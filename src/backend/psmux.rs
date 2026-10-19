@@ -26,7 +26,9 @@ use crate::backend::tmux_compat::control_mode::{ControlPolicy, PaneInput, SEND_K
 use crate::backend::tmux_compat::server::{ConfigOption, Server, TmuxCompatible};
 use crate::backend::tmux_compat::transport::TmuxTransport;
 use crate::session::{HostDef, Multiplexer, Platform};
-use crate::shell::{powershell_launcher, powershell_quote, HostLauncher, WINDOWS_CMD_LINE_MAX};
+use crate::shell::{
+    powershell_launcher, powershell_quote, CommandLineTooLong, HostLauncher, WINDOWS_CMD_LINE_MAX,
+};
 
 /// psmux.
 pub struct Psmux;
@@ -198,12 +200,16 @@ impl TmuxCompatible for Psmux {
     /// `PsmuxPaste` for why key-encoded markers do not survive there): a raw
     /// newline inside a psmux command argument is cut by the server's
     /// line-oriented read, so a multi-line prompt arrived truncated *and* its
-    /// tail ran as a psmux command (psmux #560).
-    fn paste_args(target: &str, text: &str) -> Vec<String> {
-        send_paste_args(target, text)
+    /// tail ran as a psmux command (psmux #560). One per `paste_chunks`
+    /// piece, as `PsmuxPaste::deliver` sends them.
+    fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
+        paste_chunks(text)
+            .into_iter()
+            .map(|chunk| send_paste_args(target, chunk))
+            .collect()
     }
 
-    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> String {
+    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String> {
         deferred_paste_script(mux, socket, target, text)
     }
 
@@ -507,17 +513,29 @@ fn psmux_window_command(
 /// prompt travelling as psmux's own base64 `send-paste` payload (see
 /// [`send_paste_args`]), which also keeps the script free of the prompt's
 /// newlines and quotes.
-fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> String {
+///
+/// The whole prompt rides in that one line, so a script past
+/// [`WINDOWS_CMD_LINE_MAX`] is refused with [`CommandLineTooLong`]: one
+/// `run-shell` cannot be chunked, and two scheduled `-b` would race.
+fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String> {
     // Only the socket: a quoted program name is a string to PowerShell,
     // not a command, and a multiplexer's binary name needs no quoting.
     let socket = powershell_quote(socket);
     let t = powershell_quote(target);
     let payload = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-    format!(
+    let script = format!(
         "powershell -NoProfile -Command \"{mux} -L {socket} send-paste -t {t} {payload}; \
          Start-Sleep -Milliseconds 200; \
          {mux} -L {socket} send-keys -t {t} Enter\""
-    )
+    );
+    if script.len() > WINDOWS_CMD_LINE_MAX {
+        return Err(CommandLineTooLong {
+            len: script.len(),
+            max: WINDOWS_CMD_LINE_MAX,
+        })
+        .context("the deferred prompt cannot reach a Windows host");
+    }
+    Ok(script)
 }
 
 /// Shift+Enter as `agent::input::key_to_bytes` encodes it.
@@ -1134,6 +1152,92 @@ mod tests {
         )
     }
 
+    /// A psmux that appends each command line it runs to `log` and answers a
+    /// pane as live.
+    #[cfg(unix)]
+    fn recording_backend(root: &tempfile::TempDir) -> (PsmuxBackend, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mux = root.path().join("psmux-recording");
+        let log = root.path().join("lines");
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\n[ \"$3\" = display-message ] && echo 0\nexit 0\n",
+            log.display()
+        );
+        std::fs::write(&mux, script).expect("write fake psmux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let backend = PsmuxBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy()),
+            "private-socket",
+            "thurbox",
+            "local:psmux",
+        );
+        (backend, log)
+    }
+
+    /// `session send` is a one-shot `send-paste` per chunk, so a long text
+    /// never puts a line past what a Windows host's `cmd.exe` runs — and still
+    /// arrives whole (issue #1489).
+    #[cfg(unix)]
+    #[test]
+    fn a_long_send_text_goes_out_in_lines_a_windows_host_runs() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, log) = recording_backend(&root);
+        let text = "é".repeat(PASTE_CHUNK_BYTES * 2);
+
+        backend.send_text("%1", &text, false).expect("send");
+
+        let lines = std::fs::read_to_string(&log).expect("log");
+        let pastes: Vec<&str> = lines.lines().filter(|l| l.contains("send-paste")).collect();
+        assert!(pastes.len() > 1, "{} paste line(s)", pastes.len());
+        let mut sent = Vec::new();
+        for line in &pastes {
+            assert!(line.len() <= WINDOWS_CMD_LINE_MAX, "{} chars", line.len());
+            let payload = line.rsplit(' ').next().expect("payload");
+            sent.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(payload)
+                    .expect("base64"),
+            );
+        }
+        assert_eq!(String::from_utf8(sent).expect("utf-8"), text);
+    }
+
+    /// A deferred prompt whose `run-shell` script is past the Windows limit is
+    /// refused with the reason, before anything reaches psmux (issue #1489).
+    #[cfg(unix)]
+    #[test]
+    fn a_deferred_prompt_past_the_windows_command_line_is_refused() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, log) = recording_backend(&root);
+        let prompt = "x".repeat(WINDOWS_CMD_LINE_MAX);
+
+        let error = backend
+            .send_text_after("%1", &prompt, std::time::Duration::from_secs(1))
+            .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Windows limit is 8191"),
+            "{error:#}"
+        );
+        assert!(!log.exists(), "{}", std::fs::read_to_string(&log).unwrap());
+    }
+
+    /// A prompt that fits is still scheduled as one `run-shell`.
+    #[cfg(unix)]
+    #[test]
+    fn a_deferred_prompt_that_fits_is_scheduled() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, log) = recording_backend(&root);
+
+        backend
+            .send_text_after("%1", "hello", std::time::Duration::from_secs(1))
+            .expect("scheduled");
+
+        let lines = std::fs::read_to_string(&log).expect("log");
+        assert!(lines.contains("run-shell -b -d 1"), "{lines}");
+    }
+
     /// psmux 3.3.8 exits 1 with this wording when its server is gone. That is
     /// its answer that nothing is there — what lets a restart respawn a
     /// session whose server died — not a listing that went unanswered.
@@ -1581,7 +1685,7 @@ mod tests {
     /// would otherwise cut the line and run the tail as a command (psmux #560).
     #[test]
     fn paste_prompt_args_uses_send_paste_for_psmux() {
-        let args = Psmux::paste_args("thurbox:tb-demo", "line one\nline two");
+        let args = Psmux::paste_args("thurbox:tb-demo", "line one\nline two").concat();
         assert_eq!(
             args,
             vec![
@@ -1751,7 +1855,7 @@ mod tests {
 
     #[test]
     fn a_deferred_prompt_names_the_servers_own_mux_and_socket() {
-        let psmux = deferred_paste_script("psmux", "sock", "%3", "it's\nhere");
+        let psmux = deferred_paste_script("psmux", "sock", "%3", "it's\nhere").expect("fits");
         assert!(psmux.starts_with("powershell -NoProfile -Command \"psmux -L 'sock' send-paste"));
         // Base64: the prompt's newline and quote never reach the script.
         assert!(!psmux.contains("it's"), "{psmux}");
@@ -1759,7 +1863,7 @@ mod tests {
 
     #[test]
     fn a_deferred_prompt_quotes_a_socket_name_the_host_configured() {
-        let psmux = deferred_paste_script("psmux", "my sock", "%3", "hi");
+        let psmux = deferred_paste_script("psmux", "my sock", "%3", "hi").expect("fits");
         assert!(psmux.contains("psmux -L 'my sock' send-paste"), "{psmux}");
         assert!(psmux.contains("psmux -L 'my sock' send-keys"), "{psmux}");
     }

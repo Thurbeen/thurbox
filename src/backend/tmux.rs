@@ -119,18 +119,18 @@ impl TmuxCompatible for Tmux {
     }
 
     /// The bracketed-paste-wrapped bytes, taken literally (`send-keys -l`).
-    fn paste_args(target: &str, text: &str) -> Vec<String> {
-        vec![
+    fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
+        vec![vec![
             "send-keys".to_string(),
             "-t".to_string(),
             target.to_string(),
             "-l".to_string(),
             bracketed_paste(text),
-        ]
+        ]]
     }
 
-    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> String {
-        deferred_paste_script(mux, socket, target, text)
+    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String> {
+        Ok(deferred_paste_script(mux, socket, target, text))
     }
 
     fn pane_input(_transport: &TmuxTransport, _socket: &str) -> Arc<dyn PaneInput> {
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn paste_prompt_args_wraps_literally_for_tmux() {
         assert_eq!(
-            Tmux::paste_args("thurbox:tb-demo", "line one\nline two"),
+            Tmux::paste_args("thurbox:tb-demo", "line one\nline two").concat(),
             vec![
                 "send-keys",
                 "-t",

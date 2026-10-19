@@ -120,7 +120,9 @@ quotes every one-shot command for a `cmd.exe` or PowerShell login shell rather
 than POSIX (`TmuxTransport::on_windows` → `shell::launch_on_windows`: plain
 words as they are, anything else as an encoded PowerShell script; #1460) —
 routes a bracketed paste out of band through the one-shot CLI
-`psmux send-paste` (`psmux::PsmuxPaste`), and neither writes nor reads
+`psmux send-paste` (`psmux::PsmuxPaste`) — `session send` in the same
+`PASTE_CHUNK_BYTES` chunks, and a deferred prompt's `run-shell` script refused
+past the limit (#1489) — and neither writes nor reads
 the ADR-25 window stamp there (`stamp_window` / `create_window` /
 `stamps_are_per_window`) — `set-option -w` writes a *server-global* option that
 `#{@...}` then answers with for **every** window, which made one session's id
