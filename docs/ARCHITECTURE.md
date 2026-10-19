@@ -2941,11 +2941,21 @@ layer is data in a user-editable file, so an agent's moving OTel surface is a
 config fix rather than a release. The resource attribute is what lets a backend
 join an agent's telemetry to the thurbox session.
 
-**Limits**: a remote session gets the resource attributes only, since
-`localhost` on a host is the host; a per-host endpoint is a later phase of
-issue #1465, as are thurbox's diagnostic logs. thurbox's own session metrics
-are ADR-37. A shared host's delegated spawn follows the host's own
-`[telemetry]`. The variables are inherited by everything run in the pane, not
+**Remote hosts**: `localhost` on a host is the host, so a remote session
+exports to its `hosts.toml` entry's `otel_endpoint`, with `[telemetry]`'s
+protocol and headers; a host that names none gets the resource attributes
+only. The endpoint is per host rather than derived because only the user knows
+where a host's collector is (on the host, a tunnel back, a hosted backend).
+A shared host's delegated spawn and restart follow the host's own
+`[telemetry]`: that host's CLI builds the pane from its own settings, so a
+client's endpoint never reaches the agent's pane. `session exec` and `agent
+launch-args` are answered here, from this machine's `[telemetry]` and the
+host's `otel_endpoint`, on every remote row, mirrored ones included. `session
+exec` sends that environment on ssh's stdin, never its argv, because it holds
+the `headers` token.
+
+**Limits**: thurbox's own session metrics are ADR-37, its diagnostic logs
+ADR-38. The variables are inherited by everything run in the pane, not
 only the agent.
 
 ## ADR-37: thurbox's own session telemetry is exported from the tick

@@ -55,6 +55,9 @@ worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
                               # optional — abs worktrees dir on the host
 multiplexer = "tmux"          # optional (default "tmux") — set "psmux" for a Windows SSH host
 platform = "windows"          # optional — "posix"/"windows"; unset = windows iff multiplexer is psmux
+otel_endpoint = "http://localhost:4318"
+                              # optional — the host's OTLP collector, as the host reaches it (ADR-36);
+                              # unset = its sessions get resource attributes only
 
 # A WSL distro (only needed to OVERRIDE auto-discovery, e.g. a custom worktrees_dir):
 [[hosts]]

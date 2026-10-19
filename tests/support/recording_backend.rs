@@ -47,6 +47,8 @@ pub struct Window {
     pub cwd: Option<String>,
     /// The `PATH` it was opened with, as a real spawn prefixes it.
     pub path: Option<String>,
+    /// The environment it was opened with, as the spawn handed it over.
+    pub env: std::collections::BTreeMap<String, String>,
     /// What reached the pane, in order: typed text, `\n` for each Enter, and
     /// `<name>` for any other key. What a capture reads back.
     pub screen: String,
@@ -153,6 +155,7 @@ impl RecordingBackend {
             cwd: None,
             screen: String::new(),
             path: None,
+            env: Default::default(),
             hook: None,
         });
         pane
@@ -312,7 +315,7 @@ impl SessionBackend for RecordingBackend {
         command: &str,
         args: &[String],
         cwd: Option<&Path>,
-        _env: &HashMap<String, String>,
+        env: &HashMap<String, String>,
         _rows: u16,
         _cols: u16,
     ) -> Result<SpawnedSession> {
@@ -331,6 +334,7 @@ impl SessionBackend for RecordingBackend {
             cwd: cwd.map(|p| p.display().to_string()),
             screen: String::new(),
             path: None,
+            env: env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             hook: None,
         });
         Ok(SpawnedSession {
@@ -376,6 +380,11 @@ impl SessionBackend for RecordingBackend {
             cwd: spec.cwd.map(|p| p.display().to_string()),
             screen: String::new(),
             path: spec.env.get("PATH").cloned(),
+            env: spec
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             hook: None,
         });
         state.retire_duplicates(spec.owner.session_id, spec.role);

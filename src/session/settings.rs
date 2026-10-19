@@ -95,7 +95,8 @@ pub struct TelemetrySettings {
     /// Master switch.
     #[serde(default)]
     pub enabled: bool,
-    /// OTLP base URL (`OTEL_EXPORTER_OTLP_ENDPOINT`, `{otlp_endpoint}`).
+    /// OTLP base URL (`OTEL_EXPORTER_OTLP_ENDPOINT`, `{otlp_endpoint}`) for
+    /// local sessions; a remote one uses its host's `otel_endpoint`.
     #[serde(default = "default_otlp_endpoint")]
     pub endpoint: String,
     /// OTLP protocol (`OTEL_EXPORTER_OTLP_PROTOCOL`, `{otlp_protocol}`).

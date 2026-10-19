@@ -119,6 +119,15 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #       that needs a terminal, or hangs). Absolute or "~/"-rooted ("~" is the
 #       host's $HOME); anything else is ignored. Example: ["~/.local/bin"].
 #
+#   otel_endpoint  (string, optional, default: unset)
+#       The OTLP endpoint a session on this host exports to while
+#       settings.toml [telemetry] is on, as the HOST reaches it — the
+#       local `endpoint` would name the host itself there. Unset, sessions
+#       on the host get only their resource attributes. On a shared host
+#       the agent's pane is launched by the host's own CLI from the host's
+#       own [telemetry]; `session exec` and `agent launch-args` run from
+#       here still use this endpoint.
+#
 config_version = 1
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -152,6 +161,7 @@ config_version = 1
 # # multiplexer = "tmux"        # set to "psmux" for a Windows remote host
 # # platform = "posix"          # "windows" for a Windows host (unset: psmux ⇒ windows)
 # # path_prepend = []           # e.g. ["~/.local/bin"]: first on the agent's PATH
+# # otel_endpoint = "http://localhost:4318"  # the host's own OTLP collector
 #
 # ──────────────────────────────────────────────────────────────────────────
 # WSL distro — only needed to OVERRIDE auto-discovery (distros appear with no
@@ -988,6 +998,7 @@ mod tests {
             "platform",
             "share_sessions",
             "path_prepend",
+            "otel_endpoint",
         ] {
             assert!(
                 SEED_HOSTS_TOML.contains(field),

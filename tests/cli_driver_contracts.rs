@@ -315,6 +315,106 @@ fn exec_carries_the_targets_identity_and_environment_not_the_callers() {
     );
 }
 
+/// `session exec` on a host carries the session's environment without putting a
+/// single value on a command line.
+///
+/// That environment holds secrets: the session's own `--env`, and the
+/// `[telemetry] headers` token a host with an `otel_endpoint` is handed. A
+/// value in ssh's arguments is readable by every user on both machines through
+/// `ps`, so the values travel on ssh's stdin, and only the fixed words of the
+/// launcher are left in its argv. The stand-in `ssh` records that argv and then
+/// runs the command here, stdin included, so the child proves the values still
+/// arrived.
+#[cfg(unix)]
+#[test]
+fn exec_on_a_host_keeps_every_env_value_off_the_command_line() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    let bin = env.path("bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(
+        env.path("config/settings.toml"),
+        "[features]\nautomations = false\nversion_check = false\nauto_update = false\n\
+         [telemetry]\nenabled = true\nheaders = { x-token = \"header-secret\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        env.path("config/hosts.toml"),
+        "[[hosts]]\nname = 'probe'\ndestination = 'probe'\nshare_sessions = false\n\
+         otel_endpoint = 'http://collector.probe:4318'\n",
+    )
+    .unwrap();
+    let argv_log = env.path("ssh-argv");
+    let ssh = bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n\
+             while [ \"$#\" -gt 0 ]; do\n\
+             \x20 case \"$1\" in\n\
+             \x20   -o) shift; shift ;;\n\
+             \x20   -*) shift ;;\n\
+             \x20   *) break ;;\n\
+             \x20 esac\n\
+             done\n\
+             shift\n\
+             eval \"exec $*\"\n",
+            argv_log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let work = env.path("work");
+    let id = env.seed("remote", Some(&work));
+    let db = env.db();
+    let mut session = db.get_session_by_id(id).unwrap().unwrap();
+    session.backend_type = "ssh:probe".into();
+    db.upsert_session(&session).unwrap();
+    db.set_launch_env(
+        id,
+        &[("FM_SECRET".to_string(), "env-secret".to_string())]
+            .into_iter()
+            .collect(),
+    )
+    .unwrap();
+
+    let mut cmd = env.command(&[
+        "session",
+        "exec",
+        &id.to_string(),
+        "--json",
+        "--",
+        "sh",
+        "-c",
+        "printf '%s|%s' \"$OTEL_EXPORTER_OTLP_HEADERS\" \"$FM_SECRET\"",
+    ]);
+    cmd.env(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    let out = cmd.output().expect("run thurbox-cli");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is JSON ({e}): {}{}",
+            stdout_of(&out),
+            stderr_of(&out)
+        )
+    });
+    assert_eq!(
+        doc["stdout"], "x-token=header-secret|env-secret",
+        "the child must still receive both values: {doc}"
+    );
+    let argv = std::fs::read_to_string(&argv_log).expect("ssh was run");
+    for secret in ["header-secret", "env-secret"] {
+        assert!(
+            !argv.contains(secret),
+            "{secret} reached ssh's command line, readable in ps: {argv}"
+        );
+    }
+}
+
 /// `session meta get`'s answer is one value, and being captured into a shell
 /// variable is exactly what makes stdout not a terminal.
 ///
