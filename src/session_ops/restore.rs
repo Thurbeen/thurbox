@@ -114,8 +114,9 @@ pub fn restore_refusal(
 fn refuse_a_taken_name<'a>(
     db: &'a Database,
     deleted: &crate::storage::DeletedSessionInfo,
-) -> Result<super::names::HeldName<'a>, String> {
-    let Some(hold) = super::names::hold(db, &deleted.name, &deleted.backend_type)? else {
+) -> Result<super::lock::Lock<'a>, String> {
+    let Some(hold) = super::names::hold(db, &deleted.name, &deleted.backend_type, "restore")?
+    else {
         return Err(format!(
             "'{}' is being created right now on {}; restoring this one would race that \
              creation for the name. Try again once it has finished",
@@ -257,7 +258,9 @@ pub fn restore_session_headless(
     // for the reason the name check above gives. The claim is held until the
     // row is active again, so nothing can be given the key in between.
     let (key_claim, key_dropped) = match &_hold {
-        Some(_) => super::names::admit_key(db, deleted.key.as_deref(), &deleted.backend_type)?,
+        Some(_) => {
+            super::names::admit_key(db, deleted.key.as_deref(), &deleted.backend_type, "restore")?
+        }
         None => (None, None),
     };
     let key_dropped = key_dropped.map(|why| format!("restored without its key: {why}"));
@@ -682,7 +685,7 @@ mod tests {
         .expect("upsert");
         db.soft_delete_session(id).expect("soft delete");
 
-        let held = super::super::names::hold(&db, "build", LOCAL)
+        let held = super::super::names::hold(&db, "build", LOCAL, "create")
             .expect("hold")
             .expect("nothing holds it yet");
         let err = restore_session_headless(&db, &crate::backend::registry::inert(), id, true)
@@ -692,7 +695,7 @@ mod tests {
         drop(held);
         // And the hold ending is all it was waiting on: no namesake is live.
         assert!(
-            super::super::names::hold(&db, "build", LOCAL)
+            super::super::names::hold(&db, "build", LOCAL, "create")
                 .expect("hold")
                 .is_some(),
             "the refused restore gave the name back"

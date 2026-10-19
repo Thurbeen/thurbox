@@ -215,7 +215,7 @@ pub(crate) fn spawn_session_holding_key(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     req: SpawnRequest,
-    held: &super::names::HeldName<'_>,
+    held: &super::lock::Lock<'_>,
 ) -> Result<SpawnResult, String> {
     spawn(db, backends, req, None, Some(held))
 }
@@ -225,7 +225,7 @@ fn spawn(
     backends: &crate::backend::BackendRegistry,
     req: SpawnRequest,
     progress: Option<ProgressFn<'_>>,
-    key_held: Option<&super::names::HeldName<'_>>,
+    key_held: Option<&super::lock::Lock<'_>>,
 ) -> Result<SpawnResult, String> {
     let report = |phase: SpawnPhase| {
         if let Some(progress) = progress {
@@ -279,7 +279,7 @@ fn spawn(
     // can see this creation, and the claim is what a second creator meets.
     let _key_claim = match (&req.key, key_held) {
         (Some(key), None) => {
-            let claim = super::names::claim_key(db, key, &backend_type)?;
+            let claim = super::names::claim_key(db, key, &backend_type, "create")?;
             if let Some(refusal) = super::names::key_refusal(key, &backend_type, &claim) {
                 return Err(refusal);
             }

@@ -9,7 +9,7 @@
 //!
 //! Each tick is a fresh process holding no state, so the metrics are **delta**
 //! temporality, and the position reached in the log is a cursor in the
-//! database (`storage::telemetry_export`). The agents' own telemetry is not
+//! database (`storage::event_cursors`). The agents' own telemetry is not
 //! here: ADR-36 configures their exporters, and both streams carry
 //! `thurbox.session.id` so a backend joins them.
 //!
@@ -118,9 +118,10 @@ pub fn export(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
+    let consumer = crate::storage::event_cursors::TELEMETRY_CONSUMER;
     let Some(from) = db
-        .claim_telemetry_export(now, LEASE.as_millis() as i64)
-        .map_err(|e| format!("claim_telemetry_export: {e}"))?
+        .claim_cursor(consumer, now, LEASE.as_millis() as i64)
+        .map_err(|e| format!("claim_cursor: {e}"))?
     else {
         return Ok(Report {
             skipped: Some("another export holds the lease".into()),
@@ -131,8 +132,8 @@ pub fn export(
     match outcome {
         Ok((events, to)) => {
             let moved = db
-                .advance_telemetry_cursor(from, to)
-                .map_err(|e| format!("advance_telemetry_cursor: {e}"))?;
+                .advance_cursor(consumer, from, to)
+                .map_err(|e| format!("advance_cursor: {e}"))?;
             Ok(Report {
                 events,
                 cursor: Some(to),
@@ -142,7 +143,7 @@ pub fn export(
             })
         }
         Err(e) => {
-            let _ = db.release_telemetry_export();
+            let _ = db.release_cursor(consumer);
             Err(e)
         }
     }

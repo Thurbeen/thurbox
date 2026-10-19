@@ -263,3 +263,58 @@ fn an_older_binary_refuses_a_database_it_cannot_read() {
         "the refusal rewrote the database"
     );
 }
+
+/// Every agent hook runs a `thurbox-cli`, so opening a database that is already
+/// current must not queue behind a writer (issue #1475). The schema pass and
+/// the retention sweeps each took the write lock on every open; with a peer
+/// holding it, the call waited out the whole busy timeout and then failed.
+#[test]
+fn opening_a_current_database_takes_no_write_lock() {
+    let env = Env::new();
+    let first = env.cli().output().unwrap();
+    assert!(first.status.success(), "{}", output(&first));
+
+    let writer = Connection::open(env.database()).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started = std::time::Instant::now();
+    let out = env.cli().output().unwrap();
+    let waited = started.elapsed();
+    writer.execute_batch("ROLLBACK").unwrap();
+
+    assert!(out.status.success(), "{}", output(&out));
+    assert!(
+        waited < std::time::Duration::from_millis(2_500),
+        "the open waited {waited:?} on a peer's write lock"
+    );
+}
+
+/// The skip is keyed on SQLite's schema cookie, so a change to the shape by
+/// anyone — here a snapshot trigger dropped by hand, as a thurbox from before
+/// this rule rewriting its own would — still gets a full pass that repairs it.
+#[test]
+fn a_changed_schema_still_gets_the_full_pass() {
+    let env = Env::new();
+    let first = env.cli().output().unwrap();
+    assert!(first.status.success(), "{}", output(&first));
+    let triggers = |path: &Path| -> i64 {
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' \
+                 AND name = 'snapshot_sessions_UPDATE'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(triggers(&env.database()), 1);
+    Connection::open(env.database())
+        .unwrap()
+        .execute_batch("DROP TRIGGER snapshot_sessions_UPDATE")
+        .unwrap();
+
+    let out = env.cli().output().unwrap();
+
+    assert!(out.status.success(), "{}", output(&out));
+    assert_eq!(triggers(&env.database()), 1, "the trigger came back");
+}

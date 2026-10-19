@@ -252,10 +252,7 @@ impl Database {
     pub fn prune_session_events(&self) -> rusqlite::Result<usize> {
         let retention_days = crate::session::settings::global().audit_retention_days;
         let cutoff = current_time_millis().saturating_sub(retention_days * MS_PER_DAY);
-        self.conn.execute(
-            "DELETE FROM session_events WHERE at_ms < ?1",
-            params![cutoff as i64],
-        )
+        self.delete_if_any("session_events WHERE at_ms < ?1", params![cutoff as i64])
     }
 }
 

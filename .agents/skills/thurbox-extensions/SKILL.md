@@ -150,7 +150,10 @@ bare-name install both name the three forms that do work instead
 extension at TUI startup (before session restore) and at the top of the headless
 `automation tick`. Consequence worth knowing before debugging a "zombie" session:
 while an extension is active, deleting its session/automation is a **no-op** —
-they are recreated. `extension deactivate` is the real off-switch, and headless
+they are recreated. `extension deactivate` is the real off-switch: it leaves the
+active set **first** and deletes after, and a heal pass already running checks
+the set again under each session's lock, before and after the spawn, so nothing
+it was mid-way through survives the deactivate (issue #1475). Headless
 healing needs `[features] automations = true`. Session deletion during CLI
 deactivation follows `[features] soft_delete` (default `false`); `--force`
 always tears down immediately.

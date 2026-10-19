@@ -16,11 +16,12 @@ use migrations::{
     migrate_v47_wsl_loopback_repair_owed, migrate_v48_message_delivered_via,
     migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v50_lost_at,
     migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v53_session_key,
-    migrate_v54_telemetry_export, migrate_v5_session_commands, migrate_v6_worktrees_pk,
-    migrate_v7_shell_backend_id, migrate_v8_vms, migrate_v9_agent_session_id,
+    migrate_v54_telemetry_export, migrate_v55_event_cursors, migrate_v55_move_cursors_and_claims,
+    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
+    migrate_v8_vms, migrate_v9_agent_session_id,
 };
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// Current schema version. Incremented when schema changes.
 ///
@@ -106,7 +107,13 @@ use rusqlite::Connection;
 /// v54 adds `telemetry_export`: how far `telemetry` has exported the session
 /// event log, and the lease one exporter holds while it does (ADR-37). Kept out
 /// of the v49 snapshot triggers, so an advance every minute rebuilds nothing.
-pub const SCHEMA_VERSION: u32 = 54;
+/// v55 adds `event_cursors` (`storage::event_cursors`): one row per consumer of
+/// the event log, `telemetry`'s position moved in from `telemetry_export`, and
+/// the leases `session_ops::lock` holds, moved in from the
+/// `session_name_claim:*` / `session_restart_claim:*` keys of `metadata`. It
+/// also takes `audit_log` and the teardown sweep's backoff keys out of the v49
+/// triggers, which rebuilt the interface's snapshot for writes it never reads.
+pub const SCHEMA_VERSION: u32 = 55;
 
 /// The oldest [`SCHEMA_VERSION`] that can still read and write a database this
 /// binary migrated, recorded as `min_reader_version` in `metadata`.
@@ -121,7 +128,8 @@ pub const SCHEMA_VERSION: u32 = 54;
 /// the highest any binary has written.
 ///
 /// 53, because v54 only adds `telemetry_export`, a table a v53 thurbox never
-/// reads or writes.
+/// reads or writes, and v55 only adds `event_cursors`, which no older thurbox
+/// reads either; `telemetry_export` stays for them.
 pub const MIN_READER_VERSION: u32 = 53;
 
 /// A single migration step: applied when the stored version is below `target`,
@@ -147,10 +155,10 @@ enum Reapply {
     /// to a database that has already had it would not mean what applying it
     /// once meant.
     Never,
-    /// Re-applied on every open. The step adds a column or a table **of its
-    /// own** if absent, so a healthy database changes nothing and pays a
-    /// handful of catalogue reads — far below the cost of opening the file they
-    /// are read from. "Of its own" is the load-bearing part: an `IF NOT EXISTS`
+    /// Re-applied on every open that runs the pass — one whose shape changed
+    /// since the last full pass ([`is_current`]). The step adds a column or a
+    /// table **of its own** if absent, so a healthy database changes nothing
+    /// and pays a handful of catalogue reads. "Of its own" is the load-bearing part: an `IF NOT EXISTS`
     /// that names something an *earlier* step created still fails when that
     /// step did not run (v35 indexes `tasks(source, external_id)`), and out of
     /// order is exactly the situation this exists for.
@@ -193,6 +201,9 @@ pub fn apply_connection_pragmas(conn: &Connection) -> rusqlite::Result<()> {
 pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
     // Must come first: the WAL pragma below itself needs the write lock.
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    if is_current(conn)? {
+        return apply_connection_pragmas(conn);
+    }
     enable_wal(conn)?;
     apply_connection_pragmas(conn)?;
 
@@ -209,6 +220,63 @@ pub fn initialize(conn: &Connection) -> rusqlite::Result<()> {
         });
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     pass
+}
+
+/// The `metadata` key holding SQLite's `PRAGMA schema_version` as the last
+/// full schema pass left it.
+const SCHEMA_COOKIE_KEY: &str = "schema_cookie";
+
+/// Whether the schema pass has nothing to do here: a database at this version
+/// or newer, readable by this binary, whose shape nothing has touched since a
+/// full pass last ran (issue #1475).
+///
+/// Every `thurbox-cli` call opens the database, so the pass used to take the
+/// write lock — the `WhenMissing` steps and the v49 trigger re-assert — on
+/// every agent hook. SQLite bumps its schema cookie on **any** DDL, by any
+/// binary, so an unchanged cookie means no step could find anything missing:
+/// a thurbox from before this rule that re-added its own triggers, or a
+/// column dropped by hand, changes it and gets a full pass. Read in one
+/// snapshot, and before any write, so a hot open takes no write lock at all.
+/// A file with no `metadata` table yet is not current.
+fn is_current(conn: &Connection) -> rusqlite::Result<bool> {
+    let read = || -> rusqlite::Result<bool> {
+        let cookie: i64 = conn.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+        let stored = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = ?1",
+                [SCHEMA_COOKIE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(stored.as_deref() == Some(cookie.to_string().as_str())
+            && metadata_version(conn, "schema_version") >= SCHEMA_VERSION
+            && metadata_version(conn, "min_reader_version") <= SCHEMA_VERSION)
+    };
+    conn.execute_batch("BEGIN DEFERRED")?;
+    let current = match read() {
+        Ok(current) => current,
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => false,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    };
+    conn.execute_batch("COMMIT")?;
+    Ok(current)
+}
+
+/// Record the schema cookie the pass leaves, for [`is_current`]. Last, inside
+/// the pass's transaction: every DDL statement of the pass has bumped it by
+/// then, and this write is not DDL.
+fn record_schema_cookie(conn: &Connection) -> rusqlite::Result<()> {
+    let cookie: i64 = conn.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
+    conn.execute(
+        "INSERT INTO metadata (key, value) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value \
+         WHERE metadata.value IS NOT excluded.value",
+        [SCHEMA_COOKIE_KEY, &cookie.to_string()],
+    )?;
+    Ok(())
 }
 
 /// Switch a new file to WAL, waiting out a peer doing the same.
@@ -454,6 +522,12 @@ fn create_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
             cursor      INTEGER NOT NULL,
             lease_until INTEGER NOT NULL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS event_cursors (
+            consumer    TEXT PRIMARY KEY,
+            cursor      INTEGER NOT NULL,
+            lease_until INTEGER NOT NULL DEFAULT 0
+        );
         ",
     )?;
 
@@ -467,8 +541,7 @@ fn create_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
     )?;
 
     migrate(conn)?;
-
-    Ok(())
+    record_schema_cookie(conn)
 }
 
 /// Run schema migrations for existing databases.
@@ -560,6 +633,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (52, migrate_v52_lost_rows_forget_pane, Reapply::Never),
         (53, migrate_v53_session_key, Reapply::WhenMissing),
         (54, migrate_v54_telemetry_export, Reapply::WhenMissing),
+        (55, migrate_v55_event_cursors, Reapply::WhenMissing),
+        (55, migrate_v55_move_cursors_and_claims, Reapply::Never),
     ];
 
     for &(target, step, reapply) in steps {
@@ -725,6 +800,97 @@ mod tests {
         assert!(
             after > before,
             "new columns must not escape snapshot invalidation"
+        );
+    }
+
+    /// A v54 database's export position and the claims a v54 thurbox took in
+    /// `metadata` are still there after the upgrade, in `event_cursors` under
+    /// the spellings `storage::event_cursors` asks for; and the tables v55
+    /// takes out of the snapshot triggers lose the ones a v54 binary put there.
+    #[test]
+    fn v55_moves_the_export_cursor_and_the_claims_into_event_cursors() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch(
+            "UPDATE metadata SET value = '54' WHERE key = 'schema_version';
+             DELETE FROM event_cursors;
+             INSERT INTO telemetry_export (id, cursor, lease_until) VALUES (1, 42, 7);
+             INSERT INTO metadata (key, value) VALUES
+                 ('session_name_claim:local:tmux:build', '100'),
+                 ('session_name_claim:key@:fleet.lead', '200'),
+                 ('session_restart_claim:abc', '300'),
+                 ('session_name_claimed', 'not a claim');
+             CREATE TRIGGER snapshot_audit_log_INSERT AFTER INSERT ON audit_log BEGIN
+                 UPDATE snapshot_versions SET rows_version = rows_version + 1; END;",
+        )
+        .unwrap();
+        initialize(&conn).unwrap();
+
+        let rows: Vec<(String, i64, i64)> = conn
+            .prepare("SELECT consumer, cursor, lease_until FROM event_cursors ORDER BY consumer")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            [
+                ("lock:name:key@:fleet.lead".to_string(), 0, 200),
+                ("lock:name:local:tmux:build".to_string(), 0, 100),
+                ("lock:session:abc".to_string(), 0, 300),
+                ("telemetry".to_string(), 42, 7),
+            ]
+        );
+        let left: Vec<String> = conn
+            .prepare("SELECT key FROM metadata WHERE key LIKE 'session_%claim%'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(left, ["session_name_claimed"]);
+        let triggers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' \
+                 AND tbl_name IN ('audit_log', 'event_cursors', 'telemetry_export')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(triggers, 0);
+    }
+
+    /// The bookkeeping nothing on screen reads rebuilds nothing (issue #1475):
+    /// the audit log, the cursors and leases, and the teardown sweep's backoffs.
+    /// Any other `metadata` write still does.
+    #[test]
+    fn bookkeeping_writes_leave_the_snapshot_alone() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        let rows = || -> i64 {
+            conn.query_row("SELECT rows_version FROM snapshot_versions", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        };
+        let before = rows();
+        conn.execute_batch(
+            "INSERT INTO audit_log (timestamp, entity_type, entity_id, action, instance_id) \
+                 VALUES (0, 'session', 'x', 'created', 'i');
+             INSERT INTO event_cursors (consumer, cursor, lease_until) VALUES ('lock:x', 0, 1);
+             INSERT INTO metadata (key, value) VALUES ('host_probe_backoff:ssh:h', '1:1');
+             UPDATE metadata SET value = '2:2' WHERE key = 'host_probe_backoff:ssh:h';
+             INSERT INTO metadata (key, value) VALUES ('session_reap_backoff:abc', '1:1');
+             DELETE FROM metadata WHERE key = 'session_reap_backoff:abc';",
+        )
+        .unwrap();
+        assert_eq!(rows(), before);
+        conn.execute_batch("INSERT INTO metadata (key, value) VALUES ('editor_command', 'vi')")
+            .unwrap();
+        assert!(
+            rows() > before,
+            "a setting the interface shows still rebuilds it"
         );
     }
 

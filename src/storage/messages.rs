@@ -289,12 +289,12 @@ impl Database {
         read_only: bool,
     ) -> rusqlite::Result<usize> {
         let cutoff = older_than_millis as i64;
-        let sql = if read_only {
-            "DELETE FROM session_messages WHERE created_at < ?1 AND read_at IS NOT NULL"
+        let rows = if read_only {
+            "session_messages WHERE created_at < ?1 AND read_at IS NOT NULL"
         } else {
-            "DELETE FROM session_messages WHERE created_at < ?1"
+            "session_messages WHERE created_at < ?1"
         };
-        self.conn.execute(sql, params![cutoff])
+        self.delete_if_any(rows, params![cutoff])
     }
 
     /// Best-effort retention sweep with the default policy: delete already-read

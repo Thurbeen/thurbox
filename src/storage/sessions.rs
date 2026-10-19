@@ -808,7 +808,8 @@ impl Database {
         };
         // A restart kills the window before it spawns the next one; while it
         // holds the row, the gap is on purpose.
-        if self.session_restart_held(&id_str, current_time_millis())? {
+        let held = super::event_cursors::LockSubject::Session(id);
+        if self.lease_held(&held, current_time_millis())? {
             return Ok(false);
         }
         self.conn.execute(
@@ -2462,16 +2463,16 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let session = make_session("Worker");
         db.upsert_session(&session).unwrap();
-        let id = session.id.to_string();
+        let held = crate::storage::event_cursors::LockSubject::Session(session.id);
         let now = current_time_millis();
-        assert!(db.claim_session_restart(&id, now + 60_000, now).unwrap());
+        assert!(db.take_lease(&held, now + 60_000, now).unwrap());
 
         // Kill-then-spawn: between the two the window is gone on purpose.
         assert!(!db
             .record_session_lost(session.id, &session.backend_id)
             .unwrap());
 
-        db.release_session_restart(&id, now + 60_000).unwrap();
+        db.release_lease(&held, now + 60_000).unwrap();
         assert!(db
             .record_session_lost(session.id, &session.backend_id)
             .unwrap());

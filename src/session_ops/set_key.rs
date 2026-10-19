@@ -74,7 +74,7 @@ pub fn set_session_key_headless(
     // the key's holder, and the claim is what a concurrent creator meets.
     let _claim = match key {
         Some(key) => {
-            let claim = super::names::claim_key(db, key, &session.backend_type)?;
+            let claim = super::names::claim_key(db, key, &session.backend_type, "set-key")?;
             if let Some(refusal) = super::names::key_refusal(key, &session.backend_type, &claim) {
                 return Err(refusal);
             }

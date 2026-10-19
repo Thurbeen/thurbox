@@ -97,6 +97,18 @@ pub fn ensure_extension(
     backends: &crate::backend::BackendRegistry,
     def: &ExtensionDef,
 ) -> Result<EnsureReport, String> {
+    ensure_resources(db, backends, def, None)
+}
+
+/// [`ensure_extension`], for self-heal when `healing` names the extension:
+/// every session it creates is then created only while the extension is still
+/// active ([`still_wanted`]).
+fn ensure_resources(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    def: &ExtensionDef,
+    healing: Option<&str>,
+) -> Result<EnsureReport, String> {
     let mut report = EnsureReport::default();
     let mut session_ids: HashMap<String, SessionId> = HashMap::new();
 
@@ -120,7 +132,7 @@ pub fn ensure_extension(
         }
     }
     for sess in &def.sessions {
-        if let Some(id) = ensure_session(db, backends, sess, &mut report)? {
+        if let Some(id) = ensure_session(db, backends, sess, healing, &mut report)? {
             // Under both spellings an automation's `session_ref` may use.
             if let Some(key) = &sess.key {
                 session_ids.insert(key.clone(), id);
@@ -213,12 +225,13 @@ fn ensure_keyed_session(
     backends: &crate::backend::BackendRegistry,
     sess: &ExtensionSession,
     key: &str,
+    healing: Option<&str>,
     report: &mut EnsureReport,
 ) -> Result<Option<SessionId>, String> {
     if let Some(id) = live_session_keyed(db, key)? {
         return Ok(Some(id));
     }
-    let held = match crate::session_ops::names::claim_key(db, key, &local_backend())? {
+    let held = match crate::session_ops::names::claim_key(db, key, &local_backend(), "heal")? {
         crate::session_ops::names::KeyClaim::Held(held) => held,
         crate::session_ops::names::KeyClaim::Taken(holder) => return Ok(Some(holder.id)),
         crate::session_ops::names::KeyClaim::Busy => {
@@ -231,6 +244,9 @@ fn ensure_keyed_session(
             return Ok(None);
         }
     };
+    if !still_wanted(db, healing, &sess.name, report)? {
+        return Ok(None);
+    }
     let result = crate::session_ops::spawn::spawn_session_holding_key(
         db,
         backends,
@@ -243,8 +259,7 @@ fn ensure_keyed_session(
         },
         &held,
     )?;
-    report.sessions_created.push(sess.name.clone());
-    Ok(Some(result.session_id))
+    keep_unless_deactivated(db, backends, healing, sess, result.session_id, report)
 }
 
 /// Ensure one declared session exists, reusing it when it does. Returns its id,
@@ -269,16 +284,17 @@ fn ensure_session(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     sess: &ExtensionSession,
+    healing: Option<&str>,
     report: &mut EnsureReport,
 ) -> Result<Option<SessionId>, String> {
     if let Some(key) = &sess.key {
-        return ensure_keyed_session(db, backends, sess, key, report);
+        return ensure_keyed_session(db, backends, sess, key, healing, report);
     }
     let backend = &local_backend();
     if let Some(id) = live_session_named(db, &sess.name, backend)? {
         return Ok(Some(id));
     }
-    let Some(_held) = crate::session_ops::names::hold(db, &sess.name, backend)? else {
+    let Some(_held) = crate::session_ops::names::hold(db, &sess.name, backend, "heal")? else {
         report.sessions_blocked.push(format!(
             "session '{}' was not recreated: its name is held by a creation already in \
              flight. A hold left behind by a creator that died mid-spawn lapses on its \
@@ -287,7 +303,7 @@ fn ensure_session(
         ));
         return Ok(None);
     };
-    create_under_claim(db, backends, sess, backend, report)
+    create_under_claim(db, backends, sess, backend, healing, report)
 }
 
 /// The id of the live session already answering to `name` on `backend`, if one
@@ -327,6 +343,7 @@ fn create_under_claim(
     backends: &crate::backend::BackendRegistry,
     sess: &ExtensionSession,
     backend: &str,
+    healing: Option<&str>,
     report: &mut EnsureReport,
 ) -> Result<Option<SessionId>, String> {
     if let Some(id) = live_session_named(db, &sess.name, backend)? {
@@ -343,6 +360,9 @@ fn create_under_claim(
         ));
         return Ok(None);
     }
+    if !still_wanted(db, healing, &sess.name, report)? {
+        return Ok(None);
+    }
     let result = crate::session_ops::spawn_session_headless(
         db,
         backends,
@@ -353,8 +373,58 @@ fn create_under_claim(
             ..Default::default()
         },
     )?;
+    keep_unless_deactivated(db, backends, healing, sess, result.session_id, report)
+}
+
+/// Whether self-heal may still create `name` for the extension it is healing:
+/// `false`, with the reason in `report`, once the extension has left the active
+/// set. `None` — an activation, which ensures before it joins the set — always
+/// may.
+///
+/// Asked under the session's lock, because a heal pass reads the active set
+/// once at its start and a spawn runs for seconds: a deactivate in between
+/// takes the extension out of the set first ([`deactivate_extension`]), and
+/// this is where the pass that is already running finds out.
+fn still_wanted(
+    db: &Database,
+    healing: Option<&str>,
+    name: &str,
+    report: &mut EnsureReport,
+) -> Result<bool, String> {
+    let Some(extension) = healing else {
+        return Ok(true);
+    };
+    let active = db
+        .get_active_extensions()
+        .map_err(|e| format!("get_active_extensions: {e}"))?
+        .iter()
+        .any(|n| n == extension);
+    if !active {
+        report.sessions_blocked.push(format!(
+            "session '{name}' was not recreated: extension '{extension}' was deactivated              during this pass"
+        ));
+    }
+    Ok(active)
+}
+
+/// Report a session self-heal just created — or delete it again when its
+/// extension was deactivated while it spawned. The deactivate found no row to
+/// delete then, because this spawn had not written one yet; so whichever of the
+/// two finishes last cleans up, and neither order leaves the session behind.
+fn keep_unless_deactivated(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    healing: Option<&str>,
+    sess: &ExtensionSession,
+    id: SessionId,
+    report: &mut EnsureReport,
+) -> Result<Option<SessionId>, String> {
+    if !still_wanted(db, healing, &sess.name, report)? {
+        crate::session_ops::delete_session_headless(db, backends, id, true)?;
+        return Ok(None);
+    }
     report.sessions_created.push(sess.name.clone());
-    Ok(Some(result.session_id))
+    Ok(Some(id))
 }
 
 /// Ensure a single declared automation exists and points at `target` (its
@@ -428,17 +498,28 @@ pub fn activate_extension(
     Ok(report)
 }
 
-/// Deactivate an extension: delete its declared automations and sessions, then
-/// drop it from the active set so self-heal won't resurrect it. `force` also
-/// tears down each session's window/worktrees (otherwise a soft delete).
-/// Idempotent — missing resources are simply skipped.
+/// Deactivate an extension: drop it from the active set, then delete its
+/// declared automations and sessions. `force` also tears down each session's
+/// window/worktrees (otherwise a soft delete). Idempotent — missing resources
+/// are simply skipped.
+///
+/// The set goes first (issue #1475). Deleting first left the extension active
+/// while its sessions went, so a heartbeat tick in between — or a
+/// `session.post_delete` hook running one — recreated each session as soon as
+/// it was gone. A heal pass already running when the set changes finds out
+/// under each session's lock, before and after its spawn.
 pub fn deactivate_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     def: &ExtensionDef,
     force: bool,
 ) -> Result<DeactivateReport, String> {
-    let mut report = DeactivateReport::default();
+    let mut report = DeactivateReport {
+        was_active: db
+            .remove_active_extension(&def.name)
+            .map_err(|e| format!("remove_active_extension: {e}"))?,
+        ..DeactivateReport::default()
+    };
 
     // Snapshot existing rows once rather than re-listing per declared resource.
     let automation_ids: HashMap<String, i64> = db
@@ -474,10 +555,6 @@ pub fn deactivate_extension(
             report.sessions_deleted.push(sess.name.clone());
         }
     }
-
-    report.was_active = db
-        .remove_active_extension(&def.name)
-        .map_err(|e| format!("remove_active_extension: {e}"))?;
 
     Ok(report)
 }
@@ -529,7 +606,7 @@ fn heal_one_extension(
     if heal_version_drift(db, backends, &def, name, current, auto_update, messages) {
         return;
     }
-    match ensure_extension(db, backends, &def) {
+    match ensure_resources(db, backends, &def, Some(name)) {
         Ok(report) => {
             if report.created_anything() {
                 messages.push(heal_recreated_message(&report, name));

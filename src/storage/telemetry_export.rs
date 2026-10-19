@@ -1,16 +1,9 @@
-//! Where `telemetry`'s export of the session event log has got to (ADR-37).
+//! What `telemetry` reads to export the session event log (ADR-37).
 //!
-//! The exporter runs from `automation tick`, a fresh process each time, so the
-//! position in [`super::session_events`] it has sent up to lives here. Two
-//! things keep a row from going out twice when the keeper, an OS timer and a
-//! hand-run `tick` overlap: a short lease that only one exporter holds at a
-//! time, and a cursor that moves by compare-and-swap. A failed export moves
-//! nothing, so its rows go out with the next tick — a duplicate is preferred
-//! to a gap.
-//!
-//! A table of its own rather than a `metadata` key: the snapshot triggers
-//! (schema v49) bump `rows_version` on every `metadata` write, and an advance
-//! every minute would rebuild the interface's snapshot for nothing.
+//! Where the export has got to is the `telemetry` row of
+//! [`super::event_cursors`], claimed and advanced like any other consumer's.
+//! The `telemetry_export` table schema v54 added is no longer written; it
+//! stays so a thurbox from before v55 still finds it.
 
 use rusqlite::{params, OptionalExtension};
 
@@ -37,60 +30,6 @@ pub struct ExportSession {
 }
 
 impl Database {
-    /// Take the export lease until `now_ms + lease_ms`, returning the cursor to
-    /// export from — `None` while another exporter holds the lease.
-    ///
-    /// The first claim starts the cursor at the head of the log, so turning
-    /// telemetry on does not replay the history from before it was on.
-    pub fn claim_telemetry_export(
-        &self,
-        now_ms: i64,
-        lease_ms: i64,
-    ) -> rusqlite::Result<Option<i64>> {
-        let tx = self.write_transaction()?;
-        self.conn.execute(
-            "INSERT OR IGNORE INTO telemetry_export (id, cursor, lease_until) \
-             VALUES (1, (SELECT COALESCE(MAX(seq), 0) FROM session_events), 0)",
-            [],
-        )?;
-        let claimed = self.conn.execute(
-            "UPDATE telemetry_export SET lease_until = ?1 WHERE id = 1 AND lease_until <= ?2",
-            params![now_ms + lease_ms, now_ms],
-        )?;
-        let cursor = if claimed == 1 {
-            Some(self.conn.query_row(
-                "SELECT cursor FROM telemetry_export WHERE id = 1",
-                [],
-                |r| r.get(0),
-            )?)
-        } else {
-            None
-        };
-        tx.commit()?;
-        Ok(cursor)
-    }
-
-    /// Move the cursor from `from` to `to` and give the lease up. `false` when
-    /// the cursor was no longer at `from` — an exporter whose lease ran out
-    /// lost the rows to the one that took it over.
-    pub fn advance_telemetry_cursor(&self, from: i64, to: i64) -> rusqlite::Result<bool> {
-        let moved = self.conn.execute(
-            "UPDATE telemetry_export SET cursor = ?2, lease_until = 0 \
-             WHERE id = 1 AND cursor = ?1",
-            params![from, to],
-        )?;
-        Ok(moved == 1)
-    }
-
-    /// Give the lease up without moving the cursor, after a failed export.
-    pub fn release_telemetry_export(&self) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE telemetry_export SET lease_until = 0 WHERE id = 1",
-            [],
-        )?;
-        Ok(())
-    }
-
     /// Up to `limit` events after `since`, oldest first, each with its
     /// session's facts.
     pub fn session_events_for_export(
@@ -197,44 +136,6 @@ mod tests {
     }
 
     #[test]
-    fn the_first_claim_starts_at_the_head_of_the_log() {
-        let db = Database::open_in_memory().unwrap();
-        let session = row("worker");
-        db.upsert_session(&session).unwrap();
-        let head = db.latest_session_event_seq().unwrap();
-        assert!(head > 0);
-        assert_eq!(
-            db.claim_telemetry_export(1_000, 30_000).unwrap(),
-            Some(head)
-        );
-    }
-
-    #[test]
-    fn a_held_lease_turns_a_second_exporter_away_until_it_runs_out() {
-        let db = Database::open_in_memory().unwrap();
-        assert_eq!(db.claim_telemetry_export(1_000, 30_000).unwrap(), Some(0));
-        assert_eq!(db.claim_telemetry_export(2_000, 30_000).unwrap(), None);
-        assert_eq!(db.claim_telemetry_export(31_000, 30_000).unwrap(), Some(0));
-    }
-
-    #[test]
-    fn the_cursor_moves_only_from_where_it_was() {
-        let db = Database::open_in_memory().unwrap();
-        db.claim_telemetry_export(1_000, 30_000).unwrap();
-        assert!(db.advance_telemetry_cursor(0, 5).unwrap());
-        assert!(!db.advance_telemetry_cursor(0, 9).unwrap());
-        assert_eq!(db.claim_telemetry_export(2_000, 30_000).unwrap(), Some(5));
-    }
-
-    #[test]
-    fn a_release_keeps_the_cursor_and_frees_the_lease() {
-        let db = Database::open_in_memory().unwrap();
-        db.claim_telemetry_export(1_000, 30_000).unwrap();
-        db.release_telemetry_export().unwrap();
-        assert_eq!(db.claim_telemetry_export(2_000, 30_000).unwrap(), Some(0));
-    }
-
-    #[test]
     fn exported_events_carry_their_sessions_facts() {
         let db = Database::open_in_memory().unwrap();
         let session = row("worker");
@@ -281,21 +182,5 @@ mod tests {
             )
             .unwrap();
         assert_eq!(db.state_at_seq(session.id, i64::MAX).unwrap(), None);
-    }
-
-    #[test]
-    fn the_cursor_moves_no_snapshot_generation() {
-        let db = Database::open_in_memory().unwrap();
-        let rows = |db: &Database| -> i64 {
-            db.conn_ref()
-                .query_row("SELECT rows_version FROM snapshot_versions", [], |r| {
-                    r.get(0)
-                })
-                .unwrap()
-        };
-        let before = rows(&db);
-        db.claim_telemetry_export(1_000, 30_000).unwrap();
-        db.advance_telemetry_cursor(0, 1).unwrap();
-        assert_eq!(rows(&db), before);
     }
 }

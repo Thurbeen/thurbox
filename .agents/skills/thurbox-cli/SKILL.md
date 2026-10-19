@@ -165,6 +165,12 @@ host's rows sit in the same table, so an unscoped match let a local `replace`
 force-delete a session on another machine, `fail` refuse a local create because
 of a remote namesake, and `adopt` return an id whose pane is elsewhere.
 
+`fail`, `adopt` and `replace` (without `--key`) hold the name's
+`session_ops::lock` from the lookup to the row, the lock self-heal and restore
+take, so two racing creates of one name, or a create racing a heal, cannot both
+spawn; the loser is refused with "being created … right now". `allow` takes
+none. A `--key` create is locked on the key by the spawn itself.
+
 `adopt` answers with `stopped` and `state` as well, because the reason to adopt
 is to skip the follow-up read — and what it hands back may be a **parked**
 session, which refuses `send`/`key`/`capture`. `create` publishes the same two
@@ -236,7 +242,7 @@ kills the window and then spawns its replacement, and in between the session is
 pane-less for the same reason a parked one is, so a repairer used to put a
 second agent on it and the ADR-25 stamp landed on two windows (issue #1207).
 `restart` holds the row for the length of the operation —
-`Database::claim_session_restart`, the name claim re-keyed on the session id —
+`session_ops::lock` on the session id, the lease the name lock is —
 and a repairer stands down while somebody holds it. `restart` and `start`
 themselves do not: a hold outlives its holder by minutes by design, and one left
 behind by a restart killed mid-flight must not refuse the verb the operator
@@ -924,7 +930,7 @@ The tick ends with thurbox's own OTLP export (`telemetry::export`, ADR-37):
 reported as the tick's `telemetry` object (`events`, `cursor`, `skipped`, or
 `error`; `null` while `[telemetry]` exports nothing). It runs last because a
 collector that does not answer costs a request timeout. A lease and a CAS'd
-cursor in `telemetry_export` (schema v54) keep concurrent ticks from sending a
+cursor, the `telemetry` row of `event_cursors` (schema v55), keep concurrent ticks from sending a
 row twice, and a failed export keeps the cursor so the rows go out next tick.
 No other CLI command talks to a collector: the interface's diagnostic-log bridge
 (`telemetry::diagnostic`, ADR-38) is built by the TUI only, so a hook's
