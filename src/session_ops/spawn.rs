@@ -233,13 +233,17 @@ fn spawn(
         }
     };
     report(SpawnPhase::Resolving);
-    let req = with_native_separators(req);
     validate_request(db, &req)?;
 
     // Resolve host and multiplexer before any worktree or pane is made.
     let choice = resolve_backend(backends, req.host.as_deref(), req.multiplexer.as_deref())?;
     let backend_type = choice.backend_type();
     let host = choice.host.clone();
+    let req = if host.is_none() {
+        with_native_separators(req)
+    } else {
+        req
+    };
 
     // A shareable host creates its own sessions: its CLI does the worktree,
     // the hooks and the launch with its own configuration, and its database
@@ -1092,12 +1096,9 @@ pub(crate) fn resolve_launch_cwd(
 
 /// A local request's directories in this platform's own spelling (issue #1480),
 /// so one directory is one stored string — repo grouping and dedup compare the
-/// text. A remote host's paths are left as given: they are spelled for that
-/// host, not this one.
+/// text. Only for a request that resolved to no host: a remote host's paths
+/// are spelled for that host, not this one.
 fn with_native_separators(mut req: SpawnRequest) -> SpawnRequest {
-    if req.host.is_some() {
-        return req;
-    }
     req.repo_path = crate::paths::native_separators(&req.repo_path);
     if let Some(path) = &mut req.existing_worktree {
         *path = crate::paths::native_separators(path);
