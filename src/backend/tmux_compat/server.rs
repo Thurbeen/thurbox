@@ -2125,43 +2125,52 @@ impl<M: TmuxCompatible> Server<M> {
     }
 
     /// Make `fresh` the connection, unless [`SessionBackend::shutdown`] came
-    /// first.
+    /// first, and retire whatever it replaces.
     ///
-    /// Checked under the lock `shutdown` takes the connection out under, so a
-    /// handshake that outlives a quit is torn down instead of left behind.
-    /// Whatever is replaced is retired rather than closed: other callers may
-    /// be waiting on it for answers to commands that have already run. Both it
-    /// and a refused `fresh` are dealt with after the lock is let go, since a
+    /// Retired rather than closed: other callers may be waiting on the old
+    /// connection for answers to commands that have already run. Both it and
+    /// a refused `fresh` are dealt with after the lock is let go, since a
     /// teardown waits on the child.
     fn install(&self, fresh: ControlMode) -> Result<()> {
         let fresh = Arc::new(fresh);
-        let replaced = {
-            let mut guard = self
-                .control
-                .lock()
-                .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
-            if self.is_closed() {
-                None
-            } else {
-                Some(guard.replace(Arc::clone(&fresh)))
-            }
-        };
-        match replaced {
-            Some(old) => {
+        match self.swap(&fresh) {
+            Ok(old) => {
                 if let Some(old) = old {
-                    if let Ok(mut retiring) = self.retiring.lock() {
-                        retiring.retain(|weak| weak.strong_count() > 0);
-                        retiring.push(Arc::downgrade(&old));
-                    }
                     old.retire();
                 }
                 Ok(())
             }
-            None => {
+            Err(e) => {
                 fresh.close();
-                bail!("{} is shut down", self.name)
+                Err(e)
             }
         }
+    }
+
+    /// [`Self::install`]'s step under the lock `shutdown` takes the connection
+    /// out under: refused once shut down, so a handshake that outlives a quit
+    /// is torn down instead of left behind. Answers the connection replaced.
+    ///
+    /// The replaced connection is recorded as retiring before `control` is let
+    /// go, because `shutdown` reads `retiring` only after taking `control`:
+    /// recorded later, a quit in between found nothing to close and the old
+    /// connection's child outlived it.
+    fn swap(&self, fresh: &Arc<ControlMode>) -> Result<Option<Arc<ControlMode>>> {
+        let mut guard = self
+            .control
+            .lock()
+            .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
+        if self.is_closed() {
+            bail!("{} is shut down", self.name);
+        }
+        let old = guard.replace(Arc::clone(fresh));
+        if let Some(old) = &old {
+            if let Ok(mut retiring) = self.retiring.lock() {
+                retiring.retain(|weak| weak.strong_count() > 0);
+                retiring.push(Arc::downgrade(old));
+            }
+        }
+        Ok(old)
     }
 
     /// Send a command via control mode and return the response.
@@ -5089,6 +5098,58 @@ mod tests {
         assert!(answered.is_err(), "{answered:?}");
         let log = std::fs::read_to_string(mux.with_extension("log")).expect("log");
         assert_eq!(log.matches("list-windows").count(), 1, "{log}");
+    }
+
+    /// A quit that lands while a reconnect is replacing the connection must
+    /// still close the one replaced. It was recorded as retiring only after
+    /// the swap let go of `control`, so a `shutdown` in that gap took the new
+    /// connection, found nothing retiring, and the old one's child outlived
+    /// the quit. With the swap parked at its record step (by holding
+    /// `retiring`), the new connection must not be visible yet.
+    #[cfg(unix)]
+    #[test]
+    fn a_quit_during_a_reconnect_closes_the_replaced_connection() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, _mux) = stalling_backend(root.path());
+        let backend = Arc::new(backend);
+        let old = backend.connection().expect("connection");
+        let fresh = Arc::new(
+            ControlMode::start(
+                &backend.located_transport(),
+                &backend.socket(),
+                &backend.session,
+                &backend.sizer,
+                &UnmonitoredMux::control_policy(&backend.transport, &backend.session),
+            )
+            .expect("second connection"),
+        );
+
+        let parked = backend.retiring.lock().expect("retiring lock");
+        let swap = std::thread::spawn({
+            let (backend, fresh) = (Arc::clone(&backend), Arc::clone(&fresh));
+            move || backend.swap(&fresh).map(|old| old.is_some())
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        let mut visible = false;
+        while !visible && std::time::Instant::now() < deadline {
+            let current = backend.control.try_lock().ok().and_then(|c| c.clone());
+            visible = current.is_some_and(|c| Arc::ptr_eq(&c, &fresh));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(parked);
+        let swapped = swap.join().expect("swap");
+        backend.shutdown();
+
+        assert!(
+            !visible,
+            "the swap showed before the old connection was recorded"
+        );
+        assert!(swapped.is_ok_and(|replaced| replaced), "nothing replaced");
+        let answer = old.send_command_within("display-message -p ''", LOOP_COMMAND_BUDGET);
+        assert!(
+            answer.is_err(),
+            "the replaced connection outlived the quit: {answer:?}"
+        );
     }
 
     /// The whole point of the fix: what tmux is handed must not need tmux's own
