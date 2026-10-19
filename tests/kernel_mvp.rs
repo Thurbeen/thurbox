@@ -1620,8 +1620,13 @@ fn the_granted_capability_set_matches_a_declared_list() {
     // `files` is not on it: a session's directory holds its `.env`, so the two
     // rooted reads are present only for a plugin granted the `files`
     // capability, as `run` is (`tests/plugin_commands.rs`).
-    const GRANTED: [&str; 6] = [
-        "require", "state", "store", "command", "thurbox",
+    const GRANTED: [&str; 7] = [
+        "require",
+        "state",
+        "store",
+        "store_writer",
+        "command",
+        "thurbox",
         // Display width, which Lua cannot compute for itself: `#` counts bytes
         // and `utf8.len` counts codepoints. Pure measurement — it reads
         // nothing and reaches nothing.

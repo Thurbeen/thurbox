@@ -351,7 +351,7 @@ pressed row from the action's `args.session_id`. The full contract is in
 (`granted.run`, `granted.program`, `granted.sessions`, `granted.files`). It exists
 because not every capability can be withheld by absence: `run` and `files` are
 globals, so `if not run then` is the check, but an interactive program pane, and
-`send`, `create`, `restart` and a force `delete` (`sessions`), are asked for
+the verbs that drive an agent or lose something for good (`sessions`), are asked for
 through `command`, which every plugin has.
 
 **Deliberately absent**: `os`, `io`, `debug`, `package`, `print`, `dofile`,
@@ -417,7 +417,8 @@ These are the ones that cost real time.
 - **`run` is nil until the user trusts the file.** Declaring
   `capabilities = { "run" }` does not grant it. Check `if not run then` and draw
   something honest; do not call it and hope.
-- **`send`, `create`, `restart` and a force `delete` need `sessions`.** Without
+- **`send`, `create`, `fork`, `restart`, `dispatch`, `automation`, `plugin` and a
+  force `delete` need `sessions`; `open` needs `run`.** Without
   the grant the command is refused and `command.failed` says why. `files` is nil
   until the file is granted `files`. Check `thurbox.granted.sessions` before
   offering a key that would only be refused.

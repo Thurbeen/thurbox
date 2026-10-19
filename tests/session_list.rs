@@ -1318,7 +1318,10 @@ fn force_deleting_a_session_with_work_asks_first_and_says_what_is_lost() {
         "nothing is torn down until the question is answered"
     );
     let tree = confirm_tree(&host, &snapshot);
-    assert!(tree.contains("and its worktree?"), "the question: {tree}");
+    assert!(
+        tree.contains("Delete first and its worktree for good?"),
+        "the question, worded by the confirmation from the command: {tree}"
+    );
     assert!(
         tree.contains("3 uncommitted or untracked file(s)"),
         "{tree}"

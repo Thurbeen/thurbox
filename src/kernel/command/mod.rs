@@ -577,14 +577,17 @@ impl Command {
 
     /// The capability the issuing plugin must hold for this to be applied.
     ///
-    /// An exec automation's command is a command line the heartbeat runs
-    /// through the platform shell, so writing one is gated exactly as running
-    /// one is: without `run`, a pane may toggle, run and delete automations and
-    /// edit everything else about them, but never author what an exec runs.
+    /// Every variant answers for itself, with no catch-all arm: a new verb does
+    /// not compile until someone decides what it needs, so a gap is a choice
+    /// written down here rather than a default nobody made.
     ///
-    /// `send`, `create` and `restart` drive an agent and a force `delete` loses
-    /// a worktree for good, so each needs `sessions`. A soft delete does not:
-    /// the restore list undoes it.
+    /// `sessions` covers what drives an agent or loses something for good:
+    /// `send`, `create`, `fork`, `restart`, a dispatched task, an automation run
+    /// or written with a prompt the heartbeat types, a force `delete`, and
+    /// restoring or removing a file of the interface. `run` covers what reaches
+    /// the outside world as the user: an exec automation's command line, and a
+    /// URL opened without anyone clicking it. `program` covers a plugin's own
+    /// program pane.
     pub fn requires(&self) -> Option<super::host::Capability> {
         use super::host::Capability;
         match self {
@@ -592,11 +595,43 @@ impl Command {
             Command::AutomationSave { draft, .. } if draft.command.is_some() => {
                 Some(Capability::Run)
             }
+            Command::OpenLink { .. } => Some(Capability::Run),
+            Command::Program { .. } => Some(Capability::Program),
             Command::Send { .. }
             | Command::Create { .. }
+            | Command::Fork { .. }
             | Command::Restart { .. }
+            | Command::DispatchTask { .. }
+            | Command::Automation { .. }
+            | Command::AutomationSave { .. }
+            | Command::Plugin { .. }
             | Command::Delete { force: true, .. } => Some(Capability::Sessions),
-            _ => None,
+            // Undone from the restore list, or by deleting again.
+            Command::Delete { force: false, .. } | Command::Restore { .. } => None,
+            // Arrange, name or bring up to date what already exists; nothing is
+            // typed into an agent and nothing is lost.
+            Command::Reorder { .. }
+            | Command::Order { .. }
+            | Command::Rename { .. }
+            | Command::Sync { .. }
+            | Command::Task { .. }
+            | Command::Bookmark { .. } => None,
+            // The interface's own state, or something the user then drives
+            // themselves: a pane focused, a shell or editor opened beside a
+            // session, a theme, a setting, a message, a screen copied.
+            Command::Focus { .. }
+            | Command::Shell { .. }
+            | Command::Editor { .. }
+            | Command::Copy { .. }
+            | Command::Diff { .. }
+            | Command::Theme { .. }
+            | Command::Setting { .. }
+            | Command::Message { .. }
+            | Command::Emit { .. }
+            | Command::Action { .. }
+            | Command::ActionTarget { .. } => None,
+            // Issued by the kernel, never parsed from a plugin.
+            Command::Reap | Command::Configure { .. } => None,
         }
     }
 
@@ -618,10 +653,16 @@ impl Command {
             owner
         };
         let doing = match self.kind() {
-            "automation" => "write an automation's command",
+            "automation" if need == super::host::Capability::Run => "write an automation's command",
+            "automation" => "run or change an automation",
             "send" => "type into a session",
             "create" => "create a session",
+            "fork" => "fork a session",
             "restart" => "restart a session",
+            "dispatch" => "dispatch a task to an agent",
+            "plugin" => "change a file of the interface",
+            "open" => "open a link",
+            "program" => "run a program in a pane",
             _ => "delete a session for good",
         };
         (!may(owner, need)).then(|| {
@@ -1872,7 +1913,11 @@ mod tests {
             save("edit", Some(3.0), vec![command()]).requires(),
             Some(Capability::Run)
         );
-        assert_eq!(save("edit", Some(3.0), vec![name()]).requires(), None);
+        assert_eq!(
+            save("edit", Some(3.0), vec![name()]).requires(),
+            Some(Capability::Sessions),
+            "a prompt-only automation is typed into an agent by the heartbeat"
+        );
         assert_eq!(
             Command::parse(
                 "automation",
@@ -1884,8 +1929,8 @@ mod tests {
             )
             .expect("parse")
             .requires(),
-            None,
-            "running an existing one is not writing a command"
+            Some(Capability::Sessions),
+            "running one types its prompt or runs its command now"
         );
     }
 
@@ -1926,11 +1971,186 @@ mod tests {
             },
         )
         .expect("parse");
-        assert_eq!(
-            rename.refusal("plugins/30_x.lua", |_, _| false),
-            None,
-            "no command, no grant needed"
-        );
+        let refused = rename
+            .refusal("plugins/30_x.lua", |_, _| false)
+            .expect("an automation drives an agent");
+        assert!(refused.contains("\"sessions\""), "{refused}");
+    }
+
+    /// Every verb a plugin can issue, and what it needs. `requires` has no
+    /// catch-all arm, so a new variant does not compile until it decides; this
+    /// pins each decision, so changing one is a visible edit here too.
+    #[test]
+    fn every_verb_states_what_it_requires() {
+        use super::super::host::Capability::{Program, Run, Sessions};
+        let with = |args: Args| Args {
+            session: "s1".into(),
+            owner: "plugins/30_x.lua".into(),
+            ..args
+        };
+        let verbs: Vec<(&str, Args, Option<super::super::host::Capability>)> = vec![
+            (
+                "send",
+                with(Args {
+                    text: Some("x".into()),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            (
+                "create",
+                with(Args {
+                    repo: Some("/r".into()),
+                    text: Some("n".into()),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            ("fork", with(Args::default()), Some(Sessions)),
+            ("restart", with(Args::default()), Some(Sessions)),
+            (
+                "delete",
+                with(Args {
+                    force: true,
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            ("delete", with(Args::default()), None),
+            (
+                "dispatch",
+                with(Args {
+                    number: Some(1.0),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            (
+                "automation",
+                with(Args {
+                    number: Some(1.0),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            (
+                "plugin",
+                with(Args {
+                    file: Some("plugins/x.lua".into()),
+                    action: Some("remove".into()),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            (
+                "open",
+                with(Args {
+                    text: Some("https://x".into()),
+                    ..Args::default()
+                }),
+                Some(Run),
+            ),
+            (
+                "program",
+                with(Args {
+                    text: Some("p".into()),
+                    repo: Some("top".into()),
+                    ..Args::default()
+                }),
+                Some(Program),
+            ),
+            ("restore", with(Args::default()), None),
+            (
+                "reorder",
+                with(Args {
+                    delta: Some(1),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "order",
+                with(Args {
+                    list: vec!["s1".into()],
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "rename",
+                with(Args {
+                    text: Some("n".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            ("sync", with(Args::default()), None),
+            (
+                "task",
+                with(Args {
+                    text: Some("t".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "focus",
+                with(Args {
+                    text: Some("p".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            ("shell", with(Args::default()), None),
+            ("editor", with(Args::default()), None),
+            ("copy", with(Args::default()), None),
+            ("diff", with(Args::default()), None),
+            (
+                "theme",
+                with(Args {
+                    text: Some("t".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "set",
+                with(Args {
+                    text: Some("p.k".into()),
+                    flag: Some(true),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "message",
+                with(Args {
+                    text: Some("m".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "emit",
+                with(Args {
+                    text: Some("e".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "action",
+                with(Args {
+                    text: Some("help.open".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+        ];
+        for (verb, args, expected) in verbs {
+            let command = Command::parse(verb, args).unwrap_or_else(|e| panic!("{verb}: {e}"));
+            assert_eq!(command.requires(), expected, "{verb}: {command:?}");
+        }
     }
 
     /// A pane reaching the action registry from a key handler, which is the

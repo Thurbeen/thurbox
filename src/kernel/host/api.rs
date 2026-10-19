@@ -30,6 +30,7 @@ pub(super) fn install_api(
 ) -> mlua::Result<()> {
     scrub_globals(lua)?;
     install_store(lua, "store", store, state_version, store_writes, None)?;
+    install_store_writer(lua)?;
     install_clock(lua, clock, clock_read)?;
     install_sample_reads(lua, sample_read)?;
     install_text(lua)?;
@@ -88,7 +89,7 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
     meta.set("__metatable", false)?;
     table.set_metatable(Some(meta))?;
     table.set("_G", table.clone())?;
-    sealed_views(lua, &table)?;
+    sealed_views(lua, &table, path)?;
     table.set(
         "command",
         command_for(lua, parts.queue.clone(), path.to_string())?,
@@ -195,8 +196,8 @@ fn seal_shared(lua: &Lua) -> mlua::Result<()> {
 const SEALED_METAS: &str = "__sealed_metas";
 
 /// One plugin's views of the shared tables: a fresh empty table per sealed
-/// library, and one for `store`, each carrying the shared, sealed metatable.
-fn sealed_views(lua: &Lua, env: &Table) -> mlua::Result<()> {
+/// library carrying the shared, sealed metatable, and one for `store`.
+fn sealed_views(lua: &Lua, env: &Table, path: &str) -> mlua::Result<()> {
     let metas: Table = lua.named_registry_value(SEALED_METAS)?;
     for name in SEALED {
         if let Ok(Value::Table(meta)) = metas.get::<Value>(name) {
@@ -205,10 +206,58 @@ fn sealed_views(lua: &Lua, env: &Table) -> mlua::Result<()> {
             env.raw_set(name, view)?;
         }
     }
-    let store: Table = lua.globals().get("store")?;
+    env.raw_set("store", store_view(lua, path)?)
+}
+
+/// One plugin's view of `store`: reads what every plugin reads, and records
+/// this plugin as the last writer of each key it writes ([`STORE_WRITERS`]).
+///
+/// The record is made here, by a function built for this plugin, so it cannot
+/// be claimed for another: a `rawset` on the view lands in the plugin's own
+/// table and never reaches `store`.
+fn store_view(lua: &Lua, path: &str) -> mlua::Result<Table> {
+    let shared: Table = lua.globals().get("store")?;
+    let Some(shared) = shared.metatable() else {
+        return Err(mlua::Error::runtime("store has no metatable"));
+    };
+    let write: mlua::Function = shared.get("__newindex")?;
+    let writers: Table = lua.named_registry_value(STORE_WRITERS)?;
+    let owner = path.to_string();
+    let meta = lua.create_table()?;
+    meta.set("__index", shared.get::<Value>("__index")?)?;
+    meta.set(
+        "__newindex",
+        lua.create_function(move |_, (view, key, value): (Table, String, Value)| {
+            write.call::<()>((view, key.clone(), value))?;
+            writers.raw_set(key, owner.clone())
+        })?,
+    )?;
+    meta.set("__metatable", false)?;
     let view = lua.create_table()?;
-    view.set_metatable(store.metatable())?;
-    env.raw_set("store", view)
+    view.set_metatable(Some(meta))?;
+    Ok(view)
+}
+
+/// Who last wrote each `store` key, by plugin path: what `store_writer` reads.
+const STORE_WRITERS: &str = "__store_writers";
+
+/// `store_writer(key)` — the path of the plugin that last wrote `store[key]`,
+/// or nil when nothing has, or the kernel or `layout.lua` did.
+///
+/// `store` is how one pane hands another a request, and the one acting on it
+/// may need to say whose request it is: the shipped confirmation names the
+/// pane that asked, because the question it was handed is that pane's words.
+fn install_store_writer(lua: &Lua) -> mlua::Result<()> {
+    let writers = lua.create_table()?;
+    lua.set_named_registry_value(STORE_WRITERS, writers.clone())?;
+    lua.globals().set(
+        "store_writer",
+        lua.create_function(move |_, key: String| {
+            Ok(writers
+                .raw_get::<Option<String>>(key)?
+                .filter(|path| !path.is_empty()))
+        })?,
+    )
 }
 
 /// The library tables every plugin reads, sealed by [`seal_shared`].

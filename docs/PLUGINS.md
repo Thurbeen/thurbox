@@ -1438,12 +1438,23 @@ trust.
 
 ## Driving sessions and reading files
 
-`command` is every plugin's, but four of its verbs act on an agent or destroy
-something, and those need the `sessions` capability: `send` (types into an agent),
-`create` and `restart` (launch one), and `delete` with `force = true` (a worktree
-nothing restores). Without the grant the command is refused with a message naming
-the capability, and `command.failed` carries it. A soft `delete` needs nothing — the
-restore list undoes it.
+`command` is every plugin's, but some of its verbs drive an agent or lose something
+for good, and those need the `sessions` capability:
+
+- `send` types into an agent, and `dispatch` types a task into one.
+- `create`, `fork` and `restart` launch an agent.
+- `automation` runs, toggles, deletes or writes an automation, whose prompt the
+  heartbeat types.
+- `delete` with `force = true` removes a worktree that nothing restores.
+- `plugin` restores or removes a file of the interface.
+
+Two verbs need `run` instead: `open` (a URL carries whatever is in it to the network
+without a click) and writing an exec automation's `command`. `program` needs
+`program`. Every other verb needs no grant, and the kernel lists each one's answer
+explicitly, so a new verb cannot slip through by default. Without the grant the
+command is refused with a message naming the capability, and `command.failed`
+carries it. A soft `delete` and a `restore` need nothing: each is undone by the
+other.
 
 `files.list` and `files.read` need the `files` capability, and are absent until it
 is granted, as `run` is. A session's directory holds its `.env` files and keys, and
@@ -1461,11 +1472,17 @@ end,
 
 **The panes thurbox ships hold `sessions` without asking** while they are exactly
 what it ships: the confirmation (a force delete, a restart) and the creation flow
-(a create). Edit one and it is your file, decided like any other — the Interface
-tab marks it untrusted until you press `t`. The confirmation forwards only
-`delete`, `restart`, `restore` and `sync`: `store.confirm` is written by every
-pane, so a `send` or `create` behind a question any pane wrote would be the grant
-handed to whoever wrote it.
+(a create, a fork). Edit one and it is your file, decided like any other — the
+Interface tab marks it untrusted until you press `t`.
+
+The confirmation is the one place a pane without the grant reaches these, by
+leaving a question in `store.confirm`, so it forwards only `delete`, `restart`,
+`restore` and `sync`. Every pane writes `store`, so the question is only its
+author's words. The confirmation therefore words what `y` does itself, from the
+command and the session's name, and names the pane that asked. It learns which
+pane that was from `store_writer("confirm")`, which returns the path of the plugin
+that last wrote a `store` key. That record is made by the writer's own view of
+`store`, so no pane can claim another's.
 
 ## Running a program you interact with
 

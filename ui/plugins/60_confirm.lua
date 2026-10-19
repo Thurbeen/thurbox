@@ -1,7 +1,7 @@
 -- The confirmation, for a change that cannot be undone.
 --
--- It knows nothing about sessions. A pane that is about to do something
--- irreversible leaves the question in `store.confirm`:
+-- A pane that is about to do something irreversible leaves the question in
+-- `store.confirm`:
 --
 --   store.confirm = {
 --     question = "Delete fix-osc52 and its worktree?",
@@ -10,10 +10,13 @@
 --     options = { session = id, force = true },
 --   }
 --
--- and this asks it, then issues that command on `y`/`enter`. So the pane that
--- owns the data decides *what* is at risk and this decides nothing except how the
--- question looks — which is why the session list can itemise a worktree's state
--- without a confirmation dialog knowing what a worktree is.
+-- and this asks it, then issues that command on `y`/`enter`. The pane that owns
+-- the data decides *what* is at risk — which is why the session list can itemise
+-- a worktree's state without a confirmation dialog knowing what a worktree is.
+--
+-- What `y` does is worded here, from the command, and not taken from the
+-- question: `store` is written by every pane and this one holds `sessions`, so a
+-- question is only its author's words. The pane that asked is named beside it.
 --
 -- v1 has two bespoke modals for this (`ConfirmDelete`, `ConfirmRestore`), each
 -- with the risk assessment welded in.
@@ -29,6 +32,34 @@ local widgets = require("lib.widgets")
 --- through it. A `send` or a `create` behind a question its author wrote is the
 --- capability laundered, so only the changes the shipped panes ask about pass.
 local FORWARDS = { delete = true, restart = true, restore = true, sync = true }
+
+--- A session's name, from the live list or the restore list, for the line
+--- that says what will happen to it.
+local function session_name(id)
+  for _, rows in ipairs({ thurbox.sessions or {}, thurbox.deleted or {} }) do
+    for _, row in ipairs(rows) do
+      if row.id == id then
+        return row.name or id
+      end
+    end
+  end
+  return id or "a session"
+end
+
+--- What `y` will do, in words made here from the command it issues.
+local function consequence(kind, options)
+  local name = session_name(options.session)
+  if kind == "delete" then
+    return options.force and ("Delete " .. name .. " and its worktree for good")
+      or ("Delete " .. name)
+  elseif kind == "restart" then
+    return "Restart " .. name
+  elseif kind == "restore" then
+    return options.force and ("Restore " .. name .. " with only its committed work")
+      or ("Restore " .. name)
+  end
+  return "Sync " .. name .. " with the branch it came from"
+end
 
 --- The pending question, if a pane left one it may ask.
 local function pending()
@@ -71,11 +102,31 @@ return {
       return { type = "text", text = "" }
     end
 
+    local options = type(ask.options) == "table" and ask.options or {}
     local children = {
       {
         type = "text",
         len = 1,
-        text = { { { text = " " .. ask.question, style = { fg = theme.text, bold = true } } } },
+        text = {
+          {
+            {
+              text = " " .. consequence(ask.command, options) .. "?",
+              style = { fg = theme.text, bold = true },
+            },
+          },
+        },
+      },
+      {
+        type = "text",
+        len = 1,
+        text = {
+          {
+            {
+              text = " asked by " .. (store_writer("confirm") or "thurbox"),
+              style = { fg = theme.muted },
+            },
+          },
+        },
       },
     }
 

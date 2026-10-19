@@ -508,14 +508,18 @@ views over a sealed metatable (per plugin, because `rawset` writes into the view
 them out, per call; `layout.lua` has an env that never holds either.
 `LuaHost::reachable_globals` is what the environment tripwire reads.
 
-**Driving sessions needs `sessions`.** `send`, `create`, `restart` and a force
-`delete` are refused (`Command::requires` → `Command::refusal`, checked in
-`coordinator::commands::refuse_ungranted` against the owner bound into the
-issuing plugin's own `command` — `LuaHost::drain_issued`) unless the issuing file declares `sessions` and holds the
-grant. A bundled file byte for byte as shipped is `Trust::Shipped` and holds what
-it declares untrusted — `60_confirm` and `70_new_session` need it — and
+**Driving sessions needs `sessions`.** `Command::requires` is an exhaustive match
+with no catch-all (a new verb must decide; `every_verb_states_what_it_requires`
+pins each): `send`, `create`, `fork`, `restart`, `dispatch`, `automation`, `plugin`
+and a force `delete` need `sessions`; `open` and an exec automation's command need
+`run`; `program` needs `program`. Refused in
+`coordinator::commands::refuse_ungranted` against the owner bound into the issuing
+plugin's own `command` (`LuaHost::drain_issued`). A bundled file byte for byte as
+shipped is `Trust::Shipped` and holds what it declares untrusted — `60_confirm`
+and `70_new_session` need it — and
 `60_confirm` forwards only `delete`/`restart`/`restore`/`sync`, since any pane can
-write `store.confirm`.
+write `store.confirm`; it words the change itself from the command and names the
+asker via `store_writer` (recorded by the writer's own `store` view).
 
 **A plugin can react to events** (`kernel::events`, `coordinator::events`).
 Declare `events = { "session.status", … }` and an `on_event(name, payload)`, and

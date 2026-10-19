@@ -287,13 +287,15 @@ pub enum Capability {
     /// every few seconds did not agree to "may hold a process open indefinitely
     /// and feed it what I type", so the grant is asked for separately.
     Program,
-    /// Start, restart, type into or permanently delete a session.
+    /// Drive an agent, or lose something for good.
     ///
-    /// The commands that drive an agent or destroy something. `send` puts words
-    /// in an agent's mouth, `create` and `restart` launch one, and a force
-    /// `delete` removes a worktree nothing restores. A pane holding none of these
-    /// can still ask the user through the bundled confirmation, which holds this
-    /// grant and issues the command only on their `y`.
+    /// The verbs listed in [`crate::kernel::command::Command::requires`]:
+    /// `send` and `dispatch` put words in an agent's mouth, `create`, `fork` and
+    /// `restart` launch one, an automation is typed or run by the heartbeat, a
+    /// force `delete` removes a worktree nothing restores, and `plugin` rewrites
+    /// a file of the interface. A pane holding none of these can still ask the
+    /// user through the bundled confirmation, which words the change itself and
+    /// issues it only on their `y`.
     Sessions,
     /// Read a session's files: `files.list` and `files.read`.
     ///
@@ -322,7 +324,9 @@ impl Capability {
         match self {
             Capability::Run => "runs programs and reads their output",
             Capability::Program => "runs a program you interact with",
-            Capability::Sessions => "starts, restarts, types into and deletes sessions",
+            Capability::Sessions => {
+                "starts, types into and deletes sessions, runs automations, edits the interface"
+            }
             Capability::Files => "reads the files in a session's directory",
         }
     }

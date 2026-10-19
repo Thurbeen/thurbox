@@ -799,7 +799,7 @@
 ---@class (exact) thurbox.Granted
 ---@field run? boolean
 ---@field program? boolean
----@field sessions? boolean `send`, `create`, `restart` and a force `delete` are applied.
+---@field sessions? boolean Verbs that drive an agent or lose something for good are applied (docs/PLUGINS.md).
 ---@field files? boolean `files` is present.
 
 --- Everything readable. Rebuilt each publish; a group whose inputs did not move
@@ -852,6 +852,13 @@ store = {}
 --- Persistent and private to the declaring plugin. Same lifetime as `store`.
 ---@type table<string, any>
 state = {}
+
+--- The path of the plugin that last wrote `store[key]`, or nil when nothing
+--- has, or the kernel or `layout.lua` did. Recorded by the writer's own view
+--- of `store`, so it cannot be claimed for another plugin.
+---@param key string
+---@return string?
+function store_writer(key) end
 
 ---@class (exact) thurbox.FileEntry
 ---@field name string

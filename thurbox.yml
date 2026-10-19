@@ -626,6 +626,12 @@ globals:
   store:
     property: new-fields
 
+  # Who last wrote a `store` key, by plugin path, so a pane acting on another's
+  # request can say whose it is.
+  store_writer:
+    args:
+      - type: string
+
   # Directory entries and file text, rooted at a session's directory. Not a
   # filesystem: a path outside the root is refused. Nil unless the plugin is
   # granted `files`, as `run` is unless granted `run`.

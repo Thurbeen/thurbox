@@ -190,7 +190,9 @@ has `command`. Those are gated where the command is applied instead: the queue
 records the path each plugin's own `command` was built with, and
 `Command::requires`/`Command::refusal` decide whether that plugin holds what
 the command needs before the loop applies it — `run` for an exec automation's
-command line, `sessions` for `send`, `create`, `restart` and a force `delete`.
+command line or a URL opened unasked, `sessions` for every verb that drives an
+agent or loses something for good. Every variant answers in one exhaustive
+`match` with no catch-all arm, so a new verb does not compile until it decides.
 `program` is checked the same way when its pane is started.
 
 The grant itself comes from one place, `packages::granted` → `trust_of` →
