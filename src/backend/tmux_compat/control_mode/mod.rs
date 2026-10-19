@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::JoinHandle;
 
 use anyhow::{bail, Context, Result};
@@ -391,6 +391,38 @@ struct Outbox {
     /// `None` once the connection is closed or a write to it failed.
     lines: Option<std::sync::mpsc::Sender<Line>>,
     next: u64,
+    written: Arc<Written>,
+}
+
+/// How far the writer thread has got, for a sender that must not overtake the
+/// lines queued before it by another route ([`ControlModeWriter`]'s paste).
+#[derive(Default)]
+struct Written {
+    /// Every line before this `seq` is written, and whether the thread has
+    /// stopped, after which nothing more will be.
+    state: Mutex<(u64, bool)>,
+    moved: Condvar,
+}
+
+impl Written {
+    fn advance(&self, to: u64, stopped: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.0 = state.0.max(to);
+            state.1 |= stopped;
+        }
+        self.moved.notify_all();
+    }
+
+    /// Block until every line before `seq` is written or none will be.
+    fn wait_for(&self, seq: u64) {
+        let Ok(state) = self.state.lock() else {
+            return;
+        };
+        drop(
+            self.moved
+                .wait_while(state, |(written, stopped)| *written < seq && !*stopped),
+        );
+    }
 }
 
 type SharedOutbox = Arc<Mutex<Outbox>>;
@@ -718,6 +750,9 @@ impl Write for ControlModeWriter {
             if text.is_empty() {
                 return Ok(buf.len());
             }
+            // A paste out of band does not queue behind the keys typed before
+            // it, so it waits for them to be written.
+            self.wait_written();
             match self.input.paste(&self.pane_id, text) {
                 Some(Ok(())) => return Ok(buf.len()),
                 Some(Err(e)) => {
@@ -738,6 +773,18 @@ impl Write for ControlModeWriter {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+impl ControlModeWriter {
+    /// Wait for every line queued on this connection so far to be written.
+    fn wait_written(&self) {
+        let Ok(outbox) = self.outbox.lock() else {
+            return;
+        };
+        let (seq, written) = (outbox.next, Arc::clone(&outbox.written));
+        drop(outbox);
+        written.wait_for(seq);
     }
 }
 
@@ -2213,15 +2260,20 @@ impl ControlMode {
     /// gone, which a strong hold would never let happen.
     fn spawn_writer(stdin: ChildStdin, replies: &ResponseQueue) -> Result<SharedOutbox> {
         let (tx, rx) = std::sync::mpsc::channel();
+        let written = Arc::new(Written::default());
         let outbox = Arc::new(Mutex::new(Outbox {
             lines: Some(tx),
             next: 0,
+            written: Arc::clone(&written),
         }));
         let weak = Arc::downgrade(&outbox);
         let replies = Arc::clone(replies);
         std::thread::Builder::new()
             .name("tmux-control-writer".into())
-            .spawn(move || Self::writer_thread(stdin, &rx, &weak, &replies))
+            .spawn(move || {
+                Self::writer_thread(stdin, &rx, &weak, &replies, &written);
+                written.advance(0, true);
+            })
             .context("Failed to spawn control writer thread")?;
         Ok(outbox)
     }
@@ -2231,16 +2283,18 @@ impl ControlMode {
         lines: &Receiver<Line>,
         outbox: &Weak<Mutex<Outbox>>,
         replies: &ResponseQueue,
+        written: &Written,
     ) {
         while let Ok(line) = lines.recv() {
-            let written = stdin
+            let sent = stdin
                 .write_all(line.text.as_bytes())
                 .and_then(|()| stdin.flush());
-            if let Err(e) = written {
+            if let Err(e) = sent {
                 debug!("control writer stopping: {e}");
                 Self::fail_unwritten(outbox, replies, line.seq, &e);
                 return;
             }
+            written.advance(line.seq + 1, false);
         }
     }
 

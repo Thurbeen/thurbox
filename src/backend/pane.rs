@@ -7,7 +7,7 @@ use std::sync::{
 };
 use std::time::SystemTime;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 use tracing::{debug, error};
 
@@ -870,7 +870,7 @@ impl ProgramPane {
             debug!("could not stamp the program window {window_name}: {e:#}");
         }
         let (wired, _signals) =
-            Session::wire_up(rows, cols, SessionIo::spawned(spawned), &backend, "Program");
+            Session::wire_up(rows, cols, SessionIo::spawned(spawned), &backend, "Program")?;
         debug!(program, window_name, "spawned a plugin's program pane");
         Ok(Self {
             wired,
@@ -895,7 +895,7 @@ impl ProgramPane {
             SessionIo::adopted(adopted, backend_id),
             &backend,
             "Program",
-        );
+        )?;
         debug!(program, backend_id, "adopted a plugin's program pane");
         Ok(Self {
             wired,
@@ -1019,14 +1019,14 @@ impl Session {
         info.backend_id = Some(backend_id.to_string());
         debug!(session_id = %info.id, backend_id = %backend_id, "Adopted session via backend");
 
-        Ok(Self::wire_io(
+        Self::wire_io(
             info,
             rows,
             cols,
             SessionIo::adopted(adopted, backend_id),
             backend,
             env,
-        ))
+        )
     }
 
     /// [`Self::adopt`] for a session nobody is looking at: no history is
@@ -1062,7 +1062,7 @@ impl Session {
             },
             backend,
             "Session",
-        );
+        )?;
         backend.hide_output(backend_id);
         Ok(Self {
             info,
@@ -1122,7 +1122,7 @@ impl Session {
         io: SessionIo,
         backend: &Arc<dyn SessionBackend>,
         label: &'static str,
-    ) -> (WiredPane, SignalCells) {
+    ) -> Result<(WiredPane, SignalCells)> {
         let signals = SignalCells::new();
         // The floor applies at construction too: a session first painted into a
         // one-column pane would otherwise panic on its first line of output,
@@ -1156,7 +1156,7 @@ impl Session {
         let output_seq = Arc::new(AtomicU64::new(0));
 
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
-        Self::spawn_writer(io.input, input_rx);
+        Self::spawn_writer(io.input, input_rx)?;
 
         let parser_clone = Arc::clone(&parser);
         let residency_clone = Arc::clone(&residency);
@@ -1192,7 +1192,7 @@ impl Session {
             wanted: AtomicU32::new(wanted),
             app_copy: Arc::clone(&signals.app_copy),
         };
-        (wired, signals)
+        Ok((wired, signals))
     }
 
     /// Wire up parser, reader loop, and writer loop for a new session.
@@ -1203,9 +1203,9 @@ impl Session {
         io: SessionIo,
         backend: &Arc<dyn SessionBackend>,
         env: HashMap<String, String>,
-    ) -> Self {
-        let (wired, signals) = Self::wire_up(rows, cols, io, backend, "Session");
-        Self {
+    ) -> Result<Self> {
+        let (wired, signals) = Self::wire_up(rows, cols, io, backend, "Session")?;
+        Ok(Self {
             info,
             wired,
             backend: Arc::clone(backend),
@@ -1215,7 +1215,7 @@ impl Session {
             shell_pane: None,
             env,
             placeholder: false,
-        }
+        })
     }
 
     /// Build a **placeholder** session for a persisted remote session whose host
@@ -1447,8 +1447,11 @@ impl Session {
     /// A thread and not a task: a write can block — a pipe to a server that
     /// stopped reading, a psmux paste running a process of its own — and on
     /// the async runtime it held a worker for as long as it did.
-    fn spawn_writer(mut writer: Box<dyn Write + Send>, mut input_rx: mpsc::Receiver<Vec<u8>>) {
-        let spawned = std::thread::Builder::new()
+    fn spawn_writer(
+        mut writer: Box<dyn Write + Send>,
+        mut input_rx: mpsc::Receiver<Vec<u8>>,
+    ) -> Result<()> {
+        std::thread::Builder::new()
             .name("pane-writer".into())
             .spawn(move || {
                 while let Some(data) = input_rx.blocking_recv() {
@@ -1462,10 +1465,9 @@ impl Session {
                     }
                 }
                 debug!("Session writer thread exiting");
-            });
-        if let Err(e) = spawned {
-            error!("failed to spawn a pane writer: {e}");
-        }
+            })
+            .context("Failed to spawn a pane writer thread")?;
+        Ok(())
     }
 
     /// Resize the agent's own pane and grid — and **only** that one.
@@ -1696,7 +1698,7 @@ impl Session {
             SessionIo::spawned(spawned),
             &self.backend,
             "Shell",
-        );
+        )?;
 
         stamp(
             &self.backend,
@@ -1734,7 +1736,7 @@ impl Session {
             SessionIo::adopted(adopted, backend_id),
             &self.backend,
             "Shell",
-        );
+        )?;
 
         self.info.shell_backend_id = Some(wired.backend_id.clone());
         self.shell_pane = Some(ShellPane { wired });
@@ -1923,7 +1925,7 @@ mod tests {
             .expect("runtime");
         let waited = runtime.block_on(async {
             let (tx, rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
-            Session::spawn_writer(Box::new(Stuck(stuck)), rx);
+            Session::spawn_writer(Box::new(Stuck(stuck)), rx).expect("writer thread");
             tx.send(b"x".to_vec()).await.expect("queue input");
             let started = std::time::Instant::now();
             tokio::spawn(async {}).await.expect("task");

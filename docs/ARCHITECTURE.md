@@ -631,7 +631,9 @@ not been written is handed that error: a broken pipe means the command never
 went out, which is the one case `Server::ctrl_command_list` sends again. A
 pane's own keystrokes reach its `ControlModeWriter` on a thread per pane
 (`Session::spawn_writer`), not a tokio task, since a psmux paste still blocks
-on a process of its own.
+on a process of its own. That paste goes around the connection, so it first
+waits until every line queued before it is written; otherwise it could reach the
+pane ahead of keys typed earlier.
 
 A command list (`a ; b ; c`, sent by `ControlMode::send_command_list`) answers
 with one `%begin`/`%end` block per command it runs — each gets its own command

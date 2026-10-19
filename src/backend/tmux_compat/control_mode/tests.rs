@@ -2100,3 +2100,37 @@ fn a_command_that_could_not_be_written_fails_as_a_broken_pipe() {
         );
     }
 }
+
+#[cfg(unix)]
+static PASTED: AtomicBool = AtomicBool::new(false);
+
+/// An out-of-band paste (psmux's `send-paste`) does not go down the connection,
+/// so nothing orders it after the keys typed before it but waiting for them to
+/// be written: a paste run while they still sat in the queue reached the pane
+/// first.
+#[cfg(unix)]
+#[test]
+fn an_out_of_band_paste_waits_for_the_keys_typed_before_it() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (control, mux) = stalled_server(root.path());
+    flood_keys(&control).join().ok();
+    let mut writer = control.writer(
+        "%7".to_string(),
+        Arc::new(FakeInput(Some(|| {
+            PASTED.store(true, Ordering::SeqCst);
+            Ok(())
+        }))),
+    );
+    let paste = std::thread::spawn(move || writer.write_all(b"\x1b[200~pasted\x1b[201~"));
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let early = PASTED.load(Ordering::SeqCst);
+    std::fs::write(mux.with_extension("go"), b"").expect("go");
+    std::fs::write(mux.with_extension("drain"), b"").expect("drain");
+    paste.join().expect("paste thread").expect("paste");
+    assert!(
+        !early,
+        "the paste ran before the keys typed ahead of it were written"
+    );
+    assert!(PASTED.load(Ordering::SeqCst), "the paste never ran");
+}
