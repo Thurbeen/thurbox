@@ -1453,7 +1453,7 @@ a pane that can read them and `send` could hand them to an agent.
 capabilities = { "sessions", "files" },
 
 on_action = function(action)
-  if action == "notes.send" and thurbox.granted.sessions then
+  if action == "notes.send" and thurbox.granted.sessions and files then
     command("send", { session = id, text = files.read(id, "NOTES.md") })
   end
 end,
