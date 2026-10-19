@@ -119,6 +119,9 @@ pub const SCHEMA_VERSION: u32 = 54;
 /// the migration that breaks that, so the binaries it would break refuse the
 /// database instead of corrupting it. It never moves down: the stored value is
 /// the highest any binary has written.
+///
+/// 53, because v54 only adds `telemetry_export`, a table a v53 thurbox never
+/// reads or writes.
 pub const MIN_READER_VERSION: u32 = 53;
 
 /// A single migration step: applied when the stored version is below `target`,
