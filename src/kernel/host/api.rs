@@ -1015,7 +1015,8 @@ fn from_lua(lua: &Lua, value: &Value) -> Option<Persisted> {
 }
 
 /// The table whose entries `table` holds: itself, or — for a read-only view
-/// of published data, which is empty underneath — what it reads through to.
+/// of published data, which is empty underneath — what it reads through to,
+/// and for a plugin's `thurbox` view, all of that plus its own fields.
 /// Copied raw, a published table saved into `store` or `state` was empty.
 fn contents(lua: &Lua, table: &Table) -> Table {
     let lookup = |name: &str, key: &Table| -> Option<Table> {
@@ -1034,11 +1035,34 @@ fn contents(lua: &Lua, table: &Table) -> Table {
         .and_then(|views| views.raw_get::<bool>(table.clone()).ok())
         .unwrap_or(false);
     if is_view {
-        if let Some(backing) = published_backing(lua) {
-            return backing;
+        if let Ok(copy) = view_contents(lua, table) {
+            return copy;
         }
     }
     table.clone()
+}
+
+/// A plugin's `thurbox` view as one table, the way a read sees it: every
+/// published field — walked through the view's own `pairs`, so the copy counts
+/// as reading all of it, as iterating it does — and then this plugin's own
+/// `runs` and `granted`, which are the view's and nobody else's.
+fn view_contents(lua: &Lua, view: &Table) -> mlua::Result<Table> {
+    let copy = lua.create_table()?;
+    let pairs: mlua::Function = lua.globals().get("pairs")?;
+    let (step, state, mut key): (mlua::Function, Value, Value) = pairs.call(view.clone())?;
+    loop {
+        let (next, value): (Value, Value) = step.call((state.clone(), key))?;
+        if next.is_nil() {
+            break;
+        }
+        copy.raw_set(next.clone(), value)?;
+        key = next;
+    }
+    for pair in view.clone().pairs::<Value, Value>() {
+        let (field, value) = pair?;
+        copy.raw_set(field, value)?;
+    }
+    Ok(copy)
 }
 
 /// A total order over table keys, for [`from_lua`]'s canonical order. Keys

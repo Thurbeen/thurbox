@@ -1166,3 +1166,52 @@ end }"#;
         "{issued:?}"
     );
 }
+
+#[test]
+fn saving_a_panes_whole_thurbox_keeps_what_it_reads() {
+    // A pane's `thurbox` is its own view: published data plus its own answers.
+    // Saved whole, it must keep both, and count as reading all of it, as
+    // iterating it does — the loop fetches remote diffs only for a pane that
+    // reads them.
+    let saver = r#"return { name = "saver", slot = "sessions", capabilities = { "run" },
+  render = function()
+    store.saved = thurbox
+    local saved = store.saved or {}
+    local mine = (saved.runs or {}).mine
+    command("focus", { text = tostring(mine and mine.stdout) .. "/" .. tostring(saved.theme ~= nil) })
+    return { type = "text", text = "" }
+  end }"#;
+    let (_home, ui) = interface(&[("91_saver.lua", saver)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host);
+    let mut answers = std::collections::HashMap::new();
+    answers.insert(
+        "plugins/91_saver.lua".to_string(),
+        vec![(
+            "mine".to_string(),
+            Run::Done(thurbox::kernel::runs::Output {
+                stdout: "own".into(),
+                stderr: String::new(),
+                status: Some(0),
+                truncated: false,
+                timed_out: false,
+            }),
+        )],
+    );
+    host.set_runs(answers);
+    host.take_diffs_read();
+    render(&host, "saver");
+    let issued = host.drain_commands();
+    assert!(
+        matches!(
+            issued.as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "own/true"
+        ),
+        "{issued:?}"
+    );
+    assert!(
+        host.take_diffs_read(),
+        "copying all of it reads the diffs too"
+    );
+}
