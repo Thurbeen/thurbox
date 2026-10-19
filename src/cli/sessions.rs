@@ -320,9 +320,9 @@ pub enum Action {
     /// the mailbox, which exits non-zero. After Enter it checks the line left
     /// the composer, presses Enter once more if the text is still there, and
     /// reports `submitted` — exiting non-zero when it never left.
-    /// A session on a shareable `--host` is driven by that host's own
-    /// `thurbox-cli`; on any other host thurbox drives the window over the
-    /// host's transport.
+    /// A session on a `--host` is driven by that host's own `thurbox-cli`
+    /// where one can be reached; otherwise (`share_sessions = false`, or no
+    /// CLI there) thurbox drives the window over the host's transport.
     Send {
         /// Session UUID.
         uuid: String,
