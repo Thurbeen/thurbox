@@ -960,6 +960,30 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_window_warns_and_disproves_an_active_row() {
+        let idle = Assessment::from_hooks(&registry(), "claude", Some("idle"), Some(0), None, 0)
+            .with_corroboration(Corroboration::Missing);
+        let finding = pane_finding(&idle).expect("a pane answer");
+        assert_eq!(finding.level, Level::Warn);
+        assert!(
+            finding.detail.contains("no window"),
+            "got {}",
+            finding.detail
+        );
+
+        let blocked =
+            Assessment::from_hooks(&registry(), "claude", Some("blocked"), Some(0), None, 0)
+                .with_corroboration(Corroboration::Missing);
+        let finding = pane_finding(&blocked).expect("a pane answer");
+        assert_eq!(finding.level, Level::Warn);
+        assert!(
+            finding.detail.contains("'blocked'"),
+            "got {}",
+            finding.detail
+        );
+    }
+
+    #[test]
     fn a_command_session_with_a_detected_agent_still_expects_no_hooks() {
         // A detected identity is evidence about the process, not a declaration
         // — so it must not turn a `--command` session's carve-out into a

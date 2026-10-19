@@ -677,8 +677,9 @@ pub fn classify_foreground(
 ///
 /// Only the two *active* states can be contradicted: `working` and `blocked`
 /// both assert that an agent is there to be working or waiting, and an empty,
-/// dead or missing pane says it is not. `done` and `idle` assert nothing about a live
-/// process — an agent that finished its turn and exited is not a contradiction.
+/// dead or missing pane says it is not. `done` and `idle` assert nothing about
+/// a live process — an agent that finished its turn and exited is not a
+/// contradiction.
 ///
 /// A contradiction is **reported, never applied**: the stored `hook_state` is
 /// left exactly as the agent wrote it, because overwriting an agent's own
