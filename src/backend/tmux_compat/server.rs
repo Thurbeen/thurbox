@@ -210,13 +210,14 @@ pub trait TmuxCompatible: Send + Sync + 'static {
         Ok(())
     }
 
-    /// The one-shot argv that delivers `text` into `target` as one paste.
-    fn paste_args(target: &str, text: &str) -> Vec<String>;
+    /// The one-shot argvs that deliver `text` into `target`, in order — more
+    /// than one where a single line would be too long for the server's host.
+    fn paste_args(target: &str, text: &str) -> Vec<Vec<String>>;
 
     /// The `run-shell` script that pastes `text` into `target` on `mux -L
     /// socket`, waits a beat so the paste is consumed, then presses Enter —
-    /// run through the server's own shell.
-    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> String;
+    /// run through the server's own shell — or why that shell cannot run it.
+    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String>;
 
     /// How a pane's input is typed through control mode, and whether a paste
     /// goes another way.
@@ -2950,9 +2951,10 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // what keeps a leading `-` from reading as a flag and a newline from
         // submitting the line before it.
         let target = self.target(pane);
-        let paste = M::paste_args(&target, text);
-        let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
-        self.one_shot(&paste[0], &argv)?;
+        for paste in M::paste_args(&target, text) {
+            let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
+            self.one_shot(&paste[0], &argv)?;
+        }
         if !submit {
             return Ok(());
         }
@@ -2970,7 +2972,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             &self.socket(),
             &self.target(pane),
             text,
-        );
+        )?;
         let secs = delay.as_secs().to_string();
         self.one_shot(
             "run-shell (deferred prompt)",
@@ -4764,11 +4766,11 @@ mod tests {
             push_posix_window_program(cmd, command, args, env);
             Ok(())
         }
-        fn paste_args(_: &str, _: &str) -> Vec<String> {
+        fn paste_args(_: &str, _: &str) -> Vec<Vec<String>> {
             Vec::new()
         }
-        fn deferred_paste_script(_: &str, _: &str, _: &str, _: &str) -> String {
-            String::new()
+        fn deferred_paste_script(_: &str, _: &str, _: &str, _: &str) -> Result<String> {
+            Ok(String::new())
         }
         fn pane_input(_: &TmuxTransport, _: &str) -> Arc<dyn PaneInput> {
             Arc::new(TypedKeys)
@@ -4816,11 +4818,11 @@ mod tests {
         fn session_config(_: &str) -> Vec<ConfigOption> {
             Vec::new()
         }
-        fn paste_args(_: &str, _: &str) -> Vec<String> {
+        fn paste_args(_: &str, _: &str) -> Vec<Vec<String>> {
             Vec::new()
         }
-        fn deferred_paste_script(_: &str, _: &str, _: &str, _: &str) -> String {
-            String::new()
+        fn deferred_paste_script(_: &str, _: &str, _: &str, _: &str) -> Result<String> {
+            Ok(String::new())
         }
         fn pane_input(_: &TmuxTransport, _: &str) -> Arc<dyn PaneInput> {
             Arc::new(TypedKeys)

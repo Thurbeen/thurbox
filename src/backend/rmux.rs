@@ -74,27 +74,27 @@ impl TmuxCompatible for Rmux {
         Vec::new()
     }
 
-    fn paste_args(target: &str, text: &str) -> Vec<String> {
-        vec![
+    fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
+        vec![vec![
             "send-keys".into(),
             "-t".into(),
             target.into(),
             "-l".into(),
             format!("\x1b[200~{text}\x1b[201~"),
-        ]
+        ]]
     }
 
-    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> String {
+    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String> {
         let (mux, socket, target) = (
             shell_escape(mux),
             shell_escape(socket),
             shell_escape(target),
         );
         let text = shell_escape(&format!("\x1b[200~{text}\x1b[201~"));
-        format!(
+        Ok(format!(
             "{mux} -L {socket} send-keys -t {target} -l {text}; \
              sleep 0.2; {mux} -L {socket} send-keys -t {target} Enter"
-        )
+        ))
     }
 
     fn pane_input(_transport: &TmuxTransport, _socket: &str) -> Arc<dyn PaneInput> {
