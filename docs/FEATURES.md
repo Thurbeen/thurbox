@@ -1681,7 +1681,9 @@ Automations live in the `automations` SQLite table (`name`,
 fire appends to `automation_runs` for history: the row is written as
 `running`, stamped `started_at`, before the action fires, and its `status`
 (success/skipped/error) and free-text `detail` are written over it when the
-action returns — so a run that never returns still shows.
+action returns — so a run that never returns still shows. A history write
+that fails is logged and reported as the fire's `history_error` in the tick's
+output, so a row it left `running` is not read as a hung action.
 
 ### Headless access (`thurbox-cli`)
 
