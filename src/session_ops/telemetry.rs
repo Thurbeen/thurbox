@@ -30,7 +30,7 @@ const RESOURCE_ATTRIBUTES: &str = "OTEL_RESOURCE_ATTRIBUTES";
 ///
 /// A remote session exports to its host's `otel_endpoint` instead of
 /// `[telemetry] endpoint`: `localhost:4318` there is the host, not this
-/// machine. A host that names none, or a session whose host is not in
+/// machine. A host that names none (or a blank one), or a session whose host is not in
 /// `hosts.toml`, gets only the resource attributes, which still let a backend
 /// the host does reach join its telemetry to the session.
 pub(crate) fn apply(
@@ -71,7 +71,11 @@ pub(crate) fn apply(
     );
     config.env.insert(RESOURCE_ATTRIBUTES.into(), attributes);
     let endpoint = if remote {
-        match host.and_then(|h| h.otel_endpoint.as_deref()) {
+        match host
+            .and_then(|h| h.otel_endpoint.as_deref())
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+        {
             Some(endpoint) => endpoint,
             None => return Vec::new(),
         }
@@ -264,6 +268,18 @@ mod tests {
             "http://collector.devbox:4318"
         );
         assert_eq!(config.env["OTEL_EXPORTER_OTLP_PROTOCOL"], "http/protobuf");
+    }
+
+    #[test]
+    fn a_blank_host_endpoint_is_no_endpoint() {
+        let host = HostDef {
+            otel_endpoint: Some(" ".into()),
+            ..HostDef::default()
+        };
+        let mut config = config(Some("ssh:devbox"));
+        let args = apply(&mut config, &AgentDef::default(), "s", Some(&host), &on());
+        assert!(args.is_empty());
+        assert_eq!(config.env.keys().collect::<Vec<_>>(), [RESOURCE_ATTRIBUTES]);
     }
 
     #[test]
