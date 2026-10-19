@@ -92,6 +92,45 @@ impl Env {
         env
     }
 
+    /// [`Self::reaching`], on a host whose non-login `PATH` cannot run tmux:
+    /// a `tmux` that fails as a missing command leads the `PATH` every remote
+    /// command starts with, as sshd's does on a Mac whose tmux is Homebrew's.
+    /// A command reaches the real one only through the host's login `PATH`
+    /// or `path_prepend`. The account's shell is `/bin/sh`, so its login
+    /// files are `~/.profile` alone, whatever shell runs this test.
+    fn reaching_without_tmux(hosts_toml: &str) -> Self {
+        let env = Self::reaching(hosts_toml);
+        std::fs::create_dir_all(env.path("sshd-path")).expect("mkdir");
+        let shadow = env.path("sshd-path/tmux");
+        std::fs::write(
+            &shadow,
+            "#!/bin/sh\necho 'sh: tmux: not found' >&2\nexit 127\n",
+        )
+        .expect("shadow tmux");
+        std::fs::set_permissions(&shadow, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let ssh = std::fs::read_to_string(env.path("bin/ssh")).expect("ssh stand-in");
+        let ssh = ssh.replacen(
+            "#!/bin/sh\n",
+            &format!(
+                "#!/bin/sh\nPATH='{}':$PATH; SHELL=/bin/sh; export PATH SHELL\n",
+                env.path("sshd-path").display()
+            ),
+            1,
+        );
+        std::fs::write(env.path("bin/ssh"), ssh).expect("ssh stand-in");
+        env
+    }
+
+    /// A directory holding this machine's tmux and nothing else — where a
+    /// host's package manager put it, off the non-login `PATH`.
+    fn tmux_elsewhere(&self) -> PathBuf {
+        let dir = self.path("brew/bin");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let tmux = thurbox::paths::resolve_on_path("tmux").expect("tmux on PATH");
+        std::os::unix::fs::symlink(tmux, dir.join("tmux")).expect("symlink tmux");
+        dir
+    }
+
     fn path(&self, sub: &str) -> PathBuf {
         self.root.path().join(sub)
     }
@@ -149,10 +188,13 @@ impl Env {
             .collect()
     }
 
-    /// The multiplexer binaries the host was asked to run.
+    /// The multiplexer binaries the host was asked to run. The host's `PATH`
+    /// probe names every multiplexer to look each one up (`@mux`), and runs
+    /// none of them, so it is not counted.
     fn driven(&self) -> BTreeSet<String> {
         self.ssh_calls()
             .iter()
+            .filter(|call| !call.contains("@mux"))
             .flat_map(|call| {
                 call.split_whitespace()
                     .map(str::to_string)
@@ -807,4 +849,74 @@ fn a_remote_create_reports_the_hosts_socket() {
         .output()
         .expect("run tmux");
     assert_eq!(String::from_utf8_lossy(&on_host.stdout).trim(), pane);
+}
+
+/// Create a session on a host whose tmux only the login `PATH` or
+/// `path_prepend` finds, and read back where the pane landed.
+fn create_on_a_host_without_tmux_on_its_ssh_path(env: &Env) {
+    let repo = env.path("repo");
+    std::fs::create_dir_all(&repo).expect("repo dir");
+    let out = env.cli(&[
+        "session",
+        "create",
+        "--name",
+        "afar",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--host",
+        "box",
+    ]);
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "the create failed ({e}): {}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    assert_eq!(report["backend_type"], "ssh:box:tmux", "{report}");
+    let pane = report["backend_id"].as_str().expect("backend_id");
+    let on_host = Command::new("tmux")
+        .env("TMUX_TMPDIR", env.server.tmpdir())
+        .env_remove("TMUX")
+        .args([
+            "-L",
+            "thurbox-routes-host",
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{pane_id}",
+        ])
+        .output()
+        .expect("run tmux");
+    assert_eq!(String::from_utf8_lossy(&on_host.stdout).trim(), pane);
+}
+
+/// The multiplexer commands thurbox runs on a host itself resolve tmux on the
+/// `PATH` `path_prepend` leads, as the agent's own window does (#1461).
+#[test]
+fn a_hosts_tmux_on_path_prepend_is_found() {
+    let env = Env::reaching_without_tmux("");
+    let dir = env.tmux_elsewhere();
+    std::fs::write(
+        env.path("config/hosts.toml"),
+        format!("{HOST_WITH_SOCKET}path_prepend = ['{}']\n", dir.display()),
+    )
+    .expect("hosts.toml");
+    create_on_a_host_without_tmux_on_its_ssh_path(&env);
+}
+
+/// A tmux only the host's login shell puts on the `PATH` — Homebrew's, added
+/// by `~/.zprofile` on a Mac — is the one the multiplexer commands run, as
+/// the new-session flow's probe that offered it found it there (#1461).
+#[test]
+fn a_hosts_tmux_on_the_login_path_is_found() {
+    let env = Env::reaching_without_tmux(HOST_WITH_SOCKET);
+    let dir = env.tmux_elsewhere();
+    std::fs::write(
+        env.path("home/.profile"),
+        format!("PATH='{}':$PATH; export PATH\n", dir.display()),
+    )
+    .expect(".profile");
+    create_on_a_host_without_tmux_on_its_ssh_path(&env);
 }

@@ -889,7 +889,21 @@ impl<M: TmuxCompatible> Server<M> {
     /// The transport, carrying the socket directory the server was found in —
     /// what a control-mode client is started over.
     fn located_transport(&self) -> TmuxTransport {
-        self.transport.clone().with_socket_dir(self.socket_dir())
+        self.host_transport().with_socket_dir(self.socket_dir())
+    }
+
+    /// The transport, carrying the host's `PATH` (`path_prepend`, then its
+    /// login shells', then the launcher's — [`crate::agent::host_path`]), so
+    /// every command thurbox runs there finds the multiplexer where the
+    /// new-session flow's probe found it (#1461). Asked per command rather
+    /// than at construction: the first ask probes the host, and building a
+    /// backend must not wait on one.
+    fn host_transport(&self) -> TmuxTransport {
+        let path = match (&self.host, self.platform) {
+            (Some(host), Platform::Posix) => crate::agent::host_path::assignment_for(host),
+            _ => None,
+        };
+        self.transport.clone().with_path(path)
     }
 
     /// Whether this server's socket directory is thurbox's to choose and to
@@ -1089,7 +1103,7 @@ impl<M: TmuxCompatible> Server<M> {
         let socket = self.socket();
         let script = locate_script(&candidates, &socket);
         let output = self
-            .transport
+            .host_transport()
             .shell_command(&script, &["sh", self.transport.mux(), &socket])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -5407,6 +5421,46 @@ mod tests {
         assert_eq!(
             backend.login_wrap_for_remote("claude"),
             "/bin/sh -lc 'PATH=/home/me/.local/bin:/usr/bin; export PATH; exec claude'"
+        );
+    }
+
+    /// The commands thurbox runs on a host itself resolve the multiplexer on
+    /// the `PATH` its probe found it on, as the window command does (#1461):
+    /// a Mac's Homebrew tmux is on the login `PATH`, not sshd's.
+    #[test]
+    fn a_hosts_multiplexer_commands_carry_its_login_path() {
+        let host = crate::session::HostDef {
+            name: "mux-command-path".into(),
+            destination: "me@mac".into(),
+            path_prepend: vec!["/opt/x/bin".into()],
+            ..Default::default()
+        };
+        crate::agent::host_path::seed(
+            &host,
+            Some(crate::agent::host_path::HostEnv {
+                home: Some("/Users/me".into()),
+                base: vec!["/usr/bin".into()],
+                shell_login: Some(vec!["/opt/homebrew/bin".into(), "/usr/bin".into()]),
+                sh_login: None,
+                multiplexers: vec![crate::session::Multiplexer::Tmux],
+            }),
+        );
+        let backend = TestBackend::for_host(&host);
+        let argv: Vec<String> = backend
+            .mux_command(&["-V"])
+            .expect("command")
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let line = argv.join(" ");
+        let assignment = "PATH=/opt/x/bin:/opt/homebrew/bin:/usr/bin; export PATH; ";
+        assert!(
+            line.contains(&format!("{assignment}exec")),
+            "the multiplexer command does not set the host's PATH: {line}"
+        );
+        assert!(
+            line.ends_with(&format!("sh tmux -L {} -V", backend.socket())),
+            "the multiplexer runs through the PATH-setting sh: {line}"
         );
     }
 
