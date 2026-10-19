@@ -853,8 +853,9 @@ store = {}
 ---@type table<string, any>
 state = {}
 
---- The path of the plugin that last wrote `store[key]`, or nil when nothing
---- has, or the kernel or `layout.lua` did. Recorded by the writer's own view
+--- The path of the plugin that last wrote `store[key]` — written for another
+--- plugin's request, that request's chain, "a.lua via b.lua" — or nil when
+--- nothing has, or the kernel or `layout.lua` did. Recorded by the writer's own view
 --- of `store`, so it cannot be claimed for another plugin.
 ---@param key string
 ---@return string?

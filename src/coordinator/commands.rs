@@ -20,9 +20,9 @@ impl App {
     /// Draining here rather than inside the render call is what keeps `command()`
     /// a queue push and nothing more.
     pub(crate) fn apply_commands(&mut self, terminal: &mut DefaultTerminal) {
-        for (owner, command) in self.host.drain_issued() {
-            if self.refuse_ungranted(&owner, &command)
-                || self.apply_local_command(&owner, &command, terminal)
+        for (chain, command) in self.host.drain_requests() {
+            if self.refuse_ungranted(&chain, &command)
+                || self.apply_local_command(&chain, &command, terminal)
             {
                 continue;
             }
@@ -36,13 +36,14 @@ impl App {
     /// Here rather than on a worker, which knows no grant: an exec automation's
     /// command is a command line the heartbeat runs, and `send`, `create`,
     /// `restart` and a force `delete` drive an agent or destroy a worktree, so
-    /// each is checked against the issuer's grant before anything applies it.
+    /// each is checked before anything applies it — against every plugin in
+    /// the chain the request came through, so the least-privileged one decides.
     fn refuse_ungranted(
         &mut self,
-        owner: &str,
+        chain: &[String],
         command: &thurbox::kernel::command::Command,
     ) -> bool {
-        let Some(error) = command.refusal(owner, |owner, need| self.host.may_path(owner, need))
+        let Some(error) = command.refusal_by(chain, |owner, need| self.host.may_path(owner, need))
         else {
             return false;
         };
@@ -62,7 +63,7 @@ impl App {
     /// files. `true` = handled here; `false` = hand it to a worker.
     pub(crate) fn apply_local_command(
         &mut self,
-        issuer: &str,
+        chain: &[String],
         command: &thurbox::kernel::command::Command,
         terminal: &mut DefaultTerminal,
     ) -> bool {
@@ -144,10 +145,11 @@ impl App {
             // fallback owner, which is what the click path passes too.
             Command::Action { fallback, action } => {
                 let asked = self.fallback_pane(fallback);
-                // The handler runs at the request of whoever the queue says
-                // asked — through a chain of actions, the pane that first did —
-                // so what it issues is that pane's request (`LuaHost::acting_for`).
-                let asker = command.runs_for(issuer).map(str::to_string);
+                // The handler runs for the chain the queue says made this —
+                // through any number of actions, starting with the pane that
+                // first asked — and what it issues extends that chain
+                // (`LuaHost::acting_for`).
+                let asker = command.runs_for(chain);
                 let previous = self.host.acting_for(asker);
                 self.run_clicked_action(action, asked);
                 self.host.acting_for(previous);
@@ -159,7 +161,7 @@ impl App {
                 value,
             } => {
                 let asked = self.fallback_pane(fallback);
-                let asker = command.runs_for(issuer).map(str::to_string);
+                let asker = command.runs_for(chain);
                 let previous = self.host.acting_for(asker);
                 self.run_clicked_action_with_args(action, asked, &[(argument, value)]);
                 self.host.acting_for(previous);

@@ -134,7 +134,7 @@ type Private = Rc<RefCell<BTreeMap<(String, String), Persisted>>>;
 /// Commands a plugin issued this frame, drained by the loop.
 /// Each command with the path of the plugin that issued it, stamped by the
 /// kernel — empty for Lua that belongs to no plugin.
-type Queue = Rc<RefCell<Vec<(String, Command)>>>;
+type Queue = Rc<RefCell<Vec<(Vec<String>, Command)>>>;
 
 /// Finished runs, keyed by the plugin that asked and then by its own key.
 pub type RunAnswers = std::collections::HashMap<String, Vec<(String, super::runs::Run)>>;
@@ -846,7 +846,7 @@ pub struct LuaHost {
     /// render call.
     queue: Queue,
     /// See [`Self::acting_for`].
-    behalf: Rc<RefCell<Option<String>>>,
+    behalf: Rc<RefCell<Option<Vec<String>>>>,
     /// Runs plugins asked for, drained once per frame like `queue`.
     ///
     /// Separate from `queue` because a run carries the plugin that asked —
@@ -1194,24 +1194,27 @@ impl LuaHost {
     /// `on_key` stays for panes that need every keystroke (the terminal).
     /// Run `f` as a request from the plugin at `issuer`: see [`Self::acting_for`].
     pub fn on_behalf_of<T>(&self, issuer: &str, f: impl FnOnce() -> T) -> T {
-        let previous = self.acting_for(Some(issuer.to_string()));
+        let previous = self.acting_for(Some(vec![issuer.to_string()]));
         let out = f();
         self.acting_for(previous);
         out
     }
 
-    /// Mark what runs from now on as a request from the plugin at `issuer`, or
-    /// clear the mark with `None`, returning the mark it replaces.
+    /// Mark what runs from now on as a request made by `chain` — the plugin
+    /// that first asked, then each that passed it on — or clear the mark with
+    /// `None`, returning the mark it replaces.
     ///
     /// `command("action")` runs the named action's own handler, which may
-    /// belong to a plugin holding a grant the asking one does not. While it
-    /// runs for that pane, every command it issues carries the asking pane as
-    /// its owner, so the gate weighs that pane's grant: a pane with none cannot
-    /// have a trusted one `send` for it. Only the handler's own commands are
-    /// marked — another plugin's finalizer run meanwhile keeps its own name. A
-    /// key or a click the user made runs the handler unmarked.
-    pub fn acting_for(&self, issuer: Option<String>) -> Option<String> {
-        std::mem::replace(&mut *self.behalf.borrow_mut(), issuer)
+    /// hold a grant the asker does not, or lack one the asker holds. While it
+    /// runs for that chain, every command it issues carries the chain with the
+    /// handler added, and the gate allows it only with what every plugin in it
+    /// holds (`Command::refusal_by`): a pane with no grant cannot have a
+    /// trusted one `send` for it, through any number of hops, and a trusted
+    /// pane does not lend its grant to a handler it asks. Only the handler's
+    /// own commands are marked — another plugin's finalizer run meanwhile
+    /// keeps its own name. A key or a click the user made runs it unmarked.
+    pub fn acting_for(&self, chain: Option<Vec<String>>) -> Option<Vec<String>> {
+        std::mem::replace(&mut *self.behalf.borrow_mut(), chain)
     }
 
     pub fn on_action(&self, index: usize, action: &str) -> Result<bool, PluginError> {
@@ -1826,9 +1829,18 @@ impl LuaHost {
             .collect()
     }
 
-    /// [`Self::drain_commands`], each with the path of the plugin that issued
-    /// it — what [`Command::refusal`] checks the grant of.
+    /// [`Self::drain_commands`], each with the path of the plugin it was
+    /// first asked for by — the head of its chain ([`Self::drain_requests`]).
     pub fn drain_issued(&self) -> Vec<(String, Command)> {
+        self.drain_requests()
+            .into_iter()
+            .map(|(mut chain, command)| (chain.swap_remove(0), command))
+            .collect()
+    }
+
+    /// [`Self::drain_commands`], each with the chain of plugins it was made by
+    /// ([`Self::acting_for`]) — what [`Command::refusal_by`] checks.
+    pub fn drain_requests(&self) -> Vec<(Vec<String>, Command)> {
         std::mem::take(&mut *self.queue.borrow_mut())
     }
 

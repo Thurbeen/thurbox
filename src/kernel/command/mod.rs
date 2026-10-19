@@ -645,11 +645,12 @@ impl Command {
         }
     }
 
-    /// Whose request an `action` runs as: the plugin the queue says issued
-    /// it, which through a chain of actions is still the pane that first
-    /// asked (`LuaHost::acting_for`). `None` for any other command.
-    pub fn runs_for<'a>(&self, issuer: &'a str) -> Option<&'a str> {
-        matches!(self, Command::Action { .. } | Command::ActionTarget { .. }).then_some(issuer)
+    /// The chain an `action` runs for: the one the queue says made it, which
+    /// through a chain of actions starts with the pane that first asked
+    /// (`LuaHost::acting_for`). `None` for any other command.
+    pub fn runs_for(&self, chain: &[String]) -> Option<Vec<String>> {
+        matches!(self, Command::Action { .. } | Command::ActionTarget { .. })
+            .then(|| chain.to_vec())
     }
 
     /// Why the plugin at `owner` may not have this applied, when it may not.
@@ -663,7 +664,23 @@ impl Command {
         owner: &str,
         may: impl Fn(&str, super::host::Capability) -> bool,
     ) -> Option<String> {
+        self.refusal_by(&[owner.to_string()], may)
+    }
+
+    /// Why this may not be applied for a request made by `chain`, when it may
+    /// not: allowed only with what every plugin in the chain holds, so the
+    /// least-privileged one decides, and the refusal names it.
+    pub fn refusal_by(
+        &self,
+        chain: &[String],
+        may: impl Fn(&str, super::host::Capability) -> bool,
+    ) -> Option<String> {
         let need = self.requires()?;
+        let owner = chain
+            .iter()
+            .find(|member| !may(member, need))
+            .map(String::as_str)
+            .or_else(|| chain.is_empty().then_some(""))?;
         let who = if owner.is_empty() {
             "Lua outside any plugin"
         } else {
@@ -683,7 +700,7 @@ impl Command {
             "action" => "paste into a session",
             _ => "delete a session for good",
         };
-        (!may(owner, need)).then(|| {
+        Some({
             format!(
                 "{who} may not {doing} without the {:?} capability — declare it and trust \
                  the file in settings → Interface",

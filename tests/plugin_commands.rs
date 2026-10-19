@@ -1731,26 +1731,116 @@ fn a_chained_action_still_runs_for_the_pane_that_first_asked() {
     enforce(&host, &ui);
 
     // The coordinator's two hops: the lure asks for `f.forward`, and the
-    // action that handler queues runs for whoever `runs_for` names.
+    // action that handler queues runs for the chain `runs_for` names.
     host.on_behalf_of("plugins/90_lure.lua", || {
         host.on_action(host.index_of("forwarder").expect("forwarder"), "f.forward")
     })
     .expect("first hop");
-    let hop = host.drain_issued();
-    let [(issuer, forwarded)] = hop.as_slice() else {
+    let hop = host.drain_requests();
+    let [(chain, forwarded)] = hop.as_slice() else {
         panic!("{hop:?}")
     };
-    let asker = forwarded.runs_for(issuer).expect("an action").to_string();
-    host.on_behalf_of(&asker, || {
-        host.on_action(host.index_of("grantee").expect("grantee"), "g.send")
-    })
-    .expect("second hop");
-    for (owner, command) in host.drain_issued() {
+    let asking = forwarded.runs_for(chain).expect("an action");
+    assert_eq!(
+        asking,
+        vec![
+            "plugins/90_lure.lua".to_string(),
+            "plugins/92_forwarder.lua".to_string()
+        ],
+        "the pane that first asked, then the one that forwarded"
+    );
+    let previous = host.acting_for(Some(asking));
+    host.on_action(host.index_of("grantee").expect("grantee"), "g.send")
+        .expect("second hop");
+    host.acting_for(previous);
+    for (chain, command) in host.drain_requests() {
         assert!(
             command
-                .refusal(&owner, |owner, need| host.may_path(owner, need))
+                .refusal_by(&chain, |owner, need| host.may_path(owner, need))
                 .is_some(),
-            "{owner} issued {command:?} and it would be applied"
+            "{chain:?} issued {command:?} and it would be applied"
         );
     }
+}
+
+#[test]
+fn a_trusted_pane_cannot_lend_its_grant_to_a_handler_it_asks() {
+    // The other direction of the same deputy: a request is allowed only with
+    // what every plugin in its chain holds, so a trusted pane asking an
+    // untrusted handler does not give that handler its `sessions`.
+    let untrusted = GRANTEE
+        .replace(r#"name = "grantee""#, r#"name = "untrusted""#)
+        .replace("g.send", "u.send");
+    let (home, ui) = interface(&[
+        ("91_grantee.lua", GRANTEE),
+        ("93_untrusted.lua", &untrusted),
+    ]);
+    let _config = configure(home.path());
+    thurbox::kernel::registry::Registry::load()
+        .trust(
+            &ui.join("plugins/91_grantee.lua").to_string_lossy(),
+            GRANTEE,
+        )
+        .expect("trust");
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    enforce(&host, &ui);
+    host.on_behalf_of("plugins/91_grantee.lua", || {
+        host.on_action(host.index_of("untrusted").expect("untrusted"), "u.send")
+    })
+    .expect("asked by the trusted pane");
+    let requests = host.drain_requests();
+    assert!(!requests.is_empty());
+    for (chain, command) in requests {
+        let refused = command
+            .refusal_by(&chain, |owner, need| host.may_path(owner, need))
+            .expect("the untrusted handler holds no grant");
+        assert!(
+            refused.contains("93_untrusted"),
+            "names the one lacking it: {refused}"
+        );
+    }
+}
+
+#[test]
+fn the_confirmation_names_the_pane_a_request_was_made_for() {
+    // A handler acting for a pane with no grant that leaves the confirmation a
+    // question was shown as "asked by" the handler. It names where the request
+    // came from: the pane that asked, then the handler that passed it on.
+    let asker = r#"return { name = "asker", slot = "sessions",
+  actions = { { name = "h.ask", desc = "ask" } },
+  render = function() return { type = "text", text = "" } end,
+  on_action = function(action)
+    if action == "h.ask" then
+      store.confirm = { question = "?", command = "delete", options = { session = "s1", force = true } }
+      return true
+    end
+    return false
+  end }"#;
+    let (home, ui) = interface(&[("91_asker.lua", asker)]);
+    let _config = configure(home.path());
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    publish(&host);
+    host.on_behalf_of("plugins/90_lure.lua", || {
+        host.on_action(host.index_of("asker").expect("asker"), "h.ask")
+    })
+    .expect("asked for the lure");
+    let drawn = host
+        .render(
+            host.index_of("confirm").expect("confirm"),
+            RenderContext {
+                width: 100,
+                height: 20,
+                focused: true,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .expect("render");
+    let text = format!("{:?}", drawn.node);
+    assert!(
+        text.contains("asked by plugins/90_lure.lua via plugins/91_asker.lua"),
+        "{text}"
+    );
 }
