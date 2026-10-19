@@ -205,3 +205,33 @@ fn a_run_is_recorded_when_it_starts() {
     let started = runs[0]["started_at"].as_u64().expect("a time");
     assert!(started >= before, "{started} is before the tick began");
 }
+
+/// `automation edit` writes only what it changes, as the interface's edit
+/// does: a rename leaves a pending run-now due rather than pushing it to the
+/// next slot, which is what writing back the whole row as read used to do.
+#[test]
+fn editing_a_name_keeps_a_pending_run() {
+    let env = Env::new();
+    let auto = id_of(&env.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "nightly",
+        "--trigger",
+        "daily",
+        "--command",
+        "true",
+    ]));
+    env.ok(&["automation", "run", &auto]);
+    let due = env.automation(&auto)["next_run_at"]
+        .as_u64()
+        .expect("marked due");
+
+    let renamed = env.ok(&["automation", "edit", &auto, "--name", "renamed"]);
+    assert_eq!(renamed["name"], "renamed");
+    assert_eq!(renamed["next_run_at"], due, "{renamed}");
+
+    // A schedule change still moves it.
+    let moved = env.ok(&["automation", "edit", &auto, "--trigger", "hourly"]);
+    assert_ne!(moved["next_run_at"], due, "{moved}");
+}

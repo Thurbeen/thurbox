@@ -307,6 +307,10 @@ fn edit_automation(
         return Err("--enabled and --disabled are mutually exclusive".into());
     }
     let mut auto = load(db, id)?;
+    // What a stored fire depends on, and the timing as read, for the same
+    // compare-and-set write the interface's edit makes.
+    let before = (auto.schedule.clone(), auto.timezone.clone(), auto.enabled);
+    let read_timing = (auto.enabled, auto.next_run_at);
     apply_edit_overrides(&mut auto, name, trigger, time, weekday, timezone, prompt)?;
     if disabled {
         auto.enabled = false;
@@ -314,15 +318,29 @@ fn edit_automation(
     if enabled {
         auto.enabled = true;
     }
-    // Recompute next fire after any schedule/timezone/enabled change.
-    auto.next_run_at = if auto.enabled {
-        auto.schedule
-            .next_after(current_time_millis(), auto.timezone.as_deref())
-    } else {
-        None
-    };
-    db.update_automation(&auto)
-        .map_err(|e| format!("update_automation: {e}"))?;
+    // Only an edit that moved the schedule, timezone or enabled flag moves the
+    // next fire: a rename keeps a due fire or a run-now due.
+    let unmoved = before == (auto.schedule.clone(), auto.timezone.clone(), auto.enabled)
+        && auto.next_run_at.is_some();
+    if !unmoved {
+        auto.next_run_at = if auto.enabled {
+            auto.schedule
+                .next_after(current_time_millis(), auto.timezone.as_deref())
+        } else {
+            None
+        };
+    }
+    // Never writes `last_run_at`, and writes the timing only if the row still
+    // holds what was read, so a fire the heartbeat claimed meanwhile stands.
+    let written = db
+        .update_automation_definition(&auto, (!unmoved).then_some(read_timing))
+        .map_err(|e| format!("update_automation_definition: {e}"))?;
+    if !written {
+        load(db, id)?;
+        return Err(format!(
+            "Automation #{id} changed while it was being edited; try again"
+        ));
+    }
     if auto.enabled {
         arm_heartbeat(backends);
     }

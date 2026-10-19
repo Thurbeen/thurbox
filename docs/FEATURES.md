@@ -1688,7 +1688,10 @@ action returns — so a run that never returns still shows.
 `thurbox-cli automation` (alias `auto`) provides
 `create`/`list`/`show`/`edit`/`remove`/`run`/`runs`/`tick` without
 the TUI, sharing the same tables. `run` marks an enabled automation
-due (a disabled one is refused, not switched on);
+due (a disabled one is refused, not switched on); `edit` writes through
+the same compare-and-set as the interface's edit, so it moves the next fire
+only when the schedule, timezone or enabled flag changed and never undoes a
+fire the heartbeat claimed meanwhile;
 `tick` fires all currently-due automations headlessly (this is what
 the heartbeat keeper and the optional OS timers invoke).
 
