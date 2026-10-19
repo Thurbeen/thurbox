@@ -540,8 +540,8 @@ fn stamped_windows_in(listing: &str, session_id: &str, role: WindowRole) -> Vec<
 /// which draws the same distinction one layer up.
 const SSH_ERROR_EXIT: i32 = 255;
 
-/// The most a command issued from the interface's own loop may cost it —
-/// waiting for the control lock, and for an answer where one is wanted.
+/// The most a command issued from the interface's own loop may wait for its
+/// answer, where one is wanted.
 ///
 /// Sized against the two things it sits between: a healthy round trip over an
 /// already-open connection is sub-millisecond, and the budget a keypress has
@@ -549,11 +549,6 @@ const SSH_ERROR_EXIT: i32 = 255;
 /// enough that a loaded machine or a slow link still gets a real answer; short
 /// enough that a link carrying nothing costs a hitch instead of a freeze.
 const LOOP_COMMAND_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
-
-/// How often [`Server::ctrl_command_within`] retries the control lock
-/// while its budget lasts. Short enough to be invisible next to the budget,
-/// long enough not to spin.
-const CONTROL_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(2);
 
 /// Whether a failed listing means the server genuinely holds nothing, given
 /// the layer that failed (`is_ssh` + the exit `code`) and what it said.
@@ -739,7 +734,18 @@ pub struct Server<M: TmuxCompatible> {
     /// The route this backend serves, as the registry and a persisted
     /// `backend_type` spell it (`local:tmux`, `ssh:<host>:psmux`).
     pub(in crate::backend) name: String,
-    pub(in crate::backend) control: Mutex<Option<ControlMode>>,
+    /// The live connection, taken only long enough to clone or swap the
+    /// handle: [`ControlMode`] serialises its own commands, so a caller's round
+    /// trip — up to `COMMAND_TIMEOUT` on a link that stopped answering — is
+    /// never anybody else's wait (#1472).
+    pub(in crate::backend) control: Mutex<Option<Arc<ControlMode>>>,
+    /// Held while a connection is opened, by [`Self::ensure_control`] and
+    /// [`Self::reconnect_control`], so a handshake happens once however many
+    /// callers find the connection missing or dead, and outside `control`.
+    connecting: Mutex<()>,
+    /// Connections replaced but still answering what was sent on them
+    /// ([`ControlMode::retire`]), for [`SessionBackend::shutdown`] to close.
+    retiring: Mutex<Vec<std::sync::Weak<ControlMode>>>,
     /// Set by [`SessionBackend::shutdown`]: from then on no connection is
     /// opened, so a worker still holding the registry as the process quits
     /// cannot bring back the one quit just closed.
@@ -822,6 +828,8 @@ impl<M: TmuxCompatible> Server<M> {
             session: session.into(),
             name: name.into(),
             control: Mutex::new(None),
+            connecting: Mutex::new(()),
+            retiring: Mutex::new(Vec::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
             sizer: sizer_name(),
             host: None,
@@ -1362,6 +1370,8 @@ impl<M: TmuxCompatible> Server<M> {
             session: self.session.clone(),
             name: self.name.clone(),
             control: Mutex::new(None),
+            connecting: Mutex::new(()),
+            retiring: Mutex::new(Vec::new()),
             closed: std::sync::atomic::AtomicBool::new(self.is_closed()),
             sizer: sizer_name(),
             host: self.host.clone(),
@@ -2026,42 +2036,73 @@ impl<M: TmuxCompatible> Server<M> {
         self.login_wrap_for_remote(&shell_cmd)
     }
 
-    /// Run a closure with a reference to the active control mode, or bail if
-    /// it has not been started yet.
+    /// The live connection, or an error when none has been started.
     ///
-    /// Centralizes the "lock + assert started" invariant in one place so
-    /// callers receive a guaranteed-live `&ControlMode` and never touch the
-    /// `Option` directly. This replaces a former pattern where each call site
-    /// re-asserted the invariant with `guard.as_ref().unwrap()` after a
-    /// separate `is_none()` check — fragile, since a refactor of the check
-    /// could silently leave the `unwrap`s reachable.
+    /// A clone of the handle, so the caller's round trip runs with the lock
+    /// already let go.
+    fn connection(&self) -> Result<Arc<ControlMode>> {
+        self.control
+            .lock()
+            .map_err(|e| anyhow::anyhow!("control lock: {e}"))?
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Control mode not started — call ensure_ready() first"))
+    }
+
+    /// Run a closure with the active control mode, or bail if it has not been
+    /// started yet.
     fn with_control<F, R>(&self, f: F) -> Result<R>
     where
         F: FnOnce(&ControlMode) -> Result<R>,
     {
-        let guard = self
-            .control
-            .lock()
-            .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
-        let ctrl = guard.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Control mode not started — call ensure_ready() first")
-        })?;
-        f(ctrl)
+        let ctrl = self.connection()?;
+        f(&ctrl)
     }
 
-    /// Drop the dead control mode connection and start a fresh one.
-    fn reconnect_control(&self) -> Result<()> {
-        self.refuse_if_closed()?;
-        let mut guard = self
-            .control
+    /// Start control mode unless it is running.
+    fn ensure_control(&self) -> Result<()> {
+        if self.attached() {
+            return Ok(());
+        }
+        let _connecting = self
+            .connecting
             .lock()
-            .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
-        // Start the replacement *before* touching `guard`, and only store it on
-        // success. A failed `start()` propagates via `?` while the existing
-        // handle stays in place — so a retry reconnects cleanly instead of
-        // hitting `control = None` and reporting the misleading "call
-        // ensure_ready() first". Assigning `Some(fresh)` drops the dead
-        // ControlMode (its cleanup) as it replaces it.
+            .map_err(|e| anyhow::anyhow!("connecting lock: {e}"))?;
+        if self.attached() {
+            return Ok(());
+        }
+        debug!("Starting tmux control mode");
+        let fresh = ControlMode::start(
+            &self.located_transport(),
+            &self.socket(),
+            &self.session,
+            &self.sizer,
+            &M::control_policy(&self.transport, &self.session),
+        )?;
+        self.install(fresh)
+    }
+
+    /// Replace the connection `dead` with a fresh one; `None` replaces whatever
+    /// is there.
+    ///
+    /// Callers that found the same connection dead queue on `connecting`, and
+    /// all but the first find it already replaced and reuse the replacement
+    /// instead of making a handshake each. The old connection keeps serving
+    /// everybody else until the new one is in place.
+    fn reconnect_control(&self, dead: Option<&Arc<ControlMode>>) -> Result<()> {
+        self.refuse_if_closed()?;
+        let _connecting = self
+            .connecting
+            .lock()
+            .map_err(|e| anyhow::anyhow!("connecting lock: {e}"))?;
+        if let Some(dead) = dead {
+            let current = self.connection().ok();
+            if current.is_some_and(|current| !Arc::ptr_eq(&current, dead)) {
+                return Ok(());
+            }
+        }
+        // A failed `start()` leaves the existing handle in place, so a retry
+        // reconnects cleanly instead of hitting `control = None` and reporting
+        // the misleading "call ensure_ready() first".
         let start = || {
             ControlMode::start(
                 &self.located_transport(),
@@ -2078,13 +2119,66 @@ impl<M: TmuxCompatible> Server<M> {
             Err(_) if self.relocate(true) == Search::Found => start()?,
             Err(e) => return Err(e),
         };
-        *guard = Some(fresh);
+        self.install(fresh)?;
         debug!("Control mode reconnected successfully");
         Ok(())
     }
 
+    /// Make `fresh` the connection, unless [`SessionBackend::shutdown`] came
+    /// first, and retire whatever it replaces.
+    ///
+    /// Retired rather than closed: other callers may be waiting on the old
+    /// connection for answers to commands that have already run. Both it and
+    /// a refused `fresh` are dealt with after the lock is let go, since a
+    /// teardown waits on the child.
+    fn install(&self, fresh: ControlMode) -> Result<()> {
+        let fresh = Arc::new(fresh);
+        match self.swap(&fresh) {
+            Ok(old) => {
+                if let Some(old) = old {
+                    old.retire();
+                }
+                Ok(())
+            }
+            Err(e) => {
+                fresh.close();
+                Err(e)
+            }
+        }
+    }
+
+    /// [`Self::install`]'s step under the lock `shutdown` takes the connection
+    /// out under: refused once shut down, so a handshake that outlives a quit
+    /// is torn down instead of left behind. Answers the connection replaced.
+    ///
+    /// The replaced connection is recorded as retiring before `control` is let
+    /// go, because `shutdown` reads `retiring` only after taking `control`:
+    /// recorded later, a quit in between found nothing to close and the old
+    /// connection's child outlived it.
+    fn swap(&self, fresh: &Arc<ControlMode>) -> Result<Option<Arc<ControlMode>>> {
+        let mut guard = self
+            .control
+            .lock()
+            .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
+        if self.is_closed() {
+            bail!("{} is shut down", self.name);
+        }
+        let old = guard.replace(Arc::clone(fresh));
+        if let Some(old) = &old {
+            if let Ok(mut retiring) = self.retiring.lock() {
+                retiring.retain(|weak| weak.strong_count() > 0);
+                retiring.push(Arc::downgrade(old));
+            }
+        }
+        Ok(old)
+    }
+
     /// Send a command via control mode and return the response.
-    /// On broken pipe or timeout, reconnects control mode and retries once.
+    ///
+    /// A connection that fails is replaced, but the command is sent again only
+    /// when tmux cannot have seen it — the write itself failed. One that was
+    /// written and never answered may have run, and running a `new-window`
+    /// twice opens two windows, so the caller hears the failure instead.
     fn ctrl_command(&self, cmd: &str) -> Result<String> {
         self.ctrl_command_list(&[cmd])
     }
@@ -2097,41 +2191,39 @@ impl<M: TmuxCompatible> Server<M> {
         } else {
             cmds.len()
         };
-        let result = self.with_control(|ctrl| ctrl.send_command_list(cmds, blocks));
-        match result {
+        let ctrl = self.connection()?;
+        match ctrl.send_command_list(cmds, blocks) {
             Ok(val) => Ok(val),
-            Err(err) if is_broken_pipe(&err) || is_recv_timeout(&err) => {
+            Err(err) if is_broken_pipe(&err) => {
                 warn!("Control mode error, reconnecting: {err:#}");
-                self.reconnect_control()?;
+                self.reconnect_control(Some(&ctrl))?;
                 self.with_control(|ctrl| ctrl.send_command_list(cmds, blocks))
+            }
+            Err(err) if is_recv_timeout(&err) => {
+                warn!("Control mode error, reconnecting: {err:#}");
+                if let Err(e) = self.reconnect_control(Some(&ctrl)) {
+                    debug!("reconnect after an unanswered command failed: {e:#}");
+                }
+                Err(err)
             }
             Err(err) => Err(err),
         }
     }
 
     /// Ask one question on a budget, for a caller that must not be made to
-    /// wait: the control lock and the answer together get `budget`, and
-    /// neither a lock held by someone else's round trip nor a link that has
-    /// stopped carrying anything can overrun it.
+    /// wait: a link that has stopped carrying anything cannot overrun it.
     ///
     /// No reconnect on failure, unlike every other path here. A reconnect is a
     /// fresh ssh handshake plus the implicit attach response read back
     /// synchronously — precisely the unbounded wait this exists to avoid — and
     /// the callers that *can* wait will reconnect soon enough.
     fn ctrl_command_within(&self, cmd: &str, budget: std::time::Duration) -> Result<String> {
-        let deadline = std::time::Instant::now() + budget;
-        self.with_control_until(deadline, |ctrl| {
-            ctrl.send_command_within(
-                cmd,
-                deadline.saturating_duration_since(std::time::Instant::now()),
-            )
-        })
+        self.with_control(|ctrl| ctrl.send_command_within(cmd, budget))
     }
 
     /// Send a command whose answer nobody reads, without waiting for it.
     ///
-    /// Bounded and reconnect-free for [`Self::ctrl_command_within`]'s reasons —
-    /// the budget covers only the lock, there being no answer to wait for.
+    /// Reconnect-free for [`Self::ctrl_command_within`]'s reasons.
     /// `blocks` is tmux's count; a one-block server needs one waiter slot.
     fn ctrl_command_detached(&self, cmds: &[&str], blocks: usize) -> Result<()> {
         let blocks = if M::COMMAND_LIST_SINGLE_REPLY {
@@ -2139,38 +2231,7 @@ impl<M: TmuxCompatible> Server<M> {
         } else {
             blocks
         };
-        self.with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
-            ctrl.send_command_detached(cmds, blocks)
-        })
-    }
-
-    /// [`Self::with_control`], but it will not wait past `deadline` for the lock.
-    ///
-    /// The plain lock is held across a whole round trip, so one backend is one
-    /// queue and a caller can be made to wait out someone else's command as
-    /// well as its own — the mirror pass and the attach worker share this lock
-    /// with the loop. A caller that must not block bounds the wait here and
-    /// takes "busy" for an answer.
-    fn with_control_until<F, R>(&self, deadline: std::time::Instant, f: F) -> Result<R>
-    where
-        F: FnOnce(&ControlMode) -> Result<R>,
-    {
-        let guard = loop {
-            match self.control.try_lock() {
-                Ok(guard) => break guard,
-                Err(std::sync::TryLockError::Poisoned(e)) => bail!("control lock: {e}"),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    if std::time::Instant::now() >= deadline {
-                        bail!("control mode is busy with another command");
-                    }
-                    std::thread::sleep(CONTROL_LOCK_POLL);
-                }
-            }
-        };
-        let ctrl = guard
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Control mode not started"))?;
-        f(ctrl)
+        self.with_control(|ctrl| ctrl.send_command_detached(cmds, blocks))
     }
 
     /// Register a pane sender and return the corresponding reader.
@@ -2525,24 +2586,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     fn ensure_ready(&self) -> Result<()> {
         self.refuse_if_closed()?;
         self.ensure_session_configured()?;
-
-        // Start control mode if not already running.
-        let mut guard = self
-            .control
-            .lock()
-            .map_err(|e| anyhow::anyhow!("control lock: {e}"))?;
-        if guard.is_none() {
-            debug!("Starting tmux control mode");
-            *guard = Some(ControlMode::start(
-                &self.located_transport(),
-                &self.socket(),
-                &self.session,
-                &self.sizer,
-                &M::control_policy(&self.transport, &self.session),
-            )?);
-        }
-
-        Ok(())
+        self.ensure_control()
     }
 
     fn spawn(
@@ -2717,11 +2761,10 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 self.transport.mux()
             );
         }
-        // Asked on the loop, so it waits for the lock no longer than any other
-        // loop command, and not at all for the answer. A pane whose output was
+        // Asked on the loop, so it does not wait for the answer. A pane whose output was
         // held back streams again first, so the snapshot sits in its stream
         // ahead of everything it does not already show.
-        self.with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
+        self.with_control(|ctrl| {
             ctrl.show_pane(backend_id)?;
             ctrl.request_snapshot(backend_id, snapshot_history())
         })
@@ -2736,10 +2779,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         if !(M::PANE_MONITORING && M::SNAPSHOTS && self.transport.is_remote()) {
             return;
         }
-        let hidden = self
-            .with_control_until(std::time::Instant::now() + LOOP_COMMAND_BUDGET, |ctrl| {
-                ctrl.hide_pane(backend_id)
-            });
+        let hidden = self.with_control(|ctrl| ctrl.hide_pane(backend_id));
         if let Err(e) = hidden {
             debug!(pane = %backend_id, "output of a hidden pane still streams: {e:#}");
         }
@@ -2752,8 +2792,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         if !self.supports_snapshots() {
             bail!("{} cannot snapshot a pane", self.transport.mux());
         }
-        // Asked under the control lock, which keeps the answer's place in the
-        // queue, and waited for outside it: a search reads many panes at once.
+        // Asked, then waited for apart from the asking, so several searches'
+        // round trips overlap: a search reads many panes at once.
         self.with_control(|ctrl| ctrl.ask_snapshot(backend_id, snapshot_history()))?
             .wait()
     }
@@ -2814,8 +2854,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             return self.discover_answered();
         }
         // Once control mode is up, route through `ctrl_command` so a dead
-        // connection is transparently reconnected + retried (like every other
-        // control-mode call) instead of failing the discovery.
+        // connection is reconnected, and the listing retried when it never
+        // reached tmux (like every other control-mode call).
         let result = self.ctrl_command(&format!(
             "list-windows -t {} -F '{DISCOVER_FORMAT}'",
             self.session
@@ -3279,30 +3319,34 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     }
 
     fn shutdown(&self) {
-        // Taking the connection out runs `ControlMode::drop` on the calling
-        // thread, which is what lets quit fan the (blocking) teardown out
-        // across backends. Idempotent: the mutex holds `None` afterwards, so
-        // the backend's own drop later is a no-op.
-        //
-        // `lock()` rather than `try_lock()`: a contended lock means another
-        // thread is mid-command on this connection, and skipping the teardown
-        // would leak the child + reader thread for the process lifetime.
+        // Closed on the calling thread, which is what lets quit fan the
+        // (blocking) teardown out across backends — explicitly, because a
+        // caller mid-command still holds a clone of the handle, and waiting
+        // for its drop would leave the child and reader thread to outlive
+        // quit. That caller's command fails, and `closed` keeps it from
+        // reconnecting. Idempotent: the mutex holds `None` afterwards.
         self.closed
             .store(true, std::sync::atomic::Ordering::Release);
-        drop(self.control.lock().ok().and_then(|mut c| c.take()));
+        let taken = self.control.lock().ok().and_then(|mut c| c.take());
+        if let Some(control) = taken {
+            control.close();
+        }
+        let retiring = self
+            .retiring
+            .lock()
+            .map(|mut retiring| std::mem::take(&mut *retiring))
+            .unwrap_or_default();
+        for control in retiring.iter().filter_map(std::sync::Weak::upgrade) {
+            control.close();
+        }
     }
 
     fn take_hook_state_events(&self) -> Vec<(String, String)> {
         // `try_lock`, not `lock`: this runs on the UI thread every tick, and a
-        // background restore thread holds `control` across `ControlMode::start`
-        // (an ssh connect + waited commands, up to tens of seconds on a slow
-        // host) — blocking here would stall the first frame ADR-P7 protects.
-        // A contended lock means no connection is serving events yet, and a
         // skipped drain only defers queued events to the next tick.
-        self.control
-            .try_lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(ControlMode::take_sub_events))
+        let control = self.control.try_lock().ok().and_then(|guard| guard.clone());
+        control
+            .map(|ctrl| ctrl.take_sub_events())
             .unwrap_or_default()
     }
 
@@ -4880,7 +4924,7 @@ mod tests {
             &UnmonitoredMux::control_policy(&transport, "unused"),
         )
         .expect("control client");
-        *backend.control.lock().unwrap() = Some(control);
+        *backend.control.lock().unwrap() = Some(Arc::new(control));
 
         let pane = backend
             .connect_pane("%1", Some("@1"), 24, 80)
@@ -4902,6 +4946,210 @@ mod tests {
         let commands = std::fs::read_to_string(mux.with_extension("log")).expect("command log");
         assert!(commands.contains("resize-window"), "{commands}");
         assert!(!commands.contains("refresh-client -A"), "{commands}");
+    }
+
+    /// A control server standing in for a host whose link has gone slow: every
+    /// connection it starts logs `start`, waits out [`STALL`] first when a
+    /// `.slow` file sits beside it, and answers `list-windows` only after
+    /// [`STALL`] too. Everything else is answered at once.
+    #[cfg(unix)]
+    fn stalling_backend(root: &std::path::Path) -> (Server<UnmonitoredMux>, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mux = root.join("stalling-mux");
+        std::fs::write(
+            &mux,
+            format!(
+                "#!/bin/sh\nprintf 'start\\n' >> \"$0.log\"\n\
+                 [ -e \"$0.slow\" ] && sleep {secs}\n\
+                 while IFS= read -r line; do\n\
+                 printf '%s\\n' \"$line\" >> \"$0.log\"\n\
+                 case \"$line\" in\n\
+                   list-windows*) sleep {secs}; printf '%%begin 1 1 0\\n%%end 1 1 0\\n' ;;\n\
+                   *' ; '*) printf '%%begin 1 1 0\\n%%end 1 1 0\\n%%begin 1 1 0\\n%%end 1 1 0\\n' ;;\n\
+                   *) printf '%%begin 1 1 0\\n%%end 1 1 0\\n' ;;\n\
+                 esac\n\
+                 done\n",
+                secs = STALL.as_secs()
+            ),
+        )
+        .expect("write fake mux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let transport = TmuxTransport::local(mux.to_string_lossy());
+        let backend =
+            Server::<UnmonitoredMux>::with_transport(transport, "unused", "unused", "local:tmux");
+        backend.ensure_control().expect("control client");
+        (backend, mux)
+    }
+
+    #[cfg(unix)]
+    const STALL: std::time::Duration = std::time::Duration::from_secs(3);
+
+    /// Block until the fake mux's log satisfies `seen`.
+    #[cfg(unix)]
+    fn await_log(mux: &std::path::Path, seen: impl Fn(&str) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !std::fs::read_to_string(mux.with_extension("log")).is_ok_and(|log| seen(&log)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fake mux never got there"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// #1472: the paint path's resize waited for the control lock while
+    /// another caller's round trip held it, and was refused as busy once
+    /// [`LOOP_COMMAND_BUDGET`] ran out — every frame, for every pane of a host
+    /// whose link had gone slow. Commands are already serialised on the
+    /// connection itself, so a stalled answer must cost nobody else a wait.
+    #[cfg(unix)]
+    #[test]
+    fn a_paint_is_not_held_behind_another_callers_stalled_round_trip() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, mux) = stalling_backend(root.path());
+        let backend = Arc::new(backend);
+        let slow = std::thread::spawn({
+            let backend = Arc::clone(&backend);
+            move || backend.ctrl_command("list-windows -a")
+        });
+        await_log(&mux, |log| log.contains("list-windows"));
+
+        let began = std::time::Instant::now();
+        let resized = backend.resize("%1", 24, 80);
+        let took = began.elapsed();
+
+        assert!(resized.is_ok(), "{resized:?}");
+        assert!(took < LOOP_COMMAND_BUDGET / 2, "the paint waited {took:?}");
+        slow.join().expect("slow caller").expect("slow answer");
+    }
+
+    /// #1472: a reconnect held the control lock through the new connection's
+    /// start — an ssh handshake on a remote host — so the paint path stalled
+    /// for as long as the handshake took.
+    #[cfg(unix)]
+    #[test]
+    fn a_paint_is_not_held_behind_a_slow_reconnect() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, mux) = stalling_backend(root.path());
+        let backend = Arc::new(backend);
+        std::fs::write(mux.with_extension("slow"), "").expect("slow marker");
+        let reconnect = std::thread::spawn({
+            let backend = Arc::clone(&backend);
+            move || backend.reconnect_control(None)
+        });
+        await_log(&mux, |log| log.matches("start").count() == 2);
+
+        let began = std::time::Instant::now();
+        let resized = backend.resize("%1", 24, 80);
+        let took = began.elapsed();
+
+        assert!(resized.is_ok(), "{resized:?}");
+        assert!(took < LOOP_COMMAND_BUDGET / 2, "the paint waited {took:?}");
+        reconnect.join().expect("reconnect").expect("reconnected");
+    }
+
+    /// Another caller's reconnect must not take the connection out from under a
+    /// command already sent on it: closing it lost the answer, and the caller
+    /// resent the command on the new connection — a `new-window` that tmux had
+    /// already run opened a second window.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_in_flight_across_a_reconnect_runs_once_and_is_answered() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, mux) = stalling_backend(root.path());
+        let backend = Arc::new(backend);
+        let first = backend.connection().expect("connection");
+        let in_flight = std::thread::spawn({
+            let backend = Arc::clone(&backend);
+            move || backend.ctrl_command("list-windows -a")
+        });
+        await_log(&mux, |log| log.contains("list-windows"));
+
+        backend
+            .reconnect_control(Some(&first))
+            .expect("reconnected");
+        let answered = in_flight.join().expect("in-flight caller");
+
+        assert!(answered.is_ok(), "{answered:?}");
+        let log = std::fs::read_to_string(mux.with_extension("log")).expect("log");
+        assert_eq!(log.matches("list-windows").count(), 1, "{log}");
+    }
+
+    /// A command written whose answer never came may have run, so it is not
+    /// sent again — the caller hears the failure instead. Only a write that
+    /// failed outright, which tmux never saw, is retried.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_whose_answer_was_lost_is_not_resent() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, mux) = stalling_backend(root.path());
+        let backend = Arc::new(backend);
+        let first = backend.connection().expect("connection");
+        let in_flight = std::thread::spawn({
+            let backend = Arc::clone(&backend);
+            move || backend.ctrl_command("list-windows -a")
+        });
+        await_log(&mux, |log| log.contains("list-windows"));
+
+        first.close();
+        let answered = in_flight.join().expect("in-flight caller");
+
+        assert!(answered.is_err(), "{answered:?}");
+        let log = std::fs::read_to_string(mux.with_extension("log")).expect("log");
+        assert_eq!(log.matches("list-windows").count(), 1, "{log}");
+    }
+
+    /// A quit that lands while a reconnect is replacing the connection must
+    /// still close the one replaced. It was recorded as retiring only after
+    /// the swap let go of `control`, so a `shutdown` in that gap took the new
+    /// connection, found nothing retiring, and the old one's child outlived
+    /// the quit. With the swap parked at its record step (by holding
+    /// `retiring`), the new connection must not be visible yet.
+    #[cfg(unix)]
+    #[test]
+    fn a_quit_during_a_reconnect_closes_the_replaced_connection() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, _mux) = stalling_backend(root.path());
+        let backend = Arc::new(backend);
+        let old = backend.connection().expect("connection");
+        let fresh = Arc::new(
+            ControlMode::start(
+                &backend.located_transport(),
+                &backend.socket(),
+                &backend.session,
+                &backend.sizer,
+                &UnmonitoredMux::control_policy(&backend.transport, &backend.session),
+            )
+            .expect("second connection"),
+        );
+
+        let parked = backend.retiring.lock().expect("retiring lock");
+        let swap = std::thread::spawn({
+            let (backend, fresh) = (Arc::clone(&backend), Arc::clone(&fresh));
+            move || backend.swap(&fresh).map(|old| old.is_some())
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        let mut visible = false;
+        while !visible && std::time::Instant::now() < deadline {
+            let current = backend.control.try_lock().ok().and_then(|c| c.clone());
+            visible = current.is_some_and(|c| Arc::ptr_eq(&c, &fresh));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(parked);
+        let swapped = swap.join().expect("swap");
+        backend.shutdown();
+
+        assert!(
+            !visible,
+            "the swap showed before the old connection was recorded"
+        );
+        assert!(swapped.is_ok_and(|replaced| replaced), "nothing replaced");
+        let answer = old.send_command_within("display-message -p ''", LOOP_COMMAND_BUDGET);
+        assert!(
+            answer.is_err(),
+            "the replaced connection outlived the quit: {answer:?}"
+        );
     }
 
     /// The whole point of the fix: what tmux is handed must not need tmux's own

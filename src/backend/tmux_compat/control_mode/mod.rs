@@ -1029,6 +1029,9 @@ const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const GRACEFUL_EXIT_POLLS: u32 = 10;
 const GRACEFUL_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
+/// How often a retiring connection checks whether anybody still holds it.
+const RETIRE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// A live tmux control mode connection.
 ///
 /// Commands are sent serially (stdin lock ensures ordering) and responses arrive
@@ -1064,12 +1067,22 @@ pub(in crate::backend) struct ControlMode {
     /// See [`HiddenPanes`]; shared with the reader thread, which reads
     /// their reports and leaves them paused.
     hidden: HiddenPanes,
+    /// Held across each of [`Self::hide_pane`] and [`Self::show_pane`] — the
+    /// record in `hidden` and the commands it stands for — so the two cannot
+    /// interleave: a hide's pause landing after a concurrent show's resume
+    /// leaves a pane paused with no record, which nothing would ever resume.
+    /// Separate from `hidden`, which the reader thread takes on its way to the
+    /// stdin lock, so holding it across a write never stops stdout being read.
+    visibility: Mutex<()>,
     /// True while this connection lives; cleared on reader EOF and in `Drop`.
     /// The hook poller checks it each cycle so a replaced connection's
     /// poller winds down instead of writing into a dead pipe forever.
     alive: Arc<AtomicBool>,
     reader_handle: Mutex<Option<JoinHandle<()>>>,
     child: Mutex<Child>,
+    /// Set by the first [`Self::close`], so a connection closed explicitly is
+    /// not detached and waited for a second time when it drops.
+    closed: AtomicBool,
 }
 
 /// Cap on queued subscription events. Status transitions are rare and the
@@ -1220,9 +1233,11 @@ impl ControlMode {
             sub_events,
             subscriptions: policy.subscriptions,
             hidden,
+            visibility: Mutex::new(()),
             alive,
             reader_handle: Mutex::new(Some(reader_handle)),
             child: Mutex::new(child),
+            closed: AtomicBool::new(false),
         };
 
         if let Some(command) = policy.flow_control_command {
@@ -1529,6 +1544,15 @@ impl ControlMode {
 
         // EOF — control mode connection ended. Close all pane senders so readers get EOF.
         debug!("Control reader thread exiting");
+        Self::drop_panes(&pane_senders, &pane_windows, &pane_sizes);
+    }
+
+    /// Forget every pane this connection serves, which is EOF for their readers.
+    fn drop_panes(
+        pane_senders: &PaneSendersMapShared,
+        pane_windows: &PaneWindowsMapShared,
+        pane_sizes: &PaneSizesMapShared,
+    ) {
         if let Ok(mut senders) = pane_senders.lock() {
             senders.clear();
         }
@@ -1957,6 +1981,10 @@ impl ControlMode {
         if !self.subscriptions || !is_valid_pane_id(pane_id) {
             return Ok(false);
         }
+        let _visibility = self
+            .visibility
+            .lock()
+            .map_err(|e| anyhow::anyhow!("visibility lock: {e}"))?;
         let readers = self
             .pane_senders
             .lock()
@@ -1988,6 +2016,10 @@ impl ControlMode {
     /// that is let go stops being held back: tmux keeps a pane paused across
     /// `on`/`off`, so a later adopt of it would otherwise stream nothing.
     pub(in crate::backend) fn show_pane(&self, pane_id: &str) -> Result<()> {
+        let _visibility = self
+            .visibility
+            .lock()
+            .map_err(|e| anyhow::anyhow!("visibility lock: {e}"))?;
         if !self.unhide(pane_id)? {
             return Ok(());
         }
@@ -2221,8 +2253,7 @@ impl ControlMode {
     /// Ask for a [`PaneSnapshot`] of `pane_id` as unstyled text, handed back to
     /// the caller rather than put into the stream — for a reader that wants the
     /// text as it stands (the content search). Returns once asked; the answer
-    /// is [`PendingSnapshot::wait`]ed for separately, so a caller holding the
-    /// backend's control lock can let go of it first and several searches'
+    /// is [`PendingSnapshot::wait`]ed for separately, so several searches'
     /// round trips overlap.
     pub(in crate::backend) fn ask_snapshot(
         &self,
@@ -2293,6 +2324,47 @@ impl ControlMode {
 
 impl Drop for ControlMode {
     fn drop(&mut self) {
+        self.close();
+    }
+}
+
+impl ControlMode {
+    /// Take a replaced connection out of service without failing what is
+    /// already in flight on it.
+    ///
+    /// Its panes are let go at once — EOF for their readers, as a closed
+    /// connection gives — so it never streams alongside its replacement. Its
+    /// replies keep arriving: a command already sent may have run, and losing
+    /// its answer would leave the caller unable to tell. It is closed once no
+    /// caller holds it any more, or after `COMMAND_TIMEOUT`, the longest any
+    /// of them waits.
+    pub(in crate::backend) fn retire(self: Arc<Self>) {
+        Self::drop_panes(&self.pane_senders, &self.pane_windows, &self.pane_sizes);
+        let spawned = std::thread::Builder::new()
+            .name("control-retire".into())
+            .spawn({
+                let this = Arc::clone(&self);
+                move || {
+                    let deadline = std::time::Instant::now() + COMMAND_TIMEOUT;
+                    while Arc::strong_count(&this) > 1 && std::time::Instant::now() < deadline {
+                        std::thread::sleep(RETIRE_POLL);
+                    }
+                    this.close();
+                }
+            });
+        if spawned.is_err() {
+            self.close();
+        }
+    }
+
+    /// Detach and tear the connection down. Callable through a shared handle,
+    /// for a backend shutting down while a caller is still mid-command on it.
+    /// A caller still waiting for an answer is told at once that none is
+    /// coming, rather than left to wait out `COMMAND_TIMEOUT`.
+    pub(in crate::backend) fn close(&self) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
         // Wind down the (detached) hook poller; it observes the flag on
         // its next cycle, or exits via the dead pipe once the child is killed.
         self.alive.store(false, Ordering::Relaxed);
@@ -2324,6 +2396,9 @@ impl Drop for ControlMode {
                 let _ = child.kill();
                 let _ = child.wait();
             }
+        }
+        if let Ok(mut queue) = self.response_queue.lock() {
+            queue.clear();
         }
 
         // Reader thread should exit now that the child is dead (stdout closed).
