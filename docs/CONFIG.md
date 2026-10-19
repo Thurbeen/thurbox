@@ -1033,8 +1033,9 @@ re-reads the table on every run, so a change applies within a minute.
 | `thurbox.session.lifetime` | histogram | `s` | `reason`, `agent` |
 
 - `thurbox.sessions` counts live sessions by the state word `session list`
-  shows, or `lost`. Each state word is reported, at zero when no session is in
-  it.
+  shows, or `lost`. Each state word is reported for every agent and backend
+  that has a session, at zero when no session is in it. Once an agent's last
+  session goes, its series are no longer reported and expire in the backend.
 - A turn runs from entering `working` to leaving it, and `outcome` is the state
   it left to. `thurbox.blocked.duration` is time spent waiting on a human. A
   stop, a loss or a delete in between ends either one unmeasured.
@@ -1071,9 +1072,9 @@ How the export behaves:
   following ticks.
 - **Shared hosts** (ADR-24): their sessions are left out. The host's own tick
   exports them under its own `host.name`.
-- **Never in the way.** A failure is a warning in the log and a `telemetry.error`
-  in `automation tick --json`. A collector that does not answer costs the tick
-  at most a 5-second timeout.
+- **Never in the way.** A failure is a `WARN` line on the tick's stderr and a
+  `telemetry.error` in `automation tick --json`. Each request has a 5-second
+  timeout, and the first one that fails ends the export for that tick.
 
 A Collector that takes thurbox's metrics to Prometheus and prints its session
 event logs (`otelcol-contrib`, which ships `deltatocumulative`):
