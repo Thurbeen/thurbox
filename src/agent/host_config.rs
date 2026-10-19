@@ -123,8 +123,10 @@ pub const SEED_HOSTS_TOML: &str = r#"# Thurbox hosts  —  ~/.config/thurbox/hos
 #       The OTLP endpoint a session on this host exports to while
 #       settings.toml [telemetry] is on, as the HOST reaches it — the
 #       local `endpoint` would name the host itself there. Unset, sessions
-#       on the host get only their resource attributes. A shared host's own
-#       sessions follow the host's own [telemetry] instead.
+#       on the host get only their resource attributes. On a shared host
+#       the agent's pane is launched by the host's own CLI from the host's
+#       own [telemetry]; `session exec` and `agent launch-args` run from
+#       here still use this endpoint.
 #
 config_version = 1
 

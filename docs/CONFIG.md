@@ -312,7 +312,7 @@ configured hosts, error shown.
 | `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
 | `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
 | `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands, the delegated `thurbox-cli` and the agent's pane on a POSIX host (not git, the usage probe or an image drop) — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
-| `otel_endpoint` | no | — | the OTLP endpoint, as the host reaches it, that a session on this host exports to while [`[telemetry]`](#telemetry--opentelemetry-for-sessions) configures agents; unset = resource attributes only. Not used for a session a shared host's own CLI creates, which follows the host's `[telemetry]` |
+| `otel_endpoint` | no | — | the OTLP endpoint, as the host reaches it, that a session on this host exports to while [`[telemetry]`](#telemetry--opentelemetry-for-sessions) configures agents; unset = resource attributes only. On a shared host the agent's pane is launched by the host's own CLI from the host's `[telemetry]`; this endpoint still applies to `session exec` and `agent launch-args` run from here |
 
 **The agent's `PATH` on a host.** ssh and `wsl.exe` hand a command a
 non-login environment — `wsl.exe -e` skips the user's shell entirely, so
@@ -1013,9 +1013,11 @@ A variable the session's own `--env` sets wins, except
 one, its keys winning a conflict, and thurbox's three keys still win over both.
 A remote session exports to its host's `otel_endpoint` from
 [hosts.toml](#hoststoml) instead of `endpoint` (`localhost` there is the host),
-with this table's `protocol` and `headers`; a
-host that sets none gets only the resource attributes. A session a shared host's
-own CLI creates follows the host's own `[telemetry]`. `antigravity`, `pi` and
+with this table's `protocol` and `headers`; a host that sets none gets only the
+resource attributes. On a shared host the agent's pane is created and restarted
+by the host's own CLI, which applies the host's own `[telemetry]`; `session
+exec` and `agent launch-args` run from here still use this machine's
+`[telemetry]` with the host's `otel_endpoint`. `antigravity`, `pi` and
 `aider` have no native OTel.
 
 The table is read at every spawn and restart, so a change applies to the next

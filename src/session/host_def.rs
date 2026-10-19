@@ -146,8 +146,9 @@ pub struct HostDef {
     /// `[telemetry]` configures agents (ADR-36), as the host reaches it.
     /// Unset, the session gets only its resource attributes: the local
     /// `endpoint` names this machine, which on the host is the host itself.
-    /// Not read for a session the host's own CLI creates — that one follows
-    /// the host's own `[telemetry]`.
+    /// On a shared host the agent's pane is launched by the host's own CLI,
+    /// from the host's own `[telemetry]`; `session exec` and
+    /// `agent launch-args` run from here still read this.
     #[serde(default)]
     pub otel_endpoint: Option<String>,
 }

@@ -449,9 +449,13 @@ fn session_file_template(def: &crate::session::AgentDef) -> Option<String> {
 /// Run a command in `cwd`, on `host` when the session lives off this machine,
 /// under `env`.
 ///
-/// The remote form is one `sh -c` because `cd` and the command have to share a
-/// shell, and every word is POSIX-quoted so the host's login shell re-splitting
-/// cannot reinterpret an argument containing a space. Lives here rather than in
+/// The remote form is one script because `cd` and the command have to share a
+/// shell, and every word is POSIX-quoted so an argument containing a space
+/// arrives as one. The script goes to the host's `sh -s` on ssh's **stdin**,
+/// never in its arguments: it carries `env`'s values — the session's own
+/// `--env` and the `[telemetry] headers` token among them — and a command line
+/// is readable by every user of both machines through `ps`. The command gets no
+/// stdin either way, as `Command::output` gives the local form none. Lives here rather than in
 /// `cli` because knowing how to reach a host — and how to quote for one — is
 /// `session_ops`' job; `cli` may not reach into `shell` at all.
 ///
@@ -500,9 +504,22 @@ pub fn exec_in_dir(
                     .collect::<Vec<_>>()
                     .join(" ")
             );
-            crate::shell::HostLauncher::for_host(host)
-                .shell_c(&script)
-                .output()
+            let launcher = crate::shell::HostLauncher::for_host(host);
+            let mut child = crate::shell::launch(Some(&launcher), "sh", &["-s"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            let mut stdin = child.stdin.take().expect("stdin is piped");
+            // A launcher that dies before reading (an unreachable host) closes
+            // the pipe; its exit status and stderr are the answer, not the
+            // broken pipe.
+            match std::io::Write::write_all(&mut stdin, format!("{script}\n").as_bytes()) {
+                Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => return Err(e),
+                _ => {}
+            }
+            drop(stdin);
+            child.wait_with_output()
         }
     }
 }
