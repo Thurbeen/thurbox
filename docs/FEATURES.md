@@ -2285,7 +2285,11 @@ rather than an interface anyone has to implement.
 distinction matters at restart, not at spawn:
 
 - A **registry agent** is resolved by name at every launch. That indirection is
-  a feature — fix `agents.toml`, restart, and the fix takes effect.
+  a feature — fix `agents.toml`, restart, and the fix takes effect. A name the
+  file does not define is refused at create, listing the agents it does define,
+  never replaced by the default — on a shared host that refusal is the host's,
+  relayed verbatim. A restart whose agent has since been removed launches the
+  default instead, with a warning in the log: the session already exists.
 - A **command session** has no entry to re-resolve, so its **launch recipe**
   (command, args, env) is persisted on its row and replayed verbatim. Without
   that it would restart into nothing and lose its `--env` on the first respawn.

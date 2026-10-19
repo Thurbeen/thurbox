@@ -290,7 +290,7 @@ fn spawn(
     let recipe = super::launch_recipe(&req);
     let mut agent_def = match &recipe {
         Some(r) => super::recipe_agent_def(r),
-        None => super::resolve_agent_def(req.agent.as_deref()),
+        None => super::resolve_agent_def(req.agent.as_deref())?,
     };
     let agent_name = agent_def.name.clone();
 
@@ -2065,24 +2065,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_agent_def_derives_name_with_fallback() {
+    fn resolve_agent_def_falls_back_only_when_none_is_named() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         // An explicit, seeded agent wins and its name round-trips.
-        assert_eq!(super::super::resolve_agent_def(Some("codex")).name, "codex");
-        // Empty/None/unknown fall back to the registry default.
-        assert_eq!(
-            super::super::resolve_agent_def(Some("")).name,
-            DEFAULT_AGENT_NAME
+        let resolve = |n| super::super::resolve_agent_def(n).map(|d| d.name);
+        assert_eq!(resolve(Some("codex")).unwrap(), "codex");
+        // Empty/None fall back to the registry default; an unknown name is
+        // refused, naming what is defined.
+        assert_eq!(resolve(Some("")).unwrap(), DEFAULT_AGENT_NAME);
+        assert_eq!(resolve(None).unwrap(), DEFAULT_AGENT_NAME);
+        let err = resolve(Some("no-such-agent")).unwrap_err();
+        assert!(
+            err.starts_with("no agent named 'no-such-agent' in agents.toml; known agents: "),
+            "{err}"
         );
-        assert_eq!(
-            super::super::resolve_agent_def(None).name,
-            DEFAULT_AGENT_NAME
-        );
-        assert_eq!(
-            super::super::resolve_agent_def(Some("no-such-agent")).name,
-            DEFAULT_AGENT_NAME
-        );
+        assert!(err.contains("codex"), "{err}");
     }
 
     #[test]

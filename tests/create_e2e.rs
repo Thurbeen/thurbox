@@ -2166,3 +2166,40 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
         "a fork of a registry-agent session must keep the env its parent recorded"
     );
 }
+
+/// An explicit `--agent` that `agents.toml` does not define is refused, naming
+/// the agents it does define — never quietly launched as the default (#1454).
+/// The refusal comes before any side effect: no row, no window.
+#[test]
+#[cfg(unix)]
+fn an_unknown_agent_is_refused_rather_than_replaced_by_the_default() {
+    if !have_tmux() {
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, _config) = isolated_config();
+    let db = on_disk_db();
+    let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args([
+            "session",
+            "create",
+            "--name",
+            "unknown-agent",
+            "--repo-path",
+            repo.path().to_str().unwrap(),
+            "--agent",
+            "no-such-agent",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "created anyway: {stdout}");
+    assert!(
+        format!("{stdout}{stderr}")
+            .contains("no agent named 'no-such-agent' in agents.toml; known agents: shell"),
+        "{stdout}{stderr}"
+    );
+    assert!(db.list_active_sessions().unwrap().is_empty());
+}

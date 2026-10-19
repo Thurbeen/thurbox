@@ -555,13 +555,10 @@ pub fn agent_launch_plan(
     session: Option<&crate::sync::SharedSession>,
 ) -> Result<LaunchPlan, String> {
     let registry = crate::agent::agent_config::load_or_seed();
-    let def = registry.get(agent).cloned().ok_or_else(|| {
-        let known: Vec<&str> = registry.agents.iter().map(|a| a.name.as_str()).collect();
-        format!(
-            "no agent named '{agent}' in agents.toml; known agents: {}",
-            known.join(", ")
-        )
-    })?;
+    let def = registry
+        .get(agent)
+        .cloned()
+        .ok_or_else(|| unknown_agent(&registry, agent))?;
     let host = match session {
         Some(s) => resolve_host(&s.backend_type).ok_or_else(|| {
             format!(
@@ -710,7 +707,7 @@ pub fn fork_session_headless(
 
     let codex_builtin = source.agent == "codex"
         && recipe.is_none()
-        && resolve_agent_def(Some("codex")).resume_args == ["resume", "{id}"];
+        && resolve_agent_def(Some("codex")).is_ok_and(|d| d.resume_args == ["resume", "{id}"]);
     let fork_session_id = if codex_builtin {
         Some(
             db.get_session_meta(source.id, "thurbox.codex_conversation_id")
@@ -802,19 +799,38 @@ pub(crate) fn recipe_agent_def(recipe: &crate::session::LaunchRecipe) -> crate::
     }
 }
 
-pub(crate) fn resolve_agent_def(requested: Option<&str>) -> crate::session::AgentDef {
+/// The agent to launch: the one named, or the registry's default when none is
+/// (`None` or empty). A name the registry does not define is an error, never
+/// the default — on a shared host the host's refusal is the caller's only sign
+/// that the agent exists on one side and not the other (#1454).
+pub(crate) fn resolve_agent_def(
+    requested: Option<&str>,
+) -> Result<crate::session::AgentDef, String> {
     let registry = crate::agent::agent_config::load_for_launch();
-    requested
-        .filter(|n| !n.is_empty())
-        .and_then(|n| registry.get(n))
-        .or_else(|| registry.default_agent())
-        .cloned()
-        .unwrap_or_else(|| {
-            crate::agent::agent_config::builtin_registry()
-                .default_agent()
-                .cloned()
-                .expect("built-in registry always has a default agent")
-        })
+    match requested.filter(|n| !n.is_empty()) {
+        Some(name) => registry
+            .get(name)
+            .cloned()
+            .ok_or_else(|| unknown_agent(&registry, name)),
+        None => Ok(default_agent_def(&registry)),
+    }
+}
+
+fn default_agent_def(registry: &crate::session::AgentRegistry) -> crate::session::AgentDef {
+    registry.default_agent().cloned().unwrap_or_else(|| {
+        crate::agent::agent_config::builtin_registry()
+            .default_agent()
+            .cloned()
+            .expect("built-in registry always has a default agent")
+    })
+}
+
+fn unknown_agent(registry: &crate::session::AgentRegistry, name: &str) -> String {
+    let known: Vec<&str> = registry.agents.iter().map(|a| a.name.as_str()).collect();
+    format!(
+        "no agent named '{name}' in agents.toml; known agents: {}",
+        known.join(", ")
+    )
 }
 
 /// Placeholder in an [`AgentDef`](crate::session::AgentDef)'s arg groups,

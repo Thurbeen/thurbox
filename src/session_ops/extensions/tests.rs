@@ -1926,7 +1926,7 @@ fn reinstall_tears_down_then_installs_fresh() {
     std::fs::write(
             src.path().join("extension.toml"),
             format!(
-                "name = \"flow\"\nversion = \"1.0.0\"\nhome = '{}'\n[[files]]\npath = \"seed.md\"\nif_absent = true\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
+                "name = \"flow\"\nversion = \"1.0.0\"\nhome = '{}'\n[[agents]]\nname = \"flow\"\ncommand = \"sh\"\n[[files]]\npath = \"seed.md\"\nif_absent = true\n[[sessions]]\nname = \"flow\"\nagent = \"flow\"\nrepo_path = \"{{home}}\"\n",
                 home.display()
             ),
         )

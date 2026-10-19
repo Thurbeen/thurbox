@@ -75,9 +75,17 @@ pub(crate) fn build_restart_plan(
     // *now* rather than replayed, so an `agents.toml` edit takes effect on the
     // next restart. A command session has no entry to resolve, so its persisted
     // recipe is replayed verbatim — the reason the recipe is stored at all.
+    // Unlike a create, a restart keeps the default for an agent since removed
+    // from the file: the session exists, and an agent beats none.
     let def = match recipe {
         Some(r) => super::recipe_agent_def(r),
-        None => super::resolve_agent_def(Some(&config.agent)),
+        None => super::resolve_agent_def(Some(&config.agent)).unwrap_or_else(|e| {
+            tracing::warn!(
+                "restart of '{}': {e}; launching the default agent",
+                session.name
+            );
+            super::resolve_agent_def(None).expect("the default always resolves")
+        }),
     };
     // The same adaptation a spawn does, so a restart lands the agent exactly
     // where the spawn did: `{home}` resolved against the machine it runs on
