@@ -259,9 +259,9 @@ pub(super) fn observe_samples(
 
 /// The registry name of the metatable every render context carries.
 ///
-/// See [`install_clock`]. In the registry rather than in globals for the same
-/// reason [`RUN_IMPL`] is: a plugin chunk's `_ENV` *is* the globals table, so
-/// anything parked there is reachable by name from every plugin.
+/// See [`install_clock`]. In the registry rather than in globals because the
+/// shared globals are every plugin's fallback `_ENV`, so anything parked there
+/// is reachable by name from every plugin.
 pub(super) const CTX_META: &str = "__ctx_meta";
 
 /// Serve `ctx.elapsed` through a metatable, and record that it was asked for.
