@@ -2929,8 +2929,10 @@ Two layers (`session_ops::telemetry::apply`, called at spawn, restart,
 `OTEL_RESOURCE_ATTRIBUTES` carrying `thurbox.session.id`, set for every session;
 and the agent's `telemetry_env` / `telemetry_args` from `agents.toml`,
 substituted with `{otlp_endpoint}` / `{otlp_protocol}`, for switches the spec
-does not cover. The session's own `--env` wins over both; thurbox's resource
-attributes win over an inherited value for the same keys.
+does not cover. The session's own `--env` wins over both, except that its
+`OTEL_RESOURCE_ATTRIBUTES` is merged into the inherited value, the session's
+keys winning a conflict; thurbox's resource attributes win over both for the
+same keys.
 
 **Why**: tokens, cost, models and tool calls are known only to the agent, and the
 agents that have OTel already export them. Reimplementing that per agent would
