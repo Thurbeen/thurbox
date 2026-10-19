@@ -139,15 +139,20 @@ nobody else.
 Reads fall through to the shared globals, which hold only what every plugin may
 have; writes land in the plugin's own table, so a global one plugin sets is
 invisible to the next. `_G` is the plugin's own table and the environment's
-metatable is sealed, so the shared globals are not reachable to write to. What
-is reachable and shared is sealed too: `string`, `table`, `math`, `coroutine`,
-`utf8` and `text` are read-only proxies, the string metatable is sealed, and so
-is `store`'s. `require` has a cache per plugin and runs a module in the
-requiring plugin's environment — a shared module would be a table one plugin
-could rewrite under another, and a module's `command(…)` has to act as the
-plugin that required it. `thurbox` is still one shared table of published data;
-a plugin that writes into it changes what others read until the next publish,
-but cannot act as them.
+metatable is sealed, so the shared globals are not reachable to write to. The
+shared tables are reached only through views of the plugin's own: `string`,
+`table`, `math`, `coroutine`, `utf8`, `text` and `store` are each an empty table
+per plugin over a sealed metatable, which reads through and refuses a write. Of
+the plugin's own because `rawset` writes past `__newindex` into the view itself,
+and one view every plugin shared would carry that write to all of them. Nothing
+on a view leads back to the table behind it — `__pairs` iterates through a
+closure rather than returning the table as its state — and the string
+metatable is sealed so `getmetatable("")` cannot hand one out. `require` has a
+cache per plugin and runs a module in the requiring plugin's environment — a
+shared module would be a table one plugin could rewrite under another, and a
+module's `command(…)` has to act as the plugin that required it. `thurbox` is
+still one shared table of published data; a plugin that writes into it changes
+what others read until the next publish, but cannot act as them.
 
 `run` is installed **per call**: `LuaHost::enter` puts the plugin's own `run`
 into its environment, or takes it out. A plugin that was not granted it does not

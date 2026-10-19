@@ -500,8 +500,9 @@ running — a pane that wrapped `type` used to run inside a trusted pane's call 
 its `run` and its path. `command`, `run`, `files`, `state` and `require` (with a
 per-plugin module cache, modules run in the requirer's env) are created per plugin;
 reads fall through to the sealed shared globals, writes stay in the plugin's table.
-`string`/`table`/`math`/`coroutine`/`utf8`/`text` are read-only proxies and the
-string and `store` metatables are sealed. `LuaHost::enter` puts the plugin's own
+`string`/`table`/`math`/`coroutine`/`utf8`/`text`/`store` are per-plugin empty
+views over a sealed metatable (per plugin, because `rawset` writes into the view;
+`__pairs` never returns the backing table), and the string metatable is sealed. `LuaHost::enter` puts the plugin's own
 `run` into its env, or takes it out, per call; `layout.lua` has an env that never
 holds it. `LuaHost::reachable_globals` is what the environment tripwire reads.
 

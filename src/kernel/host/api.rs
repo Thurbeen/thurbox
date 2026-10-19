@@ -71,9 +71,10 @@ pub(super) struct Env {
 /// hijacking function acts as its author and nobody else.
 ///
 /// Reads fall through to the shared globals, which hold only what every plugin
-/// may have and are sealed ([`seal_shared`]); writes land in the plugin's own
-/// table. `_G` is that table, and its metatable is sealed, so the shared one is
-/// not reachable to write to. `ns` is the key `state` is kept under.
+/// may have; the library tables and `store` are shadowed by views of the
+/// plugin's own ([`seal_shared`]). Writes land in the plugin's own table. `_G`
+/// is that table, and its metatable is sealed, so the shared one is not
+/// reachable to write to. `ns` is the key `state` is kept under.
 pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> mlua::Result<Env> {
     let table = lua.create_table()?;
     let meta = lua.create_table()?;
@@ -81,6 +82,7 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
     meta.set("__metatable", false)?;
     table.set_metatable(Some(meta))?;
     table.set("_G", table.clone())?;
+    sealed_views(lua, &table)?;
     table.set(
         "command",
         command_for(lua, parts.queue.clone(), path.to_string())?,
@@ -103,24 +105,33 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
     })
 }
 
-/// The shared tables a plugin can reach, made read-only.
+/// Make the shared library tables read-only, by building the metatable each
+/// plugin's view of them carries ([`sealed_views`]).
 ///
 /// A plugin's own `_ENV` keeps a replaced global to itself, but `string.upper =
 /// …` writes into a table every plugin reads — and so does a string method,
-/// through the one metatable all strings share. Each is replaced by a proxy that
-/// reads through and refuses a write, and the string metatable is sealed so
-/// `getmetatable("")` cannot hand out the table behind it.
+/// through the one metatable all strings share. So no plugin is handed the real
+/// table: each gets an empty proxy of its own that reads through and refuses a
+/// write. Of its own, because `rawset` writes past `__newindex` into the proxy
+/// itself, and a proxy every plugin shared would carry that write to all of them.
+/// The real tables stay in the shared globals, which no plugin can reach, and
+/// the string metatable is sealed so `getmetatable("")` cannot hand one out.
+///
+/// Nothing on a view leads back to the table behind it: `__index` is followed
+/// by Lua and never returned, `__pairs` iterates through a closure rather than
+/// returning `next` and the table as the iteration state, and `__metatable`
+/// hides the metatable itself.
 fn seal_shared(lua: &Lua) -> mlua::Result<()> {
     lua.load("getmetatable('').__metatable = false")
         .set_name("seal")
         .exec()?;
     let globals = lua.globals();
     let next: mlua::Function = globals.get("next")?;
+    let metas = lua.create_table()?;
     for name in SEALED {
         let Value::Table(inner) = globals.get::<Value>(name)? else {
             continue;
         };
-        let proxy = lua.create_table()?;
         let meta = lua.create_table()?;
         meta.set("__index", inner.clone())?;
         meta.set(
@@ -135,13 +146,39 @@ fn seal_shared(lua: &Lua) -> mlua::Result<()> {
         let walk = next.clone();
         meta.set(
             "__pairs",
-            lua.create_function(move |_, _: Value| Ok((walk.clone(), inner.clone(), Value::Nil)))?,
+            lua.create_function(move |lua, _: Value| {
+                let (walk, inner) = (walk.clone(), inner.clone());
+                let step = lua.create_function(move |_, (_, key): (Value, Value)| {
+                    walk.call::<mlua::MultiValue>((inner.clone(), key))
+                })?;
+                Ok((step, Value::Nil, Value::Nil))
+            })?,
         )?;
         meta.set("__metatable", false)?;
-        proxy.set_metatable(Some(meta))?;
-        globals.set(name, proxy)?;
+        metas.set(name, meta)?;
     }
-    Ok(())
+    lua.set_named_registry_value(SEALED_METAS, metas)
+}
+
+/// Where [`seal_shared`] keeps the metatable of each sealed library table, out
+/// of every plugin's reach.
+const SEALED_METAS: &str = "__sealed_metas";
+
+/// One plugin's views of the shared tables: a fresh empty table per sealed
+/// library, and one for `store`, each carrying the shared, sealed metatable.
+fn sealed_views(lua: &Lua, env: &Table) -> mlua::Result<()> {
+    let metas: Table = lua.named_registry_value(SEALED_METAS)?;
+    for name in SEALED {
+        if let Ok(Value::Table(meta)) = metas.get::<Value>(name) {
+            let view = lua.create_table()?;
+            view.set_metatable(Some(meta))?;
+            env.raw_set(name, view)?;
+        }
+    }
+    let store: Table = lua.globals().get("store")?;
+    let view = lua.create_table()?;
+    view.set_metatable(store.metatable())?;
+    env.raw_set("store", view)
 }
 
 /// The library tables every plugin reads, sealed by [`seal_shared`].

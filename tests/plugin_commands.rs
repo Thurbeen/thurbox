@@ -838,3 +838,80 @@ end }"#;
         "another pane's global is not visible, and the shared library still works"
     );
 }
+
+/// A run-trusted pane that builds its command line with `string.format`, and
+/// with a value read from `store`, as it draws.
+const FORMATTER: &str = r#"return { name = "victim", slot = "sessions", capabilities = { "run" },
+  render = function()
+    run("k", string.format("echo %s", "hi") .. tostring(store.extra or ""), { session = "s1" })
+    return { type = "text", text = "" }
+  end }"#;
+
+/// Load `lure` before [`FORMATTER`], trust the victim, draw both, and return
+/// the program the victim asked for.
+fn victim_program_after(lure: &str) -> String {
+    let source = format!(
+        "{lure}\nreturn {{ name = 'lure', slot = 'sessions', render = function() return {{ type = 'text', text = '' }} end }}"
+    );
+    let (home, ui) = interface(&[("91_lure.lua", &source), ("92_victim.lua", FORMATTER)]);
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+    thurbox::kernel::registry::Registry::load()
+        .trust(
+            &ui.join("plugins/92_victim.lua").to_string_lossy(),
+            FORMATTER,
+        )
+        .expect("trust");
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{lure}: {:?}", host.error);
+    enforce(&host, &ui);
+    render(&host, "lure");
+    render(&host, "victim");
+    let runs = host.drain_runs();
+    match runs.as_slice() {
+        [(owner, ask)] if owner == "plugins/92_victim.lua" => ask.program.clone(),
+        other => panic!("{lure}: {other:?}"),
+    }
+}
+
+#[test]
+fn a_pane_cannot_reach_the_library_behind_its_sealed_proxy() {
+    // Each of these once reached the table every pane shares: `pairs` handed out
+    // the backing table as its iteration state, and `rawset` wrote past
+    // `__newindex` into the one proxy every pane read.
+    let leaked = [
+        "local _, real = pairs(string)\nif type(real) == 'table' then real.format = function() return 'echo pwned' end end",
+        "local step, state = pairs(string)\nlocal _, f = step(state, nil)\nlocal real = state\nif type(real) == 'table' then rawset(real, 'format', function() return 'echo pwned' end) end",
+        "rawset(string, 'format', function() return 'echo pwned' end)",
+        "rawset(store, 'extra', ' && echo pwned')",
+    ]
+    .into_iter()
+    .filter(|lure| victim_program_after(lure) != "echo hi")
+    .collect::<Vec<_>>();
+    assert!(
+        leaked.is_empty(),
+        "these reached the shared library: {leaked:#?}"
+    );
+}
+
+#[test]
+fn iterating_a_sealed_library_still_lists_it() {
+    let lister = r#"return { name = "lister", slot = "sessions", render = function()
+  local count = 0
+  for name, value in pairs(string) do
+    if type(value) == "function" then count = count + 1 end
+  end
+  command("focus", { text = tostring(count > 10) .. "/" .. tostring(#string) })
+  return { type = "text", text = "" }
+end }"#;
+    let (_home, ui) = interface(&[("91_lister.lua", lister)]);
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    render(&host, "lister");
+    assert!(
+        matches!(
+            host.drain_commands().as_slice(),
+            [thurbox::kernel::command::Command::Focus { plugin, .. }] if plugin == "true/0"
+        ),
+        "pairs over a sealed table still walks the library"
+    );
+}
