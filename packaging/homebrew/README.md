@@ -27,11 +27,11 @@ artifact:
 | -------- | ---------------- |
 | macOS arm64 (Apple Silicon) | `aarch64-apple-darwin` |
 | Linux x86_64 | `x86_64-unknown-linux-musl` (static) |
+| Linux aarch64 | `aarch64-unknown-linux-musl` (static) |
 
-Intel macOS (`x86_64-apple-darwin`) and aarch64 Linux have **no** release
-binary, so `brew install` reports "no available formula" there. Use
-[`scripts/install.sh`](../../scripts/install.sh) or build from source on those
-platforms.
+Intel macOS (`x86_64-apple-darwin`) has **no** release binary, so
+`brew install` reports "no available formula" there. Build from source on that
+platform.
 
 ## Runtime dependencies
 

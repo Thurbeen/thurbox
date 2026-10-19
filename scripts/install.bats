@@ -65,7 +65,7 @@
 }
 
 @test "script is under 250 lines" {
-  [ $(wc -l < "${BATS_TEST_DIRNAME}/install.sh") -lt 250 ]
+  [ "$(wc -l < "${BATS_TEST_DIRNAME}/install.sh")" -lt 250 ]
 }
 
 @test "script contains banner function" {
@@ -97,9 +97,17 @@
   grep -q "darwin-aarch64) echo \"aarch64-apple-darwin\"" "${BATS_TEST_DIRNAME}/install.sh"
 }
 
-@test "script does not map unshipped platforms (linux-aarch64, darwin-x86_64)" {
-  # cd.yml builds no .tar.gz for these, so get_target must NOT resolve them.
-  run grep -E "linux-aarch64\)|darwin-x86_64\)" "${BATS_TEST_DIRNAME}/install.sh"
+@test "get_target maps linux-aarch64 and linux-arm64 to musl" {
+  for platform in linux-aarch64 linux-arm64; do
+    run sh -c "TEST_TMPDIR=1 . '${BATS_TEST_DIRNAME}/install.sh'; get_target $platform"
+    [ "$status" -eq 0 ]
+    [ "$output" = "aarch64-unknown-linux-musl" ]
+  done
+}
+
+@test "get_target rejects unshipped platforms (darwin-x86_64)" {
+  # cd.yml builds no .tar.gz for it, so get_target must NOT resolve it.
+  run sh -c "TEST_TMPDIR=1 NO_COLOR=1 . '${BATS_TEST_DIRNAME}/install.sh'; get_target darwin-x86_64"
   [ "$status" -ne 0 ]
 }
 
