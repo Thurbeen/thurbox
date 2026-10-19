@@ -57,12 +57,6 @@ pub enum Command {
         session: String,
         text: String,
     },
-    /// Clear a Codex report superseded by an Enter delivered through the TUI.
-    RetireHook {
-        session: String,
-        state: String,
-        state_at: Option<i64>,
-    },
     /// Move a session up (-1) or down (+1) in the manual order.
     Reorder {
         session: String,
@@ -468,7 +462,6 @@ impl Command {
             Command::Restore { .. } => "restore",
             Command::Restart { .. } => "restart",
             Command::Send { .. } => "send",
-            Command::RetireHook { .. } => "retire-hook",
             Command::Reorder { .. } => "reorder",
             Command::Create { .. } => "create",
             Command::Fork { .. } => "fork",
@@ -505,7 +498,6 @@ impl Command {
             | Command::Restore { session, .. }
             | Command::Restart { session, .. }
             | Command::Send { session, .. }
-            | Command::RetireHook { session, .. }
             | Command::Reorder { session, .. }
             | Command::Fork { session, .. }
             | Command::Sync { session }
@@ -580,11 +572,10 @@ impl Command {
     /// The bus keeps no in-flight record of one, so it appears nowhere the
     /// interface reads: no published `thurbox.commands` row, no message-band
     /// caption, and nothing for the redraw loop to call activity. The reap
-    /// sweep recurs even while nobody acts, and a status reset follows input
-    /// that already made the frame dirty. A failure is reported through
+    /// sweep recurs even while nobody acts. A failure is reported through
     /// `tracing`.
     pub fn is_housekeeping(&self) -> bool {
-        matches!(self, Command::Reap | Command::RetireHook { .. })
+        matches!(self, Command::Reap)
     }
 
     /// The capability the issuing plugin must hold for this to be applied.

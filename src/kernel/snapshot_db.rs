@@ -33,13 +33,36 @@ pub(crate) enum Job {
 }
 
 /// A write the store has already applied to its rows in place.
+///
+/// Each carries what the store saw when it decided on it, and storage checks
+/// that again under the write lock: the queue can hold a write for as long as
+/// another process holds that lock, and what it was decided against may have
+/// moved by then. A write that no longer applies is dropped and answered
+/// [`Reply::Rejected`], which reads the rows again so the store decides anew.
 pub(crate) enum Write {
-    /// Stamp `seen_at` on a session whose state is an unseen `done`.
-    Seen(SessionId),
-    Shell(SessionId, Option<String>),
-    Pane(SessionId, String),
-    /// A remote agent's hook report; `String` is the row's id as published.
-    Hook(SessionId, String, String),
+    /// Mark the turn stamped this unseen `done` seen. A newer turn finishing
+    /// first stays unseen.
+    Seen(SessionId, i64),
+    /// Record a shell pane over the one the row showed.
+    Shell {
+        id: SessionId,
+        seen: Option<String>,
+        pane: Option<String>,
+    },
+    /// Record an adopted agent pane over the one the row showed.
+    Pane {
+        id: SessionId,
+        seen: String,
+        pane: String,
+    },
+    /// A remote agent's hook report: the row's id as published, the state, and
+    /// the stamp the store gave it in place until this answers with storage's.
+    /// Decided as a change of state, so it is re-decided against whatever
+    /// state storage holds by then.
+    Hook(SessionId, String, String, i64),
+    /// Clear the report an Enter superseded, unless a newer one replaced it.
+    /// Its stamp may still be the store's provisional one.
+    Retire(SessionId, HookRow),
     Perf(String),
 }
 
@@ -110,6 +133,7 @@ impl DbWorker {
             seen: None,
             writes: 0,
             out: outbox,
+            stamped: HashMap::new(),
         };
         // Ends when the store drops its sender.
         let spawned = std::thread::Builder::new()
@@ -163,6 +187,10 @@ struct Worker {
     seen: Option<(i64, (i64, i64))>,
     writes: u64,
     out: Sender<Reply>,
+    /// The stamp storage chose for the last hook report written per session,
+    /// keyed by the provisional one the store published: a write queued
+    /// before the store heard back names the report by the stamp it had.
+    stamped: HashMap<SessionId, (i64, i64)>,
 }
 
 impl Worker {
@@ -234,47 +262,45 @@ impl Worker {
         replies
     }
 
+    /// A stamp as storage holds it, for one the store may have published
+    /// before hearing back.
+    fn stored_stamp(&self, id: SessionId, stamp: i64) -> i64 {
+        match self.stamped.get(&id) {
+            Some(&(provisional, stored)) if provisional == stamp => stored,
+            _ => stamp,
+        }
+    }
+
     fn write(&mut self, write: Write) -> Option<Reply> {
+        let write = match write {
+            Write::Seen(id, at) => Write::Seen(id, self.stored_stamp(id, at)),
+            Write::Retire(id, mut report) => {
+                report.state_at = report.state_at.map(|at| self.stored_stamp(id, at));
+                Write::Retire(id, report)
+            }
+            other => other,
+        };
         let database = &self.database;
         let landed = match write {
-            // Nothing to stamp is not a rejection: the store corrects in place
-            // only a row it shows as an unseen `done`, which is what this
-            // checks again against storage.
-            Write::Seen(id) => match database.load_hook_state(id) {
-                Ok(Some(hook)) => match hook.state_at {
-                    Some(state_at)
-                        if hook.state.as_deref() == Some("done")
-                            && hook.seen_at.map_or(true, |seen| seen < state_at) =>
-                    {
-                        database.mark_session_seen(id, state_at).is_ok()
+            Write::Seen(id, at) => database.mark_turn_seen(id, at).unwrap_or(false),
+            Write::Shell { id, seen, pane } => {
+                match database.set_session_shell_from(id, seen.as_deref(), pane.as_deref()) {
+                    Ok(landed) => landed,
+                    Err(e) => {
+                        tracing::warn!("could not record the shell pane for {id}: {e}");
+                        false
                     }
-                    _ => return None,
-                },
-                Ok(None) => return None,
-                Err(_) => false,
-            },
-            Write::Shell(id, pane) => match database.set_session_shell(id, pane.as_deref()) {
-                Ok(true) => true,
-                Ok(false) => {
-                    tracing::warn!("could not record the shell pane for {id}: session not found");
-                    false
                 }
-                Err(e) => {
-                    tracing::warn!("could not record the shell pane for {id}: {e}");
-                    false
-                }
-            },
-            Write::Pane(id, pane) => {
-                let claimed = database.claim_backend_id(id, &pane, |target, other| {
+            }
+            Write::Pane { id, seen, pane } => {
+                let claimed = database.claim_backend_id_from(id, &seen, &pane, |target, other| {
                     crate::session_ops::server_key(target) == crate::session_ops::server_key(other)
                 });
                 match claimed {
-                    Ok(crate::storage::PaneClaim::Stored) => true,
-                    Ok(crate::storage::PaneClaim::RowGone) => {
-                        tracing::warn!("could not record adopted pane for {id}: session not found");
-                        false
-                    }
-                    Ok(crate::storage::PaneClaim::Occupied) => {
+                    Ok(Some(crate::storage::PaneClaim::Stored)) => true,
+                    // The row moved on, to a restart's pane or a new row.
+                    Ok(None | Some(crate::storage::PaneClaim::RowGone)) => false,
+                    Ok(Some(crate::storage::PaneClaim::Occupied)) => {
                         tracing::warn!(
                             "could not record adopted pane for {id}: pane {pane} is already \
                              claimed by another session"
@@ -287,16 +313,25 @@ impl Worker {
                     }
                 }
             }
-            // `Ok(false)` is a session that was parked after the store looked:
-            // refused, not failed, and the row must be read again either way.
-            Write::Hook(id, row, state) => {
-                if !matches!(database.set_hook_state(id, &state), Ok(true)) {
-                    return Some(Reply::Rejected);
+            // Nothing written is a session parked after the store looked, or
+            // one whose state another writer already set: refused, not failed,
+            // and the row must be read again either way.
+            Write::Hook(id, row, state, provisional) => {
+                let stored = match database.report_hook_state(id, &state) {
+                    Ok(Some(stored)) => stored,
+                    Ok(None) | Err(_) => return Some(Reply::Rejected),
+                };
+                self.stamped.insert(id, (provisional, stored));
+                return Some(Reply::Stamped(row, Some(stored)));
+            }
+            Write::Retire(id, report) => {
+                match database.clear_hook_state_if_unchanged(id, &report) {
+                    Ok(retired) => retired,
+                    Err(e) => {
+                        tracing::warn!("could not retire the hook report for {id}: {e}");
+                        false
+                    }
                 }
-                return Some(match database.load_hook_state(id) {
-                    Ok(Some(hook)) => Reply::Stamped(row, hook.state_at),
-                    Ok(None) | Err(_) => Reply::Rejected,
-                });
             }
             Write::Perf(json) => {
                 // Never worth a reread; the CLI simply reports the older

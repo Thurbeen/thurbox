@@ -310,7 +310,11 @@ lands, so a write lock another process holds stalls that thread's busy wait,
 never a frame. The loop's own writes — acknowledging a `done`, recording a
 pane, a remote hook report, the perf snapshot — queue on the same thread and are
 corrected in place at once; a read answered before the latest queued write is
-discarded and asked again, so it cannot undo a correction.
+discarded and asked again, so it cannot undo a correction. Each queued write
+carries what the loop saw when it decided on it — the turn's stamp, the pane the
+row held — and storage checks that again under the write lock, so a write held
+back by another process's lock is dropped, and the rows re-read, once what it
+was decided against has moved.
 Schema v49 adds trigger-maintained row and hook-liveness generations. A commit
 that only publishes perf telemetry moves neither. A same-state hook still
 refreshes the monotonic `hook_state_at` (liveness and the Codex submission race),

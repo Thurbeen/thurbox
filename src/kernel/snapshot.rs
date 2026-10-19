@@ -1344,6 +1344,9 @@ impl SnapshotStore {
             return;
         }
         let Some(id) = parse_id(session) else { return };
+        let Some(&at) = self.hook_state_at.get(session) else {
+            return;
+        };
         let Some(row) = self
             .current
             .sessions
@@ -1354,7 +1357,7 @@ impl SnapshotStore {
         };
         row.status = SessionState::Idle;
         self.mark_changed();
-        self.send_write(Write::Seen(id));
+        self.send_write(Write::Seen(id, at));
     }
 
     /// Capture the cached report before delivering Enter. The worker compares
@@ -1372,7 +1375,7 @@ impl SnapshotStore {
     }
 
     /// A delivered Enter may submit a prompt. Publish the coarse pane state
-    /// while a worker conditionally retires the older hook report.
+    /// while [`Self::retire_codex_report`] retires the older one in storage.
     pub fn note_codex_submission(&mut self, session: &str, previous: &HookRow) {
         if previous.state.is_none() {
             return;
@@ -1387,6 +1390,17 @@ impl SnapshotStore {
             row.status = SessionState::Running;
             self.hook_state_at.remove(session);
             self.mark_changed();
+        }
+    }
+
+    /// Clear the report a delivered Enter superseded, on the queue its own write
+    /// went through, so it runs after that write whichever lands first here.
+    pub fn retire_codex_report(&mut self, session: &str, previous: &HookRow) {
+        if previous.state.is_none() {
+            return;
+        }
+        if let Some(id) = parse_id(session) {
+            self.send_write(Write::Retire(id, previous.clone()));
         }
     }
 
@@ -1477,7 +1491,7 @@ impl SnapshotStore {
             row.status = derive_state(Some(&event.state), Some(stamped), None);
             row.hook_state = Some(event.state.clone());
             row.detected_agent = None;
-            writes.push(Write::Hook(id, row.id.clone(), event.state));
+            writes.push(Write::Hook(id, row.id.clone(), event.state, stamped));
             applied += 1;
         }
         for write in writes {
@@ -1550,8 +1564,8 @@ impl SnapshotStore {
 
     /// Record — or forget — the pane id of a session's companion shell.
     ///
-    /// Written straight through and corrected in place, like `acknowledge`: this
-    /// is our own connection, so `PRAGMA data_version` will not move and a
+    /// Queued and corrected in place, like `acknowledge`: the write is on
+    /// our own connection, so `PRAGMA data_version` will not move and a
     /// refresh would otherwise re-read the row we just wrote.
     pub fn remember_shell(&mut self, session: &str, pane: &str) -> Result<(), String> {
         self.write_shell(session, Some(pane.to_string()))
@@ -1568,21 +1582,25 @@ impl SnapshotStore {
         let Some(id) = parse_id(session) else {
             return Err(format!("not a session id: {session}"));
         };
+        let Some(row) = self.current.session(session) else {
+            return Err(format!("session not found: {session}"));
+        };
         // Nothing to write when the value stands: the in-place correction below
         // keeps the snapshot row current, so it can answer without a read.
-        if self
-            .current
-            .sessions
-            .iter()
-            .any(|row| row.id == session && row.shell_backend_id == pane)
-        {
+        if row.shell_backend_id == pane {
             return Ok(());
         }
+        let seen = row.shell_backend_id.clone();
         // A targeted single-column UPDATE: the full `upsert_session` rewrite it
         // replaced also re-wrote the worktree rows, costing a commit per
-        // statement to change one column. A write that does not land is the
-        // worker's to log, and it brings the rows round again.
-        self.send_write(Write::Shell(id, pane.clone()));
+        // statement to change one column. It lands only over the pane the row
+        // showed here; one that moved on meanwhile drops it, and the rows are
+        // read again.
+        self.send_write(Write::Shell {
+            id,
+            seen,
+            pane: pane.clone(),
+        });
         if let Some(current) = self
             .current
             .sessions
@@ -1609,17 +1627,21 @@ impl SnapshotStore {
         let Some(id) = parse_id(session) else {
             return Err(format!("not a session id: {session}"));
         };
-        if self
-            .current
-            .sessions
-            .iter()
-            .any(|row| row.id == session && row.backend_id.as_deref() == Some(pane))
-        {
+        let Some(row) = self.current.session(session) else {
+            return Err(format!("session not found: {session}"));
+        };
+        if row.backend_id.as_deref() == Some(pane) {
             return Ok(());
         }
-        // A claim refused — the row gone, or the pane another session's — is
-        // the worker's to log, and it brings the rows round again.
-        self.send_write(Write::Pane(id, pane.to_string()));
+        let seen = row.backend_id.clone().unwrap_or_default();
+        // Claimed only over the pane the row showed here. One refused — the
+        // row moved on or gone, or the pane another session's — brings the
+        // rows round again.
+        self.send_write(Write::Pane {
+            id,
+            seen,
+            pane: pane.to_string(),
+        });
         if let Some(current) = self
             .current
             .sessions
@@ -2755,13 +2777,18 @@ mod tests {
             ),
             1
         );
+        // Enter lands before the worker has answered with the stamp it
+        // stored, so the report carries the store's own provisional one.
+        let id = row.id.to_string();
+        let old = store.codex_submission_report(&id).expect("cached report");
+        store.note_codex_submission(&id, &old);
+        store.retire_codex_report(&id, &old);
         store.settle();
-        let old = store
-            .codex_submission_report(&row.id.to_string())
-            .expect("cached report");
-        assert!(driver
-            .clear_hook_state_if_unchanged(row.id, &old)
-            .expect("retire remote report"));
+        assert_eq!(
+            driver.load_hook_state(row.id).unwrap().unwrap().state,
+            None,
+            "the report Enter superseded survived its retirement"
+        );
     }
 
     /// The local path: an agent's own `thurbox-cli session signal` writes the
@@ -2850,6 +2877,17 @@ mod tests {
     /// A store over a file with one local session whose turn is an unseen
     /// `done`, and a second connection to the same file.
     fn store_with_a_finished_turn() -> (tempfile::NamedTempFile, Database, SnapshotStore, String) {
+        let (temp, driver, store, id) = store_with_one_session("local-tmux", "done");
+        assert_eq!(status_of(&store, &id), SessionState::Done);
+        (temp, driver, store, id)
+    }
+
+    /// A store over a file holding one session on `backend` at hook `state`,
+    /// and a second connection to the same file.
+    fn store_with_one_session(
+        backend: &str,
+        state: &str,
+    ) -> (tempfile::NamedTempFile, Database, SnapshotStore, String) {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         let database = Database::open(temp.path()).expect("db");
         let row = crate::sync::SharedSession {
@@ -2857,7 +2895,7 @@ mod tests {
             name: "finished".into(),
             agent: "claude".into(),
             backend_id: "%7".into(),
-            backend_type: "local-tmux".into(),
+            backend_type: backend.into(),
             agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
@@ -2870,12 +2908,112 @@ mod tests {
             key: None,
         };
         database.upsert_session(&row).expect("persist");
-        database.set_hook_state(row.id, "done").expect("done");
+        database.set_hook_state(row.id, state).expect("hook state");
         let driver = Database::open(temp.path()).expect("second connection");
         let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
-        let id = row.id.to_string();
-        assert_eq!(status_of(&store, &id), SessionState::Done);
-        (temp, driver, store, id)
+        (temp, driver, store, row.id.to_string())
+    }
+
+    /// Hold `driver`'s write lock while `queue` runs, behind a perf write that
+    /// waits on it, then commit `meanwhile` and let the queue through: the
+    /// writes `queue` sent run against what `meanwhile` committed.
+    fn race(
+        store: &mut SnapshotStore,
+        driver: &Database,
+        queue: impl FnOnce(&mut SnapshotStore),
+        meanwhile: &str,
+        id: &str,
+    ) {
+        driver.conn_ref().execute_batch("BEGIN IMMEDIATE").unwrap();
+        store.set_perf_snapshot("{}");
+        queue(store);
+        driver.conn_ref().execute(meanwhile, [id]).unwrap();
+        driver.conn_ref().execute_batch("COMMIT").unwrap();
+        store.settle();
+        store.settle();
+    }
+
+    /// The store decided to write this remote report because the row showed
+    /// another state. By the time it runs, another writer has stored the same
+    /// state and the user has acknowledged it, so writing it again would
+    /// re-stamp the turn and bring back a dot the user already retired.
+    #[test]
+    fn a_queued_hook_report_is_decided_again_against_what_storage_now_holds() {
+        let (_temp, driver, mut store, id) = store_with_one_session("ssh:fixture", "working");
+        race(
+            &mut store,
+            &driver,
+            |store| {
+                store.apply_hook_states(
+                    vec![("ssh:fixture:tmux".into(), "%7".into(), "done".into())],
+                    Instant::now(),
+                );
+            },
+            "UPDATE sessions SET hook_state = 'done', hook_state_at = 5, seen_at = 5 WHERE id = ?1",
+            &id,
+        );
+        let hook = driver
+            .load_hook_state(id.parse().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (hook.state.as_deref(), hook.state_at, hook.seen_at),
+            (Some("done"), Some(5), Some(5)),
+            "an acknowledged turn was re-stamped unseen"
+        );
+    }
+
+    #[test]
+    fn a_queued_shell_pane_is_dropped_when_the_row_moved_on() {
+        let (_temp, driver, mut store, id) = store_with_one_session("local-tmux", "idle");
+        race(
+            &mut store,
+            &driver,
+            |store| store.remember_shell(&id, "%9").unwrap(),
+            "UPDATE sessions SET shell_backend_id = '%5' WHERE id = ?1",
+            &id,
+        );
+        let stored = driver
+            .get_session_by_id(id.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .shell_backend_id;
+        assert_eq!(
+            stored.as_deref(),
+            Some("%5"),
+            "a stale shell pane overwrote a newer one"
+        );
+        assert_eq!(
+            store
+                .current()
+                .session(&id)
+                .unwrap()
+                .shell_backend_id
+                .as_deref(),
+            Some("%5"),
+            "the rows were not read again after the write was dropped"
+        );
+    }
+
+    #[test]
+    fn a_queued_agent_pane_is_dropped_when_the_row_moved_on() {
+        let (_temp, driver, mut store, id) = store_with_one_session("local-tmux", "idle");
+        race(
+            &mut store,
+            &driver,
+            |store| store.remember_pane(&id, "%8").unwrap(),
+            "UPDATE sessions SET backend_id = '%9' WHERE id = ?1",
+            &id,
+        );
+        let stored = driver
+            .get_session_by_id(id.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .backend_id;
+        assert_eq!(
+            stored, "%9",
+            "a stale adopted pane overwrote a restart's new one"
+        );
     }
 
     /// The read is queued first, so the worker answers it from the row as it
@@ -2898,6 +3036,33 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(hook.seen_at >= hook.state_at, "the acknowledgment landed");
+    }
+
+    /// A turn that finishes between leaving the session and the worker reaching
+    /// the queued acknowledgment is one nobody has seen. The perf write ahead
+    /// of it waits on the lock, which is what holds the acknowledgment back
+    /// until that turn has committed.
+    #[test]
+    fn an_acknowledgment_queued_behind_a_lock_leaves_a_newer_turn_unseen() {
+        let (_temp, driver, mut store, id) = store_with_a_finished_turn();
+        let session = id.parse().unwrap();
+        let first = driver.load_hook_state(session).unwrap().unwrap().state_at;
+
+        race(
+            &mut store,
+            &driver,
+            |store| store.acknowledge(&id),
+            "UPDATE sessions SET hook_state_at = hook_state_at + 1000 WHERE id = ?1",
+            &id,
+        );
+
+        let hook = driver.load_hook_state(session).unwrap().unwrap();
+        assert!(hook.state_at > first);
+        assert!(
+            hook.seen_at
+                .map_or(true, |seen| seen < hook.state_at.unwrap()),
+            "a turn that finished after the user left was marked seen"
+        );
     }
 
     #[test]

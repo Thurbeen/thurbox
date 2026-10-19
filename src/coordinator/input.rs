@@ -24,7 +24,6 @@ use crossterm::event::{
 use thurbox::agent::input::key_to_bytes;
 use thurbox::kernel::bands::Level;
 use thurbox::kernel::clipboard;
-use thurbox::kernel::command::Command;
 use thurbox::kernel::host::{KeyPress, KeyReleases};
 use thurbox::kernel::modals::ModalKind;
 use thurbox::kernel::registry::{canonical_chord, is_ctrl_letter_chord};
@@ -976,13 +975,7 @@ impl App {
         if delivered {
             if let Some(prior) = prior {
                 self.snapshots.note_codex_submission(surface, &prior);
-                if let Some(state) = prior.state {
-                    self.commands.dispatch(Command::RetireHook {
-                        session: surface.to_string(),
-                        state,
-                        state_at: prior.state_at,
-                    });
-                }
+                self.snapshots.retire_codex_report(surface, &prior);
             }
             self.last_keystroke = Some(Instant::now());
             if let Some(echo) = echo {
