@@ -446,11 +446,7 @@ impl App {
             self.snapshots.current().sessions.len(),
             &self.host.plugin_report(),
         );
-        if let Err(e) = self.snapshots.set_perf_snapshot(&json.to_string()) {
-            // Never worth failing a frame over; the CLI simply reports the
-            // older snapshot, or none.
-            tracing::warn!("could not publish the perf snapshot: {e}");
-        }
+        self.snapshots.set_perf_snapshot(&json.to_string());
     }
 
     /// Time a named synchronous operation, ringing it if it was slow enough to

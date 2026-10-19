@@ -276,16 +276,24 @@ impl App {
                 self.bookmark_in_flight = false;
                 self.repos.invalidate_bookmarks();
             }
+            // A failure is recorded now: the bus drops a failed command from
+            // its list after a linger, and one gone before the report below
+            // would read as a success.
+            self.record_command_failures();
             // Re-read BEFORE reporting: a `session.post_create` names the row
             // the command made, which only exists here once the rows are.
-            self.snapshots.refresh();
-            self.report_finished_commands();
-            // A finished creation is deliberately not acted on here: see
-            // `focus_on_session` for why a session that just spawned does not
-            // pull the view onto itself.
-            self.note_data_change();
-        } else {
-            self.snapshots.refresh_if_due();
+            self.report_after = Some(self.snapshots.request_refresh());
+        }
+        self.snapshots.refresh_if_due();
+        if let Some(ticket) = self.report_after {
+            if self.snapshots.fresh_since(ticket) {
+                self.report_after = None;
+                self.report_finished_commands();
+                // A finished creation is deliberately not acted on here: see
+                // `focus_on_session` for why a session that just spawned does
+                // not pull the view onto itself.
+                self.note_data_change();
+            }
         }
     }
 
@@ -296,9 +304,9 @@ impl App {
     /// even be visible. The message band is where a failure is *reported*, at
     /// error severity, and each is reported once — the linger would otherwise
     /// re-raise it on every poll.
-    pub(crate) fn report_finished_commands(&mut self) {
-        // Failures, once each. The linger that lets a pane draw a failed row
-        // would otherwise re-report it on every poll.
+    /// Report each failed command once. The linger that lets a pane draw a
+    /// failed row would otherwise re-report it on every poll.
+    pub(crate) fn record_command_failures(&mut self) {
         let failures: Vec<(u64, String)> = self
             .commands
             .inflight()
@@ -319,7 +327,10 @@ impl App {
                 self.note_command_failed(&tracked, &error);
             }
         }
+    }
 
+    pub(crate) fn report_finished_commands(&mut self) {
+        self.record_command_failures();
         // Anything that left the list without having failed is a command that
         // worked. Reported because most of them change something the screen does
         // not obviously show — a sync, a restart, a worktree — and silence after

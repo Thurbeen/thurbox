@@ -703,6 +703,44 @@ fn a_signal_restores_the_terminal_before_exiting() {
     assert_terminal_restored(&tui.raw_since(taken), "a signalled exit");
 }
 
+// --- the event loop never waits on the database ----------------------------
+
+/// Another process holding the database's write lock must not freeze the
+/// interface (issue #1474). Bumping the rows generation is what brings the
+/// snapshot round to a full rebuild, whose focus claim is a write — so before
+/// the snapshot's reads and writes moved to a worker, the loop sat in SQLite's
+/// busy wait for the whole 5 s timeout and the keystroke painted only after.
+#[test]
+fn a_held_database_write_lock_does_not_stop_the_interface_painting() {
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+
+    let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
+    db.execute(
+        "UPDATE snapshot_versions SET rows_version = rows_version + 1",
+        [],
+    )
+    .expect("bump the rows generation");
+    db.execute_batch("BEGIN IMMEDIATE")
+        .expect("take the write lock");
+    // Past one refresh interval, so the rebuild the bump asked for has started.
+    std::thread::sleep(Duration::from_secs(1));
+
+    tui.send(F1);
+    tui.wait_within(
+        Duration::from_secs(2),
+        "the help overlay to paint while another process holds the write lock",
+        |frame| frame.contains("Keybindings"),
+    );
+
+    db.execute_batch("ROLLBACK")
+        .expect("release the write lock");
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+    assert!(tui.quit().success());
+}
+
 // --- diagnostic logs over OTLP ---------------------------------------------
 
 /// `export_diagnostic_logs` bridges the interface's own `tracing` events to the
@@ -3917,6 +3955,76 @@ fn a_session_shows_its_terminal_and_takes_keystrokes() {
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// A failed command is reported even while the read its report waits for is
+/// held up. The bus drops a failure from its list after a linger, and two busy
+/// waits on a lock another process holds outlast it: a failure collected only
+/// with that read read as a success, or as nothing (#1474).
+#[test]
+fn a_command_failing_under_a_held_write_lock_is_still_reported_as_failed() {
+    let Some((profile, tui)) = shell_session_prepared(
+        |profile| {
+            std::fs::write(
+                profile.path("config/hooks.toml"),
+                r#"[[hooks]]
+event = 'session.pre_restart'
+command = 'touch "$THURBOX_DATA_DIR/restart-entered"; while test ! -f "$THURBOX_DATA_DIR/restart-release"; do sleep 0.05; done; echo refused-restart >&2; exit 1'
+"#,
+            )
+            .expect("seed refusing restart hook");
+        },
+        |_| {},
+    ) else {
+        return;
+    };
+    let original = thurbox::storage::Database::open(&profile.path("data/thurbox.db"))
+        .unwrap()
+        .get_session_by_name("probe")
+        .unwrap()
+        .unwrap();
+    let mut kill = Command::new("tmux");
+    profile.apply(&mut kill);
+    assert!(kill
+        .args([
+            "-L",
+            profile.server.socket(),
+            "kill-pane",
+            "-t",
+            &original.backend_id
+        ])
+        .status()
+        .unwrap()
+        .success());
+    tui.wait_until("restart worker to enter the hook", |_| {
+        profile.path("data/restart-entered").exists()
+    });
+
+    let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
+    db.execute(
+        "UPDATE snapshot_versions SET rows_version = rows_version + 1",
+        [],
+    )
+    .expect("bump the rows generation");
+    db.execute_batch("BEGIN IMMEDIATE")
+        .expect("take the write lock");
+    // Past one refresh interval, so a read is already waiting on the lock when
+    // the command fails and the report's own read queues behind it.
+    std::thread::sleep(Duration::from_secs(1));
+    std::fs::write(profile.path("data/restart-release"), "").unwrap();
+
+    let reported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tui.wait_within(
+            Duration::from_secs(12),
+            "the failed restart to be reported while the lock is held",
+            |frame| frame.contains("could not restart probe"),
+        )
+    }));
+    db.execute_batch("ROLLBACK")
+        .expect("release the write lock");
+    if let Err(panic) = reported {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[test]

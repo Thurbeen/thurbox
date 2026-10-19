@@ -213,19 +213,6 @@ pub(super) fn execute(
             crate::session_ops::send_text_with_status(&db, backends, &session, text, true)
                 .map_err(|e| format!("send: {e:#}"))
         }
-        Command::RetireHook {
-            state, state_at, ..
-        } => db
-            .clear_hook_state_if_unchanged(
-                id,
-                &crate::storage::HookRow {
-                    state: Some(state.clone()),
-                    state_at: *state_at,
-                    seen_at: None,
-                },
-            )
-            .map(|_| ())
-            .map_err(|e| format!("retire hook: {e}")),
         Command::Reorder { delta, .. } => reorder(&db, id, *delta),
         // Handled above, before the session id is parsed.
         Command::Order { .. } => Ok(()),

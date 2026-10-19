@@ -1248,6 +1248,25 @@ impl Database {
     /// a session that has no process to be in it, and every watcher of that row
     /// would see a transition that did not happen.
     pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<bool> {
+        Ok(self.write_hook_state(id, state, false)?.is_some())
+    }
+
+    /// [`Self::set_hook_state`] for a report that is news only as a *change*:
+    /// a state the row already holds is left alone, stamp and all, which is
+    /// what keeps a re-delivered `done` the user acknowledged from becoming
+    /// unseen again. Decided under the write lock, so a writer that got there
+    /// first is what it is decided against. Returns the stamp written, or
+    /// `None` when nothing was.
+    pub fn report_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<Option<i64>> {
+        self.write_hook_state(id, state, true)
+    }
+
+    fn write_hook_state(
+        &self,
+        id: SessionId,
+        state: &str,
+        only_a_change: bool,
+    ) -> rusqlite::Result<Option<i64>> {
         let tx = self.write_transaction()?;
         let id_str = id.to_string();
 
@@ -1261,8 +1280,11 @@ impl Database {
             )
             .optional()?;
         let Some((previous, previous_at)) = before else {
-            return Ok(false);
+            return Ok(None);
         };
+        if only_a_change && previous.as_deref() == Some(state) {
+            return Ok(None);
+        }
         // Two signals can land in one millisecond. Keep the stamp distinct so
         // a submitted-input reset can never mistake the newer one for the old.
         let now = (current_time_millis() as i64).max(previous_at.unwrap_or(0) + 1);
@@ -1287,7 +1309,7 @@ impl Database {
         }
 
         tx.commit()?;
-        Ok(true)
+        Ok(Some(now))
     }
 
     /// Record the base branch a session's worktree was forked from. A targeted
@@ -1388,8 +1410,39 @@ impl Database {
         &self,
         id: SessionId,
         pane: &str,
-        mut same_server: F,
+        same_server: F,
     ) -> rusqlite::Result<PaneClaim>
+    where
+        F: FnMut(&str, &str) -> bool,
+    {
+        Ok(self
+            .claim_pane(id, None, pane, same_server)?
+            .unwrap_or(PaneClaim::RowGone))
+    }
+
+    /// [`Self::claim_backend_id`] for a caller that decided on the row holding
+    /// `expected`: `None` when it holds something else by the time the write
+    /// lock is taken, and nothing is written.
+    pub fn claim_backend_id_from<F>(
+        &self,
+        id: SessionId,
+        expected: &str,
+        pane: &str,
+        same_server: F,
+    ) -> rusqlite::Result<Option<PaneClaim>>
+    where
+        F: FnMut(&str, &str) -> bool,
+    {
+        self.claim_pane(id, Some(expected), pane, same_server)
+    }
+
+    fn claim_pane<F>(
+        &self,
+        id: SessionId,
+        expected: Option<&str>,
+        pane: &str,
+        mut same_server: F,
+    ) -> rusqlite::Result<Option<PaneClaim>>
     where
         F: FnMut(&str, &str) -> bool,
     {
@@ -1405,8 +1458,11 @@ impl Database {
             )
             .optional()?;
         let Some((before, target_backend)) = row else {
-            return Ok(PaneClaim::RowGone);
+            return Ok(Some(PaneClaim::RowGone));
         };
+        if expected.is_some_and(|expected| expected != before) {
+            return Ok(None);
+        }
         if !pane.is_empty() {
             let mut stmt = tx.prepare_cached(
                 "SELECT backend_type FROM sessions \
@@ -1416,7 +1472,7 @@ impl Database {
             let backends = stmt.query_map(params![id_str, pane], |row| row.get::<_, String>(0))?;
             for backend in backends {
                 if same_server(&target_backend, &backend?) {
-                    return Ok(PaneClaim::Occupied);
+                    return Ok(Some(PaneClaim::Occupied));
                 }
             }
         }
@@ -1442,10 +1498,10 @@ impl Database {
             )?;
         }
         tx.commit()?;
-        Ok(match updated {
+        Ok(Some(match updated {
             0 => PaneClaim::RowGone,
             _ => PaneClaim::Stored,
-        })
+        }))
     }
 
     /// Renumber the manual order: read the rows and write their new positions
@@ -1536,6 +1592,35 @@ impl Database {
              WHERE id = ?2 AND deleted_at IS NULL",
         )?;
         let updated = stmt.execute(params![pane, id.to_string()])?;
+        Ok(updated > 0)
+    }
+
+    /// [`Self::set_session_shell`] for a caller that decided on the row holding
+    /// `expected`: false, and nothing written, when it holds anything else.
+    pub fn set_session_shell_from(
+        &self,
+        id: SessionId,
+        expected: Option<&str>,
+        pane: Option<&str>,
+    ) -> rusqlite::Result<bool> {
+        let mut stmt = self.conn.prepare_cached(
+            "UPDATE sessions SET shell_backend_id = ?1 \
+             WHERE id = ?2 AND shell_backend_id IS ?3 AND deleted_at IS NULL",
+        )?;
+        let updated = stmt.execute(params![pane, id.to_string(), expected])?;
+        Ok(updated > 0)
+    }
+
+    /// Mark the turn stamped `state_at` seen, if it is still the session's
+    /// unseen `done`: false, and nothing written, once a newer turn replaced it
+    /// or it was already seen.
+    pub fn mark_turn_seen(&self, id: SessionId, state_at: i64) -> rusqlite::Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE sessions SET seen_at = ?1 \
+             WHERE id = ?2 AND hook_state = 'done' AND hook_state_at = ?1 \
+             AND (seen_at IS NULL OR seen_at < ?1) AND deleted_at IS NULL",
+            params![state_at, id.to_string()],
+        )?;
         Ok(updated > 0)
     }
 

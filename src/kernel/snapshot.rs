@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use super::snapshot_db::{DbWorker, Job, Reply, RowsRead, Write};
 use crate::session::{
     derive_state, with_output_quiescence, AgentRegistry, Assessment, Corroboration, SessionId,
     SessionState,
@@ -741,10 +742,26 @@ impl PaneProbe {
 
 /// Owns the snapshot and decides when to rebuild it.
 ///
-/// Refresh happens on the kernel's schedule, never inside a plugin call — so a
-/// slow database read shows up as one late frame, never as a plugin that hangs.
+/// Refresh happens on the kernel's schedule, never inside a plugin call, and
+/// the database itself is only ever touched by the `snapshot_db` worker's thread — so a
+/// slow read or a lock another process holds shows up as stale rows, never as
+/// a loop that stops painting (issue #1474).
 pub struct SnapshotStore {
-    database: Option<Database>,
+    db: Option<DbWorker>,
+    /// Whether a read has been sent and not answered. At most one is: an
+    /// answer is applied whole, and two in flight would only race.
+    reading: bool,
+    /// A full read is owed: something moved that the `data_version` gate
+    /// cannot see, or an answer was discarded as stale.
+    reread: bool,
+    /// How many writes have been sent. A read answered with fewer predates a
+    /// correction made in place, and applying it would undo that correction.
+    writes: u64,
+    /// Full reads sent, and the number of the last one applied — what
+    /// [`Self::request_refresh`] hands out and [`Self::fresh_since`] checks.
+    reads_sent: u64,
+    reads_applied: u64,
+    settles: u64,
     git: GitStats,
     /// What holds each unreported session's pane — see [`PaneProbe`].
     panes: PaneProbe,
@@ -773,10 +790,6 @@ pub struct SnapshotStore {
     preflight_at: Instant,
     current: Snapshot,
     last_refresh: Option<Instant>,
-    /// `PRAGMA data_version` as of the last successful rebuild. `None` means
-    /// "never read", which forces one.
-    last_data_version: Option<i64>,
-    last_snapshot_versions: Option<(i64, i64)>,
     /// Remote hook events that named a pane no session claims yet.
     ///
     /// The subscription's first report routinely arrives before the pane has
@@ -790,7 +803,7 @@ pub struct SnapshotStore {
     /// because a mutation that forgets to bump is the one failure here that is
     /// silent — see `tests/kernel_frame_cost.rs`.
     version: u64,
-    /// A focus request another process left, claimed during [`Self::refresh`]
+    /// A focus request another process left, claimed during a full read
     /// and handed out by [`Self::take_focus_request`].
     pending_focus: Option<String>,
     /// When each row's `hook_state` was stamped, by session id.
@@ -832,7 +845,13 @@ impl SnapshotStore {
         crate::agent::agent_config::publish_registry(&registry);
         let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
         let mut store = Self {
-            database,
+            db: database.map(DbWorker::spawn),
+            reading: false,
+            reread: false,
+            writes: 0,
+            reads_sent: 0,
+            reads_applied: 0,
+            settles: 0,
             git: GitStats::new(git_poll_interval()),
             panes: PaneProbe::default(),
             agents: read_agents(&registry),
@@ -851,8 +870,6 @@ impl SnapshotStore {
                 ..Snapshot::default()
             },
             last_refresh: None,
-            last_data_version: None,
-            last_snapshot_versions: None,
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
@@ -869,7 +886,13 @@ impl SnapshotStore {
         crate::agent::agent_config::publish_registry(&registry);
         let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
         let mut store = Self {
-            database: Some(database),
+            db: Some(DbWorker::spawn(database)),
+            reading: false,
+            reread: false,
+            writes: 0,
+            reads_sent: 0,
+            reads_applied: 0,
+            settles: 0,
             git: GitStats::new(git_poll_interval()),
             panes: PaneProbe::default(),
             agents: read_agents(&registry),
@@ -885,8 +908,6 @@ impl SnapshotStore {
             preflight_at: Instant::now(),
             current: Snapshot::default(),
             last_refresh: None,
-            last_data_version: None,
-            last_snapshot_versions: None,
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
@@ -944,7 +965,13 @@ impl SnapshotStore {
             self.agents = read_agents(&registry);
             self.registry = std::sync::Arc::new(registry);
             crate::agent::agent_config::publish_registry(&self.registry);
-            self.refresh();
+            // The picker's rows come from the registry, not the database, so
+            // they publish now; each session's coverage is judged against it
+            // too, which is what the read is for.
+            self.current.agents = self.agents.clone();
+            self.current.agent_default = self.agent_default.clone();
+            self.mark_changed();
+            self.request_refresh();
         } else if first_poll && warnings.is_empty() {
             return None;
         }
@@ -952,22 +979,22 @@ impl SnapshotStore {
     }
 
     /// Publish telemetry through our connection, without invalidating our rows.
-    pub fn set_perf_snapshot(&self, json: &str) -> rusqlite::Result<()> {
-        match &self.database {
-            Some(database) => database.set_perf_snapshot(json),
-            None => Ok(()),
-        }
+    /// Queued, never waited for: a failure is logged by the worker.
+    pub fn set_perf_snapshot(&mut self, json: &str) {
+        self.send_write(Write::Perf(json.to_string()));
     }
 
     /// Rebuild if the refresh interval has elapsed *and* anything committed.
-    /// Called from the event loop, never from a plugin.
+    /// Called from the event loop, never from a plugin. Returns whether rows
+    /// read from the database were applied by this call.
     ///
     /// The interval alone would re-read five tables (plus the automation run
     /// history) every 400ms forever, on a database nobody wrote to.
     /// `PRAGMA data_version` reads an in-memory counter and moves whenever
     /// another connection commits. The snapshot generations then distinguish
     /// row changes from hook liveness and perf telemetry, so only row changes
-    /// need the full rebuild (ADR-P6).
+    /// need the full rebuild (ADR-P6). The worker applies that gate; this
+    /// applies whatever it answered, on every call, and asks again when due.
     ///
     /// Git stats are folded in either way: they arrive from worker threads, not
     /// from the database, so `data_version` says nothing about them.
@@ -978,108 +1005,223 @@ impl SnapshotStore {
     /// Poll using the caller's monotonic clock. The row read and other workers
     /// retain their own timestamps; this instant controls only the poll cadence.
     pub fn refresh_if_due_at(&mut self, now: Instant) -> bool {
+        let applied = self.drain_replies();
         // `Option::is_none_or` would read better but is stable only from 1.82;
         // this crate's MSRV is 1.75.
         let due = self.last_refresh.map_or(true, |at| {
             now.saturating_duration_since(at) >= REFRESH_INTERVAL
         });
         if !due {
-            return false;
+            return applied;
         }
+        self.last_refresh = Some(now);
         // Asked either way, like the git stats below and for the same reason:
         // the answers come from worker threads, so `data_version` says nothing
         // about them — and without asking on this path a verdict would be
         // requested once and never refreshed.
-        let panes_moved = self.poll_pane_probes();
-        // Asked here rather than in `refresh`, which stops running altogether
-        // on a database nobody writes to — which is exactly the state thurbox
-        // is in while the user is off installing what was missing.
-        let preflight_moved = self.poll_preflight() | self.poll_hosts();
-        if !panes_moved && self.rows_are_current() {
-            self.last_refresh = Some(now);
-            let stamp = taken_at_stamp();
-            self.current.taken_at_ms = stamp;
-            // Git stats landing rewrite rows here, so this branch changes more
-            // than the timestamp — the unconditional bump it replaced covered both,
-            // and dropping it without asking would have published a session's
-            // new counts only on the next unrelated refresh.
-            let git_moved = self.attach_git_stats();
-            if git_moved || preflight_moved {
-                self.mark_changed();
-            }
-            return false;
+        if self.poll_pane_probes() {
+            self.reread = true;
         }
-        self.refresh();
-        self.last_refresh = Some(now);
-        true
+        // Asked here rather than with the rows, which stop being read
+        // altogether on a database nobody writes to — which is exactly the
+        // state thurbox is in while the user is off installing what was
+        // missing.
+        let preflight_moved = self.poll_preflight() | self.poll_hosts();
+        self.send_read();
+        self.current.taken_at_ms = taken_at_stamp();
+        // Git stats landing rewrite rows here, so this changes more than the
+        // timestamp, and the snapshot moved if they did.
+        let git_moved = self.attach_git_stats();
+        if git_moved || preflight_moved {
+            self.mark_changed();
+        }
+        applied
     }
 
-    /// Whether the stored rows still reflect the database.
-    ///
-    /// External commits are checked against snapshot generations. Telemetry
-    /// needs no row reads; liveness needs only hook stamps. Read failures keep
-    /// the previous gate so the next poll retries.
-    fn rows_are_current(&mut self) -> bool {
-        let Some(database) = &self.database else {
-            return true;
-        };
-        let Some(seen) = self.last_data_version else {
-            return false;
-        };
-        let Ok(current) = database.data_version() else {
-            return false;
-        };
-        if current == seen {
-            return true;
+    /// Ask for every row now, without waiting for the interval or a commit.
+    /// Returns a ticket [`Self::fresh_since`] accepts once rows read after
+    /// this call are the ones published.
+    pub fn request_refresh(&mut self) -> u64 {
+        self.reread = true;
+        self.send_read();
+        // The read that settles this is the next full one sent — this call's
+        // own, or, with one already in flight, the one sent when it lands.
+        if self.reread {
+            self.reads_sent + 1
+        } else {
+            self.reads_sent
         }
-        let Ok(versions) = database.snapshot_versions() else {
-            return false;
+    }
+
+    /// Whether the rows published now were read after `ticket` was handed out.
+    /// Always true without a database: there is nothing further to wait for.
+    pub fn fresh_since(&self, ticket: u64) -> bool {
+        self.db.is_none() || self.reads_applied >= ticket
+    }
+
+    /// Send a read unless one is in flight; full when one is owed.
+    fn send_read(&mut self) {
+        let Some(db) = &self.db else {
+            return;
         };
-        let Some(previous) = self.last_snapshot_versions else {
-            return false;
-        };
-        if versions.0 != previous.0 {
-            return false;
+        if self.reading {
+            return;
         }
-        if versions.1 != previous.1 {
-            let Ok(hooks) = database.load_hook_states() else {
-                return false;
-            };
-            // A real transition can commit between reading the generations and
-            // the stamps. Rebuild rather than patching a different raw state.
-            if self.current.sessions.iter().any(|row| {
-                parse_id(&row.id)
-                    .and_then(|id| hooks.get(&id))
-                    .map_or(true, |hook| hook.state != row.hook_state)
-            }) {
-                return false;
+        let force = std::mem::take(&mut self.reread);
+        if force {
+            self.reads_sent += 1;
+        }
+        self.reading = true;
+        db.send(Job::Read { force });
+    }
+
+    fn send_write(&mut self, write: Write) {
+        if let Some(db) = &self.db {
+            // Counted the way the worker counts: telemetry corrects no row, so
+            // it must not make a read in flight look stale.
+            if write.touches_rows() {
+                self.writes += 1;
             }
-            let mut changed = false;
-            for row in &mut self.current.sessions {
-                let Some(hook) = parse_id(&row.id).and_then(|id| hooks.get(&id)) else {
-                    continue;
-                };
-                if let Some(stamp) = hook.state_at {
-                    self.hook_state_at.insert(row.id.clone(), stamp);
-                } else {
-                    self.hook_state_at.remove(&row.id);
-                }
-                // Working/blocked are folded against output each tick. Only
-                // done can change its visible state from a new stamp alone.
-                if !row.stopped && row.hook_state.as_deref() == Some("done") {
-                    let status = derive_state(Some("done"), hook.state_at, hook.seen_at);
-                    if row.status != status {
-                        row.status = status;
-                        changed = true;
-                    }
-                }
+            db.send(Job::Write(write));
+        }
+    }
+
+    /// Apply every answer the worker has sent, returning whether rows were.
+    fn drain_replies(&mut self) -> bool {
+        let mut applied = false;
+        while let Some(reply) = self.db.as_ref().and_then(|db| db.replies.try_recv().ok()) {
+            applied |= self.apply_reply(reply);
+        }
+        applied
+    }
+
+    /// Wait until the worker has answered everything sent so far, and apply
+    /// it, returning whether rows were. Never on the event loop: for start-up,
+    /// and for a test that has to see a write or a read land.
+    pub fn settle(&mut self) -> bool {
+        self.wait().unwrap_or(false)
+    }
+
+    /// [`Self::settle`], answering `None` when there is no worker to wait for.
+    fn wait(&mut self) -> Option<bool> {
+        let db = self.db.as_ref()?;
+        self.settles += 1;
+        let token = self.settles;
+        db.send(Job::Settle(token));
+        let mut applied = false;
+        loop {
+            let reply = self.db.as_ref()?.replies.recv().ok()?;
+            if matches!(reply, Reply::Settled(t) if t == token) {
+                return Some(applied);
             }
-            if changed {
+            applied |= self.apply_reply(reply);
+        }
+    }
+
+    /// Returns whether the reply was rows that were applied.
+    fn apply_reply(&mut self, reply: Reply) -> bool {
+        match reply {
+            Reply::Rows { writes, read } => {
+                self.reading = false;
+                let number = self.reads_sent;
+                if writes != self.writes {
+                    self.reread = true;
+                    self.send_read();
+                    return false;
+                }
+                self.apply_rows(*read);
+                self.reads_applied = number;
+                self.send_owed_read();
+                true
+            }
+            Reply::Hooks { writes, hooks } => {
+                self.reading = false;
+                if writes != self.writes || !self.patch_hooks(&hooks) {
+                    self.reread = true;
+                }
+                self.send_owed_read();
+                false
+            }
+            Reply::Unchanged => {
+                self.reading = false;
+                self.send_owed_read();
+                false
+            }
+            Reply::Failed(error) => {
+                self.reading = false;
+                // The previous rows stand: a transient lock degrades to stale
+                // data rather than a blank list.
+                self.current.error = Some(error);
+                self.current.taken_at_ms = taken_at_stamp();
+                self.reads_applied = self.reads_sent;
                 self.mark_changed();
+                self.send_owed_read();
+                false
+            }
+            Reply::Focus(id) => {
+                self.pending_focus = Some(id);
+                false
+            }
+            Reply::Stamped(session, stamp) => {
+                match stamp {
+                    Some(stamp) => self.hook_state_at.insert(session, stamp),
+                    None => self.hook_state_at.remove(&session),
+                };
+                false
+            }
+            Reply::Rejected => {
+                self.reread = true;
+                self.send_read();
+                false
+            }
+            Reply::Settled(_) => false,
+        }
+    }
+
+    /// A full read owed while one was in flight goes out as that one lands.
+    fn send_owed_read(&mut self) {
+        if self.reread {
+            self.send_read();
+        }
+    }
+
+    /// Patch hook stamps into the rows, returning false when the rows need a
+    /// full read instead.
+    ///
+    /// A real transition can commit between reading the generations and the
+    /// stamps, so a row whose hook state differs is rebuilt rather than patched
+    /// with a different raw state.
+    fn patch_hooks(&mut self, hooks: &std::collections::HashMap<SessionId, HookRow>) -> bool {
+        if self.current.sessions.iter().any(|row| {
+            parse_id(&row.id)
+                .and_then(|id| hooks.get(&id))
+                .map_or(true, |hook| hook.state != row.hook_state)
+        }) {
+            return false;
+        }
+        let mut changed = false;
+        for row in &mut self.current.sessions {
+            let Some(hook) = parse_id(&row.id).and_then(|id| hooks.get(&id)) else {
+                continue;
+            };
+            if let Some(stamp) = hook.state_at {
+                self.hook_state_at.insert(row.id.clone(), stamp);
+            } else {
+                self.hook_state_at.remove(&row.id);
+            }
+            // Working/blocked are folded against output each tick. Only
+            // done can change its visible state from a new stamp alone.
+            if !row.stopped && row.hook_state.as_deref() == Some("done") {
+                let status = derive_state(Some("done"), hook.state_at, hook.seen_at);
+                if row.status != status {
+                    row.status = status;
+                    changed = true;
+                }
             }
         }
-        self.last_data_version = Some(current);
-        self.last_snapshot_versions = Some(versions);
+        if changed {
+            self.mark_changed();
+        }
         true
     }
 
@@ -1191,38 +1333,31 @@ impl SnapshotStore {
     /// `done`. Without it the blue dot is permanent, since [`derive_state`]
     /// reads a mark nobody writes.
     ///
-    /// The derived status is corrected in place as well: this write does not move
-    /// `PRAGMA data_version` (it is our own connection), so a refresh would
-    /// otherwise re-derive `done` from the row it just acknowledged.
+    /// Asked only of a row these rows show as an unseen `done`, so moving the
+    /// selection through any other session queues nothing; the worker checks
+    /// the stored row again before stamping. The derived status is corrected in
+    /// place as well: this write does not move `PRAGMA data_version` (it is our
+    /// own connection), so a refresh would otherwise re-derive `done` from the
+    /// row it just acknowledged.
     pub fn acknowledge(&mut self, session: &str) {
-        let Some(database) = &self.database else {
+        if self.db.is_none() {
             return;
-        };
+        }
         let Some(id) = parse_id(session) else { return };
-        let Ok(Some(hook)) = database.load_hook_state(id) else {
+        let Some(&at) = self.hook_state_at.get(session) else {
             return;
         };
-        if hook.state.as_deref() != Some("done") {
-            return;
-        }
-        let Some(state_at) = hook.state_at else {
-            return;
-        };
-        if hook.seen_at.is_some_and(|seen| seen >= state_at) {
-            return;
-        }
-        if database.mark_session_seen(id, state_at).is_err() {
-            return;
-        }
-        if let Some(row) = self
+        let Some(row) = self
             .current
             .sessions
             .iter_mut()
-            .find(|row| row.id == session)
-        {
-            row.status = SessionState::Idle;
-            self.mark_changed();
-        }
+            .find(|row| row.id == session && row.status == SessionState::Done)
+        else {
+            return;
+        };
+        row.status = SessionState::Idle;
+        self.mark_changed();
+        self.send_write(Write::Seen(id, at));
     }
 
     /// Capture the cached report before delivering Enter. The worker compares
@@ -1240,7 +1375,7 @@ impl SnapshotStore {
     }
 
     /// A delivered Enter may submit a prompt. Publish the coarse pane state
-    /// while a worker conditionally retires the older hook report.
+    /// while [`Self::retire_codex_report`] retires the older one in storage.
     pub fn note_codex_submission(&mut self, session: &str, previous: &HookRow) {
         if previous.state.is_none() {
             return;
@@ -1255,6 +1390,17 @@ impl SnapshotStore {
             row.status = SessionState::Running;
             self.hook_state_at.remove(session);
             self.mark_changed();
+        }
+    }
+
+    /// Clear the report a delivered Enter superseded, on the queue its own write
+    /// went through, so it runs after that write whichever lands first here.
+    pub fn retire_codex_report(&mut self, session: &str, previous: &HookRow) {
+        if previous.state.is_none() {
+            return;
+        }
+        if let Some(id) = parse_id(session) {
+            self.send_write(Write::Retire(id, previous.clone()));
         }
     }
 
@@ -1280,10 +1426,11 @@ impl SnapshotStore {
         /// Bounded so another instance's panes cannot accumulate here.
         const PENDING_CAP: usize = 256;
 
-        let Some(database) = &self.database else {
+        if self.db.is_none() {
             return 0;
-        };
+        }
         let mut queue = std::mem::take(&mut self.pending_hooks);
+        let mut writes = Vec::new();
         queue.extend(
             events
                 .into_iter()
@@ -1324,37 +1471,31 @@ impl SnapshotStore {
             if row.hook_state.as_deref() == Some(event.state.as_str()) {
                 continue;
             }
+            // A parked session refuses a state it has no process to be in, so
+            // its row is not corrected as though the write had happened.
+            if row.stopped {
+                continue;
+            }
             let Some(id) = parse_id(&row.id) else {
                 continue;
             };
-            // `Ok(false)` is a parked session refusing a state it has no
-            // process to be in — not a write that failed, and not one that
-            // happened, so the row must not be corrected as though it were.
-            if !matches!(database.set_hook_state(id, &event.state), Ok(true)) {
-                continue;
-            }
             // Corrected in place for the same reason `acknowledge` does it: this
             // is our own connection, so `PRAGMA data_version` will not move and a
             // refresh would re-derive from the row we just wrote. `detected_agent`
             // is cleared here rather than left to that (absent) refresh, because
             // this path never reaches `assess` at all — it writes the row
             // directly, which is the one case its hook.state gate cannot cover.
-            let stamped = match database.load_hook_state(id) {
-                Ok(Some(hook)) => hook.state_at,
-                Ok(None) | Err(_) => {
-                    self.last_data_version = None;
-                    continue;
-                }
-            };
-            if let Some(stamped) = stamped {
-                self.hook_state_at.insert(row.id.clone(), stamped);
-            } else {
-                self.hook_state_at.remove(&row.id);
-            }
-            row.status = derive_state(Some(&event.state), stamped, None);
-            row.hook_state = Some(event.state);
+            // Stamped now; the worker answers with the stamp storage chose.
+            let stamped = crate::sync::current_time_millis() as i64;
+            self.hook_state_at.insert(row.id.clone(), stamped);
+            row.status = derive_state(Some(&event.state), Some(stamped), None);
+            row.hook_state = Some(event.state.clone());
             row.detected_agent = None;
+            writes.push(Write::Hook(id, row.id.clone(), event.state, stamped));
             applied += 1;
+        }
+        for write in writes {
+            self.send_write(write);
         }
         if applied > 0 {
             self.mark_changed();
@@ -1423,8 +1564,8 @@ impl SnapshotStore {
 
     /// Record — or forget — the pane id of a session's companion shell.
     ///
-    /// Written straight through and corrected in place, like `acknowledge`: this
-    /// is our own connection, so `PRAGMA data_version` will not move and a
+    /// Queued and corrected in place, like `acknowledge`: the write is on
+    /// our own connection, so `PRAGMA data_version` will not move and a
     /// refresh would otherwise re-read the row we just wrote.
     pub fn remember_shell(&mut self, session: &str, pane: &str) -> Result<(), String> {
         self.write_shell(session, Some(pane.to_string()))
@@ -1435,31 +1576,31 @@ impl SnapshotStore {
     }
 
     fn write_shell(&mut self, session: &str, pane: Option<String>) -> Result<(), String> {
-        let Some(database) = &self.database else {
+        if self.db.is_none() {
             return Err("no database".to_string());
-        };
+        }
         let Some(id) = parse_id(session) else {
             return Err(format!("not a session id: {session}"));
         };
+        let Some(row) = self.current.session(session) else {
+            return Err(format!("session not found: {session}"));
+        };
         // Nothing to write when the value stands: the in-place correction below
         // keeps the snapshot row current, so it can answer without a read.
-        if self
-            .current
-            .sessions
-            .iter()
-            .any(|row| row.id == session && row.shell_backend_id == pane)
-        {
+        if row.shell_backend_id == pane {
             return Ok(());
         }
+        let seen = row.shell_backend_id.clone();
         // A targeted single-column UPDATE: the full `upsert_session` rewrite it
         // replaced also re-wrote the worktree rows, costing a commit per
-        // statement to change one column.
-        let matched = database
-            .set_session_shell(id, pane.as_deref())
-            .map_err(|e| format!("record shell pane: {e}"))?;
-        if !matched {
-            return Err(format!("session not found: {session}"));
-        }
+        // statement to change one column. It lands only over the pane the row
+        // showed here; one that moved on meanwhile drops it, and the rows are
+        // read again.
+        self.send_write(Write::Shell {
+            id,
+            seen,
+            pane: pane.clone(),
+        });
         if let Some(current) = self
             .current
             .sessions
@@ -1480,34 +1621,27 @@ impl SnapshotStore {
     /// plus an in-place correction of the snapshot row, since our own write
     /// does not move `data_version`.
     pub fn remember_pane(&mut self, session: &str, pane: &str) -> Result<(), String> {
-        let Some(database) = &self.database else {
+        if self.db.is_none() {
             return Err("no database".to_string());
-        };
+        }
         let Some(id) = parse_id(session) else {
             return Err(format!("not a session id: {session}"));
         };
-        if self
-            .current
-            .sessions
-            .iter()
-            .any(|row| row.id == session && row.backend_id.as_deref() == Some(pane))
-        {
+        let Some(row) = self.current.session(session) else {
+            return Err(format!("session not found: {session}"));
+        };
+        if row.backend_id.as_deref() == Some(pane) {
             return Ok(());
         }
-        let claimed = database
-            .claim_backend_id(id, pane, |target, other| {
-                crate::session_ops::server_key(target) == crate::session_ops::server_key(other)
-            })
-            .map_err(|e| format!("record agent pane: {e}"))?;
-        match claimed {
-            crate::storage::PaneClaim::Stored => {}
-            crate::storage::PaneClaim::RowGone => {
-                return Err(format!("session not found: {session}"));
-            }
-            crate::storage::PaneClaim::Occupied => {
-                return Err(format!("pane {pane} is already claimed by another session"));
-            }
-        }
+        let seen = row.backend_id.clone().unwrap_or_default();
+        // Claimed only over the pane the row showed here. One refused — the
+        // row moved on or gone, or the pane another session's — brings the
+        // rows round again.
+        self.send_write(Write::Pane {
+            id,
+            seen,
+            pane: pane.to_string(),
+        });
         if let Some(current) = self
             .current
             .sessions
@@ -1521,23 +1655,19 @@ impl SnapshotStore {
 
     /// Take a pending "focus this session" request, if another process left one.
     ///
-    /// The database probe lives in [`Self::refresh`], not here: the claiming
+    /// The database probe rides the worker's full reads, not this call: the claiming
     /// `DELETE … RETURNING` is a write statement that takes the WAL write lock
     /// even when it matches nothing, so running it per loop iteration put
     /// 20–100 write-lock cycles a second on the UI thread — and, behind the 5 s
     /// busy timeout, a moment of contention with `thurbox-cli` or the heartbeat
     /// could stall a frame for that long. The row can only appear via another
     /// connection's commit, which is exactly what moves `data_version` and
-    /// brings `refresh` round, so riding that gate loses nothing but a
+    /// brings a full read round, so riding that gate loses nothing but a
     /// sub-interval of latency on a notification click.
     pub fn take_focus_request(&mut self) -> Option<String> {
         self.pending_focus.take()
     }
 
-    /// Rebuild now.
-    ///
-    /// A failed read keeps the previous rows and records the error, so a
-    /// transient database lock degrades to stale data rather than a blank list.
     /// Look for the multiplexer and each agent's command again, at most once
     /// per [`PREFLIGHT_TTL`]. Returns whether any answer moved.
     ///
@@ -1590,56 +1720,45 @@ impl SnapshotStore {
         true
     }
 
+    /// Rebuild now, waiting for the read. Start-up and tests only: the event
+    /// loop asks with [`Self::request_refresh`] and never waits.
+    ///
+    /// A failed read keeps the previous rows and records the error, so a
+    /// transient database lock degrades to stale data rather than a blank list.
     pub fn refresh(&mut self) {
         self.last_refresh = Some(Instant::now());
-        let taken_at_ms = taken_at_stamp();
-        // Recorded BEFORE the reads: a commit landing between the two would
-        // otherwise be recorded as already-seen and never picked up.
-        self.last_data_version = self
-            .database
-            .as_ref()
-            .and_then(|database| database.data_version().ok());
-
-        self.last_snapshot_versions = self
-            .database
-            .as_ref()
-            .and_then(|database| database.snapshot_versions().ok());
-
-        let Some(database) = &self.database else {
-            self.current.taken_at_ms = taken_at_ms;
+        if self.db.is_none() {
+            self.current.taken_at_ms = taken_at_stamp();
             self.mark_changed();
             return;
-        };
-
-        // Claim any focus request here, where `data_version` movement already
-        // brought us: the claiming `DELETE … RETURNING` takes the write lock
-        // even on a miss, so it must not run per loop iteration (see
-        // `take_focus_request`). A request can only appear via another
-        // connection's commit, which is what triggers this refresh.
-        if let Ok(Some(id)) = database.take_pending_focus_session_id() {
-            self.pending_focus = Some(id);
         }
-
-        let sessions = match database.list_active_sessions() {
-            Ok(sessions) => sessions,
-            Err(e) => {
-                self.current.error = Some(format!("list sessions: {e}"));
-                self.current.taken_at_ms = taken_at_ms;
-                self.mark_changed();
+        // A read answered stale is sent again once it lands, so this may take
+        // more than one round.
+        let ticket = self.request_refresh();
+        while !self.fresh_since(ticket) {
+            if self.wait().is_none() {
                 return;
             }
-        };
-        let hooks = database.load_hook_states().unwrap_or_default();
+        }
+    }
+
+    /// Turn a full read into the published rows.
+    fn apply_rows(&mut self, read: RowsRead) {
+        let taken_at_ms = taken_at_stamp();
+        let RowsRead {
+            sessions,
+            hooks,
+            bases,
+            stopped,
+            reports_as,
+            deleted,
+            tasks,
+            automations,
+        } = read;
         self.hook_state_at = hooks
             .iter()
             .filter_map(|(id, row)| Some((id.to_string(), row.state_at?)))
             .collect();
-        let bases = database.load_base_branches().unwrap_or_default();
-        let stopped = database.load_stopped_sessions().unwrap_or_default();
-        // What a driver declared this row runs. Read here for the same reason
-        // `session get` reads it: the coverage a state is judged against belongs
-        // to the declared agent, not to the shell the row was created with.
-        let reports_as = database.load_reports_as().unwrap_or_default();
         let now = crate::sync::current_time_millis() as i64;
 
         self.git.drain();
@@ -1708,33 +1827,6 @@ impl SnapshotStore {
             })
             .collect();
 
-        // Deleted sessions, so a restore surface has something to list.
-        let deleted = database
-            .list_deleted_sessions()
-            .map(|list| {
-                list.into_iter()
-                    .map(|row| DeletedRow {
-                        id: row.id.to_string(),
-                        // Stats each borrowed worktree, so it is deliberately
-                        // here rather than in a render path: this refresh only
-                        // runs when `data_version` moved, and the deleted list
-                        // is short.
-                        restore_refusal: crate::session_ops::restore_refusal(
-                            &row.name,
-                            row.force_deleted,
-                            &row.backend_type,
-                            &row.worktrees,
-                        ),
-                        name: row.name,
-                        agent: row.agent,
-                        deleted_at: row.deleted_at,
-                        worktrees: row.worktrees.len(),
-                        partial: row.force_deleted,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
         // Repositories worth offering: the ones sessions already live in. A
         // richer source (a scan, a bookmark list) can replace this without the
         // plugin changing, because it only ever sees the published list.
@@ -1753,96 +1845,6 @@ impl SnapshotStore {
             });
         }
         repos.sort_by(|a, b| a.name.cmp(&b.name));
-
-        // Tasks and automations: already fully functional headlessly, so this
-        // only surfaces them.
-        let tasks = database
-            .list_tasks()
-            .map(|list| {
-                list.into_iter()
-                    .map(|task| TaskRow {
-                        id: task.id,
-                        title: task.title,
-                        description: task.description,
-                        status: task.status.as_str().to_string(),
-                        source: task.source,
-                        external_url: task.external_url,
-                        created_at: task.created_at,
-                        updated_at: task.updated_at,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        use crate::session::automation::{AutomationAction, AutomationSchedule};
-        // Run history for the whole list in one query, not one per automation.
-        let mut run_history = database.list_recent_automation_runs(10).unwrap_or_default();
-        let automations = database
-            .list_automations()
-            .map(|list| {
-                list.into_iter()
-                    .map(|auto| {
-                        let history = run_history.remove(&auto.id).unwrap_or_default();
-                        let runs: Vec<RunRow> = history
-                            .iter()
-                            .map(|run| RunRow {
-                                id: run.id,
-                                started_at: run.started_at as i64,
-                                status: run.status.as_str().to_string(),
-                                detail: run.detail.clone(),
-                                session: run.related_session_id.map(|id| id.to_string()),
-                            })
-                            .collect();
-                        let last = history.into_iter().next();
-                        let mut target = AutomationRow::default();
-                        match &auto.action {
-                            AutomationAction::Send { session_id } => {
-                                target.session = Some(session_id.to_string());
-                            }
-                            AutomationAction::Spawn {
-                                repo_path,
-                                worktree_branch,
-                                base_branch,
-                                agent,
-                                extra_repos,
-                            } => {
-                                target.repo = Some(repo_path.to_string_lossy().to_string());
-                                target.branch = worktree_branch.clone();
-                                target.base = base_branch.clone();
-                                target.agent = agent.clone();
-                                target.extra_repos = extra_repos.len();
-                            }
-                            AutomationAction::Exec { command } => {
-                                target.command = Some(command.clone());
-                            }
-                        }
-                        AutomationRow {
-                            trigger: auto.schedule.trigger(),
-                            timezone: auto.timezone.clone(),
-                            prompt: auto.prompt.clone(),
-                            created_at: auto.created_at,
-                            updated_at: auto.updated_at,
-                            last_run_at: auto.last_run_at,
-                            next_run_at: auto.next_run_at,
-                            id: auto.id,
-                            name: auto.name,
-                            // The expression itself when it is a cron, else
-                            // the kind — what a pane wants to show.
-                            schedule: match &auto.schedule {
-                                AutomationSchedule::Cron { expr } => expr.clone(),
-                                other => other.kind().to_string(),
-                            },
-                            action: auto.action.kind().to_string(),
-                            enabled: auto.enabled,
-                            last_outcome: last.as_ref().map(|run| run.status.as_str().to_string()),
-                            last_detail: last.map(|run| run.detail).filter(|d| !d.is_empty()),
-                            runs,
-                            ..target
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
 
         self.current = Snapshot {
             sessions: rows,
@@ -2674,7 +2676,11 @@ mod tests {
 
     #[test]
     fn codex_input_retires_only_the_report_it_observed() {
-        let database = Database::open_in_memory().expect("db");
+        // A file, so the test reaches it through a connection of its own: the
+        // store's lives on its worker thread.
+        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let database = Database::open(temp.path()).expect("db");
+        let driver = Database::open(temp.path()).expect("second connection");
         let row = crate::sync::SharedSession {
             id: SessionId::default(),
             name: "codex-pane".into(),
@@ -2700,41 +2706,24 @@ mod tests {
 
         let old = store.codex_submission_report(&id).expect("old report");
         store.note_codex_submission(&id, &old);
-        assert!(store
-            .database
-            .as_ref()
-            .unwrap()
+        assert!(driver
             .clear_hook_state_if_unchanged(row.id, &old)
             .expect("retire report"));
         assert_eq!(status_of(&store, &id), SessionState::Running);
         assert_eq!(store.current().session(&id).unwrap().hook_state, None);
 
-        store
-            .database
-            .as_ref()
-            .unwrap()
-            .set_hook_state(row.id, "idle")
-            .expect("idle again");
+        driver.set_hook_state(row.id, "idle").expect("idle again");
         store.refresh();
         let old = store.codex_submission_report(&id).expect("second report");
-        store
-            .database
-            .as_ref()
-            .unwrap()
+        driver
             .set_hook_state(row.id, "working")
             .expect("prompt hook");
         store.note_codex_submission(&id, &old);
-        assert!(!store
-            .database
-            .as_ref()
-            .unwrap()
+        assert!(!driver
             .clear_hook_state_if_unchanged(row.id, &old)
             .expect("newer report wins"));
         assert_eq!(
-            store
-                .database
-                .as_ref()
-                .unwrap()
+            driver
                 .load_hook_state(row.id)
                 .unwrap()
                 .unwrap()
@@ -2746,7 +2735,11 @@ mod tests {
 
     #[test]
     fn remote_codex_report_uses_its_persisted_timestamp_for_retirement() {
-        let database = Database::open_in_memory().expect("db");
+        // A file, so the test reaches it through a connection of its own: the
+        // store's lives on its worker thread.
+        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let database = Database::open(temp.path()).expect("db");
+        let driver = Database::open(temp.path()).expect("second connection");
         let row = crate::sync::SharedSession {
             id: SessionId::default(),
             name: "remote-codex".into(),
@@ -2784,15 +2777,18 @@ mod tests {
             ),
             1
         );
-        let old = store
-            .codex_submission_report(&row.id.to_string())
-            .expect("cached report");
-        assert!(store
-            .database
-            .as_ref()
-            .unwrap()
-            .clear_hook_state_if_unchanged(row.id, &old)
-            .expect("retire remote report"));
+        // Enter lands before the worker has answered with the stamp it
+        // stored, so the report carries the store's own provisional one.
+        let id = row.id.to_string();
+        let old = store.codex_submission_report(&id).expect("cached report");
+        store.note_codex_submission(&id, &old);
+        store.retire_codex_report(&id, &old);
+        store.settle();
+        assert_eq!(
+            driver.load_hook_state(row.id).unwrap().unwrap().state,
+            None,
+            "the report Enter superseded survived its retirement"
+        );
     }
 
     /// The local path: an agent's own `thurbox-cli session signal` writes the
@@ -2878,6 +2874,214 @@ mod tests {
              connection must not publish once the row reports for itself"
         );
     }
+    /// A store over a file with one local session whose turn is an unseen
+    /// `done`, and a second connection to the same file.
+    fn store_with_a_finished_turn() -> (tempfile::NamedTempFile, Database, SnapshotStore, String) {
+        let (temp, driver, store, id) = store_with_one_session("local-tmux", "done");
+        assert_eq!(status_of(&store, &id), SessionState::Done);
+        (temp, driver, store, id)
+    }
+
+    /// A store over a file holding one session on `backend` at hook `state`,
+    /// and a second connection to the same file.
+    fn store_with_one_session(
+        backend: &str,
+        state: &str,
+    ) -> (tempfile::NamedTempFile, Database, SnapshotStore, String) {
+        let temp = tempfile::NamedTempFile::new().expect("temp file");
+        let database = Database::open(temp.path()).expect("db");
+        let row = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "finished".into(),
+            agent: "claude".into(),
+            backend_id: "%7".into(),
+            backend_type: backend.into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        database.upsert_session(&row).expect("persist");
+        database.set_hook_state(row.id, state).expect("hook state");
+        let driver = Database::open(temp.path()).expect("second connection");
+        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        (temp, driver, store, row.id.to_string())
+    }
+
+    /// Hold `driver`'s write lock while `queue` runs, behind a perf write that
+    /// waits on it, then commit `meanwhile` and let the queue through: the
+    /// writes `queue` sent run against what `meanwhile` committed.
+    fn race(
+        store: &mut SnapshotStore,
+        driver: &Database,
+        queue: impl FnOnce(&mut SnapshotStore),
+        meanwhile: &str,
+        id: &str,
+    ) {
+        driver.conn_ref().execute_batch("BEGIN IMMEDIATE").unwrap();
+        store.set_perf_snapshot("{}");
+        queue(store);
+        driver.conn_ref().execute(meanwhile, [id]).unwrap();
+        driver.conn_ref().execute_batch("COMMIT").unwrap();
+        store.settle();
+        store.settle();
+    }
+
+    /// The store decided to write this remote report because the row showed
+    /// another state. By the time it runs, another writer has stored the same
+    /// state and the user has acknowledged it, so writing it again would
+    /// re-stamp the turn and bring back a dot the user already retired.
+    #[test]
+    fn a_queued_hook_report_is_decided_again_against_what_storage_now_holds() {
+        let (_temp, driver, mut store, id) = store_with_one_session("ssh:fixture", "working");
+        race(
+            &mut store,
+            &driver,
+            |store| {
+                store.apply_hook_states(
+                    vec![("ssh:fixture:tmux".into(), "%7".into(), "done".into())],
+                    Instant::now(),
+                );
+            },
+            "UPDATE sessions SET hook_state = 'done', hook_state_at = 5, seen_at = 5 WHERE id = ?1",
+            &id,
+        );
+        let hook = driver
+            .load_hook_state(id.parse().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (hook.state.as_deref(), hook.state_at, hook.seen_at),
+            (Some("done"), Some(5), Some(5)),
+            "an acknowledged turn was re-stamped unseen"
+        );
+    }
+
+    #[test]
+    fn a_queued_shell_pane_is_dropped_when_the_row_moved_on() {
+        let (_temp, driver, mut store, id) = store_with_one_session("local-tmux", "idle");
+        race(
+            &mut store,
+            &driver,
+            |store| store.remember_shell(&id, "%9").unwrap(),
+            "UPDATE sessions SET shell_backend_id = '%5' WHERE id = ?1",
+            &id,
+        );
+        let stored = driver
+            .get_session_by_id(id.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .shell_backend_id;
+        assert_eq!(
+            stored.as_deref(),
+            Some("%5"),
+            "a stale shell pane overwrote a newer one"
+        );
+        assert_eq!(
+            store
+                .current()
+                .session(&id)
+                .unwrap()
+                .shell_backend_id
+                .as_deref(),
+            Some("%5"),
+            "the rows were not read again after the write was dropped"
+        );
+    }
+
+    #[test]
+    fn a_queued_agent_pane_is_dropped_when_the_row_moved_on() {
+        let (_temp, driver, mut store, id) = store_with_one_session("local-tmux", "idle");
+        race(
+            &mut store,
+            &driver,
+            |store| store.remember_pane(&id, "%8").unwrap(),
+            "UPDATE sessions SET backend_id = '%9' WHERE id = ?1",
+            &id,
+        );
+        let stored = driver
+            .get_session_by_id(id.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .backend_id;
+        assert_eq!(
+            stored, "%9",
+            "a stale adopted pane overwrote a restart's new one"
+        );
+    }
+
+    /// The read is queued first, so the worker answers it from the row as it
+    /// stood before the acknowledgment. Applying that answer would put the
+    /// filled dot back, and nothing would read the row again: the write is
+    /// this store's own, so `data_version` never moves for it.
+    #[test]
+    fn a_read_answered_before_a_queued_write_does_not_undo_its_correction() {
+        let (_temp, driver, mut store, id) = store_with_a_finished_turn();
+
+        store.request_refresh();
+        store.acknowledge(&id);
+        assert_eq!(status_of(&store, &id), SessionState::Idle);
+        store.settle();
+        store.settle();
+
+        assert_eq!(status_of(&store, &id), SessionState::Idle);
+        let hook = driver
+            .load_hook_state(id.parse().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(hook.seen_at >= hook.state_at, "the acknowledgment landed");
+    }
+
+    /// A turn that finishes between leaving the session and the worker reaching
+    /// the queued acknowledgment is one nobody has seen. The perf write ahead
+    /// of it waits on the lock, which is what holds the acknowledgment back
+    /// until that turn has committed.
+    #[test]
+    fn an_acknowledgment_queued_behind_a_lock_leaves_a_newer_turn_unseen() {
+        let (_temp, driver, mut store, id) = store_with_a_finished_turn();
+        let session = id.parse().unwrap();
+        let first = driver.load_hook_state(session).unwrap().unwrap().state_at;
+
+        race(
+            &mut store,
+            &driver,
+            |store| store.acknowledge(&id),
+            "UPDATE sessions SET hook_state_at = hook_state_at + 1000 WHERE id = ?1",
+            &id,
+        );
+
+        let hook = driver.load_hook_state(session).unwrap().unwrap();
+        assert!(hook.state_at > first);
+        assert!(
+            hook.seen_at
+                .map_or(true, |seen| seen < hook.state_at.unwrap()),
+            "a turn that finished after the user left was marked seen"
+        );
+    }
+
+    #[test]
+    fn dropping_the_store_lands_the_writes_still_queued() {
+        let (_temp, driver, mut store, id) = store_with_a_finished_turn();
+
+        store.acknowledge(&id);
+        drop(store);
+
+        let hook = driver
+            .load_hook_state(id.parse().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(
+            hook.seen_at.is_some() && hook.seen_at >= hook.state_at,
+            "an acknowledgment queued before a clean exit was lost"
+        );
+    }
+
     #[test]
     fn idle_clock_does_not_invalidate_snapshot_rows() {
         let database = Database::open_in_memory().unwrap();
