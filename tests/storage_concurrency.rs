@@ -215,6 +215,21 @@ fn an_older_binary_opens_a_database_a_newer_one_migrated() {
         .exists([])
         .unwrap();
     assert!(kept, "the newer binary's column was dropped");
+    // The older binary runs none of its own steps: its v49 pass would put
+    // snapshot triggers on every table it finds, the newer one's included.
+    let triggers: i64 = Connection::open(env.database())
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master \
+             WHERE type = 'trigger' AND tbl_name = 'from_the_future'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        triggers, 0,
+        "the older binary re-shaped the newer one's table"
+    );
 }
 
 /// What a downgrade cannot survive is declared by the database, not guessed
