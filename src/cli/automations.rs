@@ -100,7 +100,8 @@ pub enum Action {
         /// Automation id.
         id: i64,
     },
-    /// Fire an automation now (marks it due for the running TUI).
+    /// Fire an enabled automation on the next tick (marks it due). A disabled
+    /// one is refused rather than switched on.
     Run {
         /// Automation id.
         id: i64,
@@ -306,6 +307,10 @@ fn edit_automation(
         return Err("--enabled and --disabled are mutually exclusive".into());
     }
     let mut auto = load(db, id)?;
+    // What a stored fire depends on, and the timing as read, for the same
+    // compare-and-set write the interface's edit makes.
+    let before = (auto.schedule.clone(), auto.timezone.clone(), auto.enabled);
+    let read_timing = (auto.enabled, auto.next_run_at);
     apply_edit_overrides(&mut auto, name, trigger, time, weekday, timezone, prompt)?;
     if disabled {
         auto.enabled = false;
@@ -313,15 +318,29 @@ fn edit_automation(
     if enabled {
         auto.enabled = true;
     }
-    // Recompute next fire after any schedule/timezone/enabled change.
-    auto.next_run_at = if auto.enabled {
-        auto.schedule
-            .next_after(current_time_millis(), auto.timezone.as_deref())
-    } else {
-        None
-    };
-    db.update_automation(&auto)
-        .map_err(|e| format!("update_automation: {e}"))?;
+    // Only an edit that moved the schedule, timezone or enabled flag moves the
+    // next fire: a rename keeps a due fire or a run-now due.
+    let unmoved = before == (auto.schedule.clone(), auto.timezone.clone(), auto.enabled)
+        && auto.next_run_at.is_some();
+    if !unmoved {
+        auto.next_run_at = if auto.enabled {
+            auto.schedule
+                .next_after(current_time_millis(), auto.timezone.as_deref())
+        } else {
+            None
+        };
+    }
+    // Never writes `last_run_at`, and writes the timing only if the row still
+    // holds what was read, so a fire the heartbeat claimed meanwhile stands.
+    let written = db
+        .update_automation_definition(&auto, (!unmoved).then_some(read_timing))
+        .map_err(|e| format!("update_automation_definition: {e}"))?;
+    if !written {
+        load(db, id)?;
+        return Err(format!(
+            "Automation #{id} changed while it was being edited; try again"
+        ));
+    }
     if auto.enabled {
         arm_heartbeat(backends);
     }
@@ -380,13 +399,19 @@ fn remove_automation(db: &Database, id: i64) -> Result<CommandOutput, String> {
 }
 
 /// Handle `automation run`: mark the automation due for the next tick.
+/// Refuses a disabled one, which it would otherwise have to switch on.
 fn trigger_automation(db: &Database, id: i64) -> Result<CommandOutput, String> {
     match db.trigger_automation_now(id) {
         Ok(true) => Ok(CommandOutput::new(
             json!({ "triggered": true, "id": id }),
             format!("Triggered automation #{id} (fires on the next tick)."),
         )),
-        Ok(false) => Err(format!("Automation not found: {id}")),
+        Ok(false) => {
+            load(db, id)?;
+            Err(format!(
+                "Automation #{id} is disabled; enable it with `automation edit {id} --enabled` to run it"
+            ))
+        }
         Err(e) => Err(format!("trigger_automation_now: {e}")),
     }
 }
@@ -497,13 +522,28 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
             skipped.push(json!({ "id": auto.id, "reason": "claim-lost" }));
             continue;
         }
+        // Opened before the fire, so the row says when it started and a run
+        // that never returns is still there to see.
+        let run = db.start_automation_run(auto.id, current_time_millis());
         let (status, detail, related) = fire_headless(db, backends, &auto);
-        let _ = db.record_automation_run(auto.id, status, &detail, related);
-        fired.push(json!({
+        // A failed history write is reported with the fire, so a row left
+        // `running` by it is not read as an action that never returned.
+        let history = run
+            .and_then(|run| db.finish_automation_run(run, status, &detail, related))
+            .err()
+            .map(|e| {
+                tracing::warn!(automation_id = auto.id, "run history not recorded: {e}");
+                e.to_string()
+            });
+        let mut entry = json!({
             "id": auto.id,
             "status": status.as_str(),
             "detail": detail,
-        }));
+        });
+        if let Some(error) = history {
+            entry["history_error"] = Value::String(error);
+        }
+        fired.push(entry);
     }
     // Headless status poll: the live channels ride an attached interface and
     // die with it, so this keeps every route's hook states flowing at the
@@ -894,6 +934,47 @@ mod tests {
         // shareable host is configured and nothing was soft-deleted.
         assert_eq!(v["synced"], json!([]));
         assert_eq!(v["reaped"], json!([]));
+    }
+
+    /// A run-history write that fails is reported with the fire, so a row
+    /// left `running` by a failed write is not mistaken for a hung action.
+    #[test]
+    fn tick_reports_a_run_history_write_that_failed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        for name in [
+            crate::session_ops::builtin_hooks::HOOKS_EXTENSION_NAME,
+            crate::session_ops::builtin_ui_skill::UI_SKILL_EXTENSION_NAME,
+        ] {
+            db.set_builtin_extension_optout(name, true).unwrap();
+        }
+        let id = db
+            .create_automation(&NewAutomation {
+                name: "probe".into(),
+                enabled: true,
+                schedule: parse_trigger("hourly", None, None).unwrap(),
+                timezone: None,
+                action: AutomationAction::Exec {
+                    command: "echo ok".into(),
+                },
+                prompt: String::new(),
+                next_run_at: Some(1),
+            })
+            .unwrap();
+        db.conn_ref()
+            .execute_batch(
+                "CREATE TRIGGER refuse_finish BEFORE UPDATE ON automation_runs \
+                 BEGIN SELECT RAISE(ABORT, 'history is read-only'); END;",
+            )
+            .unwrap();
+
+        let v = tick(&db, &crate::backend::registry::inert()).unwrap();
+        let fired = &v["fired"][0];
+        assert_eq!(fired["id"], id);
+        assert_eq!(fired["status"], "success", "{v}");
+        let error = fired["history_error"].as_str().unwrap_or_default();
+        assert!(error.contains("history is read-only"), "{v}");
     }
 
     #[test]

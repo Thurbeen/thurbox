@@ -609,7 +609,8 @@ A flagless `--json` delete stays soft for legacy sharing compatibility; JSON
 scripts must pass `--force` for immediate teardown or `--soft` for undo.
 `[features] soft_delete = true` or CLI `--soft` opts into an undoable delete;
 `--force` always tears down immediately. The two flags conflict. A soft delete
-marks only the DB row, and `session restore` revives it. The windows are torn down once the
+marks the DB row and disables the `send` automations targeting the session
+(a restore does not re-enable them), and `session restore` revives it. The windows are torn down once the
 undo window closes (`UNDO_WINDOW`, 10s) by the one sweep,
 `session_ops::reap_overdue_soft_deletes` — driven by the TUI's loop on a slow
 cadence (`REAP_INTERVAL`, as background housekeeping the bus keeps no in-flight
@@ -621,8 +622,7 @@ interface of its own (ADR-24), and resolves against the *deleted* rows the way
 found by their `@thurbox_session` stamp) — worktrees are what makes the undo
 lossless and are never touched by a soft delete. `--force`
 (`session_ops::delete_session_headless`) also kills the tmux window, removes
-the worktrees **thurbox created** + the symlink workspace, disables `send`
-automations targeting the session, and clears its `session meta` key/value space
+the worktrees **thurbox created** + the symlink workspace, and clears its `session meta` key/value space
 (the row is unrestorable, so the meta would otherwise outlive it) — for headless
 cleanup with no TUI running. Teardown is best-effort
 (failures land in the JSON report), but a *remote* teardown that never reached
@@ -936,7 +936,8 @@ heartbeat** at startup (`src/main.rs`; it also rides the live-reload merge
 as a restart-only flag and is published to Lua in `thurbox.features`). The rows
 are published as `thurbox.automations` and the kernel accepts an `automation`
 command (enable/disable/run/delete — `run_now` only marks it due, so the tick
-stays the one execution path), so a pane is a plugin somebody can write: both
+stays the one execution path, and refuses a disabled automation rather than
+switching it on, as `automation run` does), so a pane is a plugin somebody can write: both
 halves are done and nothing in `ui/` uses them yet.
 
 > A pane is owed. v1's shape — a pane under the session list, sharing one

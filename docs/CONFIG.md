@@ -843,7 +843,8 @@ the session status display itself is unaffected.
 TUI `Ctrl+D` and `thurbox-cli session delete` a destructive
 **hard delete**: instead of marking the row deleted with a `Ctrl+Z`
 undo window, it kills the session's tmux window, removes its worktrees
-and symlink workspace, and disables any pending `Send` automations. The TUI
+and symlink workspace, and disables any pending `Send` automations (a soft
+delete disables those too, and a restore does not re-enable them). The TUI
 asks first (`Enter`/`y` to delete, `Esc`/`n` to cancel), since the teardown
 is irreversible; the CLI performs the requested delete without a prompt. The row is marked
 **first**, before anything comes down: a crash partway through the

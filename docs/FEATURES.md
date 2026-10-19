@@ -1678,14 +1678,22 @@ Automations live in the `automations` SQLite table (`name`,
 `action_kind` plus action columns, `prompt`, timestamps,
 `last_run_at`, `next_run_at`), with a partial index on
 `next_run_at` (where enabled and non-null) for the due-scan. Each
-fire appends to `automation_runs` (`status` = success/skipped/error
-plus a free-text `detail`) for history.
+fire appends to `automation_runs` for history: the row is written as
+`running`, stamped `started_at`, before the action fires, and its `status`
+(success/skipped/error) and free-text `detail` are written over it when the
+action returns — so a run that never returns still shows. A history write
+that fails is logged and reported as the fire's `history_error` in the tick's
+output, so a row it left `running` is not read as a hung action.
 
 ### Headless access (`thurbox-cli`)
 
 `thurbox-cli automation` (alias `auto`) provides
 `create`/`list`/`show`/`edit`/`remove`/`run`/`runs`/`tick` without
-the TUI, sharing the same tables. `run` marks an automation due;
+the TUI, sharing the same tables. `run` marks an enabled automation
+due (a disabled one is refused, not switched on); `edit` writes through
+the same compare-and-set as the interface's edit, so it moves the next fire
+only when the schedule, timezone or enabled flag changed and never undoes a
+fire the heartbeat claimed meanwhile;
 `tick` fires all currently-due automations headlessly (this is what
 the heartbeat keeper and the optional OS timers invoke).
 
