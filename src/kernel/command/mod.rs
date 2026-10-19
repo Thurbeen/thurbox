@@ -345,17 +345,19 @@ pub enum Command {
     /// at all, and three panes rebuilt a float shell rather than reuse the
     /// modal furniture the kernel already has.
     ///
-    /// `owner` is **stamped by the kernel** from the plugin executing, like
-    /// [`Command::Program`]'s. It is the fallback the click path already
-    /// carries: an action no binding declares is offered to the pane that
-    /// asked for it, which is how a pane reaches its own undeclared verbs.
+    /// `fallback` is the plugin whose code issued it, stamped by the kernel:
+    /// an action no binding declares is offered to that pane, which is how a
+    /// pane reaches its own undeclared verbs. It never decides a grant. Whose
+    /// request the action is comes from the queue entry instead
+    /// ([`Command::runs_for`]), which through a chain of actions stays the pane
+    /// that first asked, where this field names the handler that forwarded it.
     Action {
-        owner: String,
+        fallback: String,
         action: String,
     },
     /// A menu action with an explicit row target.
     ActionTarget {
-        owner: String,
+        fallback: String,
         action: String,
         argument: String,
         value: String,
@@ -643,6 +645,13 @@ impl Command {
         }
     }
 
+    /// Whose request an `action` runs as: the plugin the queue says issued
+    /// it, which through a chain of actions is still the pane that first
+    /// asked (`LuaHost::acting_for`). `None` for any other command.
+    pub fn runs_for<'a>(&self, issuer: &'a str) -> Option<&'a str> {
+        matches!(self, Command::Action { .. } | Command::ActionTarget { .. }).then_some(issuer)
+    }
+
     /// Why the plugin at `owner` may not have this applied, when it may not.
     ///
     /// The coordinator's whole decision, kept here so it is tested without a
@@ -818,21 +827,21 @@ impl Command {
         if !args.session.is_empty() {
             let value = args.session;
             Ok(Command::ActionTarget {
-                owner: args.owner,
+                fallback: args.owner.clone(),
                 action,
                 argument: "session_id".into(),
                 value,
             })
         } else if let Some(value) = args.target {
             Ok(Command::ActionTarget {
-                owner: args.owner,
+                fallback: args.owner.clone(),
                 action,
                 argument: "target".into(),
                 value,
             })
         } else {
             Ok(Command::Action {
-                owner: args.owner,
+                fallback: args.owner,
                 action,
             })
         }
@@ -2185,7 +2194,7 @@ mod tests {
                 }
             ),
             Ok(Command::Action {
-                owner: "plugins/10_sessions.lua".into(),
+                fallback: "plugins/10_sessions.lua".into(),
                 action: "help.open".into(),
             })
         );

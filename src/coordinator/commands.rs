@@ -22,7 +22,7 @@ impl App {
     pub(crate) fn apply_commands(&mut self, terminal: &mut DefaultTerminal) {
         for (owner, command) in self.host.drain_issued() {
             if self.refuse_ungranted(&owner, &command)
-                || self.apply_local_command(&command, terminal)
+                || self.apply_local_command(&owner, &command, terminal)
             {
                 continue;
             }
@@ -62,6 +62,7 @@ impl App {
     /// files. `true` = handled here; `false` = hand it to a worker.
     pub(crate) fn apply_local_command(
         &mut self,
+        issuer: &str,
         command: &thurbox::kernel::command::Command,
         terminal: &mut DefaultTerminal,
     ) -> bool {
@@ -141,30 +142,25 @@ impl App {
             // runs one — the same handler, so a pane's key and its own button
             // cannot come to mean different things. The issuing plugin is the
             // fallback owner, which is what the click path passes too.
-            Command::Action { owner, action } => {
-                let asked = self
-                    .host
-                    .name_of_path(owner)
-                    .and_then(|name| self.host.index_of(name))
-                    .unwrap_or(self.focus);
-                // The handler runs at this pane's request, so what it issues is
-                // this pane's request too (`LuaHost::acting_for`).
-                let previous = self.host.acting_for(Some(owner.clone()));
+            Command::Action { fallback, action } => {
+                let asked = self.fallback_pane(fallback);
+                // The handler runs at the request of whoever the queue says
+                // asked — through a chain of actions, the pane that first did —
+                // so what it issues is that pane's request (`LuaHost::acting_for`).
+                let asker = command.runs_for(issuer).map(str::to_string);
+                let previous = self.host.acting_for(asker);
                 self.run_clicked_action(action, asked);
                 self.host.acting_for(previous);
             }
             Command::ActionTarget {
-                owner,
+                fallback,
                 action,
                 argument,
                 value,
             } => {
-                let asked = self
-                    .host
-                    .name_of_path(owner)
-                    .and_then(|name| self.host.index_of(name))
-                    .unwrap_or(self.focus);
-                let previous = self.host.acting_for(Some(owner.clone()));
+                let asked = self.fallback_pane(fallback);
+                let asker = command.runs_for(issuer).map(str::to_string);
+                let previous = self.host.acting_for(asker);
                 self.run_clicked_action_with_args(action, asked, &[(argument, value)]);
                 self.host.acting_for(previous);
             }
@@ -174,6 +170,15 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// The pane an undeclared action is offered to: the one whose code issued
+    /// it, else the focused one.
+    fn fallback_pane(&self, fallback: &str) -> usize {
+        self.host
+            .name_of_path(fallback)
+            .and_then(|name| self.host.index_of(name))
+            .unwrap_or(self.focus)
     }
 
     /// `Command::Focus`: move focus, or return whence it came.

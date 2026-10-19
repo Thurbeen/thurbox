@@ -93,7 +93,7 @@ fn a_pane_can_run_a_kernel_action_from_a_key_handler() {
             // table — the same rule `program` and `emit` follow. It is the
             // fallback owner a click carries, so an action nothing declares
             // still reaches the pane that asked for it.
-            owner: "plugins/91_presser.lua".to_string(),
+            fallback: "plugins/91_presser.lua".to_string(),
             action: "help.open".to_string(),
         }]
     );

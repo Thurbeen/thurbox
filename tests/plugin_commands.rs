@@ -1699,3 +1699,58 @@ end }"#;
         .collect();
     assert!(passed.is_empty(), "{passed:?}");
 }
+
+#[test]
+fn a_chained_action_still_runs_for_the_pane_that_first_asked() {
+    // A trusted handler that forwards through another `command("action")`
+    // must not turn the next hop into its own request: the pane that first
+    // asked is the one every hop answers for.
+    let forwarder = r#"return { name = "forwarder", slot = "sessions", capabilities = { "sessions" },
+  actions = { { name = "f.forward", desc = "forward" } },
+  render = function() return { type = "text", text = "" } end,
+  on_action = function(action)
+    if action == "f.forward" then
+      command("action", { text = "g.send" })
+      return true
+    end
+    return false
+  end }"#;
+    let (home, ui) = interface(&[("91_grantee.lua", GRANTEE), ("92_forwarder.lua", forwarder)]);
+    let _config = configure(home.path());
+    let mut registry = thurbox::kernel::registry::Registry::load();
+    for (file, source) in [
+        ("plugins/91_grantee.lua", GRANTEE),
+        ("plugins/92_forwarder.lua", forwarder),
+    ] {
+        registry
+            .trust(&ui.join(file).to_string_lossy(), source)
+            .expect("trust");
+    }
+    let host = LuaHost::new(&ui);
+    assert!(host.error.is_none(), "{:?}", host.error);
+    enforce(&host, &ui);
+
+    // The coordinator's two hops: the lure asks for `f.forward`, and the
+    // action that handler queues runs for whoever `runs_for` names.
+    host.on_behalf_of("plugins/90_lure.lua", || {
+        host.on_action(host.index_of("forwarder").expect("forwarder"), "f.forward")
+    })
+    .expect("first hop");
+    let hop = host.drain_issued();
+    let [(issuer, forwarded)] = hop.as_slice() else {
+        panic!("{hop:?}")
+    };
+    let asker = forwarded.runs_for(issuer).expect("an action").to_string();
+    host.on_behalf_of(&asker, || {
+        host.on_action(host.index_of("grantee").expect("grantee"), "g.send")
+    })
+    .expect("second hop");
+    for (owner, command) in host.drain_issued() {
+        assert!(
+            command
+                .refusal(&owner, |owner, need| host.may_path(owner, need))
+                .is_some(),
+            "{owner} issued {command:?} and it would be applied"
+        );
+    }
+}
