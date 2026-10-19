@@ -233,6 +233,7 @@ fn spawn(
         }
     };
     report(SpawnPhase::Resolving);
+    let req = with_native_separators(req);
     validate_request(db, &req)?;
 
     // Resolve host and multiplexer before any worktree or pane is made.
@@ -1087,6 +1088,24 @@ pub(crate) fn resolve_launch_cwd(
     }
     build_multi_repo_workspace(host, agent_session_id, &members)
         .unwrap_or_else(|| primary_cwd.to_path_buf())
+}
+
+/// A local request's directories in this platform's own spelling (issue #1480),
+/// so one directory is one stored string — repo grouping and dedup compare the
+/// text. A remote host's paths are left as given: they are spelled for that
+/// host, not this one.
+fn with_native_separators(mut req: SpawnRequest) -> SpawnRequest {
+    if req.host.is_some() {
+        return req;
+    }
+    req.repo_path = crate::paths::native_separators(&req.repo_path);
+    if let Some(path) = &mut req.existing_worktree {
+        *path = crate::paths::native_separators(path);
+    }
+    for extra in &mut req.extra_repos {
+        extra.repo_path = crate::paths::native_separators(&extra.repo_path);
+    }
+    req
 }
 
 /// Explicit scope for symlink targets, without granting their parent dirs.
