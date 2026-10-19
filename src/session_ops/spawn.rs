@@ -1720,6 +1720,35 @@ mod tests {
     }
 
     #[test]
+    fn a_local_cwd_is_stored_with_the_platforms_own_separators() {
+        // Issue #1480: `~/Documents/thurbox` expands onto a Windows home as
+        // `C:\Users\me\Documents/thurbox`. `Path` equality forgives the mix but
+        // the stored text does not, and repo grouping compares that text.
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let config = crate::paths::config_file().unwrap();
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            config.with_file_name("agents.toml"),
+            "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+        )
+        .unwrap();
+        let native = temp.path().join("Documents").join("thurbox");
+        std::fs::create_dir_all(&native).unwrap();
+        let mixed = PathBuf::from(format!("{}/Documents/thurbox", temp.path().display()));
+
+        let db = empty_db();
+        let mut r = req("mixed");
+        r.repo_path = mixed;
+        let spawned = spawn_session_headless(&db, &crate::backend::registry::inert(), r).unwrap();
+
+        let stored = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+        let stored = stored.cwd.expect("a cwd").display().to_string();
+        assert_eq!(stored, native.display().to_string());
+        assert_eq!(spawned.cwd.display().to_string(), stored);
+    }
+
+    #[test]
     fn default_delegation_works_with_a_host_cli_without_the_new_flag() {
         let host = HostDef {
             name: "example".into(),
