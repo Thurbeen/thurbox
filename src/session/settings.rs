@@ -111,6 +111,18 @@ pub struct TelemetrySettings {
     /// `telemetry_args` to the sessions thurbox spawns.
     #[serde(default = "default_true")]
     pub configure_agents: bool,
+    /// Export thurbox's own `thurbox.*` session metrics from `automation
+    /// tick` (ADR-37).
+    #[serde(default = "default_true")]
+    pub export_thurbox_metrics: bool,
+    /// Export one OTLP log record per session event from `automation tick`.
+    #[serde(default = "default_true")]
+    pub export_session_events: bool,
+    /// Label thurbox's own metrics with `thurbox.session.id`. Off by default:
+    /// every session then becomes a series of its own in the backend. The
+    /// session event records always carry it.
+    #[serde(default)]
+    pub per_session: bool,
 }
 
 fn default_otlp_endpoint() -> String {
@@ -128,6 +140,9 @@ impl Default for TelemetrySettings {
             protocol: default_otlp_protocol(),
             headers: Default::default(),
             configure_agents: true,
+            export_thurbox_metrics: true,
+            export_session_events: true,
+            per_session: false,
         }
     }
 }
@@ -136,6 +151,11 @@ impl TelemetrySettings {
     /// Whether spawned sessions get any telemetry configuration at all.
     pub fn configures_agents(&self) -> bool {
         self.enabled && self.configure_agents
+    }
+
+    /// Whether `automation tick` exports anything of thurbox's own.
+    pub fn exports_thurbox(&self) -> bool {
+        self.enabled && (self.export_thurbox_metrics || self.export_session_events)
     }
 }
 

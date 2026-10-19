@@ -64,6 +64,7 @@ backend::rmux        → session, shell, backend::contract,
 git                  → session, paths, shell
 storage              → session, sync, paths
 sync                 → session
+telemetry            → session, storage           (ADR-37 OTLP export)
 usage                → session, shell           [path-only: paths]
 session_ops          → session, storage, git, sync, paths, workspace, shell
                        [path-only: agent::{agent_config, extension_config,
@@ -78,7 +79,7 @@ kernel               → session, storage, sync, paths, session_ops, git,
                         themes_config, version_check},
                         backend::{contract, identity, pane, registry}, usage]
 cli                  → session, storage, session_ops, sync, paths,
-                       notifications, ui_control
+                       notifications, ui_control, telemetry
                        [path-only: agent::{agent_config, extension_config,
                         hooks_config, host_config, preflight, self_update,
                         settings_config, themes_config, version_check},
