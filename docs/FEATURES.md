@@ -2713,13 +2713,19 @@ placeholder cannot reach. It reads the cursor's row **left of the cursor**
 (`text_before_cursor`, where the multiplexer declares `CURSOR_ROW_CAPTURE`),
 and calls the line empty only when what is there is whitespace, box drawing
 and at most one prompt glyph; the dim suggestion an idle agent draws sits to
-the cursor's right and never counts. A busy line is not typed onto: the text
+the cursor's right and never counts. When the pane's foreground is an
+interactive shell (by name, given options only — `bash -c …` is a program
+running), the shell's own prompt counts as empty too: one word ending in `$`,
+`%`, `#` or `>` (`bash-5.3$`, `user@box:~$`) or PowerShell's `PS <path>>`.
+Only there, because in an agent's composer the same row is as likely the
+wrapped end of a long line ending in `%`. A busy line is not typed onto: the text
 goes the way `message send` delivers it. After Enter the same reading confirms
 the line left, and one more Enter goes only to a line that still ends with the
 text sent, never to a dialog that replaced it. Its limits are the ones a
 screen imposes: a cursor moved back into a draft reads as a bare prompt, a
-shell prompt carrying more than its glyph (`user@box:~$`) reads as typed text
-and needs `--force`, and where the row cannot be read the send reports
+shell's wrapped line that is one word ending in a glyph reads as its prompt, a
+prompt of any other shape (one with a space before its glyph) reads as typed
+text and needs `--force`, and where the row cannot be read the send reports
 `submitted: null` rather than a guess.
 
 ### Finding the recipient's inbox

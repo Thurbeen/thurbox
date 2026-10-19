@@ -12,10 +12,14 @@
 //! count. Anything else is typed text — including the wrapped end of a long
 //! line that happens to finish in `%`, which has no prompt on its row at all.
 //!
+//! A pane whose foreground is an interactive shell also reads its own prompt as
+//! empty: one word ending in a prompt glyph (`bash-5.3$`, `user@box:~$`,
+//! `host%`) or PowerShell's `PS C:\…>`. Only there, because in an agent's
+//! composer the same row is as likely the wrapped end of a long line.
+//!
 //! What this cannot see: a cursor moved back into a draft (Home, or the start
 //! of a draft's second line) reads as the bare prompt it is sitting after. And
-//! a shell prompt that carries more than its glyph (`user@box:~$`) reads as
-//! typed text, so a send to such a shell needs `--force`.
+//! a shell's wrapped line that is one word ending in a glyph reads as a prompt.
 
 use std::time::{Duration, Instant};
 
@@ -40,15 +44,32 @@ fn unframed(text: &str) -> &str {
     text.trim_matches(|c: char| c.is_whitespace() || ('\u{2500}'..='\u{259f}').contains(&c))
 }
 
-/// Classify the text left of the cursor.
-pub fn classify(before_cursor: &str) -> Composer {
+/// Glyphs a shell's own prompt ends with.
+const SHELL_PROMPT_GLYPHS: &[char] = &['$', '%', '#', '>'];
+
+/// Whether `line` is a shell prompt with nothing typed after it: one word
+/// ending in a glyph, or PowerShell's `PS <path>>`, whose path may hold spaces
+/// but never a `>`.
+fn is_shell_prompt(line: &str) -> bool {
+    let one_word =
+        !line.contains(char::is_whitespace) && line.ends_with(|c| SHELL_PROMPT_GLYPHS.contains(&c));
+    let powershell = line
+        .strip_prefix("PS ")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .is_some_and(|path| !path.contains('>'));
+    one_word || powershell
+}
+
+/// Classify the text left of the cursor; `shell` when the pane's foreground is
+/// an interactive shell, whose own prompt then reads as empty too.
+pub fn classify(before_cursor: &str, shell: bool) -> Composer {
     let line = unframed(before_cursor);
     let mut chars = line.chars();
     let bare_prompt = matches!(
         (chars.next(), chars.next()),
         (Some(c), None) if PROMPT_GLYPHS.contains(&c)
     );
-    if line.is_empty() || bare_prompt {
+    if line.is_empty() || bare_prompt || (shell && is_shell_prompt(line)) {
         Composer::Empty
     } else {
         Composer::Holding
@@ -76,8 +97,19 @@ pub fn read_line(backend: &dyn crate::backend::SessionBackend, pane: &str) -> Op
 }
 
 /// Read `pane`'s input line once. A backend that cannot answer is `Unknown`.
-pub fn read(backend: &dyn crate::backend::SessionBackend, pane: &str) -> Composer {
-    read_line(backend, pane).map_or(Composer::Unknown, |text| classify(&text))
+pub fn read(backend: &dyn crate::backend::SessionBackend, pane: &str, shell: bool) -> Composer {
+    read_line(backend, pane).map_or(Composer::Unknown, |text| classify(&text, shell))
+}
+
+/// Whether `pane`'s foreground is an interactive shell, for [`classify`]. A
+/// backend that cannot say is not one: the strict rule only ever waits.
+pub fn is_shell(backend: &dyn crate::backend::SessionBackend, pane: &str) -> bool {
+    backend.pane_state(pane).is_ok_and(|s| {
+        crate::session::is_interactive_shell(
+            s.foreground_process.as_deref(),
+            s.foreground_command.as_deref(),
+        )
+    })
 }
 
 /// Read until the line is no longer `from` or `within` has passed, and return
@@ -85,12 +117,13 @@ pub fn read(backend: &dyn crate::backend::SessionBackend, pane: &str) -> Compose
 pub fn wait_while(
     backend: &dyn crate::backend::SessionBackend,
     pane: &str,
+    shell: bool,
     from: Composer,
     within: Duration,
 ) -> Composer {
     let deadline = Instant::now() + within;
     loop {
-        let now = read(backend, pane);
+        let now = read(backend, pane, shell);
         if now != from || Instant::now() >= deadline {
             return now;
         }
@@ -125,7 +158,7 @@ mod tests {
     #[test]
     fn a_bare_prompt_is_empty_whatever_its_glyph() {
         for line in ["", "  ", "❯ ", "› ", "│ > ", "→ ", "$ ", "┃  "] {
-            assert_eq!(classify(line), Composer::Empty, "{line:?}");
+            assert_eq!(classify(line, false), Composer::Empty, "{line:?}");
         }
     }
 
@@ -138,7 +171,7 @@ mod tests {
             "$ ls",
             "  continued text",
         ] {
-            assert_eq!(classify(line), Composer::Holding, "{line:?}");
+            assert_eq!(classify(line, false), Composer::Holding, "{line:?}");
         }
     }
 
@@ -153,11 +186,37 @@ mod tests {
             "xxxxxxxx coverage fell to 50%",
             "see issue #",
             "a -> b>",
-            // A shell prompt with more than its glyph: indistinguishable from
-            // a wrapped row of text, so it reads as typed.
+            // A shell prompt with more than its glyph: in an agent's pane,
+            // indistinguishable from a wrapped row of text.
             "user@box:~$ ",
         ] {
-            assert_eq!(classify(line), Composer::Holding, "{line:?}");
+            assert_eq!(classify(line, false), Composer::Holding, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_shell_reads_its_own_prompt_as_empty_and_anything_after_it_as_typed() {
+        for line in [
+            "bash-5.3$ ",
+            "bash-3.2$",
+            "user@box:~$ ",
+            "host% ",
+            "root@box:/# ",
+            "C:\\Users\\me>",
+            "PS C:\\Users\\me> ",
+            "PS C:\\Program Files> ",
+            "$ ",
+        ] {
+            assert_eq!(classify(line, true), Composer::Empty, "{line:?}");
+        }
+        for line in [
+            "bash-5.3$ ec",
+            "user@box:~$ echo #",
+            "xxxxxxxx coverage fell to 50%",
+            "PS C:\\> Get-Item a>",
+            "PS C:\\> dir",
+        ] {
+            assert_eq!(classify(line, true), Composer::Holding, "{line:?}");
         }
     }
 

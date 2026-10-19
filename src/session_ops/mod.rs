@@ -139,7 +139,8 @@ pub fn send_text_confirmed(
     } else {
         COMPOSER_WAIT
     };
-    let before = composer::wait_while(backend, &pane, Composer::Holding, wait);
+    let shell = composer::is_shell(backend, &pane);
+    let before = composer::wait_while(backend, &pane, shell, Composer::Holding, wait);
     if before == Composer::Holding && !force {
         return Ok(SendOutcome::ComposerBusy);
     }
@@ -153,7 +154,7 @@ pub fn send_text_confirmed(
     send_text_with_status(db, backends, session, text, false)?;
     let typed = composer::wait_for_sent(backend, &pane, text, SUBMIT_WAIT);
     press_enter(db, backend, &pane, session)?;
-    let after = composer::wait_while(backend, &pane, Composer::Holding, SUBMIT_WAIT);
+    let after = composer::wait_while(backend, &pane, shell, Composer::Holding, SUBMIT_WAIT);
     let unsent = after == Composer::Holding
         && composer::read_line(backend, &pane).is_some_and(|l| composer::ends_with_sent(&l, text));
     if !unsent {
@@ -167,7 +168,7 @@ pub fn send_text_confirmed(
         });
     }
     press_enter(db, backend, &pane, session)?;
-    let retried = composer::wait_while(backend, &pane, Composer::Holding, SUBMIT_WAIT);
+    let retried = composer::wait_while(backend, &pane, shell, Composer::Holding, SUBMIT_WAIT);
     Ok(SendOutcome::Typed {
         submitted: match retried {
             Composer::Empty => Some(true),

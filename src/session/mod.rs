@@ -29,9 +29,9 @@ pub use hook_def::{
 };
 pub use hook_status::{
     age_secs, best_state, classify_foreground, contradicts, coverage_for, derive_state,
-    with_output_quiescence, with_reachability, AgentHookCoverage, Assessment, Corroboration,
-    Coverage, CoverageSource, HookDelivery, SessionState, StateSource, AGENT_HOOK_COVERAGE,
-    WORKING_QUIET_MS,
+    is_interactive_shell, with_output_quiescence, with_reachability, AgentHookCoverage, Assessment,
+    Corroboration, Coverage, CoverageSource, HookDelivery, SessionState, StateSource,
+    AGENT_HOOK_COVERAGE, WORKING_QUIET_MS,
 };
 pub use host_def::{current_wsl_distro, HostDef, HostKind, HostRegistry, WslRepairPlan};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};

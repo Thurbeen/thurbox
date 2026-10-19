@@ -313,8 +313,9 @@ pub enum Action {
     /// The text is delivered as one bracketed paste, so it arrives literally —
     /// no shell sees it, and a leading `-`, quotes or newlines survive intact.
     ///
-    /// It is typed only into an empty input line: while the composer holds
-    /// someone's typing, `send` waits a few seconds for it to clear and then
+    /// It is typed only into an empty input line — a bare prompt, or a shell's
+    /// own one-word prompt (`bash-5.3$`). While the composer holds someone's
+    /// typing, `send` waits a few seconds for it to clear and then
     /// hands the text over as `message send` does — the agent's own inbox, or
     /// the mailbox, which exits non-zero. After Enter it checks the line left
     /// the composer, presses Enter once more if the text is still there, and
@@ -1340,7 +1341,8 @@ fn leave_in_mailbox(
         .to_string();
     let id = json["message_id"].clone();
     let human = format!(
-        "'{}' has text in its composer, so nothing was typed; message #{id} went via {via}.",
+        "'{}' has text in its composer, so nothing was typed; message #{id} went via {via} \
+         (if that is only its prompt, `--force` types anyway).",
         session.name
     );
     let note = json["delivery_note"]

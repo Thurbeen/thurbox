@@ -463,6 +463,33 @@ fn executable_name(argv0: &str) -> &str {
     base.strip_suffix(".exe").unwrap_or(base)
 }
 
+/// Whether a pane's foreground is an interactive shell sitting at its own
+/// prompt: a shell by name, and — when its argv is known — given options only.
+/// An operand is a script or a `-c` command line the shell is running, whose
+/// screen is that program's, not a prompt.
+pub fn is_interactive_shell(process: Option<&str>, command_line: Option<&str>) -> bool {
+    let Some(name) = process.map(executable_name).filter(|n| !n.is_empty()) else {
+        return false;
+    };
+    if !SHELLS.contains(&name) {
+        return false;
+    }
+    let Some(line) = command_line else {
+        return true;
+    };
+    let mut argv = line.split_whitespace();
+    argv.next();
+    argv.all(|arg| match arg.strip_prefix('-') {
+        // A POSIX cluster holding `c` (`-c`, `-lc`) takes a command line.
+        Some(flags) if flags.chars().all(|c| c.is_ascii_lowercase()) => !flags.contains('c'),
+        // PowerShell's options that run a command or a script.
+        Some(flags) => !["command", "file", "encodedcommand"]
+            .iter()
+            .any(|o| flags.eq_ignore_ascii_case(o)),
+        None => false,
+    })
+}
+
 /// Whether `command_line` runs `program` **in command position** rather than
 /// merely mentioning it somewhere in its argv.
 ///
@@ -1924,5 +1951,21 @@ mod tests {
         // The agent is probably still there behind it, so this never
         // contradicts an active state.
         assert!(!contradicts(Some("working"), &other));
+    }
+
+    #[test]
+    fn an_interactive_shell_is_one_given_options_only() {
+        let shell = |p: &str, l: Option<&str>| is_interactive_shell(Some(p), l);
+        assert!(shell("bash", None));
+        assert!(shell("-zsh", Some("-zsh")));
+        assert!(shell("bash", Some("bash --norc --noprofile -i")));
+        assert!(shell("pwsh.exe", Some("pwsh.exe -NoLogo")));
+        assert!(!shell("sh", Some("sh -c 'stty -echo; read x'")));
+        assert!(!shell("bash", Some("bash -lc claude")));
+        assert!(!shell("bash", Some("bash ./run.sh")));
+        assert!(!shell("pwsh", Some("pwsh -Command Get-Item")));
+        assert!(!shell("claude", Some("claude --resume")));
+        assert!(!shell("node", None));
+        assert!(!is_interactive_shell(None, None));
     }
 }
