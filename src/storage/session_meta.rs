@@ -64,15 +64,4 @@ impl Database {
         )?;
         Ok(removed > 0)
     }
-
-    /// Drop every key of a session. Called when a session is force-deleted:
-    /// the row is unrestorable, so its metadata is dead weight that would
-    /// otherwise outlive it and be inherited by nothing.
-    pub fn clear_session_meta(&self, id: SessionId) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "DELETE FROM session_meta WHERE session_id = ?1",
-            params![id.to_string()],
-        )?;
-        Ok(())
-    }
 }

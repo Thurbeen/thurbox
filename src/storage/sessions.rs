@@ -276,6 +276,11 @@ impl Database {
     /// [`mark_session_force_deleted`](Self::mark_session_force_deleted) because
     /// the pair emitted two `gone` events, and the first of them told a watcher
     /// the session was restorable when it never was.
+    ///
+    /// The session's metadata goes in the same transaction: an unrestorable row's
+    /// keys are dead weight, and clearing them in a second write left a row
+    /// already hidden when that write failed, with its window still running and
+    /// no teardown owed (issue #1475).
     pub fn force_delete_session(&self, id: SessionId) -> rusqlite::Result<()> {
         self.delete_session(id, EventReason::ForceDeleted)
     }
@@ -299,6 +304,13 @@ impl Database {
             None,
             None,
         )?;
+
+        if reason == EventReason::ForceDeleted {
+            self.conn.execute(
+                "DELETE FROM session_meta WHERE session_id = ?1",
+                params![id_str],
+            )?;
+        }
 
         // A second delete of an already-deleted row changes nothing, so it is
         // not a second `gone`.

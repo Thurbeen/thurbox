@@ -434,8 +434,10 @@ fn keep_unless_deactivated(
 /// delete the session the heal just spawned, and either may get there first.
 /// The one that comes second must count the session as cleaned up rather than
 /// fail on "not found" — a deactivate that stopped there left the rest of the
-/// extension's sessions alive.
-fn delete_unless_gone(
+/// extension's sessions alive. Only that error: a force delete marks the row
+/// before its later steps, so one that failed after the mark also leaves a row
+/// that reads as gone, and hiding it would skip the window's teardown.
+pub(super) fn delete_unless_gone(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     id: SessionId,
@@ -443,14 +445,7 @@ fn delete_unless_gone(
 ) -> Result<bool, String> {
     match crate::session_ops::delete_session_headless(db, backends, id, force) {
         Ok(_) => Ok(true),
-        Err(_)
-            if db
-                .get_session_by_id(id)
-                .map_err(|e| format!("get_session_by_id: {e}"))?
-                .is_none() =>
-        {
-            Ok(false)
-        }
+        Err(e) if e == crate::session_ops::delete::session_not_found(id) => Ok(false),
         Err(e) => Err(e),
     }
 }

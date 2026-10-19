@@ -2049,3 +2049,36 @@ fn a_heal_auto_update_does_not_reactivate_a_deactivated_extension() {
         "the update turned the extension back on: {messages:?}"
     );
 }
+
+/// Only "the session is already gone" counts as cleaned up (issue #1475). A
+/// force delete that failed partway used to leave its row already hidden — the
+/// metadata was cleared in a second write — so it also read as gone, and
+/// treating that as done hid the failure and left the window with no teardown
+/// owed. Here clearing the metadata fails because its table is missing: the
+/// failure is reported and the row is left as it was, to be deleted again.
+#[test]
+fn a_delete_that_fails_partway_is_reported_and_leaves_the_row() {
+    let db = Database::open_in_memory().unwrap();
+    let id = insert_session(&db, "half-deleted");
+    db.conn_ref()
+        .execute_batch("DROP TABLE session_meta")
+        .unwrap();
+
+    let result = delete_unless_gone(&db, &crate::backend::registry::inert(), id, true);
+
+    let err = result.expect_err("a failed delete must be reported");
+    assert!(err.contains("session_meta"), "{err}");
+    assert!(
+        db.get_session_by_id(id).unwrap().is_some(),
+        "a failed delete leaves the row active, owning its window"
+    );
+}
+
+#[test]
+fn a_delete_of_a_session_already_gone_counts_as_cleaned_up() {
+    let db = Database::open_in_memory().unwrap();
+    let id = insert_session(&db, "gone");
+    db.force_delete_session(id).unwrap();
+
+    assert!(!delete_unless_gone(&db, &crate::backend::registry::inert(), id, true).unwrap());
+}
