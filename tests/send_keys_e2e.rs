@@ -533,3 +533,63 @@ fn a_wrapped_line_ending_in_a_prompt_glyph_is_still_retried() {
     let screen = screen_when(&session, |s| s.contains("got:xxx"));
     assert!(screen.contains("got:xxx"), "shows:\n{screen}");
 }
+
+/// A plain interactive bash with its default prompt, which carries more than
+/// its glyph: `bash-5.3$ `.
+fn live_shell(db: &Database) -> Option<SharedSession> {
+    let session = live_session_running(db, "env PS1='bash-5.3$ ' bash --norc --noprofile -i")?;
+    let drawn = screen_when(&session, |s| s.contains("bash-5.3$"));
+    assert!(
+        drawn.contains("bash-5.3$"),
+        "the shell never drew its prompt; shows:\n{drawn}"
+    );
+    Some(session)
+}
+
+/// Retro #1453: a bare `bash-5.3$ ` prompt read as a composer holding typing,
+/// so every send to a shell went to the mailbox.
+#[test]
+fn send_types_into_a_shell_sitting_at_its_default_prompt() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_shell(&db) else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+
+    let out = send(&db, &session, "echo SHELL_$((40 + 2))", false);
+    assert_eq!(out["delivered_via"], "pane", "{}", out.json);
+    assert_eq!(out["submitted"], true, "{}", out.json);
+    assert!(out.failure.is_none(), "{}", out.json);
+    let screen = screen_when(&session, |s| s.contains("SHELL_42"));
+    assert!(screen.contains("SHELL_42"), "shows:\n{screen}");
+}
+
+#[test]
+fn text_for_a_shell_holding_a_half_typed_command_goes_to_the_mailbox() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_shell(&db) else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+    tmux(&["send-keys", "-l", "-t", &session.backend_id, "ec"]);
+    screen_when(&session, |s| s.contains("bash-5.3$ ec"));
+
+    let out = send(&db, &session, "MAILED_INSTEAD", false);
+    assert_eq!(out["sent"], false, "{}", out.json);
+    assert_eq!(out["delivered_via"], "mailbox", "{}", out.json);
+    let screen = screen(&session);
+    assert!(
+        !screen.contains("MAILED_INSTEAD"),
+        "nothing may be typed onto the half-typed command; shows:\n{screen}"
+    );
+}
