@@ -347,7 +347,9 @@ session), never on the loop, ADR-P12).
   pane-option status channel — is the **legacy path** for a host that cannot
   be delegated to (no artifact, no network, a host schema older than ours that
   provisioning cannot upgrade, `share_sessions = false`); `session create` then reports `sharing` and `session sync --adopt`
-  registers such rows on the host later. `session signal` also sets the pane
+  registers such rows on the host later. `session send`/`key`/`capture` on such
+  a host drive its window over the transport through the registry (ADR-30)
+  instead of refusing. `session signal` also sets the pane
   option, so tmux hosts keep sub-second status. Relaunch after a reboot is the
   host's (`session restart --if-missing`). A fork stays on the legacy path.
   Docs: `docs/FEATURES.md` → Shared sessions.
