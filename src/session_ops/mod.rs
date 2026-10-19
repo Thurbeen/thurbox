@@ -707,7 +707,8 @@ pub fn fork_session_headless(
 
     let codex_builtin = source.agent == "codex"
         && recipe.is_none()
-        && resolve_agent_def(Some("codex")).is_ok_and(|d| d.resume_args == ["resume", "{id}"]);
+        && resolve_agent_def(Some("codex"), crate::session::Platform::local())
+            .is_ok_and(|d| d.resume_args == ["resume", "{id}"]);
     let fork_session_id = if codex_builtin {
         Some(
             db.get_session_meta(source.id, "thurbox.codex_conversation_id")
@@ -803,17 +804,42 @@ pub(crate) fn recipe_agent_def(recipe: &crate::session::LaunchRecipe) -> crate::
 /// (`None` or empty). A name the registry does not define is an error, never
 /// the default — on a shared host the host's refusal is the caller's only sign
 /// that the agent exists on one side and not the other (#1454).
+///
+/// `platform` is the machine the session runs on, which the registry — this
+/// machine's — knows nothing about: see [`shell_for`].
 pub(crate) fn resolve_agent_def(
     requested: Option<&str>,
+    platform: crate::session::Platform,
 ) -> Result<crate::session::AgentDef, String> {
     let registry = crate::agent::agent_config::load_for_launch();
-    match requested.filter(|n| !n.is_empty()) {
+    let def = match requested.filter(|n| !n.is_empty()) {
         Some(name) => registry
             .get(name)
             .cloned()
-            .ok_or_else(|| unknown_agent(&registry, name)),
-        None => Ok(default_agent_def(&registry)),
+            .ok_or_else(|| unknown_agent(&registry, name))?,
+        None => default_agent_def(&registry),
+    };
+    Ok(shell_for(def, platform))
+}
+
+/// The stock `shell` entry, spelled for whichever platform seeded it, becomes
+/// `platform`'s own shell (#1458): `bash -i` sent to a Windows host starts WSL
+/// rather than a Windows shell. Only the command and args are swapped, and only
+/// while they are still a stock pair — a `shell` the user changed is theirs.
+fn shell_for(
+    mut def: crate::session::AgentDef,
+    platform: crate::session::Platform,
+) -> crate::session::AgentDef {
+    let stock = crate::session::Platform::ALL.map(crate::shell::shell_agent_def);
+    if stock
+        .iter()
+        .any(|s| def.name == s.name && def.command == s.command && def.args == s.args)
+    {
+        let own = crate::shell::shell_agent_def(platform);
+        def.command = own.command;
+        def.args = own.args;
     }
+    def
 }
 
 fn default_agent_def(registry: &crate::session::AgentRegistry) -> crate::session::AgentDef {

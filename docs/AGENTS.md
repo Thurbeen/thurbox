@@ -54,7 +54,7 @@ Ten entries ship pre-seeded — nine coding agents and a plain shell.
 | `vibe` | `vibe` | — (starts fresh) | — (none) | none | `external_files` → `~/.vibe/hooks.toml` |
 | `pi` | `pi` | `--session-id {id}` | `--fork {id}` | **pinned** (`--session-id {id}`) | `external_files` → `~/.pi/agent/extensions/` |
 | `omp` | `omp` | `--session-dir {home}/.omp/…/thurbox-{id} --continue` | — (none) | **path-pinned** (`--session-dir <dir>`) | `external_files` → `~/.omp/agent/extensions/` |
-| `shell` | `bash -i` (`powershell -NoLogo` on Windows) | — (none) | — (none) | none | none (see below) |
+| `shell` | `bash -i` (`powershell -NoLogo` on a Windows host) | — (none) | — (none) | none | none (see below) |
 
 ### Multi-repo directory scope
 
@@ -102,6 +102,14 @@ own flags rather than asking thurbox to model them. It is the ready-made form of
 `session create --command`, and the only built-in whose `command` differs by
 platform, because a native-Windows host runs psmux and PowerShell rather than
 tmux and bash.
+
+The platform is the **session's host**, not the one thurbox was built for. The
+seed spells `shell` for the machine it is written on, and while the entry still
+holds that stock `command` and `args`, a session on a host of the other platform
+gets that host's shell instead — a Linux thurbox creating a session on a Windows
+SSH host sends it `powershell -NoLogo`, not a `bash -i` that would start WSL
+there. A `shell` whose `command` or `args` you changed is launched as written,
+wherever the session runs.
 
 `args = ["-i"]` on POSIX is load-bearing rather than decoration: a plain `bash`
 in a pane executes what is sent to it but renders **no prompt and no echo**, so

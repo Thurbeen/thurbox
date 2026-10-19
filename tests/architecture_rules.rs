@@ -71,7 +71,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "agent::agent_config",
-        allowed: &["session", "paths"],
+        allowed: &["session", "paths", "shell"],
         allowed_path_only: &[],
     },
     ModuleRules {
