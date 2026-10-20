@@ -7230,21 +7230,12 @@ fn a_resize_is_not_paid_for_on_the_render_thread_when_the_link_is_wedged() {
     assert!(tui.quit().success());
 }
 
-#[test]
-fn a_plugin_vm_at_its_memory_limit_does_not_freeze_the_interface() {
-    // Every plugin shares one VM under the memory limit. Once its heap is at
-    // the ceiling and cannot be collected below it, each allocation any pane
-    // makes runs a full emergency collection and then fails anyway: every
-    // frame pays one per plugin call, for as long as the process lives. That
-    // was a full freeze of the interface, with nothing in the log, until it
-    // was killed.
-    //
-    // The heap here is held live by the pane rather than leaked, which reaches
-    // the same state in one press. Small tables rather than one big string,
-    // because a collection's cost is the objects it has to traverse.
-    let interface = interface_plus(
-        "91_hog.lua",
-        r#"local held = {}
+/// A pane that fills the plugin VM to the byte when `ctrl+g` is pressed.
+///
+/// The heap is held live rather than leaked, which reaches the ceiling in one
+/// press. Small tables rather than one big string, because a collection's cost
+/// is the objects it has to traverse.
+const HOG_PANE: &str = r#"local held = {}
 return {
   name = "hog",
   slot = "sessions",
@@ -7276,21 +7267,17 @@ return {
     end
     return true
   end,
-}"#,
-    );
-    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
-        cmd.env("THURBOX_UI_DIR", interface.path());
-    }) else {
-        return;
-    };
-    tui.wait_for("hog-idle");
+}"#;
 
+/// Fill the VM, then require the interface to keep answering.
+///
+/// The palette is drawn from the kernel's own registry, so the only thing that
+/// can make it late is a loop that is not getting round. The first round trip
+/// waits behind the fill itself and is not counted. Measured, eight more take
+/// ~0.65 s on a healthy VM and ~14 s on a full one, every time, however long it
+/// is left — `RESPONSIVE` sits far from both.
+fn fill_the_vm_and_keep_answering(tui: &mut Tui) {
     tui.send(b"\x07");
-    // The palette is drawn from the kernel's own registry, so the only thing
-    // that can make it late is a loop that is not getting round. The first
-    // round trip waits behind the fill itself and is not counted. Measured,
-    // eight more take ~0.65 s on a healthy VM and ~14 s on a full one, every
-    // time, however long it is left — `RESPONSIVE` sits far from both.
     tui.send(CTRL_P);
     tui.wait_for("type to filter commands");
     tui.send(ESC);
@@ -7308,8 +7295,52 @@ return {
         "eight round trips through the palette took {took:?} after the plugin VM reached \
          its memory limit"
     );
+}
+
+#[test]
+fn a_plugin_vm_at_its_memory_limit_does_not_freeze_the_interface() {
+    // Every plugin shares one VM under the memory limit. Once its heap is at
+    // the ceiling and cannot be collected below it, each allocation any pane
+    // makes runs a full emergency collection and then fails anyway: every
+    // frame pays one per plugin call, for as long as the process lives. That
+    // was a full freeze of the interface, with nothing in the log, until it
+    // was killed.
+    let interface = interface_plus("91_hog.lua", HOG_PANE);
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("hog-idle");
+
+    fill_the_vm_and_keep_answering(&mut tui);
     // On a VM of its own again, which is the only way the heap comes back.
     tui.wait_for("hog-idle");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_full_vm_is_replaced_even_when_the_interface_no_longer_loads() {
+    // The rebuild reads the interface from disk, and an explicit
+    // THURBOX_UI_DIR with a file that no longer loads is never swapped for the
+    // bundled copy — a failed build keeps the VM that is running. When that VM
+    // is the full one, keeping it is the freeze.
+    let interface = interface_plus("91_hog.lua", HOG_PANE);
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("hog-idle");
+    std::fs::write(
+        interface.path().join("plugins").join("92_broken.lua"),
+        "return {",
+    )
+    .expect("break the interface");
+    tui.wait_for("reload failed");
+
+    fill_the_vm_and_keep_answering(&mut tui);
+    tui.wait_for("using the bundled interface");
     assert!(tui.quit().success());
 }
 

@@ -75,12 +75,18 @@ impl App {
         if std::env::var_os("THURBOX_UI_DIR").is_some() {
             return;
         }
+        self.install_bundled_floor();
+    }
+
+    /// Swap in the bundled interface because the user's will not load, saying
+    /// why. Answers whether it did.
+    fn install_bundled_floor(&mut self) -> bool {
         let Ok(dir) = thurbox::kernel::bundled::fallback_dir() else {
-            return;
+            return false;
         };
         let embedded = LuaHost::new(&dir);
         if embedded.error.is_some() {
-            return;
+            return false;
         }
         // Recorded before the swap: the reason is the *user's* error, and the
         // host that carries it is about to be replaced by one with none.
@@ -90,6 +96,7 @@ impl App {
             self.host.error.clone().unwrap_or_default()
         ));
         self.host = embedded;
+        true
     }
 
     /// Turn one interface file off, or back on, and reload.
@@ -295,14 +302,28 @@ impl App {
         }
         let used = self.host.used_memory() >> 20;
         let limit = thurbox::kernel::host::memory_limit() >> 20;
-        tracing::warn!("the plugin VM held {used} of its {limit} MiB; rebuilt the interface");
+        tracing::warn!("the plugin VM held {used} of its {limit} MiB; rebuilding the interface");
         self.reload_interface(super::events::ReloadReason::Memory);
+        // A build that failed kept the VM that was running, which is the full
+        // one. Even an explicit THURBOX_UI_DIR, never swapped otherwise, loses
+        // to that: the bundled copy is a working interface, and this is not.
+        let replaced = !self.host.near_memory_limit() || self.install_bundled_floor();
         self.collect_declarations();
         self.clamp_focus();
-        self.report(
-            format!("the interface reached its {limit} MiB plugin memory limit and was rebuilt"),
-            Level::Error,
-        );
+        if replaced {
+            self.report(
+                format!(
+                    "the interface reached its {limit} MiB plugin memory limit and was rebuilt"
+                ),
+                Level::Error,
+            );
+        } else {
+            tracing::warn!("no interface could be built to replace the full plugin VM");
+            self.report(
+                format!("the interface reached its {limit} MiB plugin memory limit and could not be rebuilt"),
+                Level::Error,
+            );
+        }
     }
 
     /// Report at a chosen severity. The message band badges the three
