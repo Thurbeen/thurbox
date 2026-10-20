@@ -16,7 +16,7 @@ use crate::kernel::events::Field;
 /// Install what every plugin shares into a fresh VM: `store`, `text`, the
 /// clock, and the sealed standard library.
 ///
-/// What is bound to one plugin — `command`, `run`, `files`, `state`, `require`
+/// What is bound to one plugin — `command`, `run`, `run_forget`, `files`, `state`, `require`
 /// — is not here. It goes into that plugin's own environment
 /// ([`plugin_env`]), because every plugin runs in this one Lua state.
 pub(super) fn install_api(
@@ -46,7 +46,7 @@ pub(super) struct EnvParts {
     pub state: Private,
     pub queue: Queue,
     pub roots: Roots,
-    pub runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Ask)>>>,
+    pub runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Request)>>>,
     pub version: StateVersion,
     pub writes: super::WriteCount,
     /// The plugin whose request a handler is running for, while one is: see
@@ -64,6 +64,7 @@ pub(super) struct Env {
     /// `run`, bound to this plugin. Kept out of `table` until the plugin is
     /// granted it — `LuaHost::enter` puts it there per call.
     pub run: mlua::Function,
+    pub run_forget: mlua::Function,
     /// `files`, kept out of `table` the same way until granted.
     pub files: Table,
     /// This plugin's `thurbox`: the published data, read through, plus the
@@ -78,7 +79,7 @@ pub(super) struct Env {
 /// issued a call: a pane that replaced a global another pane calls would run
 /// its own code inside that pane's call, with its grant. So nothing here asks
 /// who is running. Each plugin's chunk gets its own `_ENV`, and the functions
-/// that act for a plugin — `command`, `run`, `files`, `state`, `require` — are created
+/// that act for a plugin — `command`, `run`, `run_forget`, `files`, `state`, `require` — are created
 /// for it, with its identity bound in. Code a plugin defines resolves those
 /// names through its own environment wherever it is called from, so a
 /// hijacking function acts as its author and nobody else.
@@ -122,6 +123,7 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
     Ok(Env {
         thurbox,
         run: run_for(lua, parts.runs.clone(), path.to_string())?,
+        run_forget: forget_for(lua, parts.runs.clone(), path.to_string())?,
         files: files_for(lua, parts.roots.clone())?,
         table,
     })
@@ -662,7 +664,7 @@ pub(super) fn attach_clock(lua: &Lua, ctx: &Table) -> mlua::Result<()> {
 /// to claim another's key).
 fn run_for(
     lua: &Lua,
-    runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Ask)>>>,
+    runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Request)>>>,
     owner: String,
 ) -> mlua::Result<mlua::Function> {
     lua.create_function(
@@ -703,13 +705,19 @@ fn run_for(
                 Value::Nil => session_target()?,
                 Value::String(s) if s == "session" => session_target()?,
                 Value::String(s) if s == "local" => crate::kernel::runs::Target::Local,
+                Value::String(s) => {
+                    let value = s.to_str()?;
+                    let name = value.strip_prefix("host:")
+                        .filter(|name| !name.is_empty() && !name.contains(':'))
+                        .ok_or_else(|| mlua::Error::runtime(
+                            "run: machine must be session, local or host:<exact-configured-name>"
+                        ))?;
+                    crate::kernel::runs::Target::Host(name.to_string())
+                },
                 other => {
-                    let got = match other.as_string() {
-                        Some(s) => format!("{:?}", s.to_string_lossy()),
-                        None => format!("a {}", other.type_name()),
-                    };
                     return Err(mlua::Error::runtime(format!(
-                        "run: machine must be \"session\" or \"local\", not {got}"
+                        "run: machine must be session, local or host:<exact-configured-name>, not a {}",
+                        other.type_name()
                     )));
                 }
             };
@@ -724,10 +732,30 @@ fn run_for(
                     .and_then(|t| t.get::<Option<bool>>("refresh").ok().flatten())
                     .unwrap_or(false),
             };
-            runs.borrow_mut().push((owner.clone(), ask));
+            runs.borrow_mut().push((owner.clone(), crate::kernel::runs::Request::Ask(ask)));
             Ok(())
         },
     )
+}
+
+fn forget_for(
+    lua: &Lua,
+    runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Request)>>>,
+    owner: String,
+) -> mlua::Result<mlua::Function> {
+    lua.create_function(move |_, key: Value| {
+        let key = match key {
+            Value::String(key) if !key.as_bytes().is_empty() => key.to_str()?.to_string(),
+            _ => {
+                return Err(mlua::Error::runtime(
+                    "run_forget: a nonempty string key is required",
+                ))
+            }
+        };
+        runs.borrow_mut()
+            .push((owner.clone(), crate::kernel::runs::Request::Forget(key)));
+        Ok(())
+    })
 }
 
 /// `files.list(session, path)` and `files.read(session, path)`.

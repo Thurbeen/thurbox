@@ -915,8 +915,8 @@ function text.truncate(str, cols, opts) end
 function text.pad(str, cols, align) end
 
 ---@class (exact) thurbox.RunOpts
----@field session? string Required nonempty ID unless machine is "local"; run in this session's directory, on its machine.
----@field machine? "session"|"local" Defaults to "session" (requires session); "local" needs no session and runs in the home directory.
+---@field session? string Required nonempty ID for machine="session"; run in this session's directory, on its machine.
+---@field machine? string "session" (default), "local", or "host:<exact-configured-name>"; local/host need no session and run in the target home.
 ---@field ttl? number Seconds an answer stays fresh.
 ---@field timeout? number Seconds before the program is given up on.
 ---@field refresh? boolean Ask again even if a fresh answer is held.
@@ -930,6 +930,11 @@ function text.pad(str, cols, align) end
 ---@param program string
 ---@param opts thurbox.RunOpts
 function run(key, program, opts) end
+
+--- Forget this plugin's answer/queued request; discard its late completion.
+--- Same grant as run; asynchronous, idempotent, and does not cancel active work.
+---@param key string Nonempty key, implicitly scoped to this plugin.
+function run_forget(key) end
 
 --- Loads any `.lua` under the interface directory, and nothing outside it.
 ---@param name string

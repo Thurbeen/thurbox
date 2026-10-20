@@ -958,6 +958,15 @@ pub fn resolve_host(backend_type: &str) -> Option<Option<crate::session::HostDef
     }
 }
 
+/// Look up an exact configured/discovered host name in the process registry.
+/// Host config is refreshed by restarting the process, not per request.
+pub fn configured_host(name: &str) -> Option<crate::session::HostDef> {
+    crate::agent::host_config::cached_registry()
+        .0
+        .get(name)
+        .cloned()
+}
+
 /// The multiplexer server a row's windows live on, as a comparison key: its
 /// route, qualified the way the row was written. Two rows share one window
 /// namespace exactly when their keys agree, whichever spelling each was stored

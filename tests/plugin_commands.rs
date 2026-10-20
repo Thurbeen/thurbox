@@ -221,6 +221,30 @@ fn revoking_takes_the_capability_away_again() {
 }
 
 #[test]
+fn forgetting_run_answers_requires_the_same_owner_grant_as_running() {
+    let source = r#"return {
+      name = "forget-grant", slot = "sessions", capabilities = { "run" },
+      render = function()
+        if run then
+          assert(type(run_forget) == "function", "trusted run owner cannot forget")
+          run_forget("never-asked")
+          run_forget("never-asked")
+        else
+          assert(run_forget == nil, "untrusted owner can forget")
+        end
+        return { type = "text", text = "ok" }
+      end,
+    }"#;
+    let (_home, ui) = interface(&[("91_forget.lua", source)]);
+    let host = LuaHost::new(&ui);
+    render(&host, "forget-grant");
+    host.set_trusted(vec!["plugins/91_forget.lua".to_string()]);
+    render(&host, "forget-grant");
+    host.set_trusted(Vec::new());
+    render(&host, "forget-grant");
+}
+
+#[test]
 fn a_capability_that_does_not_exist_fails_the_load_naming_the_file() {
     // Loading it and granting nothing would look like the capability is broken.
     let (_home, ui) = interface(&[(
@@ -437,6 +461,43 @@ fn a_run_may_ask_for_this_machine_instead() {
 }
 
 #[test]
+fn a_configured_host_selector_is_exact_and_independent_of_session() {
+    for name in ["local", "session", "example"] {
+        let opts = format!(r#"{{ machine = "host:{name}", session = "irrelevant" }}"#);
+        assert_eq!(the_one_ask(&opts).target, Target::Host(name.into()));
+    }
+}
+
+#[test]
+fn forget_preserves_order_and_binds_the_issuing_owner() {
+    let source = r#"return {
+      name = "ordered", slot = "sessions", capabilities = { "run" },
+      render = function()
+        run("k", "true", { machine = "local" })
+        run_forget("k")
+        run("k", "false", { machine = "local" })
+        return { type = "text", text = "" }
+      end,
+    }"#;
+    let (_home, ui) = interface(&[("91_ordered.lua", source)]);
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec!["plugins/91_ordered.lua".to_string()]);
+    render(&host, "ordered");
+    let requests = host.drain_run_requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests
+        .iter()
+        .all(|(owner, _)| owner == "plugins/91_ordered.lua"));
+    assert!(
+        matches!(&requests[0].1, thurbox::kernel::runs::Request::Ask(ask) if ask.program == "true")
+    );
+    assert!(matches!(&requests[1].1, thurbox::kernel::runs::Request::Forget(key) if key == "k"));
+    assert!(
+        matches!(&requests[2].1, thurbox::kernel::runs::Request::Ask(ask) if ask.program == "false")
+    );
+}
+
+#[test]
 fn session_routing_requires_a_nonempty_string_before_queueing() {
     for opts in [
         "nil",
@@ -480,6 +541,8 @@ fn a_machine_nobody_knows_is_refused_not_guessed() {
     // not a string at all is no less unknown than a misspelt one.
     for opts in [
         r#"{ machine = "mars" }"#,
+        r#"{ machine = "host:" }"#,
+        r#"{ machine = "host:ssh:example" }"#,
         r#"{ session = "remote-session", machine = false }"#,
         r#"{ session = "remote-session", machine = {} }"#,
     ] {

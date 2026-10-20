@@ -852,7 +852,7 @@ pub struct LuaHost {
     /// Separate from `queue` because a run carries the plugin that asked —
     /// answers are namespaced by it — and because the command bus dispatches
     /// writes to workers, while this is a read whose worker the store owns.
-    runs: Rc<RefCell<Vec<(String, super::runs::Ask)>>>,
+    runs: Rc<RefCell<Vec<(String, super::runs::Request)>>>,
     /// Paths the user trusted, as `set_trusted` last recorded them.
     trusted: Rc<RefCell<Vec<String>>>,
     /// Paths the user turned off. Read by `build`, which simply does not load
@@ -1748,6 +1748,12 @@ impl LuaHost {
             Value::Nil
         };
         let _ = plugin.env.table.raw_set("run", run);
+        let forget = if self.may(plugin, Capability::Run) {
+            Value::Function(plugin.env.run_forget.clone())
+        } else {
+            Value::Nil
+        };
+        let _ = plugin.env.table.raw_set("run_forget", forget);
         let files = if self.may(plugin, Capability::Files) {
             Value::Table(plugin.env.files.clone())
         } else {
@@ -1820,13 +1826,27 @@ impl LuaHost {
         *self.trusted.borrow_mut() = paths;
     }
 
-    /// Take the runs plugins asked for this frame.
+    /// Take asks only; callers serving execution must use
+    /// [`Self::drain_run_requests`] to preserve forget ordering.
     pub fn drain_runs(&self) -> Vec<(String, super::runs::Ask)> {
+        self.drain_run_requests()
+            .into_iter()
+            .filter_map(|(owner, request)| match request {
+                super::runs::Request::Ask(ask) => Some((owner, ask)),
+                super::runs::Request::Forget(_) => None,
+            })
+            .collect()
+    }
+
+    /// Take owner-bound execution and eviction operations in Lua call order.
+    pub fn drain_run_requests(&self) -> Vec<(String, super::runs::Request)> {
         let asked = std::mem::take(&mut *self.runs.borrow_mut());
         if self.perf_timing.get() {
             let mut table = self.plugin_perf.borrow_mut();
-            for (path, _) in &asked {
-                table.stats_mut(path).asked += 1;
+            for (path, request) in &asked {
+                if matches!(request, super::runs::Request::Ask(_)) {
+                    table.stats_mut(path).asked += 1;
+                }
             }
         }
         asked

@@ -250,7 +250,6 @@ tokio::main → load config + settings → heal extensions → arm the heartbeat
   keeps reporting — `reset` there, or run the ssh session inside a local tmux.
   `tests/tui_e2e.rs` pins both exits' escapes.
 
-
 ## Writing an interface plugin
 
 The bundled set is deliberately small: `10_sessions`, `20_agent`, `65_search`, plus
@@ -495,10 +494,21 @@ deliberately **not a sandbox** — a program thurbox spawns has the user's autho
 and the position is that thurbox can only refuse to run things unasked.
 `examples/lua/composite.lua` is the worked example.
 
+`machine = "host:<exact-name>"` targets a configured/discovered host without a
+session, including `share_sessions = false`, in its home and platform shell.
+Hosts config is process-cached; restart to refresh it. The existing `run` grant
+covers this selector. `run_forget(key)` has the same owner/grant and removes an
+answer and queued request in call order, discarding old active completions even
+if the key is reused. Active captures keep their slots until finish/timeout;
+there is no remote cancellation promise. Plugins must bound desired keys and
+forget retired ones: queue/answer counts have no automatic cap. Request identity
+lives only with retained entries and active work, with no tombstone map. Full
+result and lifetime semantics are owned by `docs/PLUGINS.md`.
+
 **Every plugin runs in its own `_ENV`** (`host::api::plugin_env`): one Lua state
 is shared, so identity is bound where a function is made, never read from who is
 running — a pane that wrapped `type` used to run inside a trusted pane's call with
-its `run` and its path. `command`, `run`, `files`, `state` and `require` (with a
+its `run` and its path. `command`, `run`, `run_forget`, `files`, `state` and `require` (with a
 per-plugin module cache, modules run in the requirer's env) are created per plugin;
 reads fall through to the sealed shared globals, writes stay in the plugin's table.
 `string`/`table`/`math`/`coroutine`/`utf8`/`text`/`store` are per-plugin empty
