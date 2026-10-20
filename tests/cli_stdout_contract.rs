@@ -368,9 +368,46 @@ fn session_purge_drops_old_deletes_and_list_since_reads_only_newer_ones() {
         );
         serde_json::from_slice(&out.stdout).expect("one JSON document")
     };
+    // A soft row's windows are listed before it goes, so what a purge can do
+    // depends on this machine: with the multiplexer installed it lists the
+    // (empty) server and the row goes; without it — the Windows runner has no
+    // psmux — nothing can be listed and the row must stay, saying why.
+    let mux = thurbox::session::Multiplexer::platform_default();
+    let listable = std::process::Command::new(mux.name())
+        .arg("-V")
+        .output()
+        .map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |_| true);
     let dry = purge(&["--older-than-days", "30", "--dry-run"]);
-    assert_eq!(dry["purged"][0]["id"], Value::String(old.clone()), "{dry}");
-    assert_eq!(dry["purged"].as_array().map(Vec::len), Some(1), "{dry}");
+    let expect = |report: &Value| {
+        if listable {
+            assert_eq!(
+                report["purged"][0]["id"],
+                Value::String(old.clone()),
+                "{report}"
+            );
+            assert_eq!(
+                report["purged"].as_array().map(Vec::len),
+                Some(1),
+                "{report}"
+            );
+        } else {
+            assert_eq!(
+                report["purged"].as_array().map(Vec::len),
+                Some(0),
+                "{report}"
+            );
+            assert_eq!(
+                report["kept"][0]["id"],
+                Value::String(old.clone()),
+                "{report}"
+            );
+            assert_eq!(
+                report["kept"][0]["reason"], "its server's windows could not be listed",
+                "{report}"
+            );
+        }
+    };
+    expect(&dry);
     let listed = |extra: &[&str]| -> Vec<String> {
         let out = env.run(&[&["session", "list", "--deleted"], extra, &["--json"]].concat());
         let rows: Value = serde_json::from_slice(&out.stdout).expect("JSON");
@@ -383,12 +420,13 @@ fn session_purge_drops_old_deletes_and_list_since_reads_only_newer_ones() {
     assert_eq!(listed(&[]).len(), 2, "a dry run purges nothing");
 
     let done = purge(&["--older-than-days", "30"]);
-    assert_eq!(
-        done["purged"][0]["id"],
-        Value::String(old.clone()),
-        "{done}"
-    );
-    assert_eq!(listed(&[]), vec![recent.clone()]);
+    expect(&done);
+    let remaining = if listable {
+        vec![recent.clone()]
+    } else {
+        vec![recent.clone(), old.clone()]
+    };
+    assert_eq!(listed(&[]), remaining);
     let since = (forty_days_ago + 1).to_string();
     assert_eq!(listed(&["--since", &since]), vec![recent]);
 
