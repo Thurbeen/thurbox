@@ -325,7 +325,10 @@ session), never on the loop, ADR-P12).
   times a minute — right after anything it delegated, and from `automation
   tick`; a pass asks the host's `session revision` — its `rows_version` — first
   and reuses the lists it last pulled while that holds, so an idle host is not
-  re-listed), and performs create/delete/restart/restore by
+  re-listed; and a host reporting `deleted_since` has its deleted history read
+  whole once per process and then only `session list --deleted --since <newest
+  deleted_at held>`, because every write there moves the revision and the
+  history only grows), and performs create/delete/restart/restore by
   running `thurbox-cli session …` **on the host** (`session_ops::host_cli`,
   branched inside the four pipelines so every caller delegates). A host with
   no CLI is **provisioned** one under `~/.local/share/thurbox/bin/` (the

@@ -777,7 +777,11 @@ has the rationale; the shape:
   companion shell. A pass that changes nothing writes nothing, and a
   host that changed nothing is not re-listed: the pass asks its
   `session revision` first and reuses the lists it last pulled while
-  that number holds.
+  that number holds. The deleted list is read whole once, then only by
+  `--since` the newest delete already held: it is the host's whole history,
+  and it is still all needed — a row held here that the host deleted long
+  ago must read as deleted, not as unknown, or the pass would register it
+  back onto the host.
 - **Hosts of hosts.** A host that mirrors hosts of its own lists their
   sessions too, under *its* `ssh:`/`wsl:` names — so A reaching B, with
   B reaching C, sees C's sessions through B. A session keeps its id on
@@ -879,6 +883,9 @@ has the rationale; the shape:
   on the host — asked for with `thurbox-cli session reap <ref>` there,
   since a host running only the CLI has no interface of its own to
   collect them.
+- **Purge.** `thurbox-cli session purge` (or `deleted_retention_days`)
+  drops deleted rows from *this* database only; a mirror never pushes a
+  purge to its host. Purge each machine's own history there.
 - **A delete sticks.** A tombstone here outranks a row the host still
   lists as active, unless the host wrote that row *after* the delete
   (which is a restore taken there): the listing carries `updated_at`
