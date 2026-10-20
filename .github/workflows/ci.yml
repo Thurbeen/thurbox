@@ -529,6 +529,8 @@ jobs:
   sonarqube:
     name: SonarQube
     needs: changes
+    # sonar-project.properties names Thurbeen's project. A workflow copied into
+    # another repository cannot analyse against that project's credentials.
     # Skipped for a pull request from a fork. GitHub never hands a repository
     # secret to a `pull_request` run whose head is another repository, so
     # `SONAR_TOKEN` arrives empty, the scan step fails, and it takes
@@ -538,6 +540,7 @@ jobs:
     # it. The trade is real and deliberate: a fork's code is not analysed
     # before it lands, only after, when `sonar.yml` analyses `main`.
     if: >-
+      github.repository == 'Thurbeen/thurbox' &&
       needs.changes.outputs.rust == 'true' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest

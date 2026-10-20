@@ -399,3 +399,41 @@ fn a_node_launcher_is_not_a_second_codex_tui() {
         true
     );
 }
+
+#[test]
+fn codex_hook_waits_for_the_restarted_pane_to_be_published() {
+    let home = tempfile::tempdir().unwrap();
+    let db = isolate(home.path());
+    let mut row = codex_row("55555555-5555-4555-8555-555555555555");
+    row.backend_id = "%41".into();
+    db.upsert_session(&row).unwrap();
+    db.set_session_meta(row.id, CODEX_THREAD_META, "picker-required")
+        .unwrap();
+    let mut child = codex_hook::command(home.path())
+        .env("THURBOX_SESSION", row.id.to_string())
+        .env(
+            "THURBOX_SESSION_ID",
+            row.agent_session_id.as_deref().unwrap(),
+        )
+        .env("TMUX_PANE", "%42")
+        .env("THURBOX_CODEX_PICKER", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(br#"{"session_id":"11111111-1111-4111-8111-111111111111","source":"resume","hook_event_name":"SessionStart"}"#).unwrap();
+    // The old row remains visible while the replacement process starts.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    row.backend_id = "%42".into();
+    db.upsert_session(&row).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["bound"], true, "{result}");
+    assert_eq!(
+        db.get_session_meta(row.id, CODEX_THREAD_META)
+            .unwrap()
+            .as_deref(),
+        Some("11111111-1111-4111-8111-111111111111")
+    );
+}

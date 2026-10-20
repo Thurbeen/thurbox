@@ -1815,17 +1815,27 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
         .filter(|id| super::delivery::valid_codex_thread(id))
         .ok_or("Codex SessionStart did not report a valid session_id")?;
 
-    // The agent window starts before its row is persisted. The hook can run
-    // immediately, so wait briefly for that row instead of losing the only
-    // event that tells us which conversation Codex actually opened.
+    // A new window can report before its row is published. On restart the
+    // row already exists but still names the old pane; wait for the replacement
+    // too, without accepting that pane as proof of process ownership.
+    let hook_pane = std::env::var("TMUX_PANE").ok();
+    let mut latest = None;
     let target = (0..40)
-        .find_map(|_| match db.get_session_by_id(row_id) {
-            Ok(Some(row)) => Some(row),
-            _ => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                None
+        .find_map(|_| {
+            if let Ok(Some(row)) = db.get_session_by_id(row_id) {
+                let awaiting_pane = row.backend_id.starts_with('%')
+                    && hook_pane.as_deref().is_some_and(|pane| {
+                        pane.starts_with('%') && pane != row.backend_id
+                    });
+                if !awaiting_pane {
+                    return Some(row);
+                }
+                latest = Some(row);
             }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            None
         })
+        .or(latest)
         .ok_or("Codex hook could not find its Thurbox session; run `thurbox-cli session doctor` and repair the hook installation")?;
     if target.agent != "codex" || target.agent_session_id.as_deref() != Some(agent_id.as_str()) {
         return Err("Codex hook identity does not match the Thurbox session".into());
