@@ -7288,26 +7288,26 @@ return {
     tui.send(b"\x07");
     // The palette is drawn from the kernel's own registry, so the only thing
     // that can make it late is a loop that is not getting round. The first
-    // round trip waits behind the fill itself; the ones after it are the
-    // measure — ~80 ms on a healthy VM, ~1.7 s on a full one, every time,
-    // however long it is left.
+    // round trip waits behind the fill itself and is not counted. Measured,
+    // eight more take ~0.65 s on a healthy VM and ~14 s on a full one, every
+    // time, however long it is left — `RESPONSIVE` sits far from both.
     tui.send(CTRL_P);
     tui.wait_for("type to filter commands");
     tui.send(ESC);
     tui.wait_gone("type to filter commands");
-    for round in 0..3 {
-        let opened = Instant::now();
+    let started = Instant::now();
+    for _ in 0..8 {
         tui.send(CTRL_P);
         tui.wait_for("type to filter commands");
         tui.send(ESC);
         tui.wait_gone("type to filter commands");
-        let took = opened.elapsed();
-        assert!(
-            took < Duration::from_millis(600),
-            "round trip {round} through the palette took {took:?} after the plugin VM \
-             reached its memory limit"
-        );
     }
+    let took = started.elapsed();
+    assert!(
+        took < RESPONSIVE,
+        "eight round trips through the palette took {took:?} after the plugin VM reached \
+         its memory limit"
+    );
     // On a VM of its own again, which is the only way the heap comes back.
     tui.wait_for("hog-idle");
     assert!(tui.quit().success());
