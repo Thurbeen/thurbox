@@ -17,8 +17,8 @@ use migrations::{
     migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v50_lost_at,
     migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v53_session_key,
     migrate_v54_telemetry_export, migrate_v55_event_cursors, migrate_v55_move_cursors_and_claims,
-    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
-    migrate_v8_vms, migrate_v9_agent_session_id,
+    migrate_v56_automation_runs, migrate_v5_session_commands, migrate_v6_worktrees_pk,
+    migrate_v7_shell_backend_id, migrate_v8_vms, migrate_v9_agent_session_id,
 };
 
 use rusqlite::{Connection, OptionalExtension};
@@ -113,7 +113,12 @@ use rusqlite::{Connection, OptionalExtension};
 /// `session_name_claim:*` / `session_restart_claim:*` keys of `metadata`. It
 /// also takes `audit_log` and the teardown sweep's backoff keys out of the v49
 /// triggers, which rebuilt the interface's snapshot for writes it never reads.
-pub const SCHEMA_VERSION: u32 = 55;
+/// v56 adds `key` (unique where set), `timeout_secs`, `cwd` and `env` to
+/// `automations`, and `finished_at`, `exit_code`, `stdout_tail`, `stderr_tail`
+/// and `deadline_at` to `automation_runs`: an automation an orchestrator can
+/// address and bound, and a run that says how it ended (issues #1507, #1508,
+/// #1515).
+pub const SCHEMA_VERSION: u32 = 56;
 
 /// The oldest [`SCHEMA_VERSION`] that can still read and write a database this
 /// binary migrated, recorded as `min_reader_version` in `metadata`.
@@ -129,7 +134,8 @@ pub const SCHEMA_VERSION: u32 = 55;
 ///
 /// 53, because v54 only adds `telemetry_export`, a table a v53 thurbox never
 /// reads or writes, and v55 only adds `event_cursors`, which no older thurbox
-/// reads either; `telemetry_export` stays for them.
+/// reads either; `telemetry_export` stays for them. v56 only adds nullable
+/// columns and an index on a column no older thurbox writes.
 pub const MIN_READER_VERSION: u32 = 53;
 
 /// A single migration step: applied when the stored version is below `target`,
@@ -635,6 +641,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (54, migrate_v54_telemetry_export, Reapply::WhenMissing),
         (55, migrate_v55_event_cursors, Reapply::WhenMissing),
         (55, migrate_v55_move_cursors_and_claims, Reapply::Never),
+        (56, migrate_v56_automation_runs, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {
@@ -859,6 +866,65 @@ mod tests {
             )
             .unwrap();
         assert_eq!(triggers, 0);
+    }
+
+    /// A v55 database gains the automation columns v56 adds, its key index,
+    /// and keeps the run rows it had: theirs are NULL, which readers take as a
+    /// run from before structured fields.
+    #[test]
+    fn v56_adds_the_automation_key_and_run_fields_to_a_v55_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_automations_key;
+             ALTER TABLE automations DROP COLUMN key;
+             ALTER TABLE automations DROP COLUMN timeout_secs;
+             ALTER TABLE automations DROP COLUMN cwd;
+             ALTER TABLE automations DROP COLUMN env;
+             ALTER TABLE automation_runs DROP COLUMN finished_at;
+             ALTER TABLE automation_runs DROP COLUMN exit_code;
+             ALTER TABLE automation_runs DROP COLUMN stdout_tail;
+             ALTER TABLE automation_runs DROP COLUMN stderr_tail;
+             ALTER TABLE automation_runs DROP COLUMN deadline_at;
+             UPDATE metadata SET value = '55' WHERE key = 'schema_version';
+             INSERT INTO automation_runs (automation_id, started_at, status, detail)
+                 VALUES (1, 10, 'success', 'exit 0');",
+        )
+        .unwrap();
+        initialize(&conn).unwrap();
+
+        for (table, column) in [
+            ("automations", "key"),
+            ("automations", "timeout_secs"),
+            ("automations", "cwd"),
+            ("automations", "env"),
+            ("automation_runs", "finished_at"),
+            ("automation_runs", "exit_code"),
+            ("automation_runs", "stdout_tail"),
+            ("automation_runs", "stderr_tail"),
+            ("automation_runs", "deadline_at"),
+        ] {
+            assert!(
+                column_exists(&conn, table, column).unwrap(),
+                "{table}.{column}"
+            );
+        }
+        let index: bool = conn
+            .prepare(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_automations_key'",
+            )
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(index);
+        let (detail, finished): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT detail, finished_at FROM automation_runs WHERE automation_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((detail.as_str(), finished), ("exit 0", None));
     }
 
     /// The bookkeeping nothing on screen reads rebuilds nothing (issue #1475):

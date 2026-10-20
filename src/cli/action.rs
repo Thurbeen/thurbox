@@ -1,8 +1,7 @@
 //! Shared helpers for the `task` and `automation` CLI surfaces, which both build
-//! an `AutomationAction` from `--session`/`--repo`/`--command` flags, label and
-//! serialize it, and spawn-or-reuse a headless session to deliver a prompt. Each
-//! command keeps only its type-specific wrappers (different return shapes and
-//! reuse-matching) on top of these primitives.
+//! an `AutomationAction` from `--session`/`--repo`/`--command` flags, and label
+//! and serialize it. Spawning and delivering a prompt is
+//! `session_ops::deliver`'s.
 //!
 //! tmux/spawn helpers are reached via fully-qualified `crate::agent::…` paths (no
 //! `use`) to keep the cli module free of an `agent` import — see
@@ -11,12 +10,7 @@
 use serde_json::{json, Value};
 
 use crate::session::{AutomationAction, SessionId};
-use crate::session_ops::SpawnRequest;
 use crate::storage::Database;
-
-/// Seconds to wait after a headless spawn before delivering the prompt, giving
-/// the agent CLI time to start.
-pub(crate) const BOOT_DELAY_SECS: u64 = 3;
 
 /// The send/spawn/exec flags both action-bearing commands accept, gathered so
 /// their resolution lives once. `task` passes no `--command` (Exec is
@@ -134,72 +128,5 @@ pub(crate) fn resolve_send_target(db: &Database, s: &str) -> Result<SessionId, S
     db.get_session_by_id(session_id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .ok_or_else(|| format!("Session not found: {s}"))?;
-    Ok(session_id)
-}
-
-/// Why a [`spawn_and_deliver`] attempt didn't fully succeed. The split lets each
-/// caller preserve its own behavior: a spawn failure leaves no session, while a
-/// delivery failure still created one (callers that record a session id keep it).
-pub(crate) enum SpawnDeliverError {
-    /// The spawn itself failed; no session was created.
-    Spawn(String),
-    /// The session spawned but the delayed prompt delivery failed.
-    Deliver {
-        session_id: SessionId,
-        message: String,
-    },
-}
-
-/// Wire the built-in extensions just before a command launches an agent.
-///
-/// The TUI's boot and the heartbeat's tick each run the install, but a machine
-/// driven by `thurbox-cli` alone reaches its first spawn before either has: the
-/// heartbeat is armed only *after* `session create`, so that first session
-/// launched without claude's `--settings` and never reported a state. `create`
-/// and the task path reach it through [`ensure_hooks_wired_for`] once the
-/// request validates; `restart`, `start` and `fork` call it unconditionally.
-pub(crate) fn ensure_hooks_wired(db: &Database, backends: &crate::backend::BackendRegistry) {
-    for m in &crate::session_ops::ensure_builtin_extensions(db, backends) {
-        tracing::info!("{m}");
-    }
-}
-
-/// [`ensure_hooks_wired`] for a new session, once `req` would be accepted: a
-/// request the spawn refuses (a task title with a `/` is an unsafe session
-/// name) must not change the agent config either.
-pub(crate) fn ensure_hooks_wired_for(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    req: &SpawnRequest,
-) -> Result<(), String> {
-    crate::session_ops::spawn::validate_request(db, req)?;
-    ensure_hooks_wired(db, backends);
-    Ok(())
-}
-
-/// Spawn a fresh headless session for `req` and deliver `prompt` once the agent
-/// boots (after [`BOOT_DELAY_SECS`]). Returns the new session id on success.
-pub(crate) fn spawn_and_deliver(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    name: &str,
-    req: SpawnRequest,
-    prompt: &str,
-) -> Result<SessionId, SpawnDeliverError> {
-    ensure_hooks_wired_for(db, backends, &req).map_err(SpawnDeliverError::Spawn)?;
-    let spawned = crate::session_ops::spawn_session_headless(db, backends, req)
-        .map_err(SpawnDeliverError::Spawn)?;
-    let session_id = spawned.session_id;
-    crate::session_ops::send_text_when_booted(
-        db,
-        backends,
-        session_id,
-        prompt,
-        std::time::Duration::from_secs(BOOT_DELAY_SECS),
-    )
-    .map_err(|e| SpawnDeliverError::Deliver {
-        session_id,
-        message: format!("spawned {name} but prompt delivery failed: {e}"),
-    })?;
     Ok(session_id)
 }

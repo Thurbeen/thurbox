@@ -1289,6 +1289,8 @@ mod tests {
             action: AutomationAction::Send { session_id },
             prompt: "noop".into(),
             next_run_at: Some(u64::MAX),
+            key: None,
+            run: Default::default(),
         })
         .unwrap()
     }

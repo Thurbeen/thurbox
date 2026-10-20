@@ -1526,7 +1526,7 @@ each part. `AGENTS.md` keeps a summary and points here.
 > interface has no in-TUI scheduler — the heartbeat keeper runs due
 > automations whether or not thurbox is open, which is what keeps every extension
 > working. Author and inspect them with `thurbox-cli automation`. The keeper's 60 s
-> cadence is the current resolution; a ~1 s in-TUI pass is owed.
+> cadence is the resolution; `automation run --wait` fires one at once.
 
 In 1.x, `Ctrl+P` opened the automations list (the chord is the command
 palette now). An **automation** is a named,
@@ -1570,36 +1570,81 @@ spent one-shot clears it and disables the automation.
   **idempotent** (`git::create_or_attach_worktree`): if the session
   was closed but its worktree/branch still exist, a later fire
   reuses them rather than failing with "branch already exists".
+- **exec** — run a shell command (`sh -c`, `cmd /C` on Windows) with no
+  session and no agent: a deterministic scheduled job such as a sync. It
+  runs through the same bounded runner as the `hooks.toml` lifecycle hooks
+  (`session_ops::bounded`), with a deadline (`--timeout`, default 600 s) at
+  which it and everything it started are killed, a directory (`--cwd`,
+  default your home directory) and variables (`--env K=V`). It inherits the
+  firer's environment, then gets its own variables, then thurbox's location
+  (`THURBOX_CONFIG_DIR`, `THURBOX_DATA_DIR`, `THURBOX_SOCKET`) and its own
+  identity (`THURBOX_AUTOMATION_ID`, `THURBOX_AUTOMATION_NAME`), which win —
+  so a `thurbox-cli` inside reaches the instance that fired it, whether the
+  heartbeat, an OS timer or a hand-run tick did. A session identity the firer
+  carried (`THURBOX_SESSION` and its kin, when `run --wait` is typed in a
+  pane) is dropped. There is no login shell: write `bash -lc '…'` in the
+  command for one. The command runs in a process group of its own, which is
+  what lets a timeout kill everything it started — and also why a firer that
+  is itself killed mid-run (a Ctrl+C on `run --wait`) leaves it running; the
+  next tick past its deadline marks that run `timed_out`.
 
 ### Execution model
 
-Automations fire from **three** places, all going through the same
-`thurbox-cli automation tick` logic and made safe by **claim-based
-firing** (see below):
+Every fire goes through one implementation, `session_ops::automations`
+(issue #1468) — the interface's pane, `thurbox-cli automation` and the
+heartbeat call the same save, fire and tick. Automations fire from:
 
-1. **TUI tick loop** (`process_automations`, ~1 s cadence) — while
-   the TUI is open. On startup it runs an immediate catch-up pass
-   so runs missed while the TUI was down fire once on boot.
-2. **heartbeat keeper** — a detached `automation-heartbeat`
-   window (armed on TUI startup and on `thurbox-cli automation
-   create`) that loops `thurbox-cli automation tick` every 60 s.
-   Because it is a live window it also keeps the multiplexer server
-   alive, so automations — **including spawn** — fire even after
-   the TUI is closed and even with no other sessions open. This
-   restores (and generalizes) the old scheduled-command behavior
-   of firing while the TUI is shut down.
-3. **Optional OS timer** — `packaging/systemd` / `packaging/launchd`
-   units run the same `tick` for reboot-proof, tmux-independent
-   firing. Opt-in.
+1. **The heartbeat keeper** — a detached `automation-heartbeat` window
+   (armed on TUI startup and on `thurbox-cli automation create`) that loops
+   `thurbox-cli automation tick` every 60 s. Because it is a live window it
+   also keeps the multiplexer server alive, so automations — **including
+   spawn** — fire with the TUI closed and with no other sessions open. The
+   interface itself runs no scheduler.
+2. **An optional OS timer** — `packaging/systemd` / `packaging/launchd`
+   units run the same `tick` for reboot-proof, tmux-independent firing.
+   Opt-in.
+3. **`automation run <ref> --wait`** — one automation, now, on the calling
+   process (below).
 
 **Claim-based firing (no double-fire).** Before acting, every firer
 performs an atomic compare-and-swap
 (`Database::claim_due_automation`): it advances `next_run_at` *only
 if* the row still holds the value it observed as due. Exactly one
-firer wins; the rest skip. So the TUI, the keeper, and an OS timer
+firer wins; the rest skip. So the keeper, an OS timer and a hand-run tick
 can all run at once without an automation firing twice. Ordering is
 claim-then-act (at-most-once): a crash between claim and side effect
-loses a run rather than duplicating one.
+loses a run rather than duplicating one. Every fire also holds the
+automation's run lock (`lock:run:<id>` in `event_cursors`) for its length,
+so a tick skips an automation whose `run --wait` is still going
+(`run-in-flight`) and `run --wait` refuses one a tick is firing.
+
+**The run row.** The claim and the run's row are one transaction: the row
+is opened `running`, stamped `started_at`, with a deadline (the timeout plus
+5 s), before the action fires, and the outcome is written over it — `status`
+(`success`, `error`, `skipped`, `timed_out`), `finished_at`, an exec's
+`exit_code` and the last 4 KB of its stdout and its stderr apart, plus the
+one-line `detail`. A row still `running` past its deadline is marked
+`timed_out` by the next tick, so a firer that hung and one that died both
+leave a record. `automation runs --json` shows all of it, with
+`duration_ms`. A history write that fails is reported as the fire's
+`history_error` in the tick's output, so a row it left `running` is not
+read as a hung action.
+
+**The tick's wall time.** Due execs run on worker threads, four at most,
+each with its own deadline, while the tick fires the sends and spawns and
+then does its housekeeping — the remote hook-status poll, the mirror sync,
+the soft-delete reap, remote teardown retries, the telemetry export. A tick
+takes as long as its longest exec rather than the sum, and a hung exec
+holds up neither another due automation nor the housekeeping.
+
+**A tick that fails** (the database would not open, the due scan could not
+read a row, a panic) is recorded in `automation-tick.json` beside the
+database, and appended with a timestamp to `automation-tick.log` there
+(capped at 64 KB). So is each automation a tick that ran could not fire
+because its lock or claim could not be written; it is due again next tick.
+The keeper discards the tick's own output, so this is the trace;
+`thurbox-cli runtime status` reports the last tick's time, outcome, error
+and those automations.
 
 **Headless send vs spawn.** `send` types into the target session's
 window on the backend its route names. `spawn` creates the session
@@ -1608,50 +1653,11 @@ backend (`send_text_after`, a short `run-shell` timer on tmux) once the
 agent boots; a later fire reuses the `auto-<id>` session it finds by its
 row, and never types into a window no row owns (ADR-30).
 
-### Automations pane
+### Automations pane (1.x)
 
-A dedicated **Automations** pane sits beneath the session list in
-the left column. It is **always present** (showing `none` when
-empty) as long as the column is tall enough for both lists; its
-height grows with the automation count (capped). Each row reads
-`● name — schedule · action · next-run`. It is treated as **part of
-the session pane**: it forms one continuous vertical list with the
-session list, so `j` past the last session drops focus into the
-pane and `k` at the top automation hands focus back to the last
-session. Once focused: `j`/`k` select, `Space` toggle enabled, `r`
-run-now, `d` (or `Ctrl+D`) delete, and **`Ctrl+N`/`n` create a new
-automation** (works even on an empty pane).
-
-The pane behaves **exactly like the session list**, with the
-central pane as its terminal-equivalent: while the pane is focused,
-the central pane shows a **single editor** for the selected
-automation (a live, read-only-looking preview — no separate "info"
-screen). Pressing **`Enter`** (or **`Ctrl+L`**, or `e`) moves focus
-*into* that editor — just like `Enter`/`Ctrl+L` on a session focuses
-its terminal — where you can change fields; **`Ctrl+H`** (or `Esc`)
-returns to the list. `Enter` in the editor saves; `Esc` discards.
-`Ctrl+E` toggles the automation's enabled flag from inside the
-editor (the global file-viewer binding is suppressed there).
-
-The scoped automation's **run history** is shown beneath the editor:
-each row reads `<status> <clock time> <relative age> <detail>` with
-the status (`ok`/`error`/`skipped`) colour-coded and bold. Press
-`Ctrl+L` again (from the editor) to focus the history panel, then
-`j`/`k` to move the cursor over runs; the panel footer shows its
-shortcuts — **`r` runs the automation now**, **`Enter` jumps to the
-session that run touched** (the send target / spawned session, when
-it's still open), `Esc` returns to the editor. While in this whole
-context the session list above
-de-emphasises itself (no accent border, no selected-row highlight)
-since the active session is irrelevant there.
-
-`Ctrl+L`/`Ctrl+H` cycle **within the current context only** — the
-automation ring is `Automations → editor → run history` and wraps
-back to `Automations` (it never jumps off to a session; returning to
-the list discards unsaved edits, just like `Esc`). The session ring
-is the usual `SessionList → Terminal` (+ file viewer). Switching
-*between* the two contexts is done with `j`/`k` in the left column,
-not the focus cycle.
+1.x had an Automations pane beneath the session list, with an editor and a
+run-history panel. Neither exists in the current interface; a plugin can
+build one from `thurbox.automations` and the `automation` command.
 
 ### List + editor (1.x)
 
@@ -1690,28 +1696,48 @@ it opens as raw `cron`.
 Automations live in the `automations` SQLite table (`name`,
 `enabled`, `schedule_kind`/`schedule_spec`, `timezone`,
 `action_kind` plus action columns, `prompt`, timestamps,
-`last_run_at`, `next_run_at`), with a partial index on
-`next_run_at` (where enabled and non-null) for the due-scan. Each
-fire appends to `automation_runs` for history: the row is written as
-`running`, stamped `started_at`, before the action fires, and its `status`
-(success/skipped/error) and free-text `detail` are written over it when the
-action returns — so a run that never returns still shows. A history write
-that fails is logged and reported as the fire's `history_error` in the tick's
-output, so a row it left `running` is not read as a hung action.
+`last_run_at`, `next_run_at`, and since schema v56 `key`, `timeout_secs`,
+`cwd`, `env`), with a partial index on `next_run_at` (where enabled and
+non-null) for the due-scan and a unique one on `key` where set. Each fire
+appends to `automation_runs` (since v56 also `finished_at`, `exit_code`,
+`stdout_tail`, `stderr_tail`, `deadline_at`), as the run row above
+describes.
 
 ### Headless access (`thurbox-cli`)
 
 `thurbox-cli automation` (alias `auto`) provides
 `create`/`list`/`show`/`edit`/`remove`/`run`/`runs`/`tick` without
-the TUI, sharing the same tables. `run` marks an enabled automation
-due (a disabled one is refused, not switched on); `edit` writes through
-the same compare-and-set as the interface's edit, so it moves the next fire
-only when the schedule, timezone or enabled flag changed and never undoes a
-fire the heartbeat claimed meanwhile;
-`tick` fires all currently-due automations headlessly (this is what
-the heartbeat keeper and the optional OS timers invoke).
+the TUI, sharing the same tables and the same rules as the interface's pane:
+a cron expression must parse, a timezone must exist, and a schedule must fire
+at least once more.
 
----
+- **References.** Every verb takes `<ref>`: an id, then a key, then a name
+  only one automation has. A name two automations share is refused with exit
+  3 and both ids. `list --key` and `list --name` filter.
+- **Keyed create.** `create --key K --on-existing update|keep|fail` (default
+  `fail`) makes a setup script safe to run twice: `update` rewrites the one
+  automation in place, keeping its id and run history, and leaves a pending
+  fire alone unless the schedule, timezone or enabled flag changed; `keep`
+  leaves it; `fail` exits 5. `create --json` says which happened in
+  `outcome` (`created`, `updated` or `kept`). A key is unique among
+  automations.
+- **Edit.** `edit` writes through the same compare-and-set as the
+  interface's edit, so it moves the next fire only when the schedule,
+  timezone or enabled flag changed and never undoes a fire the heartbeat
+  claimed meanwhile. `--command` replaces an exec's command in place;
+  `--timeout`, `--cwd` and `--env` (which replaces the set; `--clear-env`
+  empties it) change how it runs.
+- **Run.** `run` marks an enabled automation due for the next tick (a
+  disabled one is refused, not switched on). `run --wait` fires it now and
+  answers with the run — the same row `runs` shows — exiting 0 on success, 1
+  on a failed run, 4 when it timed out and 5 when a run of it is already in
+  flight. It runs nothing else: no other due automation, no self-heal, sync,
+  reap or export. A due automation is claimed as the tick claims it, so its
+  next run moves on; one that was not due keeps its schedule. `--timeout`
+  bounds this run; `--force` runs a disabled automation once and leaves it
+  disabled.
+- **Tick.** `tick` fires all currently-due automations headlessly (this is
+  what the heartbeat keeper and the optional OS timers invoke).
 
 ## Tasks (todo list)
 

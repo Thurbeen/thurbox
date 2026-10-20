@@ -451,9 +451,10 @@ default (`SessionBackend::ensure_heartbeat`; on a tmux-protocol server a
 detached `automation-heartbeat` window) — and created implicitly by anything
 that arms an automation. It is not a session, so no session listing shows it
 and no delete reclaims it. `runtime status` reports it (`null` when the backend
-did not answer), the socket in force, the backend, and `hook_status` — whether
-each local backend has a hook status channel; `runtime stop` stops it (the next
-`automation` write arms it again).
+did not answer), the socket in force, the backend, `hook_status` — whether
+each local backend has a hook status channel — and `last_tick` (the tick log's
+last record: `at`, `age_secs`, `ok`, `error`, `fired`, `failed`, `errors`; `null` before
+any tick); `runtime stop` stops it (the next `automation` write arms it again).
 
 ### thurbox-cli is an AXI
 
@@ -768,11 +769,12 @@ the pre-create hooks run, so the placeholder row says so.
   parse through `parse_toml_reporting_unknown`, empty-with-warning on
   failure; `hooks_for(event)` in file order. `config validate`/`show` cover
   it.
-- **Runner**: `session_ops::lifecycle_hooks::run_hook` — `platform_shell`
-  (shared with `Exec` automations), `ctx.env()` + `thurbox_env_overrides()`
-  (shared with `inject_thurbox_env`, so a `thurbox-cli` inside hits the same
-  DB and the same tmux socket), JSON on a piped stdin, both output pipes drained on threads, a
-  `try_wait` poll against the timeout, `kill()` at the deadline. Synchronous
+- **Runner**: `session_ops::lifecycle_hooks::run_hook` — `platform_shell`,
+  `ctx.env()` + `thurbox_env_overrides()` (shared with `inject_thurbox_env`, so
+  a `thurbox-cli` inside hits the same DB and the same tmux socket), then
+  `session_ops::bounded::run` (shared with `Exec` automations): JSON on a piped
+  stdin, both output pipes drained on threads, a `try_wait` poll against the
+  timeout, the child's whole process group killed at the deadline. Synchronous
   by design — it runs on whichever thread runs the operation (a worker in
   the TUI, rule 5), and `session_ops` has no runtime to lean on.
 - **Cwd rule**: the primary repository when it is a local directory, else
@@ -912,19 +914,52 @@ are in the Inter-Session Messages section of `docs/FEATURES.md`.**
 An automation's `AutomationAction` is one of: **Send** (paste a prompt into a
 running session), **Spawn** (start a fresh session and prompt it), or **Exec**
 (run a shell command headlessly — `sh -c`, or `cmd /C` on Windows — with no
-agent/session; its exit status + tail-truncated output land in the run history).
-`Exec` is the deterministic-scheduled-job action (the task-integration sync
-extensions use it). The runner is `session_ops::run_exec_command`, which blocks
-until the child exits and is called from exactly one place —
-`cli::automations`'s `tick`. Firing is **CLI-only**: the interface neither
-runs schedules nor holds a worker for them, so there is no in-flight/`skipped`
-bookkeeping in the binary that draws the screen. The command is stored in the
-`action_command` column (schema **v36**, on both `tasks` and `automations`).
-Author one headlessly with `thurbox-cli automation create --command "<shell>"`
-(mutually exclusive with `--session`/`--repo`), or from an extension manifest
-(`[[automations]]` with a `command` field instead of `session_ref`/`prompt`).
-`Task.action` shares the enum but tasks never carry an `Exec`
-(it's automation-only).
+agent/session). `Exec` is the deterministic-scheduled-job action (the
+task-integration sync extensions use it). Task.action shares the enum but tasks
+never carry an `Exec` (it's automation-only).
+
+**One owner per verb (issue #1468).** Every automation verb lives in
+`session_ops::automations`, and `cli::automations` and the kernel's
+`automation` command only parse and print:
+
+- `save` — `create` (with `--key K --on-existing update|keep|fail`, default
+  `fail`; `update` rewrites in place keeping id and history, `fail` exits 5),
+  `edit` (compare-and-set on timing; `--command` replaces an exec's command),
+  `set_enabled`, `trigger` (mark due; refuses a disabled one), `remove`. The
+  interface's draft type *is* `automations::Draft`, so a cron, timezone and
+  "never fires again" check happens once for both.
+- `reference::resolve` — `<ref>` is an id, then a key, then a unique name; an
+  ambiguous name exits 3 with the ids.
+- `fire` — send, spawn, and `ExecJob`: the exec through `session_ops::bounded`
+  (the runner `lifecycle_hooks::run_hook` uses too), with `--timeout` (default
+  600 s; the child's process group / tree is killed at it), `--cwd` (default
+  home), `--env`, then `thurbox_env_overrides()` and `THURBOX_AUTOMATION_ID` /
+  `_NAME`, which win. Each stream keeps its own 4 KB tail.
+- `tick` — the due pass: stale `running` rows past `deadline_at` become
+  `timed_out`; each due row takes `lock:run:<id>` (held → `run-in-flight`
+  skip), then `claim_and_open_run` claims and opens the run row in **one
+  transaction** — execs up front (lock and deadline sized for their wave),
+  sends/spawns each just before it fires; a lock or claim error skips that one
+  automation, not the tick. Execs run on ≤4 worker threads while the main
+  thread fires sends/spawns and then the caller's housekeeping closure (remote poll, mirror,
+  reap, teardowns, telemetry — `cli::automations` passes it, since the export
+  needs `cli`/`telemetry`). `run_now` is `automation run --wait`: lock (exit 5
+  when held), claim only if due (a manual run never shifts the schedule), fire,
+  record, return the row; exit 0/1/4 for success/failure/timeout.
+- `tick_log` — `automation-tick.json` (last outcome, read by `runtime status`)
+  and `automation-tick.log` (a timestamped line per failed tick and per
+  automation a running tick could not fire, 64 KB cap).
+  Written by `cli::automations` for a tick that ran or failed, and by
+  `src/bin/thurbox-cli.rs` for one that failed before dispatch (no database, a
+  panic), because the keeper discards the tick's output.
+
+Run rows (schema **v56**) carry `finished_at`, `exit_code`, `stdout_tail`,
+`stderr_tail` and `deadline_at`; `automations` carries `key` (unique index),
+`timeout_secs`, `cwd`, `env` (JSON object). Firing is **CLI-only**: the
+interface neither runs schedules nor holds a worker for them. Author an exec
+headlessly with `thurbox-cli automation create --command "<shell>"` (mutually
+exclusive with `--session`/`--repo`), or from an extension manifest
+(`[[automations]]` with `command` and optionally `timeout_secs`, `cwd`, `env`).
 
 Automations fire even when the TUI is closed: the heartbeat the
 local backend keeps (`session_ops::arm_heartbeat`, armed on TUI
@@ -950,8 +985,8 @@ no longer hides one: its only *effect* in the TUI is gating **arming the
 heartbeat** at startup (`src/main.rs`; it also rides the live-reload merge
 as a restart-only flag and is published to Lua in `thurbox.features`). The rows
 are published as `thurbox.automations` and the kernel accepts an `automation`
-command (enable/disable/run/delete — `run_now` only marks it due, so the tick
-stays the one execution path, and refuses a disabled automation rather than
+command (create/edit/enable/disable/run/delete through `session_ops::automations`
+— `run_now` only marks it due, and refuses a disabled automation rather than
 switching it on, as `automation run` does), so a pane is a plugin somebody can write: both
 halves are done and nothing in `ui/` uses them yet.
 

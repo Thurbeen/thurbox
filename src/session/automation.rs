@@ -6,7 +6,8 @@
 //!
 //! This module is pure data + schedule math (no local crate imports), matching
 //! the architecture rule for `session`. Persistence lives in
-//! `storage::automations`; dispatch lives in the `app` tick loop.
+//! `storage::automations`; every verb — save, fire, the tick — lives in
+//! `session_ops::automations`.
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -57,6 +58,39 @@ pub struct Automation {
     /// Next fire time (unix millis). `None` once a one-shot has fired or a
     /// schedule can no longer produce an occurrence.
     pub next_run_at: Option<u64>,
+    /// An opaque address a driver gives the automation, unique where set: what
+    /// makes `automation create --key` idempotent.
+    pub key: Option<String>,
+    /// How a fire runs: its deadline, and an exec's directory and environment.
+    pub run: RunSettings,
+}
+
+/// How long a run may take when the automation names no timeout. Long enough
+/// for a sync or a report, short enough that a hung one is noticed within the
+/// hour the heartbeat ticks sixty times in.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
+
+/// How an automation's fires run.
+///
+/// The timeout is every run's deadline: an exec is killed at it, and a run of
+/// any kind still marked running past it is recorded as timed out by the next
+/// tick. The directory and environment are an exec's alone — a send types into
+/// a pane and a spawn launches an agent, neither of which runs a command here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunSettings {
+    /// `None` = [`DEFAULT_TIMEOUT_SECS`].
+    pub timeout_secs: Option<u64>,
+    /// Where an exec runs; `None` = the user's home directory.
+    pub cwd: Option<PathBuf>,
+    /// Variables an exec runs with on top of what it inherits, in key order.
+    pub env: Vec<(String, String)>,
+}
+
+impl RunSettings {
+    /// The deadline a run of this automation gets.
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS))
+    }
 }
 
 /// When an automation fires.
@@ -199,6 +233,9 @@ pub enum AutomationRunStatus {
     Success,
     Error,
     Skipped,
+    /// Killed at its deadline, or still marked running past it — a firer that
+    /// hung or died.
+    TimedOut,
 }
 
 impl AutomationRunStatus {
@@ -208,6 +245,7 @@ impl AutomationRunStatus {
             Self::Success => "success",
             Self::Error => "error",
             Self::Skipped => "skipped",
+            Self::TimedOut => "timed_out",
         }
     }
 
@@ -218,6 +256,7 @@ impl AutomationRunStatus {
             "running" => Self::Running,
             "success" => Self::Success,
             "skipped" => Self::Skipped,
+            "timed_out" => Self::TimedOut,
             _ => Self::Error,
         }
     }
@@ -235,6 +274,22 @@ pub struct AutomationRun {
     /// Session this run sent to / spawned, when one exists. `None` on
     /// pre-v28 rows (the TUI falls back to parsing `detail` for those).
     pub related_session_id: Option<super::SessionId>,
+    /// When the run ended; `None` while it runs, and on rows from before v56.
+    pub finished_at: Option<u64>,
+    /// An exec's exit code; `None` for a send or spawn, a killed exec, and
+    /// rows from before v56.
+    pub exit_code: Option<i32>,
+    /// The tail of an exec's standard output and error, each its own.
+    pub stdout_tail: Option<String>,
+    pub stderr_tail: Option<String>,
+}
+
+impl AutomationRun {
+    /// How long the run took, once it has ended.
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.finished_at
+            .map(|end| end.saturating_sub(self.started_at))
+    }
 }
 
 /// A scheduling preset offered in the CLI/TUI. Each compiles to a cron string.

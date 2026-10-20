@@ -227,6 +227,18 @@ pub struct ExtensionAutomation {
     /// exclusive with `session_ref`/`prompt`; `{home}` is substituted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Seconds a run may take before it is killed and recorded as timed out
+    /// (default 600, as for `automation create --timeout`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// Exec only: the directory `command` runs in (default: the user's home).
+    /// `{home}` is substituted; relative paths are resolved against the
+    /// extension's install home, and leading `~` against the user's home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Exec only: variables `command` runs with, on top of what it inherits.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 impl ExtensionAutomation {
@@ -248,6 +260,29 @@ impl ExtensionAutomation {
         if self.command.is_none() && self.session_ref.is_none() {
             return Err(format!(
                 "automation '{}' has neither a `command` nor a `session_ref`",
+                self.name
+            ));
+        }
+        if self.command.is_none() && (self.cwd.is_some() || !self.env.is_empty()) {
+            return Err(format!(
+                "automation '{}' sets `cwd` or `env`, which only an exec (`command`) \
+                 automation runs with",
+                self.name
+            ));
+        }
+        if let Some(bad) = self
+            .env
+            .keys()
+            .find(|k| k.is_empty() || k.contains('=') || k.contains('\0'))
+        {
+            return Err(format!(
+                "automation '{}' has an `env` entry {bad:?}, which is not a variable name",
+                self.name
+            ));
+        }
+        if self.timeout_secs == Some(0) {
+            return Err(format!(
+                "automation '{}' has `timeout_secs = 0`; give it at least one second",
                 self.name
             ));
         }
@@ -335,7 +370,8 @@ impl ExtensionDef {
     }
 
     /// Return a copy with the [`HOME_TOKEN`] resolved to `home` in every session
-    /// `repo_path`, and with `home` itself stored as the resolved absolute path.
+    /// `repo_path` and exec automation, and with `home` itself stored as the
+    /// resolved absolute path. Relative exec directories resolve against it.
     /// This is what gets written to the discovery dir at install time, so
     /// `activate`/self-heal read absolute paths (they don't expand tokens
     /// themselves) and uninstall knows the real home directory.
@@ -375,11 +411,18 @@ impl ExtensionDef {
                 m.requires_dir = Some(req.replace(HOME_TOKEN, home));
             }
         }
-        // An exec automation's command typically calls a script under the home
-        // dir (e.g. `{home}/sync.sh`); resolve it to an absolute path.
+        // Bind explicit directories at install time: the heartbeat and manual
+        // runs may start in different directories.
         for a in &mut out.automations {
             if let Some(cmd) = &a.command {
                 a.command = Some(cmd.replace(HOME_TOKEN, home));
+            }
+            if let Some(cwd) = &a.cwd {
+                let mut cwd = expand_leading_tilde(&cwd.replace(HOME_TOKEN, home), user_home);
+                if cwd.is_relative() && !cwd.starts_with("~") {
+                    cwd = Path::new(home).join(cwd);
+                }
+                a.cwd = Some(cwd.to_string_lossy().into_owned());
             }
         }
         out
@@ -610,6 +653,9 @@ prompt = "tick"
                 session_ref: session_ref.map(str::to_string),
                 prompt: prompt.map(str::to_string),
                 command: command.map(str::to_string),
+                timeout_secs: None,
+                cwd: None,
+                env: Default::default(),
             }
         };
         assert!(auto(Some("flow"), Some("tick"), None).validate().is_ok());
@@ -675,6 +721,9 @@ prompt = "tick"
                 session_ref: Some("flow".into()),
                 prompt: Some("tick".into()),
                 command: None,
+                timeout_secs: None,
+                cwd: None,
+                env: Default::default(),
             }],
         };
         let text = toml::to_string(&def).unwrap();
@@ -777,6 +826,52 @@ prompt = "tick"
         );
         // Original is untouched.
         assert_eq!(def.sessions[0].repo_path, PathBuf::from("{home}"));
+    }
+
+    /// Commands substitute `{home}`; explicit directories also bind relative
+    /// paths to install home and expand `~` without changing absolute paths.
+    #[test]
+    fn resolved_for_home_substitutes_an_exec_automation_s_cwd() {
+        let mut def: ExtensionDef = toml::from_str(
+            "name = \"sync\"\n[[automations]]\nname = \"sync\"\ntrigger = \"hourly\"\n\
+             command = \"{home}/sync.sh\"\ncwd = \"{home}\"\n",
+        )
+        .unwrap();
+        let resolved = def.resolved_for_home("/srv/sync", Some(&user_home()));
+        assert_eq!(resolved.automations[0].cwd.as_deref(), Some("/srv/sync"));
+        assert_eq!(
+            resolved.automations[0].command.as_deref(),
+            Some("/srv/sync/sync.sh")
+        );
+        let user = user_home();
+        let install = user.join("extension");
+        let absolute = user.join("elsewhere");
+        for (cwd, expected) in [
+            ("work".to_string(), install.join("work")),
+            ("~/work".to_string(), user.join("work")),
+            (absolute.to_string_lossy().into_owned(), absolute),
+        ] {
+            def.automations[0].cwd = Some(cwd);
+            let resolved = def.resolved_for_home(install.to_str().unwrap(), Some(&user));
+            assert_eq!(
+                PathBuf::from(resolved.automations[0].cwd.as_ref().unwrap()),
+                expected
+            );
+        }
+        def.automations[0].cwd = Some("~/work".into());
+        let unresolved = def.resolved_for_home(install.to_str().unwrap(), None);
+        assert_eq!(unresolved.automations[0].cwd.as_deref(), Some("~/work"));
+    }
+
+    #[test]
+    fn an_env_entry_that_is_no_variable_name_is_refused() {
+        let def: ExtensionDef = toml::from_str(
+            "name = \"sync\"\n[[automations]]\nname = \"sync\"\ntrigger = \"hourly\"\n\
+             command = \"true\"\nenv = { \"A=B\" = \"x\" }\n",
+        )
+        .unwrap();
+        let error = def.automations[0].validate().unwrap_err();
+        assert!(error.contains("not a variable name"), "{error}");
     }
 
     #[test]

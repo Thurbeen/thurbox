@@ -2401,6 +2401,8 @@ mod tests {
                 },
                 prompt: String::new(),
                 next_run_at: Some(4_000_000_000_000),
+                key: None,
+                run: Default::default(),
             })
             .expect("insert");
         database
