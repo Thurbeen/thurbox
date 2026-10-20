@@ -227,6 +227,17 @@ pub struct ExtensionAutomation {
     /// exclusive with `session_ref`/`prompt`; `{home}` is substituted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Seconds a run may take before it is killed and recorded as timed out
+    /// (default 600, as for `automation create --timeout`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// Exec only: the directory `command` runs in (default: home); `{home}`
+    /// is substituted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Exec only: variables `command` runs with, on top of what it inherits.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 impl ExtensionAutomation {
@@ -248,6 +259,19 @@ impl ExtensionAutomation {
         if self.command.is_none() && self.session_ref.is_none() {
             return Err(format!(
                 "automation '{}' has neither a `command` nor a `session_ref`",
+                self.name
+            ));
+        }
+        if self.command.is_none() && (self.cwd.is_some() || !self.env.is_empty()) {
+            return Err(format!(
+                "automation '{}' sets `cwd` or `env`, which only an exec (`command`) \
+                 automation runs with",
+                self.name
+            ));
+        }
+        if self.timeout_secs == Some(0) {
+            return Err(format!(
+                "automation '{}' has `timeout_secs = 0`; give it at least one second",
                 self.name
             ));
         }
@@ -610,6 +634,9 @@ prompt = "tick"
                 session_ref: session_ref.map(str::to_string),
                 prompt: prompt.map(str::to_string),
                 command: command.map(str::to_string),
+                timeout_secs: None,
+                cwd: None,
+                env: Default::default(),
             }
         };
         assert!(auto(Some("flow"), Some("tick"), None).validate().is_ok());
@@ -675,6 +702,9 @@ prompt = "tick"
                 session_ref: Some("flow".into()),
                 prompt: Some("tick".into()),
                 command: None,
+                timeout_secs: None,
+                cwd: None,
+                env: Default::default(),
             }],
         };
         let text = toml::to_string(&def).unwrap();

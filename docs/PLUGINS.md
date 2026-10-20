@@ -1232,8 +1232,10 @@ command("automation", { action = "edit", number = 4, trigger = "cron:0 18 * * *"
 ```
 
 An automation's fields travel typed — a name or prompt is never read by a shell —
-and are checked as `thurbox-cli automation create` checks them, plus a cron
-expression that must parse and a timezone that must exist. An exec
+and are written by the very code `thurbox-cli automation create` and `edit` use
+(`session_ops::automations`), so a cron expression must parse, a timezone must
+exist and a schedule must fire at least once more, whichever of the two wrote
+it. An exec
 automation's `command` is a command line the heartbeat runs, so sending
 `command` at all — on a create, or on an edit even when it is unchanged — needs
 the issuing file to hold `run`; without it the write is refused like any other.

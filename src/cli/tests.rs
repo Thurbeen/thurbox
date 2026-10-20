@@ -392,7 +392,7 @@ fn automation_alias_auto_parses() {
     assert!(matches!(
         subcommand(cli),
         Command::Automation {
-            action: automations::Action::List
+            action: automations::Action::List { .. }
         }
     ));
 }

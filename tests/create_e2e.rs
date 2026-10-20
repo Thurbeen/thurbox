@@ -832,6 +832,8 @@ fn delete_probe_with_format(
             action: thurbox::session::AutomationAction::Send { session_id: id },
             prompt: "probe".into(),
             next_run_at: Some(u64::MAX),
+            key: None,
+            run: Default::default(),
         })
         .unwrap();
     let mut args = vec!["session", "delete", created["id"].as_str().unwrap()];

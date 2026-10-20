@@ -2,7 +2,8 @@
 //!
 //! One exists today: the automation heartbeat, which this machine's backend
 //! (the registry's default) keeps running — `automation tick` on a loop, so
-//! schedules fire with no interface attached. It
+//! schedules fire with no interface attached. `status` reports the last tick
+//! too, since the keeper throws the tick's own output away. It
 //! is created implicitly by anything that arms an automation, and until this
 //! command it appeared in no listing and no teardown reclaimed it — a session
 //! delete cannot, because it is not a session. Anything thurbox puts on a
@@ -47,21 +48,26 @@ pub fn run(action: Action, backends: &super::Backends<'_>) -> CommandOutput {
                     )
                 })
                 .collect();
+            let last_tick = crate::session_ops::automations::tick_log::last();
             CommandOutput::new(
                 json!({
                     "tmux_socket": socket,
                     "backend": here.name(),
                     "automation_heartbeat": running,
                     "hook_status": hook_status,
+                    "last_tick": last_tick.as_ref().map(last_tick_json),
                 }),
                 format!(
-                    "socket: {socket}\nbackend: {}\nautomation heartbeat: {}",
+                    "socket: {socket}\nbackend: {}\nautomation heartbeat: {}\nlast tick: {}",
                     here.name(),
                     match running {
                         Some(true) => "running",
                         Some(false) => "not running",
                         None => "unknown (the backend did not answer)",
-                    }
+                    },
+                    last_tick
+                        .as_ref()
+                        .map_or_else(|| "never".to_string(), describe),
                 ),
             )
             .help([
@@ -84,5 +90,36 @@ pub fn run(action: Action, backends: &super::Backends<'_>) -> CommandOutput {
                 format!("could not stop the automation heartbeat: {e:#}"),
             ),
         },
+    }
+}
+
+/// The last tick as `runtime status --json` reports it: what the tick log
+/// recorded, plus how long ago, so a driver can tell a heartbeat that stopped
+/// from one that is quiet.
+fn last_tick_json(tick: &crate::session_ops::automations::tick_log::LastTick) -> serde_json::Value {
+    json!({
+        "at": tick.at,
+        "age_secs": age_secs(tick.at),
+        "ok": tick.ok,
+        "error": tick.error,
+        "fired": tick.fired,
+        "failed": tick.failed,
+        "log": crate::session_ops::automations::tick_log::log_path()
+            .map(|p| p.display().to_string()),
+    })
+}
+
+fn age_secs(at: u64) -> u64 {
+    crate::sync::current_time_millis().saturating_sub(at) / 1000
+}
+
+fn describe(tick: &crate::session_ops::automations::tick_log::LastTick) -> String {
+    let age = age_secs(tick.at);
+    match (&tick.error, tick.ok) {
+        (Some(error), false) => format!("{age}s ago, failed: {error}"),
+        _ => format!(
+            "{age}s ago, ok ({} fired, {} failed)",
+            tick.fired, tick.failed
+        ),
     }
 }

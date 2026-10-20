@@ -5,11 +5,14 @@
 //! operations are synchronous against the SQLite database and the `tmux -L
 //! thurbox` server.
 
+pub mod automations;
+pub mod bounded;
 pub mod builtin;
 pub mod builtin_hooks;
 pub mod builtin_ui_skill;
 pub mod composer;
 pub mod delete;
+pub mod deliver;
 pub mod extensions;
 pub mod host_cli;
 pub mod image_drop;
@@ -57,7 +60,7 @@ pub use wsl_loopback::repair_wsl_loopback_rows;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::session::agent_def::ID_PLACEHOLDER;
-use crate::session::{AutomationRunStatus, SessionConfig};
+use crate::session::SessionConfig;
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
@@ -231,39 +234,6 @@ pub fn send_text_when_booted(
         .map_err(|e| format!("session '{}': {e:#}", session.name))
 }
 
-/// Run an `Exec` automation's shell command headlessly (`sh -c`, or `cmd /C` on
-/// Windows) and report its outcome for the run history. No session/agent is
-/// involved — this is the deterministic-scheduled-job path shared by the TUI and
-/// the headless `automation tick`. stdout+stderr are tail-truncated so a chatty
-/// command can't bloat the history.
-pub fn run_exec_command(command: &str) -> (AutomationRunStatus, String) {
-    let out = match platform_shell(command).output() {
-        Ok(out) => out,
-        Err(e) => return (AutomationRunStatus::Error, format!("spawn failed: {e}")),
-    };
-    let mut detail = exec_tail(&out.stdout);
-    let stderr = exec_tail(&out.stderr);
-    if !stderr.is_empty() {
-        if !detail.is_empty() {
-            detail.push('\n');
-        }
-        detail.push_str(&stderr);
-    }
-    if out.status.success() {
-        let msg = match detail.is_empty() {
-            true => "ok".to_string(),
-            false => detail,
-        };
-        return (AutomationRunStatus::Success, msg);
-    }
-    let code = out.status.code().map_or("signal".into(), |c| c.to_string());
-    let msg = match detail.is_empty() {
-        true => format!("exit {code}"),
-        false => format!("exit {code}: {detail}"),
-    };
-    (AutomationRunStatus::Error, msg)
-}
-
 /// `command` as the platform shell runs it: `sh -c` or, on Windows, `cmd /C`.
 /// Shared by `Exec` automations and lifecycle hooks so the two spell a
 /// command line the same way.
@@ -279,7 +249,8 @@ pub(crate) fn platform_shell(command: &str) -> std::process::Command {
     }
 }
 
-/// The trailing 500 chars of one captured stream, trimmed. Single pass via a
+/// The trailing 500 chars of one captured stream, trimmed — what a hook's
+/// failure message quotes. Single pass via a
 /// capped ring so a huge stream isn't walked twice (count + skip) or
 /// materialized in full.
 pub(crate) fn exec_tail(stream: &[u8]) -> String {
@@ -1099,22 +1070,6 @@ mod tests {
     use crate::session::SessionId;
 
     #[cfg(unix)]
-    #[test]
-    fn run_exec_command_reports_success_and_failure() {
-        let (status, detail) = run_exec_command("printf hello");
-        assert_eq!(status, AutomationRunStatus::Success);
-        assert!(detail.contains("hello"), "got {detail}");
-
-        let (status, detail) = run_exec_command("exit 3");
-        assert_eq!(status, AutomationRunStatus::Error);
-        assert!(detail.contains('3'), "got {detail}");
-
-        // No output on success collapses to a friendly "ok".
-        let (status, detail) = run_exec_command("true");
-        assert_eq!(status, AutomationRunStatus::Success);
-        assert_eq!(detail, "ok");
-    }
-
     #[test]
     fn inject_env_sets_identity_and_task() {
         let sid = SessionId::default();

@@ -505,6 +505,12 @@ fn ensure_automation(
         action,
         prompt: auto.prompt.clone().unwrap_or_default(),
         next_run_at,
+        key: None,
+        run: crate::session::RunSettings {
+            timeout_secs: auto.timeout_secs,
+            cwd: auto.cwd.as_deref().map(crate::paths::expand_tilde),
+            env: auto.env.clone().into_iter().collect(),
+        },
     };
     let id = db
         .create_automation(&new)

@@ -378,36 +378,11 @@ pub enum Command {
 }
 
 /// The fields an `automation` create or edit carries, each as the plugin
-/// passed it.
-///
-/// Typed fields rather than a command line: a name or a prompt is whatever the
-/// user typed, and none of it is ever read by a shell on its way to the
-/// database. On an edit `None` leaves a field as it is; a create needs a name, a
-/// trigger and exactly one target — `session` (send), `repo` (spawn) or
-/// `command` (exec). Validated where it is applied, so a mistake reaches the
-/// pane as `command.failed` with a sentence rather than as a Lua error.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AutomationDraft {
-    pub name: Option<String>,
-    /// `hourly` | `daily` | `weekdays` | `weekly` | `cron:<expr>` | `at:<unix_millis>`.
-    pub trigger: Option<String>,
-    /// `HH:MM`, for a preset trigger.
-    pub time: Option<String>,
-    /// 0..=7 (0 and 7 are Sunday), for the `weekly` preset. Kept as passed so
-    /// a value out of that range is refused rather than read as the default.
-    pub weekday: Option<i64>,
-    /// An IANA name; empty means the system's own.
-    pub timezone: Option<String>,
-    pub prompt: Option<String>,
-    pub enabled: Option<bool>,
-    pub session: Option<String>,
-    pub repo: Option<String>,
-    /// The worktree branch a spawn creates or reuses.
-    pub branch: Option<String>,
-    pub base: Option<String>,
-    pub agent: Option<String>,
-    pub command: Option<String>,
-}
+/// passed it. The type is the session engine's own draft, so the pane and
+/// `thurbox-cli automation` validate and write through one implementation
+/// (issue #1468); a mistake reaches the pane as `command.failed` with a
+/// sentence rather than as a Lua error.
+pub use crate::session_ops::automations::Draft as AutomationDraft;
 
 /// A further repository a new session spans.
 ///
@@ -1157,6 +1132,7 @@ fn automation_draft(args: &Args) -> AutomationDraft {
         base: filled(&args.base),
         agent: filled(&args.agent),
         command: text("command"),
+        ..AutomationDraft::default()
     }
 }
 

@@ -341,6 +341,18 @@ growth would bloat the database over months of use.
 
 ## ADR-8b: Automations fire with or without the TUI
 
+> **Amended (issue #1468).** There is no TUI tick loop: the interface runs no
+> scheduler, and automations fire from the heartbeat, an OS timer, or
+> `automation run --wait`. Every verb — save, fire, tick — has one owner,
+> `session_ops::automations`, which the interface's pane and `thurbox-cli`
+> both call. A fire opens its run row in the same transaction as its claim and
+> holds the automation's run lock (`lock:run:<id>` in `event_cursors`, ADR-37) for
+> its length; a row still `running` past its deadline is marked `timed_out` by
+> the next tick. An exec runs through the lifecycle hooks' bounded runner,
+> killed with everything it started at its timeout, and due execs run
+> concurrently (four at most) while the tick does its housekeeping, so one
+> hung exec holds nothing else up. Claim-first at-most-once is unchanged.
+
 **Choice**: Automations fire from three places that all funnel
 through one headless entry point, `thurbox-cli automation tick`:
 the TUI tick loop, a **heartbeat** this machine's backend keeps

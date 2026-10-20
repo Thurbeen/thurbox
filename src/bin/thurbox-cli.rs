@@ -5,8 +5,9 @@
 //! are about the *process* rather than about any one command: a failure that
 //! left nothing to print is a structured document on **stdout**, and the exit
 //! code says which kind of failure it was — `0` success, `1` the command ran
-//! and failed, `2` the invocation was wrong, `3` the session reference matched
-//! more than one session. An agent reads one stream and one status; splitting
+//! and failed, `2` the invocation was wrong, `3` the reference matched more
+//! than one session or automation, and for a verb that waits or claims `4` it
+//! timed out, `5` somebody else holds it, `6` its subject went away. An agent reads one stream and one status; splitting
 //! the answer across stdout and stderr costs it a retry to find out what
 //! happened.
 //!
@@ -48,6 +49,23 @@ fn main() {
         toon: cli.toon,
     });
 
+    // The heartbeat runs `automation tick` with its output thrown away, so a
+    // tick that fails before the command records its own outcome — no
+    // database, a panic — has to be recorded from here or it leaves no trace.
+    let ticking = matches!(
+        &cli.command,
+        Some(cli::Command::Automation {
+            action: cli::automations::Action::Tick
+        })
+    );
+    if ticking {
+        let report = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            record_failed_tick(&format!("panicked: {info}"));
+            report(info);
+        }));
+    }
+
     // Publish settings before Database::open (audit pruning reads retention).
     // Warnings go to the WARN-level stderr logger; `config validate` is the
     // loud path.
@@ -55,6 +73,9 @@ fn main() {
     thurbox::session::settings::init(settings);
 
     let Some(db_path) = thurbox::paths::database_file() else {
+        if ticking {
+            record_failed_tick("cannot resolve the database path");
+        }
         fail(
             "cannot resolve the database path",
             "set HOME (or THURBOX_DATA_DIR) and run the command again",
@@ -76,7 +97,13 @@ fn main() {
     let db = match open(&db_path) {
         Ok(db) => db,
         Err(e) => fail(
-            &format!("cannot open the database at {}: {e}", db_path.display()),
+            &{
+                let message = format!("cannot open the database at {}: {e}", db_path.display());
+                if ticking {
+                    record_failed_tick(&message);
+                }
+                message
+            },
             "check the file is readable and not held by another process, then retry",
             "thurbox-cli config show",
             format,
@@ -140,6 +167,12 @@ fn main() {
             e.exit_code,
         ),
     }
+}
+
+/// Record an `automation tick` that failed before it could record itself.
+fn record_failed_tick(error: &str) {
+    use thurbox::session_ops::automations::tick_log;
+    tick_log::record(&tick_log::failed(error));
 }
 
 /// Print a structured failure on stdout and exit [`EXIT_ERROR`].

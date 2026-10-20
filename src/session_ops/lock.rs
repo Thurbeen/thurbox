@@ -89,8 +89,21 @@ impl Drop for Lock<'_> {
 /// subject otherwise, so a leaked one is bounded by the subjects ever locked
 /// rather than accumulating.
 pub fn lock<'a>(db: &'a Database, subject: Subject, op: &str) -> Result<Option<Lock<'a>>, String> {
+    lock_for(db, subject, op, std::time::Duration::ZERO)
+}
+
+/// [`lock`], held for at least `at_least` — for an operation whose own length
+/// the caller knows to exceed the usual budget, such as a fire whose
+/// automation allows it an hour.
+pub fn lock_for<'a>(
+    db: &'a Database,
+    subject: Subject,
+    op: &str,
+    at_least: std::time::Duration,
+) -> Result<Option<Lock<'a>>, String> {
     let now = current_time_millis();
-    let expires_at = now.saturating_add(ttl_ms());
+    let ttl = ttl_ms().max(at_least.as_millis() as u64);
+    let expires_at = now.saturating_add(ttl);
     let won = db
         .take_lease(&subject, expires_at, now)
         .map_err(|e| format!("lock {subject:?} for {op}: {e}"))?;

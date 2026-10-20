@@ -18,8 +18,9 @@
 //! ([`home::run`], principle 8), every result can carry `help[N]:` next steps
 //! ([`output::AgentView`], principle 9), and errors are structured on stdout
 //! with the exit code saying which kind they are — [`EXIT_ERROR`],
-//! [`EXIT_USAGE`], [`EXIT_AMBIGUOUS`] ([`error_output`], principle 6). The rest
-//! are per-command and marked where they are met.
+//! [`EXIT_USAGE`], [`EXIT_AMBIGUOUS`], and for a verb that waits or claims
+//! [`EXIT_TIMEOUT`], [`EXIT_CONFLICT`], [`EXIT_GONE`] ([`error_output`],
+//! principle 6). The rest are per-command and marked where they are met.
 //!
 //! One consequence of principle 6 is a rule the entrypoint enforces: **stdout
 //! carries exactly one document per invocation**. A command that renders a
@@ -81,6 +82,18 @@ pub const EXIT_USAGE: i32 = 2;
 /// principle 6 asks the two to exit differently, and string-matching the
 /// message was the only way to tell them apart.
 pub const EXIT_AMBIGUOUS: i32 = 3;
+/// What was waited for did not happen in time: `automation run --wait` whose
+/// run timed out.
+///
+/// 4, 5 and 6 are the codes the orchestrator-platform design reserves for
+/// every verb that waits or claims (#1470 maps typed errors onto them), so a
+/// new verb takes one of these rather than inventing its own.
+pub const EXIT_TIMEOUT: i32 = 4;
+/// Somebody else already holds it: a key taken under `--on-existing fail`, a
+/// run already in flight.
+pub const EXIT_CONFLICT: i32 = 5;
+/// The subject left while the call was waiting on it.
+pub const EXIT_GONE: i32 = 6;
 
 /// A failure that left nothing on stdout, and the exit code it deserves.
 ///

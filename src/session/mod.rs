@@ -18,7 +18,7 @@ pub mod theme_config;
 pub use agent_def::{AgentDef, AgentRegistry};
 pub use automation::{
     parse_hhmm, preset_to_cron, Automation, AutomationAction, AutomationRun, AutomationRunStatus,
-    AutomationSchedule, ExtraRepo, SchedulePreset,
+    AutomationSchedule, ExtraRepo, RunSettings, SchedulePreset,
 };
 pub use extension_def::{
     AgentPatch, ConfigMerge, ConfigMergeFormat, ExtensionAutomation, ExtensionDef, ExtensionFile,
