@@ -70,7 +70,11 @@ your own `[[agents]]` entry to support any CLI — no recompile.
 `agent_session_id` (a UUID) and `claude`/`pi` accept it at creation
 (`--session-id {id}`), so those two resume/fork by that exact id. Codex instead
 reports its own id through `SessionStart`; thurbox stores it in session metadata
-and resumes/forks that exact id. A legacy row without a captured id opens the
+and resumes/forks that exact id. Binding requires a `SessionStart` UUID and a
+proven pane-local Codex ancestor with `--no-daemon`; shared-daemon identity
+is insufficient. An ambiguous binding reports `bound: false`. Live repair is
+unsupported: wait for an operator-chosen stopping point and relaunch through
+the resume picker, preserving approval, sandbox and hook settings. A legacy row without a captured id opens the
 interactive Codex `resume` picker; its selection is then bound by the hook.
 An unbound fork uses Codex's `fork` picker. An ambiguous in-pane conversation
 switch requires the picker on restart; only that launch can bind a new ID.

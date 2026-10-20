@@ -18,6 +18,10 @@ mod tmux_server;
 use tmux_server::TmuxServer;
 
 #[cfg(unix)]
+#[path = "support/codex_hook.rs"]
+mod codex_hook;
+
+#[cfg(unix)]
 #[path = "support/recording_backend.rs"]
 mod recording_backend;
 
@@ -1243,7 +1247,20 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
     std::fs::create_dir_all(&bin).unwrap();
     let log = home.path().join("codex.log");
     let fake = bin.join("codex");
-    std::fs::write(&fake, "#!/bin/sh\nprintf '%s|%s\\n' \"$THURBOX_SESSION\" \"$*\" >> \"$FAKE_CODEX_LOG\"\nif [ \"$#\" -eq 0 ] || [ \"$*\" = resume ] || [ \"$*\" = fork ]; then\n  source=startup\n  [ \"$*\" = resume ] && source=resume\n  printf '{\"session_id\":\"%s\",\"source\":\"%s\"}\\n' \"$FAKE_CONV_ID\" \"$source\" | sh \"$FAKE_HOOK_DRIVER\"\nfi\nsleep 300\n").unwrap();
+    std::fs::write(&fake, r#"#!/bin/sh
+printf '%s|%s\n' "$THURBOX_SESSION" "$*" >> "$FAKE_CODEX_LOG"
+# Launch groups put resume before the always-present flags.
+source=startup
+case "$*" in
+  *resume*) source=resume ;;
+esac
+case "$*" in
+  '--no-daemon'|'resume --no-daemon'|'fork --no-daemon')
+    printf '{"session_id":"%s","source":"%s","hook_event_name":"SessionStart"}\n' "$FAKE_CONV_ID" "$source" | sh "$FAKE_HOOK_DRIVER"
+    ;;
+esac
+sleep 300
+"#).unwrap();
     let mut mode = std::fs::metadata(&fake).unwrap().permissions();
     mode.set_mode(0o755);
     std::fs::set_permissions(&fake, mode).unwrap();
@@ -1295,7 +1312,7 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
     std::fs::write(
         config.join("agents.toml"),
         format!(
-            "default = 'codex'\n[[agents]]\nname = 'codex'\ncommand = '{}'\n\
+            "default = 'codex'\n[[agents]]\nname = 'codex'\ncommand = '{}'\nargs = ['--no-daemon']\n\
              resume_args = ['resume', '{{id}}']\nfork_args = ['fork', '{{id}}']\n",
             fake.display()
         ),
@@ -1373,18 +1390,17 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
         Some(second_conv)
     );
     let switched_conv = "33333333-3333-4333-8333-333333333333";
-    let mut hook = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-        .args(["session", "bind-codex"])
+    let mut hook = codex_hook::command(home.path())
         .env("THURBOX_SESSION", first.session_id.to_string())
         .env("THURBOX_SESSION_ID", &first.agent_session_id)
-        .env_remove("TMUX_PANE")
+        .env("TMUX_PANE", &first.backend_id)
         .stdin(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     use std::io::Write;
     write!(
         hook.stdin.take().unwrap(),
-        "{{\"session_id\":\"{switched_conv}\",\"source\":\"clear\"}}"
+        "{{\"session_id\":\"{switched_conv}\",\"source\":\"clear\",\"hook_event_name\":\"SessionStart\"}}"
     )
     .unwrap();
     assert!(
@@ -1398,16 +1414,16 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
         "an in-pane switch must not leave the old conversation pinned"
     );
     let other_conv = "44444444-4444-4444-8444-444444444444";
-    let mut other = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-        .args(["session", "bind-codex"])
+    let mut other = codex_hook::command(home.path())
         .env("THURBOX_SESSION", first.session_id.to_string())
         .env("THURBOX_SESSION_ID", &first.agent_session_id)
+        .env("TMUX_PANE", &first.backend_id)
         .stdin(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     write!(
         other.stdin.take().unwrap(),
-        "{{\"session_id\":\"{other_conv}\",\"source\":\"startup\"}}"
+        "{{\"session_id\":\"{other_conv}\",\"source\":\"startup\",\"hook_event_name\":\"SessionStart\"}}"
     )
     .unwrap();
     assert!(other.wait().unwrap().success());
@@ -1417,17 +1433,17 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
         Some("picker-required".to_string()),
         "a second Codex process in the same pane must not redirect the row"
     );
-    let mut nested_resume = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
-        .args(["session", "bind-codex"])
+    let mut nested_resume = codex_hook::command(home.path())
         .env("THURBOX_SESSION", first.session_id.to_string())
         .env("THURBOX_SESSION_ID", &first.agent_session_id)
         .env_remove("THURBOX_CODEX_PICKER")
+        .env("TMUX_PANE", &first.backend_id)
         .stdin(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     write!(
         nested_resume.stdin.take().unwrap(),
-        "{{\"session_id\":\"{other_conv}\",\"source\":\"resume\"}}"
+        "{{\"session_id\":\"{other_conv}\",\"source\":\"resume\",\"hook_event_name\":\"SessionStart\"}}"
     )
     .unwrap();
     assert!(nested_resume.wait().unwrap().success());
@@ -1462,11 +1478,14 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
     assert!(
         launches
             .lines()
-            .any(|line| line == format!("{}|resume", first.session_id)),
+            .any(|line| line == format!("{}|resume --no-daemon", first.session_id)),
         "{launches}"
     );
     assert!(
-        launches.contains(&format!("{}|resume {second_conv}", second.session_id)),
+        launches.contains(&format!(
+            "{}|resume {second_conv} --no-daemon",
+            second.session_id
+        )),
         "{launches}"
     );
     for _ in 0..100 {
@@ -1511,7 +1530,7 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
     assert!(
         launches
             .lines()
-            .any(|line| line == format!("{}|resume", first.session_id)),
+            .any(|line| line == format!("{}|resume --no-daemon", first.session_id)),
         "{launches}"
     );
     for _ in 0..100 {
@@ -1546,7 +1565,7 @@ fn codex_sessions_in_one_directory_resume_their_own_conversations_after_lost_win
     assert!(
         launches
             .lines()
-            .any(|line| line == format!("{}|fork", fork.session_id)),
+            .any(|line| line == format!("{}|fork --no-daemon", fork.session_id)),
         "{launches}"
     );
 }
