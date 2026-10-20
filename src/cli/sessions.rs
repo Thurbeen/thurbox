@@ -1807,25 +1807,44 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
         .map_err(|e| format!("read Codex hook input: {e}"))?;
     let payload: serde_json::Value =
         serde_json::from_str(&input).map_err(|e| format!("parse Codex hook input: {e}"))?;
+    if payload["hook_event_name"].as_str() != Some("SessionStart") {
+        return Err("Codex binding requires a SessionStart event".into());
+    }
     let conversation = payload["session_id"]
         .as_str()
-        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+        .filter(|id| super::delivery::valid_codex_thread(id))
         .ok_or("Codex SessionStart did not report a valid session_id")?;
 
-    // The agent window starts before its row is persisted. The hook can run
-    // immediately, so wait briefly for that row instead of losing the only
-    // event that tells us which conversation Codex actually opened.
+    // A new window can report before its row is published. On restart the
+    // row already exists but still names the old pane; wait for the replacement
+    // too, without accepting that pane as proof of process ownership.
+    let hook_pane = std::env::var("TMUX_PANE").ok();
+    let mut latest = None;
     let target = (0..40)
-        .find_map(|_| match db.get_session_by_id(row_id) {
-            Ok(Some(row)) => Some(row),
-            _ => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                None
+        .find_map(|_| {
+            if let Ok(Some(row)) = db.get_session_by_id(row_id) {
+                let awaiting_pane = row.backend_id.starts_with('%')
+                    && hook_pane.as_deref().is_some_and(|pane| {
+                        pane.starts_with('%') && pane != row.backend_id
+                    });
+                if !awaiting_pane {
+                    return Some(row);
+                }
+                latest = Some(row);
             }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            None
         })
+        .or(latest)
         .ok_or("Codex hook could not find its Thurbox session; run `thurbox-cli session doctor` and repair the hook installation")?;
     if target.agent != "codex" || target.agent_session_id.as_deref() != Some(agent_id.as_str()) {
         return Err("Codex hook identity does not match the Thurbox session".into());
+    }
+    if !codex_hook_owned_by_pane(&target) {
+        return Ok(CommandOutput::new(
+            json!({ "bound": false, "reason": "unproven_process" }),
+            "Cannot prove a pane-local Codex process. No safe live repair is available; see the Codex binding recovery instructions before an operator-controlled relaunch. Do not manually copy a conversation ID.",
+        ));
     }
     const KEY: &str = "thurbox.codex_conversation_id";
     const PICKER_REQUIRED: &str = crate::session_ops::CODEX_PICKER_REQUIRED;
@@ -1856,10 +1875,83 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
             .set_session_meta(target.id, KEY, conversation)
             .map_err(|e| format!("save Codex id: {e}"))?,
     }
+    let bound = db
+        .get_session_meta(target.id, KEY)
+        .map_err(|e| format!("read Codex binding: {e}"))?
+        .as_deref()
+        == Some(conversation);
     Ok(CommandOutput::new(
-        json!({ "bound": true, "session_id": target.id.to_string() }),
-        format!("Bound Codex conversation for '{}'.", target.name),
+        json!({ "bound": bound, "session_id": target.id.to_string(),
+            "reason": if bound { "bound" } else { "picker_required" } }),
+        if bound {
+            format!("Bound Codex conversation for '{}'.", target.name)
+        } else {
+            "Codex binding is ambiguous. Relaunch with --no-daemon and select the conversation in the resume picker.".into()
+        },
     ))
+}
+
+/// A shared daemon keeps the environment of whichever pane started it. Only a
+/// hook descended from a pane-local TUI can use that environment as identity.
+fn codex_hook_owned_by_pane(target: &SharedSession) -> bool {
+    let Ok(mut pid) = sysinfo::get_current_pid() else {
+        return false;
+    };
+    let mut system = sysinfo::System::new();
+    let kind = sysinfo::ProcessRefreshKind::nothing()
+        .with_cmd(sysinfo::UpdateKind::Always)
+        .with_environ(sysinfo::UpdateKind::Always);
+    let row = format!("THURBOX_SESSION={}", target.id);
+    let agent = format!(
+        "THURBOX_SESSION_ID={}",
+        target.agent_session_id.as_deref().unwrap_or_default()
+    );
+    let pane = format!("TMUX_PANE={}", target.backend_id);
+    let mut found_tui = false;
+    for _ in 0..64 {
+        system.refresh_processes_specifics(sysinfo::ProcessesToUpdate::Some(&[pid]), true, kind);
+        let Some(process) = system.process(pid) else {
+            return false;
+        };
+        if process.environ().is_empty() {
+            return false;
+        }
+        let identity_matches = process.environ().iter().any(|v| v == row.as_str())
+            && process.environ().iter().any(|v| v == agent.as_str())
+            && (!target.backend_id.starts_with('%')
+                || process.environ().iter().any(|v| v == pane.as_str()));
+        if !identity_matches {
+            return found_tui;
+        }
+        let cmd = process.cmd();
+        let is_codex = |arg: &std::ffi::OsString| {
+            std::path::Path::new(arg)
+                .file_name()
+                .is_some_and(|name| name == "codex" || name == "codex.exe")
+        };
+        // npm's node launcher can name its script `codex` too; it is not a
+        // second TUI. Shell stand-ins/wrappers remain conservatively counted.
+        let shell = cmd
+            .first()
+            .and_then(|arg| std::path::Path::new(arg).file_name())
+            .is_some_and(|name| name == "sh" || name == "bash" || name == "dash");
+        let codex =
+            cmd.first().is_some_and(is_codex) || (shell && cmd.get(1).is_some_and(is_codex));
+        // app-server children of --no-daemon have no launch flags themselves.
+        if codex && !cmd.iter().any(|arg| arg == "app-server") {
+            // A second TUI under the same identity is a nested process, not
+            // proof of the conversation displayed by the pane.
+            if found_tui || !cmd.iter().any(|arg| arg == "--no-daemon") {
+                return false;
+            }
+            found_tui = true;
+        }
+        let Some(parent) = process.parent().filter(|parent| *parent != pid) else {
+            return false;
+        };
+        pid = parent;
+    }
+    false
 }
 
 /// Read a session's pane: its rendered text, and the live state around it.

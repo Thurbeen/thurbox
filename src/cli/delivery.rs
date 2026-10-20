@@ -123,7 +123,12 @@ pub(crate) fn routes(evidence: &Evidence) -> Result<Vec<Route>, String> {
         }
     }
     if let Some(thread) = &evidence.codex_thread {
-        routes.push(Route::CodexQueue(thread.clone()));
+        if !valid_codex_thread(thread) && routes.is_empty() {
+            return Err("Codex binding is invalid or ambiguous; no safe live repair is available. See the Codex binding recovery instructions before an operator-controlled relaunch".into());
+        }
+        if valid_codex_thread(thread) {
+            routes.push(Route::CodexQueue(thread.clone()));
+        }
     }
     if routes.is_empty() {
         return Err(
@@ -133,6 +138,11 @@ pub(crate) fn routes(evidence: &Evidence) -> Result<Vec<Route>, String> {
         );
     }
     Ok(routes)
+}
+
+/// Sentinels and empty UUIDs cannot name an agent conversation.
+pub(crate) fn valid_codex_thread(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok_and(|id| !id.is_nil() && !id.is_max())
 }
 
 /// Collect [`Evidence`] for `recipient` from the database and Claude's session
@@ -174,7 +184,7 @@ pub(crate) fn gather(db: &Database, recipient: &SharedSession) -> Evidence {
     Evidence {
         remote: false,
         claude_sockets,
-        codex_thread: meta(CODEX_THREAD_META).filter(|id| uuid::Uuid::parse_str(id).is_ok()),
+        codex_thread: meta(CODEX_THREAD_META),
     }
 }
 

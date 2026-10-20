@@ -2835,6 +2835,31 @@ thread keeps its queue until resumed), which the agent in the pane never
 reads. Codex runs `SessionStart` at a thread's first turn, so a send between
 `/new` and the first prompt there still reaches the thread the pane left.
 
+`bind-codex` accepts only `SessionStart` events with a nonempty conversation
+UUID. It also verifies a Codex ancestor launched with `--no-daemon`, carrying
+this row's session identity and agent pane. A shared daemon's inherited
+environment does not prove which pane owns a conversation; such hooks report
+`bound: false` with `reason: unproven_process` and leave metadata unchanged.
+If process identity cannot be inspected, binding fails closed. An ambiguous
+binding reports `bound: false` with `reason: picker_required`; `picker-required`
+is a recovery marker, never a thread address. Invalid metadata stays in the
+mailbox with a recovery explanation instead of being passed to `codex queue`.
+
+There is no supported live repair command for an old or ambiguous binding.
+The picker procedure below applies to missing or `picker-required` bindings.
+A stale but syntactically valid UUID resumes directly on restart; this
+procedure cannot safely repair it. Do not restart that session based on these
+instructions or substitute another UUID by hand.
+Neither a UUID copied from a transcript nor an enqueue success proves the
+conversation currently displayed by a pane. At an operator-chosen stopping
+point, configure the Codex entry's existing `args` to include `--no-daemon`
+(preserving sandbox, approval and hook settings), then restart the affected
+session and select its conversation in the resume picker. After its first
+prompt, verify the hook bound a UUID and verify a disposable recipient's reply
+to a native message. Do not restart an active session just to repair delivery.
+This recovery does not establish busy-turn ordering or close the `/new` window
+before its first `SessionStart`; enqueue acceptance alone proves neither.
+
 No auth line is sent: the token is optional on macOS/Linux, where the socket is
 already mode 0600 to the user; native Windows named pipes are out of scope.
 

@@ -159,7 +159,10 @@ whether resume/fork can target *this* session or only *the last* one.
   It has no `fork_args` (OMP can't pin a fork's target file to a thurbox UUID), so
   `Ctrl+F` starts fresh.
 - **Hook-reported** (`codex`) — `SessionStart` reports Codex's actual
-  conversation UUID. Thurbox saves it beside the row's generated
+  conversation UUID. Binding requires a pane-local `--no-daemon` Codex process
+  with matching row and pane identity; shared-daemon hooks are not sufficient.
+  Preserve the entry's sandbox, approval and trusted-hook settings when adding
+  that launch flag. Thurbox saves the UUID beside the row's generated
   `agent_session_id` and resumes or forks that exact UUID. Existing rows with no
   captured UUID open Codex's interactive `resume` picker on restart; selecting a
   conversation binds it through the hook. Forking an unbound row opens Codex's
