@@ -1833,7 +1833,7 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
     if !codex_hook_owned_by_pane(&target) {
         return Ok(CommandOutput::new(
             json!({ "bound": false, "reason": "unproven_process" }),
-            "Cannot prove a pane-local Codex process. Relaunch with --no-daemon and use the resume picker; do not manually copy a conversation ID.",
+            "Cannot prove a pane-local Codex process. No safe live repair is available; see the Codex binding recovery instructions before an operator-controlled relaunch. Do not manually copy a conversation ID.",
         ));
     }
     const KEY: &str = "thurbox.codex_conversation_id";
