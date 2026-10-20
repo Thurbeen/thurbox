@@ -3075,6 +3075,9 @@ case " $* " in
     : > started
     mkfifo up down || exit 1
     exec 3<>up
+    # Dash redirects stdin of async commands to /dev/null before <&0.
+    # Preserve the incoming pipe on a separate descriptor for the input pump.
+    exec 4<&0
     up= down= mux=
     cleanup() {{
       for pid in "$up" "$down" "$mux"; do
@@ -3085,10 +3088,10 @@ case " $* " in
       : > done
     }}
     trap cleanup EXIT
-    {real} "$@" <up >down 3>&- & mux=$!
-    cat <down 3>&- & down=$!
-    cat <&0 >&3 3>&- & up=$!
-    exec 0</dev/null
+    {real} "$@" <up >down 3>&- 4<&- & mux=$!
+    cat <down 3>&- 4<&- & down=$!
+    cat <&4 >&3 3>&- 4<&- & up=$!
+    exec 4<&- 0</dev/null
     : > ready
     while IFS= read -r request; do
       case "$request" in
