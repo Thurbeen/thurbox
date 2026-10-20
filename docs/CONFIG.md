@@ -1607,7 +1607,9 @@ timer, a hand-run tick, `run --wait`):
 | `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`, `THURBOX_SOCKET`, `THURBOX_SOCKET_FOR` | the location overrides above |
 
 It runs in its `--cwd`, or your home directory — never in whatever directory
-the firer was started in.
+the firer was started in. `THURBOX_SESSION`, `THURBOX_SESSION_ID`,
+`THURBOX_SESSION_KEY` and `THURBOX_TASK` are removed: an exec fired from a pane
+does not act as that pane's session.
 
 Set **at build time** (not runtime):
 

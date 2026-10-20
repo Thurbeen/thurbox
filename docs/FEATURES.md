@@ -1566,8 +1566,13 @@ spent one-shot clears it and disables the automation.
   (`THURBOX_CONFIG_DIR`, `THURBOX_DATA_DIR`, `THURBOX_SOCKET`) and its own
   identity (`THURBOX_AUTOMATION_ID`, `THURBOX_AUTOMATION_NAME`), which win —
   so a `thurbox-cli` inside reaches the instance that fired it, whether the
-  heartbeat, an OS timer or a hand-run tick did. There is no login shell:
-  write `bash -lc '…'` in the command for one.
+  heartbeat, an OS timer or a hand-run tick did. A session identity the firer
+  carried (`THURBOX_SESSION` and its kin, when `run --wait` is typed in a
+  pane) is dropped. There is no login shell: write `bash -lc '…'` in the
+  command for one. The command runs in a process group of its own, which is
+  what lets a timeout kill everything it started — and also why a firer that
+  is itself killed mid-run (a Ctrl+C on `run --wait`) leaves it running; the
+  next tick past its deadline marks that run `timed_out`.
 
 ### Execution model
 

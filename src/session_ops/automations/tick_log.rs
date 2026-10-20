@@ -107,14 +107,20 @@ fn append_log(at: u64, error: &str) -> std::io::Result<()> {
 
 /// Keep the log under [`LOG_CAP`] by dropping its older half, on a line
 /// boundary. A failing heartbeat writes a line a minute; this bounds it.
+///
+/// Cut on bytes: an error can quote a path in any script, and a newline byte
+/// never sits inside a multi-byte character, where a `str` slice would panic.
 fn trim(path: &std::path::Path) -> std::io::Result<()> {
     if std::fs::metadata(path)?.len() as usize <= LOG_CAP {
         return Ok(());
     }
-    let text = std::fs::read_to_string(path)?;
-    let cut = text.len() - LOG_CAP / 2;
-    let start = text[cut..].find('\n').map_or(text.len(), |i| cut + i + 1);
-    std::fs::write(path, &text[start..])
+    let bytes = std::fs::read(path)?;
+    let cut = bytes.len().saturating_sub(LOG_CAP / 2);
+    let start = bytes[cut..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(bytes.len(), |i| cut + i + 1);
+    std::fs::write(path, &bytes[start..])
 }
 
 fn no_data_dir() -> std::io::Error {
@@ -157,6 +163,20 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let error = "x".repeat(200);
+        for _ in 0..(LOG_CAP / 200 + 50) {
+            record(&failed(&error));
+        }
+        let log = std::fs::read_to_string(log_path().unwrap()).unwrap();
+        assert!(log.len() <= LOG_CAP, "{}", log.len());
+        assert!(log.lines().all(|l| l.ends_with(&error)), "lines stay whole");
+    }
+
+    #[test]
+    fn the_log_trims_cleanly_through_multi_byte_text() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        // Odd byte lengths, so the half-way cut lands inside a character.
+        let error = "é".repeat(101) + "x";
         for _ in 0..(LOG_CAP / 200 + 50) {
             record(&failed(&error));
         }

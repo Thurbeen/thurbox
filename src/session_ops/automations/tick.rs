@@ -57,9 +57,21 @@ pub struct Fired {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
     pub automation_id: i64,
-    /// `claim-lost` (another firer claimed it) or `run-in-flight` (a run of
-    /// it is still going).
+    /// `claim-lost` (another firer claimed it), `run-in-flight` (a run of it
+    /// is still going) or `error` (its lock or claim could not be written;
+    /// `detail` says why, and it is due again next tick).
     pub reason: &'static str,
+    pub detail: Option<String>,
+}
+
+impl Skipped {
+    fn new(automation_id: i64, reason: &'static str) -> Self {
+        Self {
+            automation_id,
+            reason,
+            detail: None,
+        }
+    }
 }
 
 /// What the due pass did.
@@ -86,19 +98,19 @@ impl DuePass {
     }
 }
 
-/// When a run started at `now` counts as timed out.
-fn deadline(auto: &Automation, now: u64) -> u64 {
-    now.saturating_add((auto.run.timeout() + DEADLINE_GRACE).as_millis() as u64)
+/// When a run claimed at `now`, that may take `budget`, counts as timed out.
+fn deadline(budget: Duration, now: u64) -> u64 {
+    now.saturating_add((budget + DEADLINE_GRACE).as_millis() as u64)
 }
 
-/// Take the run lock for as long as a run of `auto` may take.
-fn run_lock<'a>(db: &'a Database, auto: &Automation, op: &str) -> Result<Option<Lock<'a>>, String> {
-    lock::lock_for(
-        db,
-        Subject::AutomationRun(auto.id),
-        op,
-        auto.run.timeout() + DEADLINE_GRACE,
-    )
+/// Take automation `id`'s run lock for a run that may take `budget`.
+fn run_lock<'a>(
+    db: &'a Database,
+    id: i64,
+    budget: Duration,
+    op: &str,
+) -> Result<Option<Lock<'a>>, String> {
+    lock::lock_for(db, Subject::AutomationRun(id), op, budget + DEADLINE_GRACE)
 }
 
 /// Fire every automation due at `now`, and run `housekeeping` while the execs
@@ -128,39 +140,70 @@ pub fn tick<T>(
     let mut locks: Vec<(i64, Lock<'_>)> = Vec::new();
     let mut execs: VecDeque<(i64, ExecJob)> = VecDeque::new();
     let mut inline: Vec<(i64, Automation)> = Vec::new();
+    // Execs start in waves of EXEC_CONCURRENCY, so a queued one may wait for
+    // the waves before it — each as long as the longest exec — before its own
+    // timeout even starts. Its lock and its row's deadline cover that wait,
+    // or a slow queue would see its last runs called timed out, and fired a
+    // second time, while they are still running.
+    let longest_exec = due
+        .iter()
+        .filter(|a| ExecJob::of(a).is_some())
+        .map(|a| a.run.timeout())
+        .max()
+        .unwrap_or_default();
     for auto in due {
-        let Some(held) = run_lock(db, &auto, "tick")? else {
-            pass.skipped.push(Skipped {
-                automation_id: auto.id,
-                reason: "run-in-flight",
-            });
-            continue;
+        let job = ExecJob::of(&auto);
+        let budget = match &job {
+            Some(_) => longest_exec * (execs.len() / EXEC_CONCURRENCY) as u32 + auto.run.timeout(),
+            None => auto.run.timeout(),
+        };
+        // One automation's lock or claim that cannot be written skips that
+        // automation, not the tick: the ones already claimed have rows saying
+        // `running`, and leaving them unfired would read as a hang.
+        let held = match run_lock(db, auto.id, budget, "tick") {
+            Ok(Some(held)) => held,
+            Ok(None) => {
+                pass.skipped.push(Skipped::new(auto.id, "run-in-flight"));
+                continue;
+            }
+            Err(e) => {
+                pass.skipped.push(Skipped {
+                    detail: Some(e),
+                    ..Skipped::new(auto.id, "error")
+                });
+                continue;
+            }
         };
         let next = auto.schedule.next_after(now, auto.timezone.as_deref());
-        let claimed = db
-            .claim_and_open_run(
-                auto.id,
-                auto.next_run_at.unwrap_or(0),
-                next,
-                now,
-                deadline(&auto, now),
-            )
-            .map_err(|e| format!("claim_due_automation: {e}"))?;
-        let Some(run_id) = claimed else {
-            // Another firer won the claim. This logs at debug! (invisible at
-            // the default level), so it is reported in the pass too.
-            tracing::debug!(
-                automation_id = auto.id,
-                "automation claim lost to a concurrent firer"
-            );
-            pass.skipped.push(Skipped {
-                automation_id: auto.id,
-                reason: "claim-lost",
-            });
-            continue;
+        let claimed = db.claim_and_open_run(
+            auto.id,
+            auto.next_run_at.unwrap_or(0),
+            next,
+            now,
+            deadline(budget, now),
+        );
+        let run_id = match claimed {
+            Ok(Some(run_id)) => run_id,
+            Ok(None) => {
+                // Another firer won the claim. This logs at debug! (invisible
+                // at the default level), so it is reported in the pass too.
+                tracing::debug!(
+                    automation_id = auto.id,
+                    "automation claim lost to a concurrent firer"
+                );
+                pass.skipped.push(Skipped::new(auto.id, "claim-lost"));
+                continue;
+            }
+            Err(e) => {
+                pass.skipped.push(Skipped {
+                    detail: Some(format!("claim_due_automation: {e}")),
+                    ..Skipped::new(auto.id, "error")
+                });
+                continue;
+            }
         };
         locks.push((run_id, held));
-        match ExecJob::of(&auto) {
+        match job {
             Some(job) => execs.push_back((run_id, job)),
             None => inline.push((run_id, auto)),
         }
@@ -230,6 +273,8 @@ pub enum RunNowError {
     Disabled(String),
     /// A run of it is in flight.
     InFlight(String),
+    /// It was deleted before or while it ran.
+    Gone(String),
     /// The database could not be asked or written.
     Storage(String),
 }
@@ -237,9 +282,10 @@ pub enum RunNowError {
 impl std::fmt::Display for RunNowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RunNowError::Disabled(m) | RunNowError::InFlight(m) | RunNowError::Storage(m) => {
-                f.write_str(m)
-            }
+            RunNowError::Disabled(m)
+            | RunNowError::InFlight(m)
+            | RunNowError::Gone(m)
+            | RunNowError::Storage(m) => f.write_str(m),
         }
     }
 }
@@ -261,13 +307,18 @@ pub fn run_now(
     timeout: Option<Duration>,
 ) -> Result<AutomationRun, RunNowError> {
     let storage = |e: String| RunNowError::Storage(e);
-    let read = |db: &Database| {
-        db.get_automation(id)
-            .map_err(|e| format!("get automation: {e}"))
-            .and_then(|a| a.ok_or_else(|| format!("automation #{id} no longer exists")))
+    let read = |db: &Database| match db.get_automation(id) {
+        Ok(Some(auto)) => Ok(auto),
+        Ok(None) => Err(RunNowError::Gone(format!(
+            "automation #{id} no longer exists"
+        ))),
+        Err(e) => Err(RunNowError::Storage(format!("get automation: {e}"))),
     };
-    let mut auto = read(db).map_err(storage)?;
+    let mut auto = read(db)?;
     if let Some(timeout) = timeout {
+        if timeout.is_zero() {
+            return Err(storage("the timeout must be at least one second".into()));
+        }
         auto.run.timeout_secs = Some(timeout.as_secs().max(1));
     }
     if !auto.enabled && !force {
@@ -276,12 +327,13 @@ pub fn run_now(
              `automation edit {id} --enabled`"
         )));
     }
-    let Some(_held) = run_lock(db, &auto, "run").map_err(storage)? else {
+    let budget = auto.run.timeout();
+    let Some(_held) = run_lock(db, id, budget, "run").map_err(storage)? else {
         return Err(in_flight(id));
     };
     // Read again under the lock: a tick that finished just before it may have
-    // moved the schedule.
-    let fresh = read(db).map_err(storage)?;
+    // moved the schedule, and a delete may have taken it.
+    let fresh = read(db)?;
     auto.next_run_at = fresh.next_run_at;
     auto.enabled = fresh.enabled;
     let now = current_time_millis();
@@ -293,13 +345,13 @@ pub fn run_now(
             auto.next_run_at.unwrap_or(0),
             next,
             now,
-            deadline(&auto, now),
+            deadline(budget, now),
         )
         .map_err(|e| storage(format!("claim_due_automation: {e}")))?
         // Lost to a firer that takes no lock — an older thurbox's tick.
         .ok_or_else(|| in_flight(id))?
     } else {
-        db.start_automation_run(id, now, Some(deadline(&auto, now)))
+        db.start_automation_run(id, now, Some(deadline(budget, now)))
             .map_err(|e| storage(format!("start_automation_run: {e}")))?
     };
     let record = match ExecJob::of(&auto) {
@@ -308,13 +360,124 @@ pub fn run_now(
     };
     db.finish_automation_run(run_id, &record)
         .map_err(|e| storage(format!("record the run: {e}")))?;
+    // A delete during the run took its history with it.
     db.get_automation_run(run_id)
         .map_err(|e| storage(format!("read the run back: {e}")))?
-        .ok_or_else(|| storage(format!("run #{run_id} vanished")))
+        .ok_or_else(|| {
+            RunNowError::Gone(format!(
+                "automation #{id} was deleted while it ran ({}: {})",
+                record.status.as_str(),
+                record.detail
+            ))
+        })
 }
 
 fn in_flight(id: i64) -> RunNowError {
     RunNowError::InFlight(format!(
         "a run of automation #{id} is in flight; wait for it to finish"
     ))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::session::{AutomationAction, AutomationSchedule, RunSettings};
+    use crate::storage::automations::NewAutomation;
+
+    fn exec(db: &Database, name: &str, timeout_secs: u64) -> i64 {
+        db.create_automation(&NewAutomation {
+            name: name.into(),
+            enabled: true,
+            schedule: AutomationSchedule::Cron {
+                expr: "0 * * * *".into(),
+            },
+            timezone: None,
+            action: AutomationAction::Exec {
+                command: "true".into(),
+            },
+            prompt: String::new(),
+            next_run_at: Some(1),
+            key: None,
+            run: RunSettings {
+                timeout_secs: Some(timeout_secs),
+                ..RunSettings::default()
+            },
+        })
+        .expect("insert")
+    }
+
+    fn deadline_of(db: &Database, automation_id: i64) -> u64 {
+        db.conn_ref()
+            .query_row(
+                "SELECT deadline_at FROM automation_runs WHERE automation_id = ?1",
+                [automation_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("a run row") as u64
+    }
+
+    /// The fifth exec waits for a slot behind four others, so its lock and its
+    /// row's deadline cover that wait as well as its own timeout.
+    #[test]
+    fn a_queued_exec_s_deadline_covers_its_wait_for_a_slot() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().expect("db");
+        let ids: Vec<i64> = (0..=EXEC_CONCURRENCY)
+            .map(|n| exec(&db, &format!("e{n}"), 100))
+            .collect();
+        let now = 1_000;
+        let (pass, ()) = tick(&db, &crate::backend::registry::inert(), now, || ()).expect("tick");
+        assert_eq!(pass.fired.len(), ids.len(), "{pass:?}");
+        let grace = DEADLINE_GRACE.as_millis() as u64;
+        assert_eq!(deadline_of(&db, ids[0]), now + 100_000 + grace);
+        assert_eq!(
+            deadline_of(&db, ids[EXEC_CONCURRENCY]),
+            now + 200_000 + grace,
+            "one wave of the longest exec, then its own timeout"
+        );
+    }
+
+    /// A claim that cannot be written skips that automation; the others are
+    /// still fired, rather than claimed and abandoned.
+    #[test]
+    fn one_automation_s_failed_claim_does_not_strand_the_others() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().expect("db");
+        let first = exec(&db, "first", 30);
+        let broken = exec(&db, "broken", 30);
+        let last = exec(&db, "last", 30);
+        db.conn_ref()
+            .execute_batch(&format!(
+                "CREATE TRIGGER refuse_run BEFORE INSERT ON automation_runs \
+                 WHEN NEW.automation_id = {broken} \
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;"
+            ))
+            .expect("trigger");
+        let (pass, ()) = tick(&db, &crate::backend::registry::inert(), 1_000, || ()).expect("tick");
+        let mut fired: Vec<i64> = pass.fired.iter().map(|f| f.automation_id).collect();
+        fired.sort_unstable();
+        assert_eq!(fired, [first, last]);
+        assert_eq!(pass.skipped.len(), 1, "{pass:?}");
+        assert_eq!(pass.skipped[0].automation_id, broken);
+        assert_eq!(pass.skipped[0].reason, "error");
+        assert!(
+            pass.skipped[0]
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("refused")),
+            "{pass:?}"
+        );
+    }
+
+    #[test]
+    fn running_an_automation_that_is_gone_says_so() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().expect("db");
+        let error = run_now(&db, &crate::backend::registry::inert(), 404, false, None)
+            .expect_err("nothing to run");
+        assert!(matches!(error, RunNowError::Gone(_)), "{error:?}");
+    }
 }

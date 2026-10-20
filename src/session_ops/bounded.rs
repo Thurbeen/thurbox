@@ -11,6 +11,12 @@
 //! whole group: `sh -c 'sleep 600'` is a shell with a `sleep` under it, and
 //! killing only the shell left the `sleep` running with the pipes open. On
 //! Windows `taskkill /T` does the same for the tree.
+//!
+//! The other side of that: a signal sent to the caller — a Ctrl+C on
+//! `automation run --wait`, the keeper window closed under a tick — no longer
+//! reaches the child, so a caller killed mid-run leaves its command running
+//! with nobody holding its deadline. A run row the caller opened is then
+//! marked `timed_out` by the next tick past its deadline.
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};

@@ -528,8 +528,9 @@ fn ensure_automation(
 /// active set so self-heal keeps them alive. Idempotent.
 ///
 /// Note: this does NOT arm the tmux automation heartbeat — the CLI layer does
-/// that (it owns the `backend::tmux` dependency). A `Send` automation only fires
-/// while something ticks it (TUI tick loop, or the heartbeat keeper window).
+/// that (it owns the `backend::tmux` dependency). An automation only fires
+/// while something ticks it: the heartbeat keeper window, an OS timer, or a
+/// hand-run `automation tick`.
 pub fn activate_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,

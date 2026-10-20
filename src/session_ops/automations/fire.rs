@@ -20,6 +20,15 @@ use super::super::SpawnRequest;
 /// Characters of each exec stream a run keeps.
 const TAIL_CHARS: usize = 4096;
 
+/// The session identity a pane gives its processes, which an exec never
+/// inherits from whoever fired it.
+const IDENTITY_VARS: [&str; 4] = [
+    "THURBOX_SESSION",
+    "THURBOX_SESSION_ID",
+    "THURBOX_SESSION_KEY",
+    "THURBOX_TASK",
+];
+
 /// An exec fire, detached from the database so it can run on a worker thread
 /// while the tick goes on with everything else.
 #[derive(Debug, Clone)]
@@ -61,6 +70,12 @@ impl ExecJob {
         use super::super::bounded::Exit;
 
         let mut cmd = super::super::platform_shell(&self.command);
+        // A firer inside a pane carries that session's identity; the heartbeat
+        // carries none. Dropping it keeps the two runs alike, and keeps a
+        // `message send` in the job from being signed as the pane's agent.
+        for var in IDENTITY_VARS {
+            cmd.env_remove(var);
+        }
         cmd.envs(self.env.iter().map(|(k, v)| (k, v)))
             .envs(super::super::thurbox_env_overrides())
             .env("THURBOX_AUTOMATION_ID", self.automation_id.to_string())

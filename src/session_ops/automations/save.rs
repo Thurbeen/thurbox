@@ -120,6 +120,14 @@ pub fn create(
 ) -> Result<Saved, SaveError> {
     if let Some(key) = key {
         super::super::names::validate_key(key)?;
+        // A reference is tried as an id before a key, so an all-digit key
+        // would name some other automation everywhere it is used.
+        if key.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!(
+                "invalid key '{key}': a key of digits only reads as an automation id"
+            )
+            .into());
+        }
     }
     let wanted = from_draft(db, draft, now)?;
     if let Some(key) = key {
@@ -1132,5 +1140,19 @@ mod tests {
         let error = automation(&db, id, Some(true), false, false).expect_err("spent");
         assert!(error.contains("never fires"), "{error}");
         assert!(!only(&db).enabled);
+    }
+
+    #[test]
+    fn a_key_of_digits_only_is_refused() {
+        let db = Database::open_in_memory().expect("db");
+        let draft = AutomationDraft {
+            name: Some("sync".into()),
+            trigger: Some("hourly".into()),
+            command: Some("true".into()),
+            ..AutomationDraft::default()
+        };
+        let error = create(&db, &draft, Some("7"), OnExisting::Fail, NOW).unwrap_err();
+        assert!(error.to_string().contains("digits only"), "{error}");
+        create(&db, &draft, Some("v7"), OnExisting::Fail, NOW).expect("a key with a letter");
     }
 }

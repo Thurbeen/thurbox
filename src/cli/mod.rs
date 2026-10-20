@@ -92,7 +92,8 @@ pub const EXIT_TIMEOUT: i32 = 4;
 /// Somebody else already holds it: a key taken under `--on-existing fail`, a
 /// run already in flight.
 pub const EXIT_CONFLICT: i32 = 5;
-/// The subject left while the call was waiting on it.
+/// The subject left while the call was waiting on it: an automation deleted
+/// under `automation run --wait`.
 pub const EXIT_GONE: i32 = 6;
 
 /// A failure that left nothing on stdout, and the exit code it deserves.

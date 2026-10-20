@@ -7,9 +7,9 @@
 //! code says which kind of failure it was — `0` success, `1` the command ran
 //! and failed, `2` the invocation was wrong, `3` the reference matched more
 //! than one session or automation, and for a verb that waits or claims `4` it
-//! timed out, `5` somebody else holds it, `6` its subject went away. An agent reads one stream and one status; splitting
-//! the answer across stdout and stderr costs it a retry to find out what
-//! happened.
+//! timed out, `5` somebody else holds it, `6` its subject went away. An agent
+//! reads one stream and one status; splitting the answer across stdout and
+//! stderr costs it a retry to find out what happened.
 //!
 //! The exit code is the *only* half of that contract a caller may invert. An
 //! `error` key on stdout implies a non-zero exit; the converse does not hold,

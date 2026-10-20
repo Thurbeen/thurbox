@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use crate::cli::action;
 use crate::cli::output::{self, CommandOutput};
-use crate::cli::{CommandError, EXIT_AMBIGUOUS, EXIT_CONFLICT, EXIT_TIMEOUT};
+use crate::cli::{CommandError, EXIT_AMBIGUOUS, EXIT_CONFLICT, EXIT_GONE, EXIT_TIMEOUT};
 use crate::session::{Automation, AutomationRun, AutomationRunStatus};
 use crate::session_ops::automations::{self as ops, Draft, RefError, RunNowError, SaveError};
 use crate::storage::Database;
@@ -94,7 +94,7 @@ pub enum Action {
         on_existing: OnExisting,
         /// Seconds a run may take (default 600). An exec is killed at it; a run
         /// of any kind still going past it is recorded as timed out.
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         timeout: Option<u64>,
         /// Exec action: directory to run in (default: your home directory).
         #[arg(long)]
@@ -139,7 +139,7 @@ pub enum Action {
         #[arg(long)]
         command: Option<String>,
         /// Seconds a run may take.
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         timeout: Option<u64>,
         /// Exec action: directory to run in; `""` goes back to home.
         #[arg(long)]
@@ -169,7 +169,8 @@ pub enum Action {
     /// than switched on.
     ///
     /// --wait exits 0 when the run succeeded, 1 when it failed, 4 when it
-    /// timed out and 5 when a run of it is already in flight.
+    /// timed out, 5 when a run of it is already in flight and 6 when the
+    /// automation was deleted before or while it ran.
     Run {
         /// Automation id, key or name.
         reference: String,
@@ -178,7 +179,7 @@ pub enum Action {
         #[arg(long)]
         wait: bool,
         /// With --wait: seconds this run may take, instead of its own timeout.
-        #[arg(long, requires = "wait")]
+        #[arg(long, requires = "wait", value_parser = clap::value_parser!(u64).range(1..))]
         timeout: Option<u64>,
         /// With --wait: run a disabled automation once, leaving it disabled.
         #[arg(long, requires = "wait")]
@@ -457,6 +458,7 @@ fn run_wait(
 ) -> Result<CommandOutput, CommandError> {
     let run = ops::run_now(db, backends, id, force, timeout).map_err(|e| match e {
         RunNowError::InFlight(m) => CommandError::with_code(m, EXIT_CONFLICT),
+        RunNowError::Gone(m) => CommandError::with_code(m, EXIT_GONE),
         RunNowError::Disabled(m) | RunNowError::Storage(m) => CommandError::from(m),
     })?;
     let json = run_to_json(&run);
@@ -600,7 +602,7 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
     let skipped: Vec<Value> = pass
         .skipped
         .iter()
-        .map(|s| json!({ "id": s.automation_id, "reason": s.reason }))
+        .map(|s| json!({ "id": s.automation_id, "reason": s.reason, "detail": s.detail }))
         .collect();
     let mut out = json!({
         "fired": fired,
@@ -743,13 +745,13 @@ fn automation_to_json(a: &Automation) -> Value {
 }
 
 /// Best-effort: ask this machine's backend — the registry's default — to keep
-/// the heartbeat running, so the automation fires even when no interface is
-/// attached. Failures (e.g. its multiplexer missing) are non-fatal — the
-/// automation still works while the interface is up.
+/// the heartbeat running, so the automation fires with no interface attached.
+/// The interface runs no scheduler, so without the keeper (or an OS timer) a
+/// schedule fires only when somebody runs `automation tick`. A failure (its
+/// multiplexer missing, say) is a warning, not an error: the write stands.
 ///
-/// Gated on `[features] automations`: when disabled the TUI neither fires
-/// schedules nor arms the heartbeat, so the CLI must not arm it either (it
-/// would spawn a keeper window that can never fire anything).
+/// Gated on `[features] automations`, which turns heartbeat arming off for the
+/// interface and the CLI alike.
 pub(crate) fn arm_heartbeat(backends: &crate::backend::BackendRegistry) {
     if !crate::session::settings::global().features.automations {
         return;

@@ -269,6 +269,16 @@ impl ExtensionAutomation {
                 self.name
             ));
         }
+        if let Some(bad) = self
+            .env
+            .keys()
+            .find(|k| k.is_empty() || k.contains('=') || k.contains('\0'))
+        {
+            return Err(format!(
+                "automation '{}' has an `env` entry {bad:?}, which is not a variable name",
+                self.name
+            ));
+        }
         if self.timeout_secs == Some(0) {
             return Err(format!(
                 "automation '{}' has `timeout_secs = 0`; give it at least one second",
@@ -400,10 +410,14 @@ impl ExtensionDef {
             }
         }
         // An exec automation's command typically calls a script under the home
-        // dir (e.g. `{home}/sync.sh`); resolve it to an absolute path.
+        // dir (e.g. `{home}/sync.sh`), and its directory is often the home
+        // itself; resolve both to absolute paths.
         for a in &mut out.automations {
             if let Some(cmd) = &a.command {
                 a.command = Some(cmd.replace(HOME_TOKEN, home));
+            }
+            if let Some(cwd) = &a.cwd {
+                a.cwd = Some(cwd.replace(HOME_TOKEN, home));
             }
         }
         out
@@ -807,6 +821,35 @@ prompt = "tick"
         );
         // Original is untouched.
         assert_eq!(def.sessions[0].repo_path, PathBuf::from("{home}"));
+    }
+
+    /// An exec automation's `cwd` names the home the way its `command` does,
+    /// and is resolved the same way; left literal it is a relative path that
+    /// does not exist, and every fire fails to start.
+    #[test]
+    fn resolved_for_home_substitutes_an_exec_automation_s_cwd() {
+        let def: ExtensionDef = toml::from_str(
+            "name = \"sync\"\n[[automations]]\nname = \"sync\"\ntrigger = \"hourly\"\n\
+             command = \"{home}/sync.sh\"\ncwd = \"{home}\"\n",
+        )
+        .unwrap();
+        let resolved = def.resolved_for_home("/srv/sync", Some(&user_home()));
+        assert_eq!(resolved.automations[0].cwd.as_deref(), Some("/srv/sync"));
+        assert_eq!(
+            resolved.automations[0].command.as_deref(),
+            Some("/srv/sync/sync.sh")
+        );
+    }
+
+    #[test]
+    fn an_env_entry_that_is_no_variable_name_is_refused() {
+        let def: ExtensionDef = toml::from_str(
+            "name = \"sync\"\n[[automations]]\nname = \"sync\"\ntrigger = \"hourly\"\n\
+             command = \"true\"\nenv = { \"A=B\" = \"x\" }\n",
+        )
+        .unwrap();
+        let error = def.automations[0].validate().unwrap_err();
+        assert!(error.contains("not a variable name"), "{error}");
     }
 
     #[test]

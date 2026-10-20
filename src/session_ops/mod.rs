@@ -1069,7 +1069,6 @@ mod tests {
     use super::*;
     use crate::session::SessionId;
 
-    #[cfg(unix)]
     #[test]
     fn inject_env_sets_identity_and_task() {
         let sid = SessionId::default();
