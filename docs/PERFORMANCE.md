@@ -933,6 +933,11 @@ frame either. A VM near that ceiling is rebuilt rather than called again
 (`LuaHost::near_memory_limit`): at the ceiling every allocation runs a full
 emergency collection before it fails, so each plugin call cost a collection of the
 whole heap on every frame, and nothing ever freed it — a frozen interface.
+Memory recovery uses a fresh host even when the edited interface cannot build.
+If the bundled fallback also fails, the empty replacement carries the error and
+keeps kernel recovery controls usable; the exhausted heap is retired rather than
+retried every loop. Ordinary edit reloads still retain the last good VM on error.
+The 256 MiB default bounds the Lua heap, not process RSS or Rust-side caches.
 
 **Rejected**:
 

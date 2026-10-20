@@ -706,6 +706,7 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
         Action::List {
             parent: None,
             deleted: false,
+            since: None,
             verify: false,
             key: None,
             key_prefix: None,
@@ -755,6 +756,8 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
             },
             prompt: "start work".into(),
             next_run_at: Some(1),
+            key: None,
+            run: Default::default(),
         })
         .expect("automation");
     let name = format!("auto-{auto_id}");
@@ -944,6 +947,7 @@ fn a_parked_session_says_so_on_get_and_on_list() {
         Action::List {
             parent: None,
             deleted: false,
+            since: None,
             verify: false,
             key: None,
             key_prefix: None,

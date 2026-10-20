@@ -163,8 +163,13 @@ module's `command(…)` has to act as the plugin that required it.
 `thurbox` is the published data every plugin reads, so it is read-only all the
 way down: each published group is frozen into read-only proxies when it is
 built (`api::freeze`), the top-level table refuses a write, and `pairs` over
-any of them iterates through a closure. Those proxies are shared, which is safe
-because `rawset` — the one way to write past a metatable — is withheld. Each
+any of them hands back the proxy itself as the state, which the kernel's own
+`next` reads through. Those proxies are shared, which is safe because `rawset`
+— the one way to write past a metatable — is withheld. Their metamethods find
+the table behind a proxy through a weak registry map and never capture it: a
+captured table is a registry reference, a root the collector cannot see past, and
+with one per proxy a rebuilt group took one full collection per nesting level to
+free — a long deleted history filled the VM's ceiling within minutes. Each
 plugin reads it through a `thurbox` view of its own, and what the kernel sets
 per call (`runs`, `granted`) lives in that view: a finalizer runs inside
 whichever call the collector interrupts, and through its own environment it

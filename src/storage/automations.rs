@@ -4,10 +4,13 @@
 //! `(action_kind, …)` with the action-specific columns. The `next_run_at`
 //! column is the dispatcher's scan key — see [`Database::claim_due_automation`].
 
+use std::path::Path;
+
 use rusqlite::{params, OptionalExtension};
 
 use crate::session::{
-    Automation, AutomationAction, AutomationRun, AutomationRunStatus, AutomationSchedule, SessionId,
+    Automation, AutomationAction, AutomationRun, AutomationRunStatus, AutomationSchedule,
+    RunSettings, SessionId,
 };
 use crate::sync::current_time_millis;
 
@@ -23,6 +26,77 @@ pub struct NewAutomation {
     pub action: AutomationAction,
     pub prompt: String,
     pub next_run_at: Option<u64>,
+    /// Unique where set: an insert naming a key already taken fails with a
+    /// constraint violation, which [`is_key_taken`] recognises.
+    pub key: Option<String>,
+    pub run: RunSettings,
+}
+
+/// How a run ended, as [`Database::finish_automation_run`] records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunRecord {
+    pub status: AutomationRunStatus,
+    /// The human summary: the error, the skip reason, an exec's output.
+    pub detail: String,
+    pub related_session: Option<SessionId>,
+    pub finished_at: u64,
+    pub exit_code: Option<i32>,
+    pub stdout_tail: Option<String>,
+    pub stderr_tail: Option<String>,
+}
+
+impl RunRecord {
+    /// A run that produced no process: a send, a spawn, a skip.
+    pub fn plain(
+        status: AutomationRunStatus,
+        detail: impl Into<String>,
+        related_session: Option<SessionId>,
+        finished_at: u64,
+    ) -> Self {
+        Self {
+            status,
+            detail: detail.into(),
+            related_session,
+            finished_at,
+            exit_code: None,
+            stdout_tail: None,
+            stderr_tail: None,
+        }
+    }
+}
+
+/// Whether `error` is an insert refused because another automation holds its
+/// key — the race two keyed creates of one key run.
+pub fn is_key_taken(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(e, Some(message))
+            if e.code == rusqlite::ErrorCode::ConstraintViolation
+                && message.contains("automations.key")
+    )
+}
+
+/// The `env` column: a JSON object in key order, `NULL` when empty.
+fn env_to_column(env: &[(String, String)]) -> Option<String> {
+    if env.is_empty() {
+        return None;
+    }
+    let map: serde_json::Map<String, serde_json::Value> = env
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+        .collect();
+    Some(serde_json::Value::Object(map).to_string())
+}
+
+/// Read the `env` column back, tolerating a malformed value as no variables.
+fn env_from_column(raw: Option<String>) -> Vec<(String, String)> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<std::collections::BTreeMap<String, String>>(&raw) {
+        Ok(map) => map.into_iter().collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 impl Database {
@@ -36,8 +110,10 @@ impl Database {
                 (name, enabled, schedule_kind, schedule_spec, timezone,
                  action_kind, target_session, repo_path, worktree_branch,
                  base_branch, agent, prompt, created_at, updated_at,
-                 last_run_at, next_run_at, action_extra_repos, action_command)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, NULL, ?14, ?15, ?16)",
+                 last_run_at, next_run_at, action_extra_repos, action_command,
+                 key, timeout_secs, cwd, env)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, NULL, ?14, ?15, ?16,
+                     ?17, ?18, ?19, ?20)",
             params![
                 new.name,
                 new.enabled as i64,
@@ -55,9 +131,33 @@ impl Database {
                 new.next_run_at.map(|v| v as i64),
                 extra,
                 command,
+                new.key,
+                new.run.timeout_secs.map(|v| v as i64),
+                new.run.cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
+                env_to_column(&new.run.env),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The automation carrying `key`, if any.
+    pub fn get_automation_by_key(&self, key: &str) -> rusqlite::Result<Option<Automation>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {COLS} FROM automations WHERE key = ?1"),
+                params![key],
+                map_automation,
+            )
+            .optional()
+    }
+
+    /// Every automation named `name`, oldest first. Names are not unique.
+    pub fn find_automations_by_name(&self, name: &str) -> rusqlite::Result<Vec<Automation>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {COLS} FROM automations WHERE name = ?1 ORDER BY id"
+        ))?;
+        let rows = stmt.query_map(params![name], map_automation)?;
+        rows.collect()
     }
 
     /// Fetch a single automation by id.
@@ -103,7 +203,8 @@ impl Database {
                 timezone = ?6, action_kind = ?7, target_session = ?8, repo_path = ?9,
                 worktree_branch = ?10, base_branch = ?11, agent = ?12, prompt = ?13,
                 updated_at = ?14, last_run_at = ?15, next_run_at = ?16,
-                action_extra_repos = ?17, action_command = ?18
+                action_extra_repos = ?17, action_command = ?18,
+                timeout_secs = ?19, cwd = ?20, env = ?21
              WHERE id = ?1",
             params![
                 auto.id,
@@ -124,9 +225,36 @@ impl Database {
                 auto.next_run_at.map(|v| v as i64),
                 extra,
                 command,
+                auto.run.timeout_secs.map(|v| v as i64),
+                auto.run
+                    .cwd
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string()),
+                env_to_column(&auto.run.env),
             ],
         )?;
         Ok(())
+    }
+
+    /// Replace the observed cwd without overwriting a concurrent directory edit,
+    /// a fire's timing, or any other definition field.
+    pub fn update_automation_cwd(
+        &self,
+        read: &Automation,
+        cwd: Option<&Path>,
+    ) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE automations SET cwd = ?2, updated_at = ?3 WHERE id = ?1 AND cwd IS ?4",
+            params![
+                read.id,
+                cwd.map(|p| p.to_string_lossy().into_owned()),
+                current_time_millis() as i64,
+                read.run
+                    .cwd
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+            ],
+        )? > 0)
     }
 
     /// [`Self::update_automation`] for a writer that read the row a moment ago.
@@ -145,10 +273,18 @@ impl Database {
         let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) =
             super::action_to_columns(&auto.action);
         let now = current_time_millis() as i64;
+        let timeout = auto.run.timeout_secs.map(|v| v as i64);
+        let cwd = auto
+            .run
+            .cwd
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+        let env = env_to_column(&auto.run.env);
         let definition = "name = ?2, schedule_kind = ?3, schedule_spec = ?4, timezone = ?5, \
              action_kind = ?6, target_session = ?7, repo_path = ?8, worktree_branch = ?9, \
              base_branch = ?10, agent = ?11, prompt = ?12, updated_at = ?13, \
-             action_extra_repos = ?14, action_command = ?15";
+             action_extra_repos = ?14, action_command = ?15, timeout_secs = ?16, cwd = ?17, \
+             env = ?18";
         let columns = params![
             auto.id,
             auto.name,
@@ -165,6 +301,9 @@ impl Database {
             now,
             extra,
             command,
+            timeout,
+            cwd,
+            env,
         ];
         let updated = match timing {
             Some((read_enabled, read_next)) => {
@@ -181,8 +320,8 @@ impl Database {
                 ]);
                 self.conn.execute(
                     &format!(
-                        "UPDATE automations SET {definition}, enabled = ?16, next_run_at = ?17 \
-                         WHERE id = ?1 AND enabled = ?18 AND next_run_at IS ?19"
+                        "UPDATE automations SET {definition}, enabled = ?19, next_run_at = ?20 \
+                         WHERE id = ?1 AND enabled = ?21 AND next_run_at IS ?22"
                     ),
                     all.as_slice(),
                 )?
@@ -344,8 +483,8 @@ impl Database {
         let now = current_time_millis() as i64;
         self.conn.execute(
             "INSERT INTO automation_runs \
-             (automation_id, started_at, status, detail, related_session_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             (automation_id, started_at, status, detail, related_session_id, finished_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?2)",
             params![
                 automation_id,
                 now,
@@ -357,6 +496,31 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Claim a due automation ([`Self::claim_due_automation`]) and open its
+    /// run row in the same transaction, returning the row's id — `None` when
+    /// another firer won the claim.
+    ///
+    /// One transaction, so no fire happens without a row and no row is opened
+    /// for a fire that did not happen: a crash between the two used to leave a
+    /// claimed slot with no trace. `deadline_at` is when a row still `running`
+    /// counts as timed out ([`Self::time_out_stale_runs`]).
+    pub fn claim_and_open_run(
+        &self,
+        id: i64,
+        expected_next_run_at: u64,
+        next: Option<u64>,
+        now: u64,
+        deadline_at: u64,
+    ) -> rusqlite::Result<Option<i64>> {
+        let tx = self.write_transaction()?;
+        if !self.claim_due_automation(id, expected_next_run_at, next, now)? {
+            return Ok(None);
+        }
+        let run = self.start_automation_run(id, now, Some(deadline_at))?;
+        tx.commit()?;
+        Ok(Some(run))
+    }
+
     /// Open a run-history entry as `running`, stamped `started_at`, before
     /// the action fires; [`finish_automation_run`](Self::finish_automation_run)
     /// writes its outcome over it.
@@ -364,14 +528,17 @@ impl Database {
         &self,
         automation_id: i64,
         started_at: u64,
+        deadline_at: Option<u64>,
     ) -> rusqlite::Result<i64> {
         self.conn.execute(
-            "INSERT INTO automation_runs (automation_id, started_at, status, detail) \
-             VALUES (?1, ?2, ?3, '')",
+            "INSERT INTO automation_runs \
+             (automation_id, started_at, status, detail, deadline_at) \
+             VALUES (?1, ?2, ?3, '', ?4)",
             params![
                 automation_id,
                 started_at as i64,
                 AutomationRunStatus::Running.as_str(),
+                deadline_at.map(|v| v as i64),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -379,24 +546,61 @@ impl Database {
 
     /// Record the outcome of a run opened by
     /// [`start_automation_run`](Self::start_automation_run).
-    pub fn finish_automation_run(
-        &self,
-        run_id: i64,
-        status: AutomationRunStatus,
-        detail: &str,
-        related_session: Option<SessionId>,
-    ) -> rusqlite::Result<()> {
+    ///
+    /// Written whatever the row says now, including `timed_out`: a firer that
+    /// outlived its deadline and then returned knows better than the sweep
+    /// that gave up on it.
+    pub fn finish_automation_run(&self, run_id: i64, record: &RunRecord) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE automation_runs SET status = ?2, detail = ?3, related_session_id = ?4 \
+            "UPDATE automation_runs SET status = ?2, detail = ?3, related_session_id = ?4, \
+             finished_at = ?5, exit_code = ?6, stdout_tail = ?7, stderr_tail = ?8 \
              WHERE id = ?1",
             params![
                 run_id,
-                status.as_str(),
-                detail,
-                related_session.map(|id| id.to_string()),
+                record.status.as_str(),
+                record.detail,
+                record.related_session.map(|id| id.to_string()),
+                record.finished_at as i64,
+                record.exit_code,
+                record.stdout_tail,
+                record.stderr_tail,
             ],
         )?;
         Ok(())
+    }
+
+    /// Mark every run still `running` past its deadline as timed out, returning
+    /// how many: a firer that hung past it or died leaves its row behind, and
+    /// this is what says so.
+    ///
+    /// A row from before v56 has no deadline; one older than a day is past any
+    /// run a heartbeat would still be waiting on.
+    pub fn time_out_stale_runs(&self, now: u64) -> rusqlite::Result<usize> {
+        const UNDATED_MS: i64 = 24 * 60 * 60 * 1000;
+        self.conn.execute(
+            "UPDATE automation_runs SET status = ?2, finished_at = ?1, \
+             detail = 'timed out: still running past its deadline, so the run that \
+             fired it hung or died' \
+             WHERE status = ?3 AND ((deadline_at IS NOT NULL AND deadline_at < ?1) \
+             OR (deadline_at IS NULL AND started_at < ?1 - ?4))",
+            params![
+                now as i64,
+                AutomationRunStatus::TimedOut.as_str(),
+                AutomationRunStatus::Running.as_str(),
+                UNDATED_MS,
+            ],
+        )
+    }
+
+    /// One run by its id.
+    pub fn get_automation_run(&self, run_id: i64) -> rusqlite::Result<Option<AutomationRun>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {RUN_COLS} FROM automation_runs WHERE id = ?1"),
+                params![run_id],
+                map_automation_run,
+            )
+            .optional()
     }
 
     /// List the most recent runs for an automation, newest first.
@@ -405,11 +609,10 @@ impl Database {
         automation_id: i64,
         limit: u32,
     ) -> rusqlite::Result<Vec<AutomationRun>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT id, automation_id, started_at, status, detail, related_session_id \
-             FROM automation_runs \
-             WHERE automation_id = ?1 ORDER BY started_at DESC, id DESC LIMIT ?2",
-        )?;
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {RUN_COLS} FROM automation_runs \
+             WHERE automation_id = ?1 ORDER BY started_at DESC, id DESC LIMIT ?2"
+        ))?;
         let rows = stmt.query_map(params![automation_id, limit], map_automation_run)?;
         rows.collect()
     }
@@ -426,11 +629,10 @@ impl Database {
         &self,
         limit: u32,
     ) -> rusqlite::Result<std::collections::HashMap<i64, Vec<AutomationRun>>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT id, automation_id, started_at, status, detail, related_session_id \
-             FROM automation_runs \
-             ORDER BY automation_id, started_at DESC, id DESC",
-        )?;
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT {RUN_COLS} FROM automation_runs \
+             ORDER BY automation_id, started_at DESC, id DESC"
+        ))?;
         let rows = stmt.query_map([], map_automation_run)?;
 
         let mut by_automation: std::collections::HashMap<i64, Vec<AutomationRun>> =
@@ -446,6 +648,10 @@ impl Database {
     }
 }
 
+/// Column list for run SELECTs (keep in sync with [`map_automation_run`]).
+const RUN_COLS: &str = "id, automation_id, started_at, status, detail, related_session_id, \
+    finished_at, exit_code, stdout_tail, stderr_tail";
+
 fn map_automation_run(row: &rusqlite::Row) -> rusqlite::Result<AutomationRun> {
     Ok(AutomationRun {
         id: row.get(0)?,
@@ -457,6 +663,10 @@ fn map_automation_run(row: &rusqlite::Row) -> rusqlite::Result<AutomationRun> {
         related_session_id: row
             .get::<_, Option<String>>(5)?
             .and_then(|s| s.parse().ok()),
+        finished_at: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
+        exit_code: row.get(7)?,
+        stdout_tail: row.get(8)?,
+        stderr_tail: row.get(9)?,
     })
 }
 
@@ -464,7 +674,7 @@ fn map_automation_run(row: &rusqlite::Row) -> rusqlite::Result<AutomationRun> {
 const COLS: &str = "id, name, enabled, schedule_kind, schedule_spec, timezone, \
     action_kind, target_session, repo_path, worktree_branch, base_branch, agent, \
     prompt, created_at, updated_at, last_run_at, next_run_at, action_extra_repos, \
-    action_command";
+    action_command, key, timeout_secs, cwd, env";
 
 fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
     let id: i64 = row.get(0)?;
@@ -504,6 +714,14 @@ fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
         updated_at: row.get::<_, i64>(14)? as u64,
         last_run_at: row.get::<_, Option<i64>>(15)?.map(|v| v as u64),
         next_run_at: row.get::<_, Option<i64>>(16)?.map(|v| v as u64),
+        key: row.get(19)?,
+        run: RunSettings {
+            timeout_secs: row.get::<_, Option<i64>>(20)?.map(|v| v as u64),
+            cwd: row
+                .get::<_, Option<String>>(21)?
+                .map(std::path::PathBuf::from),
+            env: env_from_column(row.get(22)?),
+        },
     })
 }
 
@@ -526,6 +744,8 @@ mod tests {
             },
             prompt: "run tests".to_string(),
             next_run_at: next,
+            key: None,
+            run: RunSettings::default(),
         }
     }
 
@@ -547,6 +767,35 @@ mod tests {
     }
 
     #[test]
+    fn a_cwd_repair_preserves_other_edits_and_refuses_a_stale_directory() {
+        let db = Database::open_in_memory().unwrap();
+        let mut new = send_automation("job", Some(123));
+        new.action = AutomationAction::Exec {
+            command: "true".into(),
+        };
+        new.run.cwd = Some(PathBuf::from("work"));
+        let id = db.create_automation(&new).unwrap();
+        let read = db.get_automation(id).unwrap().unwrap();
+        db.conn.execute(
+            "UPDATE automations SET enabled = 0, next_run_at = 999, name = 'edited' WHERE id = ?1",
+            [id],
+        ).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let resolved = home.path().join("work");
+        assert!(db.update_automation_cwd(&read, Some(&resolved)).unwrap());
+        let got = db.get_automation(id).unwrap().unwrap();
+        assert_eq!(got.run.cwd.as_ref(), Some(&resolved));
+        assert!(!got.enabled);
+        assert_eq!(got.next_run_at, Some(999));
+        assert_eq!(got.name, "edited");
+        assert!(!db.update_automation_cwd(&read, None).unwrap());
+        assert_eq!(
+            db.get_automation(id).unwrap().unwrap().run.cwd,
+            Some(resolved)
+        );
+    }
+
+    #[test]
     fn spawn_action_columns_round_trip() {
         let db = Database::open_in_memory().unwrap();
         let new = NewAutomation {
@@ -565,6 +814,8 @@ mod tests {
             },
             prompt: "triage issues".into(),
             next_run_at: Some(999),
+            key: None,
+            run: RunSettings::default(),
         };
         let id = db.create_automation(&new).unwrap();
         let got = db.get_automation(id).unwrap().unwrap();
@@ -603,6 +854,8 @@ mod tests {
             },
             prompt: String::new(),
             next_run_at: Some(42),
+            key: None,
+            run: RunSettings::default(),
         };
         let id = db.create_automation(&new).unwrap();
         let got = db.get_automation(id).unwrap().unwrap();
@@ -798,5 +1051,106 @@ mod tests {
         assert!(db.delete_automation(id).unwrap());
         assert!(db.get_automation(id).unwrap().is_none());
         assert!(db.list_automation_runs(id, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_claim_opens_its_run_row_or_nothing() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_automation(&send_automation("r", Some(100)))
+            .unwrap();
+        let run = db
+            .claim_and_open_run(id, 100, Some(5000), 200, 900)
+            .unwrap()
+            .expect("the claim is won");
+        let row = db.get_automation_run(run).unwrap().expect("opened");
+        assert_eq!(row.status, AutomationRunStatus::Running);
+        assert_eq!(row.started_at, 200);
+        assert_eq!(row.finished_at, None);
+        // The loser opens nothing.
+        assert_eq!(
+            db.claim_and_open_run(id, 100, Some(9000), 200, 900)
+                .unwrap(),
+            None
+        );
+        assert_eq!(db.list_automation_runs(id, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_run_past_its_deadline_is_timed_out_and_a_live_one_is_not() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_automation(&send_automation("r", Some(100)))
+            .unwrap();
+        let stale = db.start_automation_run(id, 10, Some(50)).unwrap();
+        let live = db.start_automation_run(id, 10, Some(500)).unwrap();
+        let done = db.start_automation_run(id, 10, Some(50)).unwrap();
+        db.finish_automation_run(
+            done,
+            &RunRecord::plain(AutomationRunStatus::Success, "ok", None, 20),
+        )
+        .unwrap();
+        assert_eq!(db.time_out_stale_runs(100).unwrap(), 1);
+        let stale = db.get_automation_run(stale).unwrap().unwrap();
+        assert_eq!(stale.status, AutomationRunStatus::TimedOut);
+        assert_eq!(stale.finished_at, Some(100));
+        let live = db.get_automation_run(live).unwrap().unwrap();
+        assert_eq!(live.status, AutomationRunStatus::Running);
+        let done = db.get_automation_run(done).unwrap().unwrap();
+        assert_eq!(done.status, AutomationRunStatus::Success);
+    }
+
+    #[test]
+    fn a_finished_run_keeps_its_exit_code_and_both_tails() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_automation(&send_automation("r", Some(100)))
+            .unwrap();
+        let run = db.start_automation_run(id, 10, None).unwrap();
+        db.finish_automation_run(
+            run,
+            &RunRecord {
+                status: AutomationRunStatus::Error,
+                detail: "exit 3".into(),
+                related_session: None,
+                finished_at: 40,
+                exit_code: Some(3),
+                stdout_tail: Some("out".into()),
+                stderr_tail: Some("err".into()),
+            },
+        )
+        .unwrap();
+        let row = db.get_automation_run(run).unwrap().unwrap();
+        assert_eq!(row.exit_code, Some(3));
+        assert_eq!(row.stdout_tail.as_deref(), Some("out"));
+        assert_eq!(row.stderr_tail.as_deref(), Some("err"));
+        assert_eq!(row.duration_ms(), Some(30));
+    }
+
+    #[test]
+    fn a_key_is_unique_and_the_run_settings_round_trip() {
+        let db = Database::open_in_memory().unwrap();
+        let keyed = NewAutomation {
+            key: Some("nightly".into()),
+            run: RunSettings {
+                timeout_secs: Some(30),
+                cwd: Some(PathBuf::from("/srv/app")),
+                env: vec![("A".into(), "1".into()), ("B".into(), "two".into())],
+            },
+            ..send_automation("k", Some(100))
+        };
+        let id = db.create_automation(&keyed).unwrap();
+        let got = db.get_automation_by_key("nightly").unwrap().unwrap();
+        assert_eq!(got.id, id);
+        assert_eq!(got.run, keyed.run);
+        let again = db.create_automation(&NewAutomation {
+            key: Some("nightly".into()),
+            ..send_automation("k2", Some(100))
+        });
+        assert!(is_key_taken(&again.unwrap_err()));
+        // Unkeyed rows never collide.
+        db.create_automation(&send_automation("a", None)).unwrap();
+        db.create_automation(&send_automation("a", None)).unwrap();
+        assert_eq!(db.find_automations_by_name("a").unwrap().len(), 2);
     }
 }

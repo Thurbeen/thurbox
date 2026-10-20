@@ -1,20 +1,43 @@
-//! Automation CRUD subcommands for `thurbox-cli`.
+//! Automation subcommands for `thurbox-cli`.
 //!
-//! Automations are persisted to the shared database; the running TUI's tick
-//! loop is what actually fires them. `run` just marks an automation due so the
-//! TUI picks it up on its next tick.
+//! Argument parsing and output only: every verb is
+//! [`crate::session_ops::automations`]'s, the same code the interface's pane
+//! writes through (issue #1468). Automations fire from `automation tick` — the
+//! heartbeat keeper's, an OS timer's or a hand-run one — and `run --wait`
+//! fires one on the spot.
 
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
-use crate::cli::action::{self, SpawnDeliverError};
+use crate::cli::action;
 use crate::cli::output::{self, CommandOutput};
-use crate::session::automation::parse_trigger;
-use crate::session::{Automation, AutomationAction, AutomationRun, AutomationRunStatus, SessionId};
-use crate::session_ops::SpawnRequest;
-use crate::storage::automations::NewAutomation;
+use crate::cli::{CommandError, EXIT_AMBIGUOUS, EXIT_CONFLICT, EXIT_GONE, EXIT_TIMEOUT};
+use crate::session::{Automation, AutomationRun, AutomationRunStatus};
+use crate::session_ops::automations::{self as ops, Draft, RefError, RunNowError, SaveError};
 use crate::storage::Database;
 use crate::sync::current_time_millis;
+
+/// What `create --key` does when the key is already taken.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OnExisting {
+    /// Rewrite it in place, keeping its id and run history.
+    Update,
+    /// Leave it alone and answer with it.
+    Keep,
+    /// Refuse, exiting 5.
+    #[default]
+    Fail,
+}
+
+impl From<OnExisting> for ops::OnExisting {
+    fn from(value: OnExisting) -> Self {
+        match value {
+            OnExisting::Update => ops::OnExisting::Update,
+            OnExisting::Keep => ops::OnExisting::Keep,
+            OnExisting::Fail => ops::OnExisting::Fail,
+        }
+    }
+}
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
@@ -38,8 +61,8 @@ pub enum Action {
         #[arg(long)]
         timezone: Option<String>,
         /// Prompt text sent on fire (send/spawn actions). Unused by `--command`.
-        #[arg(long, default_value = "")]
-        prompt: String,
+        #[arg(long)]
+        prompt: Option<String>,
         /// Send action: target an existing session by UUID.
         #[arg(long)]
         session: Option<String>,
@@ -62,19 +85,43 @@ pub enum Action {
         /// Create the automation disabled.
         #[arg(long)]
         disabled: bool,
+        /// An address for the automation, unique among them: with it, running
+        /// the same create twice is safe (see --on-existing).
+        #[arg(long)]
+        key: Option<String>,
+        /// What to do when --key is already taken.
+        #[arg(long = "on-existing", value_enum, default_value_t = OnExisting::Fail, requires = "key")]
+        on_existing: OnExisting,
+        /// Seconds a run may take (default 600). An exec is killed at it; a run
+        /// of any kind still going past it is recorded as timed out.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
+        /// Exec action: directory to run in (default: your home directory).
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Exec action: `KEY=VALUE` to run with (repeatable).
+        #[arg(long)]
+        env: Vec<String>,
     },
-    /// List all automations.
-    List,
-    /// Show one automation by id.
+    /// List automations.
+    List {
+        /// Only the automation with this key.
+        #[arg(long)]
+        key: Option<String>,
+        /// Only automations with this name.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Show one automation by id, key or unique name.
     #[command(alias = "get")]
     Show {
-        /// Automation id.
-        id: i64,
+        /// Automation id, key or name.
+        reference: String,
     },
-    /// Edit an automation.
+    /// Edit an automation. Its target stays; create a new one to change it.
     Edit {
-        /// Automation id.
-        id: i64,
+        /// Automation id, key or name.
+        reference: String,
         #[arg(long)]
         name: Option<String>,
         #[arg(long)]
@@ -83,33 +130,65 @@ pub enum Action {
         time: Option<String>,
         #[arg(long)]
         weekday: Option<u32>,
+        /// IANA timezone; `""` goes back to system local.
         #[arg(long)]
         timezone: Option<String>,
         #[arg(long)]
         prompt: Option<String>,
-        /// Enable the automation.
+        /// Exec action: the new command. Keeps the id and run history.
         #[arg(long)]
+        command: Option<String>,
+        /// Seconds a run may take.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
+        /// Exec action: directory to run in; `""` goes back to home.
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Exec action: `KEY=VALUE` to run with (repeatable); replaces the
+        /// whole set.
+        #[arg(long, conflicts_with = "clear_env")]
+        env: Vec<String>,
+        /// Exec action: run with no variables of its own.
+        #[arg(long)]
+        clear_env: bool,
+        /// Enable the automation.
+        #[arg(long, conflicts_with = "disabled")]
         enabled: bool,
         /// Disable the automation.
         #[arg(long)]
         disabled: bool,
     },
-    /// Remove an automation.
+    /// Remove an automation and its run history.
     #[command(alias = "delete")]
     Remove {
-        /// Automation id.
-        id: i64,
+        /// Automation id, key or name.
+        reference: String,
     },
-    /// Fire an enabled automation on the next tick (marks it due). A disabled
-    /// one is refused rather than switched on.
+    /// Fire an enabled automation on the next tick (marks it due), or with
+    /// --wait now, answering with the run. A disabled one is refused rather
+    /// than switched on.
+    ///
+    /// --wait exits 0 when the run succeeded, 1 when it failed, 4 when it
+    /// timed out, 5 when a run of it is already in flight and 6 when the
+    /// automation was deleted before or while it ran.
     Run {
-        /// Automation id.
-        id: i64,
+        /// Automation id, key or name.
+        reference: String,
+        /// Fire it now, on this process, and answer with its run. Runs nothing
+        /// else: no other due automation and none of the tick's housekeeping.
+        #[arg(long)]
+        wait: bool,
+        /// With --wait: seconds this run may take, instead of its own timeout.
+        #[arg(long, requires = "wait", value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
+        /// With --wait: run a disabled automation once, leaving it disabled.
+        #[arg(long, requires = "wait")]
+        force: bool,
     },
     /// Show an automation's run history.
     Runs {
-        /// Automation id.
-        id: i64,
+        /// Automation id, key or name.
+        reference: String,
         /// Maximum entries (default 20).
         #[arg(long)]
         limit: Option<u32>,
@@ -123,7 +202,7 @@ pub fn run(
     action: Action,
     db: &Database,
     backends: &super::Backends<'_>,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, CommandError> {
     match action {
         Action::Create {
             name,
@@ -139,57 +218,128 @@ pub fn run(
             agent,
             command,
             disabled,
-        } => create_automation(
-            db,
-            backends.get(),
-            name,
-            trigger,
-            time,
-            weekday,
-            timezone,
-            prompt,
-            session,
-            repo,
-            worktree,
-            base,
-            agent,
-            command,
-            disabled,
-        ),
-        Action::List => list_automations(db),
-        Action::Show { id } => {
-            let auto = load(db, id)?;
+            key,
+            on_existing,
+            timeout,
+            cwd,
+            env,
+        } => {
+            let draft = Draft {
+                name: Some(name),
+                trigger: Some(trigger),
+                time,
+                weekday: weekday.map(i64::from),
+                timezone,
+                prompt,
+                enabled: Some(!disabled),
+                session,
+                repo,
+                branch: worktree,
+                base,
+                agent,
+                command,
+                timeout_secs: timeout,
+                cwd,
+                env: env_flags(&env)?,
+            };
+            create(db, backends.get(), &draft, key.as_deref(), on_existing)
+        }
+        Action::List { key, name } => list(db, key.as_deref(), name.as_deref()),
+        Action::Show { reference } => {
+            let auto = resolve(db, &reference)?;
             Ok(CommandOutput::new(
                 automation_to_json(&auto),
                 render_automation_detail(&auto),
             ))
         }
         Action::Edit {
-            id,
+            reference,
             name,
             trigger,
             time,
             weekday,
             timezone,
             prompt,
+            command,
+            timeout,
+            cwd,
+            env,
+            clear_env,
             enabled,
             disabled,
-        } => edit_automation(
-            db,
-            backends.get(),
-            id,
-            name,
-            trigger,
-            time,
-            weekday,
-            timezone,
-            prompt,
-            enabled,
-            disabled,
-        ),
-        Action::Remove { id } => remove_automation(db, id),
-        Action::Run { id } => trigger_automation(db, id),
-        Action::Runs { id, limit } => {
+        } => {
+            let id = resolve(db, &reference)?.id;
+            let draft = Draft {
+                name,
+                trigger,
+                time,
+                weekday: weekday.map(i64::from),
+                timezone,
+                prompt,
+                enabled: match (enabled, disabled) {
+                    (true, _) => Some(true),
+                    (_, true) => Some(false),
+                    _ => None,
+                },
+                command,
+                timeout_secs: timeout,
+                cwd,
+                env: if clear_env {
+                    Some(Vec::new())
+                } else {
+                    env_flags(&env)?
+                },
+                ..Draft::default()
+            };
+            ops::edit(db, id, &draft, current_time_millis())?;
+            let auto = load(db, id)?;
+            if auto.enabled {
+                arm_heartbeat(backends.get());
+            }
+            Ok(CommandOutput::new(
+                automation_to_json(&auto),
+                render_automation_detail(&auto),
+            ))
+        }
+        Action::Remove { reference } => {
+            let id = resolve(db, &reference)?.id;
+            match ops::remove(db, id)? {
+                true => Ok(CommandOutput::new(
+                    json!({ "removed": true, "id": id }),
+                    format!("Removed automation #{id}."),
+                )),
+                false => Err(format!("Automation not found: {id}").into()),
+            }
+        }
+        Action::Run {
+            reference,
+            wait: false,
+            ..
+        } => {
+            let id = resolve(db, &reference)?.id;
+            ops::trigger(db, id)?;
+            Ok(CommandOutput::new(
+                json!({ "triggered": true, "id": id }),
+                format!("Triggered automation #{id} (fires on the next tick)."),
+            ))
+        }
+        Action::Run {
+            reference,
+            wait: true,
+            timeout,
+            force,
+        } => {
+            let id = resolve(db, &reference)?.id;
+            run_wait(
+                db,
+                backends.get(),
+                id,
+                force,
+                timeout.map(std::time::Duration::from_secs),
+            )
+        }
+        Action::Runs { reference, limit } => {
+            let id = resolve(db, &reference)?.id;
             let runs = db
                 .list_automation_runs(id, limit.unwrap_or(20))
                 .map_err(|e| format!("list_automation_runs: {e}"))?;
@@ -197,223 +347,160 @@ pub fn run(
             Ok(CommandOutput::new(json, render_run_history(id, &runs)))
         }
         Action::Tick => {
-            let json = tick(db, backends.get())?;
+            let json = match tick(db, backends.get()) {
+                Ok(json) => json,
+                Err(e) => {
+                    ops::tick_log::record(&ops::tick_log::failed(&e));
+                    return Err(e.into());
+                }
+            };
+            ops::tick_log::record(&last_tick(&json));
             let human = render_tick(&json);
             Ok(CommandOutput::new(json, human))
         }
     }
 }
 
-/// Handle `automation create`: validate, persist, and arm the heartbeat.
-#[allow(clippy::too_many_arguments)]
-fn create_automation(
+/// What a tick that ran records for `runtime status`: its counts, and every
+/// automation it could not fire with why — the heartbeat discards the JSON
+/// these are in.
+fn last_tick(json: &Value) -> ops::tick_log::LastTick {
+    let errors = json["skipped"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["reason"] == "error")
+        .map(|s| {
+            format!(
+                "automation #{}: {}",
+                s["id"],
+                s["detail"].as_str().unwrap_or("no detail")
+            )
+        })
+        .collect();
+    ops::tick_log::LastTick {
+        at: current_time_millis(),
+        ok: true,
+        error: None,
+        fired: json["fired"].as_array().map_or(0, Vec::len),
+        failed: json["failed"].as_u64().unwrap_or(0) as usize,
+        errors,
+    }
+}
+
+/// `--env KEY=VALUE` flags as the draft takes them: `None` when none were
+/// passed, so an edit without them leaves the set alone.
+fn env_flags(tokens: &[String]) -> Result<Option<Vec<(String, String)>>, String> {
+    if tokens.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        super::sessions::parse_env(tokens)?.into_iter().collect(),
+    ))
+}
+
+/// The automation `reference` names, with the exit code a driver branches on
+/// when it names several.
+fn resolve(db: &Database, reference: &str) -> Result<Automation, CommandError> {
+    ops::resolve(db, reference).map_err(|e| match e {
+        RefError::Ambiguous(m) => CommandError::with_code(m, EXIT_AMBIGUOUS),
+        RefError::NotFound(m) | RefError::Storage(m) => CommandError::from(m),
+    })
+}
+
+/// Handle `automation create`: save, arm the heartbeat, answer with the row and
+/// what happened to it.
+fn create(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
-    name: String,
-    trigger: String,
-    time: Option<String>,
-    weekday: Option<u32>,
-    timezone: Option<String>,
-    prompt: String,
-    session: Option<String>,
-    repo: Option<String>,
-    worktree: Option<String>,
-    base: Option<String>,
-    agent: Option<String>,
-    command: Option<String>,
-    disabled: bool,
-) -> Result<CommandOutput, String> {
-    // An exec automation carries the command, not a prompt; send/spawn need one.
-    if command.is_none() && prompt.trim().is_empty() {
-        return Err("prompt must not be empty".into());
-    }
-    let schedule = parse_trigger(&trigger, time.as_deref(), weekday)?;
-    let action = resolve_action(
-        session,
-        repo,
-        worktree,
-        base,
-        agent,
-        Vec::new(),
-        command,
-        db,
+    draft: &Draft,
+    key: Option<&str>,
+    on_existing: OnExisting,
+) -> Result<CommandOutput, CommandError> {
+    let saved = ops::create(db, draft, key, on_existing.into(), current_time_millis()).map_err(
+        |e| match e {
+            SaveError::Conflict(m) => CommandError::with_code(m, EXIT_CONFLICT),
+            SaveError::Invalid(m) => CommandError::from(m),
+        },
     )?;
-    let next_run_at = if disabled {
-        None
-    } else {
-        schedule.next_after(current_time_millis(), timezone.as_deref())
-    };
-    let new = NewAutomation {
-        name,
-        enabled: !disabled,
-        schedule,
-        timezone,
-        action,
-        prompt,
-        next_run_at,
-    };
-    let id = db
-        .create_automation(&new)
-        .map_err(|e| format!("create_automation: {e}"))?;
-    if !disabled {
+    let auto = load(db, saved.id())?;
+    if auto.enabled {
         arm_heartbeat(backends);
     }
-    let auto = db
-        .get_automation(id)
-        .map_err(|e| format!("get_automation: {e}"))?
-        .ok_or("automation vanished after insert")?;
+    let verb = match saved {
+        ops::Saved::Created(_) => "Created",
+        ops::Saved::Updated(_) => "Updated",
+        ops::Saved::Kept(_) => "Kept",
+    };
     let human = format!(
-        "Created automation #{} '{}' ({}){}",
+        "{verb} automation #{} '{}' ({}){}",
         auto.id,
         auto.name,
         auto.schedule.kind(),
         if auto.enabled { "" } else { " — disabled" }
     );
-    Ok(CommandOutput::new(automation_to_json(&auto), human))
+    let mut json = automation_to_json(&auto);
+    json["outcome"] = json!(saved.as_str());
+    Ok(CommandOutput::new(json, human))
 }
 
 /// Handle `automation list`.
-fn list_automations(db: &Database) -> Result<CommandOutput, String> {
-    let autos = db
+fn list(
+    db: &Database,
+    key: Option<&str>,
+    name: Option<&str>,
+) -> Result<CommandOutput, CommandError> {
+    let autos: Vec<Automation> = db
         .list_automations()
-        .map_err(|e| format!("list_automations: {e}"))?;
+        .map_err(|e| format!("list_automations: {e}"))?
+        .into_iter()
+        .filter(|a| key.map_or(true, |k| a.key.as_deref() == Some(k)))
+        .filter(|a| name.map_or(true, |n| a.name == n))
+        .collect();
     let json = Value::Array(autos.iter().map(automation_to_json).collect());
     Ok(CommandOutput::new(json, render_automation_list(&autos))
         .list("automations", &["id", "name", "enabled", "next_run_at"])
         .empty("0 automations scheduled")
         .help([
-            "thurbox-cli automation show <id>   its schedule, action and prompt",
-            "thurbox-cli automation run <id>   mark it due so the next tick fires it",
+            "thurbox-cli automation show <ref>   its schedule, action and prompt",
+            "thurbox-cli automation run <ref> --wait   fire it now and see the run",
             "thurbox-cli automation tick   run everything that is due now",
         ]))
 }
 
-/// Handle `automation edit`: apply the supplied field overrides and persist.
-#[allow(clippy::too_many_arguments)]
-fn edit_automation(
+/// Handle `automation run --wait`: fire it here and answer with the run, the
+/// exit code saying how it went.
+fn run_wait(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     id: i64,
-    name: Option<String>,
-    trigger: Option<String>,
-    time: Option<String>,
-    weekday: Option<u32>,
-    timezone: Option<String>,
-    prompt: Option<String>,
-    enabled: bool,
-    disabled: bool,
-) -> Result<CommandOutput, String> {
-    if enabled && disabled {
-        return Err("--enabled and --disabled are mutually exclusive".into());
-    }
-    let mut auto = load(db, id)?;
-    // What a stored fire depends on, and the timing as read, for the same
-    // compare-and-set write the interface's edit makes.
-    let before = (auto.schedule.clone(), auto.timezone.clone(), auto.enabled);
-    let read_timing = (auto.enabled, auto.next_run_at);
-    apply_edit_overrides(&mut auto, name, trigger, time, weekday, timezone, prompt)?;
-    if disabled {
-        auto.enabled = false;
-    }
-    if enabled {
-        auto.enabled = true;
-    }
-    // Only an edit that moved the schedule, timezone or enabled flag moves the
-    // next fire: a rename keeps a due fire or a run-now due.
-    let unmoved = before == (auto.schedule.clone(), auto.timezone.clone(), auto.enabled)
-        && auto.next_run_at.is_some();
-    if !unmoved {
-        auto.next_run_at = if auto.enabled {
-            auto.schedule
-                .next_after(current_time_millis(), auto.timezone.as_deref())
-        } else {
-            None
-        };
-    }
-    // Never writes `last_run_at`, and writes the timing only if the row still
-    // holds what was read, so a fire the heartbeat claimed meanwhile stands.
-    let written = db
-        .update_automation_definition(&auto, (!unmoved).then_some(read_timing))
-        .map_err(|e| format!("update_automation_definition: {e}"))?;
-    if !written {
-        load(db, id)?;
-        return Err(format!(
-            "Automation #{id} changed while it was being edited; try again"
-        ));
-    }
-    if auto.enabled {
-        arm_heartbeat(backends);
-    }
-    let auto = load(db, id)?;
-    Ok(CommandOutput::new(
-        automation_to_json(&auto),
-        render_automation_detail(&auto),
-    ))
-}
-
-/// Apply the name/prompt/timezone/schedule overrides supplied to `edit`.
-///
-/// `--time`/`--weekday` only shape a preset trigger, so they require `--trigger`
-/// in the same call (the stored schedule is a raw cron expression with no
-/// recoverable preset to re-apply them to). Supplying them alone is a clear
-/// error rather than a silent no-op.
-fn apply_edit_overrides(
-    auto: &mut Automation,
-    name: Option<String>,
-    trigger: Option<String>,
-    time: Option<String>,
-    weekday: Option<u32>,
-    timezone: Option<String>,
-    prompt: Option<String>,
-) -> Result<(), String> {
-    if let Some(n) = name {
-        auto.name = n;
-    }
-    if let Some(p) = prompt {
-        if p.trim().is_empty() {
-            return Err("prompt must not be empty".into());
+    force: bool,
+    timeout: Option<std::time::Duration>,
+) -> Result<CommandOutput, CommandError> {
+    let run = ops::run_now(db, backends, id, force, timeout).map_err(|e| match e {
+        RunNowError::InFlight(m) => CommandError::with_code(m, EXIT_CONFLICT),
+        RunNowError::Gone(m) => CommandError::with_code(m, EXIT_GONE),
+        RunNowError::Disabled(m) | RunNowError::Storage(m) => CommandError::from(m),
+    })?;
+    let json = run_to_json(&run);
+    let human = format!(
+        "Run #{} of automation #{id}: {} — {}",
+        run.id,
+        run.status.as_str(),
+        run.detail
+    );
+    Ok(match run.status {
+        AutomationRunStatus::Success => CommandOutput::new(json, human),
+        AutomationRunStatus::TimedOut => {
+            CommandOutput::failed(json, human, format!("run #{} timed out", run.id))
+                .exiting_with(EXIT_TIMEOUT)
         }
-        auto.prompt = p;
-    }
-    if let Some(tz) = timezone {
-        auto.timezone = if tz.is_empty() { None } else { Some(tz) };
-    }
-    if let Some(t) = trigger {
-        auto.schedule = parse_trigger(&t, time.as_deref(), weekday)?;
-    } else if time.is_some() || weekday.is_some() {
-        return Err("--time/--weekday only apply with --trigger (a preset)".into());
-    }
-    Ok(())
-}
-
-/// Handle `automation remove`.
-fn remove_automation(db: &Database, id: i64) -> Result<CommandOutput, String> {
-    match db.delete_automation(id) {
-        Ok(true) => Ok(CommandOutput::new(
-            json!({ "removed": true, "id": id }),
-            format!("Removed automation #{id}."),
-        )),
-        Ok(false) => Err(format!("Automation not found: {id}")),
-        Err(e) => Err(format!("delete_automation: {e}")),
-    }
-}
-
-/// Handle `automation run`: mark the automation due for the next tick.
-/// Refuses a disabled one, which it would otherwise have to switch on.
-fn trigger_automation(db: &Database, id: i64) -> Result<CommandOutput, String> {
-    match db.trigger_automation_now(id) {
-        Ok(true) => Ok(CommandOutput::new(
-            json!({ "triggered": true, "id": id }),
-            format!("Triggered automation #{id} (fires on the next tick)."),
-        )),
-        Ok(false) => {
-            load(db, id)?;
-            Err(format!(
-                "Automation #{id} is disabled; enable it with `automation edit {id} --enabled` to run it"
-            ))
-        }
-        Err(e) => Err(format!("trigger_automation_now: {e}")),
-    }
+        _ => CommandOutput::failed(
+            json,
+            human,
+            format!("run #{} {}: {}", run.id, run.status.as_str(), run.detail),
+        ),
+    })
 }
 
 /// Render the automation list as an aligned table (or a friendly empty line).
@@ -438,9 +525,10 @@ fn render_automation_list(autos: &[Automation]) -> String {
 
 /// Render a single automation as an aligned key/value block.
 fn render_automation_detail(a: &Automation) -> String {
-    let pairs: Vec<(&str, String)> = vec![
+    let mut pairs: Vec<(&str, String)> = vec![
         ("id", a.id.to_string()),
         ("name", a.name.clone()),
+        ("key", output::dash(a.key.as_deref())),
         ("enabled", a.enabled.to_string()),
         (
             "schedule",
@@ -449,7 +537,14 @@ fn render_automation_detail(a: &Automation) -> String {
         ("timezone", output::dash(a.timezone.as_deref())),
         ("action", action::action_label(Some(&a.action))),
         ("prompt", a.prompt.clone()),
+        ("timeout", format!("{}s", a.run.timeout().as_secs())),
     ];
+    if let Some(cwd) = &a.run.cwd {
+        pairs.push(("cwd", cwd.display().to_string()));
+    }
+    for (k, v) in &a.run.env {
+        pairs.push(("env", format!("{k}={v}")));
+    }
     output::kv(&pairs)
 }
 
@@ -464,11 +559,15 @@ fn render_run_history(id: i64, runs: &[AutomationRun]) -> String {
             vec![
                 r.id.to_string(),
                 r.status.as_str().to_string(),
+                r.exit_code
+                    .map_or_else(|| "-".to_string(), |c| c.to_string()),
+                r.duration_ms()
+                    .map_or_else(|| "-".to_string(), |ms| format!("{ms}ms")),
                 r.detail.clone(),
             ]
         })
         .collect();
-    output::table(&["RUN", "STATUS", "DETAIL"], &rows)
+    output::table(&["RUN", "STATUS", "EXIT", "TOOK", "DETAIL"], &rows)
 }
 
 /// One-line human summary of an `automation tick`.
@@ -480,8 +579,9 @@ fn render_tick(v: &Value) -> String {
     format!("Tick: {fired} fired, {skipped} skipped, {healed} extension(s) healed.")
 }
 
-/// Fire every due automation headlessly: claim (atomic CAS, so this is safe to
-/// run alongside the TUI and other tickers), perform the action, record the run.
+/// Fire every due automation headlessly — claimed by compare-and-set, so this
+/// is safe beside other tickers — and run the housekeeping a headless machine
+/// needs while the due execs run.
 fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Value, String> {
     // Self-heal active extensions before firing: this runs from the
     // heartbeat every 60s, so an extension's deleted session/automation is
@@ -501,55 +601,51 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
     if let Err(e) = db.prune_old_messages() {
         tracing::debug!("prune_old_messages: {e}");
     }
-    let now = current_time_millis();
-    let due = db
-        .due_automations(now)
-        .map_err(|e| format!("due_automations: {e}"))?;
-    let mut fired = Vec::new();
-    let mut skipped = Vec::new();
-    for auto in due {
-        let next = auto.schedule.next_after(now, auto.timezone.as_deref());
-        let claimed = db
-            .claim_due_automation(auto.id, auto.next_run_at.unwrap_or(0), next, now)
-            .map_err(|e| format!("claim_due_automation: {e}"))?;
-        if !claimed {
-            // Another firer (TUI / concurrent tick) won the claim. This logs at
-            // debug! (invisible at the default level), so report it in the JSON too.
-            tracing::debug!(
-                automation_id = auto.id,
-                "automation claim lost to a concurrent firer"
-            );
-            skipped.push(json!({ "id": auto.id, "reason": "claim-lost" }));
-            continue;
-        }
-        // Opened before the fire, so the row says when it started and a run
-        // that never returns is still there to see.
-        let run = db.start_automation_run(auto.id, current_time_millis());
-        let (status, detail, related) = fire_headless(db, backends, &auto);
-        // A failed history write is reported with the fire, so a row left
-        // `running` by it is not read as an action that never returned.
-        let history = run
-            .and_then(|run| db.finish_automation_run(run, status, &detail, related))
-            .err()
-            .map(|e| {
-                tracing::warn!(automation_id = auto.id, "run history not recorded: {e}");
-                e.to_string()
+    let (pass, housekeeping) = ops::tick(db, backends, current_time_millis(), || {
+        housekeeping(db, backends)
+    })?;
+    let fired: Vec<Value> = pass
+        .fired
+        .iter()
+        .map(|f| {
+            let mut entry = json!({
+                "id": f.automation_id,
+                "run_id": f.run_id,
+                "status": f.status.as_str(),
+                "detail": f.detail,
             });
-        let mut entry = json!({
-            "id": auto.id,
-            "status": status.as_str(),
-            "detail": detail,
-        });
-        if let Some(error) = history {
-            entry["history_error"] = Value::String(error);
-        }
-        fired.push(entry);
+            if let Some(error) = &f.history_error {
+                entry["history_error"] = Value::String(error.clone());
+            }
+            entry
+        })
+        .collect();
+    let skipped: Vec<Value> = pass
+        .skipped
+        .iter()
+        .map(|s| json!({ "id": s.automation_id, "reason": s.reason, "detail": s.detail }))
+        .collect();
+    let mut out = json!({
+        "fired": fired,
+        "failed": pass.failed(),
+        "skipped": skipped,
+        "timed_out": pass.timed_out,
+        "healed": healed,
+    });
+    if let (Value::Object(out), Value::Object(more)) = (&mut out, housekeeping) {
+        out.extend(more);
     }
+    Ok(out)
+}
+
+/// What the tick does besides firing, run while the due execs run so a hung
+/// one holds none of it up.
+fn housekeeping(db: &Database, backends: &crate::backend::BackendRegistry) -> Value {
     // Headless status poll: the live channels ride an attached interface and
     // die with it, so this keeps every route's hook states flowing at the
     // heartbeat's cadence — each read from the backend that serves the route,
-    // the interface staying the sub-second channel while open. AFTER the
-    // due-automation pass: an unreachable host costs up to ConnectTimeout per
+    // the interface staying the sub-second channel while open. After the
+    // sends and spawns: an unreachable host costs up to ConnectTimeout per
     // attempt, which must never delay a scheduled firing. Skipped when the
     // built-in hooks extension is opted out (no hook reports anything then).
     if crate::session_ops::hooks_enabled(db) {
@@ -560,7 +656,7 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
     }
     // Shared hosts, mirrored at the heartbeat's cadence so `session list`
     // readers see peer sessions with the interface closed. After the
-    // due-automation pass for the same reason as the remote poll above.
+    // sends and spawns for the same reason as the remote poll above.
     let synced: Vec<Value> = match crate::session_ops::mirror::sync(db, None, false) {
         Ok(reports) => reports.iter().map(|r| r.to_json()).collect(),
         Err(e) => {
@@ -580,15 +676,12 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
     // Last: a collector that is down costs a request timeout, and nothing
     // above may wait on it.
     let telemetry = export_telemetry(db);
-    Ok(json!({
-        "fired": fired,
-        "skipped": skipped,
-        "healed": healed,
+    json!({
         "synced": synced,
         "reaped": reaped,
         "teardowns": teardowns,
         "telemetry": telemetry,
-    }))
+    })
 }
 
 /// Export thurbox's own session metrics and session event logs (ADR-37),
@@ -639,237 +732,32 @@ fn export_telemetry(db: &Database) -> Value {
     }
 }
 
-/// Execute one automation's action without a TUI, returning the run outcome.
-///
-/// `send` types into the target's window; `spawn` creates a session headlessly
-/// (the TUI adopts it on next startup) and delivers the prompt through a timer
-/// on its backend once the agent boots. Both act through the backend the row's
-/// route names.
-fn fire_headless(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    auto: &Automation,
-) -> (AutomationRunStatus, String, Option<SessionId>) {
-    match &auto.action {
-        AutomationAction::Send { session_id } => fire_send(db, backends, auto, *session_id),
-        AutomationAction::Spawn {
-            repo_path,
-            worktree_branch,
-            base_branch,
-            agent,
-            extra_repos,
-        } => fire_spawn(
-            db,
-            backends,
-            auto,
-            repo_path,
-            worktree_branch,
-            base_branch,
-            agent,
-            extra_repos,
-        ),
-        AutomationAction::Exec { command } => fire_exec(command),
-    }
-}
-
-/// Execute an `exec` automation headlessly via the shared runner. No session is
-/// involved (deterministic scheduled job).
-fn fire_exec(command: &str) -> (AutomationRunStatus, String, Option<SessionId>) {
-    let (status, detail) = crate::session_ops::run_exec_command(command);
-    (status, detail, None)
-}
-
-/// Execute a `send` automation: type the prompt into the target session's
-/// window, on the backend its route names.
-fn fire_send(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    auto: &Automation,
-    session_id: SessionId,
-) -> (AutomationRunStatus, String, Option<SessionId>) {
-    // The full row, not just the name: the persisted pane id is what
-    // disambiguates when another session shares the name.
-    let target = match db.get_session_by_id(session_id) {
-        Ok(Some(session)) => session,
-        Ok(None) => {
-            return (
-                AutomationRunStatus::Skipped,
-                "target session not found".into(),
-                None,
-            )
-        }
-        Err(e) => {
-            return (
-                AutomationRunStatus::Error,
-                format!("get_session_by_id: {e}"),
-                None,
-            )
-        }
-    };
-    match crate::session_ops::windows::agent_pane(backends, &target) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return (
-                AutomationRunStatus::Skipped,
-                "target session not running".into(),
-                None,
-            )
-        }
-        Err(e) => return (AutomationRunStatus::Error, e, None),
-    }
-    match crate::session_ops::send_text_with_status(db, backends, &target, &auto.prompt, true) {
-        Ok(()) => (
-            AutomationRunStatus::Success,
-            format!("sent to {session_id}"),
-            Some(session_id),
-        ),
-        Err(e) => (AutomationRunStatus::Error, format!("{e:#}"), None),
-    }
-}
-
-/// Execute a `spawn` automation: reuse an existing window or spawn a new
-/// headless session, then deliver the prompt once the agent boots.
-#[allow(clippy::too_many_arguments)]
-fn fire_spawn(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    auto: &Automation,
-    repo_path: &std::path::Path,
-    worktree_branch: &Option<String>,
-    base_branch: &Option<String>,
-    agent: &Option<String>,
-    extra_repos: &[crate::session::ExtraRepo],
-) -> (AutomationRunStatus, String, Option<SessionId>) {
-    let name = format!("auto-{}", auto.id);
-    // Reuse the session an earlier fire made, found by its row and on the
-    // backend its route names — never a window by its name alone: one no row
-    // owns, or several that answer to it, is somebody else's to type into.
-    let sessions = match db.find_sessions_by_name(&name) {
-        Ok(sessions) => sessions,
-        Err(e) => {
-            return (
-                AutomationRunStatus::Error,
-                format!("find_sessions_by_name: {e}"),
-                None,
-            )
-        }
-    };
-    let mut running = Vec::new();
-    for session in sessions {
-        // An automation spawns on this machine, so only a session here can be
-        // one it made: a same-named row on a host is another machine's (a
-        // mirrored peer's automation shares the name). And a row on a route
-        // nothing here serves is not a session this process could be reusing.
-        if crate::session::Route::is_remote_key(&session.backend_type)
-            || crate::session_ops::windows::backend_for(backends, &session.backend_type).is_err()
-        {
-            continue;
-        }
-        match crate::session_ops::windows::agent_pane(backends, &session) {
-            Ok(Some(_)) => running.push(session),
-            Ok(None) => {}
-            // Not knowing whether it runs must not launch a second one.
-            Err(e) => return (AutomationRunStatus::Error, e, None),
-        }
-    }
-    match running.as_slice() {
-        [] => {}
-        [session] => {
-            return match crate::session_ops::send_text_with_status(
-                db,
-                backends,
-                session,
-                &auto.prompt,
-                true,
-            ) {
-                Ok(()) => (
-                    AutomationRunStatus::Success,
-                    format!("reused {name}"),
-                    Some(session.id),
-                ),
-                Err(e) => (AutomationRunStatus::Error, format!("{e:#}"), None),
-            }
-        }
-        _ => {
-            return (
-                AutomationRunStatus::Error,
-                format!(
-                    "{} running sessions are named {name}, so there is no telling which one \
-                     this automation made",
-                    running.len()
-                ),
-                None,
-            )
-        }
-    }
-    let req = SpawnRequest {
-        name: name.clone(),
-        repo_path: repo_path.to_path_buf(),
-        worktree_branch: worktree_branch.clone(),
-        base_branch: base_branch.clone(),
-        agent: agent.clone(),
-        extra_repos: extra_repos.to_vec(),
-        ..Default::default()
-    };
-    match action::spawn_and_deliver(db, backends, &name, req, &auto.prompt) {
-        Ok(session_id) => (
-            AutomationRunStatus::Success,
-            format!("spawned {name}"),
-            Some(session_id),
-        ),
-        // A spawned-but-undelivered run still records its session id.
-        Err(SpawnDeliverError::Deliver {
-            session_id,
-            message,
-        }) => (AutomationRunStatus::Error, message, Some(session_id)),
-        Err(SpawnDeliverError::Spawn(e)) => (AutomationRunStatus::Error, e, None),
-    }
-}
-
 fn load(db: &Database, id: i64) -> Result<Automation, String> {
     db.get_automation(id)
         .map_err(|e| format!("get_automation: {e}"))?
         .ok_or_else(|| format!("Automation not found: {id}"))
 }
 
-/// Resolve the action from the shared flags; an automation, unlike a task,
-/// must carry one.
-#[allow(clippy::too_many_arguments)]
-fn resolve_action(
-    session: Option<String>,
-    repo: Option<String>,
-    worktree: Option<String>,
-    base: Option<String>,
-    agent: Option<String>,
-    extra_repos: Vec<crate::session::ExtraRepo>,
-    command: Option<String>,
-    db: &Database,
-) -> Result<AutomationAction, String> {
-    action::resolve_action(
-        action::ActionFlags {
-            session,
-            repo,
-            worktree,
-            base,
-            agent,
-            extra_repos,
-            command,
-        },
-        db,
-    )?
-    .ok_or_else(|| "specify --session (send), --repo (spawn), or --command (exec)".into())
-}
-
 fn automation_to_json(a: &Automation) -> Value {
     let action = action::action_to_json(Some(&a.action));
+    let env: serde_json::Map<String, Value> = a
+        .run
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+        .collect();
     json!({
         "id": a.id,
+        "key": a.key,
         "name": a.name,
         "enabled": a.enabled,
         "schedule": { "kind": a.schedule.kind(), "spec": a.schedule.spec() },
         "timezone": a.timezone,
         "action": action,
         "prompt": a.prompt,
+        "timeout_secs": a.run.timeout().as_secs(),
+        "cwd": a.run.cwd.as_ref().map(|p| p.display().to_string()),
+        "env": env,
         "created_at": a.created_at,
         "updated_at": a.updated_at,
         "last_run_at": a.last_run_at,
@@ -878,13 +766,13 @@ fn automation_to_json(a: &Automation) -> Value {
 }
 
 /// Best-effort: ask this machine's backend — the registry's default — to keep
-/// the heartbeat running, so the automation fires even when no interface is
-/// attached. Failures (e.g. its multiplexer missing) are non-fatal — the
-/// automation still works while the interface is up.
+/// the heartbeat running, so the automation fires with no interface attached.
+/// The interface runs no scheduler, so without the keeper (or an OS timer) a
+/// schedule fires only when somebody runs `automation tick`. A failure (its
+/// multiplexer missing, say) is a warning, not an error: the write stands.
 ///
-/// Gated on `[features] automations`: when disabled the TUI neither fires
-/// schedules nor arms the heartbeat, so the CLI must not arm it either (it
-/// would spawn a keeper window that can never fire anything).
+/// Gated on `[features] automations`, which turns heartbeat arming off for the
+/// interface and the CLI alike.
 pub(crate) fn arm_heartbeat(backends: &crate::backend::BackendRegistry) {
     if !crate::session::settings::global().features.automations {
         return;
@@ -899,7 +787,12 @@ fn run_to_json(r: &AutomationRun) -> Value {
         "id": r.id,
         "automation_id": r.automation_id,
         "started_at": r.started_at,
+        "finished_at": r.finished_at,
+        "duration_ms": r.duration_ms(),
         "status": r.status.as_str(),
+        "exit_code": r.exit_code,
+        "stdout_tail": r.stdout_tail,
+        "stderr_tail": r.stderr_tail,
         "detail": r.detail,
         "related_session_id": r.related_session_id.map(|id| id.to_string()),
     })
@@ -908,18 +801,17 @@ fn run_to_json(r: &AutomationRun) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::automation::parse_trigger;
+    use crate::session::{AutomationAction, SessionId};
+    use crate::storage::automations::NewAutomation;
 
-    #[test]
-    fn tick_reports_fired_and_skipped_arrays() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let db = Database::open_in_memory().unwrap();
+    fn opt_out_builtins(db: &Database) {
         // The tick self-heals the built-in extensions, whose outside-reaching
         // payloads resolve against `$HOME` — which `TestPathGuard` does not
         // redirect, because they target the *agent's* config dir rather than
         // thurbox's. Without opting out, running the test suite installs hook
         // files into the developer's own `~/.codex`, `~/.grok`, … Opt both
-        // built-ins out: this test is about what `tick` reports, not about
+        // built-ins out: these tests are about what `tick` reports, not about
         // what an install does.
         for name in [
             crate::session_ops::builtin_hooks::HOOKS_EXTENSION_NAME,
@@ -927,6 +819,14 @@ mod tests {
         ] {
             db.set_builtin_extension_optout(name, true).unwrap();
         }
+    }
+
+    #[test]
+    fn tick_reports_fired_and_skipped_arrays() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        opt_out_builtins(&db);
         let v = tick(&db, &crate::backend::registry::inert()).unwrap();
         assert_eq!(v["fired"], json!([]));
         assert_eq!(v["skipped"], json!([]));
@@ -943,12 +843,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let db = Database::open_in_memory().unwrap();
-        for name in [
-            crate::session_ops::builtin_hooks::HOOKS_EXTENSION_NAME,
-            crate::session_ops::builtin_ui_skill::UI_SKILL_EXTENSION_NAME,
-        ] {
-            db.set_builtin_extension_optout(name, true).unwrap();
-        }
+        opt_out_builtins(&db);
         let id = db
             .create_automation(&NewAutomation {
                 name: "probe".into(),
@@ -960,6 +855,8 @@ mod tests {
                 },
                 prompt: String::new(),
                 next_run_at: Some(1),
+                key: None,
+                run: Default::default(),
             })
             .unwrap();
         db.conn_ref()
@@ -996,167 +893,28 @@ mod tests {
     }
 
     #[test]
-    fn action_label_distinguishes_send_and_spawn() {
-        assert_eq!(
-            action::action_label(Some(&AutomationAction::Send {
-                session_id: SessionId::default(),
-            })),
-            "send"
-        );
-        assert_eq!(
-            action::action_label(Some(&AutomationAction::Spawn {
-                repo_path: "/x".into(),
-                worktree_branch: None,
-                base_branch: None,
-                agent: None,
-                extra_repos: Vec::new(),
-            })),
-            "spawn"
-        );
-    }
-
-    fn sample_automation() -> Automation {
-        Automation {
-            id: 1,
-            name: "noop".into(),
-            enabled: true,
-            schedule: crate::session::AutomationSchedule::Cron {
-                expr: "0 9 * * *".into(),
-            },
-            timezone: None,
-            action: AutomationAction::Send {
-                session_id: SessionId::default(),
-            },
-            prompt: "hi".into(),
-            created_at: 0,
-            updated_at: 0,
-            last_run_at: None,
-            next_run_at: None,
-        }
-    }
-
-    #[test]
-    fn edit_time_or_weekday_without_trigger_errors() {
-        let mut auto = sample_automation();
-        let err = apply_edit_overrides(
-            &mut auto,
-            None,
-            None,
-            Some("09:30".into()),
-            None,
-            None,
-            None,
-        )
-        .unwrap_err();
-        assert!(err.contains("--trigger"), "got {err}");
-
-        let mut auto = sample_automation();
-        let err =
-            apply_edit_overrides(&mut auto, None, None, None, Some(3), None, None).unwrap_err();
-        assert!(err.contains("--trigger"), "got {err}");
-    }
-
-    #[test]
-    fn edit_time_with_trigger_applies() {
-        let mut auto = sample_automation();
-        apply_edit_overrides(
-            &mut auto,
-            None,
-            Some("daily".into()),
-            Some("06:15".into()),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(auto.schedule.spec(), "15 6 * * *");
-    }
-
-    #[test]
-    fn edit_rejects_blank_prompt() {
-        let mut auto = sample_automation();
-        let err = apply_edit_overrides(&mut auto, None, None, None, None, None, Some("   ".into()))
-            .unwrap_err();
-        assert!(err.contains("prompt"), "got {err}");
-    }
-
-    #[test]
     fn create_rejects_blank_prompt() {
         let db = Database::open_in_memory().unwrap();
-        let err = create_automation(
+        let draft = Draft {
+            name: Some("n".into()),
+            trigger: Some("daily".into()),
+            prompt: Some("   ".into()),
+            repo: Some("/repo".into()),
+            ..Draft::default()
+        };
+        let err = create(
             &db,
             &crate::backend::registry::inert(),
-            "n".into(),
-            "daily".into(),
+            &draft,
             None,
-            None,
-            None,
-            "   ".into(),
-            None,
-            Some("/repo".into()),
-            None,
-            None,
-            None,
-            None,
-            false,
+            OnExisting::Fail,
         )
         .unwrap_err();
-        assert!(err.contains("prompt"), "got {err}");
+        assert!(err.contains("prompt"), "got {}", err.message);
     }
 
     #[test]
-    fn resolve_action_spawn_carries_extra_repos() {
-        let db = Database::open_in_memory().unwrap();
-        let extra = super::super::parse_extra_repos(&["/b@main".into()], &["/c".into()]);
-        let action =
-            resolve_action(None, Some("/a".into()), None, None, None, extra, None, &db).unwrap();
-        match action {
-            AutomationAction::Spawn { extra_repos, .. } => {
-                assert_eq!(extra_repos.len(), 2);
-                assert!(extra_repos[0].worktree);
-                assert_eq!(extra_repos[0].base_branch.as_deref(), Some("main"));
-                assert!(!extra_repos[1].worktree);
-            }
-            other => panic!("expected spawn, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_action_command_builds_exec() {
-        let db = Database::open_in_memory().unwrap();
-        let action = resolve_action(
-            None,
-            None,
-            None,
-            None,
-            None,
-            Vec::new(),
-            Some("~/sync.sh".into()),
-            &db,
-        )
-        .unwrap();
-        assert!(matches!(action, AutomationAction::Exec { command } if command == "~/sync.sh"));
-    }
-
-    #[test]
-    fn resolve_action_rejects_command_with_session() {
-        let db = Database::open_in_memory().unwrap();
-        let err = resolve_action(
-            Some("s".into()),
-            None,
-            None,
-            None,
-            None,
-            Vec::new(),
-            Some("cmd".into()),
-            &db,
-        )
-        .unwrap_err();
-        assert!(err.contains("only one"), "got {err}");
-    }
-
-    #[test]
-    fn run_to_json_emits_related_session_id() {
+    fn run_to_json_emits_related_session_id_and_the_run_s_fields() {
         let sid = SessionId::default();
         let run = AutomationRun {
             id: 1,
@@ -1165,13 +923,63 @@ mod tests {
             status: AutomationRunStatus::Success,
             detail: "sent".into(),
             related_session_id: Some(sid),
+            finished_at: Some(10),
+            exit_code: None,
+            stdout_tail: None,
+            stderr_tail: None,
         };
-        assert_eq!(run_to_json(&run)["related_session_id"], sid.to_string());
+        let json = run_to_json(&run);
+        assert_eq!(json["related_session_id"], sid.to_string());
+        assert_eq!(json["duration_ms"], 7);
 
         let run = AutomationRun {
             related_session_id: None,
+            finished_at: None,
             ..run
         };
-        assert_eq!(run_to_json(&run)["related_session_id"], Value::Null);
+        let json = run_to_json(&run);
+        assert_eq!(json["related_session_id"], Value::Null);
+        assert_eq!(json["duration_ms"], Value::Null, "still running");
+    }
+
+    /// An automation the tick could not fire is in the tick's record, with
+    /// why, so `runtime status` and the tick log show it.
+    #[test]
+    fn a_tick_that_could_not_fire_an_automation_records_it() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        opt_out_builtins(&db);
+        let id = db
+            .create_automation(&NewAutomation {
+                name: "refused".into(),
+                enabled: true,
+                schedule: parse_trigger("hourly", None, None).unwrap(),
+                timezone: None,
+                action: AutomationAction::Exec {
+                    command: "true".into(),
+                },
+                prompt: String::new(),
+                next_run_at: Some(1),
+                key: None,
+                run: Default::default(),
+            })
+            .unwrap();
+        db.conn_ref()
+            .execute_batch(
+                "CREATE TRIGGER refuse_run BEFORE INSERT ON automation_runs \
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        let v = tick(&db, &crate::backend::registry::inert()).unwrap();
+        let recorded = last_tick(&v);
+        assert!(recorded.ok);
+        assert_eq!(recorded.errors.len(), 1, "{v}");
+        assert!(
+            recorded.errors[0].starts_with(&format!("automation #{id}: "))
+                && recorded.errors[0].contains("refused"),
+            "{:?}",
+            recorded.errors
+        );
     }
 }

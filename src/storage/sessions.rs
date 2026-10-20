@@ -82,6 +82,8 @@ pub struct DeletedSessionInfo {
     /// only the tiebreaker for a multiplexer that carries no stamps (psmux).
     pub shell_backend_id: Option<String>,
     pub deleted_at: u64,
+    /// Last local row change, including promotion to a force delete.
+    pub updated_at: u64,
     /// The host's own last-reported `updated_at` for this row as of the last
     /// mirror pass before it was deleted here, or `None` if it was never
     /// mirrored from a host. Ordering a tombstone against a host's row is a
@@ -370,6 +372,63 @@ impl Database {
         tx.commit()
     }
 
+    /// Drop a deleted row for good — `thurbox-cli session purge` and the
+    /// `deleted_retention_days` sweep. Its worktree records and metadata go with
+    /// it; the audit and event logs keep their history, and nothing on disk is
+    /// touched.
+    ///
+    /// Only while the selected deletion still matches and owes no teardown,
+    /// checked inside the transaction that removes it: an interface restoring it, or a sweep
+    /// marking it owed, between the caller's read and this write wins. Returns
+    /// whether the row went.
+    pub fn purge_deleted_session(&self, id: SessionId, deleted_at: u64) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let purgeable = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sessions \
+                 WHERE id = ?1 AND deleted_at = ?2 AND teardown_owed = 0",
+                params![id_str, deleted_at as i64],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !purgeable {
+            return Ok(false);
+        }
+        for table in ["worktrees", "session_meta"] {
+            self.conn.execute(
+                &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                params![id_str],
+            )?;
+        }
+        self.conn
+            .execute("DELETE FROM sessions WHERE id = ?1", params![id_str])?;
+        self.log_audit(
+            EntityType::Session,
+            &id_str,
+            AuditAction::Deleted,
+            None,
+            None,
+            Some("purged"),
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Whether any deleted row was deleted before `cutoff_ms` — the retention
+    /// sweep's gate, so a pass with nothing to purge reads one index probe
+    /// rather than the whole deleted history.
+    pub fn any_deleted_before(&self, cutoff_ms: u64) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sessions \
+             WHERE deleted_at IS NOT NULL AND deleted_at < ?1)",
+            params![cutoff_ms as i64],
+            |row| row.get(0),
+        )
+    }
+
     /// Record whether a deleted row still owes a teardown on the host it lived
     /// on (schema v46).
     ///
@@ -413,9 +472,9 @@ impl Database {
     pub fn mark_session_force_deleted(&self, id: SessionId) -> rusqlite::Result<()> {
         let tx = self.write_transaction()?;
         let marked = self.conn.execute(
-            "UPDATE sessions SET force_deleted = 1 \
+            "UPDATE sessions SET force_deleted = 1, updated_at = MAX(updated_at, ?2) \
              WHERE id = ?1 AND deleted_at IS NOT NULL AND force_deleted = 0",
-            params![id.to_string()],
+            params![id.to_string(), current_time_millis() as i64],
         )?;
         if marked > 0 {
             self.record_session_event(
@@ -1119,6 +1178,19 @@ impl Database {
         self.query_deleted_sessions("s.deleted_at IS NOT NULL", [])
     }
 
+    /// Deleted sessions deleted or changed at or after `since_ms`, newest
+    /// deletion first — `session list --deleted --since`, which a mirroring peer
+    /// asks instead of the whole history once it holds that.
+    pub fn list_deleted_sessions_since(
+        &self,
+        since_ms: u64,
+    ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
+        self.query_deleted_sessions(
+            "s.deleted_at IS NOT NULL AND (s.deleted_at >= ?1 OR s.updated_at >= ?1)",
+            params![since_ms as i64],
+        )
+    }
+
     /// Every deleted session carrying this exact name, most recently deleted
     /// first — the deleted-row counterpart of
     /// [`find_sessions_by_name`](Self::find_sessions_by_name).
@@ -1158,7 +1230,7 @@ impl Database {
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
              s.force_deleted, s.backend_id, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox, \
-             s.host_updated_at, s.teardown_owed, s.key \
+             s.host_updated_at, s.teardown_owed, s.key, s.updated_at \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
              WHERE {condition} \
@@ -1199,6 +1271,7 @@ impl Database {
                     backend_id,
                     shell_backend_id,
                     deleted_at: deleted_at as u64,
+                    updated_at: row.get::<_, i64>(18)? as u64,
                     host_updated_at: host_updated_at.map(|at| at as u64),
                     force_deleted: force_deleted != 0,
                     teardown_owed: teardown_owed != 0,

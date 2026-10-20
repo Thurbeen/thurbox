@@ -462,6 +462,14 @@ fn ensure_automation(
     existing: Option<&Automation>,
     report: &mut EnsureReport,
 ) -> Result<(), String> {
+    let cwd = auto.cwd.as_deref().map(crate::paths::expand_tilde);
+    if cwd.as_ref().is_some_and(|path| path.is_relative()) {
+        return Err(format!(
+            "automation '{}' cwd must be absolute; install the extension to resolve it \
+             against its home, or set an absolute directory",
+            auto.name
+        ));
+    }
     // Desired action: a command wins (exec); otherwise send to the target.
     let action = match (&auto.command, target) {
         (Some(command), _) => AutomationAction::Exec {
@@ -486,6 +494,10 @@ fn ensure_automation(
                 report.automations_relinked.push(auto.name.clone());
             }
         }
+        if row.run.cwd.as_ref().is_some_and(|path| path.is_relative()) {
+            db.update_automation_cwd(row, cwd.as_deref())
+                .map_err(|e| format!("resolve automation cwd: {e}"))?;
+        }
         return Ok(());
     }
     // Guarded like a session ([`keep_unless_deactivated`]): an exec automation
@@ -505,6 +517,12 @@ fn ensure_automation(
         action,
         prompt: auto.prompt.clone().unwrap_or_default(),
         next_run_at,
+        key: None,
+        run: crate::session::RunSettings {
+            timeout_secs: auto.timeout_secs,
+            cwd,
+            env: auto.env.clone().into_iter().collect(),
+        },
     };
     let id = db
         .create_automation(&new)
@@ -522,8 +540,9 @@ fn ensure_automation(
 /// active set so self-heal keeps them alive. Idempotent.
 ///
 /// Note: this does NOT arm the tmux automation heartbeat — the CLI layer does
-/// that (it owns the `backend::tmux` dependency). A `Send` automation only fires
-/// while something ticks it (TUI tick loop, or the heartbeat keeper window).
+/// that (it owns the `backend::tmux` dependency). An automation only fires
+/// while something ticks it: the heartbeat keeper window, an OS timer, or a
+/// hand-run `automation tick`.
 pub fn activate_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,

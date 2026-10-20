@@ -883,8 +883,8 @@ pub struct LuaHost {
     /// The `status_rows` last published, the one arrangement input with no
     /// version — see [`Self::arrangement`]'s cache key.
     last_status_rows: std::cell::Cell<u16>,
-    /// Set when the *last* reload attempt failed; `plugins` are still the ones
-    /// from the last good build.
+    /// The last build error. Transactional reloads retain the last good plugins;
+    /// a failed fresh build has none.
     pub error: Option<String>,
     pub reloads: u32,
     /// Published as `thurbox.keyboard.releases`; the loop learns it from the
@@ -966,6 +966,16 @@ impl PluginIndex {
 
 impl LuaHost {
     pub fn new(ui_dir: impl Into<PathBuf>) -> Self {
+        Self::new_with_disabled(ui_dir, Vec::new())
+    }
+
+    /// Build an independent VM with the same disabled plugins. A failed build
+    /// leaves an empty fresh VM carrying the error, never this host's heap.
+    pub fn fresh_from(&self, ui_dir: impl Into<PathBuf>) -> Self {
+        Self::new_with_disabled(ui_dir, self.disabled.borrow().clone())
+    }
+
+    fn new_with_disabled(ui_dir: impl Into<PathBuf>, disabled: Vec<String>) -> Self {
         let ui_dir = ui_dir.into();
         let mut host = Self {
             lua: new_vm().unwrap_or_else(|_| Lua::new()),
@@ -995,7 +1005,7 @@ impl LuaHost {
             behalf: Rc::new(RefCell::new(None)),
             runs: Rc::new(RefCell::new(Vec::new())),
             trusted: Rc::new(RefCell::new(Vec::new())),
-            disabled: Rc::new(RefCell::new(Vec::new())),
+            disabled: Rc::new(RefCell::new(disabled)),
             run_answers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             roots: Roots::default(),
             roots_snapshot: std::cell::Cell::new(None),

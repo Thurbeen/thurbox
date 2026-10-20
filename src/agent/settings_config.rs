@@ -47,6 +47,10 @@ config_version = 1
 # Days of audit-log and session-event history kept (pruned on startup).
 # audit_retention_days = 90
 
+# Days a deleted session stays restorable before its row is purged for good.
+# `0` keeps every one. Worktrees a soft delete left on disk stay there.
+# deleted_retention_days = 0
+
 # How often each session's git working tree is re-examined (seconds), for the
 # diffstat and ahead/behind beside it in the session list. `0` turns it off.
 #
@@ -354,6 +358,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
     doc["two_panel_min_cols"] = value(i64::from(settings.two_panel_min_cols));
     doc["three_panel_min_cols"] = value(i64::from(settings.three_panel_min_cols));
     doc["audit_retention_days"] = value(settings.audit_retention_days as i64);
+    doc["deleted_retention_days"] = value(settings.deleted_retention_days as i64);
     doc["git_poll_secs"] = value(settings.git_poll_secs as i64);
 
     if !doc.contains_key("features") {
@@ -447,6 +452,7 @@ mod tests {
             "two_panel_min_cols",
             "three_panel_min_cols",
             "audit_retention_days",
+            "deleted_retention_days",
             "git_poll_secs",
             "[features]",
             "tasks",

@@ -58,9 +58,9 @@ gate:
   # perf-run.sh refuses to run wherever `THURBOX_GATE` is exported, which
   # closes that one hole; naming the command closes the general one.
   #
-  # The build is not marginal cost: the lint step above compiles the crate in
-  # the same worktree, so the artifacts are warm by the time tests run and the
-  # suite itself is ~30s.
+  # Clippy checks metadata; tests still need code generation and linking.
+  # Reuse the target directory, but measure build and execution separately:
+  # serialized PTY scenarios can dominate even with warm dependency artifacts.
   - name: test
     run: cargo nextest run --all
 

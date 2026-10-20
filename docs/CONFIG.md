@@ -33,6 +33,8 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
+| `~/.local/share/thurbox/automation-tick.json` | JSON | `automation tick` | each tick | the last tick's time, outcome, error, fire counts and the automations it could not fire, which `thurbox-cli runtime status` reports — the heartbeat keeper throws the tick's own output away |
+| `~/.local/share/thurbox/automation-tick.log` | text | `automation tick` | each failed tick | one timestamped line per tick that failed (the database would not open, the due scan failed, a panic), and per automation a tick could not fire (its lock or claim could not be written). Capped at 64 KB, its older half dropped past that |
 
 `agents.toml` and `settings.toml` reload **live**: the TUI checks them about
 once per second and applies edits without a restart. The agent registry is
@@ -591,7 +593,7 @@ timeout_secs = 120
 |-------|----------|---------|---------|
 | `event` | yes | — | one of the eight events below |
 | `command` | yes | — | run through `sh -c` (`cmd /C` on Windows) |
-| `timeout_secs` | no | `30` | the hook is killed after this long |
+| `timeout_secs` | no | `30` | the hook is killed after this long — with everything it started (its process group; the process tree on Windows) |
 
 **Events** — a `pre_*` fires before the operation has any side effect, a
 `post_*` after it has fully succeeded (never after a failure):
@@ -690,6 +692,7 @@ all commented so defaults still apply out of the box.
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
+| `deleted_retention_days` | `0` | days a deleted session stays restorable before the sweep purges its row; `0` keeps all |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
 
 A complete `settings.toml` showing every knob at its default — copy
@@ -705,6 +708,7 @@ hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
+deleted_retention_days = 0     # days a deleted session stays restorable; 0 = keep all
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]
@@ -818,20 +822,19 @@ effect in either direction. Same for `three_panel_min_cols` above.
 |-----|---------|----------|
 | `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
 | `perf_hud` | `true` | perf HUD overlay (`F12`): live perf counters, frame/tick timing and the per-pane cost table (see `docs/PERFORMANCE.md`) |
-| `automations` | `true` | TUI schedule firing + heartbeat arming (the CLI stays fully functional) |
+| `automations` | `true` | heartbeat arming, by the TUI on startup and by `automation create`/`edit` (the CLI stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
 | `soft_delete` | `false` | TUI and CLI delete immediately; on = soft delete with an undo window (CLI `--soft` / `--force` override) |
 | `version_check` | `true` | GitHub update check: TUI header "update available" badge + `thurbox-cli version --check` |
 | `auto_update` | `true` | Silent self-update **within the current major**: download + verify + replace the binaries on startup + `thurbox-cli update`; also auto-refreshes stale extensions |
 
-`automations = false` is a full stop on the TUI side: the pane
-disappears (the session list takes the whole left column and `j`/`k`
-wrap within it), and the TUI neither fires due schedules nor arms the
-heartbeat keeper on startup. Explicit `thurbox-cli automation`
-commands still work — and `automation create` still arms the
-heartbeat, so an already-armed keeper window (or an OS timer from
-`packaging/`) keeps firing schedules externally. Disabling
+`automations = false` stops thurbox arming the heartbeat keeper: the TUI
+does not on startup, and `automation create`/`edit` do not either. The
+interface runs no scheduler of its own, so nothing fires unless a keeper
+window armed earlier, an OS timer from `packaging/`, a hand-run `automation
+tick` or `automation run --wait` fires it. Every other `thurbox-cli
+automation` command still works. Disabling
 `shell_pane` hides existing shell panes but never kills their
 processes. `mouse = false` skips terminal mouse capture entirely, so
 the terminal keeps its native mouse behavior (its own text selection,
@@ -1305,6 +1308,15 @@ install **home** (where payload files land and the session runs) defaults to
 unless the manifest pins a `home` or you pass `--home`. The manifest has two
 halves — an **install** spec and a **runtime** spec.
 
+A relative install home is made absolute against the install command's
+directory. Explicit automation `cwd` paths are stored absolute: relative
+paths resolve against that install home, `~` against the user's home, and
+`{home}` names the install home. Activation and heartbeat ticks therefore use
+the same directory. A hand-written discovery manifest must supply an absolute
+or resolvable `~` cwd; install it first to resolve relative paths.
+Reactivation repairs previously stored relative cwd values from the resolved
+manifest while preserving existing absolute overrides and run history.
+
 The example below is modelled on
 [fleet](https://github.com/Thurbeen/fleet), the control-plane template that is
 the worked example of an installable extension (`docs/ORCHESTRATION.md`). Its
@@ -1382,6 +1394,19 @@ name = "example-tick"
 trigger = "cron:*/10 * * * *"   # same grammar as `automation create --trigger`
 session_ref = "fleet"          # must match a [[sessions]] name above
 prompt = "tick"
+
+# Or an exec automation: a command, no session. `timeout_secs` (default 600),
+# `cwd` (default user's home; relative to install home; `{home}` substituted)
+# and `env` are how it runs, as
+# `automation create --timeout/--cwd/--env` set them; `cwd` and `env` are
+# refused on a send automation.
+[[automations]]
+name = "example-sync"
+trigger = "hourly"
+command = "{home}/sync.sh"
+timeout_secs = 120
+cwd = "{home}"
+env = { SYNC_MODE = "incremental" }
 ```
 
 Manage extensions with the CLI:
@@ -1492,7 +1517,7 @@ snapshot when they change (schema v55): only the teardown sweep reads them.
 | `lock:name:<server>:<name>` | `session_ops::lock`, while a session name is decided: extension self-heal, `session restore`, `session create --on-existing fail\|adopt\|replace` | `0` / the epoch ms the lock lapses. Deleted when the operation ends, taken over once it lapses |
 | `lock:name:key@<host>:<key>` | the same lock, on a session key, for every writer that gives one out | as above |
 | `lock:session:<id>` | a restart, while it replaces the session's window | as above |
-| `lock:run:<automation id>` | a fire of one automation | as above |
+| `lock:run:<automation id>` | a fire of one automation — the tick's or `automation run --wait`'s — held for the automation's timeout plus 5 s at least, so a second fire of it is skipped (tick) or refused with exit 5 (`run --wait`) | as above |
 
 Until v55 the name and restart locks were `session_name_claim:*` and
 `session_restart_claim:*` keys in `metadata`, and v55 moves any still there. A
@@ -1581,6 +1606,22 @@ Set **by** thurbox into every [lifecycle hook](#hookstoml) it runs
 | `THURBOX_BRANCH`, `THURBOX_BASE_BRANCH` | the worktree branch and its base |
 | `THURBOX_HOST` | the remote host name (local: unset) |
 | `THURBOX_PARENT_SESSION` | the parent session id |
+
+Set **by** thurbox into every `exec` automation's command
+(`session_ops::automations::fire`), on top of the firer's environment and the
+automation's own `--env`. These win over both, so a `thurbox-cli` inside
+reaches the instance that fired it, whoever fired it (the heartbeat, an OS
+timer, a hand-run tick, `run --wait`):
+
+| Variable | Set into the command |
+|----------|----------------------|
+| `THURBOX_AUTOMATION_ID`, `THURBOX_AUTOMATION_NAME` | the automation's id and name |
+| `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`, `THURBOX_SOCKET`, `THURBOX_SOCKET_FOR` | the location overrides above |
+
+It runs in its `--cwd`, or your home directory — never in whatever directory
+the firer was started in. `THURBOX_SESSION`, `THURBOX_SESSION_ID`,
+`THURBOX_SESSION_KEY` and `THURBOX_TASK` are removed: an exec fired from a pane
+does not act as that pane's session.
 
 Set **at build time** (not runtime):
 
