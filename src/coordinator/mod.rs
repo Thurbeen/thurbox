@@ -99,6 +99,7 @@ impl App {
             }
 
             self.paint_if_due(&mut terminal)?;
+            self.rebuild_full_vm();
             // After the paint, which is what says which surface has the focus.
             self.forward_app_copy();
             self.focus_terminal();

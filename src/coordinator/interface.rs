@@ -10,7 +10,6 @@
 use std::time::Instant;
 
 use thurbox::kernel::bands::Level;
-use thurbox::kernel::host::LuaHost;
 use thurbox::kernel::modals::{ModalKind, Modals};
 use thurbox::kernel::perf::Counters;
 
@@ -30,11 +29,29 @@ impl App {
     /// file to no visible effect. Only a restart recovered. It also cost a plugin
     /// author their edit-reload loop, since a `./ui` checkout takes the same path.
     pub(crate) fn reload_interface(&mut self, reason: super::events::ReloadReason) {
-        self.host.reload_from(&self.ui_dir);
+        let memory = reason == super::events::ReloadReason::Memory;
+        if memory {
+            // Transactional edit reloads retain the last good VM. An exhausted
+            // VM cannot be that fallback: even reporting its error allocates.
+            self.host = self.host.fresh_from(&self.ui_dir);
+        } else {
+            self.host.reload_from(&self.ui_dir);
+        }
         Counters::bump(&self.perf.reloads);
-        // The plugins that would have received what was queued no longer exist;
-        // the rebuilt ones hear that they were rebuilt.
-        self.note_reload(reason);
+        if self.host.error.is_none() {
+            if self.floor.take().is_some() {
+                self.toast(format!("{} loaded again", self.ui_dir.display()));
+            }
+        } else if memory || std::env::var_os("THURBOX_UI_DIR").is_none() {
+            self.install_bundled_floor();
+        }
+        // A failed memory rebuild retired every plugin without loading any.
+        // Clear old events, but do not announce a successful interface reload.
+        self.note_reload(if memory && self.host.error.is_some() {
+            super::events::ReloadReason::Boot
+        } else {
+            reason
+        });
         // Plugin indices are positions in a vector the rebuild just replaced, and
         // `grabbed` and every click target are ones recorded during the previous
         // paint. A reload between a paint and an input — a watcher firing on a
@@ -47,6 +64,30 @@ impl App {
         self.last_floats.clear();
         self.drawn_floats.clear();
         self.failing.clear();
+        self.forget_unloaded_plugins();
+    }
+
+    /// Swap in the bundled interface because the user's will not load, saying why.
+    fn install_bundled_floor(&mut self) {
+        let Ok(dir) = thurbox::kernel::bundled::fallback_dir() else {
+            return;
+        };
+        let embedded = self.host.fresh_from(&dir);
+        if embedded.error.is_some() {
+            return;
+        }
+        // Recorded before the swap: the reason is the *user's* error, and the
+        // host that carries it is about to be replaced by one with none.
+        self.floor = Some(format!(
+            "using the bundled interface — {} failed to load: {}",
+            self.ui_dir.display(),
+            self.host.error.clone().unwrap_or_default()
+        ));
+        self.host = embedded;
+    }
+
+    /// Drop what plugins that are no longer loaded were holding.
+    fn forget_unloaded_plugins(&mut self) {
         // A plugin that was edited away, renamed, removed or turned off must not
         // leave its answers behind to accumulate across reloads — and must not be
         // able to read them again if a file of that name comes back.
@@ -63,33 +104,6 @@ impl App {
         // keeps its pane — a reload is an edit to a file, and losing your game to
         // one would make reloading unusable.
         self.terminals.retain_program_plugins(&live);
-        if self.host.error.is_none() {
-            if self.floor.take().is_some() {
-                self.toast(format!("{} loaded again", self.ui_dir.display()));
-            }
-            return;
-        }
-
-        // An explicit THURBOX_UI_DIR is the user saying which interface to run, so
-        // it is never silently swapped — the error stands on its own.
-        if std::env::var_os("THURBOX_UI_DIR").is_some() {
-            return;
-        }
-        let Ok(dir) = thurbox::kernel::bundled::fallback_dir() else {
-            return;
-        };
-        let embedded = LuaHost::new(&dir);
-        if embedded.error.is_some() {
-            return;
-        }
-        // Recorded before the swap: the reason is the *user's* error, and the
-        // host that carries it is about to be replaced by one with none.
-        self.floor = Some(format!(
-            "using the bundled interface — {} failed to load: {}",
-            self.ui_dir.display(),
-            self.host.error.clone().unwrap_or_default()
-        ));
-        self.host = embedded;
     }
 
     /// Turn one interface file off, or back on, and reload.
@@ -284,6 +298,44 @@ impl App {
     /// Report what just happened, for [`STATUS_TTL`], at informational level.
     pub(crate) fn toast(&mut self, message: impl Into<String>) {
         self.report(message, Level::Info);
+    }
+
+    /// Rebuild the interface once its VM has filled up — see
+    /// [`thurbox::kernel::host::LuaHost::near_memory_limit`]. Said out loud,
+    /// because the panes lose whatever they held in memory and the cause is a
+    /// plugin holding too much.
+    pub(crate) fn rebuild_full_vm(&mut self) {
+        if !self.host.near_memory_limit() {
+            return;
+        }
+        let used = self.host.used_memory() >> 20;
+        let limit = thurbox::kernel::host::memory_limit() >> 20;
+        self.reload_interface(super::events::ReloadReason::Memory);
+        self.collect_declarations();
+        self.clamp_focus();
+        if self.host.error.is_none() {
+            tracing::warn!("the plugin VM held {used} of its {limit} MiB; rebuilt the interface");
+            self.report(
+                format!(
+                    "the interface reached its {limit} MiB plugin memory limit and was rebuilt"
+                ),
+                Level::Error,
+            );
+        } else {
+            // An empty interface has no status band. Keep the outcome and the
+            // recovery keys in the kernel error panel as well as the log.
+            let cause = self.host.error.take().unwrap_or_default();
+            self.host.error = Some(format!(
+                "plugin VM replaced; interface failed to load\n{cause}\nFix the interface and press F10 to reload; F6 opens settings."
+            ));
+            tracing::warn!(
+                "the plugin VM held {used} of its {limit} MiB; plugin VM replaced; interface failed to load"
+            );
+            self.report(
+                "plugin VM replaced; interface failed to load — fix the interface and reload",
+                Level::Error,
+            );
+        }
     }
 
     /// Report at a chosen severity. The message band badges the three
