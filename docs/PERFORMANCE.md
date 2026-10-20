@@ -325,6 +325,9 @@ Working/blocked continue to fold against output on each tick. State transitions
 and other row changes still take the full refresh. The generations are read
 before the rows, leaving a concurrent commit for the next poll; errors retry.
 Triggers cover legacy writers too and follow additive migrations automatically.
+Since v55 they leave out the bookkeeping nothing on screen reads: the audit
+log, `event_cursors` (the export cursor and every lock) and the teardown
+sweep's backoff keys, each of which rebuilt the whole snapshot.
 `session signal` uses
 `Database::open_for_signal`, which skips migrations and retention for a current
 schema and falls back to the full open for a new or older database.

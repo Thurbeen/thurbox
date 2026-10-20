@@ -93,10 +93,7 @@ impl Database {
     pub fn prune_audit_log(&self) -> rusqlite::Result<usize> {
         let retention_days = crate::session::settings::global().audit_retention_days;
         let cutoff = current_time_millis().saturating_sub(retention_days * MS_PER_DAY);
-        self.conn.execute(
-            "DELETE FROM audit_log WHERE timestamp < ?1",
-            params![cutoff as i64],
-        )
+        self.delete_if_any("audit_log WHERE timestamp < ?1", params![cutoff as i64])
     }
 
     /// Query audit log entries with optional filters.

@@ -1477,11 +1477,27 @@ Live in the `metadata` table and apply immediately (no restart):
 | `perf_snapshot` | the TUI, while perf timing is active (`THURBOX_PERF_LOG` or an open perf HUD) | JSON perf snapshot read by `thurbox-cli perf` (see `docs/PERFORMANCE.md`) |
 | `host_probe_backoff:<backend>` | the teardown sweep, when a host's windows could not be listed | `<attempted_at_millis>:<failures>` — how long that host is left alone before the sweep asks again (ADR-26). Not user-set; the row is deleted the first time the host answers |
 | `session_reap_backoff:<session id>` | the teardown sweep, when a soft-deleted row's reap did not reach its host | `<attempted_at_millis>:<failures>` — the same curve, per row rather than per host, for a host that answers `list-windows` while its own `thurbox-cli` does not run (ADR-26). Not user-set; the row is deleted the moment the reap comes off, and by a restore, which ends the delete it belonged to |
-| `session_name_claim:<backend>:<name>` | a creator holding a session name while it spawns — extension self-heal today | `<expires_at_millis>` — the claim that stops two unattended creators both deciding one name is free (issue #1192). Not user-set; deleted when the creation finishes, and taken over once it expires |
 
 These are in the DB rather than a file because they are written
 concurrently by multiple thurbox processes (TUI, CLI, MCP) and picked
-up live via `PRAGMA data_version` polling.
+up live via `PRAGMA data_version` polling. The two backoff keys rebuild no
+snapshot when they change (schema v55): only the teardown sweep reads them.
+
+`event_cursors` (schema v55) holds what processes take turns at, one row per
+`consumer`, none of it user-set:
+
+| `consumer` | Written by | `cursor` / `lease_until` |
+|---|---|---|
+| `telemetry` | the export in `automation tick` (ADR-37) | the last `session_events.seq` exported / the epoch ms the exporting tick's lease ends |
+| `lock:name:<server>:<name>` | `session_ops::lock`, while a session name is decided: extension self-heal, `session restore`, `session create --on-existing fail\|adopt\|replace` | `0` / the epoch ms the lock lapses. Deleted when the operation ends, taken over once it lapses |
+| `lock:name:key@<host>:<key>` | the same lock, on a session key, for every writer that gives one out | as above |
+| `lock:session:<id>` | a restart, while it replaces the session's window | as above |
+| `lock:run:<automation id>` | a fire of one automation | as above |
+
+Until v55 the name and restart locks were `session_name_claim:*` and
+`session_restart_claim:*` keys in `metadata`, and v55 moves any still there. A
+thurbox from before v55 still takes those keys, so it and a newer one running
+side by side do not see each other's locks.
 
 ## Environment variables
 
@@ -1829,9 +1845,20 @@ with none of v41's four columns on `sessions`, so every status signal failed
 with `no such column: stopped_at` and no session on that machine ever reported
 a state. The version gate could not repair it — the version was the thing that
 was wrong — so the **additive** steps — those that add a column or a table of
-their own if absent — are now re-asserted on **every open**, not only on an
-upgrade. A healthy database changes nothing and pays a handful of catalogue
-reads. Steps that rewrite or seed data stay gated on the version, because
+their own if absent — are re-asserted on any open that runs the pass, not only
+on an upgrade. A healthy database changes nothing and pays a handful of
+catalogue reads.
+
+An open whose database is already current skips the pass, and takes no write
+lock at all: every agent hook runs a `thurbox-cli`, and each of those used to
+queue behind any writer for a pass with nothing to do. "Current" is decided
+from SQLite's own schema cookie (`PRAGMA schema_version`), which any DDL by
+any binary changes. The last full pass records it in `metadata` as
+`schema_cookie`. An open whose cookie, version and `min_reader_version` all
+still agree skips the pass. A column dropped by hand, or a thurbox from before
+this rule re-adding its own triggers, changes the cookie and gets the full pass
+again. The retention sweeps on open also read before they delete, for the same
+reason. Steps that rewrite or seed data stay gated on the version, because
 applying one twice does not mean what applying it once meant.
 
 The TUI, every agent hook's `thurbox-cli` and the host CLIs open the same file,

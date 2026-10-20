@@ -16,6 +16,7 @@ pub mod image_drop;
 #[cfg(test)]
 mod key_tests;
 pub mod lifecycle_hooks;
+pub mod lock;
 pub mod lost;
 pub mod mirror;
 pub mod names;

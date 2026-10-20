@@ -1002,6 +1002,69 @@ pub(super) fn migrate_v54_telemetry_export(conn: &Connection) -> rusqlite::Resul
     )
 }
 
+/// Tables no snapshot trigger covers: written by every lease, cursor advance,
+/// export and audit entry, and read by nothing the interface rebuilds from.
+pub(super) const UNTRACKED_TABLES: &[&str] = &["telemetry_export", "event_cursors", "audit_log"];
+
+/// The SQL condition under which a write to the `metadata` row `row` (`OLD` or
+/// `NEW`) rebuilds the snapshot: not the perf snapshot the interface itself
+/// writes, and not the teardown sweep's backoffs, which only the sweep reads.
+fn metadata_key_tracked(row: &str) -> String {
+    format!(
+        "({row}.key != 'perf_snapshot' \
+         AND substr({row}.key, 1, 19) != 'host_probe_backoff:' \
+         AND substr({row}.key, 1, 21) != 'session_reap_backoff:')"
+    )
+}
+
+/// See [`super::SCHEMA_VERSION`] v55. Also drops the snapshot triggers on every
+/// [`UNTRACKED_TABLES`] entry: a binary from before v55 covered `audit_log`, and
+/// any older binary re-asserts its own v49 triggers on the tables it knows.
+pub(super) fn migrate_v55_event_cursors(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS event_cursors (
+            consumer    TEXT PRIMARY KEY,
+            cursor      INTEGER NOT NULL,
+            lease_until INTEGER NOT NULL DEFAULT 0
+        );",
+    )?;
+    for table in UNTRACKED_TABLES {
+        for operation in ["INSERT", "DELETE", "UPDATE"] {
+            conn.execute_batch(&format!(
+                "DROP TRIGGER IF EXISTS \"snapshot_{table}_{operation}\";"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+/// See [`super::SCHEMA_VERSION`] v55: the telemetry export's position, and every
+/// claim a v54 thurbox took in `metadata`, move into `event_cursors` — so the
+/// export resumes where it was and a creation in flight across the upgrade
+/// keeps its name. `substr` rather than `LIKE`, whose `_` is a wildcard.
+pub(super) fn migrate_v55_move_cursors_and_claims(conn: &Connection) -> rusqlite::Result<()> {
+    if table_exists(conn, "telemetry_export")? {
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO event_cursors (consumer, cursor, lease_until)
+                SELECT 'telemetry', cursor, lease_until FROM telemetry_export WHERE id = 1;",
+        )?;
+    }
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO event_cursors (consumer, cursor, lease_until)
+            SELECT CASE
+                WHEN substr(key, 1, 19) = 'session_name_claim:'
+                    THEN 'lock:name:' || substr(key, 20)
+                ELSE 'lock:session:' || substr(key, 23)
+            END, 0, CAST(value AS INTEGER)
+            FROM metadata
+            WHERE substr(key, 1, 19) = 'session_name_claim:'
+               OR substr(key, 1, 22) = 'session_restart_claim:';
+        DELETE FROM metadata
+            WHERE substr(key, 1, 19) = 'session_name_claim:'
+               OR substr(key, 1, 22) = 'session_restart_claim:';",
+    )
+}
+
 /// See [`super::SCHEMA_VERSION`] v48: NULL on every existing row — nothing
 /// before this version delivered a body natively, only a keystroke nudge, and
 /// nothing is mid-send across an upgrade.
@@ -1046,8 +1109,10 @@ pub(super) fn migrate_v47_wsl_loopback_repair_owed(conn: &Connection) -> rusqlit
 
 /// Keep `data_version` as the cheap first gate, but distinguish commits that
 /// only refresh liveness or publish telemetry from changes requiring a rebuild.
-/// The triggers cover every table conservatively, including legacy writers.
-/// Re-asserted after additive migrations so their new columns are covered.
+/// The triggers cover every table conservatively, including legacy writers,
+/// except the bookkeeping nothing on screen reads ([`UNTRACKED_TABLES`] and the
+/// `metadata` keys [`metadata_key_tracked`] leaves out). Re-asserted after
+/// additive migrations so their new columns are covered.
 /// Atomic with the rest of the pass under `schema::initialize`'s write lock.
 pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -1061,12 +1126,15 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
     let tables = conn
         .prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' \
-         AND name NOT LIKE 'sqlite_%' AND name NOT IN ('snapshot_versions', 'telemetry_export')",
+         AND name NOT LIKE 'sqlite_%'",
         )?
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let quote = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
     for table in tables {
+        if table == "snapshot_versions" || UNTRACKED_TABLES.contains(&table.as_str()) {
+            continue;
+        }
         let columns = conn
             .prepare("SELECT name FROM pragma_table_info(?1)")?
             .query_map([&table], |row| row.get::<_, String>(0))?
@@ -1086,7 +1154,7 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
             (
                 "INSERT",
                 if table == "metadata" {
-                    "NEW.key != 'perf_snapshot'".to_string()
+                    metadata_key_tracked("NEW")
                 } else {
                     "1".to_string()
                 },
@@ -1094,7 +1162,7 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
             (
                 "DELETE",
                 if table == "metadata" {
-                    "OLD.key != 'perf_snapshot'".to_string()
+                    metadata_key_tracked("OLD")
                 } else {
                     "1".to_string()
                 },
@@ -1102,7 +1170,11 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
             (
                 "UPDATE",
                 if table == "metadata" {
-                    format!("(OLD.key != 'perf_snapshot' OR NEW.key != 'perf_snapshot') AND ({differences})")
+                    format!(
+                        "({} OR {}) AND ({differences})",
+                        metadata_key_tracked("OLD"),
+                        metadata_key_tracked("NEW")
+                    )
                 } else {
                     format!("({differences})")
                 },

@@ -276,6 +276,11 @@ impl Database {
     /// [`mark_session_force_deleted`](Self::mark_session_force_deleted) because
     /// the pair emitted two `gone` events, and the first of them told a watcher
     /// the session was restorable when it never was.
+    ///
+    /// The session's metadata goes in the same transaction: an unrestorable row's
+    /// keys are dead weight, and clearing them in a second write left a row
+    /// already hidden when that write failed, with its window still running and
+    /// no teardown owed (issue #1475).
     pub fn force_delete_session(&self, id: SessionId) -> rusqlite::Result<()> {
         self.delete_session(id, EventReason::ForceDeleted)
     }
@@ -299,6 +304,13 @@ impl Database {
             None,
             None,
         )?;
+
+        if reason == EventReason::ForceDeleted {
+            self.conn.execute(
+                "DELETE FROM session_meta WHERE session_id = ?1",
+                params![id_str],
+            )?;
+        }
 
         // A second delete of an already-deleted row changes nothing, so it is
         // not a second `gone`.
@@ -808,7 +820,8 @@ impl Database {
         };
         // A restart kills the window before it spawns the next one; while it
         // holds the row, the gap is on purpose.
-        if self.session_restart_held(&id_str, current_time_millis())? {
+        let held = super::event_cursors::LockSubject::Session(id);
+        if self.lease_held(&held, current_time_millis())? {
             return Ok(false);
         }
         self.conn.execute(
@@ -2462,16 +2475,16 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let session = make_session("Worker");
         db.upsert_session(&session).unwrap();
-        let id = session.id.to_string();
+        let held = crate::storage::event_cursors::LockSubject::Session(session.id);
         let now = current_time_millis();
-        assert!(db.claim_session_restart(&id, now + 60_000, now).unwrap());
+        assert!(db.take_lease(&held, now + 60_000, now).unwrap());
 
         // Kill-then-spawn: between the two the window is gone on purpose.
         assert!(!db
             .record_session_lost(session.id, &session.backend_id)
             .unwrap());
 
-        db.release_session_restart(&id, now + 60_000).unwrap();
+        db.release_lease(&held, now + 60_000).unwrap();
         assert!(db
             .record_session_lost(session.id, &session.backend_id)
             .unwrap());

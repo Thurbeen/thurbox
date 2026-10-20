@@ -59,6 +59,13 @@ pub struct ForceDeleteReport {
 /// a watcher never sees an intermediate state where a force-delete reads as
 /// restorable, and a crash partway through the teardown cannot leave an active
 /// row whose worktrees are already gone.
+/// The error [`delete_session_headless`] returns when the row is not there to
+/// delete. One constructor, so a caller that treats "already gone" as done can
+/// tell that error apart from every later step's failure.
+pub(crate) fn session_not_found(session_id: SessionId) -> String {
+    format!("Session not found: {session_id}")
+}
+
 pub fn delete_session_headless(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -68,7 +75,7 @@ pub fn delete_session_headless(
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        .ok_or_else(|| session_not_found(session_id))?;
 
     // A local row whose route no backend here serves lives on a server
     // nothing here drives. Its window cannot be found and its checkout may
@@ -267,8 +274,6 @@ fn delete_row(db: &Database, session_id: SessionId, force: bool) -> Result<(), S
     if force {
         db.force_delete_session(session_id)
             .map_err(|e| format!("force_delete_session: {e}"))?;
-        db.clear_session_meta(session_id)
-            .map_err(|e| format!("clear_session_meta: {e}"))?;
     } else {
         db.soft_delete_session(session_id)
             .map_err(|e| format!("soft_delete_session: {e}"))?;
@@ -1305,10 +1310,9 @@ mod tests {
 
     #[test]
     fn force_delete_clears_session_meta_but_soft_delete_does_not() {
-        // Regression: `clear_session_meta` is documented as being called on
-        // force-delete (the row is unrestorable, so its metadata is dead
-        // weight) but nothing wired the call in — a force-deleted session's
-        // meta rows outlived it forever.
+        // Regression: a force-deleted session's meta rows outlived it forever.
+        // The row is unrestorable, so `force_delete_session` clears them in
+        // the transaction that marks it.
         let db = Database::open_in_memory().unwrap();
 
         let soft = insert_session(&db, "soft-meta");

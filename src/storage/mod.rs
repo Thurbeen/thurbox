@@ -12,6 +12,7 @@
 
 pub mod audit;
 pub mod automations;
+pub mod event_cursors;
 pub mod keybindings;
 pub mod messages;
 mod relaunches;
@@ -206,6 +207,28 @@ impl Database {
             }
         }
         Self::open(path)
+    }
+
+    /// `DELETE FROM <rows>`, only once a read has found something to delete.
+    ///
+    /// For the retention sweeps every [`Self::open`] runs: a `DELETE` takes the
+    /// write lock even when it matches nothing, and an open that has nothing to
+    /// prune — almost all of them — must not queue behind a writer for it
+    /// (issue #1475). `rows` is a table and its `WHERE` clause.
+    fn delete_if_any(
+        &self,
+        rows: &str,
+        params: impl rusqlite::Params + Copy,
+    ) -> rusqlite::Result<usize> {
+        let any: bool = self.conn.query_row(
+            &format!("SELECT EXISTS (SELECT 1 FROM {rows})"),
+            params,
+            |row| row.get(0),
+        )?;
+        if !any {
+            return Ok(0);
+        }
+        self.conn.execute(&format!("DELETE FROM {rows}"), params)
     }
 
     /// Get a reference to the underlying connection (for metadata queries).

@@ -2260,9 +2260,9 @@ windows, and `unknown` is permanent because the windows stay (issue #1207). Two
 mechanisms now, and they answer different halves:
 
 - **The row is held for the length of a restart.** `restart::hold_restart` is
-  `Database::claim_session_restart`, the conditional statement
-  `claim_session_name` already is (docs/FEATURES.md → "Two creators never reach
-  an `--on-existing`") re-keyed on the session id, and a
+  `session_ops::lock` on the session id — the lease a name's creator takes
+  (docs/FEATURES.md → "Two creators never reach an `--on-existing`") on a row
+  rather than a name — and a
   `restart --if-missing` declines a row somebody else is replacing the window
   of. It is the only thing the two processes share, and it is what stops a
   second agent from ever being launched onto one conversation. Only a
@@ -2980,8 +2980,9 @@ only the agent.
 and one OTLP log record per `session_events` row (`telemetry::export`), over
 OTLP/HTTP protobuf with the OpenTelemetry Rust SDK and a blocking client. The
 metrics are **delta** temporality. How far the log has been exported is a
-cursor in the `telemetry_export` table (schema v54), moved by compare-and-swap
-under a short lease that one exporter holds at a time. A failed export moves
+cursor, the `telemetry` row of `event_cursors` (schema v55; v54 kept it in a
+`telemetry_export` table of its own), moved by compare-and-swap under a short
+lease that one exporter holds at a time. A failed export moves
 nothing. The first export starts at the head of the log. Rows on a shared host
 (ADR-24) are left out: that host's own tick exports them.
 
@@ -2995,9 +2996,11 @@ a fresh process holding no state between runs, which is why the temporality is
 delta and the cursor lives in the database. The lease keeps the keeper, an OS
 timer and a hand-run `tick` from sending a row twice. Keeping the cursor on a
 failed export makes delivery at-least-once: a duplicate is better than a gap.
-The cursor has a table of its own, outside the v49 snapshot triggers, so an
-advance every minute rebuilds nothing in the interface. A `metadata` key would
-bump `rows_version`.
+The cursor lives outside the v49 snapshot triggers, so an advance every minute
+rebuilds nothing in the interface. A `metadata` key would bump `rows_version`.
+`event_cursors` is one row per consumer of the log, so a second consumer takes
+a row of its own rather than a second claim implementation; the same rows hold
+the leases `session_ops::lock` takes (issue #1475).
 
 **Limits**: plain HTTP only. No TLS stack is in the tree, so an `https`
 backend is reached through a local Collector. A Prometheus backend needs the

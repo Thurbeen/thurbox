@@ -983,6 +983,22 @@ fn run_create(
         host.as_deref(),
         multiplexer.as_deref(),
     )?;
+    // `fail`, `adopt` and `replace` each promise the caller the only session
+    // of that name, so the name is locked from the lookup to the row — the
+    // lock self-heal and restore take. `allow` accepts a namesake, so it waits
+    // on nobody. A key is locked by the spawn itself, and a keyed lookup never
+    // asks about the name.
+    let name_held = match (&key, on_existing) {
+        (None, OnExisting::Fail | OnExisting::Adopt | OnExisting::Replace) => Some(
+            crate::session_ops::names::hold(db, &name, &backend, "create")?.ok_or_else(|| {
+                format!(
+                    "a session named '{name}' is being created on {backend} right now; try \
+                     again once that has finished"
+                )
+            })?,
+        ),
+        _ => None,
+    };
     let existing = resolve_existing(
         db,
         backends,
@@ -1020,8 +1036,12 @@ fn run_create(
         Ok(res) => res,
         // `replace` tore the old session down first, so a spawn that
         // fails here would otherwise leave the caller with neither
-        // session. Put back what can be put back before reporting.
-        Err(e) => return Err(rollback_replace(db, backends, &existing, e).into()),
+        // session. Put back what can be put back before reporting — with
+        // the name released, since the restore takes the same lock.
+        Err(e) => {
+            drop(name_held);
+            return Err(rollback_replace(db, backends, &existing, e).into());
+        }
     };
     if let Some(declared) = &reports_as {
         if let Err(e) = db.set_reports_as(res.session_id, Some(declared)) {
@@ -2944,8 +2964,12 @@ fn register_running_session(
     // being recorded either way — its window is already running, and refusing
     // would leave `sync --adopt` retrying it every pass — so a taken key is
     // dropped and said so, the way a restore drops one.
-    let (key_claim, key_dropped) =
-        crate::session_ops::names::admit_key(db, session.key.as_deref(), &session.backend_type)?;
+    let (key_claim, key_dropped) = crate::session_ops::names::admit_key(
+        db,
+        session.key.as_deref(),
+        &session.backend_type,
+        "register",
+    )?;
     let key_dropped = key_dropped.map(|why| format!("registered without its key: {why}"));
     if key_dropped.is_some() {
         session.key = None;

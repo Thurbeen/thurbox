@@ -2378,6 +2378,14 @@ the teardown therefore **rolls back** — the replaced session is restored
 best-effort (its row, its branch and its agent), and the error says so.
 Uncommitted work went with the force delete and does not return.
 
+`fail`, `adopt` and `replace` **lock the name** from the lookup to the row — the
+same lock self-heal and restore take (below) — because each promises the caller
+the only session of that name, and a spawn runs for seconds. Without it two
+`--on-existing fail` calls, or one racing a self-heal, both looked, both found
+nothing and both created (issue #1475). A name somebody else is creating is
+refused with "being created … right now"; try again once it has finished.
+`allow` takes no lock: it accepts a namesake, so it waits on nobody.
+
 Two creators never reach an `--on-existing` at all, and they are the two with
 nobody at the keyboard to ask: **extension self-heal**, which recreates a
 declared session from the 60 s heartbeat tick, and **`session restore`**, which
@@ -2387,9 +2395,9 @@ name on a backend, and only the first is visible to a plain lookup: a live
 session; one soft-deleted whose **undo window is still open**, because the
 delete can still be taken back and a creation now is a pair the moment it is;
 and another creator **mid-spawn**, since a spawn runs for tens of seconds and
-"look, then create" is not a claim. Both take that claim — an atomic conditional write
-on `metadata`, expiring so a creator killed mid-spawn does not hold the name for
-the rest of the day, and sized against every lifecycle hook `hooks.toml`
+"look, then create" is not a claim. Both take that claim — `session_ops::lock`, an
+atomic conditional write on `event_cursors`, expiring so a creator killed mid-spawn
+does not hold the name for the rest of the day, and sized against every lifecycle hook `hooks.toml`
 configures, whose `timeout_secs` has no cap — and hold it across the whole operation
 rather than across the lookups: a creation that has claimed a name has not
 written its row yet, so a lookup alone cannot see it.

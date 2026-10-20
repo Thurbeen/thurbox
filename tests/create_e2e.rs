@@ -2643,3 +2643,396 @@ fn a_remote_session_without_a_host_endpoint_gets_only_the_attributes() {
     );
     assert!(!plan.args.iter().any(|a| a.contains("--otel")));
 }
+
+/// Two `session create --on-existing fail` calls for one name, the second
+/// started while the first is still inside its spawn (issue #1475).
+///
+/// `fail` is a promise that the caller ends up with the only session of that
+/// name, and a spawn runs for seconds — here a slow `session.pre_create` hook,
+/// which is also where a self-heal or a restore sits when a CLI create meets
+/// it. Looking for a namesake and then spawning is not a claim: both callers
+/// looked, found nothing, and created.
+#[test]
+#[cfg(unix)]
+fn racing_creates_of_one_name_with_on_existing_fail_make_one_session() {
+    if !have_tmux() {
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    write_hooks(
+        &config,
+        "[[hooks]]\nevent = \"session.pre_create\"\ncommand = 'sleep 3'\n",
+    );
+    let db = on_disk_db();
+    let create = || {
+        Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args([
+                "session",
+                "create",
+                "--name",
+                "racer",
+                "--repo-path",
+                repo.path().to_str().unwrap(),
+                "--agent",
+                "shell",
+                "--on-existing",
+                "fail",
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    let first = create();
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let second = create().wait_with_output().unwrap();
+    let first = first.wait_with_output().unwrap();
+    let text = |out: &std::process::Output| {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    };
+    assert!(first.status.success(), "{}", text(&first));
+    let live: Vec<_> = db
+        .list_active_sessions()
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.name == "racer")
+        .collect();
+    assert_eq!(
+        live.len(),
+        1,
+        "one name, one session; the second create said: {}",
+        text(&second)
+    );
+    assert!(!second.status.success(), "{}", text(&second));
+    assert!(
+        text(&second).contains("being created"),
+        "the refusal names the creation in flight: {}",
+        text(&second)
+    );
+}
+
+/// Deactivating an extension while a heartbeat tick runs between its deletes
+/// (issue #1475): here a `session.post_delete` hook runs the tick, which is
+/// what the keeper does every 60 s. Deleting the sessions before leaving the
+/// active set let that tick's self-heal recreate each one as soon as it was
+/// gone.
+#[test]
+#[cfg(unix)]
+fn deactivating_an_extension_leaves_no_session_for_self_heal_to_recreate() {
+    if !have_tmux() {
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    let db = on_disk_db();
+    let cli = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let dir = config.join("extensions");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("healed.toml"),
+        format!(
+            "name = \"healed\"\n[[sessions]]\nname = \"healed\"\nrepo_path = \"{}\"\nagent = \"shell\"\n",
+            repo.path().display()
+        ),
+    )
+    .unwrap();
+    cli(&["extension", "activate", "healed"]);
+    let live = |db: &thurbox::storage::Database| {
+        db.list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == "healed")
+            .count()
+    };
+    assert_eq!(live(&db), 1);
+    write_hooks(
+        &config,
+        &format!(
+            "[[hooks]]\nevent = \"session.post_delete\"\ncommand = '{} automation tick'\n",
+            env!("CARGO_BIN_EXE_thurbox-cli")
+        ),
+    );
+
+    cli(&["extension", "deactivate", "healed"]);
+
+    assert_eq!(
+        live(&db),
+        0,
+        "nothing recreates a deactivated extension's session"
+    );
+}
+
+/// A deactivate that lands while a heal pass is mid-spawn (issue #1475). The
+/// pass read the active set before the deactivate and recreates the session
+/// and then the exec automation; the deactivate found neither to delete. A
+/// deactivated extension must end with neither, whichever finishes first.
+#[test]
+#[cfg(unix)]
+fn a_deactivate_during_a_heal_leaves_neither_session_nor_automation() {
+    if !have_tmux() {
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    let db = on_disk_db();
+    let cli = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    // No keeper: its own ticks would heal alongside the one this drives.
+    std::fs::write(
+        config.join("settings.toml"),
+        "[features]\nautomations = false\n",
+    )
+    .unwrap();
+    let dir = config.join("extensions");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("healed.toml"),
+        format!(
+            "name = \"healed\"\n[[sessions]]\nname = \"healed\"\nrepo_path = \"{}\"\n\
+             agent = \"shell\"\n[[automations]]\nname = \"healed-exec\"\n\
+             trigger = \"cron:*/5 * * * *\"\ncommand = \"true\"\n",
+            repo.path().display()
+        ),
+    )
+    .unwrap();
+    cli(&["extension", "activate", "healed"]);
+    let session = |db: &thurbox::storage::Database| {
+        db.list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == "healed")
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+    };
+    let automations = |db: &thurbox::storage::Database| {
+        db.list_automations()
+            .unwrap()
+            .into_iter()
+            .filter(|a| a.name == "healed-exec")
+            .map(|a| a.id)
+            .collect::<Vec<_>>()
+    };
+    // Both gone while the extension is active: the next tick heals them.
+    cli(&["session", "delete", &session(&db)[0].to_string(), "--force"]);
+    db.delete_automation(automations(&db)[0]).unwrap();
+    let spawning = config.join("spawning");
+    write_hooks(
+        &config,
+        &format!(
+            "[[hooks]]\nevent = \"session.pre_create\"\ncommand = 'touch {}; sleep 3'\n",
+            spawning.display()
+        ),
+    );
+
+    let heal = std::thread::spawn(|| {
+        Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(["automation", "tick"])
+            .output()
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !spawning.exists() {
+        if heal.is_finished() {
+            let out = heal.join().unwrap().unwrap();
+            panic!(
+                "the tick ended without healing the session: {}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the tick never started healing the session"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    cli(&["extension", "deactivate", "healed"]);
+    let heal = heal.join().unwrap().unwrap();
+    assert!(
+        heal.status.success(),
+        "{}",
+        String::from_utf8_lossy(&heal.stderr)
+    );
+
+    assert!(
+        session(&db).is_empty(),
+        "the healed session outlived the deactivate"
+    );
+    assert!(
+        automations(&db).is_empty(),
+        "the healed exec automation outlived the deactivate"
+    );
+}
+
+/// A declared session that is already gone by the time deactivate reaches it
+/// (issue #1475): a heal pass that found the extension deactivated deletes the
+/// session it just spawned, and deactivate's own list still names it. Here a
+/// `session.pre_delete` hook deletes the second session while the first is
+/// deleted, the same shape. Deactivate must still clean up the rest rather
+/// than stop at "not found".
+#[test]
+#[cfg(unix)]
+fn deactivate_carries_on_past_a_session_somebody_else_deleted() {
+    if !have_tmux() {
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    std::fs::write(
+        config.join("settings.toml"),
+        "[features]\nautomations = false\n",
+    )
+    .unwrap();
+    let db = on_disk_db();
+    let cli = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let dir = config.join("extensions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut manifest = String::from("name = \"trio\"\n");
+    for name in ["trio-a", "trio-b", "trio-c"] {
+        manifest.push_str(&format!(
+            "[[sessions]]\nname = \"{name}\"\nrepo_path = \"{}\"\nagent = \"shell\"\n",
+            repo.path().display()
+        ));
+    }
+    std::fs::write(dir.join("trio.toml"), manifest).unwrap();
+    assert!(cli(&["extension", "activate", "trio"]).status.success());
+    let live = |db: &thurbox::storage::Database| {
+        db.list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name.starts_with("trio-"))
+            .map(|s| s.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(live(&db).len(), 3);
+    let once = config.join("deleted-b");
+    write_hooks(
+        &config,
+        &format!(
+            "[[hooks]]\nevent = \"session.pre_delete\"\n\
+             command = '[ -e {once} ] || {{ touch {once}; {cli} session delete trio-b --force; }}'\n",
+            once = once.display(),
+            cli = env!("CARGO_BIN_EXE_thurbox-cli"),
+        ),
+    );
+
+    let out = cli(&["extension", "deactivate", "trio"]);
+
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(live(&db).is_empty(), "left behind: {:?}", live(&db));
+}
+
+/// The heal's half of a double delete (issue #1475): the deactivate lands
+/// after the healed session's row exists and before the heal looks again, so
+/// it deletes that session first — here from a `session.post_create` hook,
+/// which runs exactly there. The heal then finds its session already gone,
+/// and must count it as cleaned up rather than fail the pass on "not found".
+#[test]
+#[cfg(unix)]
+fn a_heal_finds_the_session_it_spawned_already_deleted_by_a_deactivate() {
+    if !have_tmux() {
+        return;
+    }
+    let repo = repo();
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    // No keeper: its own ticks would heal alongside the one this drives.
+    std::fs::write(
+        config.join("settings.toml"),
+        "[features]\nautomations = false\n",
+    )
+    .unwrap();
+    let db = on_disk_db();
+    let cli = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let dir = config.join("extensions");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("healed.toml"),
+        format!(
+            "name = \"healed\"\n[[sessions]]\nname = \"healed\"\nrepo_path = \"{}\"\n\
+             agent = \"shell\"\n",
+            repo.path().display()
+        ),
+    )
+    .unwrap();
+    cli(&["extension", "activate", "healed"]);
+    let live = |db: &thurbox::storage::Database| {
+        db.list_active_sessions()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == "healed")
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+    };
+    cli(&["session", "delete", &live(&db)[0].to_string(), "--force"]);
+    write_hooks(
+        &config,
+        &format!(
+            "[[hooks]]\nevent = \"session.post_create\"\n\
+             command = '{} extension deactivate healed'\n",
+            env!("CARGO_BIN_EXE_thurbox-cli")
+        ),
+    );
+
+    let tick = cli(&["automation", "tick"]);
+
+    assert!(
+        live(&db).is_empty(),
+        "the healed session outlived the deactivate"
+    );
+    assert!(
+        !tick.contains("self-heal failed"),
+        "the heal failed on the session the deactivate had already deleted: {tick}"
+    );
+}

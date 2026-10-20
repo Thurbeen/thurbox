@@ -68,6 +68,21 @@ pub fn install_extension(
     home_override: Option<&str>,
     force: bool,
 ) -> Result<InstallReport, String> {
+    install(db, backends, target, home_override, force, None)
+}
+
+/// [`install_extension`], ending in an activation — or, when `healing` names
+/// the extension, in self-heal's guarded ensure instead: a heal that updates a
+/// stale extension must not turn back on one deactivated while it fetched
+/// (issue #1475), so it never adds to the active set.
+fn install(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    target: &str,
+    home_override: Option<&str>,
+    force: bool,
+    healing: Option<&str>,
+) -> Result<InstallReport, String> {
     // Agent-layer helpers are reached fully-qualified (no `use crate::agent`) per
     // the session_ops → agent path-only architecture rule.
     let source = crate::agent::extension_config::resolve_source(target);
@@ -184,7 +199,10 @@ pub fn install_extension(
         .resolved_for_home(&home_str, crate::paths::home_dir().as_deref())
         .with_provenance(current, target);
     crate::agent::extension_config::write_manifest(&resolved)?;
-    report.ensure = activate_extension(db, backends, &resolved)?;
+    report.ensure = match healing {
+        None => activate_extension(db, backends, &resolved)?,
+        Some(name) => super::lifecycle::ensure_resources(db, backends, &resolved, Some(name))?,
+    };
 
     Ok(report)
 }
@@ -578,6 +596,26 @@ pub fn update_extension(
     name: &str,
     force: bool,
 ) -> Result<UpdateReport, String> {
+    update(db, backends, name, force, false)
+}
+
+/// [`update_extension`] as self-heal's auto-update runs it: never `force`, and
+/// ending in the guarded ensure rather than an activation ([`install`]).
+pub(super) fn update_extension_for_heal(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    name: &str,
+) -> Result<UpdateReport, String> {
+    update(db, backends, name, false, true)
+}
+
+fn update(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    name: &str,
+    force: bool,
+    healing: bool,
+) -> Result<UpdateReport, String> {
     let installed = crate::agent::extension_config::load_manifest(name)
         .ok_or_else(|| format!("extension '{name}' is not installed (no manifest found)"))?;
     let source = installed.source.clone().ok_or_else(|| {
@@ -588,7 +626,14 @@ pub fn update_extension(
     })?;
     // Keep it in its existing home, regardless of what the new manifest defaults to.
     let home = installed.home.clone();
-    let install = install_extension(db, backends, &source, home.as_deref(), force)?;
+    let install = install(
+        db,
+        backends,
+        &source,
+        home.as_deref(),
+        force,
+        healing.then_some(name),
+    )?;
     let changed = install.previous_version != install.version;
     Ok(UpdateReport {
         name: name.to_string(),

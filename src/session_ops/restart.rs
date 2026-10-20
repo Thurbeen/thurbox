@@ -662,29 +662,6 @@ fn restart_delegated(
     })
 }
 
-/// A restart's hold on the row it is replacing the window of, given back when
-/// this value is dropped.
-///
-/// Structural for the reason [`super::names::HeldName`] is: a restart runs
-/// through `?` and early returns, and a hold leaked by the one path that did
-/// not reach its release holds the row until it expires.
-struct HeldRestart<'a> {
-    db: &'a Database,
-    id: String,
-    expires_at: u64,
-}
-
-impl Drop for HeldRestart<'_> {
-    fn drop(&mut self) {
-        // Best-effort, exactly as a name's release is: a hold that cannot be
-        // deleted expires on its own, and failing a restart that already
-        // happened over its bookkeeping would be the worse answer.
-        if let Err(e) = self.db.release_session_restart(&self.id, self.expires_at) {
-            tracing::warn!("could not release the restart hold on '{}': {e}", self.id);
-        }
-    }
-}
-
 /// Hold the right to replace `session_id`'s window — or `None` when somebody
 /// else already holds it.
 ///
@@ -697,22 +674,18 @@ impl Drop for HeldRestart<'_> {
 /// `thurbox-cli session restart` is a separate process, and the database is the
 /// only thing the two share.
 ///
-/// Sized by [`super::names::hold_ttl_ms`], which already counts every
-/// configured lifecycle hook — so a `pre_restart` that takes minutes is inside
-/// the hold rather than beyond it — and expiring is what keeps a restart killed
-/// mid-flight from holding its row forever.
-fn hold_restart(db: &Database, session_id: SessionId) -> Option<HeldRestart<'_>> {
-    let id = session_id.to_string();
-    let now = crate::sync::current_time_millis();
-    let expires_at = now.saturating_add(super::names::hold_ttl_ms());
-    match db.claim_session_restart(&id, expires_at, now) {
-        Ok(true) => Some(HeldRestart { db, id, expires_at }),
-        Ok(false) => None,
-        // A read that failed says nothing about who holds the row, and the
+/// The row's [`super::lock`], so it is sized against every configured
+/// lifecycle hook — a `pre_restart` that takes minutes is inside the hold rather
+/// than beyond it — and expiring is what keeps a restart killed mid-flight from
+/// holding its row forever.
+fn hold_restart(db: &Database, session_id: SessionId) -> Option<super::lock::Lock<'_>> {
+    match super::lock::lock(db, super::lock::Subject::Session(session_id), "restart") {
+        Ok(held) => held,
+        // A write that failed says nothing about who holds the row, and the
         // caller only ever declines a *relaunch* on a `None` — which is the
         // safe direction: the next heartbeat asks again.
         Err(e) => {
-            tracing::warn!("could not claim the restart of '{id}': {e}");
+            tracing::warn!("could not claim the restart of '{session_id}': {e}");
             None
         }
     }
@@ -1115,13 +1088,13 @@ mod tests {
         let (_temp, _guard) = hooks_isolated();
         let db = Database::open_in_memory().unwrap();
         let row = session(None, None);
-        let id = row.id.to_string();
+        let held = crate::storage::event_cursors::LockSubject::Session(row.id);
         let now = crate::sync::current_time_millis();
 
-        assert!(db.claim_session_restart(&id, now - 1, now).unwrap());
+        assert!(db.take_lease(&held, now - 1, now).unwrap());
         let successor = hold_restart(&db, row.id).expect("an expired hold is taken over");
 
-        db.release_session_restart(&id, now - 1).unwrap();
+        db.release_lease(&held, now - 1).unwrap();
         assert!(
             hold_restart(&db, row.id).is_none(),
             "releasing the dead hold must leave the successor's alone"
