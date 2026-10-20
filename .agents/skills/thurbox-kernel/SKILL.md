@@ -539,6 +539,10 @@ subscription to an unknown name refuses to load, and the same table renders in
 delivers `user.<name>` to other plugins with `source` stamped by the kernel;
 cascades stop at `MAX_DEPTH`. Dispatch never marks the frame dirty itself
 (`frame-cost`); a reload drops the queue and delivers `interface.reloaded` first.
+Memory recovery replaces the host even when neither interface builds: the empty
+replacement reports the error through kernel chrome without a successful reload
+event. Disabled plugins are applied before building either replacement, and
+programs and run answers are retired against its final plugin list.
 `examples/lua/events.lua` is the worked example.
 
 **A plugin can ask for a strip** — `strip = true` with `size = { len = n }`: a

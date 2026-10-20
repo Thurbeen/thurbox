@@ -92,6 +92,10 @@ fn the_limits_are_settable_and_enforced() {
            }"#,
     );
     let hog = LuaHost::new(dir.path());
+    assert!(
+        !hog.near_memory_limit(),
+        "a fresh VM is nowhere near the ceiling"
+    );
     let error = hog
         .render(0, ctx())
         .expect_err("exhausting memory must fail the plugin");
@@ -102,6 +106,12 @@ fn the_limits_are_settable_and_enforced() {
         error.message
     );
     // The process is still here, which is the actual guarantee.
+    // And the VM is reported as full, which is what gets it rebuilt rather
+    // than called again on every frame.
+    assert!(
+        hog.near_memory_limit(),
+        "a VM that ran out is near its ceiling"
+    );
     host::set_memory_limit(0);
 
     // --- instructions ------------------------------------------------------

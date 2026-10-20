@@ -7394,6 +7394,430 @@ fn a_resize_is_not_paid_for_on_the_render_thread_when_the_link_is_wedged() {
     assert!(tui.quit().success());
 }
 
+/// A pane that fills the plugin VM to the byte when `ctrl+g` is pressed.
+///
+/// The heap is held live rather than leaked, which reaches the ceiling in one
+/// press. Small tables rather than one big string, because a collection's cost
+/// is the objects it has to traverse.
+const HOG_PANE: &str = r#"local held = {}
+return {
+  name = "hog",
+  slot = "sessions",
+  keys = {
+    { key = "ctrl+g", action = "hog.fill", desc = "fill the VM", scope = "global" },
+  },
+  render = function(ctx)
+    return { type = "text", text = (#held > 0 and "hog-full " or "hog-idle ") .. ctx.frame }
+  end,
+  on_action = function(action)
+    if action ~= "hog.fill" then
+      return false
+    end
+    pcall(function()
+      for i = 1, 2e6 do
+        held[i] = { i }
+      end
+    end)
+    -- Then to the byte: halve the chunk whenever one no longer fits.
+    local size, n = 1024 * 1024, 0
+    while size >= 8 do
+      n = n + 1
+      local ok = pcall(function()
+        held[#held + 1] = string.rep("x", size, tostring(n))
+      end)
+      if not ok then
+        size = size // 2
+      end
+    end
+    return true
+  end,
+}"#;
+
+/// Fill the VM, then require the interface to keep answering.
+///
+/// The palette is drawn from the kernel's own registry, so the only thing that
+/// can make it late is a loop that is not getting round. The first round trip
+/// waits behind the fill itself and is not counted. Measured, eight more take
+/// ~0.65 s on a healthy VM and ~14 s on a full one, every time, however long it
+/// is left — `RESPONSIVE` sits far from both.
+fn fill_the_vm_and_keep_answering(tui: &mut Tui) {
+    tui.send(b"\x07");
+    tui.send(CTRL_P);
+    tui.wait_for("type to filter commands");
+    tui.send(ESC);
+    tui.wait_gone("type to filter commands");
+    let started = Instant::now();
+    for _ in 0..8 {
+        tui.send(CTRL_P);
+        tui.wait_for("type to filter commands");
+        tui.send(ESC);
+        tui.wait_gone("type to filter commands");
+    }
+    let took = started.elapsed();
+    assert!(
+        took < RESPONSIVE,
+        "eight round trips through the palette took {took:?} after the plugin VM reached \
+         its memory limit"
+    );
+}
+
+#[test]
+fn a_plugin_vm_at_its_memory_limit_does_not_freeze_the_interface() {
+    // Every plugin shares one VM under the memory limit. Once its heap is at
+    // the ceiling and cannot be collected below it, each allocation any pane
+    // makes runs a full emergency collection and then fails anyway: every
+    // frame pays one per plugin call, for as long as the process lives. That
+    // was a full freeze of the interface, with nothing in the log, until it
+    // was killed.
+    let interface = interface_plus("91_hog.lua", HOG_PANE);
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("hog-idle");
+
+    fill_the_vm_and_keep_answering(&mut tui);
+    // On a VM of its own again, which is the only way the heap comes back.
+    tui.wait_for("hog-idle");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_full_vm_is_replaced_even_when_the_interface_no_longer_loads() {
+    // The rebuild reads the interface from disk, and an explicit
+    // THURBOX_UI_DIR with a file that no longer loads is never swapped for the
+    // bundled copy — a failed build keeps the VM that is running. When that VM
+    // is the full one, keeping it is the freeze.
+    let interface = interface_plus("91_hog.lua", HOG_PANE);
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("hog-idle");
+    std::fs::write(
+        interface.path().join("plugins").join("92_broken.lua"),
+        "return {",
+    )
+    .expect("break the interface");
+    tui.wait_for("reload failed");
+
+    fill_the_vm_and_keep_answering(&mut tui);
+    tui.wait_for("using the bundled interface");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_memory_floor_keeps_the_plugins_the_user_turned_off() {
+    // The floor host is built fresh and knows nothing of the disabled set, and
+    // the next reload builds the user's directory with whatever it holds. A
+    // plugin turned off because it no longer loads would then load again, and
+    // keep the repaired interface on the floor.
+    let interface = interface_plus("91_hog.lua", HOG_PANE);
+    let Some((profile, tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    // Off before the binary that is tested reads it: the session above is all
+    // the profile needed first.
+    drop(tui);
+    let off = interface.path().join("plugins").join("93_off.lua");
+    std::fs::write(&off, "return {").expect("a plugin that does not load");
+    std::fs::write(
+        profile.path("config/ui.json"),
+        format!(r#"{{"disabled": [{:?}]}}"#, off.display().to_string()),
+    )
+    .expect("turn the plugin off");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("hog-idle");
+    let broken = interface.path().join("plugins").join("92_broken.lua");
+    std::fs::write(&broken, "return {").expect("break the interface");
+    tui.wait_for("reload failed");
+
+    fill_the_vm_and_keep_answering(&mut tui);
+    tui.wait_for("using the bundled interface");
+    std::fs::remove_file(&broken).expect("repair the interface");
+    tui.wait_for("hog-idle");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_memory_floor_ends_the_programs_of_the_plugins_it_removed() {
+    // A program belongs to the plugin that started it, and the floor swaps
+    // every plugin out. Left running, it is a process nothing on screen can
+    // reach again.
+    let body = r#"local held = {}
+return {
+  name = "hog",
+  slot = "sessions",
+  capabilities = { "program" },
+  keys = {
+    { key = "ctrl+g", action = "hog.fill", desc = "fill the VM", scope = "global" },
+  },
+  render = function(ctx)
+    if not state.started then
+      command("program", { text = "keeper", repo = "sleep", args = { "31337421" } })
+      state.started = true
+    end
+    return { type = "text", text = (#held > 0 and "hog-full " or "hog-idle ") .. ctx.frame }
+  end,
+  on_action = function(action)
+    if action ~= "hog.fill" then
+      return false
+    end
+    pcall(function()
+      for i = 1, 2e6 do
+        held[i] = { i }
+      end
+    end)
+    local size, n = 1024 * 1024, 0
+    while size >= 8 do
+      n = n + 1
+      local ok = pcall(function()
+        held[#held + 1] = string.rep("x", size, tostring(n))
+      end)
+      if not ok then
+        size = size // 2
+      end
+    end
+    return true
+  end,
+}"#;
+    let interface = interface_plus("91_hog.lua", body);
+    let Some((profile, tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    drop(tui);
+    trust(&profile, interface.path(), "plugins/91_hog.lua", body);
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("hog-idle");
+    let running = || {
+        Command::new("pgrep")
+            .args(["-f", "sleep 31337421"])
+            .output()
+            .is_ok_and(|out| out.status.success())
+    };
+    let deadline = Instant::now() + WAIT;
+    while !running() {
+        assert!(Instant::now() < deadline, "the program never started");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::fs::write(
+        interface.path().join("plugins").join("92_broken.lua"),
+        "return {",
+    )
+    .expect("break the interface");
+    tui.wait_for("reload failed");
+
+    fill_the_vm_and_keep_answering(&mut tui);
+    tui.wait_for("using the bundled interface");
+    let deadline = Instant::now() + WAIT;
+    while running() {
+        assert!(
+            Instant::now() < deadline,
+            "the program outlived the plugin that started it"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_full_vm_with_an_unbuildable_explicit_interface_recovers_without_false_retries() {
+    full_vm_with_unbuildable_interface(true);
+}
+
+#[test]
+fn a_full_vm_recovers_even_when_the_bundled_fallback_cannot_be_created() {
+    full_vm_with_unbuildable_interface(false);
+}
+
+fn full_vm_with_unbuildable_interface(explicit: bool) {
+    let interface = interface_plus("91_hog.lua", HOG_PANE);
+    let profile = Profile::new();
+    let ui = if explicit {
+        interface.path().to_path_buf()
+    } else {
+        let ui = profile.path("config/ui");
+        copy_tree(interface.path(), &ui);
+        ui
+    };
+    // No fallback can be created beneath a regular file. This is scoped to
+    // the child; test scratch and the operator's interface remain untouched.
+    let blocked_temp = profile.path("blocked-temp");
+    std::fs::write(&blocked_temp, "not a directory").expect("block fallback");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("TMPDIR", &blocked_temp);
+        if explicit {
+            cmd.env("THURBOX_UI_DIR", &ui);
+        } else {
+            cmd.env_remove("THURBOX_UI_DIR");
+        }
+    });
+    tui.wait_for("hog-idle");
+    let layout = ui.join("layout.lua");
+    let valid_layout = std::fs::read_to_string(&layout).expect("read layout");
+    for cycle in 0..3 {
+        std::fs::write(&layout, "error('edited layout cannot build')").expect("break layout");
+        tui.send(F10);
+        tui.wait_for("edited layout cannot build");
+        // Ordinary edit reloads keep the live pane available even when the new
+        // layout is broken. Its key must still be able to fill the current VM.
+        tui.wait_for("hog-idle");
+        tui.send(b"\x07");
+        tui.wait_until("memory recovery to run", |_| {
+            tui.log_tail().matches("plugin VM held").count() > cycle
+        });
+        tui.wait_for("plugin VM replaced; interface failed to load");
+        tui.wait_gone("hog-idle");
+        tui.wait_gone("hog-full");
+
+        let started = Instant::now();
+        for _ in 0..8 {
+            tui.send(CTRL_P);
+            tui.wait_for("type to filter commands");
+            tui.send(ESC);
+            tui.wait_gone("type to filter commands");
+        }
+        assert!(
+            started.elapsed() < RESPONSIVE,
+            "the exhausted VM still stalls input"
+        );
+        let log = tui.log_tail();
+        assert_eq!(
+            log.matches("plugin VM replaced; interface failed to load")
+                .count(),
+            cycle + 1,
+            "{log}"
+        );
+        assert!(
+            !log.contains("rebuilt the interface"),
+            "false rebuild success: {log}"
+        );
+        assert!(
+            std::fs::read(&blocked_temp).is_ok(),
+            "fallback blocker was changed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&layout).unwrap(),
+            "error('edited layout cannot build')"
+        );
+
+        std::fs::write(&layout, &valid_layout).expect("repair layout");
+        tui.send(F10);
+        tui.wait_for("hog-idle");
+        tui.wait_gone("reload failed");
+    }
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn memory_fallback_keeps_disabled_bundled_plugins_disabled() {
+    let interface = interface_plus("91_hog.lua", HOG_PANE);
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/ui.json"),
+        serde_json::json!({
+            "disabled": [interface.path().join("plugins/20_agent.lua")]
+        })
+        .to_string(),
+    )
+    .expect("disable agent pane");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("hog-idle");
+    // The palette proves the declaration is absent, independently of whether
+    // the layout happens to place this pane on screen.
+    tui.send(CTRL_P);
+    tui.wait_for("type to filter commands");
+    tui.send(b"focus the agent terminal");
+    tui.wait_for("no matching command");
+    tui.send(ESC);
+    tui.wait_gone("no matching command");
+
+    std::fs::write(
+        interface.path().join("layout.lua"),
+        "error('broken layout')",
+    )
+    .expect("break layout");
+    tui.send(F10);
+    tui.wait_for("broken layout");
+    tui.send(b"\x07");
+    tui.wait_for("using the bundled interface");
+    tui.send(CTRL_P);
+    tui.wait_for("type to filter commands");
+    tui.send(b"focus the agent terminal");
+    tui.wait_for("no matching command");
+    tui.send(ESC);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn memory_fallback_reaps_programs_owned_by_panes_it_removed() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let interface = interface_plus("91_hog.lua", HOG_PANE);
+    let program = r#"return {
+  name = "owned-program", slot = "sessions", capabilities = { "program" },
+  render = function()
+    if not state.started then
+      command("program", { text = "owned", repo = "cat" })
+      state.started = true
+    end
+    return { type = "text", text = "owned-program-ready" }
+  end,
+}"#;
+    std::fs::write(interface.path().join("plugins/92_owned.lua"), program).expect("program pane");
+    let profile = Profile::new();
+    trust(&profile, interface.path(), "plugins/92_owned.lua", program);
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("hog-idle");
+    let program_windows = || {
+        let output = profile
+            .server
+            .tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|name| name.starts_with("tbp-"))
+            .count()
+    };
+    tui.wait_until("the owned program to start", |_| program_windows() == 1);
+    std::fs::write(
+        interface.path().join("layout.lua"),
+        "error('broken layout')",
+    )
+    .expect("break layout");
+    tui.send(F10);
+    tui.wait_for("broken layout");
+    assert_eq!(
+        program_windows(),
+        1,
+        "ordinary failed reload must keep the live pane"
+    );
+    tui.send(b"\x07");
+    tui.wait_for("using the bundled interface");
+    tui.wait_until("the removed pane's program window to be reaped", |_| {
+        program_windows() == 0
+    });
+    tui.send(CTRL_P);
+    tui.wait_for("type to filter commands");
+    tui.send(ESC);
+    assert!(tui.quit().success());
+}
+
 /// How long a host whose connection ended may take to be typed into again.
 ///
 /// The connection is re-opened on demand, in well under a second here; what

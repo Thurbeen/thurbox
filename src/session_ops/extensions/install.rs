@@ -113,7 +113,17 @@ fn install(
                 def.name
             )
         })?;
-    let home = crate::agent::extension_config::expand_tilde(&home_raw);
+    let mut home = crate::agent::extension_config::expand_tilde(&home_raw);
+    if home.is_relative() {
+        home = std::env::current_dir()
+            .map_err(|e| format!("resolve extension home '{home_raw}': {e}"))?
+            .join(home);
+    }
+    if !home.is_absolute() {
+        return Err(format!(
+            "extension home '{home_raw}' must resolve to an absolute directory"
+        ));
+    }
     let home_str = home.to_string_lossy().to_string();
 
     let current = crate::agent::extension_config::binary_version();

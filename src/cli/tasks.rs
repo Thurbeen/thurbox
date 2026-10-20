@@ -8,9 +8,10 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::cli::action::{self, SpawnDeliverError};
+use crate::cli::action;
 use crate::cli::output::{self, CommandOutput};
 use crate::session::{AutomationAction, Task, TaskStatus, SOURCE_LOCAL};
+use crate::session_ops::deliver::{spawn_and_deliver, SpawnDeliverError};
 use crate::session_ops::SpawnRequest;
 use crate::storage::tasks::NewTask;
 use crate::storage::Database;
@@ -408,7 +409,7 @@ fn run_task(
                 extra_repos: extra_repos.clone(),
                 ..Default::default()
             };
-            action::spawn_and_deliver(db, backends, &name, req, &prompt).map_err(|e| match e {
+            spawn_and_deliver(db, backends, &name, req, &prompt).map_err(|e| match e {
                 SpawnDeliverError::Spawn(msg) | SpawnDeliverError::Deliver { message: msg, .. } => {
                     msg
                 }

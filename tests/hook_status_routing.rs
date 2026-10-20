@@ -198,7 +198,7 @@ fn cli(
             thurbox::cli::sessions::run(action, db, backends).map_err(|e| e.message)?
         }
         Some(thurbox::cli::Command::Automation { action }) => {
-            thurbox::cli::automations::run(action, db, backends)?
+            thurbox::cli::automations::run(action, db, backends).map_err(|e| e.message)?
         }
         Some(thurbox::cli::Command::Runtime { action }) => {
             thurbox::cli::runtime::run(action, backends)

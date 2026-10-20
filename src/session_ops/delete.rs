@@ -885,7 +885,7 @@ pub(super) fn reap_selected_soft_delete(
         }
         Ok(())
     } else {
-        reap_remote(backends, row)
+        reap_remote(backends, row, still_selected)
     };
     if !still_selected()? {
         return Ok(false);
@@ -975,7 +975,8 @@ pub fn owned_windows_in(
 /// A host that runs a thurbox of its own is asked to reap the row itself
 /// (`session reap`): its database holds the same row, and only the host can
 /// mark it there. Otherwise the windows are killed from here, resolved by the
-/// stamp exactly as the local branch does.
+/// stamp exactly as the local branch does. That fallback must recheck the
+/// selected deletion after lookup before killing either window.
 ///
 /// `Err` names whatever stopped it, and the caller that runs on a timer backs
 /// the row off on that answer rather than asking again on its base cadence: a
@@ -984,6 +985,7 @@ pub fn owned_windows_in(
 fn reap_remote(
     backends: &crate::backend::BackendRegistry,
     row: &DeletedSessionInfo,
+    still_selected: impl Fn() -> Result<bool, String>,
 ) -> Result<(), String> {
     let Some(Some(host)) = super::resolve_host(&row.backend_type) else {
         return Err(format!(
@@ -1007,9 +1009,20 @@ fn reap_remote(
     }
     let backend = super::windows::backend_for(backends, &row.backend_type)?;
     let id = row.id.to_string();
-    super::windows::kill_owned(backend.as_ref(), deleted_owner(row, &id))
-        .map(|_| ())
-        .map_err(|e| format!("host '{}': {e:#}", host.name))
+    let placed = backend
+        .locate(deleted_owner(row, &id))
+        .map_err(|e| format!("host '{}': {e:#}", host.name))?;
+    for window in [placed.agent, placed.shell] {
+        if let crate::backend::Located::At(pane) = window {
+            if !still_selected()? {
+                return Ok(());
+            }
+            backend
+                .kill(&pane)
+                .map_err(|e| format!("host '{}': {e:#}", host.name))?;
+        }
+    }
+    Ok(())
 }
 
 /// A deleted row as its backend is asked about it, remembering the panes it
@@ -1315,6 +1328,8 @@ mod tests {
             action: AutomationAction::Send { session_id },
             prompt: "noop".into(),
             next_run_at: Some(u64::MAX),
+            key: None,
+            run: Default::default(),
         })
         .unwrap()
     }

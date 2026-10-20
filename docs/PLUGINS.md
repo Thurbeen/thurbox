@@ -1232,8 +1232,10 @@ command("automation", { action = "edit", number = 4, trigger = "cron:0 18 * * *"
 ```
 
 An automation's fields travel typed — a name or prompt is never read by a shell —
-and are checked as `thurbox-cli automation create` checks them, plus a cron
-expression that must parse and a timezone that must exist. An exec
+and are written by the very code `thurbox-cli automation create` and `edit` use
+(`session_ops::automations`), so a cron expression must parse, a timezone must
+exist and a schedule must fire at least once more, whichever of the two wrote
+it. An exec
 automation's `command` is a command line the heartbeat runs, so sending
 `command` at all — on a create, or on an edit even when it is unchanged — needs
 the issuing file to hold `run`; without it the write is refused like any other.
@@ -1655,9 +1657,20 @@ is the first thing every user of your plugin will see.
 - A plugin that throws while rendering shows a red panel **in its own rect**.
 - A plugin that never returns is **interrupted** — an unterminated loop costs one
   pane, not the application.
-- A plugin that allocates without bound hits a **memory ceiling** and fails.
+- A plugin that allocates without bound hits a **memory ceiling** and fails. Every
+  plugin shares that VM, so once it is nine-tenths full the interface is **rebuilt**
+  on a fresh one: panes lose what they held in memory. A successful rebuild sends
+  `interface.reloaded` with `reason = "memory"`. Disabled plugins stay disabled,
+  including when recovery uses the embedded interface.
 - If your whole plugin directory will not load, the **embedded copies** run
-  instead, so you can fix the file from inside the thing it broke.
+  instead, so you can fix the file from inside the thing it broke. An explicit
+  `THURBOX_UI_DIR` keeps its last good interface during ordinary edit reloads;
+  memory recovery must discard the exhausted VM even under that override.
+- If memory recovery cannot load either interface, it leaves a **fresh empty VM**
+  and reports the load failure. The kernel's settings, palette and reload controls
+  remain available. Fixing the edited files and reloading restores the interface;
+  the exhausted VM is never retained as a fallback. Sessions and worktrees are
+  untouched.
 
 ### Settings → Interface: the way back
 

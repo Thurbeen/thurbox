@@ -11,34 +11,11 @@
 //!
 //! Everything here is synchronous and blocks the calling thread, which is a
 //! worker in the TUI and the main thread in the CLI — never the render loop
-//! (rule 5). `session_ops` has no async runtime to lean on, and entering one
-//! from a thread that may already be inside one is the trap `kernel::terminal`
-//! documents, so the timeout is a `try_wait` poll rather than a timed future.
-
-use std::io::{Read, Write};
-use std::process::Stdio;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+//! (rule 5). The process itself runs through [`super::bounded`], the runner
+//! `Exec` automations share.
 
 use crate::session::{HookContext, HookEvent, LifecycleHook};
 use crate::sync::SharedSession;
-
-/// How often the runner checks whether the hook has exited. Coarse enough to
-/// cost nothing, fine enough that a timeout lands within a frame of the
-/// deadline.
-const POLL_INTERVAL: Duration = Duration::from_millis(20);
-
-/// Bytes of each stream the reader keeps. Only the tail is reported, but a
-/// hook that prints a megabyte still has to be *drained* or it blocks on a
-/// full pipe — which is why the readers are threads and this is a cap rather
-/// than a limit.
-const STREAM_KEEP: usize = 64 * 1024;
-
-/// How long to wait for the reader threads after the hook has exited. They end
-/// when the pipes close, which is at once unless the hook left a grandchild
-/// holding them (`sleep 100 &`); then the output is simply not reported, rather
-/// than the operation waiting on a process the hook forgot about.
-const READER_GRACE: Duration = Duration::from_millis(500);
 
 /// Run every `pre_*` hook for `event`, in file order, stopping at the first
 /// failure. `Err` is the reason the operation must not proceed: the caller
@@ -132,65 +109,33 @@ pub(crate) fn worktree(w: &crate::sync::SharedWorktree) -> crate::session::HookW
 /// The shell gets the inherited environment plus the `THURBOX_*` facts and the
 /// config/data-dir overrides, the JSON on a piped stdin (written and closed
 /// before waiting, so a hook that never reads it is not blocked by it), and
-/// nothing of thurbox's own stdio — the TUI owns that terminal. Both output
-/// pipes are drained on threads for the whole run; a deadline without draining
-/// deadlocks on a full pipe, and draining without a deadline hangs on a hook
-/// that never exits.
+/// nothing of thurbox's own stdio — the TUI owns that terminal.
 pub fn run_hook(hook: &LifecycleHook, event: HookEvent, ctx: &HookContext) -> Result<(), String> {
+    use super::bounded::Exit;
+
     let label = format!("hook `{}` for {event}", elide(&hook.command));
     tracing::debug!("{label}: running");
 
     let mut cmd = super::platform_shell(&hook.command);
     cmd.envs(ctx.env(event))
-        .envs(super::thurbox_env_overrides())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .envs(super::thurbox_env_overrides());
     if let Some(dir) = ctx.workdir() {
         cmd.current_dir(dir);
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("{label} could not start: {e}"))?;
-
-    // The payload is small, but a hook that exits without reading would make
-    // a synchronous write fail on a closed pipe — and one that reads slowly
-    // would stall the runner before its deadline was even armed.
-    if let Some(mut stdin) = child.stdin.take() {
-        let payload = ctx.json(event);
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(payload.as_bytes());
-        });
-    }
-    let stdout = child.stdout.take().map(drain);
-    let stderr = child.stderr.take().map(drain);
-
-    let started = Instant::now();
-    let timeout = hook.timeout();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err(format!("{label} timed out after {}s", timeout.as_secs()));
-            }
-            Ok(None) => std::thread::sleep(POLL_INTERVAL),
-            Err(e) => break Err(format!("{label} could not be waited on: {e}")),
+    let done = super::bounded::run(cmd, Some(ctx.json(event)), hook.timeout());
+    let code = match done.exit {
+        Exit::Code(0) => return Ok(()),
+        Exit::Code(code) => code.to_string(),
+        Exit::Signal => "with a signal".to_string(),
+        Exit::TimedOut(timeout) => {
+            return Err(format!("{label} timed out after {}s", timeout.as_secs()))
         }
+        Exit::SpawnFailed(e) => return Err(format!("{label} could not start: {e}")),
+        Exit::WaitFailed(e) => return Err(format!("{label} could not be waited on: {e}")),
     };
-    let out_tail = stdout.map(collect).unwrap_or_default();
-    let err_tail = stderr.map(collect).unwrap_or_default();
-
-    let status = status?;
-    if status.success() {
-        return Ok(());
-    }
-    let code = status
-        .code()
-        .map_or_else(|| "with a signal".to_string(), |c| c.to_string());
+    let err_tail = super::exec_tail(&done.stderr);
     let detail = if err_tail.is_empty() {
-        out_tail
+        super::exec_tail(&done.stdout)
     } else {
         err_tail
     };
@@ -198,36 +143,6 @@ pub fn run_hook(hook: &LifecycleHook, event: HookEvent, ctx: &HookContext) -> Re
         true => format!("{label} exited {code}"),
         false => format!("{label} exited {code}: {detail}"),
     })
-}
-
-/// Read a stream to its end on a thread, keeping only the last
-/// [`STREAM_KEEP`] bytes, and hand the tail back over a channel — so the
-/// runner can wait for it *with a deadline* ([`READER_GRACE`]).
-fn drain(mut stream: impl Read + Send + 'static) -> mpsc::Receiver<Vec<u8>> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut kept: Vec<u8> = Vec::new();
-        let mut chunk = [0u8; 8192];
-        loop {
-            match stream.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    kept.extend_from_slice(&chunk[..n]);
-                    if kept.len() > 2 * STREAM_KEEP {
-                        kept.drain(..kept.len() - STREAM_KEEP);
-                    }
-                }
-            }
-        }
-        let _ = tx.send(kept);
-    });
-    rx
-}
-
-fn collect(rx: mpsc::Receiver<Vec<u8>>) -> String {
-    rx.recv_timeout(READER_GRACE)
-        .map(|bytes| super::exec_tail(&bytes))
-        .unwrap_or_default()
 }
 
 /// The command as an error message names it: one line, at most 60 chars.
@@ -244,6 +159,7 @@ fn elide(command: &str) -> String {
 mod tests {
     use super::*;
     use crate::session::SessionId;
+    use std::time::{Duration, Instant};
 
     fn hook(event: HookEvent, command: &str, timeout_secs: Option<u64>) -> LifecycleHook {
         LifecycleHook {

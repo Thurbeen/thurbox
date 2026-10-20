@@ -1065,6 +1065,38 @@ pub(super) fn migrate_v55_move_cursors_and_claims(conn: &Connection) -> rusqlite
     )
 }
 
+/// See [`super::SCHEMA_VERSION`] v56: NULL on every existing row. An automation
+/// written before it has no key and runs with the defaults; a run recorded
+/// before it has only `detail`, which readers fall back to. The key's index is
+/// unique because an automation is this machine's alone — no mirror copies a
+/// peer's — so the database can enforce what a session key needs a claim for.
+pub(super) fn migrate_v56_automation_runs(conn: &Connection) -> rusqlite::Result<()> {
+    for (column, decl) in [
+        ("key", "TEXT"),
+        ("timeout_secs", "INTEGER"),
+        ("cwd", "TEXT"),
+        ("env", "TEXT"),
+    ] {
+        add_column_if_absent(conn, "automations", column, decl)?;
+    }
+    for (column, decl) in [
+        ("finished_at", "INTEGER"),
+        ("exit_code", "INTEGER"),
+        ("stdout_tail", "TEXT"),
+        ("stderr_tail", "TEXT"),
+        ("deadline_at", "INTEGER"),
+    ] {
+        add_column_if_absent(conn, "automation_runs", column, decl)?;
+    }
+    if column_exists(conn, "automations", "key")? {
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_key
+                ON automations(key) WHERE key IS NOT NULL;",
+        )?;
+    }
+    Ok(())
+}
+
 /// See [`super::SCHEMA_VERSION`] v48: NULL on every existing row — nothing
 /// before this version delivered a body natively, only a keystroke nudge, and
 /// nothing is mid-send across an upgrade.

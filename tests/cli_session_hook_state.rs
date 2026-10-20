@@ -756,6 +756,8 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
             },
             prompt: "start work".into(),
             next_run_at: Some(1),
+            key: None,
+            run: Default::default(),
         })
         .expect("automation");
     let name = format!("auto-{auto_id}");

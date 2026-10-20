@@ -66,6 +66,9 @@ fn flow_def() -> ExtensionDef {
             session_ref: Some("flow".into()),
             prompt: Some("tick".into()),
             command: None,
+            timeout_secs: None,
+            cwd: None,
+            env: Default::default(),
         }],
     }
 }
@@ -83,6 +86,31 @@ fn ensure_reuses_existing_session_and_creates_automation() {
     assert_eq!(autos.len(), 1);
     assert_eq!(autos[0].name, "flow-tick");
     assert!(matches!(autos[0].action, AutomationAction::Send { .. }));
+}
+
+/// An exec automation's `timeout_secs`, `cwd` and `env` reach the row it
+/// creates, so a manifest bounds and places its job as a CLI create does.
+#[test]
+fn an_exec_automation_carries_its_run_settings_from_the_manifest() {
+    let db = Database::open_in_memory().unwrap();
+    insert_session(&db, "flow");
+    let dir = tempfile::tempdir().unwrap();
+    let mut def = flow_def();
+    def.automations = vec![ExtensionAutomation {
+        name: "flow-sync".into(),
+        trigger: "hourly".into(),
+        session_ref: None,
+        prompt: None,
+        command: Some("make sync".into()),
+        timeout_secs: Some(90),
+        cwd: Some(dir.path().to_string_lossy().into_owned()),
+        env: [("MODE".to_string(), "fast".to_string())].into(),
+    }];
+    ensure_extension(&db, &crate::backend::registry::inert(), &def).unwrap();
+    let auto = &db.list_automations().unwrap()[0];
+    assert_eq!(auto.run.timeout_secs, Some(90));
+    assert_eq!(auto.run.cwd.as_deref(), Some(dir.path()));
+    assert_eq!(auto.run.env, vec![("MODE".to_string(), "fast".to_string())]);
 }
 
 #[test]
