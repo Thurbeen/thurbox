@@ -687,11 +687,28 @@ fn host_lists(host: &HostDef, cli: &CliInfo, backend: &str) -> Result<(Value, Va
 
 /// A host's deleted rows as this side last assembled them, by id, and the
 /// newest `deleted_at` among them — what the next pass asks `--since`.
-#[derive(Default)]
 struct DeletedHistory {
     rows: std::collections::BTreeMap<String, Value>,
     newest: u64,
+    /// When the whole list was last read. A delta never says a row is gone
+    /// from the host's history — a purge there leaves no trace in it — so the
+    /// whole list is read again past [`DELETED_HISTORY_TTL`].
+    read_whole_at: std::time::Instant,
 }
+
+impl Default for DeletedHistory {
+    fn default() -> Self {
+        Self {
+            rows: Default::default(),
+            newest: 0,
+            read_whole_at: std::time::Instant::now(),
+        }
+    }
+}
+
+/// How long a [`DeletedHistory`] is extended by deltas before it is read whole
+/// again: one full listing an hour rather than one a pass.
+const DELETED_HISTORY_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 impl DeletedHistory {
     fn absorb(&mut self, listing: Value) {
@@ -739,7 +756,8 @@ fn deleted_histories() -> &'static Mutex<HashMap<String, DeletedHistory>> {
 /// as unknown, or [`register_unknown`] would hand it back to the host. So the
 /// history is kept here and only the change is asked for. `--since` is
 /// inclusive, so a delete stamped in the same millisecond as the newest one
-/// held is not lost; one purged on the host simply stays held until restart.
+/// held is not lost; one purged on the host stays held until the next whole
+/// read.
 fn host_deleted(
     host: &HostDef,
     cli: &CliInfo,
@@ -754,7 +772,8 @@ fn host_deleted(
     let held = deleted_histories()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .remove(backend);
+        .remove(backend)
+        .filter(|history| history.read_whole_at.elapsed() < DELETED_HISTORY_TTL);
     let mut history = match held {
         Some(mut history) => {
             let since = history.newest.to_string();

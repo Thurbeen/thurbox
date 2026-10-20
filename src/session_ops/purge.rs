@@ -54,9 +54,10 @@ pub struct PurgeReport {
     pub kept: Vec<Kept>,
 }
 
-/// Purge the deleted rows `age` selects. A `dry_run` lists without touching
-/// anything — no reap and no write — though it still lists each server's
-/// windows, which is how it can say which rows would be kept.
+/// Purge the deleted rows `age` selects. A `dry_run` reaps and drops nothing,
+/// but still lists each server's windows — which is how it can say which rows
+/// would be kept, and which stamps a remote server's listing backoff as the
+/// sweep's own listing does.
 pub fn purge_deleted(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -66,7 +67,9 @@ pub fn purge_deleted(
     let now = crate::sync::current_time_millis();
     let selected = |row: &DeletedSessionInfo| match age {
         Age::All => true,
-        Age::OlderThanDays(days) => now.saturating_sub(row.deleted_at) >= days * MS_PER_DAY,
+        Age::OlderThanDays(days) => {
+            now.saturating_sub(row.deleted_at) >= days.saturating_mul(MS_PER_DAY)
+        }
     };
     let rows = db
         .list_deleted_sessions()
@@ -161,7 +164,7 @@ pub fn purge_expired(db: &Database, backends: &crate::backend::BackendRegistry) 
     if days == 0 {
         return PurgeReport::default();
     }
-    let cutoff = crate::sync::current_time_millis().saturating_sub(days * MS_PER_DAY);
+    let cutoff = crate::sync::current_time_millis().saturating_sub(days.saturating_mul(MS_PER_DAY));
     if !db.any_deleted_before(cutoff).unwrap_or(false) {
         return PurgeReport::default();
     }
