@@ -7344,6 +7344,128 @@ fn a_full_vm_is_replaced_even_when_the_interface_no_longer_loads() {
     assert!(tui.quit().success());
 }
 
+#[test]
+fn the_memory_floor_keeps_the_plugins_the_user_turned_off() {
+    // The floor host is built fresh and knows nothing of the disabled set, and
+    // the next reload builds the user's directory with whatever it holds. A
+    // plugin turned off because it no longer loads would then load again, and
+    // keep the repaired interface on the floor.
+    let interface = interface_plus("91_hog.lua", HOG_PANE);
+    let Some((profile, tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    // Off before the binary that is tested reads it: the session above is all
+    // the profile needed first.
+    drop(tui);
+    let off = interface.path().join("plugins").join("93_off.lua");
+    std::fs::write(&off, "return {").expect("a plugin that does not load");
+    std::fs::write(
+        profile.path("config/ui.json"),
+        format!(r#"{{"disabled": [{:?}]}}"#, off.display().to_string()),
+    )
+    .expect("turn the plugin off");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("hog-idle");
+    let broken = interface.path().join("plugins").join("92_broken.lua");
+    std::fs::write(&broken, "return {").expect("break the interface");
+    tui.wait_for("reload failed");
+
+    fill_the_vm_and_keep_answering(&mut tui);
+    tui.wait_for("using the bundled interface");
+    std::fs::remove_file(&broken).expect("repair the interface");
+    tui.wait_for("hog-idle");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_memory_floor_ends_the_programs_of_the_plugins_it_removed() {
+    // A program belongs to the plugin that started it, and the floor swaps
+    // every plugin out. Left running, it is a process nothing on screen can
+    // reach again.
+    let body = r#"local held = {}
+return {
+  name = "hog",
+  slot = "sessions",
+  capabilities = { "program" },
+  keys = {
+    { key = "ctrl+g", action = "hog.fill", desc = "fill the VM", scope = "global" },
+  },
+  render = function(ctx)
+    if not state.started then
+      command("program", { text = "keeper", repo = "sleep", args = { "31337421" } })
+      state.started = true
+    end
+    return { type = "text", text = (#held > 0 and "hog-full " or "hog-idle ") .. ctx.frame }
+  end,
+  on_action = function(action)
+    if action ~= "hog.fill" then
+      return false
+    end
+    pcall(function()
+      for i = 1, 2e6 do
+        held[i] = { i }
+      end
+    end)
+    local size, n = 1024 * 1024, 0
+    while size >= 8 do
+      n = n + 1
+      local ok = pcall(function()
+        held[#held + 1] = string.rep("x", size, tostring(n))
+      end)
+      if not ok then
+        size = size // 2
+      end
+    end
+    return true
+  end,
+}"#;
+    let interface = interface_plus("91_hog.lua", body);
+    let Some((profile, tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    drop(tui);
+    trust(&profile, interface.path(), "plugins/91_hog.lua", body);
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("hog-idle");
+    let running = || {
+        Command::new("pgrep")
+            .args(["-f", "sleep 31337421"])
+            .output()
+            .is_ok_and(|out| out.status.success())
+    };
+    let deadline = Instant::now() + WAIT;
+    while !running() {
+        assert!(Instant::now() < deadline, "the program never started");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::fs::write(
+        interface.path().join("plugins").join("92_broken.lua"),
+        "return {",
+    )
+    .expect("break the interface");
+    tui.wait_for("reload failed");
+
+    fill_the_vm_and_keep_answering(&mut tui);
+    tui.wait_for("using the bundled interface");
+    let deadline = Instant::now() + WAIT;
+    while running() {
+        assert!(
+            Instant::now() < deadline,
+            "the program outlived the plugin that started it"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(tui.quit().success());
+}
+
 /// How long a host whose connection ended may take to be typed into again.
 ///
 /// The connection is re-opened on demand, in well under a second here; what

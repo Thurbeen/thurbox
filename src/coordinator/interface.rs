@@ -47,22 +47,7 @@ impl App {
         self.last_floats.clear();
         self.drawn_floats.clear();
         self.failing.clear();
-        // A plugin that was edited away, renamed, removed or turned off must not
-        // leave its answers behind to accumulate across reloads — and must not be
-        // able to read them again if a file of that name comes back.
-        let live: Vec<String> = self
-            .host
-            .plugins
-            .iter()
-            .map(|plugin| plugin.path.clone())
-            .collect();
-        self.runs.retain_plugins(&live);
-        // The same rule for a program it was holding, and here it matters more: an
-        // answer left behind is a few bytes, a program left behind is a process
-        // nothing on screen can ever reach again. A plugin that is still loaded
-        // keeps its pane — a reload is an edit to a file, and losing your game to
-        // one would make reloading unusable.
-        self.terminals.retain_program_plugins(&live);
+        self.forget_unloaded_plugins();
         if self.host.error.is_none() {
             if self.floor.take().is_some() {
                 self.toast(format!("{} loaded again", self.ui_dir.display()));
@@ -96,7 +81,31 @@ impl App {
             self.host.error.clone().unwrap_or_default()
         ));
         self.host = embedded;
+        // Every plugin of the user's just went, and the host that replaced them
+        // is the one the user's directory is next rebuilt from.
+        self.forget_unloaded_plugins();
+        self.publish_disabled();
         true
+    }
+
+    /// Drop what plugins that are no longer loaded were holding.
+    fn forget_unloaded_plugins(&mut self) {
+        // A plugin that was edited away, renamed, removed or turned off must not
+        // leave its answers behind to accumulate across reloads — and must not be
+        // able to read them again if a file of that name comes back.
+        let live: Vec<String> = self
+            .host
+            .plugins
+            .iter()
+            .map(|plugin| plugin.path.clone())
+            .collect();
+        self.runs.retain_plugins(&live);
+        // The same rule for a program it was holding, and here it matters more: an
+        // answer left behind is a few bytes, a program left behind is a process
+        // nothing on screen can ever reach again. A plugin that is still loaded
+        // keeps its pane — a reload is an edit to a file, and losing your game to
+        // one would make reloading unusable.
+        self.terminals.retain_program_plugins(&live);
     }
 
     /// Turn one interface file off, or back on, and reload.
