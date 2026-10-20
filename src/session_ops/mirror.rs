@@ -638,6 +638,16 @@ fn listed() -> &'static Mutex<HashMap<String, Listed>> {
     LISTED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Drop every cached listing, so a test's scripted host starts unseen.
+#[cfg(test)]
+pub(crate) fn forget_lists() {
+    listed().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    deleted_histories()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
 /// The host's `session list` and `session list --deleted` answers.
 ///
 /// Both grow with the host's history and the mirror asks every few seconds,
@@ -661,7 +671,7 @@ fn host_lists(host: &HostDef, cli: &CliInfo, backend: &str) -> Result<(Value, Va
         }
     }
     let active = host_cli::run(host, cli, &["session", "list"])?;
-    let deleted = host_cli::run(host, cli, &["session", "list", "--deleted"])?;
+    let deleted = host_deleted(host, cli, backend, &active)?;
     if let Some(revision) = revision {
         listed().lock().unwrap_or_else(|e| e.into_inner()).insert(
             backend.to_string(),
@@ -673,6 +683,101 @@ fn host_lists(host: &HostDef, cli: &CliInfo, backend: &str) -> Result<(Value, Va
         );
     }
     Ok((active, deleted))
+}
+
+/// A host's deleted rows as this side last assembled them, by id, and the
+/// newest `deleted_at` among them — what the next pass asks `--since`.
+#[derive(Default)]
+struct DeletedHistory {
+    rows: std::collections::BTreeMap<String, Value>,
+    newest: u64,
+}
+
+impl DeletedHistory {
+    fn absorb(&mut self, listing: Value) {
+        let Value::Array(rows) = listing else {
+            return;
+        };
+        for row in rows {
+            let Some(id) = row.get("id").and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            let at = row.get("deleted_at").and_then(Value::as_u64).unwrap_or(0);
+            self.newest = self.newest.max(at);
+            self.rows.insert(id, row);
+        }
+    }
+
+    /// Drop the rows the host lists as active again: restored since they were
+    /// read, and a restore leaves no trace in a `--since` answer.
+    fn forget_restored(&mut self, active: &Value) {
+        for id in active
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row.get("id")?.as_str())
+        {
+            self.rows.remove(id);
+        }
+    }
+}
+
+/// The [`DeletedHistory`] per backend name, for a host that answers `--since`.
+fn deleted_histories() -> &'static Mutex<HashMap<String, DeletedHistory>> {
+    static HISTORIES: OnceLock<Mutex<HashMap<String, DeletedHistory>>> = OnceLock::new();
+    HISTORIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The host's deleted rows: its whole history the first time, and after that
+/// only what it deleted since the newest row already held.
+///
+/// The history grows for the life of the host's database — ~1600 rows came to
+/// ~900 KB a listing — and every write there moves `session revision`, so the
+/// whole of it crossed ssh on nearly every pass, which made it the answer most
+/// often cut off by a dropped connection. The rows are still all needed: a
+/// session held here that the host deleted long ago must read as deleted, not
+/// as unknown, or [`register_unknown`] would hand it back to the host. So the
+/// history is kept here and only the change is asked for. `--since` is
+/// inclusive, so a delete stamped in the same millisecond as the newest one
+/// held is not lost; one purged on the host simply stays held until restart.
+fn host_deleted(
+    host: &HostDef,
+    cli: &CliInfo,
+    backend: &str,
+    active: &Value,
+) -> Result<Value, String> {
+    if !cli.deleted_since {
+        return host_cli::run(host, cli, &["session", "list", "--deleted"]);
+    }
+    // Taken out rather than held: the lock must not span an ssh round trip
+    // that another host's pass is waiting on.
+    let held = deleted_histories()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(backend);
+    let mut history = match held {
+        Some(mut history) => {
+            let since = history.newest.to_string();
+            history.absorb(host_cli::run(
+                host,
+                cli,
+                &["session", "list", "--deleted", "--since", &since],
+            )?);
+            history
+        }
+        None => {
+            let mut history = DeletedHistory::default();
+            history.absorb(host_cli::run(host, cli, &["session", "list", "--deleted"])?);
+            history
+        }
+    };
+    history.forget_restored(active);
+    let rows = Value::Array(history.rows.values().cloned().collect());
+    deleted_histories()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(backend.to_string(), history);
+    Ok(rows)
 }
 
 /// What a mirror pass does with a host's **transitive** rows: the sessions it
@@ -933,6 +1038,19 @@ pub fn sync(db: &Database, only: Option<&str>, adopt: bool) -> Result<Vec<Mirror
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_held_deleted_row_the_host_restored_is_dropped_and_a_newer_delete_kept() {
+        let mut history = DeletedHistory::default();
+        history.absorb(serde_json::json!([
+            { "id": "a", "deleted_at": 10 },
+            { "id": "b", "deleted_at": 20 },
+        ]));
+        history.absorb(serde_json::json!([{ "id": "c", "deleted_at": 30 }]));
+        history.forget_restored(&serde_json::json!([{ "id": "b" }]));
+        assert_eq!(history.newest, 30);
+        assert_eq!(history.rows.keys().collect::<Vec<_>>(), ["a", "c"]);
+    }
 
     const BACKEND: &str = "ssh:devbox";
 

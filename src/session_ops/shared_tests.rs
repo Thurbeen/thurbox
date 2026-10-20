@@ -45,6 +45,11 @@ fn host_session(id: SessionId, name: &str) -> SharedSession {
 struct Host {
     active: Vec<SharedSession>,
     deleted: Vec<(SessionId, bool)>,
+    /// When each deleted row was deleted, on the host's clock; `0` for a row
+    /// the test seeded without one.
+    deleted_at: std::collections::HashMap<SessionId, u64>,
+    /// The host's clock, moved by each delete it takes.
+    clock: u64,
     /// A canned refusal for the next `create`.
     refuse_create: Option<String>,
 }
@@ -61,6 +66,7 @@ struct Rig {
 impl Drop for Rig {
     fn drop(&mut self) {
         fake::clear();
+        mirror::forget_lists();
     }
 }
 
@@ -100,12 +106,22 @@ fn rig() -> Rig {
                 host.active.push(created);
                 Ok(json!({ "id": id.to_string(), "name": name }))
             }
-            ["session", "list", "--deleted"] => Ok(Value::Array(
-                host.deleted
-                    .iter()
-                    .map(|(id, force)| json!({ "id": id.to_string(), "force_deleted": force }))
-                    .collect(),
-            )),
+            ["session", "list", "--deleted", rest @ ..] => {
+                let since: u64 = match rest {
+                    ["--since", ms] => ms.parse().unwrap(),
+                    _ => 0,
+                };
+                Ok(Value::Array(
+                    host.deleted
+                        .iter()
+                        .map(|(id, force)| (id, force, host.deleted_at.get(id).copied().unwrap_or(0)))
+                        .filter(|(_, _, at)| *at >= since)
+                        .map(|(id, force, at)| {
+                            json!({ "id": id.to_string(), "force_deleted": force, "deleted_at": at })
+                        })
+                        .collect(),
+                ))
+            }
             ["session", "list"] => Ok(Value::Array(
                 host.active
                     .iter()
@@ -122,6 +138,9 @@ fn rig() -> Rig {
                 host.active.retain(|s| s.id != id);
                 let force = rest.contains(&"--force");
                 host.deleted.push((id, force));
+                host.clock += 1;
+                let at = host.clock;
+                host.deleted_at.insert(id, at);
                 Ok(
                     json!({ "deleted": true, "killed_window": true, "removed_worktrees": ["/srv/wt"] }),
                 )
@@ -647,4 +666,64 @@ fn a_delete_taken_while_the_host_was_unusable_is_pushed_on_the_next_pass() {
         fake::calls()
     );
     assert!(rig.host.borrow().active.is_empty());
+}
+
+#[test]
+fn a_long_deleted_history_is_read_whole_once_and_then_only_by_what_changed() {
+    let rig = rig();
+    fake::force_usable(Usable::Yes(host_cli::CliInfo {
+        deleted_since: true,
+        ..fake::cli()
+    }));
+    // ~1600 sessions deleted on the host long ago, one of them still held here.
+    let stale = {
+        let mut host = rig.host.borrow_mut();
+        for i in 0..1600 {
+            let id = SessionId::default();
+            host.deleted.push((id, false));
+            host.deleted_at.insert(id, 1_000 + i);
+        }
+        host.clock = 5_000;
+        host.deleted[0].0
+    };
+    let mut held = host_session(stale, "stale");
+    held.backend_type = BACKEND.into();
+    rig.db.upsert_session(&held).unwrap();
+    let live = SessionId::default();
+    rig.host.borrow_mut().active.push(host_session(live, "live"));
+
+    let reports = mirror::sync(&rig.db, Some(HOST), false).unwrap();
+    assert_eq!(reports[0].deleted, vec![stale]);
+    assert!(reports[0].unknown_local.is_empty(), "{:?}", reports[0]);
+    assert!(rig.db.get_session_by_id(live).unwrap().is_some());
+
+    // The host deletes `live` itself, after everything the first pass read.
+    {
+        let mut host = rig.host.borrow_mut();
+        host.active.retain(|s| s.id != live);
+        host.deleted.push((live, false));
+        host.deleted_at.insert(live, 5_001);
+    }
+    let before = fake::calls().len();
+    let reports = mirror::sync(&rig.db, Some(HOST), false).unwrap();
+    let deleted_lists: Vec<Vec<String>> = fake::calls()[before..]
+        .iter()
+        .filter(|c| c.get(2).map(String::as_str) == Some("--deleted"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        deleted_lists,
+        vec![vec![
+            "session".to_string(),
+            "list".into(),
+            "--deleted".into(),
+            "--since".into(),
+            "2599".into(),
+        ]],
+        "the second pass asks for what was deleted since the newest row it holds"
+    );
+    assert_eq!(reports[0].deleted, vec![live]);
+    // Still known to have been deleted there, though this pass never listed it.
+    assert!(rig.db.get_deleted_session_by_id(stale).unwrap().is_some());
+    assert!(reports[0].unknown_local.is_empty(), "{:?}", reports[0]);
 }

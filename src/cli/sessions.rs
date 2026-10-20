@@ -51,6 +51,11 @@ pub enum Action {
         /// this machine reads, with each row's `force_deleted` mark.
         #[arg(long)]
         deleted: bool,
+        /// With `--deleted`: only the rows deleted at or after this instant,
+        /// in epoch milliseconds on this machine's clock — how a mirroring
+        /// peer asks for what changed instead of the whole history.
+        #[arg(long, requires = "deleted", value_name = "EPOCH_MS")]
+        since: Option<u64>,
         /// Also check each session's pane against its reported state.
         ///
         /// Off by default because it costs a multiplexer query and a `ps` **per
@@ -240,6 +245,25 @@ pub enum Action {
         /// deleted rows, since that is where a reapable session is.
         #[arg(value_name = "SESSION")]
         session: String,
+    },
+    /// Drop deleted sessions for good: they leave the restore list and can
+    /// never be restored.
+    ///
+    /// Safe while the interface runs. A soft-deleted row's windows come down
+    /// first, the way the reaper takes them; a row inside its undo window, one
+    /// whose teardown is still owed on its host, or one whose windows could
+    /// not be listed is kept and says why. Worktrees stay on disk and are
+    /// listed. `deleted_retention_days` in settings.toml does this on a timer.
+    Purge {
+        /// Only rows deleted at least this many days ago.
+        #[arg(long, value_name = "DAYS", required_unless_present = "all")]
+        older_than_days: Option<u64>,
+        /// Every deleted row, however recent.
+        #[arg(long, conflicts_with = "older_than_days")]
+        all: bool,
+        /// List what would be purged, and change nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Restart a session in-place (kills the window, re-spawns with --resume).
     Restart {
@@ -635,13 +659,18 @@ pub fn run(
     backends: &super::Backends<'_>,
 ) -> Result<CommandOutput, CommandError> {
     match action {
-        Action::List { deleted: true, .. } => run_list_deleted(db),
+        Action::List {
+            deleted: true,
+            since,
+            ..
+        } => run_list_deleted(db, since),
         Action::List {
             parent,
             deleted: false,
             verify,
             key,
             key_prefix,
+            since: _,
         } => run_list_active(
             db,
             backends,
@@ -704,6 +733,11 @@ pub fn run(
             best_effort,
         } => restore_deleted(db, backends.get(), &session, best_effort),
         Action::Reap { session } => run_reap(db, backends.get(), session),
+        Action::Purge {
+            older_than_days,
+            all: _,
+            dry_run,
+        } => run_purge(db, backends.get(), older_than_days, dry_run),
         Action::Restart { uuid, if_missing } => run_restart(db, backends.get(), uuid, if_missing),
         Action::Rename { session, name } => run_rename(db, backends.get(), session, name),
         Action::Reparent {
@@ -751,10 +785,12 @@ pub fn run(
     }
 }
 
-fn run_list_deleted(db: &Database) -> Result<CommandOutput, CommandError> {
-    let rows = db
-        .list_deleted_sessions()
-        .map_err(|e| format!("list_deleted_sessions: {e}"))?;
+fn run_list_deleted(db: &Database, since: Option<u64>) -> Result<CommandOutput, CommandError> {
+    let rows = match since {
+        Some(since) => db.list_deleted_sessions_since(since),
+        None => db.list_deleted_sessions(),
+    }
+    .map_err(|e| format!("list_deleted_sessions: {e}"))?;
     let json = Value::Array(rows.iter().map(deleted_session_to_json).collect());
     let human = if rows.is_empty() {
         "No deleted sessions.".to_string()
@@ -1141,6 +1177,52 @@ fn run_reap(
         }),
         human,
     ))
+}
+
+fn run_purge(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    older_than_days: Option<u64>,
+    dry_run: bool,
+) -> Result<CommandOutput, CommandError> {
+    use crate::session_ops::Age;
+    let age = older_than_days.map_or(Age::All, Age::OlderThanDays);
+    let report = crate::session_ops::purge_deleted(db, backends, age, dry_run)?;
+    let verb = if dry_run { "Would purge" } else { "Purged" };
+    let mut human = format!("{verb} {} deleted session(s)", report.purged.len());
+    if !report.kept.is_empty() {
+        human.push_str(&format!("; kept {}", report.kept.len()));
+    }
+    for kept in &report.kept {
+        human.push_str(&format!("\n  kept '{}' ({}): {}", kept.name, kept.id, kept.reason));
+    }
+    let on_disk: Vec<_> = report
+        .purged
+        .iter()
+        .flat_map(|p| p.left_on_disk.iter().map(move |path| (p, path)))
+        .collect();
+    if !on_disk.is_empty() {
+        human.push_str("\nWorktrees left on disk:");
+        for (purged, path) in &on_disk {
+            human.push_str(&format!("\n  {} ({})", path.display(), purged.backend_type));
+        }
+    }
+    let json = json!({
+        "dry_run": dry_run,
+        "purged": report.purged.iter().map(|p| json!({
+            "id": p.id.to_string(),
+            "name": p.name,
+            "backend_type": p.backend_type,
+            "deleted_at": p.deleted_at,
+            "left_on_disk": p.left_on_disk.iter().map(|w| w.display().to_string()).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "kept": report.kept.iter().map(|k| json!({
+            "id": k.id.to_string(),
+            "name": k.name,
+            "reason": k.reason,
+        })).collect::<Vec<_>>(),
+    });
+    Ok(CommandOutput::new(json, human))
 }
 
 fn run_restart(
@@ -3045,6 +3127,7 @@ mod tests {
             Action::List {
                 parent: None,
                 deleted: false,
+                since: None,
                 verify: false,
                 key: None,
                 key_prefix: None,
@@ -3483,6 +3566,7 @@ mod tests {
             Action::List {
                 parent: None,
                 deleted: false,
+                since: None,
                 verify: false,
                 key: None,
                 key_prefix: None,
@@ -3538,6 +3622,7 @@ mod tests {
             Action::List {
                 parent: None,
                 deleted: false,
+                since: None,
                 verify: false,
                 key: None,
                 key_prefix: None,
@@ -3559,6 +3644,7 @@ mod tests {
             Action::List {
                 parent: Some(parent_id.to_string()),
                 deleted: false,
+                since: None,
                 verify: false,
                 key: None,
                 key_prefix: None,
@@ -3578,6 +3664,7 @@ mod tests {
             Action::List {
                 parent: Some("no-such-parent".into()),
                 deleted: false,
+                since: None,
                 verify: false,
                 key: None,
                 key_prefix: None,
@@ -4081,6 +4168,7 @@ mod tests {
                 Action::List {
                     parent: None,
                     deleted: false,
+                    since: None,
                     verify: false,
                     key: key.map(str::to_string),
                     key_prefix: key_prefix.map(str::to_string),

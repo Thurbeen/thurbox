@@ -49,6 +49,11 @@ pub struct Settings {
     /// startup).
     #[serde(default = "default_audit_retention_days")]
     pub audit_retention_days: u64,
+    /// Days a deleted session stays restorable before its row is purged —
+    /// `0`, the default, keeps every one. A purge is final, so it is the
+    /// operator's to turn on (`thurbox-cli session purge` is the one-off).
+    #[serde(default)]
+    pub deleted_retention_days: u64,
     /// How often each session's git working tree is re-examined, in seconds.
     /// `0` turns the polling off: no diffstat, no ahead/behind, no `git`.
     ///
@@ -491,6 +496,7 @@ impl Settings {
             || self.two_panel_min_cols != other.two_panel_min_cols
             || self.three_panel_min_cols != other.three_panel_min_cols
             || self.audit_retention_days != other.audit_retention_days
+            || self.deleted_retention_days != other.deleted_retention_days
             || self.git_poll_secs != other.git_poll_secs
             || self.notifications != other.notifications
             || self.features.automations != other.features.automations
@@ -512,6 +518,7 @@ impl Default for Settings {
             two_panel_min_cols: default_two_panel_min_cols(),
             three_panel_min_cols: default_three_panel_min_cols(),
             audit_retention_days: default_audit_retention_days(),
+            deleted_retention_days: 0,
             git_poll_secs: default_git_poll_secs(),
             features: FeatureFlags::default(),
             notifications: NotificationSettings::default(),

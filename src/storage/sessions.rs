@@ -370,6 +370,63 @@ impl Database {
         tx.commit()
     }
 
+    /// Drop a deleted row for good — `thurbox-cli session purge` and the
+    /// `deleted_retention_days` sweep. Its worktree records and metadata go with
+    /// it; the audit and event logs keep their history, and nothing on disk is
+    /// touched.
+    ///
+    /// Only while the row is still deleted and owes no teardown, checked inside
+    /// the transaction that removes it: an interface restoring it, or a sweep
+    /// marking it owed, between the caller's read and this write wins. Returns
+    /// whether the row went.
+    pub fn purge_deleted_session(&self, id: SessionId) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let purgeable = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sessions \
+                 WHERE id = ?1 AND deleted_at IS NOT NULL AND teardown_owed = 0",
+                params![id_str],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !purgeable {
+            return Ok(false);
+        }
+        for table in ["worktrees", "session_meta"] {
+            self.conn.execute(
+                &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                params![id_str],
+            )?;
+        }
+        self.conn
+            .execute("DELETE FROM sessions WHERE id = ?1", params![id_str])?;
+        self.log_audit(
+            EntityType::Session,
+            &id_str,
+            AuditAction::Deleted,
+            None,
+            None,
+            Some("purged"),
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Whether any deleted row was deleted before `cutoff_ms` — the retention
+    /// sweep's gate, so a pass with nothing to purge reads one index probe
+    /// rather than the whole deleted history.
+    pub fn any_deleted_before(&self, cutoff_ms: u64) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sessions \
+             WHERE deleted_at IS NOT NULL AND deleted_at < ?1)",
+            params![cutoff_ms as i64],
+            |row| row.get(0),
+        )
+    }
+
     /// Record whether a deleted row still owes a teardown on the host it lived
     /// on (schema v46).
     ///
@@ -1117,6 +1174,19 @@ impl Database {
     /// List all soft-deleted sessions, most recently deleted first.
     pub fn list_deleted_sessions(&self) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
         self.query_deleted_sessions("s.deleted_at IS NOT NULL", [])
+    }
+
+    /// The deleted sessions deleted at or after `since_ms`, most recently
+    /// deleted first — `session list --deleted --since`, which a mirroring peer
+    /// asks instead of the whole history once it holds that.
+    pub fn list_deleted_sessions_since(
+        &self,
+        since_ms: u64,
+    ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
+        self.query_deleted_sessions(
+            "s.deleted_at IS NOT NULL AND s.deleted_at >= ?1",
+            params![since_ms as i64],
+        )
     }
 
     /// Every deleted session carrying this exact name, most recently deleted

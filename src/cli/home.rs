@@ -225,6 +225,7 @@ mod tests {
             crate::cli::sessions::Action::List {
                 parent: None,
                 deleted: false,
+                since: None,
                 verify: false,
                 key: None,
                 key_prefix: None,

@@ -690,6 +690,7 @@ all commented so defaults still apply out of the box.
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
+| `deleted_retention_days` | `0` | days a deleted session stays restorable before the sweep purges its row; `0` keeps all |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
 
 A complete `settings.toml` showing every knob at its default — copy
@@ -705,6 +706,7 @@ hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)
+deleted_retention_days = 0     # days a deleted session stays restorable; 0 = keep all
 git_poll_secs         = 5      # seconds between git stats of a session; 0 = off
 
 [features]

@@ -109,6 +109,9 @@ pub struct CliInfo {
     /// Whether `session revision` is understood, so the mirror can skip the
     /// full lists while the host's rows have not moved.
     pub session_revision: bool,
+    /// Whether `session list --deleted --since` is understood, so the mirror
+    /// can ask for the deletes it has not seen rather than the whole history.
+    pub deleted_since: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -724,6 +727,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .unwrap_or(false),
         session_revision: json
             .get("session_revision")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        deleted_since: json
+            .get("deleted_since")
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }))
@@ -1442,6 +1449,7 @@ pub(crate) mod fake {
             multiplexer_choice: false,
             soft_delete_choice: true,
             session_revision: false,
+            deleted_since: false,
         }
     }
 }
@@ -1573,6 +1581,7 @@ mod tests {
             multiplexer_choice: false,
             soft_delete_choice: false,
             session_revision: false,
+            deleted_since: false,
         }
     }
 

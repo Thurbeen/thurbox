@@ -20,6 +20,7 @@ pub mod lock;
 pub mod lost;
 pub mod mirror;
 pub mod names;
+pub mod purge;
 pub mod remote_hooks;
 pub mod rename;
 pub mod reparent;
@@ -46,6 +47,7 @@ pub use extensions::{
     InstallReport, ReinstallReport, UninstallReport, UpdateReport,
 };
 pub use lifecycle_hooks::{fire_post, fire_pre};
+pub use purge::{purge_deleted, purge_expired, Age, PurgeReport};
 pub use restart::{restart_session_headless, RestartReport};
 pub use restore::{restore_refusal, restore_session_headless, RestoreReport};
 
