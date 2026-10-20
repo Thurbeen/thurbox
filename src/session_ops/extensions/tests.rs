@@ -94,6 +94,7 @@ fn ensure_reuses_existing_session_and_creates_automation() {
 fn an_exec_automation_carries_its_run_settings_from_the_manifest() {
     let db = Database::open_in_memory().unwrap();
     insert_session(&db, "flow");
+    let dir = tempfile::tempdir().unwrap();
     let mut def = flow_def();
     def.automations = vec![ExtensionAutomation {
         name: "flow-sync".into(),
@@ -102,16 +103,13 @@ fn an_exec_automation_carries_its_run_settings_from_the_manifest() {
         prompt: None,
         command: Some("make sync".into()),
         timeout_secs: Some(90),
-        cwd: Some("/srv/flow".into()),
+        cwd: Some(dir.path().to_string_lossy().into_owned()),
         env: [("MODE".to_string(), "fast".to_string())].into(),
     }];
     ensure_extension(&db, &crate::backend::registry::inert(), &def).unwrap();
     let auto = &db.list_automations().unwrap()[0];
     assert_eq!(auto.run.timeout_secs, Some(90));
-    assert_eq!(
-        auto.run.cwd.as_deref(),
-        Some(std::path::Path::new("/srv/flow"))
-    );
+    assert_eq!(auto.run.cwd.as_deref(), Some(dir.path()));
     assert_eq!(auto.run.env, vec![("MODE".to_string(), "fast".to_string())]);
 }
 
