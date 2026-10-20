@@ -619,6 +619,9 @@ pub fn reap_overdue_soft_deletes(
             }
         }
     }
+    // The same two drivers are what `deleted_retention_days` needs, so the
+    // retention purge rides this sweep rather than inventing a third.
+    super::purge::purge_expired(db, backends);
     reaped
 }
 
@@ -637,6 +640,19 @@ fn window_index_on(
     backends: &crate::backend::BackendRegistry,
     backend_type: &str,
 ) -> crate::backend::identity::WindowIndex {
+    listed_windows_on(db, backends, backend_type).unwrap_or_default()
+}
+
+/// [`window_index_on`], with `None` for a server that was not listed — its
+/// claim refused, its backend unresolvable or its listing failed — where the
+/// sweep reads the same case as "owns nothing". A purge cannot: dropping a row
+/// whose windows were never looked at would leave them standing with nothing
+/// left to reap them.
+pub(super) fn listed_windows_on(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    backend_type: &str,
+) -> Option<crate::backend::identity::WindowIndex> {
     let listed = |backend: &dyn crate::backend::SessionBackend| {
         backend
             .discover()
@@ -647,21 +663,21 @@ fn window_index_on(
         // could show: a window of its name on another server is another
         // session's.
         return match super::windows::backend_for(backends, backend_type) {
-            Ok(backend) => listed(backend.as_ref()).unwrap_or_default(),
-            Err(_) => crate::backend::identity::WindowIndex::default(),
+            Ok(backend) => listed(backend.as_ref()).ok(),
+            Err(_) => Some(crate::backend::identity::WindowIndex::default()),
         };
     }
     if !claim_listing(db, backend_type) {
-        return crate::backend::identity::WindowIndex::default();
+        return None;
     }
     let Ok(backend) = super::windows::backend_for(backends, backend_type) else {
         listing_failed(db, backend_type);
-        return crate::backend::identity::WindowIndex::default();
+        return None;
     };
     match listed(backend.as_ref()) {
         Ok(index) => {
             listing_succeeded(db, backend_type);
-            index
+            Some(index)
         }
         Err(e) => {
             tracing::debug!("could not list the windows of '{}': {e:#}", backend.name());
@@ -671,7 +687,7 @@ fn window_index_on(
             // start would leave it already expired the moment it was written,
             // and the next pass five seconds later would probe again.
             listing_failed(db, backend_type);
-            crate::backend::identity::WindowIndex::default()
+            None
         }
     }
 }
@@ -895,7 +911,7 @@ fn owned_windows(
 /// Whether a live session answers to `row`'s name on `row`'s server. A failed
 /// read counts as one, for the reason [`owned_windows`] owns nothing when it
 /// cannot tell.
-fn has_live_namesake(db: &Database, row: &DeletedSessionInfo) -> bool {
+pub(super) fn has_live_namesake(db: &Database, row: &DeletedSessionInfo) -> bool {
     super::names::live_namesakes(db, &row.name, &row.backend_type)
         .map_or(true, |live| !live.is_empty())
 }

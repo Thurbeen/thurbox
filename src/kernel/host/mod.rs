@@ -1893,6 +1893,12 @@ impl LuaHost {
         self.skipped_renders.get()
     }
 
+    /// Bytes the plugin VM holds now — what [`memory_limit`] is measured
+    /// against, shared by every plugin.
+    pub fn used_memory(&self) -> usize {
+        self.lua.used_memory()
+    }
+
     /// Published groups served from the cache rather than rebuilt.
     pub fn reused_groups(&self) -> u64 {
         self.reused_groups.get()

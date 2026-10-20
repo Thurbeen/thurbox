@@ -362,6 +362,7 @@ fn listing(db: &Database, deleted: bool) -> Value {
         Action::List {
             parent: None,
             deleted,
+            since: None,
             verify: false,
             key: None,
             key_prefix: None,

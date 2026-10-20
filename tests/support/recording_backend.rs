@@ -70,12 +70,16 @@ struct State {
     hook_events: Vec<(String, String)>,
     /// What the heartbeat runs, while one is kept.
     heartbeat: Option<String>,
+    refuse_kill: bool,
+    fail_discover_on: Option<usize>,
+    discovers: usize,
 }
 
 /// See the module doc.
 pub struct RecordingBackend {
     name: String,
     state: Mutex<State>,
+    on_discover: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl RecordingBackend {
@@ -84,6 +88,7 @@ impl RecordingBackend {
         Arc::new(Self {
             name: route.format(),
             state: Mutex::new(State::default()),
+            on_discover: Mutex::new(None),
         })
     }
 
@@ -130,6 +135,18 @@ impl RecordingBackend {
     /// again.
     pub fn set_reachable(&self, reachable: bool) {
         self.state.lock().unwrap().unreachable = !reachable;
+    }
+
+    pub fn refuse_kill(&self) {
+        self.state.lock().unwrap().refuse_kill = true;
+    }
+
+    pub fn fail_discover_on(&self, call: usize) {
+        self.state.lock().unwrap().fail_discover_on = Some(call);
+    }
+
+    pub fn on_next_discover(&self, callback: impl FnOnce() + Send + 'static) {
+        *self.on_discover.lock().unwrap() = Some(Box::new(callback));
     }
 
     /// The window's program exits; `remain-on-exit` keeps the window.
@@ -421,7 +438,15 @@ impl SessionBackend for RecordingBackend {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
-        let state = self.lock("discover".into())?;
+        let callback = self.on_discover.lock().unwrap().take();
+        if let Some(callback) = callback {
+            callback();
+        }
+        let mut state = self.lock("discover".into())?;
+        state.discovers += 1;
+        if state.fail_discover_on == Some(state.discovers) {
+            bail!("scripted listing failure");
+        }
         Ok(state
             .windows
             .iter()
@@ -536,6 +561,9 @@ impl SessionBackend for RecordingBackend {
 
     fn kill(&self, backend_id: &str) -> Result<()> {
         let mut state = self.lock(format!("kill {backend_id}"))?;
+        if state.refuse_kill {
+            bail!("scripted kill refusal");
+        }
         // Idempotent, as the contract asks: a pane already gone is the
         // outcome a kill wanted.
         state.windows.retain(|w| w.pane != backend_id);

@@ -36,7 +36,7 @@ thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children onl
 
 Subcommands: `ui` (instances/state/actions/action/input for a live local TUI),
 `schema` (CLI command tree plus that instance's live UI action catalog),
-`agent` (launch-args — see below), `session` (create/list [`--deleted`]/get/delete/reap/restore/restart
+`agent` (launch-args — see below), `session` (create/list [`--deleted` [`--since`]]/get/delete/reap/purge/restore/restart
 [`--if-missing`]/rename/reparent/stop/start/fork/exec/meta/reports-as/set-key/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/revision/register —
 `sync`/`revision`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
 the session event log, one event per line), `runtime` (status/stop — what
@@ -636,7 +636,16 @@ its host is also written onto the row (`remote_teardown_owed`, schema v46's
 `teardown_owed`, shown by `session list --deleted`) and finished by
 `session_ops::retry_owed_remote_teardowns` on the next tick or `Command::Reap`
 once that host answers — the same two drivers as the reap, and the reason
-force-deleting against a machine that is down is allowed to keep working. The
+force-deleting against a machine that is down is allowed to keep working.
+`session purge --older-than-days <N> | --all [--dry-run]`
+(`session_ops::purge`) is the one way a deleted row leaves the table for good:
+it reaps a soft row's windows first and confirms they are gone, keeps a row inside its undo window, one
+whose teardown is owed, whose force-delete windows remain, whose ownership is
+ambiguous, or whose server could not be listed (each with its
+reason), leaves worktrees on disk and lists them, and re-checks "same deletion,
+owes nothing" in the transaction that drops the row, so a restore or fresh
+delete racing it wins. `deleted_retention_days` (settings.toml, `0` = off) runs the same purge
+from the end of `reap_overdue_soft_deletes`, behind one `EXISTS` probe. The
 row is marked deleted before teardown, in one write — a force delete stamps
 `deleted_at` and `force_deleted` together rather than soft-deleting first, so a
 watcher of `session_events` never sees an intermediate state that reads as

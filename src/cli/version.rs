@@ -50,6 +50,8 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
                 "multiplexer_choice": true,
                 "soft_delete_choice": true,
                 "session_revision": true,
+                "deleted_since": true,
+                "deleted_changes_since": true,
             }),
             format!("thurbox {current}"),
         );
@@ -148,6 +150,8 @@ mod tests {
         assert_eq!(out["multiplexer_choice"], true);
         assert_eq!(out["soft_delete_choice"], true);
         assert_eq!(out["session_revision"], true);
+        assert_eq!(out["deleted_since"], true);
+        assert_eq!(out["deleted_changes_since"], true);
         assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
         assert!(out.failure.is_none(), "plain version never fails");
     }

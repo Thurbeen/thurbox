@@ -65,6 +65,7 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
         Action::List {
             parent: None,
             deleted: true,
+            since: None,
             verify: false,
             key: None,
             key_prefix: None,
@@ -86,6 +87,7 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
         Action::List {
             parent: None,
             deleted: false,
+            since: None,
             verify: false,
             key: None,
             key_prefix: None,
@@ -408,6 +410,7 @@ fn listing(db: &Database, deleted: bool) -> Value {
         Action::List {
             parent: None,
             deleted,
+            since: None,
             verify: false,
             key: None,
             key_prefix: None,

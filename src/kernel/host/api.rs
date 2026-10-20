@@ -402,8 +402,54 @@ fn install_sample_reads(lua: &Lua, read: Rc<std::cell::Cell<u8>>) -> mlua::Resul
             original_next.call::<mlua::MultiValue>((table, key))
         })?,
     )?;
-    Ok(())
+    install_frozen_meta(lua)
 }
+
+/// The metamethods every [`freeze`] proxy shares, so a published table costs
+/// one metatable rather than three Rust closures.
+///
+/// Each finds the table behind its proxy through [`FROZEN`] instead of
+/// capturing it. A captured table is a registry reference — a GC root the
+/// collector cannot see through — so a proxy could only free what it stood for
+/// one full collection after the proxy itself went, one nesting level per
+/// collection. A deep published group rebuilt every pass then outran the
+/// collector, and the emergency collection at the memory ceiling, which runs
+/// once, freed one level and failed the allocation anyway.
+fn install_frozen_meta(lua: &Lua) -> mlua::Result<()> {
+    let shared = lua.create_table()?;
+    shared.raw_set(
+        "__newindex",
+        lua.create_function(|_, (_, key): (Value, Value)| -> mlua::Result<()> {
+            Err(mlua::Error::runtime(format!(
+                "thurbox is shared by every plugin and cannot be changed (assigning {})",
+                key.to_string().unwrap_or_default()
+            )))
+        })?,
+    )?;
+    shared.raw_set(
+        "__len",
+        lua.create_function(|lua, (proxy, _): (Table, Value)| {
+            let frozen: Table = lua.named_registry_value(FROZEN)?;
+            Ok(frozen
+                .raw_get::<Option<Table>>(proxy)?
+                .map_or(0, |inner| inner.raw_len()))
+        })?,
+    )?;
+    // The proxy itself is the iteration state: the `next` installed above
+    // reads a frozen proxy as what it stands for, so the table behind it is
+    // never handed out.
+    shared.raw_set(
+        "__pairs",
+        lua.create_function(|lua, proxy: Table| {
+            let next: mlua::Function = lua.globals().get("next")?;
+            Ok((next, proxy, Value::Nil))
+        })?,
+    )?;
+    lua.set_named_registry_value(FROZEN_META, shared)
+}
+
+/// Where [`install_frozen_meta`] keeps the shared metamethods.
+const FROZEN_META: &str = "__frozen_meta";
 
 /// Every plugin's `thurbox` view ([`thurbox_view`]), so `rawget` and `next`
 /// read one as the table published now.
@@ -465,8 +511,15 @@ pub(super) fn freeze(lua: &Lua, value: Value) -> mlua::Result<Value> {
         return Ok(Value::Table(table));
     }
     freeze_fields(lua, &table)?;
+    let shared: Table = lua.named_registry_value(FROZEN_META)?;
+    let meta = lua.create_table()?;
+    for name in ["__newindex", "__len", "__pairs"] {
+        meta.raw_set(name, shared.raw_get::<Value>(name)?)?;
+    }
+    meta.raw_set("__index", table.clone())?;
+    meta.raw_set("__metatable", false)?;
     let proxy = lua.create_table()?;
-    proxy.set_metatable(Some(read_only_meta(lua, table.clone(), "thurbox")?))?;
+    proxy.set_metatable(Some(meta))?;
     frozen.raw_set(proxy.clone(), table)?;
     Ok(Value::Table(proxy))
 }
@@ -500,15 +553,20 @@ pub(super) fn observe_samples(
 ) -> mlua::Result<Table> {
     let proxy = lua.create_table()?;
     let tables: Table = lua.named_registry_value(PUBLISHED_TABLES)?;
-    tables.raw_set(proxy.clone(), backing.clone())?;
+    tables.raw_set(proxy.clone(), backing)?;
+    // Neither closure captures `backing`: each finds it through
+    // `PUBLISHED_TABLES`, for the reason `install_frozen_meta` gives.
     let meta = lua.create_table()?;
-    let source = backing.clone();
     let reads = read.clone();
     meta.raw_set(
         "__index",
-        lua.create_function(move |_, (_, key): (Table, Value)| {
+        lua.create_function(move |lua, (proxy, key): (Table, Value)| {
             note_sample_read(&reads, &key);
-            source.raw_get::<Value>(key)
+            let tables: Table = lua.named_registry_value(PUBLISHED_TABLES)?;
+            match tables.raw_get::<Option<Table>>(proxy)? {
+                Some(backing) => backing.raw_get::<Value>(key),
+                None => Ok(Value::Nil),
+            }
         })?,
     )?;
     meta.raw_set(
@@ -520,18 +578,15 @@ pub(super) fn observe_samples(
             )))
         })?,
     )?;
-    // Iterated through a closure: returning `next` and the backing table as
-    // the iteration state would hand any plugin the table to write.
-    let next: mlua::Function = lua.globals().get("next")?;
+    // The proxy is the iteration state: the installed `next` reads it as the
+    // backing table and notes the read, so the table itself is never handed
+    // out.
     meta.raw_set(
         "__pairs",
-        lua.create_function(move |lua, _: Table| {
+        lua.create_function(move |lua, proxy: Table| {
             read.set(read.get() | READ_ALL);
-            let (walk, backing) = (next.clone(), backing.clone());
-            let step = lua.create_function(move |_, (_, key): (Value, Value)| {
-                walk.call::<mlua::MultiValue>((backing.clone(), key))
-            })?;
-            Ok((step, Value::Nil, Value::Nil))
+            let next: mlua::Function = lua.globals().get("next")?;
+            Ok((next, proxy, Value::Nil))
         })?,
     )?;
     meta.raw_set("__metatable", false)?;

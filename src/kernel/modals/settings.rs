@@ -278,6 +278,16 @@ const CORE_FIELDS: &[CoreField] = &[
         },
     },
     CoreField {
+        id: "deleted_retention_days",
+        description: "days a deleted session stays restorable; 0 keeps all",
+        get: |s| Value::Number(s.deleted_retention_days as f64),
+        set: |s, v| {
+            if let Value::Number(n) = v {
+                s.deleted_retention_days = n.max(0.0) as u64;
+            }
+        },
+    },
+    CoreField {
         id: "git_poll_secs",
         description: "seconds between git stats of a session; 0 is off",
         get: |s| Value::Number(s.git_poll_secs as f64),
