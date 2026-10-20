@@ -583,7 +583,9 @@ session), never on the loop, ADR-P12).
 - **A remote soft delete is reaped on the host.** `reap_soft_deleted` no longer
   gives up on a remote row: it asks a shareable host to collect it
   (`thurbox-cli session reap <ref>` there, which owns the host's own row), and
-  otherwise kills the windows itself through the stamp. Driven by the one sweep,
+  otherwise kills the windows itself through the stamp. That fallback rechecks
+  the selected deletion after lookup before killing either owned window, so a
+  restore and fresh delete during lookup keeps its undo window. Driven by the one sweep,
   `reap_overdue_soft_deletes` — the TUI's loop calls it on a slow cadence and,
   with no interface open, the heartbeat's tick does — which gates a remote row
   on the *host's* window listing,

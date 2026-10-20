@@ -75,11 +75,14 @@ struct State {
     discovers: usize,
 }
 
+type DiscoveryHook = (usize, Box<dyn FnOnce() + Send>);
+
 /// See the module doc.
 pub struct RecordingBackend {
     name: String,
     state: Mutex<State>,
-    on_discover: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    on_discover: Mutex<Option<DiscoveryHook>>,
+    on_locate: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl RecordingBackend {
@@ -89,6 +92,7 @@ impl RecordingBackend {
             name: route.format(),
             state: Mutex::new(State::default()),
             on_discover: Mutex::new(None),
+            on_locate: Mutex::new(None),
         })
     }
 
@@ -146,7 +150,16 @@ impl RecordingBackend {
     }
 
     pub fn on_next_discover(&self, callback: impl FnOnce() + Send + 'static) {
-        *self.on_discover.lock().unwrap() = Some(Box::new(callback));
+        self.on_nth_discover(1, callback);
+    }
+
+    pub fn on_nth_discover(&self, call: usize, callback: impl FnOnce() + Send + 'static) {
+        assert!(call > 0);
+        *self.on_discover.lock().unwrap() = Some((call, Box::new(callback)));
+    }
+
+    pub fn on_next_locate(&self, callback: impl FnOnce() + Send + 'static) {
+        *self.on_locate.lock().unwrap() = Some(Box::new(callback));
     }
 
     /// The window's program exits; `remain-on-exit` keeps the window.
@@ -409,6 +422,10 @@ impl SessionBackend for RecordingBackend {
     }
 
     fn locate(&self, owner: Owner<'_>) -> Result<Placed> {
+        let callback = self.on_locate.lock().unwrap().take();
+        if let Some(callback) = callback {
+            callback();
+        }
         let state = self.lock(format!("locate {}", owner.session_id))?;
         // Every window here carries its own stamp, so an ambiguous name is
         // left ambiguous: nothing the fake could do would be proof.
@@ -438,7 +455,20 @@ impl SessionBackend for RecordingBackend {
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredSession>> {
-        let callback = self.on_discover.lock().unwrap().take();
+        let callback = {
+            let mut armed = self.on_discover.lock().unwrap();
+            match armed.as_mut() {
+                Some((remaining, _)) => {
+                    *remaining -= 1;
+                    if *remaining == 0 {
+                        armed.take().map(|(_, callback)| callback)
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }
+        };
         if let Some(callback) = callback {
             callback();
         }
