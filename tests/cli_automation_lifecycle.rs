@@ -781,6 +781,141 @@ fn a_relative_cwd_is_stored_as_an_absolute_path() {
     );
 }
 
+/// Extension jobs keep their install-owned cwd across activation, manual runs
+/// and the tick used by the heartbeat, regardless of each caller's directory.
+#[test]
+fn an_extension_exec_keeps_its_directory_across_callers() {
+    for relative_home in [false, true] {
+        let env = Env::new();
+        let source = env.path("extension-source");
+        std::fs::create_dir_all(source.join("work")).unwrap();
+        std::fs::write(source.join("work/marker"), "extension-owned").unwrap();
+        let command = if cfg!(windows) {
+            "type marker"
+        } else {
+            "cat marker"
+        };
+        std::fs::write(
+            source.join("extension.toml"),
+            format!(
+                r#"name = "cwd-probe"
+[[files]]
+path = "work/marker"
+[[automations]]
+name = "cwd-probe-job"
+trigger = "hourly"
+command = "{command}"
+cwd = "work"
+"#
+            ),
+        )
+        .unwrap();
+        let callers = [env.path("caller-a"), env.path("caller-b")];
+        for caller in &callers {
+            std::fs::create_dir_all(caller.join("work")).unwrap();
+            std::fs::write(caller.join("work/marker"), "caller-owned").unwrap();
+        }
+        let from = |args: &[&str], cwd: &std::path::Path| -> Value {
+            let out = env.command(args).current_dir(cwd).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {} {}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            serde_json::from_slice(&out.stdout).expect("JSON")
+        };
+        let home = if relative_home {
+            callers[0].join("extension-home")
+        } else {
+            env.path("extension-home")
+        };
+        let home_arg = if relative_home {
+            "extension-home"
+        } else {
+            home.to_str().unwrap()
+        };
+        from(
+            &[
+                "extension",
+                "install",
+                source.to_str().unwrap(),
+                "--home",
+                home_arg,
+            ],
+            &callers[0],
+        );
+        from(&["extension", "deactivate", "cwd-probe"], &callers[0]);
+        from(&["extension", "activate", "cwd-probe"], &callers[1]);
+        let id = id_of(&env.automation("cwd-probe-job"));
+        for caller in &callers {
+            let run = from(&["automation", "run", &id, "--wait"], caller);
+            assert_eq!(run["status"], "success", "{run}");
+            assert_eq!(
+                run["stdout_tail"], "extension-owned",
+                "caller {caller:?}: {run}"
+            );
+        }
+        from(&["automation", "run", &id], &callers[0]);
+        let tick = from(&["automation", "tick"], &callers[1]);
+        assert_eq!(tick["fired"][0]["status"], "success", "{tick}");
+        let runs = env.runs(&id);
+        assert_eq!(runs.len(), 3, "{runs:?}");
+        assert!(
+            runs.iter()
+                .all(|run| run["stdout_tail"] == "extension-owned"),
+            "{runs:?}"
+        );
+        let stored = env.automation(&id);
+        let cwd = PathBuf::from(stored["cwd"].as_str().unwrap());
+        assert!(cwd.is_absolute(), "{stored}");
+        assert_eq!(
+            cwd.canonicalize().unwrap(),
+            home.join("work").canonicalize().unwrap()
+        );
+        // A prior installation may already have persisted the unresolved path.
+        env.db()
+            .conn_ref()
+            .execute("UPDATE automations SET cwd = 'work' WHERE id = ?1", [&id])
+            .unwrap();
+        let activated = from(&["extension", "activate", "cwd-probe"], &callers[1]);
+        assert!(activated["automations_created"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let run = from(&["automation", "run", &id, "--wait"], &callers[0]);
+        assert_eq!(run["stdout_tail"], "extension-owned", "retained row: {run}");
+        assert_eq!(env.runs(&id).len(), 4, "repair preserves run history");
+    }
+}
+
+/// Hand-written discovery manifests cannot leave execution dependent on the
+/// activation or heartbeat caller when no install root resolved the directory.
+#[test]
+fn activation_refuses_an_unresolved_relative_exec_directory() {
+    let env = Env::new();
+    let manifests = env.path("config/extensions");
+    std::fs::create_dir_all(&manifests).unwrap();
+    std::fs::write(
+        manifests.join("unresolved.toml"),
+        r#"name = "unresolved"
+[[automations]]
+name = "unresolved-job"
+trigger = "hourly"
+command = "echo unsafe"
+cwd = "work"
+"#,
+    )
+    .unwrap();
+    let out = env.run(&["extension", "activate", "unresolved"]);
+    assert!(!out.status.success(), "relative cwd was accepted: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("absolute"),
+        "{out:?}"
+    );
+    assert!(env.db().list_automations().unwrap().is_empty());
+}
+
 /// A one-shot retried after its time still supports idempotent keep/update.
 #[test]
 fn a_keyed_one_shot_retry_preserves_its_pending_fire() {

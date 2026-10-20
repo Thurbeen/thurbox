@@ -462,6 +462,14 @@ fn ensure_automation(
     existing: Option<&Automation>,
     report: &mut EnsureReport,
 ) -> Result<(), String> {
+    let cwd = auto.cwd.as_deref().map(crate::paths::expand_tilde);
+    if cwd.as_ref().is_some_and(|path| path.is_relative()) {
+        return Err(format!(
+            "automation '{}' cwd must be absolute; install the extension to resolve it \
+             against its home, or set an absolute directory",
+            auto.name
+        ));
+    }
     // Desired action: a command wins (exec); otherwise send to the target.
     let action = match (&auto.command, target) {
         (Some(command), _) => AutomationAction::Exec {
@@ -486,6 +494,10 @@ fn ensure_automation(
                 report.automations_relinked.push(auto.name.clone());
             }
         }
+        if row.run.cwd.as_ref().is_some_and(|path| path.is_relative()) {
+            db.update_automation_cwd(row, cwd.as_deref())
+                .map_err(|e| format!("resolve automation cwd: {e}"))?;
+        }
         return Ok(());
     }
     // Guarded like a session ([`keep_unless_deactivated`]): an exec automation
@@ -508,7 +520,7 @@ fn ensure_automation(
         key: None,
         run: crate::session::RunSettings {
             timeout_secs: auto.timeout_secs,
-            cwd: auto.cwd.as_deref().map(crate::paths::expand_tilde),
+            cwd,
             env: auto.env.clone().into_iter().collect(),
         },
     };

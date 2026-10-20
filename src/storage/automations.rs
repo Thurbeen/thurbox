@@ -4,6 +4,8 @@
 //! `(action_kind, …)` with the action-specific columns. The `next_run_at`
 //! column is the dispatcher's scan key — see [`Database::claim_due_automation`].
 
+use std::path::Path;
+
 use rusqlite::{params, OptionalExtension};
 
 use crate::session::{
@@ -232,6 +234,27 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    /// Replace the observed cwd without overwriting a concurrent directory edit,
+    /// a fire's timing, or any other definition field.
+    pub fn update_automation_cwd(
+        &self,
+        read: &Automation,
+        cwd: Option<&Path>,
+    ) -> rusqlite::Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE automations SET cwd = ?2, updated_at = ?3 WHERE id = ?1 AND cwd IS ?4",
+            params![
+                read.id,
+                cwd.map(|p| p.to_string_lossy().into_owned()),
+                current_time_millis() as i64,
+                read.run
+                    .cwd
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+            ],
+        )? > 0)
     }
 
     /// [`Self::update_automation`] for a writer that read the row a moment ago.
@@ -741,6 +764,35 @@ mod tests {
         assert!(matches!(fetched.action, AutomationAction::Send { .. }));
 
         assert_eq!(db.list_automations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_cwd_repair_preserves_other_edits_and_refuses_a_stale_directory() {
+        let db = Database::open_in_memory().unwrap();
+        let mut new = send_automation("job", Some(123));
+        new.action = AutomationAction::Exec {
+            command: "true".into(),
+        };
+        new.run.cwd = Some(PathBuf::from("work"));
+        let id = db.create_automation(&new).unwrap();
+        let read = db.get_automation(id).unwrap().unwrap();
+        db.conn.execute(
+            "UPDATE automations SET enabled = 0, next_run_at = 999, name = 'edited' WHERE id = ?1",
+            [id],
+        ).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let resolved = home.path().join("work");
+        assert!(db.update_automation_cwd(&read, Some(&resolved)).unwrap());
+        let got = db.get_automation(id).unwrap().unwrap();
+        assert_eq!(got.run.cwd.as_ref(), Some(&resolved));
+        assert!(!got.enabled);
+        assert_eq!(got.next_run_at, Some(999));
+        assert_eq!(got.name, "edited");
+        assert!(!db.update_automation_cwd(&read, None).unwrap());
+        assert_eq!(
+            db.get_automation(id).unwrap().unwrap().run.cwd,
+            Some(resolved)
+        );
     }
 
     #[test]

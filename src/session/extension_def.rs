@@ -231,8 +231,9 @@ pub struct ExtensionAutomation {
     /// (default 600, as for `automation create --timeout`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
-    /// Exec only: the directory `command` runs in (default: home); `{home}`
-    /// is substituted.
+    /// Exec only: the directory `command` runs in (default: the user's home).
+    /// `{home}` is substituted; relative paths are resolved against the
+    /// extension's install home, and leading `~` against the user's home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     /// Exec only: variables `command` runs with, on top of what it inherits.
@@ -369,7 +370,8 @@ impl ExtensionDef {
     }
 
     /// Return a copy with the [`HOME_TOKEN`] resolved to `home` in every session
-    /// `repo_path`, and with `home` itself stored as the resolved absolute path.
+    /// `repo_path` and exec automation, and with `home` itself stored as the
+    /// resolved absolute path. Relative exec directories resolve against it.
     /// This is what gets written to the discovery dir at install time, so
     /// `activate`/self-heal read absolute paths (they don't expand tokens
     /// themselves) and uninstall knows the real home directory.
@@ -409,15 +411,18 @@ impl ExtensionDef {
                 m.requires_dir = Some(req.replace(HOME_TOKEN, home));
             }
         }
-        // An exec automation's command typically calls a script under the home
-        // dir (e.g. `{home}/sync.sh`), and its directory is often the home
-        // itself; resolve both to absolute paths.
+        // Bind explicit directories at install time: the heartbeat and manual
+        // runs may start in different directories.
         for a in &mut out.automations {
             if let Some(cmd) = &a.command {
                 a.command = Some(cmd.replace(HOME_TOKEN, home));
             }
             if let Some(cwd) = &a.cwd {
-                a.cwd = Some(cwd.replace(HOME_TOKEN, home));
+                let mut cwd = expand_leading_tilde(&cwd.replace(HOME_TOKEN, home), user_home);
+                if cwd.is_relative() && !cwd.starts_with("~") {
+                    cwd = Path::new(home).join(cwd);
+                }
+                a.cwd = Some(cwd.to_string_lossy().into_owned());
             }
         }
         out
@@ -823,12 +828,11 @@ prompt = "tick"
         assert_eq!(def.sessions[0].repo_path, PathBuf::from("{home}"));
     }
 
-    /// An exec automation's `cwd` names the home the way its `command` does,
-    /// and is resolved the same way; left literal it is a relative path that
-    /// does not exist, and every fire fails to start.
+    /// Commands substitute `{home}`; explicit directories also bind relative
+    /// paths to install home and expand `~` without changing absolute paths.
     #[test]
     fn resolved_for_home_substitutes_an_exec_automation_s_cwd() {
-        let def: ExtensionDef = toml::from_str(
+        let mut def: ExtensionDef = toml::from_str(
             "name = \"sync\"\n[[automations]]\nname = \"sync\"\ntrigger = \"hourly\"\n\
              command = \"{home}/sync.sh\"\ncwd = \"{home}\"\n",
         )
@@ -839,6 +843,24 @@ prompt = "tick"
             resolved.automations[0].command.as_deref(),
             Some("/srv/sync/sync.sh")
         );
+        let user = user_home();
+        let install = user.join("extension");
+        let absolute = user.join("elsewhere");
+        for (cwd, expected) in [
+            ("work".to_string(), install.join("work")),
+            ("~/work".to_string(), user.join("work")),
+            (absolute.to_string_lossy().into_owned(), absolute),
+        ] {
+            def.automations[0].cwd = Some(cwd);
+            let resolved = def.resolved_for_home(install.to_str().unwrap(), Some(&user));
+            assert_eq!(
+                PathBuf::from(resolved.automations[0].cwd.as_ref().unwrap()),
+                expected
+            );
+        }
+        def.automations[0].cwd = Some("~/work".into());
+        let unresolved = def.resolved_for_home(install.to_str().unwrap(), None);
+        assert_eq!(unresolved.automations[0].cwd.as_deref(), Some("~/work"));
     }
 
     #[test]
