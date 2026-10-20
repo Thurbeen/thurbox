@@ -33,6 +33,72 @@ impl Env {
         Self { root }
     }
 
+    fn answer_empty_mux(&self) {
+        let bin = self.path("mux-bin");
+        std::fs::create_dir(&bin).expect("fixture bin");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mux = bin.join("tmux");
+            std::fs::write(
+                &mux,
+                r#"#!/bin/sh
+case " $* " in
+  *" list-windows "*)
+    printf '%s\n' "$*" >> "$THURBOX_TEST_MUX_LOG"
+    if [ "$THURBOX_TEST_MUX_FAIL" = 1 ]; then
+      printf '%s\n' 'permission denied' >&2
+      exit 1
+    fi
+    ;;
+  *" list-sessions "*) printf '%s\n' "$*" >> "$THURBOX_TEST_MUX_LOG" ;;
+  *) exit 2 ;;
+esac
+"#,
+            )
+            .expect("empty-listing fixture");
+            std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700))
+                .expect("fixture executable");
+        }
+        #[cfg(windows)]
+        {
+            // Windows archive runs have PowerShell but need no native Rust compiler.
+            let source = r#"using System;
+using System.IO;
+public static class EmptyMux {
+    public static int Main(string[] args) {
+        if (Array.IndexOf(args, "list-windows") < 0 &&
+            Array.IndexOf(args, "list-sessions") < 0) return 2;
+        File.AppendAllText(Environment.GetEnvironmentVariable("THURBOX_TEST_MUX_LOG"),
+            String.Join(" ", args) + Environment.NewLine);
+        if (Array.IndexOf(args, "list-windows") >= 0 &&
+            Environment.GetEnvironmentVariable("THURBOX_TEST_MUX_FAIL") == "1") {
+            Console.Error.WriteLine("permission denied");
+            return 1;
+        }
+        return 0;
+    }
+}
+"#;
+            let out = Command::new("powershell.exe")
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                    "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition $env:THURBOX_TEST_MUX_SOURCE -OutputAssembly $env:THURBOX_TEST_MUX_EXE -OutputType ConsoleApplication"])
+                .env("THURBOX_TEST_MUX_SOURCE", source)
+                .env("THURBOX_TEST_MUX_EXE", bin.join("psmux.exe"))
+                .output().expect("compile native listing fixture");
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    fn refuse_mux_listing(&self) {
+        self.answer_empty_mux();
+        std::fs::write(self.path("mux-refused"), []).expect("refuse fixture listing");
+    }
+
     fn path(&self, sub: &str) -> PathBuf {
         self.root.path().join(sub)
     }
@@ -61,6 +127,21 @@ impl Env {
         cmd.env_remove("THURBOX_SESSION_ID");
         if let Some(session) = session {
             cmd.env("THURBOX_SESSION", session);
+        }
+        if self.path("mux-bin").is_dir() {
+            let inherited = std::env::var_os("PATH").unwrap_or_default();
+            let paths =
+                std::iter::once(self.path("mux-bin")).chain(std::env::split_paths(&inherited));
+            cmd.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
+            cmd.env("THURBOX_TEST_MUX_LOG", self.path("mux.log"));
+            cmd.env(
+                "THURBOX_TEST_MUX_FAIL",
+                if self.path("mux-refused").exists() {
+                    "1"
+                } else {
+                    "0"
+                },
+            );
         }
         cmd.output().expect("run thurbox-cli")
     }
@@ -323,8 +404,41 @@ fn session_restore_takes_a_reference_like_every_other_verb() {
 #[test]
 fn session_purge_drops_old_deletes_and_list_since_reads_only_newer_ones() {
     let env = Env::new();
-    let old = seed_session(&env, "old", "claude");
-    let recent = seed_session(&env, "recent", "claude");
+    // A soft row's windows are listed before it goes, so what a purge can do
+    // depends on this machine: with the multiplexer installed it lists the
+    // (empty) server and the row goes; without it — the Windows runner has no
+    // psmux — nothing can be listed and the row must stay, saying why.
+    let mux = thurbox::session::Multiplexer::platform_default();
+    let listable = std::process::Command::new(mux.name())
+        .arg("-V")
+        .output()
+        .map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |_| true);
+    assert_purge_outcomes(&env, listable);
+}
+
+#[test]
+fn session_purge_uses_an_answered_empty_listing() {
+    let env = Env::new();
+    env.answer_empty_mux();
+    assert_purge_outcomes(&env, true);
+    assert!(std::fs::read_to_string(env.path("mux.log"))
+        .unwrap()
+        .contains("list-windows"));
+}
+
+#[test]
+fn session_purge_retains_rows_when_listing_is_refused() {
+    let env = Env::new();
+    env.refuse_mux_listing();
+    assert_purge_outcomes(&env, false);
+    assert!(std::fs::read_to_string(env.path("mux.log"))
+        .unwrap()
+        .contains("list-windows"));
+}
+
+fn assert_purge_outcomes(env: &Env, listable: bool) {
+    let old = seed_session(env, "old", "claude");
+    let recent = seed_session(env, "recent", "claude");
     for id in [&old, &recent] {
         let out = env.run(&["session", "delete", id, "--soft", "--json"]);
         assert_eq!(
@@ -368,15 +482,6 @@ fn session_purge_drops_old_deletes_and_list_since_reads_only_newer_ones() {
         );
         serde_json::from_slice(&out.stdout).expect("one JSON document")
     };
-    // A soft row's windows are listed before it goes, so what a purge can do
-    // depends on this machine: with the multiplexer installed it lists the
-    // (empty) server and the row goes; without it — the Windows runner has no
-    // psmux — nothing can be listed and the row must stay, saying why.
-    let mux = thurbox::session::Multiplexer::platform_default();
-    let listable = std::process::Command::new(mux.name())
-        .arg("-V")
-        .output()
-        .map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |_| true);
     let dry = purge(&["--older-than-days", "30", "--dry-run"]);
     let expect = |report: &Value| {
         if listable {

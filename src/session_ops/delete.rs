@@ -607,7 +607,7 @@ pub fn reap_overdue_soft_deletes(
         if !claim_reap(db, row.id, now) {
             continue;
         }
-        match reap_soft_deleted(db, backends, row.id) {
+        match reap_selected_soft_delete(db, backends, &row) {
             Ok(true) => {
                 reap_succeeded(db, row.id);
                 reaped.push(row.id.to_string());
@@ -795,8 +795,8 @@ fn reap_succeeded(db: &Database, id: SessionId) {
 /// forever.
 ///
 /// Returns whether the row was processed — `false` when it came back (the user
-/// undid it) or was force-deleted (already torn down), both of which are
-/// ordinary races rather than failures. It is not a claim that a window came
+/// undid it), was force-deleted, or its selected deletion changed during
+/// discovery. These are ordinary races rather than failures. It is not a claim that a window came
 /// down: a row that owns none (see [`owned_windows_in`]) still releases its
 /// derived artifacts and reports `true`.
 ///
@@ -816,7 +816,26 @@ pub fn reap_soft_deleted(
         // and killing its agent now would be the bug this guard exists to avoid.
         return Ok(false);
     };
-    if row.force_deleted {
+    reap_selected_soft_delete(db, backends, &row)
+}
+
+pub(super) fn reap_selected_soft_delete(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    row: &DeletedSessionInfo,
+) -> Result<bool, String> {
+    let still_selected = || {
+        db.get_deleted_session_by_id(row.id)
+            .map(|current| {
+                current.is_some_and(|current| {
+                    current.deleted_at == row.deleted_at
+                        && !current.force_deleted
+                        && !current.teardown_owed
+                })
+            })
+            .map_err(|e| format!("get deleted session: {e}"))
+    };
+    if row.force_deleted || !still_selected()? {
         return Ok(false);
     }
 
@@ -842,7 +861,7 @@ pub fn reap_soft_deleted(
         // that is how deleting a frozen session came to kill its replacement
         // 30-60s later, and why each delete-and-recreate made the next one die
         // sooner.
-        let owned = owned_windows(db, backend.as_ref(), &row);
+        let owned = owned_windows(db, backend.as_ref(), row);
         if owned.is_empty() {
             // The windows may already be gone — the agent exited, or a previous
             // reap got there first. Logged rather than silent: owning nothing is
@@ -855,6 +874,10 @@ pub fn reap_soft_deleted(
             );
         }
         for pane in owned {
+            // Discovery may span a restore and a fresh delete of the same id.
+            if !still_selected()? {
+                return Ok(false);
+            }
             // Not worth failing a cleanup over if the window went away underneath.
             if let Err(e) = backend.kill(&pane) {
                 tracing::debug!("kill({pane}) during reap: {e:#}");
@@ -862,8 +885,11 @@ pub fn reap_soft_deleted(
         }
         Ok(())
     } else {
-        reap_remote(backends, &row)
+        reap_remote(backends, row)
     };
+    if !still_selected()? {
+        return Ok(false);
+    }
 
     // Derived per-session artifacts, both rebuilt on restore. Released even
     // when the host could not be reached: they are this machine's, and nothing

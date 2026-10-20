@@ -187,3 +187,21 @@ fn purge_keeps_ambiguous_owned_windows_on_the_worklist() {
     assert!(env.db.get_deleted_session_by_id(env.id).unwrap().is_some());
     assert_eq!(env.backend.windows_of(&env.id.to_string()).len(), 3);
 }
+
+#[test]
+fn purge_preserves_a_fresh_delete_made_while_the_reaper_lists_windows() {
+    let env = Env::new();
+    let path = env._temp.path().join("purge.db");
+    let id = env.id;
+    env.backend.on_nth_discover(2, move || {
+        let peer = Database::open(&path).unwrap();
+        peer.restore_session(id).unwrap();
+        peer.soft_delete_session(id).unwrap();
+    });
+    env.assert_kept();
+    assert!(
+        !env.backend.called("kill"),
+        "a fresh undo window must survive the reaper's second discovery"
+    );
+    assert_eq!(env.backend.windows_of(&env.id.to_string()).len(), 2);
+}

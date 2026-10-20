@@ -891,8 +891,9 @@ has the rationale; the shape:
   purge to its host. Purge each machine's own history there. A deleted row is
   retained unless its owned windows are confirmed gone, including a failed force
   teardown or ambiguous ownership; the final transaction
-  also requires its selected deletion timestamp, preserving a fresh delete
-  made while teardown was being checked.
+  also requires its selected deletion timestamp. The reaper retains that
+  selected deletion and rechecks it after window discovery, preserving a fresh
+  delete made while teardown was being checked.
 - **A delete sticks.** A tombstone here outranks a row the host still
   lists as active, unless the host wrote that row *after* the delete
   (which is a restore taken there): the listing carries `updated_at`

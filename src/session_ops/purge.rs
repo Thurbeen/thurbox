@@ -134,33 +134,8 @@ pub fn purge_deleted(
             continue;
         }
         if owns && !dry_run {
-            if let Err(e) = super::reap_soft_deleted(db, backends, row.id) {
-                report
-                    .kept
-                    .push(kept(&format!("its windows did not come down: {e}")));
-                continue;
-            }
-            // Reaping is best effort. Permanent deletion needs a fresh
-            // listing proving that no owned window remains.
-            let confirmed = super::delete::listed_windows_on(db, backends, &row.backend_type);
-            let Some(confirmed) = confirmed else {
-                report
-                    .kept
-                    .push(kept("its window teardown could not be confirmed"));
-                continue;
-            };
-            if ambiguous_windows(&confirmed, &row) {
-                report.kept.push(kept("its window ownership is ambiguous"));
-                continue;
-            }
-            if !super::delete::owned_windows_in(
-                &confirmed,
-                &row,
-                super::delete::has_live_namesake(db, &row),
-            )
-            .is_empty()
-            {
-                report.kept.push(kept("its windows are still present"));
+            if let Err(reason) = confirm_teardown(db, backends, &row) {
+                report.kept.push(kept(&reason));
                 continue;
             }
         }
@@ -198,6 +173,28 @@ pub fn purge_deleted(
         });
     }
     Ok(report)
+}
+
+fn confirm_teardown(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    row: &DeletedSessionInfo,
+) -> Result<(), String> {
+    super::delete::reap_selected_soft_delete(db, backends, row)
+        .map_err(|e| format!("its windows did not come down: {e}"))?;
+    // Reaping is best effort. Permanent deletion needs a fresh
+    // listing proving that no owned window remains.
+    let confirmed = super::delete::listed_windows_on(db, backends, &row.backend_type)
+        .ok_or_else(|| "its window teardown could not be confirmed".to_string())?;
+    if ambiguous_windows(&confirmed, row) {
+        return Err("its window ownership is ambiguous".to_string());
+    }
+    if !super::delete::owned_windows_in(&confirmed, row, super::delete::has_live_namesake(db, row))
+        .is_empty()
+    {
+        return Err("its windows are still present".to_string());
+    }
+    Ok(())
 }
 
 fn ambiguous_windows(
