@@ -91,6 +91,94 @@ reports CPU. Neither is in CI — wall-clock timing stays out of the gate
 terminal size and session count, never a single absolute number. Both are
 explained in [`docs/PERFORMANCE.md`](PERFORMANCE.md).
 
+### PTY test negotiation
+
+`tests/tui_e2e.rs` emulates both directions of terminal capability detection.
+The default legacy terminal answers the primary device-attributes query, while
+ignoring the kitty keyboard query. Crossterm can then report unsupported keyboard
+enhancements without waiting for its negotiation timeout. Kitty scenarios still
+answer both queries and track pushed flags per screen. An explicit silent-terminal
+scenario retains the timeout fallback and press-only input assertions.
+
+The regression checks the actual reply bytes written to the PTY, the unsupported
+release state, and repeated NUL key presses. Fragmented queries are checked for
+both terminal types, including that each query is answered once. No timing
+threshold is used to assert this optimization. The nextest PTY group still runs
+one test at a time alongside the other test binaries.
+
+Measured on x86-64 Linux with Rust 1.99.1, cargo-nextest 0.9.137, the locked
+dependencies at `206ae013`, default features and the unchanged Cargo test profile
+(`opt-level = 1`, dependency optimization 3, line tables). Both runs used
+`CARGO_BUILD_JOBS=2 cargo nextest run --test tui_e2e`, the same dedicated disk target,
+the default nextest profile, no retries and the existing single-thread PTY group.
+Compilation finished before each timed run. These paired snapshots preceded the
+separate deterministic refusal-fixture correction from PR #1539; they do not
+measure that integrated fixture's runtime. The before tree included the same two
+new test cases and reply instrumentation; its new legacy assertion failed on an
+empty reply. The after tree passed all 163 runnable cases; the same pre-existing
+ignored case stayed ignored. Test names, ignore flags and filter matches were
+identical, and the responder optimization preserves the original assertions.
+
+| Warm command measurement | Before | After |
+|--------------------------|--------|-------|
+| Wall time, including warm Cargo startup | 626.991 s | 251.048 s |
+| Child user CPU | 22.703 s | 21.147 s |
+| Child system CPU | 15.456 s | 13.447 s |
+| Largest child peak RSS | 93,556 KiB | 93,412 KiB |
+| Reported block input/output operations | 249,992 / 504 | 3,032 / 280 |
+
+Wall time and child resource usage were collected with Python's standard-library
+`time.monotonic` and `resource.getrusage(RUSAGE_CHILDREN)`. Peak RSS is the largest
+child, not the concurrent process-tree total; block counters are kernel accounting,
+not physical disk throughput. This is one paired sample on a shared machine with
+substantial background I/O pressure. File-cache residency was uncontrolled, so the
+block-input difference is not attributed to the fix. The before case stopped at
+the expected new assertion; the after case also ran its remaining NUL presses and
+clean-exit assertions. The observed wall-time reduction is 375.944 s for this
+command, not a measured speedup for compilation or the whole CI pipeline.
+
+The empty-target PTY build took 203.278 s separately. A shared sccache 0.18.0
+wrapper was enabled; its initial contents were not recorded, so this was not a
+verified fully cold compiler-cache run. The fixed rebuild reused the target's
+dependencies; no paired cold-build improvement is claimed. To reproduce,
+build with `cargo nextest run --test tui_e2e --no-run`, then time the same warm
+command on each tree. Use `cargo nextest list --test tui_e2e --message-format json`
+to compare the test names and ignored flags as well as the counts.
+
+For context, the [successful reference CI run](https://github.com/Thurbeen/thurbox/actions/runs/39320327377)
+at `18539d7b` had these costs. It precedes the dependency update at `206ae013` and
+is not the paired baseline above:
+
+| Job | Job duration | Dominant work |
+|-----|--------------|---------------|
+| Linux Nextest | 931 s | 186 s build, 708.288 s tests |
+| Windows tests | 695 s | 363 s build, 223.600 s tests |
+| Nix package | 808 s | 571 s flake check, 212 s cache post-step |
+| Binary Size | 167 s | 141 s release build |
+| Windows clippy | 116 s | 48 s clippy, toolchain and cache setup |
+| Linux clippy / ARM clippy / docs | 32 / 37 / 31 s | Separate checks on separate runners |
+
+Linux Nextest restored an exact 453,476,928-byte dependency cache; Windows tests
+restored an exact 386,528,910-byte cache. The pinned rust-cache action keys by job,
+toolchain and Cargo inputs and excludes workspace artifacts by default, so these
+hits do not remove application compilation and linking. No cache-key or trust
+policy change was needed. PTY tests accounted for 618.673 s of cumulative passing
+test-process duration in that Linux run, making negotiation the first optimization.
+Windows also had a long real-SSH silent-host probe; its deadline and cleanup need
+separate investigation rather than a shorter timeout.
+
+The responder optimization retains the gate commands, features, timeouts,
+assertions, CI selectors and platform lanes: Linux x86-64 and ARM checks, native
+Windows checks/tests, Nix,
+security, docs, shell, Lua, website, installer/packaging probes and SonarQube.
+The only nextest configuration change corrects a comment; scheduling is unchanged.
+The two added cases cover fragmented replies and the silent-terminal fallback.
+The separately integrated refusal fixture from PR #1539 uses a closed input
+channel with a still-live program to check error forwarding; the existing
+non-draining-receiver unit test retains deterministic full-channel coverage.
+Native Windows runtime evidence comes from CI; these local measurements are Unix
+PTY measurements.
+
 ### Debug information and disk usage
 
 The dev profile uses `debug = "line-tables-only"`; the test profile inherits it,
