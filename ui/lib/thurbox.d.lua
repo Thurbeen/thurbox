@@ -327,7 +327,7 @@
 ---@field commands? thurbox.CommandDecl[]
 ---@field actions? thurbox.ActionDecl[]
 ---@field events? thurbox.Event[]
----@field capabilities? ("run"|"program")[]
+---@field capabilities? ("run"|"program"|"sessions"|"files")[]
 ---@field render? fun(ctx: thurbox.Ctx): thurbox.Root
 ---@field decorate? fun(node: thurbox.Node, ctx: thurbox.DecorateCtx): thurbox.Node
 ---@field on_focus_cycle? fun(direction: "next"|"previous"): boolean A topmost open float: true consumes; false keeps the pane cycle.
@@ -799,6 +799,8 @@
 ---@class (exact) thurbox.Granted
 ---@field run? boolean
 ---@field program? boolean
+---@field sessions? boolean Verbs that drive an agent or lose something for good are applied (docs/PLUGINS.md).
+---@field files? boolean `files` is present.
 
 --- Everything readable. Rebuilt each publish; a group whose inputs did not move
 --- is handed back as the same table, which is what `lib/theme.lua` memoizes on.
@@ -851,12 +853,21 @@ store = {}
 ---@type table<string, any>
 state = {}
 
+--- The path of the plugin that last wrote `store[key]` — written for another
+--- plugin's request, that request's chain, "a.lua via b.lua" — or nil when
+--- nothing has, or the kernel or `layout.lua` did. Recorded by the writer's own view
+--- of `store`, so it cannot be claimed for another plugin.
+---@param key string
+---@return string?
+function store_writer(key) end
+
 ---@class (exact) thurbox.FileEntry
 ---@field name string
 ---@field dir boolean True for a directory, and for a symlink to one inside the session.
 
 --- Directory entries and file text, rooted at a session's working directory.
---- Not a filesystem: a path outside the root is refused.
+--- Not a filesystem: a path outside the root is refused. Absent unless this
+--- plugin declares `capabilities = { "files" }` AND the user has trusted it.
 ---@class thurbox.Files
 files = {}
 

@@ -170,11 +170,12 @@ per call (`runs`, `granted`) lives in that view: a finalizer runs inside
 whichever call the collector interrupts, and through its own environment it
 finds only its own plugin's values.
 
-`run` is installed **per call**: `LuaHost::enter` puts the plugin's own `run`
-into its environment, or takes it out. A plugin that was not granted it does not
-get a function that refuses; it gets no function, which is the same world every
-other plugin has always had. Revoking is therefore immediate. `layout.lua` runs
-in an environment of its own that never holds `run`.
+`run` and `files` are installed **per call**: `LuaHost::enter` puts the
+plugin's own `run` and `files` into its environment, or takes them out. A plugin
+that was not granted one does not get a function that refuses; it gets nothing,
+which is the same world every other plugin has always had. Revoking is
+therefore immediate. `layout.lua` runs in an environment of its own that never
+holds either.
 
 A capability once sat in the shared globals as `__run_impl`, and a leading `__`
 is a naming convention rather than a boundary: an untrusted plugin could call
@@ -183,6 +184,27 @@ plugin may not have is parked anywhere it can name. `tests/kernel_mvp.rs`
 enumerates every global a plugin can reach and has no blanket exemption for a
 leading underscore, and `tests/plugin_commands.rs` holds the hijack: a pane
 that wraps `type` gets neither another pane's `run` nor its path on a command.
+
+A capability asked for through `command` cannot be absent, since every plugin
+has `command`. Those are gated where the command is applied instead: the queue
+records the path each plugin's own `command` was built with, and
+`Command::requires`/`Command::refusal` decide whether that plugin holds what
+the command needs before the loop applies it — `run` for an exec automation's
+command line or a URL opened unasked, `sessions` for every verb that drives an
+agent or loses something for good. Every variant answers in one exhaustive
+`match` with no catch-all arm, so a new verb does not compile until it decides. An
+`action` runs the declaring plugin's handler, so every request carries the
+chain of plugins it came through (`LuaHost::acting_for`, `api::requester`) and is
+allowed only with what every plugin in that chain holds
+(`Command::refusal_by`): neither the asker nor the handler can lend the other a
+grant, through any number of hops.
+`program` is checked the same way when its pane is started.
+
+The grant itself comes from one place, `packages::granted` → `trust_of` →
+`Trust::grants`, the same decision the Interface tab draws. A bundled file that
+is byte for byte what the binary ships is `Shipped` and holds what it declares
+without a trust record — the confirmation and the creation flow need `sessions`
+before anyone could press `t` — and an edited one is decided like any other file.
 
 The cost, accepted: a plugin must handle the absence, exactly as it handles a
 session having no worktree. `examples/lua/composite.lua` shows the shape — draw

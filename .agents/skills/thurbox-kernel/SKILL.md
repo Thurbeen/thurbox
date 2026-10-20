@@ -503,9 +503,27 @@ per-plugin module cache, modules run in the requirer's env) are created per plug
 reads fall through to the sealed shared globals, writes stay in the plugin's table.
 `string`/`table`/`math`/`coroutine`/`utf8`/`text`/`store` are per-plugin empty
 views over a sealed metatable (per plugin, because `rawset` writes into the view;
-`__pairs` never returns the backing table), and the string metatable is sealed. `LuaHost::enter` puts the plugin's own
-`run` into its env, or takes it out, per call; `layout.lua` has an env that never
-holds it. `LuaHost::reachable_globals` is what the environment tripwire reads.
+`__pairs` never returns the backing table), and the string metatable is sealed.
+`LuaHost::enter` puts the plugin's own `run` and `files` into its env, or takes
+them out, per call; `layout.lua` has an env that never holds either.
+`LuaHost::reachable_globals` is what the environment tripwire reads.
+
+**Driving sessions needs `sessions`.** `Command::requires` is an exhaustive match
+with no catch-all (a new verb must decide; `every_verb_states_what_it_requires`
+pins each): `send`, `create`, `fork`, `restart`, `dispatch`, `automation`, `plugin`
+and a force `delete` need `sessions`; `open` and an exec automation's command need
+`run`; `program` needs `program`; an `action` naming `kernel.paste` needs
+`sessions`, and every request carries the chain of plugins it came through
+(`LuaHost::acting_for`, `drain_requests`), allowed only with what every member
+holds (`Command::refusal_by`). Refused in
+`coordinator::commands::refuse_ungranted` against the owner bound into the issuing
+plugin's own `command` (`LuaHost::drain_issued`). A bundled file byte for byte as
+shipped is `Trust::Shipped` and holds what it declares untrusted — `60_confirm`
+and `70_new_session` need it — and
+`60_confirm` forwards only `delete`/`restart`/`restore`/`sync`, since any pane can
+write `store.confirm`; it words the change itself from the command, names the
+asker via `store_writer` (the writer's chain, recorded by its own `store` view), and on `y`
+issues the request it last drew, not `store.confirm` re-read.
 
 **A plugin can react to events** (`kernel::events`, `coordinator::events`).
 Declare `events = { "session.status", … }` and an `on_event(name, payload)`, and

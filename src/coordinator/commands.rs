@@ -20,12 +20,42 @@ impl App {
     /// Draining here rather than inside the render call is what keeps `command()`
     /// a queue push and nothing more.
     pub(crate) fn apply_commands(&mut self, terminal: &mut DefaultTerminal) {
-        for command in self.host.drain_commands() {
-            if self.apply_local_command(&command, terminal) {
+        for (chain, command) in self.host.drain_requests() {
+            if self.refuse_ungranted(&chain, &command)
+                || self.apply_local_command(&chain, &command, terminal)
+            {
                 continue;
             }
             self.dispatch_tracked(command);
         }
+    }
+
+    /// Refuse a plugin's command that needs a grant its issuer does not hold,
+    /// reporting why. `true` = refused, and nothing else is done with it.
+    ///
+    /// Here rather than on a worker, which knows no grant: an exec automation's
+    /// command is a command line the heartbeat runs, and `send`, `create`,
+    /// `restart` and a force `delete` drive an agent or destroy a worktree, so
+    /// each is checked before anything applies it — against every plugin in
+    /// the chain the request came through, so the least-privileged one decides.
+    fn refuse_ungranted(
+        &mut self,
+        chain: &[String],
+        command: &thurbox::kernel::command::Command,
+    ) -> bool {
+        let Some(error) = command.refusal_by(chain, |owner, need| self.host.may_path(owner, need))
+        else {
+            return false;
+        };
+        let subject = command.subject();
+        self.enqueue_event(
+            thurbox::kernel::events::Event::new("command.failed")
+                .with("kind", Some(command.kind()))
+                .with("subject", subject.as_deref())
+                .with("error", Some(error.as_str())),
+        );
+        self.report(error, Level::Error);
+        true
     }
 
     /// The commands the loop applies itself, because they touch something no
@@ -33,24 +63,11 @@ impl App {
     /// files. `true` = handled here; `false` = hand it to a worker.
     pub(crate) fn apply_local_command(
         &mut self,
+        chain: &[String],
         command: &thurbox::kernel::command::Command,
         terminal: &mut DefaultTerminal,
     ) -> bool {
         use thurbox::kernel::command::Command;
-        // Refused here rather than on a worker, which knows no grant: an exec
-        // automation's command is a command line the heartbeat runs, so a pane
-        // may write one only if it may run programs at all.
-        if let Some(error) = command.refusal(|owner, need| self.host.may_path(owner, need)) {
-            let subject = command.subject();
-            self.enqueue_event(
-                thurbox::kernel::events::Event::new("command.failed")
-                    .with("kind", Some(command.kind()))
-                    .with("subject", subject.as_deref())
-                    .with("error", Some(error.as_str())),
-            );
-            self.report(error, Level::Error);
-            return true;
-        }
         match command {
             // Theme is applied here rather than dispatched: it mutates in-process
             // state a worker thread cannot reach, and it is instant, so nothing is
@@ -126,26 +143,28 @@ impl App {
             // runs one — the same handler, so a pane's key and its own button
             // cannot come to mean different things. The issuing plugin is the
             // fallback owner, which is what the click path passes too.
-            Command::Action { owner, action } => {
-                let asked = self
-                    .host
-                    .name_of_path(owner)
-                    .and_then(|name| self.host.index_of(name))
-                    .unwrap_or(self.focus);
+            Command::Action { fallback, action } => {
+                let asked = self.fallback_pane(fallback);
+                // The handler runs for the chain the queue says made this —
+                // through any number of actions, starting with the pane that
+                // first asked — and what it issues extends that chain
+                // (`LuaHost::acting_for`).
+                let asker = command.runs_for(chain);
+                let previous = self.host.acting_for(asker);
                 self.run_clicked_action(action, asked);
+                self.host.acting_for(previous);
             }
             Command::ActionTarget {
-                owner,
+                fallback,
                 action,
                 argument,
                 value,
             } => {
-                let asked = self
-                    .host
-                    .name_of_path(owner)
-                    .and_then(|name| self.host.index_of(name))
-                    .unwrap_or(self.focus);
+                let asked = self.fallback_pane(fallback);
+                let asker = command.runs_for(chain);
+                let previous = self.host.acting_for(asker);
                 self.run_clicked_action_with_args(action, asked, &[(argument, value)]);
+                self.host.acting_for(previous);
             }
             // The message band is kernel chrome; this is a plugin contributing
             // to it, like a pill or a binding.
@@ -153,6 +172,15 @@ impl App {
             _ => return false,
         }
         true
+    }
+
+    /// The pane an undeclared action is offered to: the one whose code issued
+    /// it, else the focused one.
+    fn fallback_pane(&self, fallback: &str) -> usize {
+        self.host
+            .name_of_path(fallback)
+            .and_then(|name| self.host.index_of(name))
+            .unwrap_or(self.focus)
     }
 
     /// `Command::Focus`: move focus, or return whence it came.

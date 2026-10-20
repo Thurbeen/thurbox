@@ -30,6 +30,7 @@ pub(super) fn install_api(
 ) -> mlua::Result<()> {
     scrub_globals(lua)?;
     install_store(lua, "store", store, state_version, store_writes, None)?;
+    install_store_writer(lua)?;
     install_clock(lua, clock, clock_read)?;
     install_sample_reads(lua, sample_read)?;
     install_text(lua)?;
@@ -48,6 +49,12 @@ pub(super) struct EnvParts {
     pub runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Ask)>>>,
     pub version: StateVersion,
     pub writes: super::WriteCount,
+    /// The plugin whose request a handler is running for, while one is: see
+    /// `LuaHost::acting_for`.
+    pub behalf: Rc<RefCell<Option<Vec<String>>>>,
+    /// The path of the plugin the kernel is calling into, which is the
+    /// handler `behalf` applies to.
+    pub entered: Rc<RefCell<String>>,
 }
 
 /// One plugin's environment, and the capability it holds only while granted.
@@ -57,6 +64,8 @@ pub(super) struct Env {
     /// `run`, bound to this plugin. Kept out of `table` until the plugin is
     /// granted it — `LuaHost::enter` puts it there per call.
     pub run: mlua::Function,
+    /// `files`, kept out of `table` the same way until granted.
+    pub files: Table,
     /// This plugin's `thurbox`: the published data, read through, plus the
     /// values that are this plugin's alone (`runs`, `granted`), which
     /// `LuaHost::enter` sets here and nowhere every plugin reads.
@@ -69,7 +78,7 @@ pub(super) struct Env {
 /// issued a call: a pane that replaced a global another pane calls would run
 /// its own code inside that pane's call, with its grant. So nothing here asks
 /// who is running. Each plugin's chunk gets its own `_ENV`, and the functions
-/// that act for a plugin — `command`, `run`, `state`, `require` — are created
+/// that act for a plugin — `command`, `run`, `files`, `state`, `require` — are created
 /// for it, with its identity bound in. Code a plugin defines resolves those
 /// names through its own environment wherever it is called from, so a
 /// hijacking function acts as its author and nobody else.
@@ -86,10 +95,16 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
     meta.set("__metatable", false)?;
     table.set_metatable(Some(meta))?;
     table.set("_G", table.clone())?;
-    sealed_views(lua, &table)?;
+    sealed_views(lua, &table, path, parts)?;
     table.set(
         "command",
-        command_for(lua, parts.queue.clone(), path.to_string())?,
+        command_for(
+            lua,
+            parts.queue.clone(),
+            path.to_string(),
+            parts.behalf.clone(),
+            parts.entered.clone(),
+        )?,
     )?;
     table.set(
         "state",
@@ -101,13 +116,13 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
             parts.writes.clone(),
         )?,
     )?;
-    table.set("files", files_for(lua, parts.roots.clone())?)?;
     table.set("require", require_for(lua, &parts.ui_dir, table.clone())?)?;
     let thurbox = thurbox_view(lua)?;
     table.raw_set("thurbox", thurbox.clone())?;
     Ok(Env {
         thurbox,
         run: run_for(lua, parts.runs.clone(), path.to_string())?,
+        files: files_for(lua, parts.roots.clone())?,
         table,
     })
 }
@@ -193,8 +208,8 @@ fn seal_shared(lua: &Lua) -> mlua::Result<()> {
 const SEALED_METAS: &str = "__sealed_metas";
 
 /// One plugin's views of the shared tables: a fresh empty table per sealed
-/// library, and one for `store`, each carrying the shared, sealed metatable.
-fn sealed_views(lua: &Lua, env: &Table) -> mlua::Result<()> {
+/// library carrying the shared, sealed metatable, and one for `store`.
+fn sealed_views(lua: &Lua, env: &Table, path: &str, parts: &EnvParts) -> mlua::Result<()> {
     let metas: Table = lua.named_registry_value(SEALED_METAS)?;
     for name in SEALED {
         if let Ok(Value::Table(meta)) = metas.get::<Value>(name) {
@@ -203,10 +218,86 @@ fn sealed_views(lua: &Lua, env: &Table) -> mlua::Result<()> {
             env.raw_set(name, view)?;
         }
     }
-    let store: Table = lua.globals().get("store")?;
+    env.raw_set("store", store_view(lua, path, parts)?)
+}
+
+/// One plugin's view of `store`: reads what every plugin reads, and records
+/// this plugin as the last writer of each key it writes ([`STORE_WRITERS`]) —
+/// or, writing for another plugin's request, that request's chain
+/// ([`requester`]), so the pane a request came from is the one named.
+///
+/// The record is made here, by a function built for this plugin, so it cannot
+/// be claimed for another: a `rawset` on the view lands in the plugin's own
+/// table and never reaches `store`.
+/// Who a request from the plugin at `owner` is made by: the chain of plugins
+/// it passed through, the one that first asked first.
+///
+/// A handler running at another plugin's request (`behalf`, while `entered` is
+/// that handler) adds itself to that request's chain, and the gate allows the
+/// request only with what every plugin in it holds. Anything else — the
+/// handler's key the user pressed, another plugin's finalizer the collector
+/// runs meanwhile — is its author's own request.
+pub(super) fn requester(
+    behalf: &RefCell<Option<Vec<String>>>,
+    entered: &RefCell<String>,
+    owner: &str,
+) -> Vec<String> {
+    match behalf.borrow().as_ref() {
+        Some(chain) if *entered.borrow() == owner => {
+            let mut chain = chain.clone();
+            if chain.last().map(String::as_str) != Some(owner) {
+                chain.push(owner.to_string());
+            }
+            chain
+        }
+        _ => vec![owner.to_string()],
+    }
+}
+
+fn store_view(lua: &Lua, path: &str, parts: &EnvParts) -> mlua::Result<Table> {
+    let shared: Table = lua.globals().get("store")?;
+    let Some(shared) = shared.metatable() else {
+        return Err(mlua::Error::runtime("store has no metatable"));
+    };
+    let write: mlua::Function = shared.get("__newindex")?;
+    let writers: Table = lua.named_registry_value(STORE_WRITERS)?;
+    let owner = path.to_string();
+    let (behalf, entered) = (parts.behalf.clone(), parts.entered.clone());
+    let meta = lua.create_table()?;
+    meta.set("__index", shared.get::<Value>("__index")?)?;
+    meta.set(
+        "__newindex",
+        lua.create_function(move |_, (view, key, value): (Table, String, Value)| {
+            write.call::<()>((view, key.clone(), value))?;
+            writers.raw_set(key, requester(&behalf, &entered, &owner).join(" via "))
+        })?,
+    )?;
+    meta.set("__metatable", false)?;
     let view = lua.create_table()?;
-    view.set_metatable(store.metatable())?;
-    env.raw_set("store", view)
+    view.set_metatable(Some(meta))?;
+    Ok(view)
+}
+
+/// Who last wrote each `store` key, by plugin path: what `store_writer` reads.
+const STORE_WRITERS: &str = "__store_writers";
+
+/// `store_writer(key)` — the path of the plugin that last wrote `store[key]`,
+/// or nil when nothing has, or the kernel or `layout.lua` did.
+///
+/// `store` is how one pane hands another a request, and the one acting on it
+/// may need to say whose request it is: the shipped confirmation names the
+/// pane that asked, because the question it was handed is that pane's words.
+fn install_store_writer(lua: &Lua) -> mlua::Result<()> {
+    let writers = lua.create_table()?;
+    lua.set_named_registry_value(STORE_WRITERS, writers.clone())?;
+    lua.globals().set(
+        "store_writer",
+        lua.create_function(move |_, key: String| {
+            Ok(writers
+                .raw_get::<Option<String>>(key)?
+                .filter(|path| !path.is_empty()))
+        })?,
+    )
 }
 
 /// The library tables every plugin reads, sealed by [`seal_shared`].
@@ -586,9 +677,10 @@ fn run_for(
 
 /// `files.list(session, path)` and `files.read(session, path)`.
 ///
-/// The capability that is *not* granted here is the point: a plugin gets a
-/// directory listing and a file's text, both rooted at that session's working
-/// directory and refusing anything outside it. It never gets a filesystem.
+/// Bounded twice. A plugin gets a directory listing and a file's text, both
+/// rooted at that session's working directory and refusing anything outside
+/// it — never a filesystem. And it gets even that only when granted `files`
+/// (`LuaHost::enter`), because a worktree's `.env` is inside that root.
 fn files_for(lua: &Lua, roots: Roots) -> mlua::Result<Table> {
     let files = lua.create_table()?;
 
@@ -634,7 +726,13 @@ fn files_for(lua: &Lua, roots: Roots) -> mlua::Result<Table> {
 ///
 /// A malformed command raises immediately, because the mistake is in the
 /// plugin's own call and there is nothing to report asynchronously about.
-fn command_for(lua: &Lua, queue: Queue, owner: String) -> mlua::Result<mlua::Function> {
+fn command_for(
+    lua: &Lua,
+    queue: Queue,
+    owner: String,
+    behalf: Rc<RefCell<Option<Vec<String>>>>,
+    entered: Rc<RefCell<String>>,
+) -> mlua::Result<mlua::Function> {
     lua.create_function(move |lua, (kind, opts): (String, Option<Table>)| {
         let opts = opts;
         let get_string = |key: &str| -> Option<String> {
@@ -762,7 +860,9 @@ fn command_for(lua: &Lua, queue: Queue, owner: String) -> mlua::Result<mlua::Fun
                 store.set(key, value)?;
             }
         }
-        queue.borrow_mut().push(parsed);
+        queue
+            .borrow_mut()
+            .push((requester(&behalf, &entered, &owner), parsed));
         Ok(())
     })
 }

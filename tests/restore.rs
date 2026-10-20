@@ -360,7 +360,10 @@ fn a_force_deleted_row_is_tagged_and_asks_before_a_best_effort_restore() {
     );
     let (floated, question) = rendered(&host, &snapshot, "confirm");
     assert!(floated, "the shared confirmation is what asks");
-    assert!(question.contains("Restore 'gone' anyway?"), "{question}");
+    assert!(
+        question.contains("Restore gone with only its committed work?"),
+        "{question}"
+    );
     assert!(
         question.contains("uncommitted and untracked changes were lost on delete"),
         "{question}"

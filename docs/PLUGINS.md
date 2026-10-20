@@ -345,7 +345,7 @@ and takes no input, and the message band says why, once per failure.
 | `command(kind, opts)` | The only way to change anything. Enqueues and returns |
 | `state` | Private to your plugin. Survives a reload; **not** a restart |
 | `store` | Shared by every plugin — the bus between them. Same lifetime as `state` |
-| `files.list/read` | Directory entries and file text, rooted at a session's directory |
+| `files.list/read` | Directory entries and file text, rooted at a session's directory. Needs the `files` capability and your trust |
 | `text.width/truncate/pad` | Display width in terminal COLUMNS, and the two cuts that spend a budget in it |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
 | `thurbox.search` | The content search's answer: lines found in every session's terminals, scrollback included, ranked, each with how far back it is (`back`) and the scroll offset that shows it (`scroll`). Served only while `store.want_content` holds a query (optionally narrowed by `store["want_content.sessions"]`), off the render thread; an empty query reads every history into the cache and matches nothing, so an open search strip is ready before the first keystroke; nil until the first answer lands |
@@ -1405,7 +1405,7 @@ another copy. `refresh = true` overrides freshness; that is what a "reload" key
 does.
 
 **Trusting a plugin** is settings (`Ctrl+,`) → `]` → select it → `t`. The
-Interface tab shows which files ask to run programs, which are trusted, and
+Interface tab shows which files ask for a capability, which are trusted, and
 whether a trusted file has changed since you trusted it. Revoking takes effect on
 the next frame.
 
@@ -1435,6 +1435,66 @@ fails the call rather than falling back, because guessing would run the program
 somewhere you did not ask for. This grants nothing new: a local session's runs
 already execute here as you, so it is the same `run` capability and the same
 trust.
+
+## Driving sessions and reading files
+
+`command` is every plugin's, but some of its verbs drive an agent or lose something
+for good, and those need the `sessions` capability:
+
+- `send` types into an agent, and `dispatch` types a task into one.
+- `create`, `fork` and `restart` launch an agent.
+- `automation` runs, toggles, deletes or writes an automation, whose prompt the
+  heartbeat types.
+- `delete` with `force = true` removes a worktree that nothing restores.
+- `plugin` restores or removes a file of the interface.
+- `action` naming `kernel.paste` types the clipboard into the focused agent.
+
+Any other `action` runs the handler of the plugin that declared it — but as your
+request. Every request carries the chain of plugins it came through, the one that
+first asked first, and is allowed only with what *every* plugin in that chain
+holds: a pane holding no grant cannot have a trusted one `send` for it, however
+many actions it forwards through, and a trusted pane does not lend its grant to a
+handler it asks. A key or a click the user makes runs the handler under its own
+name.
+
+Two verbs need `run` instead: `open` (a URL carries whatever is in it to the network
+without a click) and writing an exec automation's `command`. `program` needs
+`program`. Every other verb needs no grant, and the kernel lists each one's answer
+explicitly, so a new verb cannot slip through by default. Without the grant the
+command is refused with a message naming the capability, and `command.failed`
+carries it. A soft `delete` and a `restore` need nothing: each is undone by the
+other.
+
+`files.list` and `files.read` need the `files` capability, and are absent until it
+is granted, as `run` is. A session's directory holds its `.env` files and keys, and
+a pane that can read them and `send` could hand them to an agent.
+
+```lua
+capabilities = { "sessions", "files" },
+
+on_action = function(action)
+  if action == "notes.send" and thurbox.granted.sessions and files then
+    command("send", { session = id, text = files.read(id, "NOTES.md") })
+  end
+end,
+```
+
+**The panes thurbox ships hold `sessions` without asking** while they are exactly
+what it ships: the confirmation (a force delete, a restart) and the creation flow
+(a create, a fork). Edit one and it is your file, decided like any other — the
+Interface tab marks it untrusted until you press `t`.
+
+The confirmation is the one place a pane without the grant reaches these, by
+leaving a question in `store.confirm`, so it forwards only `delete`, `restart`,
+`restore` and `sync`. Every pane writes `store`, so the question is only its
+author's words. The confirmation therefore words what `y` does itself, from the
+command and the session's name, and names the pane that asked. It learns which
+pane that was from `store_writer("confirm")`, which returns the path of the
+plugin that last wrote a `store` key — or, written for another plugin's request,
+that request's chain (`plugins/a.lua via plugins/b.lua`). That record is made by the writer's own
+view of `store`, so no pane can claim another's. On `y` it issues exactly the
+request it drew, never `store.confirm` read again at the keypress, which a later
+float could have replaced.
 
 ## Running a program you interact with
 
@@ -1879,7 +1939,7 @@ manages everything else.
 
 The file viewer, the remaining missing surface, has no pane — by nobody having written
 one rather than by anything withheld: `files.list/read` is published, rooted at a
-session's directory.
+session's directory, to a pane granted `files`.
 
 ## Managing panes
 

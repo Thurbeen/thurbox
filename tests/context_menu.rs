@@ -688,6 +688,9 @@ fn undo_delete_is_offered_once_a_session_was_deleted() {
     let sessions = index_of(&host, "sessions");
     host.on_action(sessions, "sessions.delete").expect("delete");
     host.drain_commands();
+    // The confirmation answers what it drew, as it does every frame.
+    host.render(index_of(&host, "confirm"), ctx())
+        .expect("draw the question");
     host.on_key(index_of(&host, "confirm"), &key("y"))
         .expect("confirm delete");
     host.drain_commands();

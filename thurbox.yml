@@ -461,6 +461,10 @@ globals:
     property: read-only
   thurbox.granted.program:
     property: read-only
+  thurbox.granted.sessions:
+    property: read-only
+  thurbox.granted.files:
+    property: read-only
   # Machine, per-agent and account readings. `system` is a fixed record, so its
   # three fields are written out; `sessions` is keyed by session id and can only
   # be reached through a variable, which ends the checked path there.
@@ -622,8 +626,15 @@ globals:
   store:
     property: new-fields
 
+  # Who last wrote a `store` key, by plugin path, so a pane acting on another's
+  # request can say whose it is.
+  store_writer:
+    args:
+      - type: string
+
   # Directory entries and file text, rooted at a session's directory. Not a
-  # filesystem: a path outside the root is refused.
+  # filesystem: a path outside the root is refused. Nil unless the plugin is
+  # granted `files`, as `run` is unless granted `run`.
   files.list:
     args:
       - type: "..."

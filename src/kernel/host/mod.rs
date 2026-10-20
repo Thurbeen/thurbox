@@ -132,7 +132,9 @@ type WriteCount = Rc<std::cell::Cell<(u64, u64)>>;
 type StateVersion = Rc<std::cell::Cell<u64>>;
 type Private = Rc<RefCell<BTreeMap<(String, String), Persisted>>>;
 /// Commands a plugin issued this frame, drained by the loop.
-type Queue = Rc<RefCell<Vec<Command>>>;
+/// Each command with the path of the plugin that issued it, stamped by the
+/// kernel — empty for Lua that belongs to no plugin.
+type Queue = Rc<RefCell<Vec<(Vec<String>, Command)>>>;
 
 /// Finished runs, keyed by the plugin that asked and then by its own key.
 pub type RunAnswers = std::collections::HashMap<String, Vec<(String, super::runs::Run)>>;
@@ -285,6 +287,21 @@ pub enum Capability {
     /// every few seconds did not agree to "may hold a process open indefinitely
     /// and feed it what I type", so the grant is asked for separately.
     Program,
+    /// Drive an agent, or lose something for good.
+    ///
+    /// The verbs listed in [`crate::kernel::command::Command::requires`]:
+    /// `send` and `dispatch` put words in an agent's mouth, `create`, `fork` and
+    /// `restart` launch one, an automation is typed or run by the heartbeat, a
+    /// force `delete` removes a worktree nothing restores, and `plugin` rewrites
+    /// a file of the interface. A pane holding none of these can still ask the
+    /// user through the bundled confirmation, which words the change itself and
+    /// issues it only on their `y`.
+    Sessions,
+    /// Read a session's files: `files.list` and `files.read`.
+    ///
+    /// A worktree holds `.env` files and keys, so reading one is not something
+    /// every pane that draws a list may do.
+    Files,
 }
 
 impl Capability {
@@ -292,6 +309,8 @@ impl Capability {
         match self {
             Capability::Run => "run",
             Capability::Program => "program",
+            Capability::Sessions => "sessions",
+            Capability::Files => "files",
         }
     }
 
@@ -305,6 +324,10 @@ impl Capability {
         match self {
             Capability::Run => "runs programs and reads their output",
             Capability::Program => "runs a program you interact with",
+            Capability::Sessions => {
+                "starts, types into and deletes sessions, runs automations, edits the interface"
+            }
+            Capability::Files => "reads the files in a session's directory",
         }
     }
 
@@ -317,12 +340,19 @@ impl Capability {
         match name {
             "run" => Some(Capability::Run),
             "program" => Some(Capability::Program),
+            "sessions" => Some(Capability::Sessions),
+            "files" => Some(Capability::Files),
             _ => None,
         }
     }
 
     /// Every capability, for a message naming what was available.
-    pub const ALL: [Capability; 2] = [Capability::Run, Capability::Program];
+    pub const ALL: [Capability; 4] = [
+        Capability::Run,
+        Capability::Program,
+        Capability::Sessions,
+        Capability::Files,
+    ];
 }
 
 /// A key, flattened to what Lua needs to know about it.
@@ -815,6 +845,8 @@ pub struct LuaHost {
     /// and a plugin must never be able to run a database write from inside a
     /// render call.
     queue: Queue,
+    /// See [`Self::acting_for`].
+    behalf: Rc<RefCell<Option<Vec<String>>>>,
     /// Runs plugins asked for, drained once per frame like `queue`.
     ///
     /// Separate from `queue` because a run carries the plugin that asked —
@@ -960,6 +992,7 @@ impl LuaHost {
             current: Rc::new(RefCell::new(String::new())),
             current_path: Rc::new(RefCell::new(String::new())),
             queue: Queue::default(),
+            behalf: Rc::new(RefCell::new(None)),
             runs: Rc::new(RefCell::new(Vec::new())),
             trusted: Rc::new(RefCell::new(Vec::new())),
             disabled: Rc::new(RefCell::new(Vec::new())),
@@ -1031,6 +1064,8 @@ impl LuaHost {
             runs: self.runs.clone(),
             version: self.state_version.clone(),
             writes: self.store_writes.clone(),
+            behalf: self.behalf.clone(),
+            entered: self.current_path.clone(),
         };
 
         let dir = self.ui_dir.join("plugins");
@@ -1157,6 +1192,31 @@ impl LuaHost {
     /// Separate from `on_key`: a declared key is routed by the registry, which
     /// is what lets it be rebound, listed in help, and conflict-checked. Raw
     /// `on_key` stays for panes that need every keystroke (the terminal).
+    /// Run `f` as a request from the plugin at `issuer`: see [`Self::acting_for`].
+    pub fn on_behalf_of<T>(&self, issuer: &str, f: impl FnOnce() -> T) -> T {
+        let previous = self.acting_for(Some(vec![issuer.to_string()]));
+        let out = f();
+        self.acting_for(previous);
+        out
+    }
+
+    /// Mark what runs from now on as a request made by `chain` — the plugin
+    /// that first asked, then each that passed it on — or clear the mark with
+    /// `None`, returning the mark it replaces.
+    ///
+    /// `command("action")` runs the named action's own handler, which may
+    /// hold a grant the asker does not, or lack one the asker holds. While it
+    /// runs for that chain, every command it issues carries the chain with the
+    /// handler added, and the gate allows it only with what every plugin in it
+    /// holds (`Command::refusal_by`): a pane with no grant cannot have a
+    /// trusted one `send` for it, through any number of hops, and a trusted
+    /// pane does not lend its grant to a handler it asks. Only the handler's
+    /// own commands are marked — another plugin's finalizer run meanwhile
+    /// keeps its own name. A key or a click the user made runs it unmarked.
+    pub fn acting_for(&self, chain: Option<Vec<String>>) -> Option<Vec<String>> {
+        std::mem::replace(&mut *self.behalf.borrow_mut(), chain)
+    }
+
     pub fn on_action(&self, index: usize, action: &str) -> Result<bool, PluginError> {
         self.on_action_with_args(index, action, &[])
     }
@@ -1657,9 +1717,9 @@ impl LuaHost {
     /// has been granted.
     ///
     /// Installed **per call** rather than once at load so a grant revoked on
-    /// the Interface tab is gone on the next call. `run` goes into the plugin's
-    /// own environment or is taken out of it: not a function that refuses, but
-    /// no function at all (design D7).
+    /// the Interface tab is gone on the next call. `run` and `files` go into
+    /// the plugin's own environment or are taken out of it: not a function that
+    /// refuses, but no function at all (design D7).
     fn enter(&self, plugin: &Plugin) {
         *self.current.borrow_mut() = plugin.file.clone();
         *self.current_path.borrow_mut() = plugin.path.clone();
@@ -1678,6 +1738,12 @@ impl LuaHost {
             Value::Nil
         };
         let _ = plugin.env.table.raw_set("run", run);
+        let files = if self.may(plugin, Capability::Files) {
+            Value::Table(plugin.env.files.clone())
+        } else {
+            Value::Nil
+        };
+        let _ = plugin.env.table.raw_set("files", files);
     }
 
     /// This plugin's own answers, and nothing else's, as `thurbox.runs` — in
@@ -1757,6 +1823,24 @@ impl LuaHost {
     }
 
     pub fn drain_commands(&self) -> Vec<Command> {
+        self.drain_issued()
+            .into_iter()
+            .map(|(_, command)| command)
+            .collect()
+    }
+
+    /// [`Self::drain_commands`], each with the path of the plugin it was
+    /// first asked for by — the head of its chain ([`Self::drain_requests`]).
+    pub fn drain_issued(&self) -> Vec<(String, Command)> {
+        self.drain_requests()
+            .into_iter()
+            .map(|(mut chain, command)| (chain.swap_remove(0), command))
+            .collect()
+    }
+
+    /// [`Self::drain_commands`], each with the chain of plugins it was made by
+    /// ([`Self::acting_for`]) — what [`Command::refusal_by`] checks.
+    pub fn drain_requests(&self) -> Vec<(Vec<String>, Command)> {
         std::mem::take(&mut *self.queue.borrow_mut())
     }
 

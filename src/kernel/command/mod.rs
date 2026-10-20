@@ -161,9 +161,6 @@ pub enum Command {
     AutomationSave {
         id: Option<i64>,
         draft: AutomationDraft,
-        /// The plugin that issued it, by path — stamped by the kernel, and
-        /// checked against [`Command::requires`] before it is applied.
-        owner: String,
     },
     /// Copy a surface's terminal contents to the clipboard.
     ///
@@ -348,17 +345,19 @@ pub enum Command {
     /// at all, and three panes rebuilt a float shell rather than reuse the
     /// modal furniture the kernel already has.
     ///
-    /// `owner` is **stamped by the kernel** from the plugin executing, like
-    /// [`Command::Program`]'s. It is the fallback the click path already
-    /// carries: an action no binding declares is offered to the pane that
-    /// asked for it, which is how a pane reaches its own undeclared verbs.
+    /// `fallback` is the plugin whose code issued it, stamped by the kernel:
+    /// an action no binding declares is offered to that pane, which is how a
+    /// pane reaches its own undeclared verbs. It never decides a grant. Whose
+    /// request the action is comes from the queue entry instead
+    /// ([`Command::runs_for`]), which through a chain of actions stays the pane
+    /// that first asked, where this field names the handler that forwarded it.
     Action {
-        owner: String,
+        fallback: String,
         action: String,
     },
     /// A menu action with an explicit row target.
     ActionTarget {
-        owner: String,
+        fallback: String,
         action: String,
         argument: String,
         value: String,
@@ -580,31 +579,132 @@ impl Command {
 
     /// The capability the issuing plugin must hold for this to be applied.
     ///
-    /// An exec automation's command is a command line the heartbeat runs
-    /// through the platform shell, so writing one is gated exactly as running
-    /// one is: without `run`, a pane may toggle, run and delete automations and
-    /// edit everything else about them, but never author what an exec runs.
+    /// Every variant answers for itself, with no catch-all arm: a new verb does
+    /// not compile until someone decides what it needs, so a gap is a choice
+    /// written down here rather than a default nobody made.
+    ///
+    /// `sessions` covers what drives an agent or loses something for good:
+    /// `send`, `create`, `fork`, `restart`, a dispatched task, an automation run
+    /// or written with a prompt the heartbeat types, a force `delete`, and
+    /// restoring or removing a file of the interface. `run` covers what reaches
+    /// the outside world as the user: an exec automation's command line, and a
+    /// URL opened without anyone clicking it. `program` covers a plugin's own
+    /// program pane.
     pub fn requires(&self) -> Option<super::host::Capability> {
+        use super::host::Capability;
         match self {
+            Command::Guarded { inner, .. } => inner.requires(),
             Command::AutomationSave { draft, .. } if draft.command.is_some() => {
-                Some(super::host::Capability::Run)
+                Some(Capability::Run)
             }
-            _ => None,
+            Command::OpenLink { .. } => Some(Capability::Run),
+            Command::Program { .. } => Some(Capability::Program),
+            Command::Send { .. }
+            | Command::Create { .. }
+            | Command::Fork { .. }
+            | Command::Restart { .. }
+            | Command::DispatchTask { .. }
+            | Command::Automation { .. }
+            | Command::AutomationSave { .. }
+            | Command::Plugin { .. }
+            | Command::Delete { force: true, .. } => Some(Capability::Sessions),
+            // Undone from the restore list, or by deleting again.
+            Command::Delete { force: false, .. } | Command::Restore { .. } => None,
+            // Arrange, name or bring up to date what already exists; nothing is
+            // typed into an agent and nothing is lost.
+            Command::Reorder { .. }
+            | Command::Order { .. }
+            | Command::Rename { .. }
+            | Command::Sync { .. }
+            | Command::Task { .. }
+            | Command::Bookmark { .. } => None,
+            // The interface's own state, or something the user then drives
+            // themselves: a pane focused, a shell or editor opened beside a
+            // session, a theme, a setting, a message, a screen copied.
+            Command::Focus { .. }
+            | Command::Shell { .. }
+            | Command::Editor { .. }
+            | Command::Copy { .. }
+            | Command::Diff { .. }
+            | Command::Theme { .. }
+            | Command::Setting { .. }
+            | Command::Message { .. }
+            | Command::Emit { .. } => None,
+            // The kernel's paste types the clipboard into the focused agent, so
+            // a pane may not press it for the user. Any other action runs its
+            // owner's handler, and what that issues is checked as this pane's
+            // request (`LuaHost::acting_for`).
+            Command::Action { action, .. } | Command::ActionTarget { action, .. }
+                if action == super::clipboard::PASTE_ACTION =>
+            {
+                Some(Capability::Sessions)
+            }
+            Command::Action { .. } | Command::ActionTarget { .. } => None,
+            // Issued by the kernel, never parsed from a plugin.
+            Command::Reap | Command::Configure { .. } => None,
         }
     }
 
-    /// Why a plugin `may` not have this applied, when it may not.
+    /// The chain an `action` runs for: the one the queue says made it, which
+    /// through a chain of actions starts with the pane that first asked
+    /// (`LuaHost::acting_for`). `None` for any other command.
+    pub fn runs_for(&self, chain: &[String]) -> Option<Vec<String>> {
+        matches!(self, Command::Action { .. } | Command::ActionTarget { .. })
+            .then(|| chain.to_vec())
+    }
+
+    /// Why the plugin at `owner` may not have this applied, when it may not.
     ///
     /// The coordinator's whole decision, kept here so it is tested without a
-    /// running interface: `may(owner, capability)` is the host's grant check.
-    pub fn refusal(&self, may: impl Fn(&str, super::host::Capability) -> bool) -> Option<String> {
+    /// running interface: `may(owner, capability)` is the host's grant check,
+    /// and `owner` is the path the kernel stamped when the command was issued —
+    /// empty for Lua that belongs to no plugin, which holds no grant.
+    pub fn refusal(
+        &self,
+        owner: &str,
+        may: impl Fn(&str, super::host::Capability) -> bool,
+    ) -> Option<String> {
+        self.refusal_by(&[owner.to_string()], may)
+    }
+
+    /// Why this may not be applied for a request made by `chain`, when it may
+    /// not: allowed only with what every plugin in the chain holds, so the
+    /// least-privileged one decides, and the refusal names it.
+    pub fn refusal_by(
+        &self,
+        chain: &[String],
+        may: impl Fn(&str, super::host::Capability) -> bool,
+    ) -> Option<String> {
         let need = self.requires()?;
-        let Command::AutomationSave { owner, .. } = self else {
-            return None;
+        let owner = chain
+            .iter()
+            .find(|member| !may(member, need))
+            .map(String::as_str)
+            .or_else(|| chain.is_empty().then_some(""))?;
+        let who = if owner.is_empty() {
+            "Lua outside any plugin"
+        } else {
+            owner
         };
-        (!may(owner, need)).then(|| {
+        let doing = match self.kind() {
+            "automation" if need == super::host::Capability::Run => "write an automation's command",
+            "automation" => "run or change an automation",
+            "send" => "type into a session",
+            "create" => "create a session",
+            "fork" => "fork a session",
+            "restart" => "restart a session",
+            "dispatch" => "dispatch a task to an agent",
+            "plugin" => "change a file of the interface",
+            "open" => "open a link",
+            "program" => "run a program in a pane",
+            "action" => "paste into a session",
+            _ => "delete a session for good",
+        };
+        Some({
             format!(
-                "{owner} may not write an automation's command — trust it in settings → Interface"
+                "{who} may not {doing} without the {:?} capability — declare it and trust \
+                 the file in settings → Interface",
+                need.as_str()
             )
         })
     }
@@ -744,21 +844,21 @@ impl Command {
         if !args.session.is_empty() {
             let value = args.session;
             Ok(Command::ActionTarget {
-                owner: args.owner,
+                fallback: args.owner.clone(),
                 action,
                 argument: "session_id".into(),
                 value,
             })
         } else if let Some(value) = args.target {
             Ok(Command::ActionTarget {
-                owner: args.owner,
+                fallback: args.owner.clone(),
                 action,
                 argument: "target".into(),
                 value,
             })
         } else {
             Ok(Command::Action {
-                owner: args.owner,
+                fallback: args.owner,
                 action,
             })
         }
@@ -850,7 +950,6 @@ impl Command {
                 return Ok(Command::AutomationSave {
                     id: None,
                     draft: automation_draft(&args),
-                    owner: args.owner.clone(),
                 })
             }
             Some("edit") => {
@@ -860,7 +959,6 @@ impl Command {
                 return Ok(Command::AutomationSave {
                     id: Some(id),
                     draft: automation_draft(&args),
-                    owner: args.owner.clone(),
                 });
             }
             Some(other) => {
@@ -1850,7 +1948,11 @@ mod tests {
             save("edit", Some(3.0), vec![command()]).requires(),
             Some(Capability::Run)
         );
-        assert_eq!(save("edit", Some(3.0), vec![name()]).requires(), None);
+        assert_eq!(
+            save("edit", Some(3.0), vec![name()]).requires(),
+            Some(Capability::Sessions),
+            "a prompt-only automation is typed into an agent by the heartbeat"
+        );
         assert_eq!(
             Command::parse(
                 "automation",
@@ -1862,8 +1964,8 @@ mod tests {
             )
             .expect("parse")
             .requires(),
-            None,
-            "running an existing one is not writing a command"
+            Some(Capability::Sessions),
+            "running one types its prompt or runs its command now"
         );
     }
 
@@ -1884,10 +1986,14 @@ mod tests {
             },
         )
         .expect("parse");
-        let refused = create.refusal(|_, _| false).expect("refused");
+        let refused = create
+            .refusal("plugins/30_x.lua", |_, _| false)
+            .expect("refused");
         assert!(refused.contains("plugins/30_x.lua"), "{refused}");
         assert_eq!(
-            create.refusal(|owner, need| owner == "plugins/30_x.lua" && need == Capability::Run),
+            create.refusal("plugins/30_x.lua", |owner, need| owner
+                == "plugins/30_x.lua"
+                && need == Capability::Run),
             None
         );
         let rename = Command::parse(
@@ -1900,11 +2006,194 @@ mod tests {
             },
         )
         .expect("parse");
-        assert_eq!(
-            rename.refusal(|_, _| false),
-            None,
-            "no command, no grant needed"
-        );
+        let refused = rename
+            .refusal("plugins/30_x.lua", |_, _| false)
+            .expect("an automation drives an agent");
+        assert!(refused.contains("\"sessions\""), "{refused}");
+    }
+
+    /// Every verb a plugin can issue, and what it needs. `requires` has no
+    /// catch-all arm, so a new variant does not compile until it decides; this
+    /// pins each decision, so changing one is a visible edit here too.
+    #[test]
+    fn every_verb_states_what_it_requires() {
+        use super::super::host::Capability::{Program, Run, Sessions};
+        let with = |args: Args| Args {
+            session: "s1".into(),
+            owner: "plugins/30_x.lua".into(),
+            ..args
+        };
+        let verbs: Vec<(&str, Args, Option<super::super::host::Capability>)> = vec![
+            (
+                "send",
+                with(Args {
+                    text: Some("x".into()),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            (
+                "create",
+                with(Args {
+                    repo: Some("/r".into()),
+                    text: Some("n".into()),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            ("fork", with(Args::default()), Some(Sessions)),
+            ("restart", with(Args::default()), Some(Sessions)),
+            (
+                "delete",
+                with(Args {
+                    force: true,
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            ("delete", with(Args::default()), None),
+            (
+                "dispatch",
+                with(Args {
+                    number: Some(1.0),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            (
+                "automation",
+                with(Args {
+                    number: Some(1.0),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            (
+                "plugin",
+                with(Args {
+                    file: Some("plugins/x.lua".into()),
+                    action: Some("remove".into()),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+            (
+                "open",
+                with(Args {
+                    text: Some("https://x".into()),
+                    ..Args::default()
+                }),
+                Some(Run),
+            ),
+            (
+                "program",
+                with(Args {
+                    text: Some("p".into()),
+                    repo: Some("top".into()),
+                    ..Args::default()
+                }),
+                Some(Program),
+            ),
+            ("restore", with(Args::default()), None),
+            (
+                "reorder",
+                with(Args {
+                    delta: Some(1),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "order",
+                with(Args {
+                    list: vec!["s1".into()],
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "rename",
+                with(Args {
+                    text: Some("n".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            ("sync", with(Args::default()), None),
+            (
+                "task",
+                with(Args {
+                    text: Some("t".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "focus",
+                with(Args {
+                    text: Some("p".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            ("shell", with(Args::default()), None),
+            ("editor", with(Args::default()), None),
+            ("copy", with(Args::default()), None),
+            ("diff", with(Args::default()), None),
+            (
+                "theme",
+                with(Args {
+                    text: Some("t".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "set",
+                with(Args {
+                    text: Some("p.k".into()),
+                    flag: Some(true),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "message",
+                with(Args {
+                    text: Some("m".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "emit",
+                with(Args {
+                    text: Some("e".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "action",
+                with(Args {
+                    text: Some("help.open".into()),
+                    ..Args::default()
+                }),
+                None,
+            ),
+            (
+                "action",
+                with(Args {
+                    text: Some(super::super::clipboard::PASTE_ACTION.into()),
+                    ..Args::default()
+                }),
+                Some(Sessions),
+            ),
+        ];
+        for (verb, args, expected) in verbs {
+            let command = Command::parse(verb, args).unwrap_or_else(|e| panic!("{verb}: {e}"));
+            assert_eq!(command.requires(), expected, "{verb}: {command:?}");
+        }
     }
 
     /// A pane reaching the action registry from a key handler, which is the
@@ -1922,7 +2211,7 @@ mod tests {
                 }
             ),
             Ok(Command::Action {
-                owner: "plugins/10_sessions.lua".into(),
+                fallback: "plugins/10_sessions.lua".into(),
                 action: "help.open".into(),
             })
         );

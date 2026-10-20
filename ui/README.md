@@ -348,9 +348,11 @@ pressed row from the action's `args.session_id`. The full contract is in
 `docs/PLUGINS.md` → *The right button*.
 
 `thurbox.granted` tells you which capabilities *this* file has been granted
-(`granted.run`, `granted.program`). It exists because not every capability can be
-withheld by absence: `run` is a global, so `if not run then` is the check, but an
-interactive program pane is asked for through `command`, which every plugin has.
+(`granted.run`, `granted.program`, `granted.sessions`, `granted.files`). It exists
+because not every capability can be withheld by absence: `run` and `files` are
+globals, so `if not run then` is the check, but an interactive program pane, and
+the verbs that drive an agent or lose something for good (`sessions`), are asked for
+through `command`, which every plugin has.
 
 **Deliberately absent**: `os`, `io`, `debug`, `package`, `print`, `dofile`,
 `load`, `loadstring`, `rawset`, `require` of anything outside `lib/`. They are not blocked,
@@ -415,6 +417,11 @@ These are the ones that cost real time.
 - **`run` is nil until the user trusts the file.** Declaring
   `capabilities = { "run" }` does not grant it. Check `if not run then` and draw
   something honest; do not call it and hope.
+- **`send`, `create`, `fork`, `restart`, `dispatch`, `automation`, `plugin` and a
+  force `delete` need `sessions`; `open` needs `run`.** Without
+  the grant the command is refused and `command.failed` says why. `files` is nil
+  until the file is granted `files`. Check `thurbox.granted.sessions` before
+  offering a key that would only be refused.
 - **A program pane needs `focusable = true`.** `capabilities = { "program" }` plus
   `input = "session"` gets you a terminal you can never type at, because raw input
   only reaches the plugin that *has* focus. It draws perfectly and ignores the
