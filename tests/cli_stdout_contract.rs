@@ -336,10 +336,24 @@ fn session_purge_drops_old_deletes_and_list_since_reads_only_newer_ones() {
     }
     let db = thurbox::storage::Database::open(&env.path("data").join("thurbox.db"))
         .expect("open the instance database");
+    for id in [&old, &recent] {
+        db.conn_ref()
+            .execute(
+                "UPDATE sessions SET backend_type = ?1 WHERE id = ?2",
+                rusqlite::params![
+                    thurbox::session::Route::local(Some(
+                        thurbox::session::Multiplexer::platform_default()
+                    ))
+                    .format(),
+                    id
+                ],
+            )
+            .unwrap();
+    }
     let forty_days_ago = thurbox::sync::current_time_millis() - 40 * 24 * 60 * 60 * 1000;
     db.conn_ref()
         .execute(
-            "UPDATE sessions SET deleted_at = ?1 WHERE id = ?2",
+            "UPDATE sessions SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",
             rusqlite::params![forty_days_ago as i64, old],
         )
         .expect("age the old delete");
@@ -381,6 +395,37 @@ fn session_purge_drops_old_deletes_and_list_since_reads_only_newer_ones() {
     // Neither an age nor `--all`: refused before anything is read.
     let bare = env.run(&["session", "purge", "--json"]);
     assert_eq!(bare.status.code(), Some(2));
+}
+
+#[test]
+fn deleted_list_since_includes_force_promotion_of_an_older_delete() {
+    let env = Env::new();
+    let id = seed_session(&env, "promoted", "codex");
+    let db = open_db(&env);
+    let parsed: SessionId = id.parse().unwrap();
+    db.soft_delete_session(parsed).unwrap();
+    db.conn_ref()
+        .execute(
+            "UPDATE sessions SET deleted_at = 10, updated_at = 10 WHERE id = ?1",
+            [&id],
+        )
+        .unwrap();
+    let listed = || {
+        let out = env.run(&["session", "list", "--deleted", "--since", "20", "--json"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    assert!(listed().as_array().unwrap().is_empty());
+    db.mark_session_force_deleted(parsed).unwrap();
+    let rows = listed();
+    assert_eq!(rows[0]["id"], id);
+    assert_eq!(rows[0]["deleted_at"], 10);
+    assert_eq!(rows[0]["force_deleted"], true);
+    assert!(rows[0]["updated_at"].as_u64().unwrap() >= 20);
 }
 
 /// A reference matching two sessions is a different answer from one matching

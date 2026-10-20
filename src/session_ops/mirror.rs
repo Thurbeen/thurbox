@@ -686,7 +686,7 @@ fn host_lists(host: &HostDef, cli: &CliInfo, backend: &str) -> Result<(Value, Va
 }
 
 /// A host's deleted rows as this side last assembled them, by id, and the
-/// newest `deleted_at` among them — what the next pass asks `--since`.
+/// newest deletion or update among them — what the next pass asks `--since`.
 struct DeletedHistory {
     rows: std::collections::BTreeMap<String, Value>,
     newest: u64,
@@ -719,7 +719,11 @@ impl DeletedHistory {
             let Some(id) = row.get("id").and_then(Value::as_str).map(str::to_string) else {
                 continue;
             };
-            let at = row.get("deleted_at").and_then(Value::as_u64).unwrap_or(0);
+            let at = row
+                .get("deleted_at")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                .max(row.get("updated_at").and_then(Value::as_u64).unwrap_or(0));
             self.newest = self.newest.max(at);
             self.rows.insert(id, row);
         }
@@ -746,7 +750,7 @@ fn deleted_histories() -> &'static Mutex<HashMap<String, DeletedHistory>> {
 }
 
 /// The host's deleted rows: its whole history the first time, and after that
-/// only what it deleted since the newest row already held.
+/// only what was deleted or changed since the newest timestamp already held.
 ///
 /// The history grows for the life of the host's database — ~1600 rows came to
 /// ~900 KB a listing — and every write there moves `session revision`, so the
@@ -764,18 +768,21 @@ fn host_deleted(
     backend: &str,
     active: &Value,
 ) -> Result<Value, String> {
-    if !cli.deleted_since {
+    if !cli.deleted_changes_since {
         return host_cli::run(host, cli, &["session", "list", "--deleted"]);
     }
     // Taken out rather than held: the lock must not span an ssh round trip
     // that another host's pass is waiting on.
     let held = deleted_histories()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(backend)
         .filter(|history| history.read_whole_at.elapsed() < DELETED_HISTORY_TTL);
-    let mut history = match held {
+    let history = match held {
         Some(mut history) => {
+            // The active answer precedes the deleted answer: remove only
+            // cached tombstones before applying the newer deletes.
+            history.forget_restored(active);
             let since = history.newest.to_string();
             history.absorb(host_cli::run(
                 host,
@@ -790,11 +797,10 @@ fn host_deleted(
             history
         }
     };
-    history.forget_restored(active);
     let rows = Value::Array(history.rows.values().cloned().collect());
     deleted_histories()
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(backend.to_string(), history);
     Ok(rows)
 }

@@ -109,9 +109,9 @@ pub struct CliInfo {
     /// Whether `session revision` is understood, so the mirror can skip the
     /// full lists while the host's rows have not moved.
     pub session_revision: bool,
-    /// Whether `session list --deleted --since` is understood, so the mirror
-    /// can ask for the deletes it has not seen rather than the whole history.
-    pub deleted_since: bool,
+    /// Whether deleted-list deltas include changes to older tombstones and
+    /// report `updated_at`. Deletion-time-only peers need full listings.
+    pub deleted_changes_since: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -729,8 +729,8 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .get("session_revision")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        deleted_since: json
-            .get("deleted_since")
+        deleted_changes_since: json
+            .get("deleted_changes_since")
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }))
@@ -1449,7 +1449,7 @@ pub(crate) mod fake {
             multiplexer_choice: false,
             soft_delete_choice: true,
             session_revision: false,
-            deleted_since: false,
+            deleted_changes_since: false,
         }
     }
 }
@@ -1581,7 +1581,7 @@ mod tests {
             multiplexer_choice: false,
             soft_delete_choice: false,
             session_revision: false,
-            deleted_since: false,
+            deleted_changes_since: false,
         }
     }
 
@@ -1623,7 +1623,7 @@ mod tests {
         let found = parse_probe(
             "@cli /usr/local/bin/thurbox-cli\n@status 0\n{\"version\":\"1.4.0\",\
              \"tmux_socket\":\"thurbox\",\"data_dir\":\"/home/me/.local/share/thurbox\",\
-             \"schema_version\":40}\n",
+             \"schema_version\":40,\"deleted_since\":true}\n",
         )
         .unwrap()
         .unwrap();
@@ -1637,14 +1637,19 @@ mod tests {
         assert_eq!(found.schema_version, Some(40));
         assert!(!found.multiplexer_choice);
         assert!(!found.soft_delete_choice);
+        assert!(
+            !found.deleted_changes_since,
+            "deletion-time-only deltas need full listings"
+        );
         let capable = parse_probe(
             "@cli thurbox-cli\n@status 0\n{\"version\":\"1.4.0\",\
-             \"schema_version\":40,\"multiplexer_choice\":true,\"soft_delete_choice\":true}\n",
+             \"schema_version\":40,\"multiplexer_choice\":true,\"soft_delete_choice\":true,\"deleted_changes_since\":true}\n",
         )
         .unwrap()
         .unwrap();
         assert!(capable.multiplexer_choice);
         assert!(capable.soft_delete_choice);
+        assert!(capable.deleted_changes_since);
         assert_eq!(parse_probe("@none\n").unwrap(), None);
         // Neither of these says a CLI was found, so neither justifies
         // re-provisioning; both are the host failing to answer the protocol.

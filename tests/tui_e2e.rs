@@ -3031,6 +3031,113 @@ fn a_sessionless_run_is_refused_before_queueing_and_local_runs_complete() {
     assert!(tui.quit().success());
 }
 
+/// Keep the real server and its output alive while closing only the control
+/// client's input. A burst cannot reliably fill a queue drained on another
+/// thread; a pipe with no reader reliably makes that writer fail instead.
+struct CutProgramInput {
+    control: std::fs::File,
+    root: PathBuf,
+}
+
+impl CutProgramInput {
+    fn install(profile: &Profile) -> Self {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let real = Command::new("sh")
+            .args(["-c", "command -v tmux"])
+            .output()
+            .expect("find tmux");
+        assert!(real.status.success());
+        let real = PathBuf::from(String::from_utf8(real.stdout).unwrap().trim());
+        let root = profile.path("input-relay");
+        std::fs::create_dir(&root).expect("relay directory");
+        let fifo = root.join("control");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let control = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .expect("control fifo");
+        let shim = profile.bin.join("tmux");
+        std::fs::write(
+            &shim,
+            format!(
+                r#"#!/bin/sh
+case " $* " in
+  *" -C attach-session "*)
+    cd {root} || exit 1
+    : > started
+    mkfifo up down || exit 1
+    exec 3<>up
+    # Dash redirects stdin of async commands to /dev/null before <&0.
+    # Preserve the incoming pipe on a separate descriptor for the input pump.
+    exec 4<&0
+    up= down= mux=
+    cleanup() {{
+      for pid in "$up" "$down" "$mux"; do
+        [ -z "$pid" ] || kill "$pid" 2>/dev/null
+      done
+      wait
+      exec 3>&-
+      : > done
+    }}
+    trap cleanup EXIT
+    {real} "$@" <up >down 3>&- 4<&- & mux=$!
+    cat <down 3>&- 4<&- & down=$!
+    cat <&4 >&3 3>&- 4<&- & up=$!
+    exec 4<&- 0</dev/null
+    : > ready
+    while IFS= read -r request; do
+      case "$request" in
+        cut) kill "$up"; wait "$up"; up=; : > cut ;;
+        stop) break ;;
+      esac
+    done <control
+    ;;
+  *) exec {real} "$@" ;;
+esac
+"#,
+                root = shell_word(&root),
+                real = shell_word(&real),
+            ),
+        )
+        .expect("tmux input relay");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self { control, root }
+    }
+
+    fn cut(&mut self, tui: &Tui) {
+        tui.wait_until("the control relay to attach", |_| {
+            self.root.join("ready").exists()
+        });
+        self.control.write_all(b"cut\n").expect("cut input");
+        tui.wait_until("the input relay to close", |_| {
+            self.root.join("cut").exists()
+        });
+    }
+}
+
+impl Drop for CutProgramInput {
+    fn drop(&mut self) {
+        // The supervisor owns and reaps its pumps, including on a test panic.
+        // Its held FIFO descriptor keeps server input open until this request.
+        let _ = self.control.write_all(b"stop\n");
+        let deadline = Instant::now() + WAIT;
+        while self.root.join("started").exists() && !self.root.join("done").exists() {
+            if Instant::now() >= deadline {
+                eprintln!("input relay did not acknowledge teardown");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    }
+}
+
 /// Types at a program it started, and counts what `command.failed` told it.
 const TYPIST: &str = r#"return {
   name = "typist",
@@ -3041,26 +3148,28 @@ const TYPIST: &str = r#"return {
   render = function()
     return {
       type = "text",
-      text = "tb-typist " .. (state.step or 0)
+      text = "tb-typist " .. (state.started and 1 or 0)
         .. " absent=" .. (state.absent or 0)
-        .. " full=" .. (state.full and "yes" or "no"),
+        .. " shut=" .. (state.closed and "yes" or "no"),
     }
   end,
   keys = {
     { key = "ctrl+g", action = "typist.next", desc = "next step", scope = "global" },
+    { key = "ctrl+u", action = "typist.missing", desc = "missing program", scope = "global" },
   },
   on_action = function(action)
+    if action == "typist.missing" then
+      command("program", { text = "gone", keys = "x" })
+      return true
+    end
     if action ~= "typist.next" then
       return false
     end
-    state.step = (state.step or 0) + 1
-    if state.step == 1 then
+    if not state.started then
+      state.started = true
       command("program", { text = "cat", repo = "cat" })
-      for _ = 1, 5000 do
-        command("program", { text = "cat", keys = "x" })
-      end
     else
-      command("program", { text = "gone", keys = "x" })
+      command("program", { text = "cat", keys = "x" })
     end
     return true
   end,
@@ -3069,20 +3178,15 @@ const TYPIST: &str = r#"return {
     if error:find("no running program", 1, true) then
       state.absent = (state.absent or 0) + 1
     end
-    if error:find("full", 1, true) then
-      state.full = true
+    if error:find("input channel closed", 1, true) then
+      state.closed = true
     end
   end,
 }"#;
 
-/// Every refused `keys` send reaches the plugin's `command.failed`, with the
-/// reason it was refused (#1119).
-///
-/// The burst is the case that was misreported: one batch holds more sends than
-/// a pane's input channel, so the tail is refused while `cat` is plainly
-/// running — and was reported as "no running program", to the band only. The
-/// second step is the honest version of that message, which also never reached
-/// the plugin.
+/// A live program whose input failed is distinct from a missing program, and
+/// both refusal reasons reach the plugin (#1119). Queue overflow itself is
+/// pinned without a consumer by `input_channel_overflow_fails_fast_without_blocking`.
 #[test]
 fn a_refused_keystroke_reaches_the_plugin_with_the_reason_it_was_refused() {
     if !have_tmux() {
@@ -3091,23 +3195,58 @@ fn a_refused_keystroke_reaches_the_plugin_with_the_reason_it_was_refused() {
     }
     let interface = interface_plus("91_typist.lua", TYPIST);
     let profile = Profile::new();
+    let mut relay = CutProgramInput::install(&profile);
     trust(&profile, interface.path(), "plugins/91_typist.lua", TYPIST);
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
     tui.wait_for("tb-typist 0");
-
     tui.send(b"\x07");
-    tui.wait_for("tb-typist 1 absent=0 full=yes");
+    tui.wait_for("tb-typist 1");
+    relay.cut(&tui);
+
+    // The first write fails in the control writer; the next makes the pane
+    // writer drop its receiver. Wait for that state, not a scheduling delay.
+    let deadline = Instant::now() + WAIT;
+    while !tui.frame().contains("tb-typist 1 absent=0 shut=yes") {
+        assert!(
+            !tui.frame().contains("no running program"),
+            "a live program's input failure was reported as a missing program:\n{}",
+            tui.frame()
+        );
+        if Instant::now() >= deadline {
+            tui.give_up("the live program's closed input refusal");
+        }
+        tui.send(b"\x07");
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    let panes = profile.server.tmux(&[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{pane_dead} #{pane_current_command}",
+    ]);
+    assert!(panes.status.success());
+    assert!(
+        String::from_utf8_lossy(&panes.stdout)
+            .lines()
+            .any(|line| line == "0 cat"),
+        "the program must still be alive: {}",
+        String::from_utf8_lossy(&panes.stdout)
+    );
     assert!(
         !tui.frame().contains("no running program"),
-        "a full input channel was reported as a missing program:\n{}",
+        "a closed input channel was reported as a missing program:\n{}",
         tui.frame()
     );
-
-    tui.send(b"\x07");
-    tui.wait_for("tb-typist 2 absent=1");
-
+    tui.send(b"\x15");
+    tui.wait_for("tb-typist 1 absent=1 shut=yes");
+    let reaped = relay.root.join("done");
+    drop(relay);
+    assert!(
+        reaped.exists(),
+        "the relay must reap its pumps and close its FIFO"
+    );
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
 }

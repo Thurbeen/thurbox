@@ -382,7 +382,7 @@ mod tests {
             multiplexer_choice: true,
             soft_delete_choice: true,
             session_revision: true,
-            deleted_since: true,
+            deleted_changes_since: true,
         }
     }
 

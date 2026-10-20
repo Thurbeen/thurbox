@@ -639,11 +639,12 @@ once that host answers — the same two drivers as the reap, and the reason
 force-deleting against a machine that is down is allowed to keep working.
 `session purge --older-than-days <N> | --all [--dry-run]`
 (`session_ops::purge`) is the one way a deleted row leaves the table for good:
-it reaps a soft row's windows first, keeps a row inside its undo window, one
-whose teardown is owed, or one whose server could not be listed (each with its
-reason), leaves worktrees on disk and lists them, and re-checks "still deleted,
-owes nothing" in the transaction that drops the row, so a restore racing it
-wins. `deleted_retention_days` (settings.toml, `0` = off) runs the same purge
+it reaps a soft row's windows first and confirms they are gone, keeps a row inside its undo window, one
+whose teardown is owed, whose force-delete windows remain, whose ownership is
+ambiguous, or whose server could not be listed (each with its
+reason), leaves worktrees on disk and lists them, and re-checks "same deletion,
+owes nothing" in the transaction that drops the row, so a restore or fresh
+delete racing it wins. `deleted_retention_days` (settings.toml, `0` = off) runs the same purge
 from the end of `reap_overdue_soft_deletes`, behind one `EXISTS` probe. The
 row is marked deleted before teardown, in one write — a force delete stamps
 `deleted_at` and `force_deleted` together rather than soft-deleting first, so a

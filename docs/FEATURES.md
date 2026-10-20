@@ -778,7 +778,10 @@ has the rationale; the shape:
   host that changed nothing is not re-listed: the pass asks its
   `session revision` first and reuses the lists it last pulled while
   that number holds. The deleted list is read whole once, then only by
-  `--since` the newest delete already held: it is the host's whole history,
+  `--since` the newest deletion or update already held, including force-delete
+  promotions of older tombstones. Deltas require the host's
+  `deleted_changes_since` capability; older hosts are read whole. Cached history
+  is refreshed whole hourly. It is the host's whole history,
   and it is still all needed — a row held here that the host deleted long
   ago must read as deleted, not as unknown, or the pass would register it
   back onto the host.
@@ -885,7 +888,11 @@ has the rationale; the shape:
   collect them.
 - **Purge.** `thurbox-cli session purge` (or `deleted_retention_days`)
   drops deleted rows from *this* database only; a mirror never pushes a
-  purge to its host. Purge each machine's own history there.
+  purge to its host. Purge each machine's own history there. A deleted row is
+  retained unless its owned windows are confirmed gone, including a failed force
+  teardown or ambiguous ownership; the final transaction
+  also requires its selected deletion timestamp, preserving a fresh delete
+  made while teardown was being checked.
 - **A delete sticks.** A tombstone here outranks a row the host still
   lists as active, unless the host wrote that row *after* the delete
   (which is a restore taken there): the listing carries `updated_at`

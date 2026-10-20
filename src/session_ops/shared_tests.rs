@@ -48,10 +48,12 @@ struct Host {
     /// When each deleted row was deleted, on the host's clock; `0` for a row
     /// the test seeded without one.
     deleted_at: std::collections::HashMap<SessionId, u64>,
+    updated_at: std::collections::HashMap<SessionId, u64>,
     /// The host's clock, moved by each delete it takes.
     clock: u64,
     /// A canned refusal for the next `create`.
     refuse_create: Option<String>,
+    delete_after_active_read: Vec<SessionId>,
 }
 
 struct Rig {
@@ -115,19 +117,29 @@ fn rig() -> Rig {
                     host.deleted
                         .iter()
                         .map(|(id, force)| (id, force, host.deleted_at.get(id).copied().unwrap_or(0)))
-                        .filter(|(_, _, at)| *at >= since)
+                        .filter(|(id, _, at)| (*at).max(host.updated_at.get(id).copied().unwrap_or(*at)) >= since)
                         .map(|(id, force, at)| {
-                            json!({ "id": id.to_string(), "force_deleted": force, "deleted_at": at })
+                            json!({ "id": id.to_string(), "force_deleted": force, "deleted_at": at, "updated_at": host.updated_at.get(id).copied().unwrap_or(at) })
                         })
                         .collect(),
                 ))
             }
-            ["session", "list"] => Ok(Value::Array(
-                host.active
-                    .iter()
-                    .map(|s| mirror::session_to_json(s, Some("working"), None, Some(1)))
-                    .collect(),
-            )),
+            ["session", "list"] => {
+                let answer = Value::Array(
+                    host.active
+                        .iter()
+                        .map(|s| mirror::session_to_json(s, Some("working"), None, Some(1)))
+                        .collect(),
+                );
+                for id in std::mem::take(&mut host.delete_after_active_read) {
+                    host.active.retain(|s| s.id != id);
+                    host.clock += 1;
+                    let at = host.clock;
+                    host.deleted.push((id, false));
+                    host.deleted_at.insert(id, at);
+                }
+                Ok(answer)
+            }
             ["session", "delete", id, rest @ ..] => {
                 let id: SessionId = id.parse().unwrap();
                 if !host.active.iter().any(|s| s.id == id) {
@@ -672,7 +684,7 @@ fn a_delete_taken_while_the_host_was_unusable_is_pushed_on_the_next_pass() {
 fn a_long_deleted_history_is_read_whole_once_and_then_only_by_what_changed() {
     let rig = rig();
     fake::force_usable(Usable::Yes(host_cli::CliInfo {
-        deleted_since: true,
+        deleted_changes_since: true,
         ..fake::cli()
     }));
     // ~1600 sessions deleted on the host long ago, one of them still held here.
@@ -729,4 +741,75 @@ fn a_long_deleted_history_is_read_whole_once_and_then_only_by_what_changed() {
     // Still known to have been deleted there, though this pass never listed it.
     assert!(rig.db.get_deleted_session_by_id(stale).unwrap().is_some());
     assert!(reports[0].unknown_local.is_empty(), "{:?}", reports[0]);
+}
+
+#[test]
+fn a_delete_between_active_and_deleted_reads_survives_the_next_delta() {
+    let rig = rig();
+    fake::force_usable(Usable::Yes(host_cli::CliInfo {
+        deleted_changes_since: true,
+        ..fake::cli()
+    }));
+    let first = SessionId::default();
+    let later = SessionId::default();
+    {
+        let mut host = rig.host.borrow_mut();
+        host.active.push(host_session(first, "first"));
+        host.active.push(host_session(later, "later"));
+    }
+    mirror::sync(&rig.db, Some(HOST), false).unwrap();
+    rig.host.borrow_mut().delete_after_active_read = vec![first, later];
+    mirror::sync(&rig.db, Some(HOST), false).unwrap();
+    let reports = mirror::sync(&rig.db, Some(HOST), false).unwrap();
+    for id in [first, later] {
+        assert!(
+            rig.db.get_deleted_session_by_id(id).unwrap().is_some(),
+            "the later deleted answer wins for {id}: {reports:?}"
+        );
+        assert!(rig.db.get_session_by_id(id).unwrap().is_none());
+    }
+    assert!(reports[0].unknown_local.is_empty(), "{:?}", reports[0]);
+}
+
+#[test]
+fn force_deletion_of_an_older_tombstone_reaches_the_next_observer() {
+    let rig = rig();
+    fake::force_usable(Usable::Yes(host_cli::CliInfo {
+        deleted_changes_since: true,
+        ..fake::cli()
+    }));
+    let old = SessionId::default();
+    let newer = SessionId::default();
+    {
+        let mut host = rig.host.borrow_mut();
+        host.active.push(host_session(old, "old"));
+        host.active.push(host_session(newer, "newer"));
+    }
+    mirror::sync(&rig.db, Some(HOST), false).unwrap();
+    {
+        let mut host = rig.host.borrow_mut();
+        host.active.clear();
+        host.deleted = vec![(old, false), (newer, false)];
+        host.deleted_at.insert(old, 10);
+        host.deleted_at.insert(newer, 20);
+    }
+    mirror::sync(&rig.db, Some(HOST), false).unwrap();
+    assert!(
+        !rig.db
+            .get_deleted_session_by_id(old)
+            .unwrap()
+            .unwrap()
+            .force_deleted
+    );
+    rig.host.borrow_mut().deleted[0].1 = true;
+    rig.host.borrow_mut().updated_at.insert(old, 30);
+    mirror::sync(&rig.db, Some(HOST), false).unwrap();
+    assert!(
+        rig.db
+            .get_deleted_session_by_id(old)
+            .unwrap()
+            .unwrap()
+            .force_deleted,
+        "a force-delete mark must propagate even below the deletion-time cursor"
+    );
 }

@@ -91,37 +91,81 @@ pub fn purge_deleted(
                 .push(kept("its teardown is still owed on its host"));
             continue;
         }
-        if !row.force_deleted {
-            if now.saturating_sub(row.deleted_at) < super::UNDO_WINDOW.as_millis() as u64 {
-                report.kept.push(kept("it is inside its undo window"));
+        if !row.force_deleted
+            && now.saturating_sub(row.deleted_at) < super::UNDO_WINDOW.as_millis() as u64
+        {
+            report.kept.push(kept("it is inside its undo window"));
+            continue;
+        }
+        let index = windows
+            .entry(row.backend_type.clone())
+            .or_insert_with(|| super::delete::listed_windows_on(db, backends, &row.backend_type));
+        let Some(index) = index else {
+            report
+                .kept
+                .push(kept("its server's windows could not be listed"));
+            continue;
+        };
+        if ambiguous_windows(index, &row) {
+            report.kept.push(kept("its window ownership is ambiguous"));
+            continue;
+        }
+        let owns = !super::delete::owned_windows_in(
+            index,
+            &row,
+            super::delete::has_live_namesake(db, &row),
+        )
+        .is_empty();
+        if !dry_run {
+            let current = db
+                .get_deleted_session_by_id(row.id)
+                .map_err(|e| format!("get deleted session: {e}"))?;
+            if !current.is_some_and(|current| {
+                current.deleted_at == row.deleted_at
+                    && current.force_deleted == row.force_deleted
+                    && !current.teardown_owed
+            }) {
+                report.kept.push(kept("its deletion changed meanwhile"));
                 continue;
             }
-            let index = windows.entry(row.backend_type.clone()).or_insert_with(|| {
-                super::delete::listed_windows_on(db, backends, &row.backend_type)
-            });
-            let Some(index) = index else {
+        }
+        if owns && row.force_deleted {
+            report.kept.push(kept("its windows are still present"));
+            continue;
+        }
+        if owns && !dry_run {
+            if let Err(e) = super::reap_soft_deleted(db, backends, row.id) {
                 report
                     .kept
-                    .push(kept("its server's windows could not be listed"));
+                    .push(kept(&format!("its windows did not come down: {e}")));
+                continue;
+            }
+            // Reaping is best effort. Permanent deletion needs a fresh
+            // listing proving that no owned window remains.
+            let confirmed = super::delete::listed_windows_on(db, backends, &row.backend_type);
+            let Some(confirmed) = confirmed else {
+                report
+                    .kept
+                    .push(kept("its window teardown could not be confirmed"));
                 continue;
             };
-            let owns = !super::delete::owned_windows_in(
-                index,
+            if ambiguous_windows(&confirmed, &row) {
+                report.kept.push(kept("its window ownership is ambiguous"));
+                continue;
+            }
+            if !super::delete::owned_windows_in(
+                &confirmed,
                 &row,
                 super::delete::has_live_namesake(db, &row),
             )
-            .is_empty();
-            if owns && !dry_run {
-                if let Err(e) = super::reap_soft_deleted(db, backends, row.id) {
-                    report
-                        .kept
-                        .push(kept(&format!("its windows did not come down: {e}")));
-                    continue;
-                }
+            .is_empty()
+            {
+                report.kept.push(kept("its windows are still present"));
+                continue;
             }
         }
         if !dry_run {
-            match db.purge_deleted_session(row.id) {
+            match db.purge_deleted_session(row.id, row.deleted_at) {
                 Ok(true) => {}
                 Ok(false) => {
                     report.kept.push(kept(
@@ -154,6 +198,19 @@ pub fn purge_deleted(
         });
     }
     Ok(report)
+}
+
+fn ambiguous_windows(
+    index: &crate::backend::identity::WindowIndex,
+    row: &DeletedSessionInfo,
+) -> bool {
+    let id = row.id.to_string();
+    [
+        index.agent_window(&id, &row.name),
+        index.shell_window(&id, &row.name),
+    ]
+    .into_iter()
+    .any(|window| matches!(window, crate::backend::identity::Located::Unknown))
 }
 
 /// The `deleted_retention_days` sweep: purge what has been deleted for longer
@@ -284,8 +341,16 @@ mod tests {
     fn a_row_restored_before_the_write_is_not_purged() {
         let db = Database::open_in_memory().unwrap();
         let id = deleted(&db, "back", "local-tmux", 40);
+        let deleted_at = db
+            .get_deleted_session_by_id(id)
+            .unwrap()
+            .unwrap()
+            .deleted_at;
         db.restore_session(id).unwrap();
-        assert!(!db.purge_deleted_session(id).unwrap());
+        assert!(!db.purge_deleted_session(id, deleted_at).unwrap());
         assert!(db.get_session_by_id(id).unwrap().is_some());
+        db.soft_delete_session(id).unwrap();
+        assert!(!db.purge_deleted_session(id, deleted_at).unwrap());
+        assert!(db.get_deleted_session_by_id(id).unwrap().is_some());
     }
 }

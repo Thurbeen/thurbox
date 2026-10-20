@@ -51,7 +51,7 @@ pub enum Action {
         /// this machine reads, with each row's `force_deleted` mark.
         #[arg(long)]
         deleted: bool,
-        /// With `--deleted`: only the rows deleted at or after this instant,
+        /// With `--deleted`: rows deleted or changed at or after this instant,
         /// in epoch milliseconds on this machine's clock — how a mirroring
         /// peer asks for what changed instead of the whole history.
         #[arg(long, requires = "deleted", value_name = "EPOCH_MS")]
@@ -2967,6 +2967,7 @@ fn deleted_session_to_json(r: &crate::storage::DeletedSessionInfo) -> Value {
         "parent_session_id": r.parent_session_id.map(|id| id.to_string()),
         "key": r.key,
         "deleted_at": r.deleted_at,
+        "updated_at": r.updated_at,
         "force_deleted": r.force_deleted,
         "teardown_owed": r.teardown_owed,
         "worktrees": r.worktrees.iter().map(|w| json!({
