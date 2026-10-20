@@ -317,6 +317,72 @@ fn session_restore_takes_a_reference_like_every_other_verb() {
     assert_eq!(missing.status.code(), Some(1));
 }
 
+/// `session purge` drops what was deleted long enough ago, and only that: a
+/// dry run changes nothing, and `session list --deleted --since` then lists
+/// just the delete that was kept.
+#[test]
+fn session_purge_drops_old_deletes_and_list_since_reads_only_newer_ones() {
+    let env = Env::new();
+    let old = seed_session(&env, "old", "claude");
+    let recent = seed_session(&env, "recent", "claude");
+    for id in [&old, &recent] {
+        let out = env.run(&["session", "delete", id, "--soft", "--json"]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let db = thurbox::storage::Database::open(&env.path("data").join("thurbox.db"))
+        .expect("open the instance database");
+    let forty_days_ago = thurbox::sync::current_time_millis() - 40 * 24 * 60 * 60 * 1000;
+    db.conn_ref()
+        .execute(
+            "UPDATE sessions SET deleted_at = ?1 WHERE id = ?2",
+            rusqlite::params![forty_days_ago as i64, old],
+        )
+        .expect("age the old delete");
+
+    let purge = |args: &[&str]| -> Value {
+        let out = env.run(&[&["session", "purge"], args, &["--json"]].concat());
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).expect("one JSON document")
+    };
+    let dry = purge(&["--older-than-days", "30", "--dry-run"]);
+    assert_eq!(dry["purged"][0]["id"], Value::String(old.clone()), "{dry}");
+    assert_eq!(dry["purged"].as_array().map(Vec::len), Some(1), "{dry}");
+    let listed = |extra: &[&str]| -> Vec<String> {
+        let out = env.run(&[&["session", "list", "--deleted"], extra, &["--json"]].concat());
+        let rows: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+        rows.as_array()
+            .expect("an array")
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(listed(&[]).len(), 2, "a dry run purges nothing");
+
+    let done = purge(&["--older-than-days", "30"]);
+    assert_eq!(
+        done["purged"][0]["id"],
+        Value::String(old.clone()),
+        "{done}"
+    );
+    assert_eq!(listed(&[]), vec![recent.clone()]);
+    let since = (forty_days_ago + 1).to_string();
+    assert_eq!(listed(&["--since", &since]), vec![recent]);
+
+    // Neither an age nor `--all`: refused before anything is read.
+    let bare = env.run(&["session", "purge", "--json"]);
+    assert_eq!(bare.status.code(), Some(2));
+}
+
 /// A reference matching two sessions is a different answer from one matching
 /// none, and a driver has to be able to tell them apart without matching on the
 /// message: it reconciles the first by creating a session, and can only escalate

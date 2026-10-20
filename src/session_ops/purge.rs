@@ -14,7 +14,6 @@
 
 use std::path::PathBuf;
 
-use crate::backend::identity::WindowIndex;
 use crate::session::SessionId;
 use crate::storage::{Database, DeletedSessionInfo};
 
@@ -72,8 +71,10 @@ pub fn purge_deleted(
     let rows = db
         .list_deleted_sessions()
         .map_err(|e| format!("list_deleted_sessions: {e}"))?;
-    let mut windows: std::collections::HashMap<String, Option<WindowIndex>> =
-        std::collections::HashMap::new();
+    let mut windows: std::collections::HashMap<
+        String,
+        Option<crate::backend::identity::WindowIndex>,
+    > = std::collections::HashMap::new();
     let mut report = PurgeReport::default();
     for row in rows.into_iter().filter(selected) {
         let kept = |reason: &str| Kept {
