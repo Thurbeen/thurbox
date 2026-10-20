@@ -82,7 +82,9 @@ pub fn purge_deleted(
             reason: reason.to_string(),
         };
         if row.teardown_owed {
-            report.kept.push(kept("its teardown is still owed on its host"));
+            report
+                .kept
+                .push(kept("its teardown is still owed on its host"));
             continue;
         }
         if !row.force_deleted {
@@ -90,11 +92,13 @@ pub fn purge_deleted(
                 report.kept.push(kept("it is inside its undo window"));
                 continue;
             }
-            let index = windows
-                .entry(row.backend_type.clone())
-                .or_insert_with(|| super::delete::listed_windows_on(db, backends, &row.backend_type));
+            let index = windows.entry(row.backend_type.clone()).or_insert_with(|| {
+                super::delete::listed_windows_on(db, backends, &row.backend_type)
+            });
             let Some(index) = index else {
-                report.kept.push(kept("its server's windows could not be listed"));
+                report
+                    .kept
+                    .push(kept("its server's windows could not be listed"));
                 continue;
             };
             let owns = !super::delete::owned_windows_in(
@@ -105,7 +109,9 @@ pub fn purge_deleted(
             .is_empty();
             if owns && !dry_run {
                 if let Err(e) = super::reap_soft_deleted(db, backends, row.id) {
-                    report.kept.push(kept(&format!("its windows did not come down: {e}")));
+                    report
+                        .kept
+                        .push(kept(&format!("its windows did not come down: {e}")));
                     continue;
                 }
             }
@@ -114,13 +120,15 @@ pub fn purge_deleted(
             match db.purge_deleted_session(row.id) {
                 Ok(true) => {}
                 Ok(false) => {
-                    report
-                        .kept
-                        .push(kept("it was restored, or began owing a teardown, meanwhile"));
+                    report.kept.push(kept(
+                        "it was restored, or began owing a teardown, meanwhile",
+                    ));
                     continue;
                 }
                 Err(e) => {
-                    report.kept.push(kept(&format!("the database refused: {e}")));
+                    report
+                        .kept
+                        .push(kept(&format!("the database refused: {e}")));
                     continue;
                 }
             }
@@ -238,7 +246,10 @@ mod tests {
 
         let dry = purge_deleted(&db, &backends, Age::OlderThanDays(30), true).unwrap();
         assert_eq!(names(&dry), (vec!["old"], vec!["owed", "unlisted"]));
-        assert!(db.get_deleted_session_by_id(old).unwrap().is_some(), "a dry run writes nothing");
+        assert!(
+            db.get_deleted_session_by_id(old).unwrap().is_some(),
+            "a dry run writes nothing"
+        );
 
         let done = purge_deleted(&db, &backends, Age::OlderThanDays(30), false).unwrap();
         assert_eq!(names(&done), (vec!["old"], vec!["owed", "unlisted"]));

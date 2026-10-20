@@ -690,7 +690,10 @@ fn a_long_deleted_history_is_read_whole_once_and_then_only_by_what_changed() {
     held.backend_type = BACKEND.into();
     rig.db.upsert_session(&held).unwrap();
     let live = SessionId::default();
-    rig.host.borrow_mut().active.push(host_session(live, "live"));
+    rig.host
+        .borrow_mut()
+        .active
+        .push(host_session(live, "live"));
 
     let reports = mirror::sync(&rig.db, Some(HOST), false).unwrap();
     assert_eq!(reports[0].deleted, vec![stale]);

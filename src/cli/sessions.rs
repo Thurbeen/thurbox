@@ -1194,7 +1194,10 @@ fn run_purge(
         human.push_str(&format!("; kept {}", report.kept.len()));
     }
     for kept in &report.kept {
-        human.push_str(&format!("\n  kept '{}' ({}): {}", kept.name, kept.id, kept.reason));
+        human.push_str(&format!(
+            "\n  kept '{}' ({}): {}",
+            kept.name, kept.id, kept.reason
+        ));
     }
     let on_disk: Vec<_> = report
         .purged
