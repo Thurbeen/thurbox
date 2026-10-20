@@ -33,7 +33,8 @@ slow-timeout = { period = "30s" }
 # wall-clock waits. Run alongside the rest of the (much larger) suite at full
 # parallelism, they starve each other of CPU and blow their timeouts under
 # load even though each passes cleanly in isolation — serialize this one
-# binary so it never contends with itself or the rest of the run.
+# binary so its tests do not contend with each other. Other binaries still
+# run alongside it; a test group does not reserve the whole runner.
 [test-groups]
 e2e-pty = { max-threads = 1 }
 

@@ -101,6 +101,8 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   `tests/fixtures/v2_32_0_split_shell/`) upgrading back to classic. Also
   `just smoke`. It replaced the bash tmux
   smoke script, which could not see the byte stream and duplicated this harness.
+  Keyboard negotiation covers responsive legacy, kitty and silent terminals;
+  `docs/DEVELOPMENT.md` records the reply invariant and execution measurements.
   Two scenarios there cover a **remote session whose link has gone bad**, which
   needs a stand-in that a local tmux cannot supply on its own: `tmux -C
   attach-session` hands its stdin and stdout *file descriptors* to the tmux
