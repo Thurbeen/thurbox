@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::JoinHandle;
 
 use anyhow::{bail, Context, Result};
@@ -154,7 +154,7 @@ pub fn parse_snapshot(mut blocks: Vec<Vec<String>>) -> Option<PaneSnapshot> {
 
 /// A snapshot asked for with [`ControlMode::ask_snapshot`], not yet answered.
 pub(in crate::backend) struct PendingSnapshot {
-    rx: Receiver<CommandResponse>,
+    rx: Receiver<Reply>,
     cmd: String,
     pane: String,
 }
@@ -358,8 +358,10 @@ impl CommandResponse {
 /// each carries a command number of its own (measured, tmux 3.2 and 3.7c) — so
 /// only the sender can know.
 struct Waiter {
-    tx: SyncSender<CommandResponse>,
+    tx: SyncSender<Reply>,
     blocks: usize,
+    /// Its line's place on the wire (see [`Outbox`]).
+    seq: u64,
     /// For a [`snapshot_commands`] list: the pane whose output stream the
     /// answer is put into, as a [`PaneChunk::Snapshot`], at the point it
     /// arrived.
@@ -368,6 +370,62 @@ struct Waiter {
 
 /// The waiters, in the order their lines were written.
 type ResponseQueue = Arc<Mutex<VecDeque<Waiter>>>;
+
+/// What a waiter is handed: the answer, or the write error that kept its line
+/// from ever reaching the server. Only the second tells a caller that sending
+/// the command again cannot run it twice.
+type Reply = std::result::Result<CommandResponse, std::io::Error>;
+
+/// A line for the connection's writer thread, with its waiter's `seq`.
+struct Line {
+    seq: u64,
+    text: String,
+}
+
+/// The way into a connection. Taking a place in the reply queue and handing the
+/// line to the writer thread happen under this one lock, so lines go out in the
+/// order their waiters queued; the write happens on the writer thread, so
+/// nothing that holds this lock — a caller, the reader thread resuming a pane —
+/// ever waits on the pipe.
+struct Outbox {
+    /// `None` once the connection is closed or a write to it failed.
+    lines: Option<std::sync::mpsc::Sender<Line>>,
+    next: u64,
+    written: Arc<Written>,
+}
+
+/// How far the writer thread has got, for a sender that must not overtake the
+/// lines queued before it by another route ([`ControlModeWriter`]'s paste).
+#[derive(Default)]
+struct Written {
+    /// Every line before this `seq` is written, and whether the thread has
+    /// stopped, after which nothing more will be.
+    state: Mutex<(u64, bool)>,
+    moved: Condvar,
+}
+
+impl Written {
+    fn advance(&self, to: u64, stopped: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.0 = state.0.max(to);
+            state.1 |= stopped;
+        }
+        self.moved.notify_all();
+    }
+
+    /// Block until every line before `seq` is written or none will be.
+    fn wait_for(&self, seq: u64) {
+        let Ok(state) = self.state.lock() else {
+            return;
+        };
+        drop(
+            self.moved
+                .wait_while(state, |(written, stopped)| *written < seq && !*stopped),
+        );
+    }
+}
+
+type SharedOutbox = Arc<Mutex<Outbox>>;
 
 /// A waiter whose command list has answered some of its blocks.
 struct Answer {
@@ -576,6 +634,12 @@ pub trait PaneInput: Send + Sync {
     /// (`tmux_paste_commands`). An `Err` drops the paste: typing it out instead
     /// would make every CR in it `Enter`.
     fn paste(&self, pane_id: &str, text: &str) -> Option<Result<()>>;
+
+    /// Whether [`Self::paste`] goes around the connection, where nothing orders
+    /// it after the keys queued before it but waiting for them to be written.
+    fn pastes_out_of_band(&self) -> bool {
+        false
+    }
 }
 
 /// Max text bytes per `set-buffer` line of `tmux_paste_commands`. Every
@@ -658,7 +722,7 @@ fn tmux_paste_commands(pane_id: &str, text: &str) -> Vec<String> {
 }
 
 /// Per-pane writer that sends input via control-mode `send-keys` through the
-/// shared control stdin, encoded the way the server's adapter says
+/// connection's outbox, encoded the way the server's adapter says
 /// ([`PaneInput`]).
 ///
 /// A write that opens with `ESC[200~` is a paste, and a paste is never typed
@@ -671,7 +735,7 @@ fn tmux_paste_commands(pane_id: &str, text: &str) -> Vec<String> {
 /// place in the connection's reply queue like any other — see
 /// `ControlMode::write_unanswered`.
 pub struct ControlModeWriter {
-    stdin: Arc<Mutex<std::process::ChildStdin>>,
+    outbox: SharedOutbox,
     replies: ResponseQueue,
     pub pane_id: String,
     pub input: Arc<dyn PaneInput>,
@@ -683,7 +747,7 @@ impl Write for ControlModeWriter {
             return Ok(0);
         }
         // `Ok` either way for a paste that is dropped: an error here ends the
-        // writer task, and with it every later keystroke to this pane.
+        // pane's writer thread, and with it every later keystroke to this pane.
         let cmds = if buf.starts_with(PASTE_START) {
             let Some(text) = bracketed_paste_text(buf) else {
                 warn!("dropped a paste that is not one bracketed frame");
@@ -691,6 +755,13 @@ impl Write for ControlModeWriter {
             };
             if text.is_empty() {
                 return Ok(buf.len());
+            }
+            // A paste out of band does not queue behind the keys typed before
+            // it, so it waits for them to be written. One down the connection
+            // is ordered by the queue, and waiting would only park this pane's
+            // writer behind a stalled link.
+            if self.input.pastes_out_of_band() {
+                self.wait_written();
             }
             match self.input.paste(&self.pane_id, text) {
                 Some(Ok(())) => return Ok(buf.len()),
@@ -703,7 +774,7 @@ impl Write for ControlModeWriter {
         } else {
             self.input.send_keys(&self.pane_id, buf)
         };
-        ControlMode::write_unanswered(&self.stdin, &self.replies, &cmds).map_err(|e| {
+        ControlMode::write_unanswered(&self.outbox, &self.replies, &cmds).map_err(|e| {
             e.downcast::<std::io::Error>()
                 .unwrap_or_else(std::io::Error::other)
         })?;
@@ -712,6 +783,18 @@ impl Write for ControlModeWriter {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+impl ControlModeWriter {
+    /// Wait for every line queued on this connection so far to be written.
+    fn wait_written(&self) {
+        let Ok(outbox) = self.outbox.lock() else {
+            return;
+        };
+        let (seq, written) = (outbox.next, Arc::clone(&outbox.written));
+        drop(outbox);
+        written.wait_for(seq);
     }
 }
 
@@ -1034,13 +1117,13 @@ const RETIRE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// A live tmux control mode connection.
 ///
-/// Commands are sent serially (stdin lock ensures ordering) and responses arrive
-/// in the same order. We use a FIFO queue instead of matching command numbers,
+/// Commands are written in order by one writer thread (see [`Outbox`]) and
+/// responses arrive in the same order. We use a FIFO queue instead of matching command numbers,
 /// so **every** line written takes a place in it, whether or not its answer is
 /// read: tmux answers each command, and an answer with no place of its own is
 /// handed to whichever command was queued after it.
 pub(in crate::backend) struct ControlMode {
-    pub(in crate::backend) stdin: Arc<Mutex<ChildStdin>>,
+    outbox: SharedOutbox,
     pub(in crate::backend) pane_senders: PaneSendersMapShared,
     /// Where each registered pane lives, for turning `%window-close` into EOF.
     /// Written by `register_pane`/`unregister_pane`, read by the reader thread.
@@ -1071,8 +1154,8 @@ pub(in crate::backend) struct ControlMode {
     /// record in `hidden` and the commands it stands for — so the two cannot
     /// interleave: a hide's pause landing after a concurrent show's resume
     /// leaves a pane paused with no record, which nothing would ever resume.
-    /// Separate from `hidden`, which the reader thread takes on its way to the
-    /// stdin lock, so holding it across a write never stops stdout being read.
+    /// Separate from `hidden`, which the reader thread takes on its way to
+    /// resume a pane, so holding it never stops stdout being read.
     visibility: Mutex<()>,
     /// True while this connection lives; cleared on reader EOF and in `Drop`.
     /// The hook poller checks it each cycle so a replaced connection's
@@ -1179,19 +1262,19 @@ impl ControlMode {
             Self::drain_implicit_attach_response(&mut reader)?;
         }
 
-        let stdin = Arc::new(Mutex::new(stdin));
+        let response_queue: ResponseQueue = Arc::new(Mutex::new(VecDeque::new()));
+        let outbox = Self::spawn_writer(stdin, &response_queue)?;
         let pane_senders: PaneSendersMapShared =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
         let pane_windows: PaneWindowsMapShared =
             Arc::new(Mutex::new(std::collections::HashMap::new()));
         let pane_sizes: PaneSizesMapShared = Arc::default();
-        let response_queue: ResponseQueue = Arc::new(Mutex::new(VecDeque::new()));
         let sub_events: Arc<Mutex<VecDeque<(String, String)>>> =
             Arc::new(Mutex::new(VecDeque::new()));
         let alive = Arc::new(AtomicBool::new(true));
         let hidden: HiddenPanes = Arc::default();
 
-        let reader_stdin = Arc::clone(&stdin);
+        let reader_outbox = Arc::clone(&outbox);
         let reader_pane_senders = Arc::clone(&pane_senders);
         let reader_sizer = sizer.to_string();
         let reader_pane_windows = Arc::clone(&pane_windows);
@@ -1208,7 +1291,7 @@ impl ControlMode {
             .spawn(move || {
                 Self::reader_thread(
                     reader,
-                    reader_stdin,
+                    reader_outbox,
                     reader_pane_senders,
                     reader_pane_windows,
                     reader_pane_sizes,
@@ -1224,7 +1307,7 @@ impl ControlMode {
             .context("Failed to spawn control reader thread")?;
 
         let control = Self {
-            stdin,
+            outbox,
             pane_senders,
             pane_windows,
             pane_sizes,
@@ -1293,7 +1376,7 @@ impl ControlMode {
     /// drop for [`COMMAND_TIMEOUT`]; instead it exits on its own via the
     /// `alive` flag or the dead pipe shortly after.
     fn spawn_hook_poller(&self, cmd: String) {
-        let stdin = Arc::clone(&self.stdin);
+        let outbox = Arc::clone(&self.outbox);
         let queue = Arc::clone(&self.response_queue);
         let events = Arc::clone(&self.sub_events);
         let alive = Arc::clone(&self.alive);
@@ -1306,7 +1389,7 @@ impl ControlMode {
                     if !alive.load(Ordering::Relaxed) {
                         break;
                     }
-                    let body = match Self::send_command_on(&stdin, &queue, &cmd, 1) {
+                    let body = match Self::send_command_on(&outbox, &queue, &cmd, 1) {
                         Ok(body) => body,
                         Err(e) => {
                             debug!("hook poller stopping: {e:#}");
@@ -1410,7 +1493,7 @@ impl ControlMode {
     #[allow(clippy::too_many_arguments)]
     fn reader_thread(
         mut reader: BufReader<std::process::ChildStdout>,
-        stdin: Arc<Mutex<ChildStdin>>,
+        outbox: SharedOutbox,
         pane_senders: PaneSendersMapShared,
         pane_windows: PaneWindowsMapShared,
         pane_sizes: PaneSizesMapShared,
@@ -1485,7 +1568,7 @@ impl ControlMode {
                     );
                 }
                 Notification::Pause { pane_id } => {
-                    Self::on_pause(&stdin, &response_queue, &hidden, &pane_id);
+                    Self::on_pause(&outbox, &response_queue, &hidden, &pane_id);
                 }
                 Notification::WindowClose { window_id } => match &confirm_close {
                     None => {
@@ -1493,7 +1576,7 @@ impl ControlMode {
                         Self::forget_sizes(&pane_sizes, &pane_windows);
                     }
                     Some(listing) => Self::spawn_close_check(
-                        &stdin,
+                        &outbox,
                         &response_queue,
                         &pane_senders,
                         &pane_windows,
@@ -1640,7 +1723,7 @@ impl ControlMode {
     /// liveness is polled as well (`needs_liveness_poll`), which still finds a
     /// pane that went.
     fn spawn_close_check(
-        stdin: &Arc<Mutex<ChildStdin>>,
+        outbox: &SharedOutbox,
         response_queue: &ResponseQueue,
         pane_senders: &PaneSendersMapShared,
         pane_windows: &PaneWindowsMapShared,
@@ -1655,7 +1738,7 @@ impl ControlMode {
         if registered.is_empty() {
             return;
         }
-        let stdin = Arc::clone(stdin);
+        let outbox = Arc::clone(outbox);
         let queue = Arc::clone(response_queue);
         let senders = Arc::clone(pane_senders);
         let windows = Arc::clone(pane_windows);
@@ -1665,7 +1748,7 @@ impl ControlMode {
         let spawned = std::thread::Builder::new()
             .name("window-close-check".into())
             .spawn(move || {
-                let live = match Self::send_command_on(&stdin, &queue, &listing, 1) {
+                let live = match Self::send_command_on(&outbox, &queue, &listing, 1) {
                     Ok(live) => live,
                     Err(e) => {
                         debug!(window_id, "could not confirm a window close: {e:#}");
@@ -1874,10 +1957,10 @@ impl ControlMode {
                 Self::dispatch(pane_senders, pane, PaneChunk::Snapshot(Box::new(snapshot)));
             }
         }
-        let _ = answer.waiter.tx.send(CommandResponse {
+        let _ = answer.waiter.tx.send(Ok(CommandResponse {
             blocks: answer.blocks,
             is_error,
-        });
+        }));
     }
 
     /// Drain the queued `(pane_id, state)` remote-hook status events.
@@ -1892,25 +1975,26 @@ impl ControlMode {
     ///
     /// Written from the reader thread, which answers to nobody, but it is still
     /// a command tmux answers — and a link slow enough to pause a pane is one
-    /// where other commands are in flight to take that answer.
-    fn resume_pane(stdin: &Arc<Mutex<ChildStdin>>, replies: &ResponseQueue, pane_id: &str) {
+    /// where other commands are in flight to take that answer. Only queued:
+    /// the reader must not wait on a write to go on reading.
+    fn resume_pane(outbox: &SharedOutbox, replies: &ResponseQueue, pane_id: &str) {
         let cmd = format!(
             "refresh-client -A '{}:continue'",
             pane_id.replace('\'', "'\\''")
         );
-        let _ = Self::write_unanswered(stdin, replies, &[cmd]);
+        let _ = Self::write_unanswered(outbox, replies, &[cmd]);
     }
 
     /// A pane paused on purpose (`hide_pane`) stays paused; one the server
     /// paused for falling behind is resumed.
     fn on_pause(
-        stdin: &Arc<Mutex<ChildStdin>>,
+        outbox: &SharedOutbox,
         replies: &ResponseQueue,
         hidden: &HiddenPanes,
         pane_id: &str,
     ) {
         if !hidden.lock().is_ok_and(|h| h.contains_key(pane_id)) {
-            Self::resume_pane(stdin, replies, pane_id);
+            Self::resume_pane(outbox, replies, pane_id);
         }
     }
 
@@ -2040,7 +2124,7 @@ impl ControlMode {
 
     /// Send a command and wait for its response.
     pub(in crate::backend) fn send_command(&self, cmd: &str) -> Result<String> {
-        Self::send_command_on(&self.stdin, &self.response_queue, cmd, 1)
+        Self::send_command_on(&self.outbox, &self.response_queue, cmd, 1)
     }
 
     /// Send commands as one command list (`a ; b ; c`) and wait for the number
@@ -2058,31 +2142,30 @@ impl ControlMode {
         if cmds.is_empty() {
             bail!("an empty command list has nothing to send");
         }
-        Self::send_command_on(&self.stdin, &self.response_queue, &cmds.join(" ; "), blocks)
+        Self::send_command_on(
+            &self.outbox,
+            &self.response_queue,
+            &cmds.join(" ; "),
+            blocks,
+        )
     }
 
     /// [`Self::send_command`] without `&self`, so background threads holding
     /// only the shared handles (the hook poller) can issue commands.
     ///
-    /// Both locks are held across enqueue **and** write: concurrent senders
-    /// (a backend caller vs the poller) must not interleave one thread's
-    /// waiter-push with another's stdin-write, or the FIFO waiter order stops
-    /// matching the on-wire command order and every later response is
-    /// delivered one command off. A failed write pops the just-enqueued
-    /// waiter for the same reason.
-    ///
     /// `blocks` is how many commands `cmd` holds (see [`Waiter`]).
     fn send_command_on(
-        stdin: &Arc<Mutex<ChildStdin>>,
+        outbox: &SharedOutbox,
         response_queue: &ResponseQueue,
         cmd: &str,
         blocks: usize,
     ) -> Result<String> {
-        let rx = Self::enqueue_command_on(stdin, response_queue, cmd, blocks, None)?;
+        let rx = Self::enqueue_command_on(outbox, response_queue, cmd, blocks, None)?;
         Self::await_response(rx, cmd, COMMAND_TIMEOUT)
     }
 
-    /// Write `cmd` and take a place in the waiter queue, without waiting.
+    /// Queue `cmd` for writing and take a place in the waiter queue, without
+    /// waiting.
     ///
     /// Split out of [`Self::send_command_on`] so a caller can decline the wait
     /// ([`Self::send_command_detached`]) or shorten it
@@ -2093,53 +2176,64 @@ impl ControlMode {
     /// `splice` names the pane whose output stream the answer is also put
     /// into, for a [`snapshot_commands`] list (see [`Waiter::splice`]).
     fn enqueue_command_on(
-        stdin: &Arc<Mutex<ChildStdin>>,
+        outbox: &SharedOutbox,
         response_queue: &ResponseQueue,
         cmd: &str,
         blocks: usize,
         splice: Option<String>,
-    ) -> Result<Receiver<CommandResponse>> {
-        // Lock order: stdin first, queue only for the brief push/pop.
-        // Holding stdin across enqueue AND write keeps the FIFO waiter order
-        // matching the on-wire command order for concurrent senders (a backend
-        // caller vs the hook poller) — while never holding the queue lock
-        // across the pipe write, so a write blocked on a wedged transport can't
-        // stall the reader thread (whose response dispatch needs the queue
-        // lock) or any other `send_command` caller beyond the command itself.
-        let mut stdin = stdin
+    ) -> Result<Receiver<Reply>> {
+        let mut outbox = outbox
             .lock()
-            .map_err(|e| anyhow::anyhow!("stdin lock: {e}"))?;
-        let rx = Self::enqueue_locked(&mut stdin, response_queue, cmd, blocks, splice)?;
-        stdin.flush()?;
-        Ok(rx)
+            .map_err(|e| anyhow::anyhow!("outbox lock: {e}"))?;
+        Self::enqueue_locked(&mut outbox, response_queue, cmd, blocks, splice)
     }
 
-    /// [`Self::enqueue_command_on`]'s push and write, for a caller already
-    /// holding the stdin lock. Not flushed.
+    /// [`Self::enqueue_command_on`]'s push and hand-over, for a caller already
+    /// holding the outbox lock.
+    ///
+    /// A connection that can take no more lines refuses with a broken pipe,
+    /// as a write to it would have: the command never went out.
     fn enqueue_locked(
-        stdin: &mut ChildStdin,
+        outbox: &mut Outbox,
         response_queue: &ResponseQueue,
         cmd: &str,
         blocks: usize,
         splice: Option<String>,
-    ) -> Result<Receiver<CommandResponse>> {
+    ) -> Result<Receiver<Reply>> {
+        let gone =
+            || std::io::Error::new(std::io::ErrorKind::BrokenPipe, "control connection closed");
+        let Some(lines) = &outbox.lines else {
+            return Err(gone().into());
+        };
+        let seq = outbox.next;
         let (tx, rx) = sync_channel(1);
         response_queue
             .lock()
             .map_err(|e| anyhow::anyhow!("response_queue lock: {e}"))?
-            .push_back(Waiter { tx, blocks, splice });
-        if let Err(e) = writeln!(stdin, "{cmd}") {
-            // Un-enqueue our waiter — still under the stdin lock, so no other
-            // sender can have pushed after us: the back is ours.
+            .push_back(Waiter {
+                tx,
+                blocks,
+                seq,
+                splice,
+            });
+        let line = Line {
+            seq,
+            text: format!("{cmd}\n"),
+        };
+        if lines.send(line).is_err() {
+            // The writer thread is gone. Un-enqueue our waiter — still under
+            // the outbox lock, so no other sender can have pushed after us.
             if let Ok(mut queue) = response_queue.lock() {
                 queue.pop_back();
             }
-            return Err(e.into());
+            outbox.lines = None;
+            return Err(gone().into());
         }
+        outbox.next += 1;
         Ok(rx)
     }
 
-    /// Write `cmds` — one command each, with or without a trailing newline —
+    /// Queue `cmds` — one command each, with or without a trailing newline —
     /// as one burst no other sender can split, keeping a place in the reply
     /// queue for each and waiting for none.
     ///
@@ -2150,24 +2244,102 @@ impl ControlMode {
     /// said the host held nothing — and every later answer one command off
     /// until the queue next ran dry.
     fn write_unanswered(
-        stdin: &Arc<Mutex<ChildStdin>>,
+        outbox: &SharedOutbox,
         response_queue: &ResponseQueue,
         cmds: &[String],
     ) -> Result<()> {
-        let mut stdin = stdin
+        let mut outbox = outbox
             .lock()
-            .map_err(|e| anyhow::anyhow!("stdin lock: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("outbox lock: {e}"))?;
         for cmd in cmds {
             Self::enqueue_locked(
-                &mut stdin,
+                &mut outbox,
                 response_queue,
                 cmd.trim_end_matches('\n'),
                 1,
                 None,
             )?;
         }
-        stdin.flush()?;
         Ok(())
+    }
+
+    /// Start the thread that writes this connection's lines to `stdin`, the
+    /// only thing that ever does, and hand back the way in to it.
+    ///
+    /// The thread holds the outbox weakly: it ends once the last sender is
+    /// gone, which a strong hold would never let happen.
+    fn spawn_writer(stdin: ChildStdin, replies: &ResponseQueue) -> Result<SharedOutbox> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let written = Arc::new(Written::default());
+        let outbox = Arc::new(Mutex::new(Outbox {
+            lines: Some(tx),
+            next: 0,
+            written: Arc::clone(&written),
+        }));
+        let weak = Arc::downgrade(&outbox);
+        let replies = Arc::clone(replies);
+        std::thread::Builder::new()
+            .name("tmux-control-writer".into())
+            .spawn(move || {
+                Self::writer_thread(stdin, &rx, &weak, &replies, &written);
+                written.advance(0, true);
+            })
+            .context("Failed to spawn control writer thread")?;
+        Ok(outbox)
+    }
+
+    fn writer_thread(
+        mut stdin: ChildStdin,
+        lines: &Receiver<Line>,
+        outbox: &Weak<Mutex<Outbox>>,
+        replies: &ResponseQueue,
+        written: &Written,
+    ) {
+        while let Ok(line) = lines.recv() {
+            let sent = stdin
+                .write_all(line.text.as_bytes())
+                .and_then(|()| stdin.flush());
+            if let Err(e) = sent {
+                debug!("control writer stopping: {e}");
+                Self::fail_unwritten(outbox, replies, line.seq, &e);
+                return;
+            }
+            written.advance(line.seq + 1, false);
+        }
+    }
+
+    /// A write failed, so nothing more goes out on this connection, and every
+    /// waiter from `seq` on is for a line the server never got. Each is handed
+    /// the error, which is how its caller knows the command did not run.
+    ///
+    /// Under the outbox lock, so no sender can queue behind the sweep.
+    fn fail_unwritten(
+        outbox: &Weak<Mutex<Outbox>>,
+        replies: &ResponseQueue,
+        seq: u64,
+        e: &std::io::Error,
+    ) {
+        let outbox = outbox.upgrade();
+        let mut held = outbox.as_ref().and_then(|outbox| outbox.lock().ok());
+        if let Some(outbox) = held.as_mut() {
+            outbox.lines = None;
+        }
+        let unwritten = replies
+            .lock()
+            .map(|mut queue| {
+                let at = queue
+                    .iter()
+                    .position(|waiter| waiter.seq >= seq)
+                    .unwrap_or(queue.len());
+                queue.split_off(at)
+            })
+            .unwrap_or_default();
+        drop(held);
+        for waiter in unwritten {
+            let _ = waiter
+                .tx
+                .send(Err(std::io::Error::new(e.kind(), e.to_string())));
+        }
     }
 
     /// A writer for `pane_id`'s keystrokes on this connection.
@@ -2177,7 +2349,7 @@ impl ControlMode {
         input: Arc<dyn PaneInput>,
     ) -> ControlModeWriter {
         ControlModeWriter {
-            stdin: Arc::clone(&self.stdin),
+            outbox: Arc::clone(&self.outbox),
             replies: Arc::clone(&self.response_queue),
             pane_id,
             input,
@@ -2186,7 +2358,7 @@ impl ControlMode {
 
     /// Wait for an enqueued command's answer, for at most `budget`.
     fn await_response(
-        rx: Receiver<CommandResponse>,
+        rx: Receiver<Reply>,
         cmd: &str,
         budget: std::time::Duration,
     ) -> Result<String> {
@@ -2196,13 +2368,14 @@ impl ControlMode {
 
     /// [`Self::await_response`], keeping each command's block apart.
     fn await_blocks(
-        rx: Receiver<CommandResponse>,
+        rx: Receiver<Reply>,
         cmd: &str,
         budget: std::time::Duration,
     ) -> Result<CommandResponse> {
         let response = rx
             .recv_timeout(budget)
-            .with_context(|| format!("Timeout waiting for response to: {cmd}"))?;
+            .with_context(|| format!("Timeout waiting for response to: {cmd}"))?
+            .with_context(|| format!("Failed to send: {cmd}"))?;
 
         if response.is_error {
             bail!(
@@ -2223,7 +2396,7 @@ impl ControlMode {
         cmd: &str,
         budget: std::time::Duration,
     ) -> Result<String> {
-        let rx = Self::enqueue_command_on(&self.stdin, &self.response_queue, cmd, 1, None)?;
+        let rx = Self::enqueue_command_on(&self.outbox, &self.response_queue, cmd, 1, None)?;
         Self::await_response(rx, cmd, budget)
     }
 
@@ -2237,7 +2410,7 @@ impl ControlMode {
             snapshot_commands(pane_id, history, true)
         };
         Self::enqueue_command_on(
-            &self.stdin,
+            &self.outbox,
             &self.response_queue,
             &cmds.join(" ; "),
             if self.command_list_single_reply {
@@ -2271,7 +2444,7 @@ impl ControlMode {
         } else {
             cmds.len()
         };
-        let rx = Self::enqueue_command_on(&self.stdin, &self.response_queue, &cmd, blocks, None)?;
+        let rx = Self::enqueue_command_on(&self.outbox, &self.response_queue, &cmd, blocks, None)?;
         Ok(PendingSnapshot {
             rx,
             cmd,
@@ -2312,7 +2485,7 @@ impl ControlMode {
             bail!("an empty command list has nothing to send");
         }
         Self::enqueue_command_on(
-            &self.stdin,
+            &self.outbox,
             &self.response_queue,
             &cmds.join(" ; "),
             blocks,
@@ -2369,10 +2542,15 @@ impl ControlMode {
         // its next cycle, or exits via the dead pipe once the child is killed.
         self.alive.store(false, Ordering::Relaxed);
 
-        // Try to gracefully detach.
-        if let Ok(mut stdin) = self.stdin.lock() {
-            let _ = writeln!(stdin, "detach-client");
-            let _ = stdin.flush();
+        // Try to gracefully detach — the last line this connection takes. The
+        // writer thread ends once it has written it.
+        if let Ok(mut outbox) = self.outbox.lock() {
+            if let Some(lines) = outbox.lines.take() {
+                let _ = lines.send(Line {
+                    seq: outbox.next,
+                    text: "detach-client\n".to_string(),
+                });
+            }
         }
 
         // Give the child a moment to exit gracefully, then force-kill so the

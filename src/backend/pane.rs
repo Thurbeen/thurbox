@@ -1156,7 +1156,7 @@ impl Session {
         let output_seq = Arc::new(AtomicU64::new(0));
 
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
-        tokio::spawn(Self::writer_loop(io.input, input_rx));
+        Self::spawn_writer(io.input, input_rx);
 
         let parser_clone = Arc::clone(&parser);
         let residency_clone = Arc::clone(&residency);
@@ -1442,18 +1442,30 @@ impl Session {
         }
     }
 
-    async fn writer_loop(mut writer: Box<dyn Write + Send>, mut input_rx: mpsc::Receiver<Vec<u8>>) {
-        while let Some(data) = input_rx.recv().await {
-            if let Err(e) = writer.write_all(&data) {
-                error!("Session writer error: {e}");
-                break;
-            }
-            if let Err(e) = writer.flush() {
-                error!("Session flush error: {e}");
-                break;
-            }
+    /// Hand `input_rx` to a thread of its own that writes it to the pane.
+    ///
+    /// A thread and not a task: a write can block — a pipe to a server that
+    /// stopped reading, a psmux paste running a process of its own — and on
+    /// the async runtime it held a worker for as long as it did.
+    fn spawn_writer(mut writer: Box<dyn Write + Send>, mut input_rx: mpsc::Receiver<Vec<u8>>) {
+        let spawned = std::thread::Builder::new()
+            .name("pane-writer".into())
+            .spawn(move || {
+                while let Some(data) = input_rx.blocking_recv() {
+                    if let Err(e) = writer.write_all(&data) {
+                        error!("Session writer error: {e}");
+                        break;
+                    }
+                    if let Err(e) = writer.flush() {
+                        error!("Session flush error: {e}");
+                        break;
+                    }
+                }
+                debug!("Session writer thread exiting");
+            });
+        if let Err(e) = spawned {
+            error!("failed to spawn a pane writer: {e}");
         }
-        debug!("Session writer task exiting");
     }
 
     /// Resize the agent's own pane and grid — and **only** that one.
@@ -1886,6 +1898,42 @@ mod tests {
         }
         let err = send_to_input_channel(&tx, vec![b'x'], "Session").unwrap_err();
         assert!(err.to_string().contains("full"), "got: {err}");
+    }
+
+    /// A pane's input can block — a pipe to a server that stopped reading, a
+    /// psmux paste running its own process — and the async runtime must not
+    /// be what waits for it.
+    #[test]
+    fn a_blocked_pane_write_leaves_the_runtime_free() {
+        struct Stuck(std::sync::mpsc::Receiver<()>);
+        impl Write for Stuck {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let _ = self.0.recv_timeout(std::time::Duration::from_secs(3));
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (release, stuck) = std::sync::mpsc::channel();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        let waited = runtime.block_on(async {
+            let (tx, rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+            Session::spawn_writer(Box::new(Stuck(stuck)), rx);
+            tx.send(b"x".to_vec()).await.expect("queue input");
+            let started = std::time::Instant::now();
+            tokio::spawn(async {}).await.expect("task");
+            started.elapsed()
+        });
+        let _ = release.send(());
+        assert!(
+            waited < std::time::Duration::from_secs(1),
+            "a task waited {waited:?} behind a blocked pane write"
+        );
     }
 
     #[test]

@@ -598,8 +598,8 @@ Each channel feeds a `ControlModeReader` (implements `Read`) consumed
 by the existing `Session::reader_loop`. This allows multiple instances
 to independently parse and render terminal state in real-time.
 
-**Input**: `send-keys -H <hex>` through the shared control mode
-stdin, wrapped in a `ControlModeWriter` (implements `Write`), which encodes
+**Input**: `send-keys -H <hex>` through the connection's shared outbox,
+wrapped in a `ControlModeWriter` (implements `Write`), which encodes
 the bytes the way its adapter's `PaneInput` says. The **psmux** adapter, whose
 multiplexer has no `-H`, encodes the byte stream from the primitives psmux does
 support, and sends a **paste** out of control mode entirely through psmux's own
@@ -618,6 +618,22 @@ and every later answer arrives one command off until the queue runs dry. That
 is how typing into a remote pane used to answer the pid lookup or window
 listing asked a round trip later with an empty block — a host read as holding
 no windows while its link was fine.
+
+**One writer per connection** (#1472): only the connection's writer thread
+writes to its stdin. A sender takes its place in the waiter queue and hands the
+line to that thread under one short lock (the outbox), so lines go out in queue
+order and nothing that sends — the paint path's resize and snapshot requests,
+the reader thread resuming a paused pane — waits on the pipe. Over a stalled ssh
+link a write blocks; when it did so under a lock, every other sender queued
+behind it, and the reader thread stopped reading output at the next `%pause`.
+A write that fails ends the connection's input, and each waiter whose line had
+not been written is handed that error: a broken pipe means the command never
+went out, which is the one case `Server::ctrl_command_list` sends again. A
+pane's own keystrokes reach its `ControlModeWriter` on a thread per pane
+(`Session::spawn_writer`), not a tokio task, since a psmux paste still blocks
+on a process of its own. That paste goes around the connection, so it first
+waits until every line queued before it is written; otherwise it could reach the
+pane ahead of keys typed earlier.
 
 A command list (`a ; b ; c`, sent by `ControlMode::send_command_list`) answers
 with one `%begin`/`%end` block per command it runs — each gets its own command

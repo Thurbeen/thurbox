@@ -943,10 +943,16 @@ impl PaneInput for FakeInput {
     fn paste(&self, _: &str, _: &str) -> Option<Result<()>> {
         self.0.map(|deliver| deliver())
     }
+
+    fn pastes_out_of_band(&self) -> bool {
+        self.0.is_some()
+    }
 }
 
 /// What a [`ControlModeWriter`] wrote to its control connection for `buf` —
-/// the connection a `cat` standing in for the server copies to a file.
+/// the connection a `cat` standing in for the server copies to a file. Read
+/// once `cat` exits, which is once the writer thread has written everything
+/// and let go of the pipe.
 #[cfg(unix)]
 fn written_by(input: FakeInput, buf: &[u8]) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -958,9 +964,10 @@ fn written_by(input: FakeInput, buf: &[u8]) -> String {
         .expect("spawn cat");
     let stdin = cat.stdin.take().expect("cat stdin");
     {
+        let replies = ResponseQueue::default();
         let mut writer = ControlModeWriter {
-            stdin: Arc::new(Mutex::new(stdin)),
-            replies: ResponseQueue::default(),
+            outbox: ControlMode::spawn_writer(stdin, &replies).expect("writer thread"),
+            replies,
             pane_id: "%1".to_string(),
             input: Arc::new(input),
         };
@@ -1942,4 +1949,217 @@ fn a_hidden_pane_reads_as_printing_only_when_its_activity_moves() {
     hidden.lock().unwrap().clear();
     ControlMode::dispatch_hidden(&senders, &hidden, "%7", &report("102"));
     assert!(rx.try_recv().is_err(), "a pane shown again takes no report");
+}
+
+// --- a connection whose server stops reading ---
+
+/// A control server that stops reading its stdin, as one behind a stalled ssh
+/// link does: it reads nothing until `$0.go` exists, then pauses `%7` and
+/// streams a line of it, and reads again only once `$0.drain` exists.
+#[cfg(unix)]
+fn stalled_server(root: &std::path::Path) -> (ControlMode, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mux = root.join("stalled-mux");
+    std::fs::write(
+        &mux,
+        "#!/bin/sh\n\
+         while [ ! -e \"$0.go\" ]; do sleep 0.02; done\n\
+         printf '%%pause %%7\\n%%output %%7 streamed\\n'\n\
+         while [ ! -e \"$0.drain\" ]; do sleep 0.02; done\n\
+         exec cat >/dev/null\n",
+    )
+    .expect("write fake mux");
+    std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let control = ControlMode::start(
+        &TmuxTransport::local(mux.to_string_lossy()),
+        "unused",
+        "unused",
+        "tests",
+        &ControlPolicy {
+            flow_control_command: None,
+            implicit_attach_reply: false,
+            tagged_blocks: false,
+            command_list_single_reply: false,
+            subscriptions: false,
+            status_poll: None,
+            confirm_close: None,
+        },
+    )
+    .expect("control client");
+    (control, mux)
+}
+
+/// Keystrokes enough to fill any pipe between thurbox and a server that has
+/// stopped reading, written from a thread of their own.
+#[cfg(unix)]
+fn flood_keys(control: &ControlMode) -> std::thread::JoinHandle<()> {
+    let mut writer = control.writer("%7".to_string(), Arc::new(FakeInput(None)));
+    std::thread::spawn(move || {
+        let keys = vec![b'x'; 4096];
+        for _ in 0..256 {
+            if writer.write_all(&keys).is_err() {
+                return;
+            }
+        }
+    })
+}
+
+#[cfg(unix)]
+#[test]
+fn a_server_that_stops_reading_stalls_neither_output_nor_callers() {
+    use std::io::Read;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let (control, mux) = stalled_server(root.path());
+    let (tx, rx) = sync_channel(4);
+    control
+        .pane_senders
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), vec![tx]);
+    let flood = flood_keys(&control);
+    // Long enough for the flood to fill the pipe and park whatever writes it.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // The paint path's request: it must not queue behind the stalled write.
+    let control = Arc::new(control);
+    let (asked_tx, asked) = sync_channel(1);
+    std::thread::spawn({
+        let control = Arc::clone(&control);
+        move || {
+            let _ = asked_tx.send(control.request_snapshot("%7", 0).is_ok());
+        }
+    });
+    let asked = asked.recv_timeout(std::time::Duration::from_secs(1));
+
+    // The server pauses `%7` and then streams it. Resuming the pane is a write,
+    // and the reader must not wait on one to go on reading.
+    std::fs::write(mux.with_extension("go"), b"").expect("go");
+    let (out_tx, out) = sync_channel(1);
+    std::thread::spawn(move || {
+        let mut reader = ControlModeReader::new(rx);
+        let mut buf = [0; 8];
+        let _ = out_tx.send(reader.read_exact(&mut buf).map(|()| buf));
+    });
+    let streamed = out.recv_timeout(std::time::Duration::from_secs(3));
+
+    std::fs::write(mux.with_extension("drain"), b"").expect("drain");
+    flood.join().expect("flood thread");
+    assert_eq!(
+        asked,
+        Ok(true),
+        "a snapshot request waited on a stalled write"
+    );
+    assert_eq!(
+        streamed.ok().and_then(Result::ok).as_ref(),
+        Some(b"streamed"),
+        "the reader stopped reading output while a write was stalled"
+    );
+}
+
+/// A line the writer thread could not write never reached the server, and its
+/// caller is told so as a broken pipe — what lets `Server::ctrl_command_list`
+/// send it again — at once, not after `COMMAND_TIMEOUT`. So is every caller
+/// after it.
+#[cfg(unix)]
+#[test]
+fn a_command_that_could_not_be_written_fails_as_a_broken_pipe() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let mux = root.path().join("gone-mux");
+    std::fs::write(&mux, "#!/bin/sh\nexit 0\n").expect("write fake mux");
+    std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let control = ControlMode::start(
+        &TmuxTransport::local(mux.to_string_lossy()),
+        "unused",
+        "unused",
+        "tests",
+        &ControlPolicy {
+            flow_control_command: None,
+            implicit_attach_reply: false,
+            tagged_blocks: false,
+            command_list_single_reply: false,
+            subscriptions: false,
+            status_poll: None,
+            confirm_close: None,
+        },
+    )
+    .expect("control client");
+    while control.alive.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    for _ in 0..2 {
+        let started = std::time::Instant::now();
+        let err = control
+            .send_command("display-message -p hello")
+            .expect_err("nobody is reading");
+        assert!(is_broken_pipe(&err), "{err:#}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "waited {:?} for a line that never went out",
+            started.elapsed()
+        );
+    }
+}
+
+#[cfg(unix)]
+static PASTED: AtomicBool = AtomicBool::new(false);
+
+/// An out-of-band paste (psmux's `send-paste`) does not go down the connection,
+/// so nothing orders it after the keys typed before it but waiting for them to
+/// be written: a paste run while they still sat in the queue reached the pane
+/// first.
+#[cfg(unix)]
+#[test]
+fn an_out_of_band_paste_waits_for_the_keys_typed_before_it() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (control, mux) = stalled_server(root.path());
+    flood_keys(&control).join().ok();
+    let mut writer = control.writer(
+        "%7".to_string(),
+        Arc::new(FakeInput(Some(|| {
+            PASTED.store(true, Ordering::SeqCst);
+            Ok(())
+        }))),
+    );
+    let paste = std::thread::spawn(move || writer.write_all(b"\x1b[200~pasted\x1b[201~"));
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let early = PASTED.load(Ordering::SeqCst);
+    std::fs::write(mux.with_extension("go"), b"").expect("go");
+    std::fs::write(mux.with_extension("drain"), b"").expect("drain");
+    paste.join().expect("paste thread").expect("paste");
+    assert!(
+        !early,
+        "the paste ran before the keys typed ahead of it were written"
+    );
+    assert!(PASTED.load(Ordering::SeqCst), "the paste never ran");
+}
+
+/// A paste that goes down the connection is ordered by the queue like any
+/// key, so it must not wait for the writer: on a stalled link that parked the
+/// pane's writer, and every key after it failed on a full input channel.
+#[cfg(unix)]
+#[test]
+fn a_paste_down_the_connection_does_not_wait_for_the_writer() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let (control, mux) = stalled_server(root.path());
+    flood_keys(&control).join().ok();
+    let mut writer = control.writer("%7".to_string(), Arc::new(FakeInput(None)));
+    let (done_tx, done) = sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = done_tx.send(writer.write_all(b"\x1b[200~pasted\x1b[201~").is_ok());
+    });
+    let queued = done.recv_timeout(std::time::Duration::from_secs(1));
+
+    std::fs::write(mux.with_extension("go"), b"").expect("go");
+    std::fs::write(mux.with_extension("drain"), b"").expect("drain");
+    assert_eq!(
+        queued,
+        Ok(true),
+        "a paste down the connection waited on a stalled writer"
+    );
 }
