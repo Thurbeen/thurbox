@@ -33,8 +33,8 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
-| `~/.local/share/thurbox/automation-tick.json` | JSON | `automation tick` | each tick | the last tick's time, outcome, error and fire counts, which `thurbox-cli runtime status` reports — the heartbeat keeper throws the tick's own output away |
-| `~/.local/share/thurbox/automation-tick.log` | text | `automation tick` | each failed tick | one timestamped line per tick that failed (the database would not open, the due scan failed, a panic). Capped at 64 KB, its older half dropped past that |
+| `~/.local/share/thurbox/automation-tick.json` | JSON | `automation tick` | each tick | the last tick's time, outcome, error, fire counts and the automations it could not fire, which `thurbox-cli runtime status` reports — the heartbeat keeper throws the tick's own output away |
+| `~/.local/share/thurbox/automation-tick.log` | text | `automation tick` | each failed tick | one timestamped line per tick that failed (the database would not open, the due scan failed, a panic), and per automation a tick could not fire (its lock or claim could not be written). Capped at 64 KB, its older half dropped past that |
 
 `agents.toml` and `settings.toml` reload **live**: the TUI checks them about
 once per second and applies edits without a restart. The agent registry is

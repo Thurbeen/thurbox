@@ -453,7 +453,7 @@ that arms an automation. It is not a session, so no session listing shows it
 and no delete reclaims it. `runtime status` reports it (`null` when the backend
 did not answer), the socket in force, the backend, `hook_status` — whether
 each local backend has a hook status channel — and `last_tick` (the tick log's
-last record: `at`, `age_secs`, `ok`, `error`, `fired`, `failed`; `null` before
+last record: `at`, `age_secs`, `ok`, `error`, `fired`, `failed`, `errors`; `null` before
 any tick); `runtime stop` stops it (the next `automation` write arms it again).
 
 ### thurbox-cli is an AXI
@@ -929,14 +929,17 @@ never carry an `Exec` (it's automation-only).
 - `tick` — the due pass: stale `running` rows past `deadline_at` become
   `timed_out`; each due row takes `lock:run:<id>` (held → `run-in-flight`
   skip), then `claim_and_open_run` claims and opens the run row in **one
-  transaction**; execs run on ≤4 worker threads while the main thread fires
-  sends/spawns and then the caller's housekeeping closure (remote poll, mirror,
+  transaction** — execs up front (lock and deadline sized for their wave),
+  sends/spawns each just before it fires; a lock or claim error skips that one
+  automation, not the tick. Execs run on ≤4 worker threads while the main
+  thread fires sends/spawns and then the caller's housekeeping closure (remote poll, mirror,
   reap, teardowns, telemetry — `cli::automations` passes it, since the export
   needs `cli`/`telemetry`). `run_now` is `automation run --wait`: lock (exit 5
   when held), claim only if due (a manual run never shifts the schedule), fire,
   record, return the row; exit 0/1/4 for success/failure/timeout.
 - `tick_log` — `automation-tick.json` (last outcome, read by `runtime status`)
-  and `automation-tick.log` (a timestamped line per failed tick, 64 KB cap).
+  and `automation-tick.log` (a timestamped line per failed tick and per
+  automation a running tick could not fire, 64 KB cap).
   Written by `cli::automations` for a tick that ran or failed, and by
   `src/bin/thurbox-cli.rs` for one that failed before dispatch (no database, a
   panic), because the keeper discards the tick's output.

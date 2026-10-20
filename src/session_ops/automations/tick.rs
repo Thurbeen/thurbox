@@ -135,11 +135,13 @@ pub fn tick<T>(
         .due_automations(now)
         .map_err(|e| format!("due_automations: {e}"))?;
 
-    // Claimed fires, split by what they need: an exec needs only a process,
-    // a send or spawn needs this thread's database and backends.
+    // Execs are claimed now and run on workers; sends and spawns are claimed
+    // one at a time on this thread, each just before it fires, because the
+    // ones ahead of it may take minutes and a lock taken up front could lapse
+    // while it still waits its turn.
     let mut locks: Vec<(i64, Lock<'_>)> = Vec::new();
     let mut execs: VecDeque<(i64, ExecJob)> = VecDeque::new();
-    let mut inline: Vec<(i64, Automation)> = Vec::new();
+    let mut inline: Vec<Automation> = Vec::new();
     // Execs start in waves of EXEC_CONCURRENCY, so a queued one may wait for
     // the waves before it — each as long as the longest exec — before its own
     // timeout even starts. Its lock and its row's deadline cover that wait,
@@ -152,60 +154,16 @@ pub fn tick<T>(
         .max()
         .unwrap_or_default();
     for auto in due {
-        let job = ExecJob::of(&auto);
-        let budget = match &job {
-            Some(_) => longest_exec * (execs.len() / EXEC_CONCURRENCY) as u32 + auto.run.timeout(),
-            None => auto.run.timeout(),
+        let Some(job) = ExecJob::of(&auto) else {
+            inline.push(auto);
+            continue;
         };
-        // One automation's lock or claim that cannot be written skips that
-        // automation, not the tick: the ones already claimed have rows saying
-        // `running`, and leaving them unfired would read as a hang.
-        let held = match run_lock(db, auto.id, budget, "tick") {
-            Ok(Some(held)) => held,
-            Ok(None) => {
-                pass.skipped.push(Skipped::new(auto.id, "run-in-flight"));
-                continue;
-            }
-            Err(e) => {
-                pass.skipped.push(Skipped {
-                    detail: Some(e),
-                    ..Skipped::new(auto.id, "error")
-                });
-                continue;
-            }
-        };
-        let next = auto.schedule.next_after(now, auto.timezone.as_deref());
-        let claimed = db.claim_and_open_run(
-            auto.id,
-            auto.next_run_at.unwrap_or(0),
-            next,
-            now,
-            deadline(budget, now),
-        );
-        let run_id = match claimed {
-            Ok(Some(run_id)) => run_id,
-            Ok(None) => {
-                // Another firer won the claim. This logs at debug! (invisible
-                // at the default level), so it is reported in the pass too.
-                tracing::debug!(
-                    automation_id = auto.id,
-                    "automation claim lost to a concurrent firer"
-                );
-                pass.skipped.push(Skipped::new(auto.id, "claim-lost"));
-                continue;
-            }
-            Err(e) => {
-                pass.skipped.push(Skipped {
-                    detail: Some(format!("claim_due_automation: {e}")),
-                    ..Skipped::new(auto.id, "error")
-                });
-                continue;
-            }
-        };
-        locks.push((run_id, held));
-        match job {
-            Some(job) => execs.push_back((run_id, job)),
-            None => inline.push((run_id, auto)),
+        let wait = longest_exec * (execs.len() / EXEC_CONCURRENCY) as u32;
+        if let Some((run_id, held)) =
+            claim(db, &auto, wait + auto.run.timeout(), now, now, &mut pass)
+        {
+            locks.push((run_id, held));
+            execs.push_back((run_id, job));
         }
     }
 
@@ -230,10 +188,15 @@ pub fn tick<T>(
         }
         drop(tx);
 
-        for (run_id, auto) in &inline {
+        for auto in &inline {
+            let started = current_time_millis();
+            let Some((run_id, _held)) =
+                claim(db, auto, auto.run.timeout(), now, started, &mut pass)
+            else {
+                continue;
+            };
             let record = fire(db, backends, auto);
-            pass.fired.push(finish(db, auto.id, *run_id, &record));
-            release(&mut locks, *run_id);
+            pass.fired.push(finish(db, auto.id, run_id, &record));
         }
         let kept = housekeeping();
         for (run_id, automation_id, record) in rx {
@@ -243,6 +206,62 @@ pub fn tick<T>(
         kept
     });
     Ok((pass, kept))
+}
+
+/// Take `auto`'s run lock for a run that may take `budget` and claim its due
+/// slot, opening the run row stamped `started` — or record in `pass` why it is
+/// not fired. One automation's lock or claim that cannot be written skips that
+/// automation, not the tick. `due_at` is the tick's clock, from which the next
+/// slot is computed.
+fn claim<'a>(
+    db: &'a Database,
+    auto: &Automation,
+    budget: Duration,
+    due_at: u64,
+    started: u64,
+    pass: &mut DuePass,
+) -> Option<(i64, Lock<'a>)> {
+    let held = match run_lock(db, auto.id, budget, "tick") {
+        Ok(Some(held)) => held,
+        Ok(None) => {
+            pass.skipped.push(Skipped::new(auto.id, "run-in-flight"));
+            return None;
+        }
+        Err(e) => {
+            pass.skipped.push(Skipped {
+                detail: Some(e),
+                ..Skipped::new(auto.id, "error")
+            });
+            return None;
+        }
+    };
+    let next = auto.schedule.next_after(due_at, auto.timezone.as_deref());
+    match db.claim_and_open_run(
+        auto.id,
+        auto.next_run_at.unwrap_or(0),
+        next,
+        started,
+        deadline(budget, started),
+    ) {
+        Ok(Some(run_id)) => Some((run_id, held)),
+        Ok(None) => {
+            // Another firer won the claim. This logs at debug! (invisible at
+            // the default level), so it is reported in the pass too.
+            tracing::debug!(
+                automation_id = auto.id,
+                "automation claim lost to a concurrent firer"
+            );
+            pass.skipped.push(Skipped::new(auto.id, "claim-lost"));
+            None
+        }
+        Err(e) => {
+            pass.skipped.push(Skipped {
+                detail: Some(format!("claim_due_automation: {e}")),
+                ..Skipped::new(auto.id, "error")
+            });
+            None
+        }
+    }
 }
 
 /// Write a fire's outcome over its run row, reporting a write that failed with
@@ -479,5 +498,49 @@ mod tests {
         let error = run_now(&db, &crate::backend::registry::inert(), 404, false, None)
             .expect_err("nothing to run");
         assert!(matches!(error, RunNowError::Gone(_)), "{error:?}");
+    }
+
+    fn send_to_nobody(db: &Database, name: &str) -> i64 {
+        db.create_automation(&NewAutomation {
+            name: name.into(),
+            enabled: true,
+            schedule: AutomationSchedule::Cron {
+                expr: "0 * * * *".into(),
+            },
+            timezone: None,
+            action: AutomationAction::Send {
+                session_id: crate::session::SessionId::default(),
+            },
+            prompt: "hi".into(),
+            next_run_at: Some(1),
+            key: None,
+            run: RunSettings::default(),
+        })
+        .expect("insert")
+    }
+
+    /// A send or spawn takes its lock and opens its row when it starts, not
+    /// when the tick began: the ones before it may take minutes, and a lock
+    /// taken up front could lapse while it still waited its turn.
+    #[test]
+    fn an_inline_fire_is_claimed_when_it_starts() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().expect("db");
+        let first = send_to_nobody(&db, "first");
+        let second = send_to_nobody(&db, "second");
+        let (pass, ()) = tick(&db, &crate::backend::registry::inert(), 1_000, || ()).expect("tick");
+        assert_eq!(pass.fired.len(), 2, "{pass:?}");
+        let row = |id| db.list_automation_runs(id, 1).expect("runs").remove(0);
+        let (a, b) = (row(first), row(second));
+        let (earlier, later) = if a.started_at <= b.started_at {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        assert!(
+            later.started_at >= earlier.finished_at.expect("finished"),
+            "the second started before the first ended: {earlier:?} {later:?}"
+        );
     }
 }

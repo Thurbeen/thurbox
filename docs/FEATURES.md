@@ -1626,9 +1626,11 @@ holds up neither another due automation nor the housekeeping.
 **A tick that fails** (the database would not open, the due scan could not
 read a row, a panic) is recorded in `automation-tick.json` beside the
 database, and appended with a timestamp to `automation-tick.log` there
-(capped at 64 KB). The keeper discards the tick's own output, so this is
-the trace; `thurbox-cli runtime status` reports the last tick's time,
-outcome and error.
+(capped at 64 KB). So is each automation a tick that ran could not fire
+because its lock or claim could not be written; it is due again next tick.
+The keeper discards the tick's own output, so this is the trace;
+`thurbox-cli runtime status` reports the last tick's time, outcome, error
+and those automations.
 
 **Headless send vs spawn.** `send` types into the target session's
 window on the backend its route names. `spawn` creates the session

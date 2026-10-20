@@ -129,12 +129,13 @@ pub fn create(
             .into());
         }
     }
-    let wanted = from_draft(db, draft, now)?;
     if let Some(key) = key {
         if let Some(existing) = by_key(db, key)? {
-            return settle(db, key, existing, wanted, on_existing);
+            return settle(db, key, existing, draft, on_existing, now);
         }
     }
+    let wanted = from_draft(db, draft, now)?;
+    require_next_run(&wanted, now)?;
     let inserted = db.create_automation(&NewAutomation {
         name: wanted.name.clone(),
         enabled: wanted.enabled,
@@ -153,7 +154,7 @@ pub fn create(
         (Err(e), Some(key)) if is_key_taken(&e) => {
             let existing = by_key(db, key)?
                 .ok_or_else(|| format!("the automation holding key '{key}' vanished"))?;
-            settle(db, key, existing, wanted, on_existing)
+            settle(db, key, existing, draft, on_existing, now)
         }
         (Err(e), _) => Err(format!("create automation: {e}").into()),
     }
@@ -164,13 +165,16 @@ fn by_key(db: &Database, key: &str) -> Result<Option<Automation>, String> {
         .map_err(|e| format!("get automation by key: {e}"))
 }
 
-/// A keyed create that found its key taken by `existing`.
+/// A keyed create that found its key taken by `existing`. `keep` answers
+/// before the draft is built, so a create repeated after its one-shot came
+/// due is not refused for a schedule it is not going to write.
 fn settle(
     db: &Database,
     key: &str,
     existing: Automation,
-    wanted: Automation,
+    draft: &Draft,
     on_existing: OnExisting,
+    now: u64,
 ) -> Result<Saved, SaveError> {
     match on_existing {
         OnExisting::Fail => Err(SaveError::Conflict(format!(
@@ -180,16 +184,25 @@ fn settle(
         ))),
         OnExisting::Keep => Ok(Saved::Kept(existing.id)),
         OnExisting::Update => {
-            rewrite(db, &existing, wanted)?;
+            rewrite(db, &existing, from_draft(db, draft, now)?, now)?;
             Ok(Saved::Updated(existing.id))
         }
     }
 }
 
 /// Write `wanted` over `existing`, keeping its id, key, history and — when the
-/// schedule, timezone and enabled flag did not move — its pending fire.
-fn rewrite(db: &Database, existing: &Automation, wanted: Automation) -> Result<(), String> {
+/// schedule, timezone and enabled flag did not move — its pending fire. Only a
+/// moved schedule has to fire again.
+fn rewrite(
+    db: &Database,
+    existing: &Automation,
+    wanted: Automation,
+    now: u64,
+) -> Result<(), String> {
     let unmoved = timing_key(existing) == timing_key(&wanted) && existing.next_run_at.is_some();
+    if !unmoved {
+        require_next_run(&wanted, now)?;
+    }
     let auto = Automation {
         id: existing.id,
         created_at: existing.created_at,
@@ -277,7 +290,9 @@ pub fn edit(db: &Database, id: i64, draft: &Draft, now: u64) -> Result<(), Strin
     }
 }
 
-/// The automation a create's draft describes, validated, with its next run.
+/// The automation a create's draft describes, validated, with its next run —
+/// `None` for an enabled schedule with no future occurrence, which only a
+/// write that needs a new next run refuses ([`require_next_run`]).
 fn from_draft(db: &Database, draft: &Draft, now: u64) -> Result<Automation, String> {
     let weekday = weekday(draft)?;
     let schedule = parse_trigger(
@@ -304,12 +319,19 @@ fn from_draft(db: &Database, draft: &Draft, now: u64) -> Result<Automation, Stri
         run: Default::default(),
     };
     apply_common(&mut auto, draft)?;
-    auto.next_run_at = if auto.enabled {
-        Some(next_run(&auto, now)?)
-    } else {
-        None
-    };
+    auto.next_run_at = auto
+        .enabled
+        .then(|| auto.schedule.next_after(now, auto.timezone.as_deref()))
+        .flatten();
     Ok(auto)
+}
+
+/// Refuse an enabled automation that would never fire again.
+fn require_next_run(auto: &Automation, now: u64) -> Result<(), String> {
+    match auto.enabled {
+        true => next_run(auto, now).map(drop),
+        false => Ok(()),
+    }
 }
 
 /// The fields a create and an edit set alike, and the checks they share.
@@ -368,11 +390,19 @@ fn apply_common(auto: &mut Automation, draft: &Draft) -> Result<(), String> {
     Ok(())
 }
 
-/// `cwd` with a leading `~` expanded, refused unless it is a directory here —
-/// an automation runs on this machine, and a typo is cheaper to hear about now
-/// than as a run that failed at three in the morning.
+/// `cwd` with a leading `~` expanded and made absolute against the directory
+/// the writer runs in, refused unless it is a directory here. Absolute because
+/// the heartbeat fires from wherever it was started: a relative path would
+/// mean somewhere else on every fire. Refused because an automation runs on
+/// this machine, and a typo is cheaper to hear about now than as a run that
+/// failed at three in the morning.
 fn existing_dir(cwd: &str) -> Result<PathBuf, String> {
-    let path = crate::paths::expand_tilde(cwd);
+    let mut path = crate::paths::expand_tilde(cwd);
+    if path.is_relative() {
+        let here = std::env::current_dir()
+            .map_err(|e| format!("resolve the relative directory {cwd}: {e}"))?;
+        path = here.join(path);
+    }
     if !path.is_dir() {
         return Err(format!("not a directory: {}", path.display()));
     }
@@ -1154,5 +1184,43 @@ mod tests {
         let error = create(&db, &draft, Some("7"), OnExisting::Fail, NOW).unwrap_err();
         assert!(error.to_string().contains("digits only"), "{error}");
         create(&db, &draft, Some("v7"), OnExisting::Fail, NOW).expect("a key with a letter");
+    }
+
+    /// Repeating a keyed create after its one-shot has come due keeps or
+    /// rewrites the row rather than refusing a schedule that no longer fires:
+    /// `keep` touches nothing, and an unchanged `update` keeps its pending fire.
+    #[test]
+    fn a_repeated_keyed_one_shot_create_keeps_or_updates_after_its_time() {
+        let db = Database::open_in_memory().expect("db");
+        let draft = AutomationDraft {
+            name: Some("once".into()),
+            trigger: Some(format!("at:{}", NOW + 10)),
+            command: Some("true".into()),
+            ..AutomationDraft::default()
+        };
+        let id = create(&db, &draft, Some("once"), OnExisting::Fail, NOW)
+            .expect("create")
+            .id();
+        let later = NOW + 20;
+        assert_eq!(
+            create(&db, &draft, Some("once"), OnExisting::Keep, later),
+            Ok(Saved::Kept(id))
+        );
+        assert_eq!(
+            create(&db, &draft, Some("once"), OnExisting::Update, later),
+            Ok(Saved::Updated(id))
+        );
+        assert_eq!(
+            only(&db).next_run_at,
+            Some(NOW + 10),
+            "the pending fire stays"
+        );
+        // A changed schedule still has to fire again.
+        let moved = AutomationDraft {
+            trigger: Some(format!("at:{}", NOW + 15)),
+            ..draft
+        };
+        let error = create(&db, &moved, Some("once"), OnExisting::Update, later).unwrap_err();
+        assert!(error.to_string().contains("never fires again"), "{error}");
     }
 }

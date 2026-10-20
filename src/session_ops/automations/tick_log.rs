@@ -6,7 +6,8 @@
 //! scan could not read a row — used to leave no trace at all: scheduling could
 //! stop for an hour and nothing said so. Each tick now records its outcome in
 //! `automation-tick.json` beside the database, and a failed one also appends a
-//! timestamped line to `automation-tick.log`. `runtime status` reads the first.
+//! timestamped line to `automation-tick.log`, as does each automation a tick
+//! that ran could not fire. `runtime status` reads the first.
 //!
 //! Files rather than rows, because the failure worth recording most is the one
 //! where the database is what failed — and a tick every minute writing a row
@@ -33,6 +34,10 @@ pub struct LastTick {
     /// out.
     pub fired: usize,
     pub failed: usize,
+    /// Automations a tick that ran could not fire — a lock or a claim that
+    /// could not be written — each with why. They are due again next tick.
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
 /// The directory the database lives in: the instance's own, so a sandbox or a
@@ -56,9 +61,17 @@ pub fn record(tick: &LastTick) {
     if let Err(e) = write_state(tick) {
         tracing::warn!("could not record the tick's outcome: {e}");
     }
-    if let (false, Some(error)) = (tick.ok, &tick.error) {
-        if let Err(e) = append_log(tick.at, error) {
-            tracing::warn!("could not log the failed tick: {e}");
+    let failure = (!tick.ok)
+        .then_some(tick.error.as_deref())
+        .flatten()
+        .map(|e| format!("tick failed: {e}"));
+    let skipped = tick
+        .errors
+        .iter()
+        .map(|e| format!("tick could not fire {e}"));
+    for line in failure.into_iter().chain(skipped) {
+        if let Err(e) = append_log(tick.at, &line) {
+            tracing::warn!("could not log the tick: {e}");
         }
     }
 }
@@ -71,6 +84,7 @@ pub fn failed(error: &str) -> LastTick {
         error: Some(error.to_string()),
         fired: 0,
         failed: 0,
+        errors: Vec::new(),
     }
 }
 
@@ -90,12 +104,12 @@ fn write_state(tick: &LastTick) -> std::io::Result<()> {
     std::fs::rename(&tmp, &path)
 }
 
-fn append_log(at: u64, error: &str) -> std::io::Result<()> {
+fn append_log(at: u64, line: &str) -> std::io::Result<()> {
     let path = log_path().ok_or_else(no_data_dir)?;
     let stamp = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(at as i64)
         .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
         .unwrap_or_else(|| at.to_string());
-    let line = format!("{stamp} tick failed: {}\n", error.replace('\n', " "));
+    let line = format!("{stamp} {}\n", line.replace('\n', " "));
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -148,6 +162,7 @@ mod tests {
             error: None,
             fired: 2,
             failed: 1,
+            errors: Vec::new(),
         };
         record(&ok);
         assert_eq!(last(), Some(ok));
@@ -183,5 +198,28 @@ mod tests {
         let log = std::fs::read_to_string(log_path().unwrap()).unwrap();
         assert!(log.len() <= LOG_CAP, "{}", log.len());
         assert!(log.lines().all(|l| l.ends_with(&error)), "lines stay whole");
+    }
+
+    /// A tick that ran but could not fire some automation records why, and
+    /// logs it, so the heartbeat's discarded output is not the only trace.
+    #[test]
+    fn a_tick_s_per_automation_errors_are_kept_and_logged() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let tick = LastTick {
+            at: 5,
+            ok: true,
+            error: None,
+            fired: 1,
+            failed: 0,
+            errors: vec!["automation #3: claim_due_automation: database is locked".into()],
+        };
+        record(&tick);
+        assert_eq!(last(), Some(tick));
+        let log = std::fs::read_to_string(log_path().unwrap()).unwrap();
+        assert!(
+            log.contains("automation #3: claim_due_automation: database is locked"),
+            "{log}"
+        );
     }
 }

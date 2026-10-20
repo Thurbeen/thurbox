@@ -354,16 +354,37 @@ pub fn run(
                     return Err(e.into());
                 }
             };
-            ops::tick_log::record(&ops::tick_log::LastTick {
-                at: current_time_millis(),
-                ok: true,
-                error: None,
-                fired: json["fired"].as_array().map_or(0, Vec::len),
-                failed: json["failed"].as_u64().unwrap_or(0) as usize,
-            });
+            ops::tick_log::record(&last_tick(&json));
             let human = render_tick(&json);
             Ok(CommandOutput::new(json, human))
         }
+    }
+}
+
+/// What a tick that ran records for `runtime status`: its counts, and every
+/// automation it could not fire with why — the heartbeat discards the JSON
+/// these are in.
+fn last_tick(json: &Value) -> ops::tick_log::LastTick {
+    let errors = json["skipped"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["reason"] == "error")
+        .map(|s| {
+            format!(
+                "automation #{}: {}",
+                s["id"],
+                s["detail"].as_str().unwrap_or("no detail")
+            )
+        })
+        .collect();
+    ops::tick_log::LastTick {
+        at: current_time_millis(),
+        ok: true,
+        error: None,
+        fired: json["fired"].as_array().map_or(0, Vec::len),
+        failed: json["failed"].as_u64().unwrap_or(0) as usize,
+        errors,
     }
 }
 
@@ -919,5 +940,46 @@ mod tests {
         let json = run_to_json(&run);
         assert_eq!(json["related_session_id"], Value::Null);
         assert_eq!(json["duration_ms"], Value::Null, "still running");
+    }
+
+    /// An automation the tick could not fire is in the tick's record, with
+    /// why, so `runtime status` and the tick log show it.
+    #[test]
+    fn a_tick_that_could_not_fire_an_automation_records_it() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        opt_out_builtins(&db);
+        let id = db
+            .create_automation(&NewAutomation {
+                name: "refused".into(),
+                enabled: true,
+                schedule: parse_trigger("hourly", None, None).unwrap(),
+                timezone: None,
+                action: AutomationAction::Exec {
+                    command: "true".into(),
+                },
+                prompt: String::new(),
+                next_run_at: Some(1),
+                key: None,
+                run: Default::default(),
+            })
+            .unwrap();
+        db.conn_ref()
+            .execute_batch(
+                "CREATE TRIGGER refuse_run BEFORE INSERT ON automation_runs \
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        let v = tick(&db, &crate::backend::registry::inert()).unwrap();
+        let recorded = last_tick(&v);
+        assert!(recorded.ok);
+        assert_eq!(recorded.errors.len(), 1, "{v}");
+        assert!(
+            recorded.errors[0].starts_with(&format!("automation #{id}: "))
+                && recorded.errors[0].contains("refused"),
+            "{:?}",
+            recorded.errors
+        );
     }
 }

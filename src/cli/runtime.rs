@@ -104,6 +104,7 @@ fn last_tick_json(tick: &crate::session_ops::automations::tick_log::LastTick) ->
         "error": tick.error,
         "fired": tick.fired,
         "failed": tick.failed,
+        "errors": tick.errors,
         "log": crate::session_ops::automations::tick_log::log_path()
             .map(|p| p.display().to_string()),
     })
@@ -118,8 +119,10 @@ fn describe(tick: &crate::session_ops::automations::tick_log::LastTick) -> Strin
     match (&tick.error, tick.ok) {
         (Some(error), false) => format!("{age}s ago, failed: {error}"),
         _ => format!(
-            "{age}s ago, ok ({} fired, {} failed)",
-            tick.fired, tick.failed
+            "{age}s ago, ok ({} fired, {} failed, {} could not fire)",
+            tick.fired,
+            tick.failed,
+            tick.errors.len()
         ),
     }
 }

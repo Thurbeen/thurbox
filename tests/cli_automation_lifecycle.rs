@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -743,4 +744,166 @@ fn a_zero_timeout_is_refused() {
     let id = env.exec("job", "true", &[]);
     env.exits(2, &["automation", "run", &id, "--wait", "--timeout", "0"]);
     env.exits(2, &["automation", "edit", &id, "--timeout", "0"]);
+}
+
+/// A relative `--cwd` is stored against the directory it was given in, so the
+/// heartbeat — started anywhere — runs the command where the creator meant.
+#[test]
+fn a_relative_cwd_is_stored_as_an_absolute_path() {
+    let env = Env::new();
+    let out = env
+        .command(&[
+            "automation",
+            "create",
+            "--name",
+            "rel",
+            "--trigger",
+            "hourly",
+            "--command",
+            "true",
+            "--cwd",
+            "work",
+        ])
+        .current_dir(env.root.path())
+        .output()
+        .expect("create");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let created: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let stored = PathBuf::from(created["cwd"].as_str().expect("a cwd"));
+    assert!(stored.is_absolute(), "{stored:?}");
+    assert_eq!(
+        stored.canonicalize().expect("exists"),
+        env.path("work").canonicalize().expect("work")
+    );
+}
+
+/// A one-shot retried after its time still supports idempotent keep/update.
+#[test]
+fn a_keyed_one_shot_retry_preserves_its_pending_fire() {
+    let env = Env::new();
+    let at = thurbox::sync::current_time_millis() + 3_600_000;
+    let trigger = format!("at:{at}");
+    let args = [
+        "automation",
+        "create",
+        "--name",
+        "once",
+        "--trigger",
+        &trigger,
+        "--command",
+        "true",
+        "--key",
+        "once",
+    ];
+    let id = id_of(&env.ok(&args));
+    // Move the existing slot into the past without waiting for wall time.
+    let past = thurbox::sync::current_time_millis() - 10_000;
+    env.db()
+        .conn_ref()
+        .execute(
+            "UPDATE automations SET schedule_spec = ?1, next_run_at = ?1 WHERE id = ?2",
+            rusqlite::params![past.to_string(), id],
+        )
+        .unwrap();
+    let past_trigger = format!("at:{past}");
+    for policy in ["keep", "update"] {
+        let result = env.ok(&[
+            "automation",
+            "create",
+            "--name",
+            "once",
+            "--trigger",
+            &past_trigger,
+            "--command",
+            "true",
+            "--key",
+            "once",
+            "--on-existing",
+            policy,
+        ]);
+        assert_eq!(id_of(&result), id);
+        assert_eq!(env.automation(&id)["next_run_at"], past);
+        assert!(env.runs(&id).is_empty());
+    }
+}
+
+/// Claims for serial sends are opened only after the preceding fire finishes.
+#[test]
+fn a_tick_claims_each_inline_fire_when_it_starts() {
+    let env = Env::new();
+    let session = env.seed_session("absent");
+    let mut ids = Vec::new();
+    for name in ["first", "second"] {
+        let id = id_of(&env.ok(&[
+            "automation",
+            "create",
+            "--name",
+            name,
+            "--trigger",
+            "hourly",
+            "--session",
+            &session,
+            "--prompt",
+            "hello",
+        ]));
+        env.ok(&["automation", "run", &id]);
+        ids.push(id);
+    }
+    // A deterministic observer of claim order; no slow hook or sleep needed.
+    env.db()
+        .conn_ref()
+        .execute_batch(
+            "CREATE TRIGGER serial_claims BEFORE INSERT ON automation_runs
+         WHEN EXISTS (SELECT 1 FROM automation_runs WHERE status = 'running')
+         BEGIN SELECT RAISE(ABORT, 'previous inline fire still running'); END;",
+        )
+        .unwrap();
+    let tick = env.ok(&["automation", "tick"]);
+    assert_eq!(tick["fired"].as_array().unwrap().len(), 2, "{tick}");
+    for id in ids {
+        let runs = env.runs(&id);
+        assert_eq!(runs.len(), 1, "{runs:?}");
+        assert_ne!(runs[0]["status"], "running");
+    }
+}
+
+/// The heartbeat can discard stdout without losing an individual claim error.
+#[test]
+fn a_refused_claim_is_logged_and_reported_by_runtime_status() {
+    let env = Env::new();
+    let id = env.exec("refused", "echo ok", &[]);
+    env.ok(&["automation", "run", &id]);
+    env.db()
+        .conn_ref()
+        .execute_batch(
+            "CREATE TRIGGER refuse_run BEFORE INSERT ON automation_runs
+         BEGIN SELECT RAISE(ABORT, 'claim refused'); END;",
+        )
+        .unwrap();
+    let tick = env.ok(&["automation", "tick"]);
+    assert!(
+        tick["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["reason"] == "error"),
+        "{tick}"
+    );
+    let status = env.ok(&["runtime", "status"]);
+    let errors = status["last_tick"]["errors"]
+        .as_array()
+        .expect("persisted errors");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.as_str().unwrap().contains("claim refused")),
+        "{status}"
+    );
+    let log = std::fs::read_to_string(env.path("data/automation-tick.log")).expect("a tick log");
+    assert!(log.contains("claim refused"), "{log}");
+    assert!(env.runs(&id).is_empty());
 }
