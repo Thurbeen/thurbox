@@ -231,15 +231,14 @@ fn openpty(rows: u16, cols: u16) -> (OwnedFd, OwnedFd) {
     unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) }
 }
 
-/// The half of a kitty-protocol terminal the keyboard negotiation talks to: a
-/// stack of pushed flags per screen, and answers to the two queries crossterm
-/// sends.
+/// Device-attribute replies and, on kitty terminals, a flag stack per screen.
 ///
 /// Per screen, as kitty keeps them: flags pushed on the alternate screen are
 /// not popped by a pop written after leaving it, which is the order mistake
 /// this exists to catch.
 #[derive(Default)]
-struct KittyTerminal {
+struct TestTerminal {
+    kitty: bool,
     /// How far into the output the sequences have been read.
     scanned: usize,
     main: Vec<u32>,
@@ -247,7 +246,7 @@ struct KittyTerminal {
     on_alternate: bool,
 }
 
-impl KittyTerminal {
+impl TestTerminal {
     fn stack(&mut self) -> &mut Vec<u32> {
         if self.on_alternate {
             &mut self.alternate
@@ -279,7 +278,7 @@ impl KittyTerminal {
             };
             let (params, last) = (&body[..end], body[end]);
             match (params.first(), last) {
-                (Some(b'?'), b'u') if params.len() == 1 => {
+                (Some(b'?'), b'u') if params.len() == 1 && self.kitty => {
                     let flags = self.stack().last().copied().unwrap_or(0);
                     reply.extend_from_slice(format!("\x1b[?{flags}u").as_bytes());
                 }
@@ -306,12 +305,21 @@ impl KittyTerminal {
     }
 }
 
+enum TerminalMode {
+    Silent,
+    Legacy,
+    Kitty,
+}
+
 /// The binary, running on a pty, with everything it has written so far.
 struct Tui {
     child: Child,
     master: OwnedFd,
     /// Every byte the binary wrote, verbatim — the escape-sequence record.
     raw: Arc<Mutex<Vec<u8>>>,
+    /// Successful terminal replies, separate from the application's output.
+    replies: Arc<Mutex<Vec<u8>>>,
+    reply_error: Arc<Mutex<Option<std::io::Error>>>,
     /// The same bytes through vt100, for asserting on the visible frame.
     screen: Arc<Mutex<vt100::Parser>>,
     /// The exit status, once seen: `try_wait` reaps, so it is read once.
@@ -319,7 +327,7 @@ struct Tui {
     /// The binary's own log, quoted when a wait times out.
     log: PathBuf,
     /// The kitty-protocol half of the terminal, on one that speaks it.
-    kitty: Option<Arc<Mutex<KittyTerminal>>>,
+    kitty: Option<Arc<Mutex<TestTerminal>>>,
 }
 
 impl Tui {
@@ -334,21 +342,21 @@ impl Tui {
         cols: u16,
         adjust: impl FnOnce(&mut Command),
     ) -> Self {
-        Self::spawn_on(profile, rows, cols, adjust, false)
+        Self::spawn_on(profile, rows, cols, adjust, TerminalMode::Legacy)
     }
 
     /// [`Self::spawn_with`] on a terminal that speaks the kitty keyboard
     /// protocol: it answers the flags query with the flags pushed so far and
     /// the device-attributes query after it, which is how crossterm detects
-    /// support. Without an answer the binary waits out its query and runs on a
-    /// legacy keyboard, which is what every other scenario here gets.
+    /// support. Legacy terminals answer only the device-attributes query; the
+    /// silent-terminal scenario covers a query that times out.
     fn spawn_kitty(
         profile: &Profile,
         rows: u16,
         cols: u16,
         adjust: impl FnOnce(&mut Command),
     ) -> Self {
-        Self::spawn_on(profile, rows, cols, adjust, true)
+        Self::spawn_on(profile, rows, cols, adjust, TerminalMode::Kitty)
     }
 
     fn spawn_on(
@@ -356,7 +364,7 @@ impl Tui {
         rows: u16,
         cols: u16,
         adjust: impl FnOnce(&mut Command),
-        kitty: bool,
+        mode: TerminalMode,
     ) -> Self {
         let (master, slave) = openpty(rows, cols);
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox"));
@@ -382,10 +390,16 @@ impl Tui {
         let child = cmd.spawn().expect("spawn thurbox");
 
         let raw = Arc::new(Mutex::new(Vec::new()));
+        let replies = Arc::new(Mutex::new(Vec::new()));
+        let reply_error = Arc::new(Mutex::new(None));
         let screen = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
         let mut reader = std::fs::File::from(master.try_clone().expect("dup master"));
-        let kitty = kitty.then(|| Arc::new(Mutex::new(KittyTerminal::default())));
-        let mut answer = kitty.clone().map(|terminal| {
+        let terminal = Arc::new(Mutex::new(TestTerminal {
+            kitty: matches!(mode, TerminalMode::Kitty),
+            ..TestTerminal::default()
+        }));
+        let kitty = matches!(mode, TerminalMode::Kitty).then(|| Arc::clone(&terminal));
+        let mut answer = (!matches!(mode, TerminalMode::Silent)).then(|| {
             (
                 terminal,
                 std::fs::File::from(master.try_clone().expect("dup master")),
@@ -393,6 +407,8 @@ impl Tui {
         });
         {
             let raw = Arc::clone(&raw);
+            let replies = Arc::clone(&replies);
+            let reply_error = Arc::clone(&reply_error);
             let screen = Arc::clone(&screen);
             // Reads until EIO, which is how a pty reports the child gone.
             std::thread::spawn(move || {
@@ -406,8 +422,13 @@ impl Tui {
                     if let Some((terminal, writer)) = answer.as_mut() {
                         let reply = terminal.lock().unwrap().feed(&raw);
                         if !reply.is_empty() {
-                            let _ = writer.write_all(&reply);
-                            let _ = writer.flush();
+                            if let Err(error) =
+                                writer.write_all(&reply).and_then(|()| writer.flush())
+                            {
+                                *reply_error.lock().unwrap() = Some(error);
+                                break;
+                            }
+                            replies.lock().unwrap().extend_from_slice(&reply);
                         }
                     }
                     drop(raw);
@@ -419,6 +440,8 @@ impl Tui {
             child,
             master,
             raw,
+            replies,
+            reply_error,
             screen,
             exited: None,
             log: profile.path("data/thurbox.log"),
@@ -446,6 +469,8 @@ impl Tui {
 
     /// The frame as vt100 reconstructs it, rows trimmed of trailing blanks.
     fn frame(&self) -> String {
+        let error = self.reply_error.lock().unwrap();
+        assert!(error.is_none(), "terminal reply failed: {error:?}");
         self.screen.lock().unwrap().screen().contents()
     }
 
@@ -3032,6 +3057,113 @@ fn a_sessionless_run_is_refused_before_queueing_and_local_runs_complete() {
 }
 
 /// Types at a program it started, and counts what `command.failed` told it.
+/// Keep the real server and its output alive while closing only the control
+/// client's input. A burst cannot reliably fill a queue drained on another
+/// thread; a pipe with no reader reliably makes that writer fail instead.
+struct CutProgramInput {
+    control: std::fs::File,
+    root: PathBuf,
+}
+
+impl CutProgramInput {
+    fn install(profile: &Profile) -> Self {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let real = Command::new("sh")
+            .args(["-c", "command -v tmux"])
+            .output()
+            .expect("find tmux");
+        assert!(real.status.success());
+        let real = PathBuf::from(String::from_utf8(real.stdout).unwrap().trim());
+        let root = profile.path("input-relay");
+        std::fs::create_dir(&root).expect("relay directory");
+        let fifo = root.join("control");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let control = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .expect("control fifo");
+        let shim = profile.bin.join("tmux");
+        std::fs::write(
+            &shim,
+            format!(
+                r#"#!/bin/sh
+case " $* " in
+  *" -C attach-session "*)
+    cd {root} || exit 1
+    : > started
+    mkfifo up down || exit 1
+    exec 3<>up
+    # Dash redirects stdin of async commands to /dev/null before <&0.
+    # Preserve the incoming pipe on a separate descriptor for the input pump.
+    exec 4<&0
+    up= down= mux=
+    cleanup() {{
+      for pid in "$up" "$down" "$mux"; do
+        [ -z "$pid" ] || kill "$pid" 2>/dev/null
+      done
+      wait
+      exec 3>&-
+      : > done
+    }}
+    trap cleanup EXIT
+    {real} "$@" <up >down 3>&- 4<&- & mux=$!
+    cat <down 3>&- 4<&- & down=$!
+    cat <&4 >&3 3>&- 4<&- & up=$!
+    exec 4<&- 0</dev/null
+    : > ready
+    while IFS= read -r request; do
+      case "$request" in
+        cut) kill "$up"; wait "$up"; up=; : > cut ;;
+        stop) break ;;
+      esac
+    done <control
+    ;;
+  *) exec {real} "$@" ;;
+esac
+"#,
+                root = shell_word(&root),
+                real = shell_word(&real),
+            ),
+        )
+        .expect("tmux input relay");
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self { control, root }
+    }
+
+    fn cut(&mut self, tui: &Tui) {
+        tui.wait_until("the control relay to attach", |_| {
+            self.root.join("ready").exists()
+        });
+        self.control.write_all(b"cut\n").expect("cut input");
+        tui.wait_until("the input relay to close", |_| {
+            self.root.join("cut").exists()
+        });
+    }
+}
+
+impl Drop for CutProgramInput {
+    fn drop(&mut self) {
+        // The supervisor owns and reaps its pumps, including on a test panic.
+        // Its held FIFO descriptor keeps server input open until this request.
+        let _ = self.control.write_all(b"stop\n");
+        let deadline = Instant::now() + WAIT;
+        while self.root.join("started").exists() && !self.root.join("done").exists() {
+            if Instant::now() >= deadline {
+                eprintln!("input relay did not acknowledge teardown");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(40));
+        }
+    }
+}
+
 const TYPIST: &str = r#"return {
   name = "typist",
   slot = "sessions",
@@ -3041,26 +3173,28 @@ const TYPIST: &str = r#"return {
   render = function()
     return {
       type = "text",
-      text = "tb-typist " .. (state.step or 0)
+      text = "tb-typist " .. (state.started and 1 or 0)
         .. " absent=" .. (state.absent or 0)
-        .. " full=" .. (state.full and "yes" or "no"),
+        .. " shut=" .. (state.closed and "yes" or "no"),
     }
   end,
   keys = {
     { key = "ctrl+g", action = "typist.next", desc = "next step", scope = "global" },
+    { key = "ctrl+u", action = "typist.missing", desc = "missing program", scope = "global" },
   },
   on_action = function(action)
+    if action == "typist.missing" then
+      command("program", { text = "gone", keys = "x" })
+      return true
+    end
     if action ~= "typist.next" then
       return false
     end
-    state.step = (state.step or 0) + 1
-    if state.step == 1 then
+    if not state.started then
+      state.started = true
       command("program", { text = "cat", repo = "cat" })
-      for _ = 1, 5000 do
-        command("program", { text = "cat", keys = "x" })
-      end
     else
-      command("program", { text = "gone", keys = "x" })
+      command("program", { text = "cat", keys = "x" })
     end
     return true
   end,
@@ -3069,20 +3203,15 @@ const TYPIST: &str = r#"return {
     if error:find("no running program", 1, true) then
       state.absent = (state.absent or 0) + 1
     end
-    if error:find("full", 1, true) then
-      state.full = true
+    if error:find("input channel closed", 1, true) then
+      state.closed = true
     end
   end,
 }"#;
 
-/// Every refused `keys` send reaches the plugin's `command.failed`, with the
-/// reason it was refused (#1119).
-///
-/// The burst is the case that was misreported: one batch holds more sends than
-/// a pane's input channel, so the tail is refused while `cat` is plainly
-/// running — and was reported as "no running program", to the band only. The
-/// second step is the honest version of that message, which also never reached
-/// the plugin.
+/// A live program whose input failed is distinct from a missing program, and
+/// both refusal reasons reach the plugin (#1119). Queue overflow itself is
+/// pinned without a consumer by `input_channel_overflow_fails_fast_without_blocking`.
 #[test]
 fn a_refused_keystroke_reaches_the_plugin_with_the_reason_it_was_refused() {
     if !have_tmux() {
@@ -3091,23 +3220,58 @@ fn a_refused_keystroke_reaches_the_plugin_with_the_reason_it_was_refused() {
     }
     let interface = interface_plus("91_typist.lua", TYPIST);
     let profile = Profile::new();
+    let mut relay = CutProgramInput::install(&profile);
     trust(&profile, interface.path(), "plugins/91_typist.lua", TYPIST);
     let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
     tui.wait_for("tb-typist 0");
-
     tui.send(b"\x07");
-    tui.wait_for("tb-typist 1 absent=0 full=yes");
+    tui.wait_for("tb-typist 1");
+    relay.cut(&tui);
+
+    // The first write fails in the control writer; the next makes the pane
+    // writer drop its receiver. Wait for that state, not a scheduling delay.
+    let deadline = Instant::now() + WAIT;
+    while !tui.frame().contains("tb-typist 1 absent=0 shut=yes") {
+        assert!(
+            !tui.frame().contains("no running program"),
+            "a live program's input failure was reported as a missing program:\n{}",
+            tui.frame()
+        );
+        if Instant::now() >= deadline {
+            tui.give_up("the live program's closed input refusal");
+        }
+        tui.send(b"\x07");
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    let panes = profile.server.tmux(&[
+        "list-panes",
+        "-a",
+        "-F",
+        "#{pane_dead} #{pane_current_command}",
+    ]);
+    assert!(panes.status.success());
+    assert!(
+        String::from_utf8_lossy(&panes.stdout)
+            .lines()
+            .any(|line| line == "0 cat"),
+        "the program must still be alive: {}",
+        String::from_utf8_lossy(&panes.stdout)
+    );
     assert!(
         !tui.frame().contains("no running program"),
-        "a full input channel was reported as a missing program:\n{}",
+        "a closed input channel was reported as a missing program:\n{}",
         tui.frame()
     );
-
-    tui.send(b"\x07");
-    tui.wait_for("tb-typist 2 absent=1");
-
+    tui.send(b"\x15");
+    tui.wait_for("tb-typist 1 absent=1 shut=yes");
+    let reaped = relay.root.join("done");
+    drop(relay);
+    assert!(
+        reaped.exists(),
+        "the relay must reap its pumps and close its FIFO"
+    );
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
 }
@@ -8723,6 +8887,51 @@ fn a_release_never_types_into_a_field_and_a_modal_keeps_its_press() {
 }
 
 #[test]
+fn terminal_query_replies_survive_fragmented_output() {
+    for kitty in [false, true] {
+        let mut terminal = TestTerminal {
+            kitty,
+            ..TestTerminal::default()
+        };
+        let mut output = b"plain text\x1b".to_vec();
+        assert!(terminal.feed(&output).is_empty());
+        output.extend_from_slice(b"[?u\x1b");
+        let expected: &[u8] = if kitty { b"\x1b[?0u" } else { b"" };
+        assert_eq!(terminal.feed(&output), expected);
+        output.extend_from_slice(b"[c");
+        assert_eq!(terminal.feed(&output), b"\x1b[?62;22c");
+        assert!(
+            terminal.feed(&output).is_empty(),
+            "each query is answered once"
+        );
+    }
+}
+
+#[test]
+fn a_silent_terminal_keeps_press_only_delivery_after_negotiation_times_out() {
+    let interface = hold_interface();
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_on(
+        &profile,
+        40,
+        120,
+        |cmd| {
+            cmd.env("THURBOX_UI_DIR", interface.path());
+        },
+        TerminalMode::Silent,
+    );
+    tui.wait_for("No sessions yet");
+    wait_hold(&profile, &tui, "", "unsupported");
+    assert!(tui.raw_since(0).contains("\x1b[?u\x1b[c"));
+    assert!(tui.replies.lock().unwrap().is_empty());
+    tui.send(b"\x00");
+    wait_hold(&profile, &tui, "press", "unsupported");
+    tui.send(b"\x00");
+    wait_hold(&profile, &tui, "press,press", "unsupported");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn a_legacy_terminal_reports_no_releases_and_keeps_press_only_delivery() {
     let interface = hold_interface();
     let profile = Profile::new();
@@ -8731,6 +8940,14 @@ fn a_legacy_terminal_reports_no_releases_and_keeps_press_only_delivery() {
     });
     tui.wait_for("No sessions yet");
     wait_hold(&profile, &tui, "", "unsupported");
+    // A legacy terminal rejects kitty support by answering the following DA
+    // query, rather than leaving capability detection to its timeout.
+    assert!(tui.raw_since(0).contains("\x1b[?u\x1b[c"));
+    assert_eq!(
+        *tui.replies.lock().unwrap(),
+        b"\x1b[?62;22c",
+        "a legacy terminal must answer DA without advertising kitty flags"
+    );
     // `ctrl+space` in a legacy terminal is NUL. Every press is delivered, as
     // a press, because nothing can say the key was ever let go.
     tui.send(b"\x00");
