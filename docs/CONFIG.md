@@ -1306,6 +1306,15 @@ install **home** (where payload files land and the session runs) defaults to
 unless the manifest pins a `home` or you pass `--home`. The manifest has two
 halves — an **install** spec and a **runtime** spec.
 
+A relative install home is made absolute against the install command's
+directory. Explicit automation `cwd` paths are stored absolute: relative
+paths resolve against that install home, `~` against the user's home, and
+`{home}` names the install home. Activation and heartbeat ticks therefore use
+the same directory. A hand-written discovery manifest must supply an absolute
+or resolvable `~` cwd; install it first to resolve relative paths.
+Reactivation repairs previously stored relative cwd values from the resolved
+manifest while preserving existing absolute overrides and run history.
+
 The example below is modelled on
 [fleet](https://github.com/Thurbeen/fleet), the control-plane template that is
 the worked example of an installable extension (`docs/ORCHESTRATION.md`). Its
@@ -1385,7 +1394,8 @@ session_ref = "fleet"          # must match a [[sessions]] name above
 prompt = "tick"
 
 # Or an exec automation: a command, no session. `timeout_secs` (default 600),
-# `cwd` (default home; `{home}` substituted) and `env` are how it runs, as
+# `cwd` (default user's home; relative to install home; `{home}` substituted)
+# and `env` are how it runs, as
 # `automation create --timeout/--cwd/--env` set them; `cwd` and `env` are
 # refused on a send automation.
 [[automations]]
