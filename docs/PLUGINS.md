@@ -1655,7 +1655,10 @@ is the first thing every user of your plugin will see.
 - A plugin that throws while rendering shows a red panel **in its own rect**.
 - A plugin that never returns is **interrupted** — an unterminated loop costs one
   pane, not the application.
-- A plugin that allocates without bound hits a **memory ceiling** and fails.
+- A plugin that allocates without bound hits a **memory ceiling** and fails. Every
+  plugin shares that VM, so once it is nine-tenths full the interface is **rebuilt**
+  on a fresh one, with a message saying so: panes lose what they held in memory,
+  and receive `interface.reloaded` with `reason = "memory"`.
 - If your whole plugin directory will not load, the **embedded copies** run
   instead, so you can fix the file from inside the thing it broke.
 

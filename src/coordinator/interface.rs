@@ -286,6 +286,25 @@ impl App {
         self.report(message, Level::Info);
     }
 
+    /// Rebuild the interface once its VM has filled up — see
+    /// [`LuaHost::near_memory_limit`]. Said out loud, because the panes lose
+    /// whatever they held in memory and the cause is a plugin holding too much.
+    pub(crate) fn rebuild_full_vm(&mut self) {
+        if !self.host.near_memory_limit() {
+            return;
+        }
+        let used = self.host.used_memory() >> 20;
+        let limit = thurbox::kernel::host::memory_limit() >> 20;
+        tracing::warn!("the plugin VM held {used} of its {limit} MiB; rebuilt the interface");
+        self.reload_interface(super::events::ReloadReason::Memory);
+        self.collect_declarations();
+        self.clamp_focus();
+        self.report(
+            format!("the interface reached its {limit} MiB plugin memory limit and was rebuilt"),
+            Level::Error,
+        );
+    }
+
     /// Report at a chosen severity. The message band badges the three
     /// differently, as v1 does — an error that reads like a confirmation is an
     /// error nobody notices.

@@ -7230,6 +7230,89 @@ fn a_resize_is_not_paid_for_on_the_render_thread_when_the_link_is_wedged() {
     assert!(tui.quit().success());
 }
 
+#[test]
+fn a_plugin_vm_at_its_memory_limit_does_not_freeze_the_interface() {
+    // Every plugin shares one VM under the memory limit. Once its heap is at
+    // the ceiling and cannot be collected below it, each allocation any pane
+    // makes runs a full emergency collection and then fails anyway: every
+    // frame pays one per plugin call, for as long as the process lives. That
+    // was a full freeze of the interface, with nothing in the log, until it
+    // was killed.
+    //
+    // The heap here is held live by the pane rather than leaked, which reaches
+    // the same state in one press. Small tables rather than one big string,
+    // because a collection's cost is the objects it has to traverse.
+    let interface = interface_plus(
+        "91_hog.lua",
+        r#"local held = {}
+return {
+  name = "hog",
+  slot = "sessions",
+  keys = {
+    { key = "ctrl+g", action = "hog.fill", desc = "fill the VM", scope = "global" },
+  },
+  render = function(ctx)
+    return { type = "text", text = (#held > 0 and "hog-full " or "hog-idle ") .. ctx.frame }
+  end,
+  on_action = function(action)
+    if action ~= "hog.fill" then
+      return false
+    end
+    pcall(function()
+      for i = 1, 2e6 do
+        held[i] = { i }
+      end
+    end)
+    -- Then to the byte: halve the chunk whenever one no longer fits.
+    local size, n = 1024 * 1024, 0
+    while size >= 8 do
+      n = n + 1
+      local ok = pcall(function()
+        held[#held + 1] = string.rep("x", size, tostring(n))
+      end)
+      if not ok then
+        size = size // 2
+      end
+    end
+    return true
+  end,
+}"#,
+    );
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("hog-idle");
+
+    tui.send(b"\x07");
+    // The palette is drawn from the kernel's own registry, so the only thing
+    // that can make it late is a loop that is not getting round. The first
+    // round trip waits behind the fill itself; the ones after it are the
+    // measure — ~80 ms on a healthy VM, ~1.7 s on a full one, every time,
+    // however long it is left.
+    tui.send(CTRL_P);
+    tui.wait_for("type to filter commands");
+    tui.send(ESC);
+    tui.wait_gone("type to filter commands");
+    for round in 0..3 {
+        let opened = Instant::now();
+        tui.send(CTRL_P);
+        tui.wait_for("type to filter commands");
+        tui.send(ESC);
+        tui.wait_gone("type to filter commands");
+        let took = opened.elapsed();
+        assert!(
+            took < Duration::from_millis(600),
+            "round trip {round} through the palette took {took:?} after the plugin VM \
+             reached its memory limit"
+        );
+    }
+    // On a VM of its own again, which is the only way the heap comes back.
+    tui.wait_for("hog-idle");
+    assert!(tui.quit().success());
+}
+
 /// How long a host whose connection ended may take to be typed into again.
 ///
 /// The connection is re-opened on demand, in well under a second here; what

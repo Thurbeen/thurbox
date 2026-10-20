@@ -37,6 +37,8 @@ pub(crate) enum ReloadReason {
     Watch,
     /// A switch or a trust change in the settings modal's Interface tab.
     Settings,
+    /// The plugin VM filled up (`LuaHost::near_memory_limit`).
+    Memory,
 }
 
 impl ReloadReason {
@@ -46,6 +48,7 @@ impl ReloadReason {
             ReloadReason::Key => "f10",
             ReloadReason::Watch => "watch",
             ReloadReason::Settings => "settings",
+            ReloadReason::Memory => "memory",
         }
     }
 }

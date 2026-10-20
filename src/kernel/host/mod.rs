@@ -1893,6 +1893,24 @@ impl LuaHost {
         self.skipped_renders.get()
     }
 
+    /// Bytes the plugin VM holds now — what [`memory_limit`] is measured
+    /// against, shared by every plugin.
+    pub fn used_memory(&self) -> usize {
+        self.lua.used_memory()
+    }
+
+    /// Whether the VM is full enough that it should be rebuilt rather than
+    /// called again.
+    ///
+    /// A heap at the ceiling that a collection cannot bring down never comes
+    /// back: each allocation runs a full emergency collection and then fails,
+    /// so every plugin call pays one on every frame — a frozen interface, for
+    /// as long as the process lives. Only a new VM returns the memory. Set
+    /// below the ceiling so the rebuild comes before those collections start.
+    pub fn near_memory_limit(&self) -> bool {
+        self.used_memory() >= memory_limit() / 10 * 9
+    }
+
     /// Published groups served from the cache rather than rebuilt.
     pub fn reused_groups(&self) -> u64 {
         self.reused_groups.get()
