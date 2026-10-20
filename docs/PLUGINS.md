@@ -1475,7 +1475,7 @@ operations are asynchronous and preserve Lua call order, so
 reflect forgetting after the coordinator processes it, rather than within the
 issuing handler. An old active completion cannot repopulate a forgotten entry
 or overwrite a new request under the same key. Removing a plugin also discards
-its late completions.
+its unserved requests and late completions.
 
 Forgetting **does not cancel active execution**: its capture still occupies one
 of the four slots until completion or timeout. Timeout kills the immediate

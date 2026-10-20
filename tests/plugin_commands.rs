@@ -498,6 +498,41 @@ fn forget_preserves_order_and_binds_the_issuing_owner() {
 }
 
 #[test]
+fn reload_discards_unserved_host_requests_from_retired_owners_and_keeps_live_ones() {
+    let (_home, ui) = interface(&[
+        (
+            "91_gone.lua",
+            &asking_with("gone", r#"{ machine = "host:example" }"#),
+        ),
+        (
+            "92_keeper.lua",
+            &asking_with("keeper", r#"{ machine = "local" }"#),
+        ),
+    ]);
+    let mut host = LuaHost::new(&ui);
+    host.set_trusted(vec![
+        "plugins/91_gone.lua".into(),
+        "plugins/92_keeper.lua".into(),
+    ]);
+    render(&host, "gone");
+    render(&host, "keeper");
+    std::fs::remove_file(ui.join("plugins/91_gone.lua")).expect("remove owner");
+    host.reload();
+    assert!(host.error.is_none(), "{:?}", host.error);
+    assert!(host.index_of("gone").is_none());
+    let requests = host.drain_run_requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "retired owner reached execution: {requests:?}"
+    );
+    assert_eq!(requests[0].0, "plugins/92_keeper.lua");
+    assert!(
+        matches!(&requests[0].1, thurbox::kernel::runs::Request::Ask(ask) if ask.target == Target::Local)
+    );
+}
+
+#[test]
 fn session_routing_requires_a_nonempty_string_before_queueing() {
     for opts in [
         "nil",

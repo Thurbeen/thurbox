@@ -136,7 +136,7 @@ type Private = Rc<RefCell<BTreeMap<(String, String), Persisted>>>;
 /// kernel — empty for Lua that belongs to no plugin.
 type Queue = Rc<RefCell<Vec<(Vec<String>, Command)>>>;
 
-/// Finished runs, keyed by the plugin that asked and then by its own key.
+/// Run answers, keyed by the plugin that asked and then by its own key.
 pub type RunAnswers = std::collections::HashMap<String, Vec<(String, super::runs::Run)>>;
 /// Each session's working directory, so a file read can be rooted at one.
 /// Refreshed with the snapshot; a session not in here cannot be browsed.
@@ -1800,7 +1800,7 @@ impl LuaHost {
         let _ = plugin.env.thurbox.raw_set("granted", table);
     }
 
-    /// Hand over the answers to every run asked for so far.
+    /// Hand over the retained run answers.
     ///
     /// Keyed by plugin, and published per plugin in `enter` rather than into one
     /// shared table: a plugin reading another's `docker` output would be a
@@ -1838,9 +1838,12 @@ impl LuaHost {
             .collect()
     }
 
-    /// Take owner-bound execution and eviction operations in Lua call order.
+    /// Take execution/eviction operations from loaded owners in Lua call order.
     pub fn drain_run_requests(&self) -> Vec<(String, super::runs::Request)> {
-        let asked = std::mem::take(&mut *self.runs.borrow_mut());
+        let mut asked = std::mem::take(&mut *self.runs.borrow_mut());
+        // Edit reloads keep this queue while replacing the plugins. Delivering
+        // a retired owner's ask would recreate state already pruned by reload.
+        asked.retain(|(owner, _)| self.plugins.iter().any(|plugin| plugin.path == *owner));
         if self.perf_timing.get() {
             let mut table = self.plugin_perf.borrow_mut();
             for (path, request) in &asked {

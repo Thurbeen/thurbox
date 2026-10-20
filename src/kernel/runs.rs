@@ -141,9 +141,8 @@ struct Finished {
 /// goes away.
 ///
 /// A plain `tx.send` after the call is skipped by an unwinding panic, and the
-/// loop's bookkeeping — the concurrency slot and the key's in-flight marker — is
-/// only ever cleared by a message arriving. So the message is owed on every exit
-/// path, which is what `Drop` is for.
+/// loop's concurrency slot is only released by a message arriving. The message
+/// is owed even when its answer was forgotten, on every exit path.
 struct Report {
     tx: Sender<Finished>,
     plugin: String,
@@ -351,11 +350,10 @@ impl RunStore {
         changed
     }
 
-    /// Has anything ever been asked for?
+    /// No retained answers or queued/active work remain.
     ///
-    /// The common answer is no — most interfaces have no plugin that runs
-    /// programs — and the loop checks it every iteration, so it is one bool
-    /// rather than a walk.
+    /// The loop uses this constant-time check to avoid rebuilding the runner's
+    /// session map when there is nothing to serve.
     pub fn is_empty(&self) -> bool {
         self.answers.is_empty() && self.queued.is_empty() && self.running == 0
     }
