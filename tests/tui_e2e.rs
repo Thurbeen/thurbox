@@ -3163,6 +3163,361 @@ impl Drop for CutProgramInput {
     }
 }
 
+fn configured_host_run_profile() -> Profile {
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/hosts.toml"),
+        r#"[[hosts]]
+name = "local"
+destination = "fixture-host"
+share_sessions = false
+ssh_opts = ["-o", "HostKeyAlias=fixture"]
+"#,
+    )
+    .expect("hosts");
+    let script = profile.bin.join("ssh");
+    std::fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> {calls}
+while [ "$1" = '-o' ]; do shift 2; done
+[ "$1" = 'fixture-host' ] || exit 98
+shift
+case "$*" in
+  *HOST-API-STALL*) printf '%s\n' "$$" > {pid}; exec sleep 30 ;;
+  *HOST-API-OFFLINE*) printf '%s\n' 'fixture transport unavailable' >&2; exit 255 ;;
+  *HOST-API-*) cd "$HOME" || exit 97; eval "exec $*" ;;
+  *) exit 96 ;;
+esac
+"#,
+            calls = shell_word(&profile.path("host-run-calls")),
+            pid = shell_word(&profile.path("host-run-pid")),
+        ),
+    )
+    .expect("transport fixture");
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    profile
+}
+
+const CONFIGURED_HOST_RUN: &str = r#"return {
+  name = "host-run", slot = "sessions", capabilities = { "run" },
+  render = function()
+    if not run then return { type = "text", text = "HOST-RUN-UNTRUSTED" } end
+    local ok, err = pcall(function()
+      run("host:local:ok", [[printf 'HOST-API-OK:%s' "$PWD"]], { machine = "host:local", ttl = 60 })
+      run("host:local:offline", "echo HOST-API-OFFLINE", { machine = "host:local", ttl = 60 })
+      run("host:local:stall", "echo HOST-API-STALL", { machine = "host:local", ttl = 60, timeout = 0.25 })
+      run("host:local:cap", "printf HOST-API-CAP; head -c 300000 /dev/zero", { machine = "host:local", ttl = 60 })
+      run("host:missing", "echo HOST-API-MUST-NOT-RUN", { machine = "host:missing", ttl = 60 })
+    end)
+    if not ok then return { type = "text", text = "HOST-RUN-REJECTED " .. tostring(err) } end
+    local children = { { type = "text", len = 1, text = "sessions=" .. #thurbox.sessions } }
+    for _, key in ipairs({ "ok", "offline", "stall", "cap" }) do
+      local got = thurbox.runs["host:local:" .. key]
+      local text = key .. " pending"
+      if got and got.state == "done" then
+        if key == "ok" then text = got.stdout
+        elseif key == "offline" and got.status == 255 and got.stderr:find("fixture transport unavailable", 1, true) then text = "HOST-OFFLINE-OK"
+        elseif key == "stall" and got.timed_out and not got.ok then text = "HOST-TIMEOUT-OK"
+        elseif key == "cap" and got.truncated and #got.stdout <= 262144 then text = "HOST-CAP-OK"
+        end
+      end
+      children[#children + 1] = { type = "text", len = 1, text = text }
+    end
+    local missing = thurbox.runs["host:missing"]
+    if missing and missing.state == "failed" and missing.error then
+      children[#children + 1] = { type = "text", len = 1, text = "HOST-MISSING-REFUSED" }
+    end
+    return { type = "box", children = children }
+  end,
+}"#;
+
+#[test]
+fn configured_host_runs_need_no_session_or_sharing_and_keep_execution_bounded() {
+    let interface = interface_with("plugins/10_sessions.lua", CONFIGURED_HOST_RUN);
+    std::fs::write(
+        interface.path().join("layout.lua"),
+        "return function() return { children = { { slot = 'sessions' } } } end",
+    )
+    .expect("layout");
+    let profile = configured_host_run_profile();
+    trust(
+        &profile,
+        interface.path(),
+        "plugins/10_sessions.lua",
+        CONFIGURED_HOST_RUN,
+    );
+    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for(&format!("HOST-API-OK:{}", profile.path("home").display()));
+    tui.wait_for("sessions=0");
+    for result in [
+        "HOST-OFFLINE-OK",
+        "HOST-TIMEOUT-OK",
+        "HOST-CAP-OK",
+        "HOST-MISSING-REFUSED",
+    ] {
+        tui.wait_for(result);
+    }
+    let calls = std::fs::read_to_string(profile.path("host-run-calls")).expect("calls");
+    assert!(calls.contains("HostKeyAlias=fixture"), "{calls}");
+    assert!(!calls.contains("HOST-API-MUST-NOT-RUN"), "{calls}");
+    let pid: i32 = std::fs::read_to_string(profile.path("host-run-pid"))
+        .expect("transport pid")
+        .trim()
+        .parse()
+        .expect("pid");
+    // The stand-in execs its sleeper: this pins local transport termination,
+    // without claiming that killing SSH can terminate a remote command.
+    assert_eq!(
+        unsafe { libc::kill(pid, 0) },
+        -1,
+        "timed-out transport survived"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn configured_host_runs_still_require_a_trusted_run_capability() {
+    let interface = interface_with("plugins/10_sessions.lua", CONFIGURED_HOST_RUN);
+    let profile = configured_host_run_profile();
+    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("HOST-RUN-UNTRUSTED");
+    let calls = std::fs::read_to_string(profile.path("host-run-calls")).unwrap_or_default();
+    assert!(!calls.contains("HOST-API-"), "{calls}");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn forgetting_retired_host_keys_bounds_answers_across_repeated_churn() {
+    let body = r#"return {
+  name = "retention", slot = "sessions", capabilities = { "run" },
+  render = function()
+    if not run_forget then return { type = "text", text = "FORGET-API-MISSING" } end
+    state.round = state.round or 1
+    local count = 0
+    for _ in pairs(thurbox.runs) do count = count + 1 end
+    if count > 1 then error("retired answers accumulated: " .. count) end
+    if state.round > 32 then
+      return { type = "text", text = count == 0 and "HOST-CHURN-BOUNDED" or "retiring" }
+    end
+    local key = "host:rotating-" .. state.round
+    local got = thurbox.runs[key]
+    if got and got.state == "done" and got.ok then
+      run_forget(key)
+      run_forget(key)
+      state.round = state.round + 1
+    else
+      run(key, "printf HOST-API-CHURN", { machine = "host:rotating-" .. state.round, ttl = 60 })
+    end
+    return { type = "text", text = "host churn " .. state.round }
+  end,
+}"#;
+    let interface = interface_with("plugins/10_sessions.lua", body);
+    let profile = configured_host_run_profile();
+    // The registry is fixed at startup. Rotate the consumer's desired hosts,
+    // without implying that editing hosts.toml reloads the running registry.
+    let mut hosts = String::new();
+    for round in 1..=32 {
+        hosts.push_str(&format!(
+            "[[hosts]]\nname = \"rotating-{round}\"\ndestination = \"fixture-host\"\nshare_sessions = false\n"
+        ));
+    }
+    std::fs::write(profile.path("config/hosts.toml"), hosts).expect("hosts");
+    trust(&profile, interface.path(), "plugins/10_sessions.lua", body);
+    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    let deadline = Instant::now() + WAIT;
+    while !tui.frame().contains("HOST-CHURN-BOUNDED") && Instant::now() < deadline {
+        // Drive the input/repaint cycles a changing desired-host set causes,
+        // rather than relying on an otherwise idle interface's redraw floor.
+        tui.send(b"\x0c");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        tui.frame().contains("HOST-CHURN-BOUNDED"),
+        "{}",
+        tui.frame()
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn forgetting_an_active_request_does_not_replace_a_reused_keys_new_answer() {
+    let body = r#"return {
+  name = "forget-race", slot = "sessions", capabilities = { "run" },
+  keys = { { key = "ctrl+g", action = "reuse", desc = "Reuse forgotten key", scope = "global" } },
+  on_action = function()
+    run_forget("same")
+    run_forget("same")
+    run("same", "printf HOST-API-NEW", { machine = "host:local", ttl = 60 })
+    return true
+  end,
+  render = function()
+    if not run_forget then return { type = "text", text = "FORGET-API-MISSING" } end
+    if not state.asked then
+      run("same", "printf HOST-API-OLD", { machine = "host:local", ttl = 60 })
+      state.asked = true
+    end
+    local got = thurbox.runs.same
+    return { type = "text", text = got and (got.stdout or got.state) or "forgotten" }
+  end,
+}"#;
+    let interface = interface_with("plugins/10_sessions.lua", body);
+    let profile = configured_host_run_profile();
+    let old_started = profile.path("old-started");
+    let release_old = profile.path("release-old");
+    let old_finished = profile.path("old-finished");
+    let script = profile.bin.join("ssh");
+    let original = std::fs::read_to_string(&script).expect("fixture");
+    let gated = original.replacen(
+        "case \"$*\" in",
+        &format!(
+            r#"case "$*" in
+  *HOST-API-OLD*)
+    touch {started}
+    n=0
+    while [ ! -f {release} ] && [ "$n" -lt 250 ]; do
+      sleep 0.02
+      n=$((n + 1))
+    done
+    printf HOST-API-OLD
+    touch {finished}
+    exit 0 ;;
+"#,
+            started = shell_word(&old_started),
+            release = shell_word(&release_old),
+            finished = shell_word(&old_finished),
+        ),
+        1,
+    );
+    std::fs::write(script, gated).expect("gated fixture");
+    trust(&profile, interface.path(), "plugins/10_sessions.lua", body);
+    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !old_started.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        old_started.exists(),
+        "old request never reached the transport: {}",
+        tui.frame()
+    );
+    tui.send(b"\x07");
+    tui.wait_for("HOST-API-NEW");
+    std::fs::write(release_old, "release").expect("release old transport");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !old_finished.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(old_finished.exists(), "old transport never finished");
+    // Let the real coordinator consume the transport's late completion. The
+    // replacement must remain readable after repeated paints and polls.
+    for _ in 0..10 {
+        tui.send(b"\x0c");
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(tui.frame().contains("HOST-API-NEW"), "{}", tui.frame());
+    }
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn forgetting_a_queued_host_request_prevents_its_transport_from_starting() {
+    let body = r#"return {
+  name = "queued-forget", slot = "sessions", capabilities = { "run" },
+  render = function()
+    if not run_forget then return { type = "text", text = "FORGET-API-MISSING" } end
+    if not state.asked then
+      for i = 1, 4 do
+        run("busy:" .. i, "echo HOST-API-STALL", { machine = "host:local", ttl = 60, timeout = 0.25 })
+      end
+      run("discard", "echo HOST-API-QUEUED-MUST-NOT-START", { machine = "host:local", ttl = 60 })
+      run_forget("discard")
+      run_forget("discard")
+      run("after", "printf HOST-API-QUEUE-DRAINED", { machine = "host:local", ttl = 60 })
+      state.asked = true
+    end
+    if thurbox.runs.discard then error("forgotten queued answer survived") end
+    local got = thurbox.runs.after
+    return { type = "text", text = got and (got.stdout or got.state) or "pending" }
+  end,
+}"#;
+    let interface = interface_with("plugins/10_sessions.lua", body);
+    let profile = configured_host_run_profile();
+    trust(&profile, interface.path(), "plugins/10_sessions.lua", body);
+    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("HOST-API-QUEUE-DRAINED");
+    let calls = std::fs::read_to_string(profile.path("host-run-calls")).expect("calls");
+    assert!(!calls.contains("HOST-API-QUEUED-MUST-NOT-START"), "{calls}");
+    assert_eq!(calls.matches("HOST-API-STALL").count(), 4, "{calls}");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn forgetting_an_asked_key_preserves_another_plugins_answer_with_that_key() {
+    let forgetting = r#"return {
+  name = "forgetter", slot = "sessions", capabilities = { "run" },
+  render = function()
+    if not run_forget then return { type = "text", text = "FORGET-API-MISSING" } end
+    if not state.asked then
+      run("same", "printf SHOULD-NOT-BE-PUBLISHED", { machine = "local", ttl = 60 })
+      run_forget("same")
+      state.asked = true
+    end
+    local got = thurbox.runs.same
+    return { type = "text", text = got and "FORGOTTEN-ANSWER-RETURNED" or "OWNER-EMPTY" }
+  end,
+}"#;
+    let keeping = r#"return {
+  name = "keeper", slot = "keeper", capabilities = { "run" },
+  render = function()
+    run("same", "printf OTHER-OWNER-SURVIVED", { machine = "local", ttl = 60 })
+    local got = thurbox.runs.same
+    return { type = "text", text = got and (got.stdout or got.state) or "pending" }
+  end,
+}"#;
+    let interface = interface_with("plugins/10_sessions.lua", forgetting);
+    let second = "plugins/91_keeper.lua";
+    std::fs::write(interface.path().join(second), keeping).expect("keeper");
+    std::fs::write(
+        interface.path().join("layout.lua"),
+        "return function() return { children = { { slot = 'sessions' }, { slot = 'keeper' } } } end",
+    )
+    .expect("layout");
+    let profile = Profile::new();
+    trust(
+        &profile,
+        interface.path(),
+        "plugins/10_sessions.lua",
+        forgetting,
+    );
+    let grants = profile.path("config/ui.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&grants).expect("trust")).expect("json");
+    let path = interface.path().join(second);
+    let digest = thurbox::kernel::bundled::digest(keeping);
+    for path in [path.clone(), path.canonicalize().expect("canonicalize")] {
+        config["trusted"][path.to_string_lossy().as_ref()] = serde_json::json!(digest);
+    }
+    std::fs::write(grants, serde_json::to_string(&config).expect("encode")).expect("trust keeper");
+    let mut tui = Tui::spawn_with(&profile, 24, 140, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("OTHER-OWNER-SURVIVED");
+    tui.wait_for("OWNER-EMPTY");
+    assert!(!tui.frame().contains("FORGOTTEN-ANSWER-RETURNED"));
+    assert!(tui.quit().success());
+}
+
 /// Types at a program it started, and counts what `command.failed` told it.
 const TYPIST: &str = r#"return {
   name = "typist",

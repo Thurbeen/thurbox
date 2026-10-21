@@ -23,6 +23,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Most output kept per stream. Beyond this the run is truncated and says so.
@@ -65,6 +66,13 @@ pub struct Ask {
     pub refresh: bool,
 }
 
+/// Owner-bound operations, delivered in the order Lua issued them.
+#[derive(Debug, Clone)]
+pub enum Request {
+    Ask(Ask),
+    Forget(String),
+}
+
 /// The machine, and the directory on it, a run happens in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -78,6 +86,8 @@ pub enum Target {
     /// cannot stand in for. It grants nothing a local session's run does not
     /// already: both are the user's own shell, here.
     Local,
+    /// An exact configured host name, without needing a session on it.
+    Host(String),
 }
 
 impl Ask {
@@ -124,21 +134,22 @@ struct Finished {
     run: Run,
     at: Instant,
     started: Instant,
+    identity: Arc<()>,
 }
 
 /// Sends its `Finished` when the worker thread's frame goes away, however it
 /// goes away.
 ///
 /// A plain `tx.send` after the call is skipped by an unwinding panic, and the
-/// loop's bookkeeping — the concurrency slot and the key's in-flight marker — is
-/// only ever cleared by a message arriving. So the message is owed on every exit
-/// path, which is what `Drop` is for.
+/// loop's concurrency slot is only released by a message arriving. The message
+/// is owed even when its answer was forgotten, on every exit path.
 struct Report {
     tx: Sender<Finished>,
     plugin: String,
     key: String,
     run: Option<Run>,
     started: Instant,
+    identity: Arc<()>,
 }
 
 impl Drop for Report {
@@ -149,6 +160,7 @@ impl Drop for Report {
             run: self.run.take().unwrap_or(Run::Pending),
             at: Instant::now(),
             started: self.started,
+            identity: self.identity.clone(),
         });
     }
 }
@@ -169,6 +181,9 @@ struct Answer {
     /// every frame's ask started another process, and asking every frame is the
     /// documented way to use `run`.
     inflight: bool,
+    /// Retained only by the answer and its queued or active request. Removing
+    /// the answer invalidates completion without retaining a key tombstone.
+    identity: Arc<()>,
 }
 
 impl Answer {
@@ -208,7 +223,7 @@ pub enum RunEvent {
 pub struct RunStore {
     answers: HashMap<(String, String), Answer>,
     /// Asks waiting for a slot, in the order they arrived.
-    queued: VecDeque<(String, Ask)>,
+    queued: VecDeque<(String, Ask, Arc<()>)>,
     running: usize,
     channel: Option<(Sender<Finished>, Receiver<Finished>)>,
     /// Runs started and finished since the loop last took them.
@@ -248,15 +263,18 @@ impl RunStore {
         // The previous answer stays readable until the new one lands, so a pane
         // does not blink to "pending" every time its value refreshes — only a
         // key nobody has asked for before starts out pending.
+        let identity = Arc::new(());
         let entry = self.answers.entry(id).or_insert_with(|| Answer {
             run: Run::Pending,
             at: None,
             ttl: ask.ttl,
             inflight: false,
+            identity: identity.clone(),
         });
         entry.inflight = true;
+        entry.identity = identity.clone();
 
-        self.queued.push_back((plugin.to_string(), ask));
+        self.queued.push_back((plugin.to_string(), ask, identity));
         self.drain_queue(runner);
         true
     }
@@ -264,7 +282,7 @@ impl RunStore {
     /// Start whatever the concurrency bound allows.
     fn drain_queue(&mut self, runner: &std::sync::Arc<Runner>) {
         while self.running < MAX_CONCURRENT {
-            let Some((plugin, ask)) = self.queued.pop_front() else {
+            let Some((plugin, ask, identity)) = self.queued.pop_front() else {
                 return;
             };
             self.running += 1;
@@ -287,6 +305,7 @@ impl RunStore {
                     key: ask.key.clone(),
                     run: Some(Run::Failed(format!("{}: the run panicked", ask.program))),
                     started,
+                    identity,
                 };
                 report.run = Some(runner(&ask));
             });
@@ -316,16 +335,13 @@ impl RunStore {
                 took: done.at.saturating_duration_since(done.started),
             });
             let id = (done.plugin, done.key);
-            let ttl = self.answers.get(&id).map(|a| a.ttl).unwrap_or(DEFAULT_TTL);
-            self.answers.insert(
-                id,
-                Answer {
-                    run: done.run,
-                    at: Some(done.at),
-                    ttl,
-                    inflight: false,
-                },
-            );
+            if let Some(answer) = self.answers.get_mut(&id) {
+                if Arc::ptr_eq(&answer.identity, &done.identity) {
+                    answer.run = done.run;
+                    answer.at = Some(done.at);
+                    answer.inflight = false;
+                }
+            }
             changed = true;
         }
         if changed {
@@ -334,13 +350,12 @@ impl RunStore {
         changed
     }
 
-    /// Has anything ever been asked for?
+    /// No retained answers or queued/active work remain.
     ///
-    /// The common answer is no — most interfaces have no plugin that runs
-    /// programs — and the loop checks it every iteration, so it is one bool
-    /// rather than a walk.
+    /// The loop uses this constant-time check to avoid rebuilding the runner's
+    /// session map when there is nothing to serve.
     pub fn is_empty(&self) -> bool {
-        self.answers.is_empty() && self.queued.is_empty()
+        self.answers.is_empty() && self.queued.is_empty() && self.running == 0
     }
 
     pub fn get(&self, plugin: &str, key: &str) -> Option<&Run> {
@@ -358,13 +373,22 @@ impl RunStore {
             .collect()
     }
 
+    /// Forget this owner's answer and queued ask. Active work keeps its slot
+    /// until it finishes, but no longer owns an answer it could publish into.
+    pub fn forget(&mut self, plugin: &str, key: &str) -> bool {
+        let removed = self.answers.remove(&(plugin.to_string(), key.to_string()));
+        self.queued
+            .retain(|(owner, ask, _)| owner != plugin || ask.key != key);
+        removed.is_some()
+    }
+
     /// Forget everything belonging to plugins that no longer exist.
     ///
     /// Called after a reload: a plugin that was edited away, renamed or removed
     /// must not leave its answers behind to accumulate across reloads.
     pub fn retain_plugins(&mut self, live: &[String]) {
         self.answers.retain(|(plugin, _), _| live.contains(plugin));
-        self.queued.retain(|(plugin, _)| live.contains(plugin));
+        self.queued.retain(|(plugin, _, _)| live.contains(plugin));
     }
 
     /// Take the runs started and finished since the last call.
@@ -570,6 +594,22 @@ pub fn command_for(
             );
             crate::git::host_shell_c(host, &script)
         }
+    }
+}
+
+/// A sessionless command in the configured host user's home and environment.
+pub fn command_for_host(program: &str, host: &crate::session::HostDef) -> std::process::Command {
+    if host.is_windows() {
+        crate::git::host_powershell_c(
+            host,
+            &format!(
+                "Set-Location -LiteralPath $HOME -ErrorAction Stop\n{program}\n\
+                 if (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}; exit 1 }}\n\
+                 exit $LASTEXITCODE"
+            ),
+        )
+    } else {
+        crate::git::host_shell_c(host, &format!("cd \"$HOME\" && {program}"))
     }
 }
 
@@ -830,6 +870,209 @@ mod tests {
         run_to_completion(&mut store, &runner);
         store.retain_plugins(&["still-here".to_string()]);
         assert!(store.get("gone", "k").is_none());
+    }
+
+    #[test]
+    fn a_retired_plugins_late_completion_cannot_recreate_its_answer() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let runner: Arc<Runner> = Arc::new(move |ask: &Ask| {
+            if ask.key == "retired" {
+                started_tx.send(()).expect("started");
+                release_rx
+                    .lock()
+                    .expect("release lock")
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("release retired request");
+            }
+            Run::Done(Output {
+                stdout: ask.key.clone(),
+                stderr: String::new(),
+                status: Some(0),
+                truncated: false,
+                timed_out: false,
+            })
+        });
+        let mut store = RunStore::new();
+        for _ in 0..64 {
+            store.retain_plugins(&["gone".to_string(), "keeper".to_string()]);
+            store.request("gone", ask("retired"), &runner);
+            started_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("retired request started");
+            store.retain_plugins(&["keeper".to_string()]);
+            store.request("keeper", ask("live"), &runner);
+            release_tx.send(()).expect("release");
+            run_to_completion(&mut store, &runner);
+
+            assert!(store.get("gone", "retired").is_none());
+            assert!(store.for_plugin("gone").is_empty());
+            assert!(matches!(store.get("keeper", "live"), Some(Run::Done(_))));
+            assert_eq!(store.answers.len(), 1);
+            assert!(store.queued.is_empty());
+            assert_eq!(store.running, 0);
+        }
+    }
+
+    #[test]
+    fn forgetting_and_reusing_a_key_accepts_only_its_new_request_in_either_finish_order() {
+        for old_first in [true, false] {
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (old_tx, old_rx) = std::sync::mpsc::channel();
+            let (new_tx, new_rx) = std::sync::mpsc::channel();
+            let old_rx = std::sync::Mutex::new(old_rx);
+            let new_rx = std::sync::Mutex::new(new_rx);
+            let runner: Arc<Runner> = Arc::new(move |ask| {
+                started_tx.send(()).expect("started");
+                let gate = if ask.program == "old" {
+                    &old_rx
+                } else {
+                    &new_rx
+                };
+                gate.lock()
+                    .expect("gate")
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("release");
+                Run::Failed(ask.program.clone())
+            });
+            let mut store = RunStore::new();
+            let mut old = ask("same");
+            old.program = "old".into();
+            store.request("p", old, &runner);
+            started_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("old started");
+            let retired = Arc::downgrade(
+                &store
+                    .answers
+                    .get(&("p".into(), "same".into()))
+                    .expect("answer")
+                    .identity,
+            );
+            assert!(store.forget("p", "same"));
+            assert!(!store.forget("p", "same"));
+            assert!(
+                !store.is_empty(),
+                "forgotten active captures still need polling"
+            );
+            let mut new = ask("same");
+            new.program = "new".into();
+            store.request("p", new, &runner);
+            started_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("new started");
+            let (first, last) = if old_first {
+                (&old_tx, &new_tx)
+            } else {
+                (&new_tx, &old_tx)
+            };
+            first.send(()).expect("first release");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while store.running == 2 && Instant::now() < deadline {
+                store.poll(&runner);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(store.running, 1);
+            if old_first {
+                assert!(matches!(store.get("p", "same"), Some(Run::Pending)));
+            } else {
+                assert_eq!(store.get("p", "same"), Some(&Run::Failed("new".into())));
+            }
+            last.send(()).expect("last release");
+            run_to_completion(&mut store, &runner);
+            assert_eq!(store.get("p", "same"), Some(&Run::Failed("new".into())));
+            assert!(
+                retired.upgrade().is_none(),
+                "retired request identity leaked"
+            );
+            assert_eq!(store.answers.len(), 1);
+            assert!(store.queued.is_empty());
+        }
+    }
+
+    #[test]
+    fn forgotten_key_churn_leaves_no_retained_request_state() {
+        let (runner, count) = counting();
+        let mut store = RunStore::new();
+        store.request("keeper", ask("same"), &runner);
+        run_to_completion(&mut store, &runner);
+        for index in 0..128 {
+            let key = format!("host:retired-{index}");
+            store.request("p", ask(&key), &runner);
+            run_to_completion(&mut store, &runner);
+            let retired = Arc::downgrade(
+                &store
+                    .answers
+                    .get(&("p".into(), key.clone()))
+                    .expect("answer")
+                    .identity,
+            );
+            assert!(store.forget("p", &key));
+            assert!(!store.forget("p", &key));
+            assert!(retired.upgrade().is_none());
+            assert!(store.for_plugin("p").is_empty());
+            assert_eq!(store.answers.len(), 1);
+            assert!(store.queued.is_empty());
+            assert_eq!(store.running, 0);
+            assert!(matches!(store.get("keeper", "same"), Some(Run::Done(_))));
+        }
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 129);
+    }
+
+    #[test]
+    fn sessionless_host_commands_use_existing_transport_and_target_shell() {
+        use base64::Engine as _;
+
+        let posix = crate::session::HostDef {
+            name: "example".into(),
+            destination: "fixture-host".into(),
+            share_sessions: false,
+            ..Default::default()
+        };
+        let command = command_for_host("printf probe", &posix);
+        assert_eq!(command.get_program(), "ssh");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert!(args.iter().any(|arg| arg == "fixture-host"));
+        assert_eq!(
+            args.last().expect("script").as_ref(),
+            "'cd \"$HOME\" && printf probe'"
+        );
+
+        let windows = crate::session::HostDef {
+            platform: Some(crate::session::Platform::Windows),
+            ..posix
+        };
+        let command = command_for_host("quota-axi --json --no-credential-refresh", &windows);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert!(args.iter().any(|arg| arg == "powershell"));
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(args.last().expect("encoded script").as_bytes())
+            .expect("base64");
+        let units: Vec<_> = decoded
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let script = String::from_utf16(&units).expect("UTF16");
+        assert!(script.starts_with("Set-Location -LiteralPath $HOME -ErrorAction Stop\n"));
+        assert!(script.contains("quota-axi --json --no-credential-refresh"));
+        assert!(script.ends_with("exit $LASTEXITCODE"));
+
+        let command = command_for_host("printf probe", &crate::session::HostDef::wsl("Example"));
+        assert_eq!(command.get_program(), "wsl.exe");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert!(args
+            .windows(4)
+            .any(|part| part == ["-e", "sh", "-c", "cd \"$HOME\" && printf probe"]));
     }
 
     #[test]

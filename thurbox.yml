@@ -667,3 +667,8 @@ globals:
   run:
     args:
       - type: "..."
+
+  # Same owner and grant as run; evicts answers without cancelling execution.
+  run_forget:
+    args:
+      - type: string

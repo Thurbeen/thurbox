@@ -1398,6 +1398,25 @@ readout with no session, select local execution explicitly:
 run("quota", "quota-axi --json", { machine = "local", ttl = 60, timeout = 30 })
 ```
 
+For a configured or discovered host without a session, use its exact name
+from `thurbox.hosts`:
+
+```lua
+run("quota:devbox", "quota-axi --json --no-credential-refresh", {
+  machine = "host:devbox", ttl = 60, timeout = 30,
+})
+```
+
+This works with zero sessions and `share_sessions = false`. The command runs
+in the target user's home, with the environment supplied by its transport,
+using POSIX `sh` or Windows PowerShell according to `thurbox.hosts[].platform`.
+No local session config or authentication environment is injected. The name is
+not a session ID or a backend alias: `host:local` names a configured host named
+`local`; `host:ssh:devbox` is invalid. An unknown host produces a `failed`
+answer and never falls back to local execution. The host registry is loaded
+once per process; restart thurbox after changing `hosts.toml`. This API adds no
+host-config hot reload or CLI command.
+
 **Ask on every frame.** `run` does nothing while the answer is fresh *or while a
 run for that key is already going*, so asking is a map lookup rather than a
 process — and asking once, somewhere clever, is how a pane ends up showing
@@ -1432,11 +1451,52 @@ run("start", "thurbox-voice start --session " .. id, { machine = "local" })
 
 It runs in your home directory whatever session is selected, and needs no
 `session`. If you give one anyway, it is not where the program runs; `machine`
-decides that. A `machine` other than `"session"` (the default) or `"local"`
-fails the call rather than falling back, because guessing would run the program
+decides that. A `machine` other than `"session"` (the default), `"local"`, or
+`"host:<exact-name>"` fails the call rather than falling back, because guessing would run the program
 somewhere you did not ask for. This grants nothing new: a local session's runs
 already execute here as you, so it is the same `run` capability and the same
 trust.
+
+**Retire keys explicitly.** Answers belong to `(plugin, key)`, not to the
+program or target. A fresh or in-flight key ignores another request even if its
+program or target differs. Use stable target-specific keys. For a retired host
+or provider, call `run_forget(key)` from the same plugin:
+
+```lua
+run_forget("quota:retired-host")
+```
+
+The nonempty string key is required; unknown or repeated keys are a no-op. It
+returns no values. Like `run`, this function is absent without the plugin's
+existing `run` declaration and trust grant. It removes that owner's cached
+answer and queued request; other owners' identical keys are untouched. Both
+operations are asynchronous and preserve Lua call order, so
+`run_forget(key); run(key, program, opts)` starts a new request. Published reads
+reflect forgetting after the coordinator processes it, rather than within the
+issuing handler. An old active completion cannot repopulate a forgotten entry
+or overwrite a new request under the same key. Removing a plugin also discards
+its unserved requests and late completions.
+
+Forgetting **does not cancel active execution**: its capture still occupies one
+of the four slots until completion or timeout. Timeout kills the immediate
+local child (the SSH/WSL transport for a host), without guaranteeing termination
+of descendants or remote commands. There is no public cancel API. Results remain
+`pending`, `failed` with `error`, or `done` with `stdout`, `stderr`, `status`,
+`ok`, `truncated`, and `timed_out`; no freshness timestamp is published. Transport
+nonzero exits are `done` with their stderr/status; timeout has `timed_out = true`,
+`status = nil`, and `ok = false`.
+
+There is no automatic key-count, queue-size, or answer-cache limit. Plugins must
+bound their desired keys and forget retired ones, including after host/provider
+churn. This leaves only their desired answer/queued entries plus at most four
+active captures globally; forgotten keys leave no invalidation tombstones.
+After a Lua VM rebuild or reload, reconcile the plugin's published
+`thurbox.runs` keys against its desired keys: private Lua tracking state may
+have reset while core answers for the surviving plugin path remain.
+Each capture retains at most 256 KiB of bytes per stream before UTF-8 decoding,
+which can expand invalid bytes into replacement characters. The same `run`
+grant authorizes configured hosts without sessions: trust remains shell-level
+user authority, rather than a per-host sandbox.
 
 ## Driving sessions and reading files
 

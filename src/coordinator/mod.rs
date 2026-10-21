@@ -728,12 +728,11 @@ impl App {
 
     /// Take what plugins asked for, start what may start, and publish answers.
     ///
-    /// The runner closure is what makes a run land on the right machine: it
-    /// resolves the session to its directory and its host **before** the worker
-    /// starts, so an unreachable host is a reported failure rather than a
-    /// program run against a path that only exists somewhere else.
+    /// Session directories/routes are snapshotted for the runner; host
+    /// resolution and execution stay on its worker. An unknown target is a
+    /// reported failure, never a fallback to another machine.
     pub(crate) fn serve_runs(&mut self) {
-        let asked = self.host.drain_runs();
+        let asked = self.host.drain_run_requests();
         // Nothing asked now, nothing ever asked: every interface with no
         // capability-using plugin, i.e. almost all of them. Checked *before*
         // `self.runner()`, which clones every session's id, cwd and backend into a
@@ -747,8 +746,15 @@ impl App {
         }
         if !asked.is_empty() {
             let runner = self.runner();
-            for (plugin, ask) in asked {
-                self.runs.request(&plugin, ask, &runner);
+            for (plugin, request) in asked {
+                match request {
+                    thurbox::kernel::runs::Request::Ask(ask) => {
+                        self.runs.request(&plugin, ask, &runner);
+                    }
+                    thurbox::kernel::runs::Request::Forget(key) => {
+                        self.runs.forget(&plugin, &key);
+                    }
+                }
             }
         }
         // Drained on every pass so the store never holds them; the host ignores
@@ -790,6 +796,15 @@ impl App {
         std::sync::Arc::new(move |ask: &thurbox::kernel::runs::Ask| {
             let session = match &ask.target {
                 thurbox::kernel::runs::Target::Session(session) => session,
+                thurbox::kernel::runs::Target::Host(name) => {
+                    let Some(host) = thurbox::session_ops::configured_host(name) else {
+                        return thurbox::kernel::runs::Run::Failed(format!(
+                            "no configured host {name} to run it on"
+                        ));
+                    };
+                    let command = thurbox::kernel::runs::command_for_host(&ask.program, &host);
+                    return thurbox::kernel::runs::capture(command, ask.timeout);
+                }
                 thurbox::kernel::runs::Target::Local => {
                     let Some(home) = thurbox::paths::home_dir() else {
                         return thurbox::kernel::runs::Run::Failed(
