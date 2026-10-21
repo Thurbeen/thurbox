@@ -94,12 +94,15 @@ fn resident_probe(chunks: usize) -> String {
     format!(
         r#"local held = {{}}
            local function hold() held[#held + 1] = string.rep("x", {CHUNK}) end
+           -- Concatenation writes the result directly: no buffer left behind.
+           local base = string.rep("c", {CHUNK} - 16)
            for _ = 1, {chunks} do hold() end
            return {{
              name = "probe", slot = "a",
              on_action = function(action)
-               if action ~= "grow" then return false end
-               hold()
+               if action == "grow" then hold()
+               elseif action == "grow_clean" then held[#held + 1] = base .. string.format("%016d", #held)
+               else return false end
                return true
              end,
              render = function()
@@ -192,6 +195,33 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
         leaking.memory_pressure(),
         Some(MemoryPressure::Exhausted),
         "a VM whose allocations fail is full"
+    );
+
+    // A live heap inside the exhaustion margin is exhausted whether or not
+    // anything new was allocated since the last collection: one whose
+    // allocations fail leaves no garbage behind to move a pacing gate.
+    let crossing = loading(10);
+    let probe = crossing.index_of("probe").expect("the probe loaded");
+    assert_eq!(grow_until_pressure(&crossing), Some(MemoryPressure::Grown));
+    crossing.accept_resident_memory();
+    while crossing.used_memory() < limit - limit / 32 - 3 * CHUNK {
+        crossing.on_action(probe, "grow").expect("room to grow");
+    }
+    crossing.accept_resident_memory();
+    let collections = crossing.pressure_collections();
+    while crossing.pressure_collections() == collections {
+        crossing.render(0, ctx()).expect("garbage below the line");
+        assert_eq!(crossing.memory_pressure(), None, "below the line");
+    }
+    while crossing.used_memory() <= limit - limit / 32 {
+        crossing
+            .on_action(probe, "grow_clean")
+            .expect("room to cross the line");
+    }
+    assert_eq!(
+        crossing.memory_pressure(),
+        Some(MemoryPressure::Exhausted),
+        "a live heap inside the margin is full"
     );
 
     // A live heap parked just under a threshold must not buy a full collection

@@ -2004,9 +2004,13 @@ impl LuaHost {
         };
         let used = self.lua.used_memory();
         assess(used)?;
-        // A live heap parked just under a threshold would otherwise buy a full
-        // collection on every frame: the next waits for a share of new garbage.
-        if used < self.collected.get().saturating_add(ceiling / 64) {
+        // A live heap parked just under the growth threshold would otherwise
+        // buy a full collection on every frame: the next waits for a share of
+        // new garbage. Never inside the exhaustion margin, though: there a
+        // failing allocation leaves no garbage to move the gate, so pacing
+        // would hide a full VM for good.
+        if used < ceiling - ceiling / 32 && used < self.collected.get().saturating_add(ceiling / 64)
+        {
             return None;
         }
         // A collection can itself fail on a full heap; what is left is then
