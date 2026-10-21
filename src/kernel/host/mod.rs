@@ -91,6 +91,17 @@ pub fn memory_limit() -> usize {
 /// plugin error rather than aborting the process.
 pub const MEMORY_LIMIT: usize = 256 * 1024 * 1024;
 
+/// Why a plugin VM should be rebuilt — [`LuaHost::memory_pressure`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryPressure {
+    /// The live heap is within a thirty-second of the ceiling: allocations are
+    /// failing, or are about to, whatever size the interface loaded at.
+    Exhausted,
+    /// Past nine-tenths of the ceiling and grown by a twentieth of it since
+    /// the heap was last accepted as resident: what a leak looks like.
+    Grown,
+}
+
 /// Which standard libraries plugins get.
 ///
 /// Chosen deliberately, not inherited: `io`, `os` and `debug` are **absent**,
@@ -773,6 +784,8 @@ pub struct LuaHost {
     /// through the perf snapshot, and what `tests/kernel_frame_cost.rs` asserts
     /// on, since it has nothing else to assert on (`frame-cost`).
     skipped_renders: std::cell::Cell<u64>,
+    /// The heap taken as this interface's own — see [`Self::memory_pressure`].
+    resident: std::cell::Cell<usize>,
     reused_groups: std::cell::Cell<u64>,
     /// Per-plugin cost, recorded only while [`Self::set_perf_timing`] is on
     /// (ADR-P23).
@@ -975,9 +988,23 @@ impl LuaHost {
         Self::new_with_disabled(ui_dir, self.disabled.borrow().clone())
     }
 
+    /// An independent empty VM carrying `error`, with the same disabled
+    /// plugins: what replaces a full VM when no interface can go in, without
+    /// building the one that filled it again.
+    pub fn retired(&self, error: String) -> Self {
+        let mut host = Self::unbuilt(self.ui_dir.clone(), self.disabled.borrow().clone());
+        host.error = Some(error);
+        host
+    }
+
     fn new_with_disabled(ui_dir: impl Into<PathBuf>, disabled: Vec<String>) -> Self {
-        let ui_dir = ui_dir.into();
-        let mut host = Self {
+        let mut host = Self::unbuilt(ui_dir.into(), disabled);
+        host.reload();
+        host
+    }
+
+    fn unbuilt(ui_dir: PathBuf, disabled: Vec<String>) -> Self {
+        Self {
             lua: new_vm().unwrap_or_else(|_| Lua::new()),
             ui_dir,
             groups: RefCell::new(HashMap::new()),
@@ -988,6 +1015,7 @@ impl LuaHost {
             rendered_reads: std::cell::Cell::new(0),
             epoch: RefCell::new(None),
             skipped_renders: std::cell::Cell::new(0),
+            resident: std::cell::Cell::new(0),
             reused_groups: std::cell::Cell::new(0),
             key_releases: std::cell::Cell::new(KeyReleases::default()),
             perf_timing: std::cell::Cell::new(false),
@@ -1016,9 +1044,7 @@ impl LuaHost {
             last_status_rows: std::cell::Cell::new(0),
             error: None,
             reloads: 0,
-        };
-        host.reload();
-        host
+        }
     }
 
     /// Rebuild the VM from disk. On failure the previous VM keeps running.
@@ -1049,6 +1075,7 @@ impl LuaHost {
                 self.layout_cache.replace(None);
                 self.error = None;
                 self.reloads += 1;
+                self.accept_resident_memory();
             }
             Err(e) => self.error = Some(e),
         }
@@ -1933,15 +1960,55 @@ impl LuaHost {
     }
 
     /// Whether the VM is full enough that it should be rebuilt rather than
-    /// called again.
+    /// called again — see [`MemoryPressure`].
+    pub fn near_memory_limit(&self) -> bool {
+        self.memory_pressure().is_some()
+    }
+
+    /// Why the VM should be rebuilt, if it should.
     ///
     /// A heap at the ceiling that a collection cannot bring down never comes
     /// back: each allocation runs a full emergency collection and then fails,
     /// so every plugin call pays one on every frame — a frozen interface, for
-    /// as long as the process lives. Only a new VM returns the memory. Set
-    /// below the ceiling so the rebuild comes before those collections start.
-    pub fn near_memory_limit(&self) -> bool {
-        self.used_memory() >= memory_limit() / 10 * 9
+    /// as long as the process lives. Only a new VM returns the memory.
+    ///
+    /// Measured on the live heap. `used_memory` counts garbage not yet
+    /// collected, and with a large resident heap the collector's next cycle
+    /// lies past the ceiling, so garbage drifts up to it before anything is
+    /// freed: a stable interface would read as full. The cheap reading only
+    /// decides whether to pay for a full collection and read again.
+    ///
+    /// Size alone is not pressure either. An interface that holds most of the
+    /// VM from load works, and a new VM comes back just as full, so rebuilding
+    /// it replaced the VM on every loop iteration. Below the margin under the
+    /// ceiling, only growth past [`Self::accept_resident_memory`]'s baseline
+    /// counts.
+    pub fn memory_pressure(&self) -> Option<MemoryPressure> {
+        let ceiling = memory_limit();
+        let assess = |used: usize| {
+            if used >= ceiling - ceiling / 32 {
+                Some(MemoryPressure::Exhausted)
+            } else if used >= ceiling / 10 * 9
+                && used >= self.resident.get().saturating_add(ceiling / 20)
+            {
+                Some(MemoryPressure::Grown)
+            } else {
+                None
+            }
+        };
+        assess(self.lua.used_memory())?;
+        // A collection can itself fail on a full heap; what is left is then
+        // what gets measured, which is the answer either way.
+        let _ = self.lua.gc_collect();
+        assess(self.lua.used_memory())
+    }
+
+    /// Take the heap as this interface's resident size, so only growth past
+    /// it is [`MemoryPressure::Grown`]. Set on every build, where the count
+    /// still includes the load's garbage and so errs high; the loop also sets
+    /// it, on a just-collected heap, when a rebuild did not bring it down.
+    pub fn accept_resident_memory(&self) {
+        self.resident.set(self.lua.used_memory());
     }
 
     /// Published groups served from the cache rather than rebuilt.

@@ -1718,10 +1718,15 @@ is the first thing every user of your plugin will see.
 - A plugin that never returns is **interrupted** — an unterminated loop costs one
   pane, not the application.
 - A plugin that allocates without bound hits a **memory ceiling** and fails. Every
-  plugin shares that VM, so once it is nine-tenths full the interface is **rebuilt**
-  on a fresh one: panes lose what they held in memory. A successful rebuild sends
-  `interface.reloaded` with `reason = "memory"`. Disabled plugins stay disabled,
-  including when recovery uses the embedded interface.
+  plugin shares that VM, so once it is full the interface is **rebuilt** on a fresh
+  one: panes lose what they held in memory. Full means the live heap is at the
+  ceiling, or past nine-tenths of it and still growing; an interface that simply
+  holds a lot from load is left alone. A successful rebuild sends
+  `interface.reloaded` with `reason = "memory"`. If the fresh VM fills right back
+  up, the rebuild is not repeated: an interface that grew back to the same size
+  is kept, and one that fills it to the ceiling again is replaced by the embedded
+  interface until you next reload. Disabled plugins stay disabled, including when
+  recovery uses the embedded interface.
 - If your whole plugin directory will not load, the **embedded copies** run
   instead, so you can fix the file from inside the thing it broke. An explicit
   `THURBOX_UI_DIR` keeps its last good interface during ordinary edit reloads;

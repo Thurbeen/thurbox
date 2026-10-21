@@ -930,9 +930,20 @@ while a run for that key is in flight, caps output with truncation flagged, time
 out, and runs four at a time with the rest queued. The Lua VM has an instruction
 budget and a memory ceiling (`tests/kernel_limits.rs`), so a plugin cannot spin the
 frame either. A VM near that ceiling is rebuilt rather than called again
-(`LuaHost::near_memory_limit`): at the ceiling every allocation runs a full
+(`LuaHost::memory_pressure`): at the ceiling every allocation runs a full
 emergency collection before it fails, so each plugin call cost a collection of the
 whole heap on every frame, and nothing ever freed it — a frozen interface.
+Pressure is measured on the live heap: the loop's per-iteration check pays for a
+full collection only once the raw count passes nine-tenths, because under a large
+resident heap the collector's own pace lets garbage pile up to the ceiling, where
+a `luaL_Buffer` allocation (`string.rep`, `table.concat`) fails without an
+emergency collection. Size alone is not pressure — the first version rebuilt
+an interface that loads above nine-tenths on every loop iteration (#1553), ~7
+times a second at ~75% of a core. Within 1/32 of the ceiling is `Exhausted`;
+past nine-tenths and grown by 1/20 since the heap was last accepted as resident
+is `Grown`. A second rebuild due within 10 s of the last is not taken: `Grown`
+accepts the heap as the interface's size, `Exhausted` installs the bundled
+interface, so the user's interface is rebuilt at most once per window.
 Memory recovery uses a fresh host even when the edited interface cannot build.
 If the bundled fallback also fails, the empty replacement carries the error and
 keeps kernel recovery controls usable; the exhausted heap is retired rather than

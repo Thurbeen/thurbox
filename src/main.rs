@@ -520,6 +520,10 @@ struct App {
     /// there was wiped before it could ever be painted. The floor is a state that
     /// lasts until the user's copy loads again, so it is recorded as one.
     floor: Option<String>,
+    /// When the plugin VM was last replaced for memory, so a rebuild that did
+    /// not help is not repeated on every loop iteration
+    /// (`App::rebuild_full_vm`).
+    memory_rebuilt: Option<Instant>,
     /// What just happened, and when. Separate from `layout_error` because that
     /// field is reset by every successful arrangement — which is once a frame —
     /// so a message sharing it was gone before it could be read.

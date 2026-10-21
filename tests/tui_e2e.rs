@@ -7888,6 +7888,253 @@ fn a_full_vm_is_replaced_even_when_the_interface_no_longer_loads() {
     assert!(tui.quit().success());
 }
 
+/// A pane that holds ~230 MiB from the moment it loads — above the rebuild
+/// threshold (90% of the 256 MiB ceiling) and below the ceiling itself, so it
+/// works, and a rebuild cannot bring the heap down. Each VM it loads in draws
+/// its own token, which is how a test sees the VM being replaced.
+const RESIDENT_PANE: &str = r#"local held = {}
+for i = 1, 230 do
+  held[i] = string.rep(string.format("%07d|", i), 131072)
+end
+local token = math.random(1, 999999999)
+return {
+  name = "resident",
+  slot = "sessions",
+  render = function()
+    return { type = "text", text = "resident-" .. token .. " " .. #held }
+  end,
+}"#;
+
+/// The per-VM token a pane draws after `prefix`.
+fn token_after(screen: &str, prefix: &str) -> Option<String> {
+    let at = screen.find(prefix)? + prefix.len();
+    Some(
+        screen[at..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect(),
+    )
+}
+
+#[test]
+fn a_vm_that_a_rebuild_cannot_shrink_is_not_rebuilt_again_and_again() {
+    // The memory rebuild assumes a new VM comes back small. One whose
+    // interface itself holds more than the threshold comes back just as full,
+    // so a rebuild on every loop iteration replaced the VM several times a
+    // second, pinning a core, for as long as the process lived — while the
+    // same interface ran fine below the ceiling before the rebuild existed.
+    let interface = interface_plus("91_resident.lua", RESIDENT_PANE);
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("resident-");
+    // Startup and at most one rebuild settle first.
+    std::thread::sleep(Duration::from_secs(3));
+    let settled = token_after(&tui.frame(), "resident-").expect("the resident pane is drawn");
+    std::thread::sleep(Duration::from_secs(4));
+    let later = token_after(&tui.frame(), "resident-").expect("the resident pane is still drawn");
+    assert_eq!(
+        settled,
+        later,
+        "the plugin VM kept being rebuilt although no rebuild could shrink it\n--- thurbox.log ---\n{}",
+        tui.log_tail()
+    );
+    assert!(tui.quit().success());
+}
+
+/// Fill the VM to the byte from inside a plugin, holding every chunk in
+/// `held`, and return how many whole MiB chunks went in first. The same
+/// halving as [`HOG_PANE`]'s, as a Lua prelude several panes share.
+const FILL_TO_THE_BYTE: &str = r#"local function fill(held)
+  local mib = 0
+  while pcall(function()
+    held[#held + 1] = string.rep("m", 1024 * 1024, tostring(#held))
+  end) do
+    mib = mib + 1
+  end
+  local size, n = 512 * 1024, 0
+  while size >= 8 do
+    n = n + 1
+    local ok = pcall(function()
+      held[#held + 1] = string.rep("x", size, tostring(n))
+    end)
+    if not ok then
+      size = size // 2
+    end
+  end
+  return mib
+end
+"#;
+
+/// A pane that loads about ten MiB under the ceiling — far above the rebuild
+/// threshold — and fills the rest when `ctrl+g` is pressed. Each VM draws its
+/// own token.
+fn near_ceiling_pane() -> String {
+    format!(
+        r#"{FILL_TO_THE_BYTE}
+local held = {{}}
+local mib = fill(held)
+-- Hand back ten of the whole MiB chunks: the VM settles ten MiB under its
+-- ceiling, whatever else the interface holds.
+for i = mib - 9, mib do
+  held[i] = false
+end
+local full = false
+local token = math.random(1, 999999999)
+return {{
+  name = "nearly",
+  slot = "sessions",
+  keys = {{
+    {{ key = "ctrl+g", action = "nearly.fill", desc = "fill the VM", scope = "global" }},
+  }},
+  render = function()
+    return {{ type = "text", text = (full and "nearly-full-" or "nearly-idle-") .. token }}
+  end,
+  on_action = function(action)
+    if action ~= "nearly.fill" then
+      return false
+    end
+    full = true
+    fill(held)
+    return true
+  end,
+}}"#
+    )
+}
+
+#[test]
+fn a_vm_loaded_near_its_ceiling_is_still_rebuilt_when_it_fills() {
+    // An interface that loads large is left alone, but not once it is full:
+    // a heap at the ceiling is the freeze, whatever size it was built at.
+    // (`kernel_limits` pins the case no growth allowance can reach.)
+    let interface = interface_plus("91_nearly.lua", &near_ceiling_pane());
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("nearly-idle-");
+    let before = token_after(&tui.frame(), "nearly-idle-").expect("the pane is drawn");
+    fill_the_vm_and_keep_answering(&mut tui);
+    tui.wait_within(WAIT, "the full VM to be replaced", |frame| {
+        token_after(frame, "nearly-idle-").is_some_and(|token| token != before)
+    });
+    assert!(tui.quit().success());
+}
+
+/// A pane that fills the VM to the byte on the first render of every VM it
+/// loads in, and holds it: a rebuild cannot help, however often it runs.
+fn refilling_pane() -> String {
+    format!(
+        r#"{FILL_TO_THE_BYTE}
+local held = {{}}
+return {{
+  name = "refill",
+  slot = "sessions",
+  render = function()
+    if #held == 0 then
+      fill(held)
+    end
+    return {{ type = "text", text = "refill " .. #held }}
+  end,
+}}"#
+    )
+}
+
+#[test]
+fn an_interface_that_refills_a_fresh_vm_falls_back_to_the_bundled_one() {
+    // Rebuilding a VM the interface fills again straight away is the freeze
+    // with a rebuild added to every loop iteration. Once a rebuild has not
+    // helped, the bundled interface runs instead, and says why.
+    let interface = interface_plus("91_refill.lua", &refilling_pane());
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("using the bundled interface");
+    // And it stays answerable there.
+    tui.send(CTRL_P);
+    tui.wait_within(
+        RESPONSIVE,
+        "the palette on the bundled interface",
+        |frame| frame.contains("type to filter commands"),
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn an_interface_that_refills_a_fresh_vm_is_retired_when_no_fallback_can_load() {
+    // The bundled interface cannot go in when its directory cannot be created.
+    // Building the user's interface again instead hands it a VM to fill once
+    // more, on every loop iteration: what replaces it is an empty VM.
+    let interface = interface_plus("91_refill.lua", &refilling_pane());
+    let profile = Profile::new();
+    let blocked_temp = profile.path("blocked-temp");
+    std::fs::write(&blocked_temp, "not a directory").expect("block fallback");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("TMPDIR", &blocked_temp);
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("plugin VM replaced; interface failed to load");
+    std::thread::sleep(Duration::from_secs(2));
+    let log = tui.log_tail();
+    assert_eq!(
+        log.matches("plugin VM held").count(),
+        2,
+        "one rebuild, then one replacement, and no more\n{log}"
+    );
+    tui.send(CTRL_P);
+    tui.wait_within(RESPONSIVE, "the palette on the empty VM", |frame| {
+        frame.contains("type to filter commands")
+    });
+    assert!(tui.quit().success());
+}
+
+/// A pane that loads small and holds ~230 MiB from its first render on, so
+/// the build is small and the heap is not. Each VM draws its own token.
+const LAZY_RESIDENT_PANE: &str = r#"local held = {}
+local token = math.random(1, 999999999)
+return {
+  name = "lazy",
+  slot = "sessions",
+  render = function()
+    if #held == 0 then
+      for i = 1, 230 do
+        held[i] = string.rep(string.format("%07d|", i), 131072)
+      end
+    end
+    return { type = "text", text = "lazy-" .. token .. " " .. #held }
+  end,
+}"#;
+
+#[test]
+fn a_vm_that_fills_on_its_first_frame_is_rebuilt_once_then_kept() {
+    // Growth since the build is what tells a leak from a large interface. One
+    // that grows to its resident size on its first frame looks like a leak to
+    // that test, every time: the rebuild that shows it is not one is the last.
+    let interface = interface_plus("91_lazy.lua", LAZY_RESIDENT_PANE);
+    let Some((_profile, mut tui)) = shell_session_with(|cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    }) else {
+        return;
+    };
+    tui.wait_for("lazy-");
+    std::thread::sleep(Duration::from_secs(3));
+    let settled = token_after(&tui.frame(), "lazy-").expect("the lazy pane is drawn");
+    std::thread::sleep(Duration::from_secs(4));
+    let later = token_after(&tui.frame(), "lazy-").expect("the lazy pane is still drawn");
+    assert_eq!(
+        settled,
+        later,
+        "the plugin VM kept being rebuilt although the interface stopped growing\n--- thurbox.log ---\n{}",
+        tui.log_tail()
+    );
+    assert!(tui.quit().success());
+}
+
 #[test]
 fn the_memory_floor_keeps_the_plugins_the_user_turned_off() {
     // The floor host is built fresh and knows nothing of the disabled set, and

@@ -549,7 +549,12 @@ subscription to an unknown name refuses to load, and the same table renders in
 delivers `user.<name>` to other plugins with `source` stamped by the kernel;
 cascades stop at `MAX_DEPTH`. Dispatch never marks the frame dirty itself
 (`frame-cost`); a reload drops the queue and delivers `interface.reloaded` first.
-Memory recovery replaces the host even when neither interface builds: the empty
+Memory recovery (`LuaHost::memory_pressure`, live heap after a collection)
+rebuilds an `Exhausted` VM (within 1/32 of the ceiling) or a `Grown` one (past
+nine-tenths and 1/20 over its accepted resident size), never a VM that only loads
+large; pressure again within 10 s of a rebuild is accepted (`Grown`) or sent to
+the bundled interface (`Exhausted`), so no loop iteration rebuilds twice in a row.
+It replaces the host even when neither interface builds: the empty
 replacement reports the error through kernel chrome without a successful reload
 event. Disabled plugins are applied before building either replacement, and
 programs and run answers are retired against its final plugin list.
