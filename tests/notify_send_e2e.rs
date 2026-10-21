@@ -99,6 +99,7 @@ impl Instance {
         self.ok(bus, &send_args(extra))
     }
 
+    #[cfg(target_os = "linux")]
     fn db(&self) -> thurbox::storage::Database {
         thurbox::storage::Database::open(&self.path("data").join("thurbox.db"))
             .expect("open the instance database")
