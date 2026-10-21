@@ -51,7 +51,11 @@ fn request(repo: &Path, name: &str, key: Option<&str>) -> SpawnRequest {
     }
 }
 
-fn create(rig: &Rig, name: &str, key: Option<&str>) -> Result<SessionId, String> {
+fn create(
+    rig: &Rig,
+    name: &str,
+    key: Option<&str>,
+) -> Result<SessionId, crate::session_ops::OpError> {
     super::spawn_session_headless(&rig.db, &rig.backends, request(&rig.repo, name, key))
         .map(|res| res.session_id)
 }

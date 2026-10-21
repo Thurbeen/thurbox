@@ -84,7 +84,7 @@ fn window_names() -> Vec<String> {
 
 /// A long-lived program: one that exits before tmux finishes setting the window
 /// up would turn a real failure into a passing run.
-fn spawn(name: &str, cwd: &std::path::Path) -> anyhow::Result<String> {
+fn spawn(name: &str, cwd: &std::path::Path) -> thurbox::backend::BackendResult<String> {
     thurbox::backend::SessionBackend::create_window(
         &thurbox::backend::tmux::TmuxBackend::new(),
         &thurbox::backend::WindowSpec {

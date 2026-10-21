@@ -191,7 +191,7 @@ pub fn spawn_session_headless(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     req: SpawnRequest,
-) -> Result<SpawnResult, String> {
+) -> Result<SpawnResult, crate::session_ops::OpError> {
     spawn_session_headless_with_progress(db, backends, req, None)
 }
 
@@ -204,7 +204,7 @@ pub fn spawn_session_headless_with_progress(
     backends: &crate::backend::BackendRegistry,
     req: SpawnRequest,
     progress: Option<ProgressFn<'_>>,
-) -> Result<SpawnResult, String> {
+) -> Result<SpawnResult, crate::session_ops::OpError> {
     spawn(db, backends, req, progress, None)
 }
 
@@ -216,7 +216,7 @@ pub(crate) fn spawn_session_holding_key(
     backends: &crate::backend::BackendRegistry,
     req: SpawnRequest,
     held: &super::lock::Lock<'_>,
-) -> Result<SpawnResult, String> {
+) -> Result<SpawnResult, crate::session_ops::OpError> {
     spawn(db, backends, req, None, Some(held))
 }
 
@@ -226,7 +226,7 @@ fn spawn(
     req: SpawnRequest,
     progress: Option<ProgressFn<'_>>,
     key_held: Option<&super::lock::Lock<'_>>,
-) -> Result<SpawnResult, String> {
+) -> Result<SpawnResult, crate::session_ops::OpError> {
     let report = |phase: SpawnPhase| {
         if let Some(progress) = progress {
             progress(phase);
@@ -281,7 +281,7 @@ fn spawn(
         (Some(key), None) => {
             let claim = super::names::claim_key(db, key, &backend_type, "create")?;
             if let Some(refusal) = super::names::key_refusal(key, &backend_type, &claim) {
-                return Err(refusal);
+                return Err(crate::session_ops::OpError::Conflict(refusal));
             }
             Some(claim)
         }
@@ -503,7 +503,7 @@ fn spawn(
             req.name
         );
         discard_orphaned_window(backend.as_ref(), &stamp, &req.name, &backend_id);
-        return Err(format!("Failed to persist session: {e}"));
+        return Err(format!("Failed to persist session: {e}").into());
     }
 
     // A command session's recipe is the only record of how to start it again:
@@ -558,7 +558,10 @@ fn spawn(
 }
 
 /// Refuse a request that cannot be spawned, before anything is resolved.
-pub fn validate_request(db: &Database, req: &SpawnRequest) -> Result<(), String> {
+pub fn validate_request(
+    db: &Database,
+    req: &SpawnRequest,
+) -> Result<(), crate::session_ops::OpError> {
     crate::paths::validate_safe_name(&req.name)?;
     if let Some(key) = &req.key {
         super::names::validate_key(key)?;
@@ -567,7 +570,8 @@ pub fn validate_request(db: &Database, req: &SpawnRequest) -> Result<(), String>
         return Err(
             "--resume is not supported for --command sessions: a raw command has no agent \
              conversation to attach to; drop --resume, or use --agent instead of --command"
-                .to_string(),
+                .to_string()
+                .into(),
         );
     }
     validate_parent_session(db, req.parent_session_id)?;
@@ -603,7 +607,7 @@ fn launch_window(
     args: &[String],
     cwd: &std::path::Path,
     env: &std::collections::HashMap<String, String>,
-) -> Result<String, String> {
+) -> Result<String, crate::session_ops::OpError> {
     backend
         .create_window(&crate::backend::WindowSpec {
             owner: crate::backend::Owner::new(stamp, name),
@@ -614,15 +618,10 @@ fn launch_window(
             env,
         })
         .map(String::from)
-        .map_err(
-            |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                // Already a sentence naming the binary (or the `ssh`/`wsl.exe`
-                // missing on *this* machine), the search and the fix; a prefix
-                // in front of it only pushes the fix off the row.
-                true => format!("{e}"),
-                false => format!("Failed to spawn a window on {}: {e:#}", backend.name()),
-            },
-        )
+        .map_err(|e| {
+            crate::session_ops::OpError::from(e)
+                .context(format!("Failed to spawn a window on {}", backend.name()))
+        })
 }
 
 /// Tear down the window a spawn opened but could not persist as a row — only
@@ -674,7 +673,7 @@ fn delegated_mux_option(
     choice: &crate::session::BackendChoice,
     host: &HostDef,
     cli: &super::host_cli::CliInfo,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, crate::session_ops::OpError> {
     if cli.multiplexer_choice {
         return Ok(vec![
             "--multiplexer".into(),
@@ -695,7 +694,7 @@ fn delegated_mux_option(
             "host '{}' has an older thurbox-cli that cannot select {}; update that CLI before creating this session",
             host.name,
             choice.multiplexer.name()
-        ))
+        ).into())
     }
 }
 
@@ -714,7 +713,7 @@ fn spawn_delegated(
     cli: &super::host_cli::CliInfo,
     choice: &crate::session::BackendChoice,
     report: &dyn Fn(SpawnPhase),
-) -> Result<SpawnResult, String> {
+) -> Result<SpawnResult, crate::session_ops::OpError> {
     let backend = choice.backend_type();
     let mux_option = delegated_mux_option(choice, host, cli)?;
     // The host validates the parent against its own database; a parent that
@@ -724,12 +723,16 @@ fn spawn_delegated(
         let parent = db
             .get_session_by_id(parent_id)
             .map_err(|e| format!("get parent session: {e}"))?
-            .ok_or_else(|| format!("parent session not found: {parent_id}"))?;
+            .ok_or_else(|| {
+                crate::session_ops::OpError::NotFound(format!(
+                    "parent session not found: {parent_id}"
+                ))
+            })?;
         if !super::same_machine(&parent.backend_type, &backend) {
             return Err(format!(
                 "parent session '{}' runs on {}, not on host '{}'; a session's parent must be on the same host",
                 parent.name, parent.backend_type, host.name
-            ));
+            ).into());
         }
     }
 
@@ -863,14 +866,17 @@ fn spawn_delegated(
 
 /// Validate that the requested parent session, if any, exists and is active.
 /// Runs before any side effects (worktree creation, tmux spawn).
-fn validate_parent_session(db: &Database, parent: Option<SessionId>) -> Result<(), String> {
+fn validate_parent_session(
+    db: &Database,
+    parent: Option<SessionId>,
+) -> Result<(), crate::session_ops::OpError> {
     let Some(parent) = parent else {
         return Ok(());
     };
     match db.get_session_by_id(parent) {
         Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(format!("Parent session not found: {parent}")),
-        Err(e) => Err(format!("get_session_by_id: {e}")),
+        Ok(None) => Err(format!("Parent session not found: {parent}").into()),
+        Err(e) => Err(format!("get_session_by_id: {e}").into()),
     }
 }
 
@@ -890,7 +896,7 @@ fn validate_parent_session(db: &Database, parent: Option<SessionId>) -> Result<(
 fn resolve_dirs(
     req: &SpawnRequest,
     host: Option<&HostDef>,
-) -> Result<(PathBuf, Vec<SharedWorktree>, Vec<PathBuf>), String> {
+) -> Result<(PathBuf, Vec<SharedWorktree>, Vec<PathBuf>), crate::session_ops::OpError> {
     let shared_branch = req.worktree_branch.as_deref();
     // An existing worktree is opened, never planned: it is already checked out,
     // so `git worktree add` would refuse the branch outright.
@@ -987,7 +993,9 @@ fn plan_members<'a>(
                 extra.base_branch.as_deref().unwrap_or(primary_base),
             )),
             None => Err(
-                "a worktree extra-repo requires --worktree-branch (the shared branch)".to_string(),
+                "a worktree extra-repo requires --worktree-branch (the shared branch)"
+                    .to_string()
+                    .into(),
             ),
         });
     }
@@ -996,14 +1004,14 @@ fn plan_members<'a>(
 
 /// One planned worktree creation — `(repo, base)`, or the per-position error
 /// [`resolve_dirs`] found while planning.
-type WorktreePlan<'a> = Result<(&'a std::path::Path, &'a str), String>;
+type WorktreePlan<'a> = Result<(&'a std::path::Path, &'a str), crate::session_ops::OpError>;
 
 /// Run one plan: surface its planning error, or create its worktree.
 fn create_planned_worktree(
     host: Option<&HostDef>,
     branch: &str,
     plan: &WorktreePlan<'_>,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, crate::session_ops::OpError> {
     let (repo, base) = plan.as_ref().map_err(Clone::clone)?;
     create_worktree(host, repo, branch, base)
 }
@@ -1024,7 +1032,7 @@ fn create_worktrees(
     host: Option<&HostDef>,
     branch: &str,
     plans: &[WorktreePlan<'_>],
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Vec<PathBuf>, crate::session_ops::OpError> {
     if host.is_some() || plans.len() < 2 {
         // `collect` on `Result` short-circuits, so a serial failure stops the
         // remaining creations exactly as the old loop did.
@@ -1055,9 +1063,9 @@ fn create_worktree(
     repo: &std::path::Path,
     branch: &str,
     base: &str,
-) -> Result<PathBuf, String> {
-    crate::git::create_worktree_on(host, repo, branch, base)
-        .map_err(|e| format!("Failed to create worktree {branch} off {base} in {repo:?}: {e}"))
+) -> Result<PathBuf, crate::session_ops::OpError> {
+    Ok(crate::git::create_worktree_on(host, repo, branch, base)
+        .map_err(|e| format!("Failed to create worktree {branch} off {base} in {repo:?}: {e}"))?)
 }
 
 /// The directory the agent process should launch in: a per-session symlink
@@ -1664,7 +1672,7 @@ pub(crate) fn backend_type_for_choice(
     backends: &crate::backend::BackendRegistry,
     host: Option<&str>,
     multiplexer: Option<&str>,
-) -> Result<String, String> {
+) -> Result<String, crate::session_ops::OpError> {
     resolve_backend(backends, host, multiplexer).map(|choice| choice.backend_type())
 }
 
@@ -1672,7 +1680,7 @@ fn resolve_backend(
     backends: &crate::backend::BackendRegistry,
     host: Option<&str>,
     multiplexer: Option<&str>,
-) -> Result<crate::session::BackendChoice, String> {
+) -> Result<crate::session::BackendChoice, crate::session_ops::OpError> {
     let (_, host_def) = resolve_host_flag(host)?;
     // Nothing named, locally: what is installed here decides, so a machine
     // with only RMUX runs RMUX rather than failing on a missing tmux.
@@ -1689,7 +1697,8 @@ fn resolve_backend(
         return Err(format!(
             "{} is unavailable for this host: no registered backend implements it",
             choice.multiplexer.name()
-        ));
+        )
+        .into());
     }
     Ok(choice)
 }
@@ -1705,7 +1714,9 @@ fn resolve_backend(
 /// `ssh:`/`wsl:` backend name the interface's host picker carries — because both
 /// reach here and a bare-name-only lookup silently refused every session the
 /// new-session flow tried to create on a host.
-fn resolve_host_flag(host_name: Option<&str>) -> Result<(String, Option<HostDef>), String> {
+fn resolve_host_flag(
+    host_name: Option<&str>,
+) -> Result<(String, Option<HostDef>), crate::session_ops::OpError> {
     let Some(name) = host_name.filter(|n| !n.is_empty()) else {
         return Ok((crate::session::Route::local(None).format(), None));
     };
@@ -1717,7 +1728,8 @@ fn resolve_host_flag(host_name: Option<&str>) -> Result<(String, Option<HostDef>
             Err(format!(
                 "Unknown host '{name}'. Configure it in hosts.toml (or check the \
                  WSL distro name). Available: [{available}]"
-            ))
+            )
+            .into())
         }
     }
 }

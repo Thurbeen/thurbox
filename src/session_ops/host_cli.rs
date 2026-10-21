@@ -773,23 +773,27 @@ pub enum Reach {
 pub struct RunFailure {
     pub message: String,
     pub reach: Reach,
+    pub error: super::OpError,
 }
 
 impl RunFailure {
     fn new(message: String, reach: Reach) -> Self {
-        Self { message, reach }
+        let error = match reach {
+            Reach::Unreached => super::OpError::Unreached(message.clone()),
+            Reach::Undetermined => super::OpError::Undetermined(message.clone()),
+            Reach::Answered => super::OpError::Other(message.clone()),
+        };
+        Self {
+            message,
+            reach,
+            error,
+        }
     }
 }
 
 impl std::fmt::Display for RunFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
-    }
-}
-
-impl From<RunFailure> for String {
-    fn from(failure: RunFailure) -> Self {
-        failure.message
     }
 }
 
@@ -826,8 +830,8 @@ pub fn run_classified(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Va
     })
 }
 
-pub fn run(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Value, String> {
-    run_classified(host, cli, args).map_err(String::from)
+pub fn run(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Value, super::OpError> {
+    run_classified(host, cli, args).map_err(|e| e.error)
 }
 
 /// The `sh` line for one CLI invocation. Every argument is POSIX-quoted, and
@@ -857,7 +861,7 @@ fn run_script(
     action: &str,
     timeout: Duration,
 ) -> Result<String, String> {
-    run_script_classified(host, script, action, timeout).map_err(String::from)
+    run_script_classified(host, script, action, timeout).map_err(|e| e.to_string())
 }
 
 /// [`run_script`] keeping the layer that failed. See [`Reach`].
@@ -868,8 +872,8 @@ fn run_script(
 ///   or it could not be executed — so nothing left this machine: `Unreached`.
 /// - `ssh` exited **255**, which is its documented code for "an error
 ///   occurred" *in ssh*. It passes a remote command's own status through
-///   untouched (a remote `exit 7` exits 7), and `thurbox-cli` only ever exits
-///   1, 2 or 3 ([`crate::cli::EXIT_ERROR`] and friends), so 255 cannot be the
+///   untouched (a remote `exit 7` exits 7); delegated CLI operations use
+///   1 through 6 ([`CLI_EXIT_CODES`]), so 255 cannot be the
 ///   host CLI answering: `Unreached`.
 /// - the host CLI answered on stdout with the structured `{"error": …}` every
 ///   remote invocation asks for: `Answered`.
@@ -947,7 +951,7 @@ fn run_script_classified(
         };
         let code = output.status.code();
         let reach = classify_failure(host.is_wsl(), code, answered.is_some());
-        return Err(RunFailure::new(
+        let mut failure = RunFailure::new(
             reported.unwrap_or_else(|| {
                 format!(
                     "{action} on '{}' failed (exit {})",
@@ -956,7 +960,19 @@ fn run_script_classified(
                 )
             }),
             reach,
-        ));
+        );
+        if reach == Reach::Answered {
+            let document: Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+            let kind = match document.get("error_kind").and_then(Value::as_str) {
+                Some(kind) => kind,
+                // A host on an older build sends no kind. Its own absence
+                // sentences still mean absence; no other wording is read.
+                None if answered.as_deref().is_some_and(legacy_absence) => "not_found",
+                None => "other",
+            };
+            failure.error = super::OpError::from_kind(kind, failure.message.clone());
+        }
+        return Err(failure);
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -1058,15 +1074,17 @@ fn classify_failure(is_wsl: bool, code: Option<i32>, answered: bool) -> Reach {
     Reach::Undetermined
 }
 
-/// Every code `thurbox-cli` exits with of its own accord. A status outside
-/// this set did not come from the host's thurbox.
+/// The CLI's operational error codes. Passthrough statuses from `session exec`
+/// are outside this registry; delegated lifecycle and pane calls never request
+/// passthrough.
 ///
 /// Spelled out rather than imported: `session_ops` may not reference `cli`
 /// (`tests/architecture_rules.rs`). These are `cli::EXIT_ERROR`,
-/// `cli::EXIT_USAGE` and `cli::EXIT_AMBIGUOUS`, and
+/// `cli::EXIT_USAGE`, `cli::EXIT_AMBIGUOUS`, `cli::EXIT_TIMEOUT`,
+/// `cli::EXIT_CONFLICT`, and `cli::EXIT_GONE`;
 /// `cli::tests::host_cli_knows_every_exit_code_this_binary_uses` fails if they
 /// ever drift apart.
-pub(crate) const CLI_EXIT_CODES: [i32; 3] = [1, 2, 3];
+pub(crate) const CLI_EXIT_CODES: [i32; 6] = [1, 2, 3, 4, 5, 6];
 
 /// Pull the message out of a failed host CLI's stdout.
 ///
@@ -1086,6 +1104,14 @@ fn reported_error(stdout: &[u8]) -> Option<String> {
         Some(hint) if !hint.trim().is_empty() => Some(format!("{message} ({})", hint.trim())),
         _ => Some(message.to_string()),
     }
+}
+
+/// Whether an untagged error is one of `thurbox-cli`'s own "no such row"
+/// sentences, exactly as a build from before `error_kind` words it.
+fn legacy_absence(message: &str) -> bool {
+    ["Session not found: ", "Deleted session not found: "]
+        .iter()
+        .any(|sentence| message.starts_with(sentence))
 }
 
 /// `(os, arch)` as the host's shell spells them (`uname -sm`, or
@@ -1418,6 +1444,12 @@ pub(crate) mod fake {
         super::RunFailure::new(message.to_string(), super::Reach::Answered)
     }
 
+    pub fn not_found(message: &str) -> super::RunFailure {
+        let mut failure = answered(message);
+        failure.error = crate::session_ops::OpError::NotFound(message.to_string());
+        failure
+    }
+
     /// A failure whose layer could not be told — the case a caller must never
     /// quietly round to one of the other two.
     pub fn undetermined(message: &str) -> super::RunFailure {
@@ -1532,7 +1564,7 @@ mod tests {
     #[test]
     fn a_failed_remote_call_is_classified_by_layer_not_by_message() {
         // ssh's own code, and only ssh's: it passes a remote command's status
-        // through untouched, and thurbox-cli only ever exits 1, 2 or 3.
+        // through untouched; delegated operation errors use 1 through 6.
         assert_eq!(
             classify_failure(false, Some(SSH_ERROR_EXIT), false),
             Reach::Unreached
@@ -1552,7 +1584,7 @@ mod tests {
         assert_eq!(classify_failure(false, Some(1), true), Reach::Answered);
         // An exit code of the CLI's own still says something thurbox-shaped
         // refused, even on a build too old to write the structured document.
-        for code in [Some(1), Some(2), Some(3)] {
+        for code in [Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)] {
             assert_eq!(
                 classify_failure(false, code, false),
                 Reach::Answered,

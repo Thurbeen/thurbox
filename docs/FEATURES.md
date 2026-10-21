@@ -2380,7 +2380,7 @@ therefore a TOML edit, never a thurbox code change.
 `session create --on-existing <allow|adopt|replace|fail>` — one question with
 four answers. `allow` (the default) creates a second session with that name;
 `adopt` returns the existing one with `created: false`; `replace` tears it down
-first; `fail` refuses and exits 1, naming the session in the way.
+first; `fail` refuses and exits 5, naming the session in the way.
 
 **For a driver, this name match is legacy.** A program that has to find its own
 sessions again passes `--key` (next section): `--on-existing` then matches the

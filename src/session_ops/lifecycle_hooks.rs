@@ -20,12 +20,12 @@ use crate::sync::SharedSession;
 /// Run every `pre_*` hook for `event`, in file order, stopping at the first
 /// failure. `Err` is the reason the operation must not proceed: the caller
 /// returns it before its first side effect.
-pub fn fire_pre(event: HookEvent, ctx: &HookContext) -> Result<(), String> {
+pub fn fire_pre(event: HookEvent, ctx: &HookContext) -> Result<(), super::OpError> {
     debug_assert!(event.is_pre(), "{event} is not a pre-event");
     for hook in crate::agent::hooks_config::hooks_for(event) {
         if let Err(reason) = run_hook(&hook, event, ctx) {
             tracing::warn!("{reason}; refusing the operation");
-            return Err(reason);
+            return Err(super::OpError::Refused(reason));
         }
     }
     Ok(())

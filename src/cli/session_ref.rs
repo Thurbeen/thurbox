@@ -35,6 +35,8 @@ use crate::sync::SharedSession;
 pub enum Ambiguity {
     /// No active session matches.
     NotFound,
+    /// Lookup failed; it says nothing about whether the row exists.
+    Unavailable,
     /// More than one does — the candidates, for the message.
     Many(Vec<SharedSession>),
 }
@@ -48,7 +50,8 @@ pub enum Ambiguity {
 /// operator picking which was meant.
 pub fn resolve(db: &Database, reference: &str) -> Result<SharedSession, CommandError> {
     resolve_detailed(db, reference).map_err(|(reason, kind)| match kind {
-        Ambiguity::NotFound => CommandError::from(reason),
+        Ambiguity::NotFound => crate::session_ops::OpError::NotFound(reason).into(),
+        Ambiguity::Unavailable => CommandError::from(reason),
         Ambiguity::Many(_) => CommandError::with_code(reason, EXIT_AMBIGUOUS),
     })
 }
@@ -75,7 +78,7 @@ pub fn resolve_detailed(
     if let Ok(id) = reference.parse::<SessionId>() {
         if let Some(found) = db
             .get_session_by_id(id)
-            .map_err(|e| (format!("get_session_by_id: {e}"), Ambiguity::NotFound))?
+            .map_err(|e| (format!("get_session_by_id: {e}"), Ambiguity::Unavailable))?
         {
             return Ok(found);
         }
@@ -87,9 +90,12 @@ pub fn resolve_detailed(
         ));
     }
 
-    let by_name = db
-        .find_sessions_by_name(reference)
-        .map_err(|e| (format!("find_sessions_by_name: {e}"), Ambiguity::NotFound))?;
+    let by_name = db.find_sessions_by_name(reference).map_err(|e| {
+        (
+            format!("find_sessions_by_name: {e}"),
+            Ambiguity::Unavailable,
+        )
+    })?;
     match by_name.len() {
         1 => return Ok(by_name.into_iter().next().expect("length checked")),
         n if n > 1 => return Err((ambiguous(reference, &by_name), Ambiguity::Many(by_name))),
@@ -101,7 +107,7 @@ pub fn resolve_detailed(
     let by_prefix = db.find_sessions_by_id_prefix(reference).map_err(|e| {
         (
             format!("find_sessions_by_id_prefix: {e}"),
-            Ambiguity::NotFound,
+            Ambiguity::Unavailable,
         )
     })?;
     match by_prefix.len() {
@@ -142,7 +148,7 @@ fn resolve_key(db: &Database, addressed: &str) -> Result<SharedSession, (String,
     };
     let found: Vec<SharedSession> = db
         .find_sessions_by_key(key)
-        .map_err(|e| (format!("find_sessions_by_key: {e}"), Ambiguity::NotFound))?
+        .map_err(|e| (format!("find_sessions_by_key: {e}"), Ambiguity::Unavailable))?
         .into_iter()
         .filter(|s| {
             crate::session::Route::parse(&s.backend_type)
@@ -188,10 +194,23 @@ pub fn resolve_deleted(
         .list_deleted_sessions()
         .map_err(|e| CommandError::from(format!("list_deleted_sessions: {e}")))?;
     if let Ok(id) = reference.parse::<SessionId>() {
-        return deleted
-            .into_iter()
-            .find(|d| d.id == id)
-            .ok_or_else(|| CommandError::from(format!("Deleted session not found: {reference}")));
+        if let Some(row) = deleted.into_iter().find(|d| d.id == id) {
+            return Ok(row);
+        }
+        // Live here (restored, or never deleted) is not absence: a peer that
+        // still holds the row deleted must not read it as leave to kill the
+        // windows itself.
+        let live = db
+            .get_session_by_id(id)
+            .map_err(|e| CommandError::from(format!("get_session_by_id: {e}")))?;
+        return Err(CommandError::from(match live {
+            Some(_) => crate::session_ops::OpError::Conflict(format!(
+                "Session {reference} is active here, not deleted"
+            )),
+            None => crate::session_ops::OpError::NotFound(format!(
+                "Deleted session not found: {reference}"
+            )),
+        }));
     }
     let by_name: Vec<_> = deleted
         .iter()
@@ -206,9 +225,9 @@ pub fn resolve_deleted(
         .filter(|d| d.id.to_string().starts_with(reference))
         .collect();
     pick_deleted(reference, by_prefix)?.ok_or_else(|| {
-        CommandError::from(format!(
+        CommandError::from(crate::session_ops::OpError::NotFound(format!(
             "Deleted session not found: {reference} (tried it as a UUID, a name, and an id prefix)"
-        ))
+        )))
     })
 }
 
@@ -421,5 +440,21 @@ mod tests {
             resolve(&db, "key:dup").unwrap_err().exit_code,
             crate::cli::EXIT_AMBIGUOUS
         );
+    }
+    #[test]
+    fn a_lookup_failure_never_claims_the_session_is_absent() {
+        let db = db();
+        db.conn_ref().execute_batch("DROP TABLE sessions").unwrap();
+        for reference in [
+            "00000000-0000-0000-0000-000000000001",
+            "name",
+            "key:claimed",
+        ] {
+            let error = resolve(&db, reference).unwrap_err();
+            assert!(
+                matches!(error.error, crate::session_ops::OpError::Other(_)),
+                "{error}"
+            );
+        }
     }
 }

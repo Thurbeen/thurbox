@@ -17,7 +17,7 @@ pub const BOOT_DELAY_SECS: u64 = 3;
 #[derive(Debug)]
 pub enum SpawnDeliverError {
     /// The spawn itself failed; no session was created.
-    Spawn(String),
+    Spawn(super::OpError),
     /// The session spawned but the delayed prompt delivery failed.
     Deliver {
         session_id: SessionId,
@@ -46,7 +46,7 @@ pub fn ensure_hooks_wired_for(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     req: &SpawnRequest,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     super::spawn::validate_request(db, req)?;
     ensure_hooks_wired(db, backends);
     Ok(())

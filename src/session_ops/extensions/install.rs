@@ -67,7 +67,7 @@ pub fn install_extension(
     target: &str,
     home_override: Option<&str>,
     force: bool,
-) -> Result<InstallReport, String> {
+) -> Result<InstallReport, crate::session_ops::OpError> {
     install(db, backends, target, home_override, force, None)
 }
 
@@ -82,7 +82,7 @@ fn install(
     home_override: Option<&str>,
     force: bool,
     healing: Option<&str>,
-) -> Result<InstallReport, String> {
+) -> Result<InstallReport, crate::session_ops::OpError> {
     // Agent-layer helpers are reached fully-qualified (no `use crate::agent`) per
     // the session_ops → agent path-only architecture rule.
     let source = crate::agent::extension_config::resolve_source(target);
@@ -120,9 +120,9 @@ fn install(
             .join(home);
     }
     if !home.is_absolute() {
-        return Err(format!(
-            "extension home '{home_raw}' must resolve to an absolute directory"
-        ));
+        return Err(
+            format!("extension home '{home_raw}' must resolve to an absolute directory").into(),
+        );
     }
     let home_str = home.to_string_lossy().to_string();
 
@@ -223,13 +223,13 @@ fn install(
 fn load_manifest_for_install(
     target: &str,
     source: &crate::agent::extension_config::ExtensionSource,
-) -> Result<(ExtensionDef, Vec<String>), String> {
+) -> Result<(ExtensionDef, Vec<String>), crate::session_ops::OpError> {
     match crate::agent::extension_config::load_manifest_from_source(source) {
         Ok(v) => Ok(v),
-        Err(e) if crate::agent::extension_config::is_bare_name(target) => Err(
-            crate::agent::extension_config::unknown_extension_help(target, &e),
-        ),
-        Err(e) => Err(e),
+        Err(e) if crate::agent::extension_config::is_bare_name(target) => {
+            Err(crate::agent::extension_config::unknown_extension_help(target, &e).into())
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -243,7 +243,7 @@ fn install_payload_file(
     home_str: &str,
     force: bool,
     report: &mut InstallReport,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     // Reject absolute / `..` destinations and sources so a manifest can't
     // write or read outside the home / source dir (path-traversal guard).
     let dest = safe_join(home, &f.path)?;
@@ -296,7 +296,7 @@ fn install_external_file(
     home_str: &str,
     force: bool,
     report: &mut InstallReport,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     if let Some(req) = &f.requires_dir {
         if !crate::agent::extension_config::expand_tilde(req).is_dir() {
             report.external_files_skipped.push(f.path.clone());
@@ -357,32 +357,34 @@ fn stamped(doc: &serde_json::Value) -> bool {
 /// result is written straight back: treating an unreadable file as empty would
 /// replace the user's whole config with our hook entries alone. A file we cannot
 /// read is not an empty file, and the only safe answer is to refuse and say so.
-fn read_json_or_empty(path: &Path) -> Result<serde_json::Value, String> {
+fn read_json_or_empty(path: &Path) -> Result<serde_json::Value, crate::session_ops::OpError> {
     match std::fs::read_to_string(path) {
         Ok(s) if s.trim().is_empty() => Ok(serde_json::json!({})),
-        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("parse {}: {e}", path.display())),
+        Ok(s) => serde_json::from_str(&s).map_err(|e| {
+            crate::session_ops::OpError::Other(format!("parse {}: {e}", path.display()))
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
-        Err(e) => Err(format!("read {}: {e}", path.display())),
+        Err(e) => Err(format!("read {}: {e}", path.display()).into()),
     }
 }
 
 /// [`read_json_or_empty`] for a TOML target, with the same rule: absent is an
 /// empty document, present-but-unreadable refuses.
-fn read_toml_or_empty(path: &Path) -> Result<toml_edit::DocumentMut, String> {
+fn read_toml_or_empty(path: &Path) -> Result<toml_edit::DocumentMut, crate::session_ops::OpError> {
     match std::fs::read_to_string(path) {
         Ok(s) if s.trim().is_empty() => Ok(toml_edit::DocumentMut::new()),
-        Ok(s) => s
-            .parse()
-            .map_err(|e| format!("parse {}: {e}", path.display())),
+        Ok(s) => s.parse().map_err(|e| {
+            crate::session_ops::OpError::Other(format!("parse {}: {e}", path.display()))
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml_edit::DocumentMut::new()),
-        Err(e) => Err(format!("read {}: {e}", path.display())),
+        Err(e) => Err(format!("read {}: {e}", path.display()).into()),
     }
 }
 
 /// Write `content` to `path` only when it differs from the current contents (the
 /// merge runs every startup + heartbeat tick, so a no-op write would be churn).
 /// Returns whether it wrote.
-fn write_if_changed(path: &Path, content: &str) -> Result<bool, String> {
+fn write_if_changed(path: &Path, content: &str) -> Result<bool, crate::session_ops::OpError> {
     if file_has_content(path, content) {
         return Ok(false);
     }
@@ -401,7 +403,7 @@ fn install_config_merge(
     source: &crate::agent::extension_config::ExtensionSource,
     m: &crate::session::ConfigMerge,
     report: &mut InstallReport,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     if let Some(req) = &m.requires_dir {
         if !crate::agent::extension_config::expand_tilde(req).is_dir() {
             report.config_merges_skipped.push(m.path.clone());
@@ -438,7 +440,7 @@ fn merged_config(
     dest: &Path,
     source_text: &str,
     source_name: &str,
-) -> Result<String, String> {
+) -> Result<String, crate::session_ops::OpError> {
     match format {
         crate::session::ConfigMergeFormat::Json => {
             let to_merge: serde_json::Value = serde_json::from_str(source_text)
@@ -486,8 +488,9 @@ fn merged_config(
                 );
             }
             crate::agent::json_merge::merge(&mut doc, &to_merge);
-            serde_json::to_string_pretty(&doc)
-                .map_err(|e| format!("serialize {}: {e}", dest.display()))
+            Ok(serde_json::to_string_pretty(&doc).map_err(|e| {
+                crate::session_ops::OpError::Other(format!("serialize {}: {e}", dest.display()))
+            })?)
         }
         crate::session::ConfigMergeFormat::Toml => {
             let to_merge: toml_edit::DocumentMut = source_text
@@ -510,7 +513,9 @@ fn merged_config(
 /// Reverse an [`install_config_merge`]: prune our marked hook entries out of the
 /// agent's config file, leaving the user's own settings intact. A missing file
 /// is a no-op. Returns whether the path was touched.
-fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> {
+fn revert_config_merge(
+    m: &crate::session::ConfigMerge,
+) -> Result<bool, crate::session_ops::OpError> {
     let dest = crate::agent::extension_config::expand_tilde(&m.path);
     if !dest.exists() {
         return Ok(false);
@@ -528,8 +533,9 @@ fn revert_config_merge(m: &crate::session::ConfigMerge) -> Result<bool, String> 
                 // themselves with it, as it always has.
                 crate::agent::json_merge::prune_marked(&mut doc, MANAGED_MARKER);
                 crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
-                serde_json::to_string_pretty(&doc)
-                    .map_err(|e| format!("serialize {}: {e}", dest.display()))
+                serde_json::to_string_pretty(&doc).map_err(|e| {
+                    crate::session_ops::OpError::Other(format!("serialize {}: {e}", dest.display()))
+                })
             }
             Err(e) => Err(e),
         },
@@ -557,7 +563,7 @@ fn install_symlink(
     s: &crate::session::extension_def::ExtensionSymlink,
     home: &Path,
     report: &mut InstallReport,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     // Validate both ends before touching the filesystem, so a bad target
     // can't leave a removed symlink behind.
     let link = safe_join(home, &s.link)?;
@@ -605,7 +611,7 @@ pub fn update_extension(
     backends: &crate::backend::BackendRegistry,
     name: &str,
     force: bool,
-) -> Result<UpdateReport, String> {
+) -> Result<UpdateReport, crate::session_ops::OpError> {
     update(db, backends, name, force, false)
 }
 
@@ -615,7 +621,7 @@ pub(super) fn update_extension_for_heal(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     name: &str,
-) -> Result<UpdateReport, String> {
+) -> Result<UpdateReport, crate::session_ops::OpError> {
     update(db, backends, name, false, true)
 }
 
@@ -625,7 +631,7 @@ fn update(
     name: &str,
     force: bool,
     healing: bool,
-) -> Result<UpdateReport, String> {
+) -> Result<UpdateReport, crate::session_ops::OpError> {
     let installed = crate::agent::extension_config::load_manifest(name)
         .ok_or_else(|| format!("extension '{name}' is not installed (no manifest found)"))?;
     let source = installed.source.clone().ok_or_else(|| {
@@ -659,7 +665,7 @@ pub fn update_all_extensions(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     force: bool,
-) -> Vec<(String, Result<UpdateReport, String>)> {
+) -> Vec<(String, Result<UpdateReport, crate::session_ops::OpError>)> {
     crate::agent::extension_config::list_manifests()
         .into_iter()
         .map(|def| {
@@ -696,7 +702,7 @@ pub fn reinstall_extension(
     backends: &crate::backend::BackendRegistry,
     name: &str,
     purge_home: bool,
-) -> Result<ReinstallReport, String> {
+) -> Result<ReinstallReport, crate::session_ops::OpError> {
     let installed = crate::agent::extension_config::load_manifest(name)
         .ok_or_else(|| format!("extension '{name}' is not installed (no manifest found)"))?;
     let source = installed.source.clone().ok_or_else(|| {
@@ -745,7 +751,7 @@ pub fn uninstall_extension(
     backends: &crate::backend::BackendRegistry,
     name: &str,
     purge_home: bool,
-) -> Result<UninstallReport, String> {
+) -> Result<UninstallReport, crate::session_ops::OpError> {
     let def = crate::agent::extension_config::load_manifest(name)
         .ok_or_else(|| format!("extension '{name}' is not installed (no manifest found)"))?;
 

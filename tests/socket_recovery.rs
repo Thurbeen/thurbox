@@ -140,6 +140,8 @@ fn socket_path(dir: &Path, socket: &str) -> PathBuf {
 /// Every running tmux server process for `socket`: a process whose command
 /// line started one (`new-session`) on that name. A server keeps the argv of
 /// the client that started it, which is what makes a socketless one findable.
+/// Test sockets include the test process id so simultaneous worktree suites
+/// cannot count or recover each other's servers.
 fn servers(socket: &str) -> Vec<u32> {
     let out = Command::new("ps")
         .args(["-axo", "pid=,args="])
@@ -200,7 +202,7 @@ fn a_server_whose_socket_was_removed_is_reattached_not_replaced() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let server = TmuxServer::pin("tbx-sockrec-local");
+    let server = TmuxServer::pin(&format!("tbx-sockrec-local-{}", std::process::id()));
     let mut reap = ReapByPid::default();
     let pid = start_with_window(&server, TMUX_SESSION);
     reap.0.push(pid);
@@ -232,7 +234,7 @@ fn a_hosts_server_whose_socket_was_removed_is_reattached_not_replaced() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let server = TmuxServer::pin("tbx-sockrec-ssh");
+    let server = TmuxServer::pin(&format!("tbx-sockrec-ssh-{}", std::process::id()));
     let mut reap = ReapByPid::default();
     let _bin = stand_in_ssh();
     let pid = start_with_window(&server, "tbx-sockrec");
@@ -267,7 +269,7 @@ fn a_server_in_the_old_directory_is_adopted_until_it_exits() {
     // The guard's directory stands for tmux's default (`TMUX_TMPDIR`, which
     // an earlier build left alone); `new/` inside it is the one a build
     // choosing its own directory would use.
-    let server = TmuxServer::pin("tbx-sockrec-move");
+    let server = TmuxServer::pin(&format!("tbx-sockrec-move-{}", std::process::id()));
     let mut reap = ReapByPid::default();
     let new_dir = server.tmpdir().join("new");
     std::fs::create_dir(&new_dir).expect("mkdir");
@@ -317,7 +319,7 @@ fn a_socket_path_with_a_space_in_it_is_found_whole() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let server = TmuxServer::pin("tbx sockrec space");
+    let server = TmuxServer::pin(&format!("tbx sockrec space-{}", std::process::id()));
     let mut reap = ReapByPid::default();
     let pid = start_with_window(&server, TMUX_SESSION);
     reap.0.push(pid);
@@ -342,7 +344,7 @@ fn a_server_that_will_not_answer_is_not_replaced() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let server = TmuxServer::pin("tbx-sockrec-stop");
+    let server = TmuxServer::pin(&format!("tbx-sockrec-stop-{}", std::process::id()));
     let mut reap = ReapByPid::default();
     let pid = start_with_window(&server, TMUX_SESSION);
     reap.0.push(pid);
@@ -375,7 +377,7 @@ fn a_host_whose_data_dir_is_too_deep_starts_its_server_in_the_default() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let server = TmuxServer::pin("tbx-sockrec-deep");
+    let server = TmuxServer::pin(&format!("tbx-sockrec-deep-{}", std::process::id()));
     let socket = format!("tbx-sockrec-deep-{}", std::process::id());
     let _kill = KillDefaultServer(socket.clone());
     let _bin = stand_in_ssh();
@@ -406,7 +408,7 @@ fn a_hosts_socket_name_with_a_quote_in_it_starts_in_its_data_dir() {
         eprintln!("skipping: tmux is not installed");
         return;
     }
-    let server = TmuxServer::pin("tbx-sockrec-quote");
+    let server = TmuxServer::pin(&format!("tbx-sockrec-quote-{}", std::process::id()));
     let socket = format!("tbx-sockrec-\"q-{}", std::process::id());
     let _bin = stand_in_ssh();
     let data = server.tmpdir().join("xdg");

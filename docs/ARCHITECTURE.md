@@ -2115,7 +2115,7 @@ follow from the host owning the record, none of which the first cut had:
   branch, silently, in whichever direction happens to be worse. So the question
   is asked of the layer instead. `ssh` exits **255** for its own failures and
   passes a remote command's status through untouched (a remote `exit 7` exits
-  7), and `thurbox-cli` only ever exits 1, 2 or 3 — so 255 is ssh saying the
+  7), while delegated CLI operation errors use 1 through 6 — so 255 is ssh saying the
   question never arrived, whatever the stderr underneath resembles
   (`backend::tmux_compat::server::listing_is_absence`, `session_ops::host_cli::classify_failure`).
   `session_ops::host_cli::Reach` names the three answers a failed remote call
@@ -3055,3 +3055,30 @@ collector unreachable waits out the request timeout once. Records carry what
 the log lines carry — paths, session names, host names — which is why the
 bridge is opt-in. A change to the switch, or to the endpoint, protocol or
 headers while it is on, reads as restart-only.
+
+## ADR-39: Errors keep their classification across operation boundaries
+
+**Decision:** `SessionBackend` returns `BackendResult<T>` with `BackendError`
+(`Absent`, `Unreachable`, `Refused`, `Busy`, `Io`). The transport and adapter
+classify raw process status and protocol replies once. Session lifecycle and
+pane operations return `OpError` (pure `session` data, re-exported by
+`session_ops`); adding context preserves its variant.
+Reports may render an error as text, but decisions match the type.
+
+`CommandError` maps operation variants onto the shared CLI registry: 1 general
+failure (including not found and refusal), 2 usage, 3 ambiguity, 4 timeout,
+5 conflict, 6 gone. Its JSON adds `error_kind`, retaining `error` and the
+existing exit codes. Delegated host calls read this tag; old or unknown tags
+remain `Other`. A message containing “not found” is never evidence of absence.
+
+Transport reach is independent of the host's operation error. `RunFailure`
+keeps `Unreached`, `Answered`, and `Undetermined`; `host_cli::run` preserves
+unreached and undetermined outcomes in `OpError`. An answered `NotFound` can
+permit a local teardown fallback; a refusal or an opaque legacy error cannot.
+These rules apply to every backend route and agent family.
+
+**Why:** deletion previously read a remote refusal's wording to decide whether
+to kill windows. A missing policy file could therefore authorize a teardown.
+A typed absence is evidence; a sentence is only a diagnosis. Discovery also
+keeps confirmed absence, transport failure, and other inconclusive probes
+separate so only absence can authorize relaunch.

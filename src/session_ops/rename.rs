@@ -37,12 +37,14 @@ pub fn rename_session_headless(
     backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     name: &str,
-) -> Result<RenameReport, String> {
+) -> Result<RenameReport, crate::session_ops::OpError> {
     crate::paths::validate_safe_name(name)?;
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        .ok_or_else(|| {
+            crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
+        })?;
     if session.name == name {
         return Ok(RenameReport {
             previous: session.name,
@@ -69,7 +71,8 @@ pub fn rename_session_headless(
              the same window. Pick another name",
             session.backend_type,
             taken.join(", ")
-        ));
+        )
+        .into());
     }
 
     let host = super::resolve_host(&session.backend_type).ok_or_else(|| {
@@ -102,11 +105,20 @@ pub fn rename_session_headless(
     let id = session_id.to_string();
     let written = backend
         .rename_windows(crate::backend::Owner::new(&id, &session.name), name)
-        .map_err(|e| format!("could not rename the windows of '{}': {e:#}", session.name))
+        .map_err(|e| {
+            crate::session_ops::OpError::from(e).context(format!(
+                "could not rename the windows of '{}'",
+                session.name
+            ))
+        })
         .and_then(|()| match db.rename_session(session_id, name) {
             Ok(true) => Ok(()),
-            Ok(false) => Err(format!("Session not found: {session_id}")),
-            Err(e) => Err(format!("rename_session: {e}")),
+            Ok(false) => Err(crate::session_ops::OpError::Gone(format!(
+                "Session not found: {session_id}"
+            ))),
+            Err(e) => Err(crate::session_ops::OpError::Other(format!(
+                "rename_session: {e}"
+            ))),
         });
     if let Err(error) = written {
         // Some window may now carry a name the row does not — the agent's, when

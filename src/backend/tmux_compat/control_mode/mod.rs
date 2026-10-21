@@ -9,6 +9,43 @@
 //! What a server can be expected to do on that wire is its adapter's to say
 //! ([`ControlPolicy`], [`PaneInput`]).
 
+/// A multiplexer answered and refused the command; transport failures never
+/// enter this classifier.
+pub(in crate::backend) fn classify_refusal(
+    reply: &str,
+    message: String,
+) -> crate::backend::contract::BackendError {
+    let reply = reply.trim();
+    if [
+        "can't find pane: ",
+        "can't find window: ",
+        "can't find session: ",
+        "session not found: ",
+    ]
+    .iter()
+    .any(|prefix| reply.starts_with(prefix))
+        && !reply.contains('\n')
+    {
+        return crate::backend::contract::BackendError::Absent(message);
+    }
+    // RMUX wraps its missing-target reply. Match both copies of the target,
+    // rather than searching arbitrary refusal text for "can't find pane".
+    if let Some(wrapped) = reply.strip_prefix("invalid target '") {
+        if let Some((target, detail)) = wrapped.split_once("': ") {
+            if !reply.contains('\n')
+                && (detail == format!("can't find pane: {target}")
+                    || detail == format!("can't find window: {target}"))
+            {
+                return crate::backend::contract::BackendError::Absent(message);
+            }
+        }
+    }
+    if reply.starts_with("duplicate session: ") || reply.starts_with("duplicate window: ") {
+        return crate::backend::contract::BackendError::Busy(message);
+    }
+    crate::backend::contract::BackendError::Refused(message)
+}
+
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Stdio};
@@ -2378,10 +2415,9 @@ impl ControlMode {
             .with_context(|| format!("Failed to send: {cmd}"))?;
 
         if response.is_error {
-            bail!(
-                "tmux command failed: {cmd}: {}",
-                response.lines().join("\n")
-            );
+            let reply = response.lines().join("\n");
+            let message = format!("tmux command failed: {cmd}: {reply}");
+            return Err(classify_refusal(&reply, message).into());
         }
 
         Ok(response)

@@ -396,7 +396,7 @@ fn merged_remote_doc(
     existing: &str,
     payload: &str,
     signal: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, crate::session_ops::OpError> {
     let before: serde_json::Value = if existing.trim().is_empty() {
         serde_json::Value::Object(serde_json::Map::new())
     } else {
@@ -417,15 +417,18 @@ fn merged_remote_doc(
     if doc == before {
         return Ok(None);
     }
-    serde_json::to_string_pretty(&doc)
+    Ok(serde_json::to_string_pretty(&doc)
         .map(Some)
-        .map_err(|e| format!("serialize merged doc: {e}"))
+        .map_err(|e| format!("serialize merged doc: {e}"))?)
 }
 
 /// [`merged_remote_doc`] for a TOML target (kimi's `~/.kimi-code/config.toml`):
 /// same prune-then-merge contract, `toml_edit` so the remote user's comments and
 /// key order survive.
-fn merged_remote_toml_doc(existing: &str, payload: &str) -> Result<Option<String>, String> {
+fn merged_remote_toml_doc(
+    existing: &str,
+    payload: &str,
+) -> Result<Option<String>, crate::session_ops::OpError> {
     let before: toml_edit::DocumentMut = if existing.trim().is_empty() {
         toml_edit::DocumentMut::new()
     } else {

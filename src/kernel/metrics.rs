@@ -443,11 +443,15 @@ mod tests {
         fn hook_signal_command(&self) -> Option<String> {
             None
         }
-        fn record_hook_state(&self, _: &str, _: &str) -> anyhow::Result<()> {
-            anyhow::bail!("this stub has no status channel")
+        fn record_hook_state(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no status channel").into())
         }
-        fn hook_states(&self) -> anyhow::Result<Vec<(String, String)>> {
-            anyhow::bail!("this stub has no status channel")
+        fn hook_states(&self) -> crate::backend::contract::BackendResult<Vec<(String, String)>> {
+            Err(anyhow::anyhow!("this stub has no status channel").into())
         }
         fn take_hook_state_events(&self) -> Vec<(String, String)> {
             Vec::new()
@@ -457,46 +461,75 @@ mod tests {
             _: &std::path::Path,
             _: &[String],
             _: std::time::Duration,
-        ) -> anyhow::Result<()> {
-            anyhow::bail!("this stub keeps no heartbeat")
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub keeps no heartbeat").into())
         }
-        fn heartbeat_running(&self) -> anyhow::Result<bool> {
+        fn heartbeat_running(&self) -> crate::backend::contract::BackendResult<bool> {
             Ok(false)
         }
-        fn stop_heartbeat(&self) -> anyhow::Result<bool> {
+        fn stop_heartbeat(&self) -> crate::backend::contract::BackendResult<bool> {
             Ok(false)
         }
-        fn send_text(&self, _: &str, _: &str, _: bool) -> anyhow::Result<()> {
-            anyhow::bail!("this stub has no panes to type into")
+        fn send_text(
+            &self,
+            _: &str,
+            _: &str,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
         }
-        fn send_text_after(&self, _: &str, _: &str, _: std::time::Duration) -> anyhow::Result<()> {
-            anyhow::bail!("this stub has no panes to type into")
+        fn send_text_after(
+            &self,
+            _: &str,
+            _: &str,
+            _: std::time::Duration,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
         }
-        fn send_key(&self, _: &str, _: &crate::backend::Key) -> anyhow::Result<String> {
-            anyhow::bail!("this stub has no panes to type into")
+        fn send_key(
+            &self,
+            _: &str,
+            _: &crate::backend::Key,
+        ) -> crate::backend::contract::BackendResult<String> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
         }
-        fn capture(&self, _: &str, _: u32, _: bool) -> anyhow::Result<String> {
-            anyhow::bail!("this stub has no panes to read")
+        fn capture(
+            &self,
+            _: &str,
+            _: u32,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<String> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
         }
-        fn pane_state(&self, _: &str) -> anyhow::Result<crate::backend::PaneState> {
-            anyhow::bail!("this stub has no panes to read")
+        fn pane_state(
+            &self,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<crate::backend::PaneState> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
         }
-        fn pane_path(&self, _: &str) -> anyhow::Result<Option<String>> {
-            anyhow::bail!("this stub has no panes to read")
+        fn pane_path(&self, _: &str) -> crate::backend::contract::BackendResult<Option<String>> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
         }
         fn create_window(
             &self,
             _: &crate::backend::WindowSpec<'_>,
-        ) -> anyhow::Result<crate::backend::PaneId> {
-            anyhow::bail!("{}: a stub opens no windows", self.name())
+        ) -> crate::backend::contract::BackendResult<crate::backend::PaneId> {
+            Err(anyhow::anyhow!("{}: a stub opens no windows", self.name()).into())
         }
-        fn locate(&self, _: crate::backend::Owner<'_>) -> anyhow::Result<crate::backend::Placed> {
+        fn locate(
+            &self,
+            _: crate::backend::Owner<'_>,
+        ) -> crate::backend::contract::BackendResult<crate::backend::Placed> {
             Ok(crate::backend::Placed {
                 agent: crate::backend::Located::Absent,
                 shell: crate::backend::Located::Absent,
             })
         }
-        fn rename_windows(&self, _: crate::backend::Owner<'_>, _: &str) -> anyhow::Result<()> {
+        fn rename_windows(
+            &self,
+            _: crate::backend::Owner<'_>,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
         fn stamp_window(
@@ -504,13 +537,20 @@ mod tests {
             _: &str,
             _: &str,
             _: crate::backend::WindowRole,
-        ) -> anyhow::Result<()> {
+        ) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
-        fn window_panes(&self, _: &str) -> anyhow::Result<Vec<(String, bool)>> {
+        fn window_panes(
+            &self,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<Vec<(String, bool)>> {
             Ok(Vec::new())
         }
-        fn set_pane_retention(&self, _: &str, _: bool) -> anyhow::Result<()> {
+        fn set_pane_retention(
+            &self,
+            _: &str,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
         fn shutdown(&self) {}
@@ -520,10 +560,10 @@ mod tests {
         fn default_shell(&self) -> String {
             "/bin/sh".to_string()
         }
-        fn check_available(&self) -> anyhow::Result<()> {
+        fn check_available(&self) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
-        fn ensure_ready(&self) -> anyhow::Result<()> {
+        fn ensure_ready(&self) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
         fn spawn(
@@ -535,7 +575,7 @@ mod tests {
             _: &HashMap<String, String>,
             _: u16,
             _: u16,
-        ) -> anyhow::Result<crate::backend::SpawnedSession> {
+        ) -> crate::backend::contract::BackendResult<crate::backend::SpawnedSession> {
             unimplemented!()
         }
         fn adopt(
@@ -544,32 +584,35 @@ mod tests {
             _: u16,
             _: u16,
             _: Option<Vec<u8>>,
-        ) -> anyhow::Result<crate::backend::AdoptedSession> {
+        ) -> crate::backend::contract::BackendResult<crate::backend::AdoptedSession> {
             unimplemented!()
         }
-        fn discover(&self) -> anyhow::Result<Vec<crate::backend::DiscoveredSession>> {
+        fn discover(
+            &self,
+        ) -> crate::backend::contract::BackendResult<Vec<crate::backend::DiscoveredSession>>
+        {
             Ok(Vec::new())
         }
-        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+        fn resize(&self, _: &str, _: u16, _: u16) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
-        fn is_dead(&self, _: &str) -> anyhow::Result<bool> {
+        fn is_dead(&self, _: &str) -> crate::backend::contract::BackendResult<bool> {
             Ok(false)
         }
-        fn kill(&self, _: &str) -> anyhow::Result<()> {
+        fn kill(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
-        fn detach(&self, _: &str) -> anyhow::Result<()> {
+        fn detach(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
-        fn pane_pid(&self, pane: &str) -> anyhow::Result<Option<u32>> {
+        fn pane_pid(&self, pane: &str) -> crate::backend::contract::BackendResult<Option<u32>> {
             Ok(self.pids.get(pane).copied())
         }
-        fn pane_pids(&self) -> anyhow::Result<HashMap<String, u32>> {
+        fn pane_pids(&self) -> crate::backend::contract::BackendResult<HashMap<String, u32>> {
             if self.batched {
                 Ok(self.pids.clone())
             } else {
-                anyhow::bail!("no batched lookup")
+                Err(anyhow::anyhow!("no batched lookup").into())
             }
         }
     }

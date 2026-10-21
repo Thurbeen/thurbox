@@ -977,7 +977,7 @@ impl Session {
     /// called on the deliberate chord that must tell a dead pane from a live
     /// one.
     pub fn is_dead(&self) -> Result<bool> {
-        self.backend.is_dead(self.backend_id())
+        Ok(self.backend.is_dead(self.backend_id())?)
     }
 
     /// Whether the backend reports this session's companion shell pane as dead.
@@ -990,7 +990,7 @@ impl Session {
     pub fn shell_is_dead(&self) -> Option<Result<bool>> {
         self.shell_pane
             .as_ref()
-            .map(|shell| self.backend.is_dead(shell.backend_id()))
+            .map(|shell| self.backend.is_dead(shell.backend_id()).map_err(Into::into))
     }
 
     /// Reconnect to an existing backend session. `seed` is the optional
@@ -1612,7 +1612,7 @@ impl Session {
 
     /// Return the PID of the process running in this session's backend pane.
     pub fn pane_pid(&self) -> Result<Option<u32>> {
-        self.backend.pane_pid(&self.wired.backend_id)
+        Ok(self.backend.pane_pid(&self.wired.backend_id)?)
     }
 
     /// Clone the backend handle + id so a background task can query the pane

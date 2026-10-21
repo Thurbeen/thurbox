@@ -20,11 +20,11 @@ pub fn reparent_session_headless(
     db: &Database,
     id: SessionId,
     parent: Option<SessionId>,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     let session = db
         .get_session_by_id(id)
         .map_err(|e| format!("Failed to load session: {e}"))?
-        .ok_or_else(|| format!("Session not found: {id}"))?;
+        .ok_or_else(|| crate::session_ops::OpError::NotFound(format!("Session not found: {id}")))?;
     if let Some(parent) = parent {
         refuse_cycle(db, &session.name, id, parent)?;
     }
@@ -43,18 +43,20 @@ pub fn reparent_session_headless(
 
     match db.set_session_parent(id, parent) {
         Ok(true) => Ok(()),
-        Ok(false) => Err(format!("Session not found: {id}")),
-        Err(e) => Err(format!(
-            "could not set the parent of '{}': {e}",
-            session.name
-        )),
+        Ok(false) => Err(format!("Session not found: {id}").into()),
+        Err(e) => Err(format!("could not set the parent of '{}': {e}", session.name).into()),
     }
 }
 
 /// Walk up from `parent`; reaching `id` means `parent` is `id` or below it.
-fn refuse_cycle(db: &Database, name: &str, id: SessionId, parent: SessionId) -> Result<(), String> {
+fn refuse_cycle(
+    db: &Database,
+    name: &str,
+    id: SessionId,
+    parent: SessionId,
+) -> Result<(), crate::session_ops::OpError> {
     if parent == id {
-        return Err(format!("'{name}' cannot be its own parent"));
+        return Err(format!("'{name}' cannot be its own parent").into());
     }
     let mut seen = HashSet::new();
     let mut cursor = Some(parent);
@@ -62,7 +64,8 @@ fn refuse_cycle(db: &Database, name: &str, id: SessionId, parent: SessionId) -> 
         if at == id {
             return Err(format!(
                 "{parent} is a descendant of '{name}', so it cannot be its parent"
-            ));
+            )
+            .into());
         }
         // Deleted rows included: a soft-deleted ancestor comes back with
         // its link intact, and would close the cycle on restore.

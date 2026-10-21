@@ -119,7 +119,7 @@ pub fn create(
     now: u64,
 ) -> Result<Saved, SaveError> {
     if let Some(key) = key {
-        super::super::names::validate_key(key)?;
+        super::super::names::validate_key(key).map_err(|e| SaveError::Invalid(e.to_string()))?;
         // A reference is tried as an id before a key, so an all-digit key
         // would name some other automation everywhere it is used.
         if key.bytes().all(|b| b.is_ascii_digit()) {

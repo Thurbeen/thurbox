@@ -33,7 +33,7 @@ pub fn live_namesakes(
     db: &Database,
     name: &str,
     backend: &str,
-) -> Result<Vec<SharedSession>, String> {
+) -> Result<Vec<SharedSession>, crate::session_ops::OpError> {
     let server = super::server_key(backend);
     Ok(db
         .find_sessions_by_name(name)
@@ -57,7 +57,7 @@ pub fn undoable_namesake(
     name: &str,
     backend: &str,
     now: u64,
-) -> Result<Option<DeletedSessionInfo>, String> {
+) -> Result<Option<DeletedSessionInfo>, crate::session_ops::OpError> {
     let window = super::UNDO_WINDOW.as_millis() as u64;
     let server = super::server_key(backend);
     Ok(db
@@ -86,7 +86,7 @@ pub fn window_namesakes(
     db: &Database,
     name: &str,
     backend: &str,
-) -> Result<Vec<SharedSession>, String> {
+) -> Result<Vec<SharedSession>, crate::session_ops::OpError> {
     // Fully-qualified per the session_ops → agent path-only architecture rule.
     let window = crate::backend::identity::sanitize_window_name(name);
     let server = super::server_key(backend);
@@ -119,7 +119,7 @@ pub fn hold<'a>(
     name: &str,
     backend: &str,
     op: &str,
-) -> Result<Option<Lock<'a>>, String> {
+) -> Result<Option<Lock<'a>>, crate::session_ops::OpError> {
     let subject = Subject::Name {
         scope: super::server_key(backend),
         name: name.to_string(),
@@ -130,8 +130,8 @@ pub fn hold<'a>(
 /// Refuse a key that is not one: held to a name's rules (1-64 bytes, no `/` or
 /// `\`, no `..`, no leading `.`), so `key:<host>/<key>` stays parseable — the
 /// first `/` is the host's.
-pub fn validate_key(key: &str) -> Result<(), String> {
-    crate::paths::validate_safe_name(key).map_err(|e| format!("invalid key '{key}': {e}"))
+pub fn validate_key(key: &str) -> Result<(), crate::session_ops::OpError> {
+    Ok(crate::paths::validate_safe_name(key).map_err(|e| format!("invalid key '{key}': {e}"))?)
 }
 
 /// The scope a key is unique in: the host a session on `backend` runs on.
@@ -155,7 +155,7 @@ pub fn live_key_holders(
     db: &Database,
     key: &str,
     backend: &str,
-) -> Result<Vec<SharedSession>, String> {
+) -> Result<Vec<SharedSession>, crate::session_ops::OpError> {
     Ok(db
         .find_sessions_by_key(key)
         .map_err(|e| format!("find_sessions_by_key: {e}"))?
@@ -189,7 +189,7 @@ pub fn claim_key<'a>(
     key: &str,
     backend: &str,
     op: &str,
-) -> Result<KeyClaim<'a>, String> {
+) -> Result<KeyClaim<'a>, crate::session_ops::OpError> {
     let subject = Subject::Name {
         scope: format!("key@{}", key_host(backend).unwrap_or_default()),
         name: key.to_string(),
@@ -234,7 +234,7 @@ pub fn admit_key<'a>(
     key: Option<&str>,
     backend: &str,
     op: &str,
-) -> Result<(Option<KeyClaim<'a>>, Option<String>), String> {
+) -> Result<(Option<KeyClaim<'a>>, Option<String>), crate::session_ops::OpError> {
     let Some(key) = key else {
         return Ok((None, None));
     };

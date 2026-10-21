@@ -158,14 +158,18 @@ fn main() {
         // message is about. The code travels with the message: an ambiguous
         // session reference is a different answer from a missing one, and only
         // the failure itself knows which it was.
-        Err(e) => fail_with(
-            &e.message,
-            "the command ran and failed; the message says what went wrong — \
-             `thurbox-cli` prints the state it was working against",
-            "thurbox-cli",
-            format,
-            e.exit_code,
-        ),
+        Err(e) => {
+            println!(
+                "{}",
+                cli::typed_error_output(
+                    &e.error,
+                    "the command ran and failed; the message says what went wrong",
+                    "thurbox-cli",
+                    format
+                )
+            );
+            std::process::exit(e.exit_code)
+        }
     }
 }
 
@@ -218,8 +222,8 @@ fn exit_from_clap(e: &clap::Error) -> ! {
 
     println!(
         "{}",
-        cli::error_output(
-            &message,
+        cli::typed_error_output(
+            &thurbox::session_ops::OpError::Usage(message),
             "this binary's commands and flags are listed by --help",
             "thurbox-cli --help",
             format_from_raw_args(),

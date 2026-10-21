@@ -12,6 +12,62 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
+/// Classified at the adapter/transport, before callers add context.
+#[derive(Debug)]
+pub enum BackendError {
+    Absent(String),
+    Unreachable(String),
+    Refused(String),
+    Busy(String),
+    Io(String),
+}
+
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Absent(m)
+            | Self::Unreachable(m)
+            | Self::Refused(m)
+            | Self::Busy(m)
+            | Self::Io(m) => f.write_str(m),
+        }
+    }
+}
+impl std::error::Error for BackendError {}
+impl From<std::io::Error> for BackendError {
+    fn from(e: std::io::Error) -> Self {
+        let message = e.to_string();
+        match e.kind() {
+            std::io::ErrorKind::PermissionDenied => Self::Refused(message),
+            std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::TimedOut => Self::Unreachable(message),
+            _ => Self::Io(message),
+        }
+    }
+}
+impl From<anyhow::Error> for BackendError {
+    fn from(e: anyhow::Error) -> Self {
+        if let Some(classified) = e.downcast_ref::<Self>() {
+            let message = format!("{e:#}");
+            return match classified {
+                Self::Absent(_) => Self::Absent(message),
+                Self::Unreachable(_) => Self::Unreachable(message),
+                Self::Refused(_) => Self::Refused(message),
+                Self::Busy(_) => Self::Busy(message),
+                Self::Io(_) => Self::Io(message),
+            };
+        }
+        if let Some(io) = e.downcast_ref::<std::io::Error>() {
+            return Self::from(std::io::Error::new(io.kind(), format!("{e:#}")));
+        }
+        Self::Io(format!("{e:#}"))
+    }
+}
+pub type BackendResult<T> = std::result::Result<T, BackendError>;
+
 /// A pane's size as its backend reports it, handed from the backend's output
 /// reader to the loop that feeds the pane's grid.
 ///
@@ -545,10 +601,10 @@ pub trait SessionBackend: Send + Sync {
     }
 
     /// Check if the backend is available/healthy.
-    fn check_available(&self) -> Result<()>;
+    fn check_available(&self) -> BackendResult<()>;
 
     /// Initialize the backend (e.g., start tmux server).
-    fn ensure_ready(&self) -> Result<()>;
+    fn ensure_ready(&self) -> BackendResult<()>;
 
     /// Spawn a new session running the given command.
     #[allow(clippy::too_many_arguments)]
@@ -561,7 +617,7 @@ pub trait SessionBackend: Send + Sync {
         env: &HashMap<String, String>,
         rows: u16,
         cols: u16,
-    ) -> Result<SpawnedSession>;
+    ) -> BackendResult<SpawnedSession>;
 
     /// Reconnect to an existing session. `seed` is the pre-captured pane state
     /// to prepend to the live stream (see [`Self::capture_history`]);
@@ -575,7 +631,7 @@ pub trait SessionBackend: Send + Sync {
         rows: u16,
         cols: u16,
         seed: Option<Vec<u8>>,
-    ) -> Result<AdoptedSession>;
+    ) -> BackendResult<AdoptedSession>;
 
     /// Capture the pane state the live stream cannot replay — its scrollback
     /// history, and any terminal state the backend can read back, such as the
@@ -585,7 +641,7 @@ pub trait SessionBackend: Send + Sync {
     /// sessions — unlike `adopt`'s control-mode connect, which is serialized.
     /// Default: nothing (backends without a capture facility adopt with an
     /// empty scrollback, exactly as if the capture had failed).
-    fn capture_history(&self, _backend_id: &str) -> Result<Vec<u8>> {
+    fn capture_history(&self, _backend_id: &str) -> BackendResult<Vec<u8>> {
         Ok(Vec::new())
     }
 
@@ -601,15 +657,15 @@ pub trait SessionBackend: Send + Sync {
     /// byte it describes, as a
     /// [`SnapshotArrived`] the
     /// reader loop takes up in order. Returns once asked, not once answered.
-    fn request_snapshot(&self, _backend_id: &str) -> Result<()> {
-        anyhow::bail!("this backend cannot snapshot a pane")
+    fn request_snapshot(&self, _backend_id: &str) -> BackendResult<()> {
+        Err(anyhow::anyhow!("this backend cannot snapshot a pane").into())
     }
 
     /// The pane's state as it stands, answered to the caller rather than put
     /// into the stream: for a reader that wants the text and has no parser to
     /// keep in step (the content search of a pane that has no grid).
-    fn snapshot(&self, _backend_id: &str) -> Result<PaneSnapshot> {
-        anyhow::bail!("this backend cannot snapshot a pane")
+    fn snapshot(&self, _backend_id: &str) -> BackendResult<PaneSnapshot> {
+        Err(anyhow::anyhow!("this backend cannot snapshot a pane").into())
     }
 
     /// Stop sending `backend_id`'s output to this interface while it has no
@@ -640,26 +696,26 @@ pub trait SessionBackend: Send + Sync {
     /// server that could not be asked — is an `Err`. The difference is what
     /// every teardown rests on: an empty answer means there is nothing to
     /// kill.
-    fn discover(&self) -> Result<Vec<DiscoveredSession>>;
+    fn discover(&self) -> BackendResult<Vec<DiscoveredSession>>;
 
     /// Open `spec.owner`'s `spec.role` window, detached, stamped with its owner
     /// as it is created, and return its pane — what [`Self::adopt`] later
     /// attaches to. The headless half of a session's lifecycle: create,
     /// restart and restore open a window through here and nothing attaches to
     /// it until an interface does.
-    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<PaneId>;
+    fn create_window(&self, spec: &WindowSpec<'_>) -> BackendResult<PaneId>;
 
     /// Where `owner`'s two windows are, from one listing the backend
     /// answered — [`crate::backend::identity::WindowIndex`]'s rule (ADR-25),
     /// plus whatever the backend alone can do about an ambiguous answer. `Err`
     /// when it could not answer, which a caller must never read as absence.
-    fn locate(&self, owner: Owner<'_>) -> Result<Placed>;
+    fn locate(&self, owner: Owner<'_>) -> BackendResult<Placed>;
 
     /// Follow a row's rename with the windows named after it, found under the
     /// name it had (`owner.name`). A window left under the old name is lost to
     /// a backend that finds windows by name, so ambiguity is an error rather
     /// than a skip.
-    fn rename_windows(&self, owner: Owner<'_>, to: &str) -> Result<()>;
+    fn rename_windows(&self, owner: Owner<'_>, to: &str) -> BackendResult<()>;
 
     /// Stamp a window with the identity every reconciler resolves it by: which
     /// session row owns it, and in what role (on a tmux-protocol server, the
@@ -668,7 +724,12 @@ pub trait SessionBackend: Send + Sync {
     /// A backend with no place to keep one returns `Ok` and its windows read
     /// as unstamped, which [`crate::backend::identity::WindowIndex`] resolves
     /// by name — a decision each backend makes, not a default it inherits.
-    fn stamp_window(&self, backend_id: &str, session_id: &str, role: WindowRole) -> Result<()>;
+    fn stamp_window(
+        &self,
+        backend_id: &str,
+        session_id: &str,
+        role: WindowRole,
+    ) -> BackendResult<()>;
 
     /// The pane of every window carrying this **exact** name, and whether that
     /// pane is dead.
@@ -686,7 +747,7 @@ pub trait SessionBackend: Send + Sync {
     /// caller there is ([`crate::kernel::terminal::Terminals::start_program`])
     /// needs the whole picture to keep that true.
     ///
-    fn window_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>>;
+    fn window_panes(&self, window_name: &str) -> BackendResult<Vec<(String, bool)>>;
 
     /// Say whether the window holding `backend_id` keeps its pane's corpse.
     ///
@@ -698,7 +759,7 @@ pub trait SessionBackend: Send + Sync {
     ///
     /// Asked only where the answer is already known from the caller's own
     /// naming, so this is one round trip and no lookup.
-    fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()>;
+    fn set_pane_retention(&self, backend_id: &str, keep: bool) -> BackendResult<()>;
 
     /// Type `text` into a pane, pressing Enter after it when `submit`.
     ///
@@ -710,41 +771,46 @@ pub trait SessionBackend: Send + Sync {
     /// Refuses a pane whose program has exited: a pane kept after its program
     /// exits may still accept input and discard it, and every caller reads
     /// success as "the agent got it".
-    fn send_text(&self, pane: &str, text: &str, submit: bool) -> Result<()>;
+    fn send_text(&self, pane: &str, text: &str, submit: bool) -> BackendResult<()>;
 
     /// [`Self::send_text`] with `submit`, `delay` from now, scheduled where the
     /// pane lives so it happens after the caller has returned: a headless
     /// command hands a freshly launched agent its prompt once it has had time to
     /// boot, and there is no process of its own left to wait in. Returns once
     /// scheduled.
-    fn send_text_after(&self, pane: &str, text: &str, delay: std::time::Duration) -> Result<()>;
+    fn send_text_after(
+        &self,
+        pane: &str,
+        text: &str,
+        delay: std::time::Duration,
+    ) -> BackendResult<()>;
 
     /// Press one key in a pane — no text, no Enter. Refuses an exited pane, as
     /// [`Self::send_text`] does. Returns the key as this backend spelled it.
-    fn send_key(&self, pane: &str, key: &Key) -> Result<String>;
+    fn send_key(&self, pane: &str, key: &Key) -> BackendResult<String>;
 
     /// A pane's rendered text, with up to `lines` of history before the visible
     /// region, and its styling as SGR sequences when `ansi`.
-    fn capture(&self, pane: &str, lines: u32, ansi: bool) -> Result<String>;
+    fn capture(&self, pane: &str, lines: u32, ansi: bool) -> BackendResult<String>;
 
     /// The text on the cursor's row to the left of the cursor — what has been
     /// typed into the input line the cursor is on, prompt included. `Ok(None)`:
     /// this backend cannot tell, which a caller must treat as unknown rather
     /// than as an empty line.
-    fn text_before_cursor(&self, _pane: &str) -> Result<Option<String>> {
+    fn text_before_cursor(&self, _pane: &str) -> BackendResult<Option<String>> {
         Ok(None)
     }
 
     /// What is around a pane's text — see [`PaneState`]. `Err` when the backend
     /// could not ask; an answer it could not read is a default field, not an
     /// error.
-    fn pane_state(&self, pane: &str) -> Result<PaneState>;
+    fn pane_state(&self, pane: &str) -> BackendResult<PaneState>;
 
     /// The `PATH` thurbox handed the pane's program when it opened the window,
     /// read back from the backend's own record of it. `Ok(None)`: the pane is
     /// there, and its `PATH` is not one thurbox wrote or one this backend can
     /// read — which a caller must report as unknown, never as a working one.
-    fn pane_path(&self, pane: &str) -> Result<Option<String>>;
+    fn pane_path(&self, pane: &str) -> BackendResult<Option<String>>;
 
     /// Match a pane to the rect it is painted into.
     ///
@@ -752,25 +818,25 @@ pub trait SessionBackend: Send + Sync {
     /// another client is sizing stays that client's size (see
     /// `tmux_compat::Server::resize`), and a backend that declines reports the size the
     /// pane really is through [`PaneSize`].
-    fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()>;
+    fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> BackendResult<()>;
 
     /// Size a pane to `rows` × `cols` and become the client that sizes it — the
     /// user is typing into it here. Default: a plain [`Self::resize`], for a
     /// backend nothing else shares.
-    fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+    fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> BackendResult<()> {
         self.resize(backend_id, rows, cols)
     }
 
     /// Check if a session's process has exited.
-    fn is_dead(&self, backend_id: &str) -> Result<bool>;
+    fn is_dead(&self, backend_id: &str) -> BackendResult<bool>;
 
     /// Kill a pane and the window it is in — attached or not, so a
     /// teardown needs no interface. Idempotent: a pane already gone is what
     /// the kill wanted.
-    fn kill(&self, backend_id: &str) -> Result<()>;
+    fn kill(&self, backend_id: &str) -> BackendResult<()>;
 
     /// Detach from a session without killing it (for Ctrl+Q quit).
-    fn detach(&self, backend_id: &str) -> Result<()>;
+    fn detach(&self, backend_id: &str) -> BackendResult<()>;
 
     /// Default shell command for companion shell panes: one that exists on
     /// the machine this backend's panes run on. Each backend answers for its
@@ -780,7 +846,7 @@ pub trait SessionBackend: Send + Sync {
 
     /// Return the PID of the process running in a backend pane, attached or
     /// not.
-    fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>>;
+    fn pane_pid(&self, backend_id: &str) -> BackendResult<Option<u32>>;
 
     /// Every live pane's `pane_id → pid` in **one** backend round trip.
     ///
@@ -793,8 +859,8 @@ pub trait SessionBackend: Send + Sync {
     ///
     /// Default: unsupported — an `Err` tells the caller to fall back to
     /// per-pane [`Self::pane_pid`], which every backend must provide.
-    fn pane_pids(&self) -> Result<HashMap<String, u32>> {
-        anyhow::bail!("batched pane pid lookup not supported by this backend")
+    fn pane_pids(&self) -> BackendResult<HashMap<String, u32>> {
+        Err(anyhow::anyhow!("batched pane pid lookup not supported by this backend").into())
     }
 
     /// Every pane the backend lists, dead ones included, in one round trip.
@@ -803,8 +869,8 @@ pub trait SessionBackend: Send + Sync {
     /// pane is missing from that map whenever it has no pid to report.
     ///
     /// Default: unsupported.
-    fn pane_ids(&self) -> Result<HashSet<String>> {
-        anyhow::bail!("pane listing not supported by this backend")
+    fn pane_ids(&self) -> BackendResult<HashSet<String>> {
+        Err(anyhow::anyhow!("pane listing not supported by this backend").into())
     }
 
     /// The command a hook running in one of this backend's panes runs, with
@@ -826,14 +892,14 @@ pub trait SessionBackend: Send + Sync {
     /// it: what `session signal` does after writing the database, so a peer
     /// attached to this backend sees the change live. `Err` when there is no
     /// channel to record it in, or the backend could not be asked.
-    fn record_hook_state(&self, pane: &str, state: &str) -> Result<()>;
+    fn record_hook_state(&self, pane: &str, state: &str) -> BackendResult<()>;
 
     /// Every pane's hook state as this backend's status channel holds it, in
     /// one round trip, attached or not — the headless poll's read. `Ok` with an
     /// empty list only when the backend answered that none is held; an
     /// unanswered question, or a backend with no channel, is an `Err`, which
     /// the poll reads as no news rather than as every pane gone quiet.
-    fn hook_states(&self) -> Result<Vec<(String, String)>>;
+    fn hook_states(&self) -> BackendResult<Vec<(String, String)>>;
 
     /// Drain the `(pane, hook-state)` changes this backend's status channel
     /// pushed to an attached interface since the last drain.
@@ -853,14 +919,14 @@ pub trait SessionBackend: Send + Sync {
         program: &Path,
         args: &[String],
         every: std::time::Duration,
-    ) -> Result<()>;
+    ) -> BackendResult<()>;
 
     /// Whether the heartbeat [`Self::ensure_heartbeat`] keeps is running. `Err`
     /// when the backend could not be asked.
-    fn heartbeat_running(&self) -> Result<bool>;
+    fn heartbeat_running(&self) -> BackendResult<bool>;
 
     /// Stop the heartbeat. Returns whether there was one to stop.
-    fn stop_heartbeat(&self) -> Result<bool>;
+    fn stop_heartbeat(&self) -> BackendResult<bool>;
 
     /// Tear down the backend's own long-lived resources (for a tmux backend,
     /// its control-mode connection: child process + reader thread).

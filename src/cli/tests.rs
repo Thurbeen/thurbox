@@ -989,7 +989,14 @@ fn command_arguments_may_start_with_a_dash() {
 fn host_cli_knows_every_exit_code_this_binary_uses() {
     use crate::session_ops::host_cli::CLI_EXIT_CODES;
 
-    for code in [EXIT_ERROR, EXIT_USAGE, EXIT_AMBIGUOUS] {
+    for code in [
+        EXIT_ERROR,
+        EXIT_USAGE,
+        EXIT_AMBIGUOUS,
+        EXIT_TIMEOUT,
+        EXIT_CONFLICT,
+        EXIT_GONE,
+    ] {
         assert!(
             CLI_EXIT_CODES.contains(&code),
             "exit {code} is one thurbox-cli gives, and the remote classifier \
@@ -998,7 +1005,7 @@ fn host_cli_knows_every_exit_code_this_binary_uses() {
     }
     assert_eq!(
         CLI_EXIT_CODES.len(),
-        3,
+        6,
         "a new exit code needs adding to CLI_EXIT_CODES too"
     );
 }

@@ -179,20 +179,22 @@ pub(super) fn execute(
 
     match command {
         Command::Delete { force, .. } => {
-            crate::session_ops::delete_session_headless(&db, backends, id, *force).map(|_| ())
+            crate::session_ops::delete_session_headless(&db, backends, id, *force)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         }
         // Restoring is the row, its worktrees and its agent — clearing the flag
         // alone gives back a session that can never attach (parity-gap #11).
         Command::Restore { best_effort, .. } => {
-            crate::session_ops::restore_session_headless(&db, backends, id, *best_effort).map(
-                |report| {
+            crate::session_ops::restore_session_headless(&db, backends, id, *best_effort)
+                .map(|report| {
                     if let Some(error) = report.respawn_error {
                         // Restored, but without its agent: worth saying, not worth
                         // undoing — `restart` will try again.
                         tracing::warn!("restored {} but could not launch it: {error}", report.name);
                     }
-                },
-            )
+                })
+                .map_err(|e| e.to_string())
         }
         // A failed post-restart hook is already in the log; the restart stands.
         // A relaunch held back for a crash loop does not, and fails with why.
@@ -204,6 +206,7 @@ pub(super) fn execute(
                 *if_missing,
             )
             .and_then(crate::session_ops::restart::RestartReport::into_outcome)
+            .map_err(|e| e.to_string())
         }
         Command::Send { text, .. } => {
             let session = db
@@ -220,7 +223,9 @@ pub(super) fn execute(
 
         Command::Sync { .. } => sync(&db, id),
         Command::Rename { name, .. } => {
-            crate::session_ops::rename::rename_session_headless(&db, backends, id, name).map(|_| ())
+            crate::session_ops::rename::rename_session_headless(&db, backends, id, name)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
         }
         // Unreachable: guarded above, and kept exhaustive so adding a command
         // is a compile error here rather than a silent no-op.
@@ -379,6 +384,7 @@ fn create(
         Some(&report),
     )
     .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// Remember, forget or import a repository path.
@@ -543,7 +549,9 @@ fn fork(
     id: SessionId,
     name: &str,
 ) -> Result<(), String> {
-    crate::session_ops::fork_session_headless(db, backends, id, name).map(|_| ())
+    crate::session_ops::fork_session_headless(db, backends, id, name)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Refuses rather than asking the user to be careful: a sync that discards
@@ -703,7 +711,8 @@ fn dispatch_task(
                 task_id: Some(task_id),
                 ..Default::default()
             };
-            let spawned = crate::session_ops::spawn::spawn_session_headless(db, backends, request)?;
+            let spawned = crate::session_ops::spawn::spawn_session_headless(db, backends, request)
+                .map_err(|e| e.to_string())?;
             // The agent needs a moment to be ready for input; sending into a
             // shell that has not drawn its prompt loses the text.
             crate::session_ops::send_text_when_booted(

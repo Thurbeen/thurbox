@@ -629,7 +629,7 @@ fn hook_cli(
                 crate::session_ops::windows::backend_for(backends, &session.backend_type)
                     .is_ok_and(|backend| backend.check_available().is_ok());
             return match available {
-                true => HookCli::PaneUnreadable(why),
+                true => HookCli::PaneUnreadable(why.to_string()),
                 false => no_pane(),
             };
         }

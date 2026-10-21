@@ -27,14 +27,16 @@ pub fn set_session_key_headless(
     db: &Database,
     session_id: SessionId,
     key: Option<&str>,
-) -> Result<SetKeyReport, String> {
+) -> Result<SetKeyReport, crate::session_ops::OpError> {
     if let Some(key) = key {
         super::names::validate_key(key)?;
     }
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        .ok_or_else(|| {
+            crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
+        })?;
     let previous = session.key.clone();
     if previous.as_deref() == key {
         return Ok(SetKeyReport {
@@ -76,7 +78,7 @@ pub fn set_session_key_headless(
         Some(key) => {
             let claim = super::names::claim_key(db, key, &session.backend_type, "set-key")?;
             if let Some(refusal) = super::names::key_refusal(key, &session.backend_type, &claim) {
-                return Err(refusal);
+                return Err(crate::session_ops::OpError::Conflict(refusal));
             }
             Some(claim)
         }
@@ -87,7 +89,9 @@ pub fn set_session_key_headless(
             previous,
             changed: true,
         }),
-        Ok(false) => Err(format!("Session not found: {session_id}")),
-        Err(e) => Err(format!("set_session_key: {e}")),
+        Ok(false) => Err(crate::session_ops::OpError::Gone(format!(
+            "Session not found: {session_id}"
+        ))),
+        Err(e) => Err(format!("set_session_key: {e}").into()),
     }
 }

@@ -42,7 +42,7 @@ pub(crate) fn build_restart_plan(
     hooks_enabled: bool,
     recipe: Option<&crate::session::LaunchRecipe>,
     env: &std::collections::BTreeMap<String, String>,
-) -> Result<RestartPlan, String> {
+) -> Result<RestartPlan, crate::session_ops::OpError> {
     let agent_session_id = session.agent_session_id.clone().ok_or_else(|| {
         format!(
             "Cannot restart session {} without agent_session_id",
@@ -187,11 +187,13 @@ pub fn stop_session_headless(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
-) -> Result<bool, String> {
+) -> Result<bool, crate::session_ops::OpError> {
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        .ok_or_else(|| {
+            crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
+        })?;
 
     let remote = crate::session::Route::is_remote_key(&session.backend_type);
     // Asked before the mark: a row whose route no backend here serves — on
@@ -236,13 +238,15 @@ pub fn start_session_headless(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
-) -> Result<RestartReport, String> {
+) -> Result<RestartReport, crate::session_ops::OpError> {
     // Refused before the mark comes off: a stop cleared for a session nothing
     // here can relaunch reads as a session that should be running.
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        .ok_or_else(|| {
+            crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
+        })?;
     if super::resolve_host(&session.backend_type)
         .flatten()
         .and_then(|host| super::host_cli::delegated(&host))
@@ -264,14 +268,18 @@ pub fn start_session_headless(
 /// in between puts an agent on a row whose windows the sweep is on its way to
 /// collect, and the pane write that follows would refuse anyway
 /// (see [`record_pane`]) — after the spawn rather than before it.
-fn refuse_if_deleted(db: &Database, session: &crate::sync::SharedSession) -> Result<(), String> {
+fn refuse_if_deleted(
+    db: &Database,
+    session: &crate::sync::SharedSession,
+) -> Result<(), crate::session_ops::OpError> {
     match db.get_deleted_session_by_id(session.id) {
         Ok(None) => Ok(()),
         Ok(Some(_)) => Err(format!(
             "'{}' was deleted while it was preparing to restart",
             session.name
-        )),
-        Err(e) => Err(format!("could not re-read '{}': {e}", session.name)),
+        )
+        .into()),
+        Err(e) => Err(format!("could not re-read '{}': {e}", session.name).into()),
     }
 }
 
@@ -349,9 +357,9 @@ impl RestartReport {
     /// The restart as a command outcome: a relaunch held back is a failure,
     /// with the reason, since no agent came back. The interface reports a
     /// command that succeeds as "restarted" and lets go of the old pane.
-    pub fn into_outcome(self) -> Result<(), String> {
+    pub fn into_outcome(self) -> Result<(), crate::session_ops::OpError> {
         match self.held_back {
-            true => Err(held_back_reason()),
+            true => Err(held_back_reason().into()),
             false => Ok(()),
         }
     }
@@ -388,7 +396,10 @@ pub const CRASH_LOOP_WINDOW_MS: i64 = 10 * 60 * 1000;
 /// `session start`, or an adoption. The relaunches that tripped it stay
 /// counted until they age out, so an agent that dies again straight after
 /// the operator's restart is held again rather than given three more tries.
-fn crash_looping(db: &Database, session: &SharedSession) -> Result<bool, String> {
+fn crash_looping(
+    db: &Database,
+    session: &SharedSession,
+) -> Result<bool, crate::session_ops::OpError> {
     let read =
         |e: rusqlite::Error| format!("could not read the relaunches of '{}': {e}", session.name);
     if db.relaunches_held(session.id).map_err(read)? {
@@ -416,7 +427,7 @@ pub fn restart_session_headless(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
-) -> Result<RestartReport, String> {
+) -> Result<RestartReport, crate::session_ops::OpError> {
     restart_session_headless_with(db, backends, session_id, false)
 }
 
@@ -430,7 +441,7 @@ pub fn restart_session_headless_with(
     backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     if_missing: bool,
-) -> Result<RestartReport, String> {
+) -> Result<RestartReport, crate::session_ops::OpError> {
     restart_for(
         db,
         backends,
@@ -487,11 +498,13 @@ fn restart_for(
     backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     why: Relaunch,
-) -> Result<RestartReport, String> {
+) -> Result<RestartReport, crate::session_ops::OpError> {
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
-        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        .ok_or_else(|| {
+            crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
+        })?;
 
     // A remote session's window lives on its host, so both halves have to go
     // there — restarting it locally would leave the real window running and add
@@ -636,7 +649,7 @@ fn restart_delegated(
     host: &crate::session::HostDef,
     cli: &super::host_cli::CliInfo,
     if_missing: bool,
-) -> Result<RestartReport, String> {
+) -> Result<RestartReport, crate::session_ops::OpError> {
     let mut hook_ctx = super::lifecycle_hooks::context_for(session);
     super::fire_pre(crate::session::HookEvent::PreRestart, &hook_ctx)?;
     let id = session.id.to_string();
@@ -702,7 +715,7 @@ fn relaunch_is_owed(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
     session: &SharedSession,
-) -> Result<bool, String> {
+) -> Result<bool, crate::session_ops::OpError> {
     // "Relaunch what is missing" is what a peer asks after a reboot, and a
     // parked session is missing on purpose. Only `session start` clears the
     // mark, so this is the one place that has to check it — refusing here
@@ -722,8 +735,10 @@ fn relaunch_is_owed(
     // An ambiguous name — several windows, none stamped — reads as running
     // here on purpose: launching another agent is the expensive mistake.
     let id = session.id.to_string();
-    let alive = super::windows::agent_running(backend, owner_of(session, &id))
-        .map_err(|e| format!("could not list windows for '{}': {e:#}", session.name))?;
+    let alive = super::windows::agent_running(backend, owner_of(session, &id)).map_err(|e| {
+        crate::session_ops::OpError::from(e)
+            .context(format!("could not list windows for '{}'", session.name))
+    })?;
     if alive {
         tracing::debug!("'{}' is running; nothing to relaunch", session.name);
         return Ok(false);
@@ -738,7 +753,7 @@ fn respawn(
     backend: &dyn crate::backend::SessionBackend,
     session: &SharedSession,
     plan: &RestartPlan,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     let id = session.id.to_string();
     // By the windows' own stamps, agent and companion shell together: the
     // window *name* is not unique, and killing by name with a duplicate around
@@ -751,28 +766,26 @@ fn respawn(
     // A backend that cannot say what is there is a refusal, before anything is
     // spawned: launching beside windows nobody could see — or on a socket the
     // host has not vouched for — puts a second agent on the conversation.
-    if let Err(e) = super::windows::kill_owned(backend, owner_of(session, &id)) {
-        return Err(match crate::agent::preflight::is_missing_dependency(&e) {
-            // Already a sentence naming the binary, the search and the fix.
-            true => format!("{e}"),
-            false => format!(
-                "cannot restart '{}': could not take down its windows on {}: {e:#}",
-                session.name,
-                backend.name()
-            ),
-        });
-    }
+    super::windows::kill_owned(backend, owner_of(session, &id)).map_err(|e| {
+        crate::session_ops::OpError::from(e).context(format!(
+            "cannot restart '{}': could not take down its windows on {}",
+            session.name,
+            backend.name()
+        ))
+    })?;
     // A successful kill reply need not mean the old window went away. In
     // particular, a mux can report an unresolved target with status zero.
     // Starting another agent then puts two processes on one conversation.
-    if super::windows::agent_running(backend, owner_of(session, &id))
-        .map_err(|e| format!("cannot verify teardown of '{}': {e:#}", session.name))?
-    {
+    if super::windows::agent_running(backend, owner_of(session, &id)).map_err(|e| {
+        crate::session_ops::OpError::from(e)
+            .context(format!("cannot verify teardown of '{}'", session.name))
+    })? {
         return Err(format!(
             "cannot restart '{}': its agent window is still present after teardown; \
              no replacement was launched",
             session.name
-        ));
+        )
+        .into());
     }
 
     let pane = backend
@@ -784,14 +797,10 @@ fn respawn(
             cwd: plan.cwd.as_deref(),
             env: &plan.env,
         })
-        .map_err(
-            |e| match crate::agent::preflight::is_missing_dependency(&e) {
-                // Already a sentence naming the binary, the search and the fix;
-                // a prefix in front of it only pushes the fix off the row.
-                true => format!("{e}"),
-                false => format!("Failed to re-spawn a window on {}: {e:#}", backend.name()),
-            },
-        )?;
+        .map_err(|e| {
+            crate::session_ops::OpError::from(e)
+                .context(format!("Failed to spawn a window on {}", backend.name()))
+        })?;
 
     // The new pane is a different one, and the id is how every later read
     // finds it — leaving the old one persisted would point the interface at a
@@ -811,16 +820,18 @@ fn respawn(
                     backend.name()
                 );
             }
-            return Err(Recorded::deleted_mid_restart(&session.name));
-        }
-        Recorded::Occupied => {
-            return Err(format!(
-                "Failed to record the new pane for '{}': another live session already claims it",
-                session.name
+            return Err(crate::session_ops::OpError::Gone(
+                Recorded::deleted_mid_restart(&session.name),
             ));
         }
+        Recorded::Occupied => {
+            return Err(crate::session_ops::OpError::Conflict(format!(
+                "Failed to record the new pane for '{}': another live session already claims it",
+                session.name
+            )));
+        }
         // The agent is running; only the row lags. Reported, not killed.
-        Recorded::WriteFailed(e) => return Err(e),
+        Recorded::WriteFailed(e) => return Err(e.into()),
     }
     Ok(())
 }

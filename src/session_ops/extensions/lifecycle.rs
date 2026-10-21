@@ -94,7 +94,7 @@ pub fn ensure_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     def: &ExtensionDef,
-) -> Result<EnsureReport, String> {
+) -> Result<EnsureReport, crate::session_ops::OpError> {
     ensure_resources(db, backends, def, None)
 }
 
@@ -106,7 +106,7 @@ pub(super) fn ensure_resources(
     backends: &crate::backend::BackendRegistry,
     def: &ExtensionDef,
     healing: Option<&str>,
-) -> Result<EnsureReport, String> {
+) -> Result<EnsureReport, crate::session_ops::OpError> {
     let mut report = EnsureReport::default();
     let mut session_ids: HashMap<String, SessionId> = HashMap::new();
 
@@ -162,7 +162,8 @@ pub(super) fn ensure_resources(
                     return Err(format!(
                         "automation '{}' references unknown session '{session_ref}'",
                         auto.name
-                    ))
+                    )
+                    .into())
                 }
             }
         };
@@ -194,7 +195,10 @@ fn local_backend() -> String {
 ///
 /// More than one is a database that broke the key's rule; the first is reused
 /// for the reason [`live_session_named`] gives, and logged.
-fn live_session_keyed(db: &Database, key: &str) -> Result<Option<SessionId>, String> {
+fn live_session_keyed(
+    db: &Database,
+    key: &str,
+) -> Result<Option<SessionId>, crate::session_ops::OpError> {
     let live = crate::session_ops::names::live_key_holders(db, key, &local_backend())?;
     let Some(first) = live.first() else {
         return Ok(None);
@@ -226,7 +230,7 @@ fn ensure_keyed_session(
     key: &str,
     healing: Option<&str>,
     report: &mut EnsureReport,
-) -> Result<Option<SessionId>, String> {
+) -> Result<Option<SessionId>, crate::session_ops::OpError> {
     if let Some(id) = live_session_keyed(db, key)? {
         return Ok(Some(id));
     }
@@ -285,7 +289,7 @@ fn ensure_session(
     sess: &ExtensionSession,
     healing: Option<&str>,
     report: &mut EnsureReport,
-) -> Result<Option<SessionId>, String> {
+) -> Result<Option<SessionId>, crate::session_ops::OpError> {
     if let Some(key) = &sess.key {
         return ensure_keyed_session(db, backends, sess, key, healing, report);
     }
@@ -317,7 +321,7 @@ fn live_session_named(
     db: &Database,
     name: &str,
     backend: &str,
-) -> Result<Option<SessionId>, String> {
+) -> Result<Option<SessionId>, crate::session_ops::OpError> {
     let live = crate::session_ops::names::live_namesakes(db, name, backend)?;
     let Some(first) = live.first() else {
         return Ok(None);
@@ -344,7 +348,7 @@ fn create_under_claim(
     backend: &str,
     healing: Option<&str>,
     report: &mut EnsureReport,
-) -> Result<Option<SessionId>, String> {
+) -> Result<Option<SessionId>, crate::session_ops::OpError> {
     if let Some(id) = live_session_named(db, &sess.name, backend)? {
         return Ok(Some(id));
     }
@@ -389,7 +393,7 @@ fn still_wanted(
     healing: Option<&str>,
     what: &str,
     report: &mut EnsureReport,
-) -> Result<bool, String> {
+) -> Result<bool, crate::session_ops::OpError> {
     let Some(extension) = healing else {
         return Ok(true);
     };
@@ -418,7 +422,7 @@ fn keep_unless_deactivated(
     sess: &ExtensionSession,
     id: SessionId,
     report: &mut EnsureReport,
-) -> Result<Option<SessionId>, String> {
+) -> Result<Option<SessionId>, crate::session_ops::OpError> {
     if !still_wanted(db, healing, &format!("session '{}'", sess.name), report)? {
         delete_unless_gone(db, backends, id, true)?;
         return Ok(None);
@@ -442,10 +446,10 @@ pub(super) fn delete_unless_gone(
     backends: &crate::backend::BackendRegistry,
     id: SessionId,
     force: bool,
-) -> Result<bool, String> {
+) -> Result<bool, crate::session_ops::OpError> {
     match crate::session_ops::delete_session_headless(db, backends, id, force) {
         Ok(_) => Ok(true),
-        Err(e) if e == crate::session_ops::delete::session_not_found(id) => Ok(false),
+        Err(crate::session_ops::OpError::NotFound(_)) => Ok(false),
         Err(e) => Err(e),
     }
 }
@@ -461,14 +465,15 @@ fn ensure_automation(
     target: Option<SessionId>,
     existing: Option<&Automation>,
     report: &mut EnsureReport,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     let cwd = auto.cwd.as_deref().map(crate::paths::expand_tilde);
     if cwd.as_ref().is_some_and(|path| path.is_relative()) {
         return Err(format!(
             "automation '{}' cwd must be absolute; install the extension to resolve it \
              against its home, or set an absolute directory",
             auto.name
-        ));
+        )
+        .into());
     }
     // Desired action: a command wins (exec); otherwise send to the target.
     let action = match (&auto.command, target) {
@@ -480,7 +485,8 @@ fn ensure_automation(
             return Err(format!(
                 "automation '{}' has neither a command nor a session_ref",
                 auto.name
-            ))
+            )
+            .into())
         }
     };
     if let Some(row) = existing {
@@ -547,7 +553,7 @@ pub fn activate_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     def: &ExtensionDef,
-) -> Result<EnsureReport, String> {
+) -> Result<EnsureReport, crate::session_ops::OpError> {
     let report = ensure_extension(db, backends, def)?;
     db.add_active_extension(&def.name)
         .map_err(|e| format!("add_active_extension: {e}"))?;
@@ -570,7 +576,7 @@ pub fn deactivate_extension(
     backends: &crate::backend::BackendRegistry,
     def: &ExtensionDef,
     force: bool,
-) -> Result<DeactivateReport, String> {
+) -> Result<DeactivateReport, crate::session_ops::OpError> {
     let mut report = DeactivateReport {
         was_active: db
             .remove_active_extension(&def.name)
@@ -773,7 +779,10 @@ fn heal_recreated_message(report: &EnsureReport, name: &str) -> String {
 
 /// Snapshot which of a manifest's declared resources currently exist and whether
 /// the extension is in the active set.
-pub fn extension_health(db: &Database, def: &ExtensionDef) -> Result<ExtensionHealth, String> {
+pub fn extension_health(
+    db: &Database,
+    def: &ExtensionDef,
+) -> Result<ExtensionHealth, crate::session_ops::OpError> {
     let session_names: Vec<String> = db
         .list_active_sessions()
         .map_err(|e| format!("list_active_sessions: {e}"))?
@@ -809,7 +818,7 @@ pub fn extension_health(db: &Database, def: &ExtensionDef) -> Result<ExtensionHe
                 };
                 Ok((s.name.clone(), present))
             })
-            .collect::<Result<_, String>>()?,
+            .collect::<Result<_, crate::session_ops::OpError>>()?,
         automations: def
             .automations
             .iter()

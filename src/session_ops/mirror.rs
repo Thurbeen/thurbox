@@ -220,7 +220,10 @@ pub fn session_to_json_assessed(
 /// host's own (`local-tmux` there). The multiplexer the listing recorded
 /// travels with the row (`placed`). Fields a host older than this one does
 /// not print are simply empty; the id and the name are required.
-pub fn session_from_json(value: &Value, backend_type: &str) -> Result<HostRow, String> {
+pub fn session_from_json(
+    value: &Value,
+    backend_type: &str,
+) -> Result<HostRow, crate::session_ops::OpError> {
     let string = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
     let backend_type = placed(backend_type, string("backend_type").as_deref());
     let id: SessionId = string("id")
@@ -606,7 +609,11 @@ fn merge(local: &SharedSession, host: &SharedSession) -> SharedSession {
 }
 
 /// One mirror pass for `host` through its usable CLI.
-pub fn mirror_host(db: &Database, host: &HostDef, cli: &CliInfo) -> Result<MirrorReport, String> {
+pub fn mirror_host(
+    db: &Database,
+    host: &HostDef,
+    cli: &CliInfo,
+) -> Result<MirrorReport, crate::session_ops::OpError> {
     let backend = host.backend_name();
     let (active, deleted) = host_lists(host, cli, &backend)?;
     let transitive = if crate::agent::settings_config::load_quiet()
@@ -658,7 +665,11 @@ pub(crate) fn forget_lists() {
 /// keeping an answer older than its number. Reconciling still runs every
 /// pass, against the reused lists, so a change on this side is handled exactly
 /// as before.
-fn host_lists(host: &HostDef, cli: &CliInfo, backend: &str) -> Result<(Value, Value), String> {
+fn host_lists(
+    host: &HostDef,
+    cli: &CliInfo,
+    backend: &str,
+) -> Result<(Value, Value), crate::session_ops::OpError> {
     let revision = cli
         .session_revision
         .then(|| host_cli::run(host, cli, &["session", "revision"]).ok())
@@ -767,7 +778,7 @@ fn host_deleted(
     cli: &CliInfo,
     backend: &str,
     active: &Value,
-) -> Result<Value, String> {
+) -> Result<Value, crate::session_ops::OpError> {
     if !cli.deleted_changes_since {
         return host_cli::run(host, cli, &["session", "list", "--deleted"]);
     }
@@ -1008,7 +1019,11 @@ pub fn register_unknown(
 /// Mirror one host (`only`) or every shareable one, optionally registering
 /// the local rows a host does not know. A host that cannot be used lands in
 /// its report's `error`; an unknown `only` is the one hard failure.
-pub fn sync(db: &Database, only: Option<&str>, adopt: bool) -> Result<Vec<MirrorReport>, String> {
+pub fn sync(
+    db: &Database,
+    only: Option<&str>,
+    adopt: bool,
+) -> Result<Vec<MirrorReport>, crate::session_ops::OpError> {
     let hosts = crate::agent::host_config::load_all();
     let targets: Vec<HostDef> = match only {
         Some(name) => vec![hosts.resolve(name).cloned().ok_or_else(|| {
@@ -1045,7 +1060,7 @@ pub fn sync(db: &Database, only: Option<&str>, adopt: bool) -> Result<Vec<Mirror
                 }
                 Err(e) => MirrorReport {
                     host: host.backend_name(),
-                    error: Some(e),
+                    error: Some(e.to_string()),
                     ..MirrorReport::default()
                 },
             },
