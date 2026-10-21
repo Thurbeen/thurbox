@@ -7,7 +7,7 @@
 //! the capability is *absent* on the next frame rather than present and
 //! refusing.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use thurbox::kernel::bands::Level;
 use thurbox::kernel::modals::{ModalKind, Modals};
@@ -15,6 +15,12 @@ use thurbox::kernel::perf::Counters;
 
 use super::snapshots_db;
 use crate::{App, DEBOUNCE};
+
+/// How soon after a memory rebuild pressure again means the rebuild did not
+/// help. Well under the time a leaking plugin takes to refill the VM — about
+/// 30 s at 2 MiB a render — and far over the few frames an interface takes to
+/// reach its resident size.
+const MEMORY_REFILL: Duration = Duration::from_secs(10);
 
 impl App {
     /// Rebuild the interface from the directory the user actually edits, dropping
@@ -36,6 +42,9 @@ impl App {
             self.host = self.host.fresh_from(&self.ui_dir);
         } else {
             self.host.reload_from(&self.ui_dir);
+            // The window measures the VM a memory rebuild produced; one the user
+            // asked for is a fresh start.
+            self.memory_rebuilt = None;
         }
         Counters::bump(&self.perf.reloads);
         if self.host.error.is_none() {
@@ -45,6 +54,12 @@ impl App {
         } else if memory || std::env::var_os("THURBOX_UI_DIR").is_none() {
             self.install_bundled_floor();
         }
+        self.settle_reload(reason);
+    }
+
+    /// What every reload ends with, whichever interface it put in.
+    fn settle_reload(&mut self, reason: super::events::ReloadReason) {
+        let memory = reason == super::events::ReloadReason::Memory;
         // A failed memory rebuild retired every plugin without loading any.
         // Clear old events, but do not announce a successful interface reload.
         self.note_reload(if memory && self.host.error.is_some() {
@@ -68,13 +83,14 @@ impl App {
     }
 
     /// Swap in the bundled interface because the user's will not load, saying why.
-    fn install_bundled_floor(&mut self) {
+    /// Whether it went in.
+    fn install_bundled_floor(&mut self) -> bool {
         let Ok(dir) = thurbox::kernel::bundled::fallback_dir() else {
-            return;
+            return false;
         };
         let embedded = self.host.fresh_from(&dir);
         if embedded.error.is_some() {
-            return;
+            return false;
         }
         // Recorded before the swap: the reason is the *user's* error, and the
         // host that carries it is about to be replaced by one with none.
@@ -84,6 +100,20 @@ impl App {
             self.host.error.clone().unwrap_or_default()
         ));
         self.host = embedded;
+        true
+    }
+
+    /// Replace a full VM with the bundled interface without building the
+    /// user's again: it filled the last fresh VM it was given (`cause`).
+    fn floor_refilled_interface(&mut self, cause: String) {
+        self.host.error = Some(cause.clone());
+        if !self.install_bundled_floor() {
+            // The full VM must not stay, and the user's interface is what filled
+            // it: an empty VM, with the recovery keys in the kernel's chrome.
+            self.host = self.host.retired(cause);
+        }
+        Counters::bump(&self.perf.reloads);
+        self.settle_reload(super::events::ReloadReason::Memory);
     }
 
     /// Drop what plugins that are no longer loaded were holding.
@@ -301,19 +331,57 @@ impl App {
     }
 
     /// Rebuild the interface once its VM has filled up — see
-    /// [`thurbox::kernel::host::LuaHost::near_memory_limit`]. Said out loud,
+    /// [`thurbox::kernel::host::LuaHost::memory_pressure`]. Said out loud,
     /// because the panes lose whatever they held in memory and the cause is a
     /// plugin holding too much.
+    ///
+    /// A rebuild that did not help is not repeated: pressure again within
+    /// [`MEMORY_REFILL`] of the last one means the interface, not a leak, is
+    /// what fills the VM. Grown back is its size, so it is kept; exhausted
+    /// again, it cannot run in the VM at all, so the bundled interface runs
+    /// until the user's next reload. Either way the user's interface is
+    /// rebuilt at most once per window, never on every loop iteration.
     pub(crate) fn rebuild_full_vm(&mut self) {
-        if !self.host.near_memory_limit() {
+        use thurbox::kernel::host::MemoryPressure;
+        let Some(pressure) = self.host.memory_pressure() else {
             return;
-        }
+        };
         let used = self.host.used_memory() >> 20;
         let limit = thurbox::kernel::host::memory_limit() >> 20;
-        self.reload_interface(super::events::ReloadReason::Memory);
+        let again = self
+            .memory_rebuilt
+            .is_some_and(|at| at.elapsed() < MEMORY_REFILL);
+        if again && pressure == MemoryPressure::Grown {
+            tracing::info!(
+                "the plugin VM grew back to {used} of its {limit} MiB after a rebuild; kept as the interface's size"
+            );
+            self.host.accept_resident_memory();
+            return;
+        }
+        if again {
+            self.floor_refilled_interface(format!(
+                "it filled a new plugin VM to its {limit} MiB limit within {} s of the last rebuild",
+                MEMORY_REFILL.as_secs()
+            ));
+        } else {
+            self.reload_interface(super::events::ReloadReason::Memory);
+        }
+        // From when the replacement is in, not when it was asked for: a slow
+        // load must not use up the window before the new VM has run at all.
+        self.memory_rebuilt = Some(Instant::now());
         self.collect_declarations();
         self.clamp_focus();
-        if self.host.error.is_none() {
+        if self.host.error.is_none() && again && self.floor.is_some() {
+            tracing::warn!(
+                "the plugin VM held {used} of its {limit} MiB again right after a rebuild; using the bundled interface"
+            );
+            self.report(
+                format!(
+                    "the interface filled its {limit} MiB plugin memory again right after a rebuild; using the bundled interface"
+                ),
+                Level::Error,
+            );
+        } else if self.host.error.is_none() {
             tracing::warn!("the plugin VM held {used} of its {limit} MiB; rebuilt the interface");
             self.report(
                 format!(

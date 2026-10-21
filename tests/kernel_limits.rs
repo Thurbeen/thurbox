@@ -1,11 +1,12 @@
 //! Resource limits: the guarantees Luau would have donated and Lua 5.4 makes
 //! the kernel build.
 //!
-//! Separate from `kernel_mvp` because both tests mutate a process-wide bound,
+//! Separate from `kernel_mvp` because these tests mutate process-wide bounds,
 //! and running them beside the rest would change the limits under those tests.
-//! They run in one file, in sequence, restoring the defaults afterwards.
+//! Within the file each holds [`limits`] for its whole run, so they run in
+//! sequence under any runner, restoring the defaults afterwards.
 
-use thurbox::kernel::host::{self, Epoch, LuaHost, Published, RenderContext};
+use thurbox::kernel::host::{self, Epoch, LuaHost, MemoryPressure, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{DeletedRow, Snapshot};
 use thurbox::kernel::theme::Themes;
@@ -16,6 +17,15 @@ fn plugin_dir(source: &str) -> tempfile::TempDir {
     std::fs::create_dir_all(&plugins).expect("mkdir");
     std::fs::write(plugins.join("10_probe.lua"), source).expect("write");
     dir
+}
+
+/// Held by every test here: the limits are process-wide, and `cargo test` runs
+/// a file's tests on parallel threads.
+fn limits() -> std::sync::MutexGuard<'static, ()> {
+    static LIMITS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LIMITS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn ctx() -> RenderContext {
@@ -30,6 +40,7 @@ fn ctx() -> RenderContext {
 
 #[test]
 fn a_float_focus_hook_that_never_returns_is_interrupted_and_reported() {
+    let _limits = limits();
     host::set_instruction_budget(200_000);
     let dir = plugin_dir(
         r#"return {
@@ -51,6 +62,7 @@ fn a_float_focus_hook_that_never_returns_is_interrupted_and_reported() {
 
 #[test]
 fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
+    let _limits = limits();
     host::set_instruction_budget(200_000);
     let dir = plugin_dir(
         r#"return {
@@ -76,16 +88,175 @@ fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
     );
 }
 
+/// A probe holding `chunks` of [`CHUNK`] bytes from load. `grow` holds one
+/// more; every render leaves garbage behind.
+fn resident_probe(chunks: usize) -> String {
+    format!(
+        r#"local held = {{}}
+           local function hold() held[#held + 1] = string.rep("x", {CHUNK}) end
+           -- Concatenation writes the result directly: no buffer left behind.
+           local base = string.rep("c", {CHUNK} - 16)
+           for _ = 1, {chunks} do hold() end
+           return {{
+             name = "probe", slot = "a",
+             on_action = function(action)
+               if action == "grow" then hold()
+               elseif action == "grow_clean" then held[#held + 1] = base .. string.format("%016d", #held)
+               else return false end
+               return true
+             end,
+             render = function()
+               local junk = {{}}
+               for i = 1, 16 do junk[i] = string.rep("g", 4096) end
+               return {{ type = "text", text = "ok" }}
+             end,
+           }}"#
+    )
+}
+
+const CHUNK: usize = 64 * 1024;
+
+/// Grow the probe one chunk at a time until the VM reports pressure.
+fn grow_until_pressure(host: &LuaHost) -> Option<MemoryPressure> {
+    let probe = host.index_of("probe").expect("the probe loaded");
+    for _ in 0..4096 {
+        if let Some(pressure) = host.memory_pressure() {
+            return Some(pressure);
+        }
+        let _ = host.on_action(probe, "grow");
+    }
+    None
+}
+
+#[test]
+fn memory_pressure_tells_a_full_vm_from_a_large_one() {
+    let _limits = limits();
+    let limit = 16 * 1024 * 1024;
+    host::set_memory_limit(limit);
+    let base = LuaHost::new(plugin_dir(&resident_probe(0)).path()).used_memory();
+    let loading = |share: usize| {
+        let host =
+            LuaHost::new(plugin_dir(&resident_probe((limit / 100 * share - base) / CHUNK)).path());
+        assert!(host.error.is_none(), "{:?}", host.error);
+        host
+    };
+
+    // Large and stable: above the rebuild threshold from load, and not full.
+    let large = loading(93);
+    assert_eq!(
+        large.memory_pressure(),
+        None,
+        "a VM that loads large is not full"
+    );
+    // Checked once a frame, as the loop does: the check is also what collects
+    // the garbage, which the collector's own pace would leave to pile up to the
+    // ceiling, where a buffer allocation fails without an emergency collection.
+    for _ in 0..400 {
+        large.render(0, ctx()).expect("the large VM renders");
+        assert_eq!(
+            large.memory_pressure(),
+            None,
+            "garbage piling up under a large resident heap is not pressure"
+        );
+    }
+
+    // A leak from a small build is caught by its growth, before the ceiling.
+    let leaking = loading(10);
+    assert_eq!(grow_until_pressure(&leaking), Some(MemoryPressure::Grown));
+
+    // Accepted as resident, it is pressure again only once it grows further.
+    leaking.accept_resident_memory();
+    let accepted = leaking.used_memory();
+    assert_eq!(
+        leaking.memory_pressure(),
+        None,
+        "the heap was accepted as resident"
+    );
+    assert_eq!(grow_until_pressure(&leaking), Some(MemoryPressure::Grown));
+    assert!(
+        leaking.used_memory() >= accepted + limit / 20,
+        "only growth past the accepted heap counts"
+    );
+
+    // Accepted this close to the ceiling, no growth allowance fits under it:
+    // only the ceiling itself can say the VM filled, and it must.
+    leaking.accept_resident_memory();
+    assert!(
+        leaking.used_memory() + limit / 20 > limit - limit / 32,
+        "growth alone could not report this VM before it is full"
+    );
+    assert_eq!(
+        grow_until_pressure(&leaking),
+        Some(MemoryPressure::Exhausted)
+    );
+    let probe = leaking.index_of("probe").expect("the probe loaded");
+    while leaking.on_action(probe, "grow").is_ok() {}
+    assert_eq!(
+        leaking.memory_pressure(),
+        Some(MemoryPressure::Exhausted),
+        "a VM whose allocations fail is full"
+    );
+
+    // A live heap inside the exhaustion margin is exhausted whether or not
+    // anything new was allocated since the last collection: one whose
+    // allocations fail leaves no garbage behind to move a pacing gate.
+    let crossing = loading(10);
+    let probe = crossing.index_of("probe").expect("the probe loaded");
+    assert_eq!(grow_until_pressure(&crossing), Some(MemoryPressure::Grown));
+    crossing.accept_resident_memory();
+    while crossing.used_memory() < limit - limit / 32 - 3 * CHUNK {
+        crossing.on_action(probe, "grow").expect("room to grow");
+    }
+    crossing.accept_resident_memory();
+    let collections = crossing.pressure_collections();
+    while crossing.pressure_collections() == collections {
+        crossing.render(0, ctx()).expect("garbage below the line");
+        assert_eq!(crossing.memory_pressure(), None, "below the line");
+    }
+    while crossing.used_memory() <= limit - limit / 32 {
+        crossing
+            .on_action(probe, "grow_clean")
+            .expect("room to cross the line");
+    }
+    assert_eq!(
+        crossing.memory_pressure(),
+        Some(MemoryPressure::Exhausted),
+        "a live heap inside the margin is full"
+    );
+
+    // A live heap parked just under a threshold must not buy a full collection
+    // on every frame: the next one waits for a share of new garbage.
+    let parked = loading(10);
+    let probe = parked.index_of("probe").expect("the probe loaded");
+    while parked.used_memory() < limit / 1000 * 895 {
+        parked.on_action(probe, "grow").expect("room to grow");
+    }
+    let before = parked.pressure_collections();
+    for _ in 0..200 {
+        parked.render(0, ctx()).expect("the parked VM renders");
+        assert_eq!(parked.memory_pressure(), None, "parked, not full");
+    }
+    // 200 frames of 64 KiB of garbage is 12.5 MiB; one collection per 1/64
+    // of the limit is at most 50 of them.
+    let collections = parked.pressure_collections() - before;
+    assert!(
+        collections <= 51,
+        "{collections} full collections in 200 frames"
+    );
+    host::set_memory_limit(0);
+}
+
 #[test]
 fn the_limits_are_settable_and_enforced() {
+    let _limits = limits();
     // --- memory ------------------------------------------------------------
     // A small ceiling, so exhausting it is a test rather than an ordeal.
     host::set_memory_limit(4 * 1024 * 1024);
     let dir = plugin_dir(
-        r#"return {
+        r#"local t = {}
+           return {
              name = "hog", slot = "a",
              render = function()
-               local t = {}
                for i = 1, 1e9 do t[i] = string.rep("x", 1024) end
                return { text = "never" }
              end,
@@ -107,7 +278,8 @@ fn the_limits_are_settable_and_enforced() {
     );
     // The process is still here, which is the actual guarantee.
     // And the VM is reported as full, which is what gets it rebuilt rather
-    // than called again on every frame.
+    // than called again on every frame. The hog keeps what it allocated: a
+    // spike a collection returns leaves a VM that is not full at all.
     assert!(
         hog.near_memory_limit(),
         "a VM that ran out is near its ceiling"
@@ -151,6 +323,7 @@ fn the_limits_are_settable_and_enforced() {
 
 #[test]
 fn a_healthy_plugin_is_unaffected_by_the_hook() {
+    let _limits = limits();
     // The overhead question from task 2.12, as a bound rather than a number:
     // a plugin doing ordinary work must not be near the budget.
     let dir = plugin_dir(
@@ -274,6 +447,7 @@ fn frames(host: &LuaHost, snapshot: &Snapshot, count: usize) -> usize {
 
 #[test]
 fn rebuilding_a_long_deleted_history_stays_far_below_the_memory_limit() {
+    let _limits = limits();
     let host = bundled();
     let peak = frames(&host, &snapshot(1600), 300);
     // Measured at ~6 MiB; the ceiling leaves room for the collector's pace
