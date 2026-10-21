@@ -416,15 +416,29 @@ fn dispatch_macos_osascript(n: &Notification) -> Result<(), Box<dyn std::error::
 const NOTIFIER_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Run a notifier to completion or until [`NOTIFIER_TIMEOUT`], killing and
-/// reaping it then. Its stdout is discarded; stderr is kept for the error.
+/// reaping it then. Its stdout is discarded; stderr is kept for the error,
+/// read on a thread of its own while it runs, so one that writes more than a
+/// pipe holds is not blocked into a false timeout.
 fn run_notifier(cmd: &mut Command) -> std::io::Result<Output> {
+    use std::io::Read;
+
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()?;
+    let stderr = child.stderr.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    });
     let deadline = Instant::now() + NOTIFIER_TIMEOUT;
-    while child.try_wait()?.is_none() {
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
@@ -434,8 +448,15 @@ fn run_notifier(cmd: &mut Command) -> std::io::Result<Output> {
             ));
         }
         thread::sleep(Duration::from_millis(50));
-    }
-    child.wait_with_output()
+    };
+    let stderr = stderr
+        .and_then(|reader| reader.join().ok())
+        .unwrap_or_default();
+    Ok(Output {
+        status,
+        stdout: Vec::new(),
+        stderr,
+    })
 }
 
 /// Deliver a Windows toast from WSL by invoking `powershell.exe` with a small

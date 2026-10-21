@@ -374,6 +374,35 @@ fn a_delivery_that_hangs_is_given_up_on() {
     assert!(!left_running, "the hung notifier outlived the send");
 }
 
+/// A notifier that fails loudly is reported as failing, with its own error,
+/// rather than blocked on a full stderr pipe until the deadline kills it.
+#[cfg(unix)]
+#[test]
+fn a_loud_failing_notifier_is_not_mistaken_for_a_hung_one() {
+    let instance = Instance::with_backend("windows", "");
+    let path = fake_toast(
+        &instance,
+        "head -c 200000 /dev/zero | tr '\\000' x >&2\necho toast-refused >&2\nexit 1",
+    );
+
+    let started = std::time::Instant::now();
+    let out = instance
+        .command(Some(NO_BUS), &send_args(&[]))
+        .env("PATH", path)
+        .output()
+        .expect("run thurbox-cli");
+    let waited = started.elapsed();
+
+    assert!(!out.status.success(), "{}", describe(&out));
+    let value: Value = serde_json::from_slice(&out.stdout).expect("one JSON result");
+    let error = value["error"].as_str().unwrap_or_default();
+    assert!(error.contains("toast-refused"), "{value}");
+    assert!(
+        waited < std::time::Duration::from_secs(5),
+        "a notifier that exited at once was waited on for {waited:?}"
+    );
+}
+
 /// A delivery that fails after its key's interval ran out gives back only its
 /// own hold: a newer delivery of the same key keeps the one it took.
 #[cfg(target_os = "linux")]
