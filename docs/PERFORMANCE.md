@@ -934,7 +934,9 @@ frame either. A VM near that ceiling is rebuilt rather than called again
 emergency collection before it fails, so each plugin call cost a collection of the
 whole heap on every frame, and nothing ever freed it — a frozen interface.
 Pressure is measured on the live heap: the loop's per-iteration check pays for a
-full collection only once the raw count passes nine-tenths, because under a large
+full collection only once the raw count passes a threshold and has grown 1/64 of
+the limit past what the last such collection left, so a heap parked just under a
+threshold is not collected every frame. It collects at all because under a large
 resident heap the collector's own pace lets garbage pile up to the ceiling, where
 a `luaL_Buffer` allocation (`string.rep`, `table.concat`) fails without an
 emergency collection. Size alone is not pressure — the first version rebuilt

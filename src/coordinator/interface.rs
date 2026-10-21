@@ -358,7 +358,6 @@ impl App {
             self.host.accept_resident_memory();
             return;
         }
-        self.memory_rebuilt = Some(Instant::now());
         if again {
             self.floor_refilled_interface(format!(
                 "it filled a new plugin VM to its {limit} MiB limit within {} s of the last rebuild",
@@ -367,6 +366,9 @@ impl App {
         } else {
             self.reload_interface(super::events::ReloadReason::Memory);
         }
+        // From when the replacement is in, not when it was asked for: a slow
+        // load must not use up the window before the new VM has run at all.
+        self.memory_rebuilt = Some(Instant::now());
         self.collect_declarations();
         self.clamp_focus();
         if self.host.error.is_none() && again && self.floor.is_some() {

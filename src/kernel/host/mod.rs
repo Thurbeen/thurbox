@@ -786,6 +786,10 @@ pub struct LuaHost {
     skipped_renders: std::cell::Cell<u64>,
     /// The heap taken as this interface's own — see [`Self::memory_pressure`].
     resident: std::cell::Cell<usize>,
+    /// Full collections [`Self::memory_pressure`] has paid for.
+    pressure_collections: std::cell::Cell<u64>,
+    /// The heap the last of those left, so the next waits for new garbage.
+    collected: std::cell::Cell<usize>,
     reused_groups: std::cell::Cell<u64>,
     /// Per-plugin cost, recorded only while [`Self::set_perf_timing`] is on
     /// (ADR-P23).
@@ -1016,6 +1020,8 @@ impl LuaHost {
             epoch: RefCell::new(None),
             skipped_renders: std::cell::Cell::new(0),
             resident: std::cell::Cell::new(0),
+            pressure_collections: std::cell::Cell::new(0),
+            collected: std::cell::Cell::new(0),
             reused_groups: std::cell::Cell::new(0),
             key_releases: std::cell::Cell::new(KeyReleases::default()),
             perf_timing: std::cell::Cell::new(false),
@@ -1996,11 +2002,26 @@ impl LuaHost {
                 None
             }
         };
-        assess(self.lua.used_memory())?;
+        let used = self.lua.used_memory();
+        assess(used)?;
+        // A live heap parked just under a threshold would otherwise buy a full
+        // collection on every frame: the next waits for a share of new garbage.
+        if used < self.collected.get().saturating_add(ceiling / 64) {
+            return None;
+        }
         // A collection can itself fail on a full heap; what is left is then
         // what gets measured, which is the answer either way.
         let _ = self.lua.gc_collect();
-        assess(self.lua.used_memory())
+        self.pressure_collections
+            .set(self.pressure_collections.get() + 1);
+        let live = self.lua.used_memory();
+        self.collected.set(live);
+        assess(live)
+    }
+
+    /// Full collections [`Self::memory_pressure`] has paid for.
+    pub fn pressure_collections(&self) -> u64 {
+        self.pressure_collections.get()
     }
 
     /// Take the heap as this interface's resident size, so only growth past

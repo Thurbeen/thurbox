@@ -1,9 +1,10 @@
 //! Resource limits: the guarantees Luau would have donated and Lua 5.4 makes
 //! the kernel build.
 //!
-//! Separate from `kernel_mvp` because both tests mutate a process-wide bound,
+//! Separate from `kernel_mvp` because these tests mutate process-wide bounds,
 //! and running them beside the rest would change the limits under those tests.
-//! They run in one file, in sequence, restoring the defaults afterwards.
+//! Within the file each holds [`limits`] for its whole run, so they run in
+//! sequence under any runner, restoring the defaults afterwards.
 
 use thurbox::kernel::host::{self, Epoch, LuaHost, MemoryPressure, Published, RenderContext};
 use thurbox::kernel::registry::Registry;
@@ -18,6 +19,15 @@ fn plugin_dir(source: &str) -> tempfile::TempDir {
     dir
 }
 
+/// Held by every test here: the limits are process-wide, and `cargo test` runs
+/// a file's tests on parallel threads.
+fn limits() -> std::sync::MutexGuard<'static, ()> {
+    static LIMITS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LIMITS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn ctx() -> RenderContext {
     RenderContext {
         width: 20,
@@ -30,6 +40,7 @@ fn ctx() -> RenderContext {
 
 #[test]
 fn a_float_focus_hook_that_never_returns_is_interrupted_and_reported() {
+    let _limits = limits();
     host::set_instruction_budget(200_000);
     let dir = plugin_dir(
         r#"return {
@@ -51,6 +62,7 @@ fn a_float_focus_hook_that_never_returns_is_interrupted_and_reported() {
 
 #[test]
 fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
+    let _limits = limits();
     host::set_instruction_budget(200_000);
     let dir = plugin_dir(
         r#"return {
@@ -115,6 +127,7 @@ fn grow_until_pressure(host: &LuaHost) -> Option<MemoryPressure> {
 
 #[test]
 fn memory_pressure_tells_a_full_vm_from_a_large_one() {
+    let _limits = limits();
     let limit = 16 * 1024 * 1024;
     host::set_memory_limit(limit);
     let base = LuaHost::new(plugin_dir(&resident_probe(0)).path()).used_memory();
@@ -180,11 +193,32 @@ fn memory_pressure_tells_a_full_vm_from_a_large_one() {
         Some(MemoryPressure::Exhausted),
         "a VM whose allocations fail is full"
     );
+
+    // A live heap parked just under a threshold must not buy a full collection
+    // on every frame: the next one waits for a share of new garbage.
+    let parked = loading(10);
+    let probe = parked.index_of("probe").expect("the probe loaded");
+    while parked.used_memory() < limit / 1000 * 895 {
+        parked.on_action(probe, "grow").expect("room to grow");
+    }
+    let before = parked.pressure_collections();
+    for _ in 0..200 {
+        parked.render(0, ctx()).expect("the parked VM renders");
+        assert_eq!(parked.memory_pressure(), None, "parked, not full");
+    }
+    // 200 frames of 64 KiB of garbage is 12.5 MiB; one collection per 1/64
+    // of the limit is at most 50 of them.
+    let collections = parked.pressure_collections() - before;
+    assert!(
+        collections <= 51,
+        "{collections} full collections in 200 frames"
+    );
     host::set_memory_limit(0);
 }
 
 #[test]
 fn the_limits_are_settable_and_enforced() {
+    let _limits = limits();
     // --- memory ------------------------------------------------------------
     // A small ceiling, so exhausting it is a test rather than an ordeal.
     host::set_memory_limit(4 * 1024 * 1024);
@@ -259,6 +293,7 @@ fn the_limits_are_settable_and_enforced() {
 
 #[test]
 fn a_healthy_plugin_is_unaffected_by_the_hook() {
+    let _limits = limits();
     // The overhead question from task 2.12, as a bound rather than a number:
     // a plugin doing ordinary work must not be near the budget.
     let dir = plugin_dir(
@@ -382,6 +417,7 @@ fn frames(host: &LuaHost, snapshot: &Snapshot, count: usize) -> usize {
 
 #[test]
 fn rebuilding_a_long_deleted_history_stays_far_below_the_memory_limit() {
+    let _limits = limits();
     let host = bundled();
     let peak = frames(&host, &snapshot(1600), 300);
     // Measured at ~6 MiB; the ceiling leaves room for the collector's pace
