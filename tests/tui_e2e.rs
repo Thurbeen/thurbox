@@ -3466,23 +3466,37 @@ fn forgetting_a_queued_host_request_prevents_its_transport_from_starting() {
 fn forgetting_an_asked_key_preserves_another_plugins_answer_with_that_key() {
     let forgetting = r#"return {
   name = "forgetter", slot = "sessions", capabilities = { "run" },
+  keys = {
+    { key = "ctrl+g", action = "owner.forget", desc = "forget this owner's answer", scope = "global" },
+  },
+  on_action = function(action)
+    if action ~= "owner.forget" then return false end
+    run_forget("same")
+    run_forget("same")
+    state.forgot = true
+    return true
+  end,
   render = function()
     if not run_forget then return { type = "text", text = "FORGET-API-MISSING" } end
     if not state.asked then
-      run("same", "printf SHOULD-NOT-BE-PUBLISHED", { machine = "local", ttl = 60 })
-      run_forget("same")
+      run("same", "printf FORGETTER-READY", { machine = "local", ttl = 60 })
       state.asked = true
     end
     local got = thurbox.runs.same
-    return { type = "text", text = got and "FORGOTTEN-ANSWER-RETURNED" or "OWNER-EMPTY" }
+    local text = got and (got.stdout or got.state) or "pending"
+    if state.forgot then text = got and "retiring" or "OWNER-EMPTY-AFTER-FORGET" end
+    return { type = "text", text = text }
   end,
 }"#;
     let keeping = r#"return {
   name = "keeper", slot = "keeper", capabilities = { "run" },
   render = function()
-    run("same", "printf OTHER-OWNER-SURVIVED", { machine = "local", ttl = 60 })
+    if not state.asked then
+      run("same", "printf x >> \"$HOME/owner-keeper-calls\"; printf OTHER-OWNER-SURVIVED", { machine = "local", ttl = 60 })
+      state.asked = true
+    end
     local got = thurbox.runs.same
-    return { type = "text", text = got and (got.stdout or got.state) or "pending" }
+    return { type = "text", text = got and (got.stdout or got.state) or "KEEPER-ANSWER-MISSING" }
   end,
 }"#;
     let interface = interface_with("plugins/10_sessions.lua", forgetting);
@@ -3513,8 +3527,19 @@ fn forgetting_an_asked_key_preserves_another_plugins_answer_with_that_key() {
         cmd.env("THURBOX_UI_DIR", interface.path());
     });
     tui.wait_for("OTHER-OWNER-SURVIVED");
-    tui.wait_for("OWNER-EMPTY");
-    assert!(!tui.frame().contains("FORGOTTEN-ANSWER-RETURNED"));
+    tui.wait_for("FORGETTER-READY");
+    tui.send(b"\x07");
+    tui.wait_for("OWNER-EMPTY-AFTER-FORGET");
+    assert!(
+        tui.frame().contains("OTHER-OWNER-SURVIVED"),
+        "{}",
+        tui.frame()
+    );
+    assert_eq!(
+        std::fs::read_to_string(profile.path("home/owner-keeper-calls")).expect("keeper calls"),
+        "x",
+        "the peer answer must stay cached without another execution"
+    );
     assert!(tui.quit().success());
 }
 
