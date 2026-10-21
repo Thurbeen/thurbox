@@ -41,9 +41,11 @@
 
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use tracing::{debug, warn};
 
@@ -302,8 +304,6 @@ fn terminal_notifier_available() -> bool {
 
 #[cfg(target_os = "macos")]
 fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
-    use std::process::{Command, Stdio};
-
     // `-group <id>` collapses repeat notifications for the same session
     // into a single banner instead of stacking — the per-session dedup
     // floor already bounds frequency, but if a long-running session fires
@@ -331,7 +331,7 @@ fn dispatch_macos_terminal_notifier(n: &Notification) -> Result<(), Box<dyn std:
     if let Some(focus_cmd) = thurbox_cli_focus_command(n.session_id) {
         cmd.arg("-execute").arg(focus_cmd);
     }
-    let status = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+    let status = run_notifier(&mut cmd)?.status;
     if !status.success() {
         return Err(format!("terminal-notifier exited with {status}").into());
     }
@@ -381,8 +381,6 @@ fn sh_single_quote(s: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn dispatch_macos_osascript(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
-    use std::process::Command;
-
     // Arguments are passed via AppleScript's `argv` (rather than spliced
     // into the script text) so the body/title can contain any characters —
     // quotes, backslashes, newlines — with zero escaping.
@@ -396,17 +394,48 @@ fn dispatch_macos_osascript(n: &Notification) -> Result<(), Box<dyn std::error::
          display notification (item 1 of argv) with title (item 2 of argv)\n\
          end run"
     };
-    let status = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .arg("--")
-        .arg(&n.body)
-        .arg(&n.title)
-        .status()?;
+    let status = run_notifier(
+        Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .arg("--")
+            .arg(&n.body)
+            .arg(&n.title),
+    )?
+    .status;
     if !status.success() {
         return Err(format!("osascript exited with {status}").into());
     }
     Ok(())
+}
+
+/// How long a notifier child (`powershell.exe`, `terminal-notifier`,
+/// `osascript`) may run. It is stopped, not abandoned, at the deadline: an
+/// abandoned one keeps running after the process that started it, one more per
+/// retry, and may still show its notification after the send reported failure.
+const NOTIFIER_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Run a notifier to completion or until [`NOTIFIER_TIMEOUT`], killing and
+/// reaping it then. Its stdout is discarded; stderr is kept for the error.
+fn run_notifier(cmd: &mut Command) -> std::io::Result<Output> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let deadline = Instant::now() + NOTIFIER_TIMEOUT;
+    while child.try_wait()?.is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("timed out after {}s", NOTIFIER_TIMEOUT.as_secs()),
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    child.wait_with_output()
 }
 
 /// Deliver a Windows toast from WSL by invoking `powershell.exe` with a small
@@ -414,13 +443,17 @@ fn dispatch_macos_osascript(n: &Notification) -> Result<(), Box<dyn std::error::
 /// boundary; it needs WSL interop enabled (the default) and `powershell.exe`
 /// on `PATH` (also the default). Click-to-focus is not wired up here.
 fn dispatch_windows_toast(n: &Notification) -> Result<(), Box<dyn std::error::Error>> {
-    use std::process::Command;
-
     let script = build_powershell_toast_script(&n.title, &n.body, n.sound);
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|e| format!("could not run powershell.exe (WSL interop?): {e}"))?;
+    let output = run_notifier(Command::new("powershell.exe").args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &script,
+    ]))
+    .map_err(|e| match e.kind() {
+        std::io::ErrorKind::TimedOut => format!("powershell.exe toast {e}"),
+        _ => format!("could not run powershell.exe (WSL interop?): {e}"),
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

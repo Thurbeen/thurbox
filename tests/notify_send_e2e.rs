@@ -299,11 +299,10 @@ fn notify_send_attaches_a_session_and_leaves_its_state_alone() {
     assert_eq!(bus.shown().len(), 1, "nothing sent for an unknown session");
 }
 
-/// Put a stand-in `powershell.exe` first on `PATH`, so the `windows` backend
-/// runs it: it sleeps `secs` in a child whose pid it records in
-/// `<root>/notifier.pid`, then exits 1.
+/// Put a stand-in `powershell.exe` running `body` first on `PATH`, so the
+/// `windows` backend runs it. `{pid}` in `body` names `<root>/notifier.pid`.
 #[cfg(unix)]
-fn fake_toast(instance: &Instance, secs: u32) -> String {
+fn fake_toast(instance: &Instance, body: &str) -> String {
     use std::os::unix::fs::PermissionsExt;
     let bin = instance.path("bin");
     std::fs::create_dir_all(&bin).expect("bin dir");
@@ -311,8 +310,11 @@ fn fake_toast(instance: &Instance, secs: u32) -> String {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\nsleep {secs} &\necho $! > '{}'\nwait $!\nexit 1\n",
-            instance.path("notifier.pid").display()
+            "#!/bin/sh\n{}\n",
+            body.replace(
+                "{pid}",
+                &instance.path("notifier.pid").display().to_string()
+            )
         ),
     )
     .expect("stand-in notifier");
@@ -324,22 +326,28 @@ fn fake_toast(instance: &Instance, secs: u32) -> String {
     )
 }
 
-/// Stop the stand-in notifier if it is still running.
+/// Whether the stand-in notifier recorded in `notifier.pid` still runs, and
+/// stop it if so.
 #[cfg(unix)]
-fn reap_fake_toast(instance: &Instance) {
-    if let Ok(pid) = std::fs::read_to_string(instance.path("notifier.pid")) {
-        let _ = Command::new("kill").arg(pid.trim()).status();
-    }
+fn reap_fake_toast(instance: &Instance) -> bool {
+    let Ok(pid) = std::fs::read_to_string(instance.path("notifier.pid")) else {
+        return false;
+    };
+    Command::new("kill")
+        .arg(pid.trim())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
-/// A notifier that never returns is given up on: the tick sends its alerts
-/// through this path, and a delivery that hangs would stop every scheduled
-/// run behind it.
+/// A notifier that never returns is given up on, and stopped: the tick sends
+/// its alerts through this path, and a delivery that hangs would stop every
+/// scheduled run behind it, or leave one more stuck process per retry.
 #[cfg(unix)]
 #[test]
 fn a_delivery_that_hangs_is_given_up_on() {
     let instance = Instance::with_backend("windows", "");
-    let path = fake_toast(&instance, 120);
+    // `exec`, so the recorded pid is the notifier process itself.
+    let path = fake_toast(&instance, "echo $$ > '{pid}'\nexec sleep 120");
 
     let started = std::time::Instant::now();
     let out = instance
@@ -348,7 +356,7 @@ fn a_delivery_that_hangs_is_given_up_on() {
         .output()
         .expect("run thurbox-cli");
     let waited = started.elapsed();
-    reap_fake_toast(&instance);
+    let left_running = reap_fake_toast(&instance);
 
     assert!(
         waited < std::time::Duration::from_secs(60),
@@ -363,6 +371,7 @@ fn a_delivery_that_hangs_is_given_up_on() {
             .contains("timed out"),
         "{value}"
     );
+    assert!(!left_running, "the hung notifier outlived the send");
 }
 
 /// A delivery that fails after its key's interval ran out gives back only its
@@ -371,7 +380,7 @@ fn a_delivery_that_hangs_is_given_up_on() {
 #[test]
 fn a_late_failure_keeps_a_newer_hold() {
     let instance = Instance::with_backend("windows", "");
-    let path = fake_toast(&instance, 3);
+    let path = fake_toast(&instance, "sleep 3\nexit 1");
     let short = ["--key", "k", "--min-interval", "1"];
     // Slow and failing: holds `k` for one second, fails after three.
     let slow = instance
@@ -394,7 +403,6 @@ fn a_late_failure_keeps_a_newer_hold() {
     assert_eq!(instance.send(Some(&address), &held)["delivered"], true);
 
     let slow = slow.wait_with_output().expect("the slow send ends");
-    reap_fake_toast(&instance);
     assert!(!slow.status.success(), "{}", describe(&slow));
 
     let repeat = instance.send(Some(&address), &held);
