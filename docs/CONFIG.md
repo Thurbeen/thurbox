@@ -1206,13 +1206,16 @@ thurbox-cli notify send --title "nightly sync failed" --body "see the run log" \
 ```
 
 - It honours `[features] notifications = false` and `backend = "off"`: it does
-  nothing and exits 0, reporting `"suppressed": "disabled"`.
-- `--key` with `--min-interval` (seconds; one needs the other) drops a repeat of
+  nothing and exits 0, reporting `"suppressed": "disabled"` — before it looks
+  at `--session`, so a hook naming a session that is already gone still exits 0.
+- `--key` with `--min-interval` (seconds, at most a year; one needs the other) drops a repeat of
   the same key inside the interval, between separate processes, and reports
   `"suppressed": "deduped"`. The key is held in the database's lease table from
   the moment of a delivery; a delivery that fails does not hold it, so the retry
   goes out.
-- A delivery that fails exits non-zero with `"error"` set. `--json` always
+- A delivery that fails exits non-zero with `"error"` set. One the backend has
+  not finished after 10 seconds counts as failed (`delivery timed out after
+  10s`), so a hung notifier never holds up the tick that sends an alert. `--json` always
   reports `delivered`, `suppressed`, `error` and `session_id`.
 - It never changes a session's state. `--session` only names the session the
   notification is about; an unknown reference is an error.
@@ -1236,7 +1239,9 @@ run that ends `error` or `timed_out` raises a notification titled
 (`exit 3`, `timed out after 60s`). It is sent the way `notify send` sends one,
 from the headless `automation tick` as well, and deduplicated per automation:
 the failures after the first are dropped until a tick sees the automation
-succeed again, or for at most a day while it keeps failing. It covers the runs
+succeed again, or for at most a day while it keeps failing. Only a run that is
+still the automation's latest counts, so a slow tick reporting an older run
+cannot reopen a streak a newer success closed. It covers the runs
 a tick fires; `automation run --wait` reports its own outcome to its caller and
 raises no alert. `automation tick --json` lists each
 alert under `alerts`. Off by default.

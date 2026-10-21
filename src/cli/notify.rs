@@ -16,6 +16,8 @@
 //! `event_cursors`. The failing-run alert of `automation tick` is built on
 //! `send` (issue #1508).
 
+use std::time::Duration;
+
 use clap::{Args, Subcommand};
 use serde_json::{json, Value};
 
@@ -59,10 +61,23 @@ pub struct SendArgs {
     /// Drop a repeat of this key inside `--min-interval`, across processes.
     #[arg(long, requires = "min_interval")]
     pub key: Option<String>,
-    /// Seconds a delivered `--key` holds off its repeats.
-    #[arg(long, requires = "key", value_parser = clap::value_parser!(u64).range(1..))]
+    /// Seconds a delivered `--key` holds off its repeats; at most a year.
+    #[arg(
+        long,
+        requires = "key",
+        value_parser = clap::value_parser!(u64).range(1..=MAX_MIN_INTERVAL_SECS)
+    )]
     pub min_interval: Option<u64>,
 }
+
+/// The longest `--min-interval`: a year, far inside what a lease expiry in
+/// milliseconds can hold.
+const MAX_MIN_INTERVAL_SECS: u64 = 365 * 24 * 60 * 60;
+
+/// How long a send waits for the backend. The toast and macOS paths wait on a
+/// child process, and one that never returns must not hold up the tick that
+/// sends an alert, nor every scheduled run behind it.
+const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One notification [`send`] is asked to deliver.
 pub(crate) struct Message {
@@ -105,11 +120,17 @@ fn dedupe_subject(key: &str) -> LockSubject {
 /// The key is leased before delivery, so two processes racing on one key
 /// deliver once; a delivery that fails gives the lease back, so the retry is
 /// not deduped against a notification nobody saw.
-pub(crate) fn send(db: &Database, m: &Message) -> Sent {
+/// Whether either off switch is set.
+fn disabled() -> bool {
     let s = settings::global();
-    if !s.features.notifications || s.notifications.backend == NotificationBackend::Off {
+    !s.features.notifications || s.notifications.backend == NotificationBackend::Off
+}
+
+pub(crate) fn send(db: &Database, m: &Message) -> Sent {
+    if disabled() {
         return Sent::Suppressed("disabled");
     }
+    let s = settings::global();
     let leased = match &m.dedupe {
         Some((key, secs)) => {
             let now = current_time_millis();
@@ -117,8 +138,9 @@ pub(crate) fn send(db: &Database, m: &Message) -> Sent {
                 tracing::debug!("prune notification leases: {e}");
             }
             let subject = dedupe_subject(key);
-            match db.take_lease(&subject, now.saturating_add(secs * 1000), now) {
-                Ok(true) => Some(subject),
+            let expires = now.saturating_add(secs.saturating_mul(1000));
+            match db.take_lease(&subject, expires, now) {
+                Ok(true) => Some((subject, expires)),
                 Ok(false) => return Sent::Suppressed("deduped"),
                 Err(e) => return Sent::Failed(format!("dedupe lease: {e}")),
             }
@@ -131,17 +153,34 @@ pub(crate) fn send(db: &Database, m: &Message) -> Sent {
         body: m.body.clone(),
         sound: s.notifications.sound,
     };
-    match notifications::send_blocking(&n, notifications::detect_backend(s.notifications.backend)) {
+    match deliver(n, notifications::detect_backend(s.notifications.backend)) {
         Ok(()) => Sent::Delivered,
         Err(e) => {
-            if let Some(subject) = leased {
-                if let Err(e) = db.drop_lease(&subject) {
+            // Only the hold this send took: past its interval another send
+            // may have taken the key, and that hold is not ours to give back.
+            if let Some((subject, expires)) = leased {
+                if let Err(e) = db.release_lease(&subject, expires) {
                     tracing::warn!("give back notification lease: {e}");
                 }
             }
             Sent::Failed(e)
         }
     }
+}
+
+/// Deliver on a thread of its own and wait at most [`DELIVERY_TIMEOUT`]. A
+/// backend that hangs is left behind; the process ends without it.
+fn deliver(n: Notification, backend: DeliveryBackend) -> Result<(), String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(notifications::send_blocking(&n, backend));
+    });
+    rx.recv_timeout(DELIVERY_TIMEOUT).unwrap_or_else(|_| {
+        Err(format!(
+            "delivery timed out after {}s",
+            DELIVERY_TIMEOUT.as_secs()
+        ))
+    })
 }
 
 /// Forget `key`'s last delivery, so its next send is not deduped.
@@ -158,6 +197,16 @@ pub fn run(args: NotifyArgs, db: &Database) -> Result<CommandOutput, CommandErro
 }
 
 fn run_send(db: &Database, args: SendArgs) -> Result<CommandOutput, CommandError> {
+    // Before the session is looked up: with notifications off a hook naming a
+    // session that is already gone still exits 0.
+    if disabled() {
+        let mut json = Sent::Suppressed("disabled").to_json();
+        json["session_id"] = Value::Null;
+        return Ok(CommandOutput::new(
+            json,
+            "Notification suppressed (disabled).",
+        ));
+    }
     let session = match &args.session {
         Some(reference) => Some(super::session_ref::resolve(db, reference)?.id),
         None => None,

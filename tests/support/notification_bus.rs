@@ -65,11 +65,23 @@ impl Receiver {
     }
 }
 
+/// The private `dbus-daemon`, killed when dropped — from the moment it is
+/// spawned, so a setup step that panics after it does not leave it running.
+struct Daemon(Child);
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 pub struct NotificationBus {
-    daemon: Child,
     socket: PathBuf,
     shown: Arc<Mutex<Vec<Shown>>>,
     _connection: zbus::blocking::Connection,
+    // Last: fields drop in order, so the connection closes before the bus.
+    _daemon: Daemon,
 }
 
 impl NotificationBus {
@@ -78,14 +90,16 @@ impl NotificationBus {
     /// service on it.
     pub fn start(dir: &Path) -> Self {
         let socket = dir.join("bus");
-        let daemon = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--nopidfile"])
-            .arg(format!("--address=unix:path={}", socket.display()))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("dbus-daemon on PATH");
+        let daemon = Daemon(
+            Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--nopidfile"])
+                .arg(format!("--address=unix:path={}", socket.display()))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("dbus-daemon on PATH"),
+        );
         let deadline = Instant::now() + Duration::from_secs(10);
         while !socket.exists() {
             assert!(Instant::now() < deadline, "the private bus never listened");
@@ -108,10 +122,10 @@ impl NotificationBus {
         .build()
         .expect("connect the receiver");
         Self {
-            daemon,
             socket,
             shown,
             _connection: connection,
+            _daemon: daemon,
         }
     }
 
@@ -123,12 +137,5 @@ impl NotificationBus {
     /// Every notification received so far, in order.
     pub fn shown(&self) -> Vec<Shown> {
         self.shown.lock().unwrap().clone()
-    }
-}
-
-impl Drop for NotificationBus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
     }
 }

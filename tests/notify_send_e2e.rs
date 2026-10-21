@@ -143,6 +143,9 @@ fn notify_send_honours_the_notifications_feature_switch() {
     // session is looked at.
     assert_disabled(&instance.send(Some(NO_BUS), DEDUPED));
     assert_disabled(&instance.send(Some(NO_BUS), DEDUPED));
+    // Not even a session that does not exist turns a disabled send into a
+    // failure: a hook naming its own, already deleted, session still exits 0.
+    assert_disabled(&instance.send(Some(NO_BUS), &["--session", "nobody"]));
 }
 
 #[test]
@@ -166,6 +169,27 @@ fn a_key_and_its_interval_come_together() {
             describe(&out)
         );
     }
+}
+
+/// An interval too long to hold as a lease expiry is refused rather than
+/// wrapped into one that has already passed, which would turn dedupe off.
+#[test]
+fn an_interval_beyond_a_year_is_refused() {
+    let instance = Instance::with_backend("off", "");
+    for secs in ["18446744073709551615", "31536001"] {
+        let out = instance.run(
+            Some(NO_BUS),
+            &send_args(&["--key", "k", "--min-interval", secs]),
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "--min-interval {secs}:\n{}",
+            describe(&out)
+        );
+    }
+    let year = instance.send(Some(NO_BUS), &["--key", "k", "--min-interval", "31536000"]);
+    assert_disabled(&year);
 }
 
 #[cfg(target_os = "linux")]
@@ -273,6 +297,109 @@ fn notify_send_attaches_a_session_and_leaves_its_state_alone() {
     let unknown = instance.run(Some(&address), &send_args(&["--session", "nobody"]));
     assert!(!unknown.status.success(), "{}", describe(&unknown));
     assert_eq!(bus.shown().len(), 1, "nothing sent for an unknown session");
+}
+
+/// Put a stand-in `powershell.exe` first on `PATH`, so the `windows` backend
+/// runs it: it sleeps `secs` in a child whose pid it records in
+/// `<root>/notifier.pid`, then exits 1.
+#[cfg(unix)]
+fn fake_toast(instance: &Instance, secs: u32) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = instance.path("bin");
+    std::fs::create_dir_all(&bin).expect("bin dir");
+    let script = bin.join("powershell.exe");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nsleep {secs} &\necho $! > '{}'\nwait $!\nexit 1\n",
+            instance.path("notifier.pid").display()
+        ),
+    )
+    .expect("stand-in notifier");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+/// Stop the stand-in notifier if it is still running.
+#[cfg(unix)]
+fn reap_fake_toast(instance: &Instance) {
+    if let Ok(pid) = std::fs::read_to_string(instance.path("notifier.pid")) {
+        let _ = Command::new("kill").arg(pid.trim()).status();
+    }
+}
+
+/// A notifier that never returns is given up on: the tick sends its alerts
+/// through this path, and a delivery that hangs would stop every scheduled
+/// run behind it.
+#[cfg(unix)]
+#[test]
+fn a_delivery_that_hangs_is_given_up_on() {
+    let instance = Instance::with_backend("windows", "");
+    let path = fake_toast(&instance, 120);
+
+    let started = std::time::Instant::now();
+    let out = instance
+        .command(Some(NO_BUS), &send_args(&[]))
+        .env("PATH", path)
+        .output()
+        .expect("run thurbox-cli");
+    let waited = started.elapsed();
+    reap_fake_toast(&instance);
+
+    assert!(
+        waited < std::time::Duration::from_secs(60),
+        "send waited {waited:?} on a hung notifier"
+    );
+    assert!(!out.status.success(), "{}", describe(&out));
+    let value: Value = serde_json::from_slice(&out.stdout).expect("one JSON result");
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("timed out"),
+        "{value}"
+    );
+}
+
+/// A delivery that fails after its key's interval ran out gives back only its
+/// own hold: a newer delivery of the same key keeps the one it took.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_late_failure_keeps_a_newer_hold() {
+    let instance = Instance::with_backend("windows", "");
+    let path = fake_toast(&instance, 3);
+    let short = ["--key", "k", "--min-interval", "1"];
+    // Slow and failing: holds `k` for one second, fails after three.
+    let slow = instance
+        .command(Some(NO_BUS), &send_args(&short))
+        .env("PATH", path)
+        .spawn()
+        .expect("start the slow send");
+    std::thread::sleep(std::time::Duration::from_millis(1_500));
+
+    // The settings are read at start, so the slow send keeps `windows`.
+    std::fs::write(
+        instance.path("config/settings.toml"),
+        "[features]\nautomations = false\nversion_check = false\nauto_update = false\n\
+         [notifications]\nbackend = 'dbus'\nsound = false\n",
+    )
+    .expect("switch to dbus");
+    let bus = NotificationBus::start(&instance.path("runtime"));
+    let address = bus.address();
+    let held = ["--key", "k", "--min-interval", "60"];
+    assert_eq!(instance.send(Some(&address), &held)["delivered"], true);
+
+    let slow = slow.wait_with_output().expect("the slow send ends");
+    reap_fake_toast(&instance);
+    assert!(!slow.status.success(), "{}", describe(&slow));
+
+    let repeat = instance.send(Some(&address), &held);
+    assert_eq!(repeat["suppressed"], "deduped", "{repeat}");
+    assert_eq!(bus.shown().len(), 1);
 }
 
 #[cfg(target_os = "linux")]

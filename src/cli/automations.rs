@@ -621,7 +621,13 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
             entry
         })
         .collect();
-    let alerts = failure_alerts(db, &pass);
+    let alerts = failure_alerts(
+        db,
+        &pass,
+        crate::session::settings::global()
+            .notifications
+            .on_automation_failure,
+    );
     let skipped: Vec<Value> = pass
         .skipped
         .iter()
@@ -648,16 +654,24 @@ const FAILURE_ALERT_INTERVAL_SECS: u64 = 24 * 60 * 60;
 /// The opt-in failing-run alert (issue #1508): one desktop notification per
 /// failing streak of an automation, sent the way `notify send` sends one and
 /// deduplicated by the same lease. A success forgets the streak, so the next
-/// failure alerts again.
-fn failure_alerts(db: &Database, pass: &ops::DuePass) -> Vec<Value> {
-    if !crate::session::settings::global()
-        .notifications
-        .on_automation_failure
-    {
+/// failure alerts again. A run that is no longer the automation's latest is
+/// skipped either way.
+fn failure_alerts(db: &Database, pass: &ops::DuePass, enabled: bool) -> Vec<Value> {
+    if !enabled {
         return Vec::new();
     }
     let mut alerts = Vec::new();
     for fired in &pass.fired {
+        // A tick reports its runs once its slowest exec is done, and another
+        // ticker may have run the same automation meanwhile: only its latest
+        // run says whether the streak is open.
+        let latest = db
+            .list_automation_runs(fired.automation_id, 1)
+            .ok()
+            .and_then(|runs| runs.first().map(|run| run.id));
+        if latest != Some(fired.run_id) {
+            continue;
+        }
         let key = format!("automation-failure:{}", fired.automation_id);
         match fired.status {
             AutomationRunStatus::Success => {
@@ -924,6 +938,53 @@ mod tests {
         assert_eq!(fired["status"], "success", "{v}");
         let error = fired["history_error"].as_str().unwrap_or_default();
         assert!(error.contains("history is read-only"), "{v}");
+    }
+
+    /// A tick reports its runs only once every exec it started has finished,
+    /// so another tick may have run the same automation in the meantime. A
+    /// failure older than the automation's latest run is old news: it must
+    /// not reopen a streak a newer success already closed.
+    #[test]
+    fn a_stale_failure_raises_no_alert() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db
+            .create_automation(&NewAutomation {
+                name: "nightly".into(),
+                enabled: true,
+                schedule: parse_trigger("hourly", None, None).unwrap(),
+                timezone: None,
+                action: AutomationAction::Exec {
+                    command: "exit 3".into(),
+                },
+                prompt: String::new(),
+                next_run_at: None,
+                key: None,
+                run: Default::default(),
+            })
+            .unwrap();
+        let stale = db
+            .record_automation_run(id, AutomationRunStatus::Error, "exit 3", None)
+            .unwrap();
+        db.record_automation_run(id, AutomationRunStatus::Success, "ok", None)
+            .unwrap();
+        // Held already, so a regression reports `deduped` here instead of
+        // reaching the desktop of whoever runs the suite.
+        let held = crate::storage::event_cursors::LockSubject::Notification(format!(
+            "automation-failure:{id}"
+        ));
+        assert!(db.take_lease(&held, u64::MAX / 2, 0).unwrap());
+        let pass = ops::DuePass {
+            fired: vec![ops::Fired {
+                automation_id: id,
+                run_id: stale,
+                status: AutomationRunStatus::Error,
+                detail: "exit 3".into(),
+                history_error: None,
+            }],
+            ..ops::DuePass::default()
+        };
+
+        assert_eq!(failure_alerts(&db, &pass, true), Vec::<Value>::new());
     }
 
     #[test]
