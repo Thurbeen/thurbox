@@ -726,6 +726,7 @@ also_on_waiting     = false    # also fire when a session finishes (Working → 
 suppress_for_active = true     # skip the session you're currently viewing
 sound               = true     # play the OS default notification sound
 min_interval_secs   = 5        # per-session floor between notifications
+on_automation_failure = false  # notify when an automation run fails (once per failing streak)
 
 [clipboard]
 provider       = "auto"        # auto | native | osc52 | none
@@ -1152,8 +1153,10 @@ and skipped for the session you're currently viewing (`suppress_for_active`).
 The notification body is the agent's last OSC 9 / OSC 777 message when
 present (truncated to 200 chars), otherwise `Waiting for input` — the OSC
 message is kept only for the body text, no longer for the trigger.
-**Only fires while the TUI is open** — the dispatcher thread runs only
-inside the TUI, so a headless `automation tick` never notifies.
+These session-state notifications **only fire while the TUI is open** — the
+dispatcher thread runs only inside the TUI. Two things do notify headlessly,
+both explicitly: `thurbox-cli notify send` and the opt-in failing-run alert
+(see [Scripted notifications](#scripted-notifications)).
 
 **Delivery backend** (`backend`, default `auto`) is detected at startup:
 
@@ -1186,10 +1189,57 @@ thurbox-cli notify --test   # fire a sample notification to confirm it works
 | `sound` | `true` | play the OS default notification sound |
 | `min_interval_secs` | `5` | per-session floor between two notifications (dedup) |
 | `backend` | `auto` | delivery backend: `auto` \| `dbus` \| `windows` \| `off` |
+| `on_automation_failure` | `false` | notify when an automation run fails or times out, from the headless `automation tick` too; once per failing streak |
 
 Notifications fire on the hooks-driven status transitions (see
 [Session status](#session-status)): always on `→ Blocked` (the agent needs
 you), and with `also_on_waiting = true` also on `Working → Done`.
+
+### Scripted notifications
+
+`notify send` delivers one notification through the same backend, for an Exec
+automation, a lifecycle hook, a CI job or an orchestration script:
+
+```bash
+thurbox-cli notify send --title "nightly sync failed" --body "see the run log" \
+  [--session <id|key|name>] [--key nightly-sync --min-interval 3600] [--json]
+```
+
+- It honours `[features] notifications = false` and `backend = "off"`: it does
+  nothing and exits 0, reporting `"suppressed": "disabled"`.
+- `--key` with `--min-interval` (seconds; one needs the other) drops a repeat of
+  the same key inside the interval, between separate processes, and reports
+  `"suppressed": "deduped"`. The key is held in the database's lease table from
+  the moment of a delivery; a delivery that fails does not hold it, so the retry
+  goes out.
+- A delivery that fails exits non-zero with `"error"` set. `--json` always
+  reports `delivered`, `suppressed`, `error` and `session_id`.
+- It never changes a session's state. `--session` only names the session the
+  notification is about; an unknown reference is an error.
+- **Click-to-focus.** On macOS with `terminal-notifier`, clicking runs
+  `thurbox-cli session focus <id>` for the `--session` given, as the TUI's
+  banners do. On Linux the click is answered by the process that sent the
+  notification, and `notify send` exits as soon as it is shown, so the banner
+  is informational there; elsewhere it always is.
+- **The session bus.** On Linux the dbus backend reads
+  `DBUS_SESSION_BUS_ADDRESS`, and without it the per-user bus at
+  `$XDG_RUNTIME_DIR/bus`. An Exec automation fired by the heartbeat inherits the
+  environment of the tmux server that runs it, which normally carries both; one
+  run from a bare cron or a systemd system unit has neither, and must export
+  `XDG_RUNTIME_DIR` (or the bus address) for a notification to reach the
+  desktop. `thurbox-cli notify` shows the backend the current environment
+  resolves to.
+
+**The failing-run alert.** With `on_automation_failure = true`, an automation
+run that ends `error` or `timed_out` raises a notification titled
+`Automation <name> failed` whose body is the first line of the run's detail
+(`exit 3`, `timed out after 60s`). It is sent the way `notify send` sends one,
+from the headless `automation tick` as well, and deduplicated per automation:
+the failures after the first are dropped until a tick sees the automation
+succeed again, or for at most a day while it keeps failing. It covers the runs
+a tick fires; `automation run --wait` reports its own outcome to its caller and
+raises no alert. `automation tick --json` lists each
+alert under `alerts`. Off by default.
 
 ## Session status
 

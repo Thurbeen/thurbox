@@ -10,6 +10,7 @@ use clap::{Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
 use crate::cli::action;
+use crate::cli::notify;
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::{CommandError, EXIT_AMBIGUOUS, EXIT_CONFLICT, EXIT_GONE, EXIT_TIMEOUT};
 use crate::session::{Automation, AutomationRun, AutomationRunStatus};
@@ -620,6 +621,7 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
             entry
         })
         .collect();
+    let alerts = failure_alerts(db, &pass);
     let skipped: Vec<Value> = pass
         .skipped
         .iter()
@@ -630,12 +632,62 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
         "failed": pass.failed(),
         "skipped": skipped,
         "timed_out": pass.timed_out,
+        "alerts": alerts,
         "healed": healed,
     });
     if let (Value::Object(out), Value::Object(more)) = (&mut out, housekeeping) {
         out.extend(more);
     }
     Ok(out)
+}
+
+/// How long a failing automation's alert holds off the next one while it keeps
+/// failing. A success ends the streak sooner.
+const FAILURE_ALERT_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+/// The opt-in failing-run alert (issue #1508): one desktop notification per
+/// failing streak of an automation, sent the way `notify send` sends one and
+/// deduplicated by the same lease. A success forgets the streak, so the next
+/// failure alerts again.
+fn failure_alerts(db: &Database, pass: &ops::DuePass) -> Vec<Value> {
+    if !crate::session::settings::global()
+        .notifications
+        .on_automation_failure
+    {
+        return Vec::new();
+    }
+    let mut alerts = Vec::new();
+    for fired in &pass.fired {
+        let key = format!("automation-failure:{}", fired.automation_id);
+        match fired.status {
+            AutomationRunStatus::Success => {
+                if let Err(e) = notify::forget(db, &key) {
+                    tracing::debug!("forget {key}: {e}");
+                }
+            }
+            AutomationRunStatus::Error | AutomationRunStatus::TimedOut => {
+                let name = db
+                    .get_automation(fired.automation_id)
+                    .ok()
+                    .flatten()
+                    .map_or_else(|| format!("#{}", fired.automation_id), |a| a.name);
+                let sent = notify::send(
+                    db,
+                    &notify::Message {
+                        title: format!("Automation {name} failed"),
+                        body: fired.detail.lines().next().unwrap_or_default().to_string(),
+                        session: None,
+                        dedupe: Some((key, FAILURE_ALERT_INTERVAL_SECS)),
+                    },
+                );
+                let mut alert = sent.to_json();
+                alert["id"] = json!(fired.automation_id);
+                alerts.push(alert);
+            }
+            _ => {}
+        }
+    }
+    alerts
 }
 
 /// What the tick does besides firing, run while the due execs run so a hung

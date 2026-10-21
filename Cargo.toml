@@ -210,3 +210,9 @@ prost = "0.14"
 # binary on a pseudo-terminal and needs only `openpty`, `setsid`, `TIOCSCTTY`
 # and `TIOCSWINSZ` — no PTY crate. `libc` is already in the tree either way.
 libc = "0.2"
+
+# The stand-in notification daemon `tests/notify_send_e2e.rs` serves on a
+# private bus, so delivery is asserted without the user's desktop. Already in
+# the tree through notify-rust; `blocking-api` adds code, not crates.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = { version = "5.16.0", default-features = false, features = ["async-io", "blocking-api"] }

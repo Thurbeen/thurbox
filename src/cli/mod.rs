@@ -277,7 +277,8 @@ pub enum Command {
     Version(version::VersionArgs),
     /// Download, verify, and replace the installed binaries with the latest release.
     Update(update::UpdateArgs),
-    /// Diagnose OS desktop notifications; `--test` fires a sample.
+    /// Diagnose OS desktop notifications (`--test` fires a sample), or `send`
+    /// one from a script, a hook or an automation.
     Notify(notify::NotifyArgs),
     /// Print the perf snapshot a running TUI publishes (THURBOX_PERF_LOG or
     /// the perf HUD must be active in that TUI); `--plugins` for the per-pane
@@ -563,7 +564,7 @@ fn dispatch(
         Command::Extension { action } => extensions::run(action, db, backends)?,
         Command::Version(args) => version::run(args),
         Command::Update(args) => update::run(args),
-        Command::Notify(args) => notify::run(args),
+        Command::Notify(args) => notify::run(args, db)?,
         Command::Perf(args) => perf::run(db, args.plugins)?,
         // Never returns a document: it *is* the document, one line at a time,
         // written as each change lands. Handled before dispatch for that

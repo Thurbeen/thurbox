@@ -1,4 +1,4 @@
-//! `thurbox-cli notify` — diagnose OS desktop notifications.
+//! `thurbox-cli notify` — diagnose OS desktop notifications, and send one.
 //!
 //! The default (no flags) prints which delivery backend thurbox would use on
 //! this host, whether it can actually deliver, whether click-to-focus is
@@ -8,33 +8,192 @@
 //!
 //! With `--test`, it fires a sample notification *synchronously* so the user
 //! can confirm end-to-end that a banner/toast actually appears.
+//!
+//! `notify send` is the same delivery for a script, a hook or an Exec
+//! automation (issue #1519): it honours both off switches and the configured
+//! backend, never touches a session's state, and with `--key` drops a repeat
+//! inside `--min-interval`, across processes, through a lease in
+//! `event_cursors`. The failing-run alert of `automation tick` is built on
+//! `send` (issue #1508).
 
-use clap::Args;
-use serde_json::json;
+use clap::{Args, Subcommand};
+use serde_json::{json, Value};
 
 use crate::notifications::{self, DeliveryBackend, Notification};
-use crate::session::settings;
+use crate::session::settings::{self, NotificationBackend};
 use crate::session::SessionId;
+use crate::storage::event_cursors::LockSubject;
+use crate::storage::Database;
+use crate::sync::current_time_millis;
 
 use super::output::{kv, CommandOutput};
+use super::CommandError;
 
 /// `notify` subcommand arguments.
 #[derive(Args, Debug)]
 pub struct NotifyArgs {
+    #[command(subcommand)]
+    pub action: Option<Action>,
     /// Fire a sample notification to confirm delivery works end-to-end.
     #[arg(long)]
     pub test: bool,
 }
 
-/// Run the `notify` command. Takes no database — it reads the process-wide
+#[derive(Subcommand, Debug)]
+pub enum Action {
+    /// Send a desktop notification through the configured backend. Exits 0
+    /// with `suppressed` when notifications are off or the key is deduped.
+    Send(SendArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SendArgs {
+    #[arg(long)]
+    pub title: String,
+    #[arg(long)]
+    pub body: String,
+    /// The session the notification is about (id, key or name). Clicking it
+    /// focuses that session where the backend supports it.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Drop a repeat of this key inside `--min-interval`, across processes.
+    #[arg(long, requires = "min_interval")]
+    pub key: Option<String>,
+    /// Seconds a delivered `--key` holds off its repeats.
+    #[arg(long, requires = "key", value_parser = clap::value_parser!(u64).range(1..))]
+    pub min_interval: Option<u64>,
+}
+
+/// One notification [`send`] is asked to deliver.
+pub(crate) struct Message {
+    pub title: String,
+    pub body: String,
+    pub session: Option<SessionId>,
+    /// The dedupe key and how long a delivery of it holds off its repeats.
+    pub dedupe: Option<(String, u64)>,
+}
+
+/// What became of a [`Message`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Sent {
+    Delivered,
+    /// `disabled` or `deduped`.
+    Suppressed(&'static str),
+    Failed(String),
+}
+
+impl Sent {
+    pub fn to_json(&self) -> Value {
+        match self {
+            Sent::Delivered => json!({ "delivered": true, "suppressed": null, "error": null }),
+            Sent::Suppressed(why) => {
+                json!({ "delivered": false, "suppressed": why, "error": null })
+            }
+            Sent::Failed(e) => json!({ "delivered": false, "suppressed": null, "error": e }),
+        }
+    }
+}
+
+/// The subject a dedupe key is leased under.
+fn dedupe_subject(key: &str) -> LockSubject {
+    LockSubject::Notification(key.to_string())
+}
+
+/// Deliver `m` synchronously, unless notifications are off or its key was
+/// delivered inside its interval. Changes no session state.
+///
+/// The key is leased before delivery, so two processes racing on one key
+/// deliver once; a delivery that fails gives the lease back, so the retry is
+/// not deduped against a notification nobody saw.
+pub(crate) fn send(db: &Database, m: &Message) -> Sent {
+    let s = settings::global();
+    if !s.features.notifications || s.notifications.backend == NotificationBackend::Off {
+        return Sent::Suppressed("disabled");
+    }
+    let leased = match &m.dedupe {
+        Some((key, secs)) => {
+            let now = current_time_millis();
+            if let Err(e) = db.prune_notification_leases(now) {
+                tracing::debug!("prune notification leases: {e}");
+            }
+            let subject = dedupe_subject(key);
+            match db.take_lease(&subject, now.saturating_add(secs * 1000), now) {
+                Ok(true) => Some(subject),
+                Ok(false) => return Sent::Suppressed("deduped"),
+                Err(e) => return Sent::Failed(format!("dedupe lease: {e}")),
+            }
+        }
+        None => None,
+    };
+    let n = Notification {
+        session_id: m.session.unwrap_or_default(),
+        title: m.title.clone(),
+        body: m.body.clone(),
+        sound: s.notifications.sound,
+    };
+    match notifications::send_blocking(&n, notifications::detect_backend(s.notifications.backend)) {
+        Ok(()) => Sent::Delivered,
+        Err(e) => {
+            if let Some(subject) = leased {
+                if let Err(e) = db.drop_lease(&subject) {
+                    tracing::warn!("give back notification lease: {e}");
+                }
+            }
+            Sent::Failed(e)
+        }
+    }
+}
+
+/// Forget `key`'s last delivery, so its next send is not deduped.
+pub(crate) fn forget(db: &Database, key: &str) -> rusqlite::Result<()> {
+    db.drop_lease(&dedupe_subject(key))
+}
+
+/// Run the `notify` command.
+pub fn run(args: NotifyArgs, db: &Database) -> Result<CommandOutput, CommandError> {
+    match args.action {
+        Some(Action::Send(send_args)) => run_send(db, send_args),
+        None => Ok(diagnose(args.test)),
+    }
+}
+
+fn run_send(db: &Database, args: SendArgs) -> Result<CommandOutput, CommandError> {
+    let session = match &args.session {
+        Some(reference) => Some(super::session_ref::resolve(db, reference)?.id),
+        None => None,
+    };
+    let sent = send(
+        db,
+        &Message {
+            title: args.title,
+            body: args.body,
+            session,
+            dedupe: args.key.zip(args.min_interval),
+        },
+    );
+    let mut json = sent.to_json();
+    json["session_id"] = session.map_or(Value::Null, |id| Value::String(id.to_string()));
+    Ok(match sent {
+        Sent::Delivered => CommandOutput::new(json, "Notification delivered."),
+        Sent::Suppressed(why) => {
+            CommandOutput::new(json, format!("Notification suppressed ({why})."))
+        }
+        Sent::Failed(e) => {
+            let msg = format!("Notification failed: {e}");
+            CommandOutput::failed(json, msg.clone(), msg)
+        }
+    })
+}
+
+/// The report `notify` with no subcommand prints. Reads the process-wide
 /// settings (for the configured backend) and probes the host.
-pub fn run(args: NotifyArgs) -> CommandOutput {
+fn diagnose(test: bool) -> CommandOutput {
     let s = settings::global();
     let feature_on = s.features.notifications;
     let configured = s.notifications.backend;
     let backend = notifications::detect_backend(configured);
 
-    if args.test {
+    if test {
         return run_test(feature_on, backend);
     }
 
@@ -169,7 +328,7 @@ mod tests {
         // In the test process settings::global() is the all-default config
         // (feature on, backend auto); host probing runs against the real test
         // host, so we only assert the shape, not the concrete backend.
-        let out = run(NotifyArgs { test: false });
+        let out = diagnose(false);
         assert!(out["feature_enabled"].is_boolean());
         assert!(out["resolved_backend"].is_string());
         assert!(out["deliverable"].is_boolean());

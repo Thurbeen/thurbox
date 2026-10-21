@@ -225,8 +225,9 @@ jobs:
       # a shell in it. Every one of them lands on a private socket under a
       # private `TMUX_TMPDIR`.
       # xvfb: `tui_e2e`'s native-clipboard paste runs against a private X server.
-      - name: Install tmux and Xvfb
-        run: sudo apt-get update && sudo apt-get install -y tmux xvfb
+      # dbus: `notify_send_e2e` delivers to a private session bus.
+      - name: Install tmux, Xvfb and dbus
+        run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus
       - run: cargo nextest run --all --profile ci
 
   # Native-Windows gate (psmux backend selection, known-folder paths, toast
