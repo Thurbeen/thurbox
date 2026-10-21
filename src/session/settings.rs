@@ -417,6 +417,11 @@ pub struct NotificationSettings {
     /// macOS at startup; `dbus`/`windows` force one; `off` disables delivery.
     #[serde(default)]
     pub backend: NotificationBackend,
+    /// Notify when an automation run fails or times out, from the headless
+    /// `automation tick` as well — once per failing streak (issue #1508).
+    /// Off by default.
+    #[serde(default)]
+    pub on_automation_failure: bool,
 }
 
 fn default_notification_min_interval_secs() -> u64 {
@@ -431,6 +436,7 @@ impl Default for NotificationSettings {
             sound: true,
             min_interval_secs: default_notification_min_interval_secs(),
             backend: NotificationBackend::Auto,
+            on_automation_failure: false,
         }
     }
 }

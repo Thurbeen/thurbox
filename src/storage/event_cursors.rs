@@ -27,6 +27,9 @@ use super::Database;
 /// The consumer row the telemetry export reads the event log through.
 pub const TELEMETRY_CONSUMER: &str = "telemetry";
 
+/// The consumer prefix of every [`LockSubject::Notification`] row.
+const NOTIFICATION_PREFIX: &str = "lock:notify:";
+
 /// What a lease is held on — every subject `session_ops::lock` takes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LockSubject {
@@ -39,6 +42,11 @@ pub enum LockSubject {
     /// One automation's run, held while a fire is in flight so a second fire
     /// of the same automation waits for it.
     AutomationRun(i64),
+    /// A `notify send --key`, held for its `--min-interval` after a delivery
+    /// so a repeat inside it is dropped. Never released on success: the
+    /// expiry is the interval, and a lapsed one is swept by
+    /// [`Database::prune_notification_leases`].
+    Notification(String),
 }
 
 impl LockSubject {
@@ -50,6 +58,7 @@ impl LockSubject {
             LockSubject::Name { scope, name } => format!("lock:name:{scope}:{name}"),
             LockSubject::Session(id) => format!("lock:session:{id}"),
             LockSubject::AutomationRun(id) => format!("lock:run:{id}"),
+            LockSubject::Notification(key) => format!("{NOTIFICATION_PREFIX}{key}"),
         }
     }
 }
@@ -141,6 +150,27 @@ impl Database {
             params![subject.consumer(), expires_at as i64],
         )?;
         Ok(())
+    }
+
+    /// Give `subject` up whoever holds it: a notification whose delivery
+    /// failed, or a failing streak that ended.
+    pub fn drop_lease(&self, subject: &LockSubject) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM event_cursors WHERE consumer = ?1",
+            [subject.consumer()],
+        )?;
+        Ok(())
+    }
+
+    /// Delete the notification leases that lapsed by `now`, so the table is
+    /// bounded by the keys still inside their interval rather than by every
+    /// key ever sent. A range on the primary key, not a scan.
+    pub fn prune_notification_leases(&self, now: u64) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "DELETE FROM event_cursors \
+             WHERE consumer >= ?1 AND consumer < ?2 AND lease_until <= ?3",
+            params![NOTIFICATION_PREFIX, "lock:notify;", now as i64],
+        )
     }
 
     /// Whether somebody holds `subject` at `now`.
@@ -261,6 +291,25 @@ mod tests {
         assert!(!db
             .take_lease(&LockSubject::AutomationRun(7), 100, 10)
             .unwrap());
+    }
+
+    #[test]
+    fn a_notification_lease_is_dropped_by_anyone_and_swept_once_lapsed() {
+        let db = Database::open_in_memory().unwrap();
+        let key = |k: &str| LockSubject::Notification(k.into());
+        assert!(db.take_lease(&key("a"), 100, 10).unwrap());
+        assert!(!db.take_lease(&key("a"), 100, 10).unwrap());
+        db.drop_lease(&key("a")).unwrap();
+        assert!(db.take_lease(&key("a"), 100, 10).unwrap());
+
+        assert!(db.take_lease(&key("b"), 50, 10).unwrap());
+        assert!(db.take_lease(&name("build"), 50, 10).unwrap());
+        assert_eq!(db.prune_notification_leases(60).unwrap(), 1);
+        assert!(db.lease_held(&key("a"), 60).unwrap(), "inside its interval");
+        assert!(
+            db.lease_held(&name("build"), 40).unwrap(),
+            "the sweep leaves other leases alone"
+        );
     }
 
     #[test]

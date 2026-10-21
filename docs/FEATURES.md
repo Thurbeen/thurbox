@@ -3193,7 +3193,14 @@ and the user alt-tabs back themselves.
 ### TUI-only lifecycle and gating
 
 The PTY parser that observes the bell only runs while the TUI is
-alive, so notifications never fire from a headless `automation tick`.
+alive, so session-state notifications never fire from a headless
+`automation tick`. What does notify headlessly is explicit:
+`thurbox-cli notify send` (a script, a hook or an Exec automation asks for
+it) and the opt-in `on_automation_failure` alert, which the tick sends
+through the same function. Both deliver synchronously, honour the same
+switches, and deduplicate a key through a lease in `event_cursors`, so a
+repeat is dropped across processes; see
+[CONFIG.md → Scripted notifications](CONFIG.md#scripted-notifications).
 The dispatcher thread (`crate::notifications::start`) starts only when
 `[features] notifications = true`, so the feature is zero-overhead when
 disabled. Knobs live in the `[notifications]` block of `settings.toml`

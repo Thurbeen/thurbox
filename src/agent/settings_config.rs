@@ -106,6 +106,7 @@ config_version = 1
 # sound = true                  # play the OS default notification sound
 # min_interval_secs = 5         # per-session dedup floor (seconds)
 # backend = "auto"              # delivery backend: auto | dbus | windows | off
+# on_automation_failure = false # notify when an automation run fails, once per failing streak
 
 # Clipboard transport for copy. `auto` writes to the local clipboard
 # when one is reachable and otherwise emits an OSC 52 escape sequence, which
@@ -470,6 +471,7 @@ mod tests {
             "sound",
             "min_interval_secs",
             "backend",
+            "on_automation_failure",
             "[remote]",
             "transitive_sessions",
         ] {

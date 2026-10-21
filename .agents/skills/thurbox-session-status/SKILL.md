@@ -384,6 +384,13 @@ overflow the banner.
 - **Diagnostic**: `thurbox-cli notify` prints the detected backend, whether it can
   deliver, click-to-focus support and the last error; `--test` fires a sample
   *synchronously* (`send_blocking`, since the short-lived CLI has no dispatcher).
+- **Headless sends**: `thurbox-cli notify send` and the opt-in
+  `[notifications] on_automation_failure` alert of `automation tick` go through
+  one function, `cli::notify::send`: off switches first, then a dedupe lease
+  (`LockSubject::Notification`, `lock:notify:<key>`) that a failed delivery gives
+  back, then `send_blocking`. Neither changes a session's state. Linux
+  click-to-focus does not reach them: the click is answered by the sending
+  process, which has exited.
 - **Click-to-focus** (dbus + macOS `terminal-notifier`): the callback writes a
   session id to the `metadata` row keyed by `PENDING_FOCUS_SESSION_ID_KEY`, and the
   loop reads-and-deletes it atomically (`take_pending_focus_session_id`, one

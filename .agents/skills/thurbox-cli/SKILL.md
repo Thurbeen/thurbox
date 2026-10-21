@@ -61,7 +61,11 @@ up-to-date/dev-build/major guards; gated on
 `[features] auto_update`, on by default for 1.0; the TUI also runs this silently on
 startup when the flag is on), `notify`
 (diagnose OS desktop notifications: prints the detected delivery backend
-and last error; `--test` fires a sample — see OS notifications below), `perf`
+and last error; `--test` fires a sample; `send --title --body [--session]
+[--key --min-interval]` delivers one for a script, hook or Exec automation —
+honours both off switches, never touches session state, dedupes a key across
+processes through a lease in `event_cursors`; see `docs/CONFIG.md` →
+Scripted notifications), `perf`
 (print the perf snapshot a running TUI publishes while `THURBOX_PERF_LOG`
 or its perf HUD is active; `--plugins` for one row per pane, sorted by cost,
 with hints — see `docs/PERFORMANCE.md`), `plugin`
