@@ -227,3 +227,42 @@ impl Iterator for Parser {
         self.internal_events.pop_front()
     }
 }
+
+// thurbox patch: each chunk below is one `advance` call, so these pin what the
+// parser keeps between reads, which a pty test can only hope to provoke. No
+// chunk ends on a lone ESC: with nothing after it, that is the Escape key. Run
+// with `cargo test --manifest-path vendor/crossterm/Cargo.toml --lib thurbox_patch`.
+#[cfg(test)]
+mod thurbox_patch_tests {
+    use super::Parser;
+    use crate::event::{Event, InternalEvent, KeyCode, KeyEvent};
+
+    fn typed(chunks: &[&[u8]]) -> String {
+        let mut parser = Parser::default();
+        for chunk in chunks {
+            parser.advance(chunk, false);
+        }
+        parser
+            .map(|event| match event {
+                InternalEvent::Event(Event::Key(KeyEvent {
+                    code: KeyCode::Char(c),
+                    ..
+                })) => c,
+                other => panic!("not a typed character: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_coalesced_secondary_device_attributes_reply_is_consumed() {
+        assert_eq!(typed(&[b"before\x1b[>0;10;1cafter"]), "beforeafter");
+    }
+
+    #[test]
+    fn a_secondary_device_attributes_reply_split_across_reads_is_consumed() {
+        assert_eq!(
+            typed(&[b"before\x1b[", b">", b"0;", b"10;1", b"c", b"after"]),
+            "beforeafter"
+        );
+    }
+}
