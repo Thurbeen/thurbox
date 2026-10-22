@@ -279,8 +279,11 @@ session was deleted, stopped or lost, 1 is another failure and 3 an ambiguous
 reference. Bad flags or an invalid regex exit 2.
 
 `send --wait-turn` takes its cursor **before** sending and waits for the next
-`working` edge, even if the agent is already working. It preserves the send
-result and adds the matching event as `turn`. Only agents whose hooks report
+`working` edge, even if the agent is already working; text left in the
+mailbox for a busy composer is waited for the same way. It preserves the send
+result and adds the matching event as `turn`, and a timeout (4) or a session
+that left (6) keeps the send result too, with `turn: null` and `error`, so a
+driver never reads either as "the text was not delivered". Only agents whose hooks report
 `working` can confirm this; a silent agent times out. `--strict` makes an
 unconfirmable submission (`submitted: null`) fail. Without it the existing
 success code for null is preserved. Neither option is used with `--no-enter`.

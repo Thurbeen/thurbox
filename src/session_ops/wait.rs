@@ -66,10 +66,9 @@ pub fn run(
                     "started" => stopped = false,
                     _ => {}
                 }
-                if event.event == "gone"
-                    || stopped
-                    || ["lost", "exited"].contains(&event.reason.as_str())
-                {
+                let ended =
+                    event.event == "gone" || ["lost", "exited"].contains(&event.reason.as_str());
+                if ended {
                     return Err(Error::Gone);
                 }
                 let Some(facts) = facts.get(&session.id) else {
@@ -93,6 +92,11 @@ pub fn run(
                     let mut value = super::events::render(&event, facts, &hook, stopped);
                     value["gap"] = json!(gap);
                     return Ok(value);
+                }
+                // Checked after the match, so `--state stopped` is answered by
+                // the stop it was waiting for rather than ended by it.
+                if stopped {
+                    return Err(Error::Gone);
                 }
             }
             if full {

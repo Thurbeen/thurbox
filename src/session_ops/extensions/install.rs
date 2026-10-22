@@ -90,6 +90,17 @@ fn install(
     for w in &warnings {
         tracing::warn!("{w}");
     }
+    // The name becomes the manifest's file name and the default home's
+    // directory: one that climbs out of the extensions directory would
+    // overwrite whatever it reaches, the user's hooks.toml included.
+    if def.name.is_empty() || def.name.contains(['/', '\\']) || def.name == "." || def.name == ".."
+    {
+        return Err(format!(
+            "extension name '{}' must be a plain file name: no path separators, '.' or '..'",
+            def.name
+        )
+        .into());
+    }
 
     // Record the previously-installed version (if any) before we overwrite the
     // discovery manifest, so an install-over-existing / update can report a move.

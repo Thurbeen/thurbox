@@ -325,6 +325,31 @@ fn since_resumes_without_replaying() {
     watch.silent_for(Duration::from_secs(1));
 }
 
+/// A cursor older than the retained log says so with `gap: true` on the first
+/// event it reads, and only on that one.
+#[test]
+fn a_cursor_older_than_the_retained_log_reports_one_gap() {
+    let env = Env::new();
+    let db = env.db();
+    let id = seed(&db, "worker");
+    for state in ["working", "blocked", "done"] {
+        db.set_hook_state(id, state).expect(state);
+    }
+    db.conn_ref()
+        .execute(
+            "DELETE FROM session_events WHERE seq < (SELECT MAX(seq) - 1 FROM session_events)",
+            [],
+        )
+        .expect("prune");
+
+    let watch = env.watch(&["--json", "--since", "0", "--for-secs", "30"]);
+
+    let first = watch.event("the oldest retained event");
+    assert_eq!(first["gap"], Value::Bool(true), "{first}");
+    let second = watch.event("the next retained event");
+    assert_eq!(second["gap"], Value::Bool(false), "{second}");
+}
+
 /// A parked session takes no hook state, so a heartbeat's pane poll — or a
 /// mirror pass carrying a host's last word — cannot report a turn on a session
 /// that has no process to be in one.

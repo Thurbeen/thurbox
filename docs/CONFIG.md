@@ -595,7 +595,7 @@ timeout_secs = 120
 | `command` | yes | — | run through `sh -c` (`cmd /C` on Windows) |
 | `timeout_secs` | no | `30` | the hook is killed after this long — with everything it started (its process group; the process tree on Windows) |
 | `agents` | no | `[]` | exact agent names; empty matches all |
-| `to` | no | `[]` | destination states for `session.state_changed`; empty matches all; unknown states fail validation |
+| `to` | no | `[]` | destination states for `session.state_changed`: `working`, `blocked`, `done`, `idle`, `stopped`, `lost`, `exited`; empty matches all; any other word fails validation |
 
 **Events** — a `pre_*` fires before the operation has any side effect, a
 `post_*` after it has fully succeeded (never after a failure):
@@ -655,7 +655,13 @@ timeouts; each remaining hook gets a share of the remaining phase budget so
 one slow hook cannot starve the rest of its event. Unfinished rows wait for
 the next tick. Reaping and telemetry run
 before this phase, so a slow hook delays only hooks. First use starts at the
-head, skipping history. Pruned history produces `gap: true` once.
+head, skipping history. Pruned history produces `gap: true` once, on the first
+payload a hook receives in that tick; when no hook's filter matches anything
+in that batch, only the tick's own report carries it. The cursor outlives the
+file: removing every state hook pauses delivery, and adding one back resumes
+from where it stopped (at most 512 edges a tick, within retention) rather
+than from the head. An edge whose session row was force-deleted before the
+tick reached it is skipped, since its agent and context are gone with it.
 
 Keeper latency is normally 60 seconds. The existing `features.automations`
 off switch disables automatic keeper startup; manual `automation tick` still

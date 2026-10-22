@@ -13,6 +13,7 @@ use std::path::PathBuf;
 pub struct ReadFields {
     output: HashMap<String, HashMap<String, u64>>,
     transcripts: HashMap<SessionId, Option<PathBuf>>,
+    rows: HashMap<SessionId, Option<SharedSession>>,
 }
 impl ReadFields {
     /// At most one metadata listing per local server per invocation/batch,
@@ -55,7 +56,13 @@ impl ReadFields {
     ) {
         value["last_output_at"] = Value::Null;
         value["transcript_path"] = Value::Null;
-        if let Ok(Some(row)) = db.get_session_by_id(id) {
+        // A batch holds up to 512 events, mostly about the same few sessions.
+        let row = self
+            .rows
+            .entry(id)
+            .or_insert_with(|| db.get_session_by_id(id).ok().flatten())
+            .clone();
+        if let Some(row) = row {
             self.annotate(db, backends, registry, &row, value);
         }
     }

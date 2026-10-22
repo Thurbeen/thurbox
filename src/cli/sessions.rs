@@ -1479,10 +1479,12 @@ fn run_send(
         ));
     }
     if wait.wait_turn {
-        if output.json["sent"] != true {
-            return Err("the prompt was not submitted to the pane".into());
-        }
-        let event = crate::session_ops::wait::run(
+        // Text left in the mailbox starts its turn once the agent takes it,
+        // so that is waited for too. Whatever ends the wait, the text was
+        // delivered: the send result stays on the answer, so a driver does
+        // not read a timeout as "send again".
+        output.json["turn"] = Value::Null;
+        match crate::session_ops::wait::run(
             db,
             backends,
             &session,
@@ -1492,9 +1494,18 @@ fn run_send(
                 timeout: wait.timeout.map(std::time::Duration::from_secs),
             },
             Some(seq),
-        )
-        .map_err(wait_error)?;
-        output.json["turn"] = event;
+        ) {
+            Ok(event) => output.json["turn"] = event,
+            Err(e) => {
+                let error = wait_error(e);
+                output.json["error"] = json!(error.message);
+                output.json["error_kind"] = json!(error.error.kind());
+                return Ok(
+                    CommandOutput::failed(output.json, output.human, error.message)
+                        .exiting_with(error.exit_code),
+                );
+            }
+        }
     }
     Ok(output)
 }

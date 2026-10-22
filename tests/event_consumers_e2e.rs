@@ -336,6 +336,11 @@ fn send_wait_turn_times_out_when_no_working_edge_follows() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+    // The text was delivered: a driver that retried on exit 4 without seeing
+    // that would type it twice.
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["sent"], true, "{v}");
+    assert!(v["turn"].is_null(), "{v}");
 }
 
 #[test]
@@ -697,25 +702,6 @@ fn concurrent_ticks_deliver_a_state_hook_once_under_the_lease() {
 }
 
 #[test]
-fn watch_reports_a_pruned_cursor_gap_once() {
-    let env = Env::new();
-    let id = env.seed();
-    let db = env.db();
-    db.set_hook_state(id, "working").unwrap();
-    db.set_hook_state(id, "done").unwrap();
-    db.conn_ref()
-        .execute(
-            "DELETE FROM session_events WHERE seq < (SELECT MAX(seq) FROM session_events)",
-            [],
-        )
-        .unwrap();
-    let out = env.run(&["watch", "--since", "0", "--for-secs", "0"]);
-    assert!(out.status.success());
-    let event: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(event["gap"], true);
-}
-
-#[test]
 fn a_wait_can_match_an_already_stopped_session() {
     let env = Env::new();
     let id = env.seed();
@@ -988,4 +974,95 @@ fn extension_hook_protection_resolves_relative_destinations_from_the_install_cwd
         );
         assert!(String::from_utf8_lossy(&out.stdout).contains("hooks.toml"));
     }
+}
+
+#[test]
+fn a_wait_matches_a_stop_that_happens_while_it_waits() {
+    let env = Env::new();
+    let id = env.seed();
+    let mut cmd = env.command(&[
+        "session",
+        "wait",
+        "worker",
+        "--state",
+        "stopped",
+        "--timeout",
+        "5",
+    ]);
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700));
+        env.db().set_session_stopped(id, true).unwrap();
+        env
+    });
+    let out = cmd.output().unwrap();
+    let _env = writer.join().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let event: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(event["state"], "stopped");
+    assert_eq!(event["reason"], "stopped");
+}
+
+/// Only the hook words and the terminal reasons are ever an edge's
+/// destination, so a filter naming a derived state would never fire.
+#[test]
+fn state_hook_filters_reject_states_no_edge_carries() {
+    for state in ["running", "unreachable", "uncovered", "unreported"] {
+        let env = Env::new();
+        env.hooks(&format!(
+            "[[hooks]]\nevent = 'session.state_changed'\nto = ['{state}']\ncommand = 'true'\n"
+        ));
+        let out = env.run(&["config", "validate"]);
+        assert!(!out.status.success(), "{state} was accepted");
+        assert!(String::from_utf8_lossy(&out.stdout).contains(state));
+    }
+}
+
+/// An extension's name becomes its manifest's file name, so a name that
+/// climbs out of the extensions directory would overwrite hooks.toml.
+#[test]
+fn an_extension_name_cannot_climb_out_of_the_extensions_directory() {
+    let env = Env::new();
+    let hooks = "config_version = 1\n[[hooks]]\nevent = 'session.pre_create'\ncommand = 'true'\n";
+    env.hooks(hooks);
+    let source = env.path("extension");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("extension.toml"), "name = '../hooks'\n").unwrap();
+    let out = env.run(&["extension", "install", source.to_str().unwrap(), "--force"]);
+    assert!(
+        !out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.path("config/hooks.toml")).unwrap(),
+        hooks
+    );
+}
+
+/// Retention can empty the log entirely. The next edge is news, not a gap: a
+/// consumer that starts on the empty log missed nothing.
+#[test]
+fn a_first_claim_on_an_emptied_log_reports_no_gap() {
+    let env = Env::new();
+    let id = env.seed();
+    let db = env.db();
+    db.set_hook_state(id, "working").unwrap();
+    db.conn_ref()
+        .execute("DELETE FROM session_events", [])
+        .unwrap();
+    env.hooks(&format!(
+        "[[hooks]]\nevent = 'session.state_changed'\ncommand = 'cat >> {}'\n",
+        env.path("events").display()
+    ));
+    env.ok(&["automation", "tick"]);
+    db.set_hook_state(id, "done").unwrap();
+    env.ok(&["automation", "tick"]);
+    let text = std::fs::read_to_string(env.path("events")).unwrap();
+    let event: Value = serde_json::from_str(text.trim()).unwrap();
+    assert_eq!(event["gap"], false, "{event}");
 }

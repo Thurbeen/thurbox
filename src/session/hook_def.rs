@@ -128,7 +128,9 @@ pub struct LifecycleHook {
 fn state_filter<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     let states = Vec::<String>::deserialize(d)?;
     for state in &states {
-        if !super::SessionState::ALL.iter().any(|s| s.as_str() == state)
+        // What an edge can carry: a hook word, or a terminal lifecycle reason.
+        // A derived state such as `running` is never an edge's destination.
+        if !super::HOOK_STATES.contains(&state.as_str())
             && !["stopped", "lost", "exited"].contains(&state.as_str())
         {
             return Err(serde::de::Error::custom(format!(
