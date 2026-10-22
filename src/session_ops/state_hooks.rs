@@ -10,9 +10,10 @@ use std::time::{Duration, Instant};
 const CONSUMER: &str = "hooks";
 const LEASE_MS: i64 = 90_000;
 const BUDGET: Duration = Duration::from_secs(30);
-/// Less budget than this left, for every hook still to run on an event, is too
-/// little to start the next one: the rest of the event waits for the next
-/// tick, which delivers it again whole.
+/// When less budget than this is left in total, no further hook of the event
+/// starts: the event waits for the next tick, which delivers it again whole.
+/// It is a floor on what is left, not on a hook's share of it, which can be
+/// smaller when several hooks remain.
 const MIN_LEFT: Duration = Duration::from_millis(100);
 
 pub fn configured() -> bool {
