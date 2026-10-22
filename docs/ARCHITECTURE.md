@@ -1189,7 +1189,7 @@ The answer is kept for the control connection it was asked on (a generation
 bumped as each connection is installed), since a replacement may be to a
 server started since; a one-shot answer is not kept, since nothing would say
 the server it came from had gone, so a one-shot caller (`thurbox-cli`) asks
-for each pane it names — one `-V` and one `display-message` more, about 30 ms
+for each target it spells — one `-V` and one `display-message` more, about 30 ms
 each locally and an ssh exec each on a remote host. Callers arriving together
 wait for one question: they take a connection's answer, or a failure on the
 same connection. A timeout reconnects, and those behind it ask the new

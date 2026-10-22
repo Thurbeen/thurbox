@@ -384,8 +384,9 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
             "psmux {}.{}.{} is too old: its server runs a command meant for one pane on the \
              session's active pane — keystrokes typed into another session, the wrong pane \
              read or killed — and, before 3.3.7, starts agents with a stdin that is not their \
-             pane. Upgrade psmux to {}.{}.{} or newer, then restart its server (`psmux -L \
-             {socket} kill-server`) — a running server keeps the old code",
+             pane. A running server keeps the code it started with: restart it on psmux \
+             {}.{}.{} or newer (`psmux -L {socket} kill-server`, which ends the agents running \
+             on it)",
             v.0,
             v.1,
             v.2,
@@ -1619,24 +1620,27 @@ mod tests {
     /// the agent reports "stdin is unreadable (EISDIR)" and exits.
     #[test]
     fn psmux_older_than_the_floor_is_refused_with_the_upgrade() {
-        let err = check_psmux_version("tmux 3.3.6\n", "thurbox")
+        let err = check_psmux_version("3.3.6", "thurbox")
             .unwrap_err()
             .to_string();
         assert!(err.contains("3.3.6"), "{err}");
         assert!(err.contains("3.3.8"), "{err}");
         assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
-        assert!(check_psmux_version("tmux 3.3.5", "thurbox").is_err());
-        assert!(check_psmux_version("psmux 3.2.9", "thurbox").is_err());
+        assert!(check_psmux_version("3.3.5", "thurbox").is_err());
+        assert!(check_psmux_version("3.2.9", "thurbox").is_err());
     }
 
-    /// `#{version}` is answered by the running server, which is what matters:
-    /// upgrading the binary leaves a server started before it on the old code.
-    /// The heartbeat asks a backend's `check_available` before it starts a
-    /// server, so an old psmux is refused there too, not only where panes are
-    /// born.
+    /// The binary is held to the floor before it starts a server, as the
+    /// running server is before a pane is named: the heartbeat asks a
+    /// backend's `check_available` first, so an old psmux is refused there too,
+    /// with the binary's advice and never the server's `kill-server`.
     #[test]
     fn an_old_psmux_banner_is_refused_before_a_server_starts() {
-        assert!(Psmux::check_banner("tmux 3.3.6\n", "thurbox").is_err());
+        let err = Psmux::check_banner("tmux 3.3.6\n", "thurbox")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("psmux binary is 3.3.6, too old"), "{err}");
+        assert!(!err.contains("kill-server"), "{err}");
         assert!(Psmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (x)\n", "thurbox").is_ok());
     }
 
@@ -1917,8 +1921,8 @@ mod tests {
     /// version it can read — `3.3.9-dev` included, which it refuses.
     #[test]
     fn an_unreadable_psmux_banner_is_not_refused() {
-        assert!(check_psmux_version("", "thurbox").is_ok());
-        assert!(check_psmux_version("psmux (dev build)", "thurbox").is_ok());
+        assert!(Psmux::check_banner("", "thurbox").is_ok());
+        assert!(Psmux::check_banner("psmux (dev build)", "thurbox").is_ok());
     }
 
     /// psmux gets its own `send-paste`: the bracketed markers are psmux's to add,

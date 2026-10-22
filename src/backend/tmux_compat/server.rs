@@ -147,12 +147,11 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// adapter), before the command itself.
     const DISPLAY_FLAGS: &[&str];
 
-    /// Refuse a multiplexer too old to give a new pane its own console or to
-    /// read the pane targets thurbox sends, from its `-V` banner or its
-    /// `#{version}` answer, or `None` when nothing is known to need refusing.
-    /// Asked of the running server and of the binary before a pane is named or
-    /// born (`Server::admit_server`), and of the binary before it starts a
-    /// server.
+    /// Refuse a server too old to give a new pane its own console or to read
+    /// the pane targets thurbox sends, from its `#{version}` answer, or `None`
+    /// when nothing is known to need refusing. Asked of the running server
+    /// before a pane is named or born (`Server::admit_server`); the binary is
+    /// judged by [`Self::check_banner`], there and before it starts a server.
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>>;
 
     /// Refuse a `-V` banner this adapter cannot work with, or that would start
@@ -1303,22 +1302,18 @@ impl<M: TmuxCompatible> Server<M> {
         attached: bool,
         refuse_old: fn(&str, &str) -> Result<()>,
     ) -> Result<Admission> {
-        // The binary's own refusal, not the server's: its server may be fine,
-        // and restarting that would end every agent and change nothing.
+        // Read strictly here, then judged by the adapter's own binary check,
+        // whose advice is about the binary: its server may be fine, and
+        // restarting that would end every agent and change nothing.
         let mux = self.transport.mux();
         let banner = self.tmux_output(&["-V"])?;
-        let Some(client) = banner_version(&banner) else {
+        if banner_version(&banner).is_none() {
             bail!(
                 "the {mux} binary did not give a version thurbox can hold to its floor (it \
                  answered {banner:?}); put a released {mux} first on PATH"
             );
-        };
-        if refuse_old(client, &self.socket()).is_err() {
-            bail!(
-                "the {mux} binary is {client}, too old to name a pane through: upgrade it, or \
-                 put a newer {mux} first on PATH; restarting a server would not change this"
-            );
         }
+        M::check_banner(&banner, &self.socket())?;
         let answer = match attached {
             true => self
                 .ctrl_command("display-message -p '#{version}'")
