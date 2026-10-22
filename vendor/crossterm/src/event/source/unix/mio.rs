@@ -230,8 +230,9 @@ impl Iterator for Parser {
 
 // thurbox patch: each chunk below is one `advance` call, so these pin what the
 // parser keeps between reads, which a pty test can only hope to provoke. No
-// chunk ends on a lone ESC: with nothing after it, that is the Escape key. Run
-// with `cargo test --manifest-path vendor/crossterm/Cargo.toml --lib thurbox_patch`.
+// chunk ends on a lone ESC: with nothing after it, that is the Escape key. CI's
+// Nextest job runs them with
+// `cargo test --locked --manifest-path vendor/crossterm/Cargo.toml --lib thurbox_patch`.
 #[cfg(test)]
 mod thurbox_patch_tests {
     use super::Parser;
