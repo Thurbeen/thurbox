@@ -2472,22 +2472,12 @@ fn delete_session(
     // own `deleted_at`, as the reaper and the retention purge measure them.
     // They are when each becomes *allowed*: the reap and the purge happen
     // only when a sweep runs (interface, heartbeat, or the verb by hand).
-    // A delete a shared host took is the host's to time: its row, its
-    // retention, its clock.
     let row = db.get_deleted_session_by_id(session.id).ok().flatten();
-    let soft_row = row.as_ref().filter(|_| !force);
-    let (undo_until, reapable_at) = match &report.host_deadlines {
-        Some(host) => (host.undo_until, host.reapable_at),
-        None => {
-            let retention_days = crate::session::settings::global().deleted_retention_days;
-            (
-                soft_row
-                    .filter(|_| retention_days > 0)
-                    .map(|r| r.deleted_at + retention_days.saturating_mul(24 * 60 * 60 * 1000)),
-                soft_row.map(|r| r.deleted_at + crate::session_ops::UNDO_WINDOW.as_millis() as u64),
-            )
-        }
-    };
+    let (undo_until, reapable_at) = undo_deadlines(
+        report.host_deadlines.as_ref(),
+        row.as_ref().filter(|_| !force).map(|r| r.deleted_at),
+        crate::session::settings::global().deleted_retention_days,
+    );
     Ok(CommandOutput::new(
         json!({
             "deleted": true,
@@ -2511,6 +2501,30 @@ fn delete_session(
         }),
         human,
     ))
+}
+
+/// A delete's `(undo_until, reapable_at)`, in epoch milliseconds.
+///
+/// A delete a shared host took is the host's to time — its row, its retention,
+/// its clock — so its own pair is reported as given. Otherwise both are
+/// measured from this machine's soft-deleted row (`soft_deleted_at`, `None`
+/// for a forced delete), the way the reaper and the retention purge measure
+/// them: the reap is allowed once the undo window closes, the purge once
+/// `retention_days` pass (never, at `0`).
+fn undo_deadlines(
+    host: Option<&crate::session_ops::HostDeadlines>,
+    soft_deleted_at: Option<u64>,
+    retention_days: u64,
+) -> (Option<u64>, Option<u64>) {
+    if let Some(host) = host {
+        return (host.undo_until, host.reapable_at);
+    }
+    (
+        soft_deleted_at
+            .filter(|_| retention_days > 0)
+            .map(|at| at + retention_days.saturating_mul(24 * 60 * 60 * 1000)),
+        soft_deleted_at.map(|at| at + crate::session_ops::UNDO_WINDOW.as_millis() as u64),
+    )
 }
 
 /// The human half of a `--force` delete: teardown counts, plus whichever of the
@@ -3726,6 +3740,35 @@ fn register_running_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The deadlines a delete reports: a shared host's own when it took the
+    /// delete, else this machine's, measured from the row's `deleted_at`.
+    #[test]
+    fn undo_deadlines_take_the_hosts_values_or_compute_them_locally() {
+        let window = crate::session_ops::UNDO_WINDOW.as_millis() as u64;
+        let day = 24 * 60 * 60 * 1000;
+        let host = crate::session_ops::HostDeadlines {
+            undo_until: Some(9_000),
+            reapable_at: Some(1_000),
+        };
+        // (undo_until, reapable_at), in that order, from the host as given.
+        assert_eq!(
+            undo_deadlines(Some(&host), Some(50), 3),
+            (Some(9_000), Some(1_000))
+        );
+        assert_eq!(
+            undo_deadlines(Some(&Default::default()), Some(50), 3),
+            (None, None)
+        );
+        // Local: retention bounds the restore, the window the reap.
+        assert_eq!(
+            undo_deadlines(None, Some(50), 2),
+            (Some(50 + 2 * day), Some(50 + window))
+        );
+        assert_eq!(undo_deadlines(None, Some(50), 0), (None, Some(50 + window)));
+        // A forced delete (no soft row) has neither.
+        assert_eq!(undo_deadlines(None, None, 2), (None, None));
+    }
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()

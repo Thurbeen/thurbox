@@ -13,15 +13,11 @@ use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
-/// Point this process at `home` and open its database. nextest runs one
-/// process per test, so the env is this test's alone.
+/// The database a `thurbox-cli` pointed at `home` (see [`cli`]) uses. Nothing
+/// process-wide is set, so tests sharing a process under `cargo test`'s
+/// threads keep their own instance each.
 fn isolate(home: &Path) -> Database {
-    thurbox::paths::set_test_dir(home);
-    std::env::set_var(thurbox::paths::CONFIG_DIR_OVERRIDE_ENV, home);
-    std::env::set_var(thurbox::paths::DATA_DIR_OVERRIDE_ENV, home);
-    let path = thurbox::paths::database_file().expect("db path");
-    std::fs::create_dir_all(path.parent().expect("data dir")).expect("mkdir");
-    Database::open(&path).expect("open db")
+    Database::open(&home.join("thurbox.db")).expect("open db")
 }
 
 fn seed(db: &Database, name: &str) -> SessionId {
@@ -46,9 +42,11 @@ fn seed(db: &Database, name: &str) -> SessionId {
     row.id
 }
 
-fn cli(args: &[&str]) -> Output {
+fn cli(home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .args(args)
+        .env(thurbox::paths::CONFIG_DIR_OVERRIDE_ENV, home)
+        .env(thurbox::paths::DATA_DIR_OVERRIDE_ENV, home)
         .env_remove("THURBOX_SESSION")
         .env_remove("THURBOX_SOCKET")
         .env_remove("THURBOX_SOCKET_FOR")
@@ -56,11 +54,11 @@ fn cli(args: &[&str]) -> Output {
         .expect("run thurbox-cli")
 }
 
-fn delete(id: SessionId, flags: &[&str]) -> (Value, String) {
+fn delete(home: &Path, id: SessionId, flags: &[&str]) -> (Value, String) {
     let id = id.to_string();
     let mut args = vec!["session", "delete", id.as_str(), "--json"];
     args.extend_from_slice(flags);
-    let out = cli(&args);
+    let out = cli(home, &args);
     assert!(
         out.status.success(),
         "delete failed: {}",
@@ -76,7 +74,7 @@ fn delete(id: SessionId, flags: &[&str]) -> (Value, String) {
 fn the_help_says_a_soft_delete_reaps_its_windows() {
     let home = tempfile::tempdir().expect("tempdir");
     isolate(home.path());
-    let out = cli(&["session", "delete", "--help"]);
+    let out = cli(home.path(), &["session", "delete", "--help"]);
     let help = String::from_utf8_lossy(&out.stdout);
     let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -94,7 +92,7 @@ fn a_soft_delete_reports_its_undo_window_and_the_row_it_left() {
     let db = isolate(home.path());
     let id = seed(&db, "worker");
 
-    let (report, stderr) = delete(id, &["--soft"]);
+    let (report, stderr) = delete(home.path(), id, &["--soft"]);
 
     assert_eq!(report["soft"], true, "{report}");
     let row = &report["session"];
@@ -112,9 +110,10 @@ fn a_soft_delete_reports_its_undo_window_and_the_row_it_left() {
     );
 
     // The same shape `session list --deleted --json` prints for the row.
-    let listed: Value =
-        serde_json::from_slice(&cli(&["session", "list", "--deleted", "--json"]).stdout)
-            .expect("list --deleted --json");
+    let listed: Value = serde_json::from_slice(
+        &cli(home.path(), &["session", "list", "--deleted", "--json"]).stdout,
+    )
+    .expect("list --deleted --json");
     assert_eq!(&listed[0], row);
 }
 
@@ -129,7 +128,7 @@ fn with_retention_a_soft_delete_says_when_it_stops_being_restorable() {
     .expect("write settings.toml");
     let id = seed(&db, "worker");
 
-    let (report, _) = delete(id, &["--soft"]);
+    let (report, _) = delete(home.path(), id, &["--soft"]);
 
     let deleted_at = report["session"]["deleted_at"]
         .as_u64()
@@ -147,7 +146,7 @@ fn a_flagless_json_delete_is_soft_and_says_so_on_stderr_only() {
     let db = isolate(home.path());
     let id = seed(&db, "worker");
 
-    let (report, stderr) = delete(id, &[]);
+    let (report, stderr) = delete(home.path(), id, &[]);
 
     assert_eq!(report["soft"], true, "{report}");
     assert_eq!(report["session"]["force_deleted"], false, "{report}");
@@ -163,7 +162,7 @@ fn a_forced_delete_reports_no_undo() {
     let db = isolate(home.path());
     let id = seed(&db, "worker");
 
-    let (report, stderr) = delete(id, &["--force"]);
+    let (report, stderr) = delete(home.path(), id, &["--force"]);
 
     assert_eq!(report["soft"], false, "{report}");
     assert_eq!(report["forced"], true);

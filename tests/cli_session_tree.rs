@@ -12,13 +12,11 @@ use thurbox::session::SessionId;
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;
 
+/// The database a `thurbox-cli` pointed at `home` (see [`list`]) uses. Nothing
+/// process-wide is set, so tests sharing a process under `cargo test`'s
+/// threads keep their own instance each.
 fn isolate(home: &Path) -> Database {
-    thurbox::paths::set_test_dir(home);
-    std::env::set_var(thurbox::paths::CONFIG_DIR_OVERRIDE_ENV, home);
-    std::env::set_var(thurbox::paths::DATA_DIR_OVERRIDE_ENV, home);
-    let path = thurbox::paths::database_file().expect("db path");
-    std::fs::create_dir_all(path.parent().expect("data dir")).expect("mkdir");
-    Database::open(&path).expect("open db")
+    Database::open(&home.join("thurbox.db")).expect("open db")
 }
 
 fn seed(db: &Database, name: &str, parent: Option<SessionId>, order: i64) -> SessionId {
@@ -43,10 +41,12 @@ fn seed(db: &Database, name: &str, parent: Option<SessionId>, order: i64) -> Ses
     row.id
 }
 
-fn list(args: &[&str]) -> String {
+fn list(home: &Path, args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .args(["session", "list"])
         .args(args)
+        .env(thurbox::paths::CONFIG_DIR_OVERRIDE_ENV, home)
+        .env(thurbox::paths::DATA_DIR_OVERRIDE_ENV, home)
         .env_remove("THURBOX_SESSION")
         .env_remove("THURBOX_SOCKET")
         .env_remove("THURBOX_SOCKET_FOR")
@@ -61,10 +61,10 @@ fn list(args: &[&str]) -> String {
 }
 
 /// `(name, depth)` per row, in output order.
-fn rows(args: &[&str]) -> Vec<(String, u64)> {
+fn rows(home: &Path, args: &[&str]) -> Vec<(String, u64)> {
     let mut args = args.to_vec();
     args.push("--json");
-    let json: Value = serde_json::from_str(&list(&args)).expect("list --json");
+    let json: Value = serde_json::from_str(&list(home, &args)).expect("list --json");
     json.as_array()
         .expect("an array")
         .iter()
@@ -104,7 +104,7 @@ fn tree_nests_children_under_parents_in_manual_order() {
     forest(&db);
 
     assert_eq!(
-        rows(&["--tree"]),
+        rows(home.path(), &["--tree"]),
         named(&[
             ("lead", 0),
             ("worker-b", 1),
@@ -114,7 +114,7 @@ fn tree_nests_children_under_parents_in_manual_order() {
             ("orphan", 0),
         ])
     );
-    let text = list(&["--tree", "--text"]);
+    let text = list(home.path(), &["--tree", "--text"]);
     assert!(text.contains("└ worker-b"), "{text}");
     assert!(text.contains("  └ sub"), "{text}");
 }
@@ -126,7 +126,7 @@ fn the_flat_list_keeps_its_order_and_gains_depth() {
     forest(&db);
 
     assert_eq!(
-        rows(&[]),
+        rows(home.path(), &[]),
         named(&[
             ("lead", 0),
             ("other", 0),
@@ -145,15 +145,15 @@ fn recursive_returns_every_descendant_and_parent_alone_stays_direct() {
     let lead = forest(&db).to_string();
 
     assert_eq!(
-        rows(&["--parent", &lead]),
+        rows(home.path(), &["--parent", &lead]),
         named(&[("worker-b", 0), ("worker-a", 0)])
     );
     assert_eq!(
-        rows(&["--parent", &lead, "--recursive"]),
+        rows(home.path(), &["--parent", &lead, "--recursive"]),
         named(&[("worker-b", 0), ("worker-a", 0), ("sub", 1)])
     );
     assert_eq!(
-        rows(&["--parent", &lead, "--recursive", "--tree"]),
+        rows(home.path(), &["--parent", &lead, "--recursive", "--tree"]),
         named(&[("worker-b", 0), ("sub", 1), ("worker-a", 0)])
     );
 }
@@ -170,11 +170,14 @@ fn a_parent_cycle_neither_hangs_nor_drops_a_row() {
     row.parent_session_id = Some(b);
     db.upsert_session(&row).expect("close the cycle");
 
-    let mut names: Vec<String> = rows(&["--tree"]).into_iter().map(|(n, _)| n).collect();
+    let mut names: Vec<String> = rows(home.path(), &["--tree"])
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
     names.sort();
     assert_eq!(names, ["a", "b"]);
 
-    let listed = rows(&["--parent", &a.to_string(), "--recursive"]);
+    let listed = rows(home.path(), &["--parent", &a.to_string(), "--recursive"]);
     assert_eq!(listed, named(&[("b", 0)]));
 }
 
@@ -186,6 +189,8 @@ fn tree_of_the_deleted_list_is_refused() {
     isolate(home.path());
     let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .args(["session", "list", "--deleted", "--tree", "--json"])
+        .env(thurbox::paths::CONFIG_DIR_OVERRIDE_ENV, home.path())
+        .env(thurbox::paths::DATA_DIR_OVERRIDE_ENV, home.path())
         .env_remove("THURBOX_SESSION")
         .env_remove("THURBOX_SOCKET")
         .env_remove("THURBOX_SOCKET_FOR")
@@ -226,8 +231,11 @@ fn a_key_filtered_subtree_does_not_nest_under_a_hidden_parent() {
     let lead = lead.to_string();
     let args = ["--parent", &lead, "--recursive", "--key-prefix", "k."];
     assert_eq!(
-        rows(&[&args[..], &["--tree"]].concat()),
+        rows(home.path(), &[&args[..], &["--tree"]].concat()),
         named(&[("direct", 0), ("visible", 0)])
     );
-    assert_eq!(rows(&args), named(&[("direct", 0), ("visible", 0)]));
+    assert_eq!(
+        rows(home.path(), &args),
+        named(&[("direct", 0), ("visible", 0)])
+    );
 }

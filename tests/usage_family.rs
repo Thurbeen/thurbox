@@ -23,7 +23,13 @@ fn subject(session: &str, agent: &str) -> Subject {
     }
 }
 
-fn isolate(home: &std::path::Path) {
+/// `Metrics` reads its config and credentials from this process's env, which
+/// `cargo test` shares between threads; each test holds this while it runs,
+/// across the awaits its fetch needs.
+static ENV: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn isolate(home: &std::path::Path) -> tokio::sync::MutexGuard<'static, ()> {
+    let guard = ENV.lock().await;
     thurbox::paths::set_test_dir(home);
     std::env::set_var(thurbox::paths::CONFIG_DIR_OVERRIDE_ENV, home);
     std::env::set_var(thurbox::paths::DATA_DIR_OVERRIDE_ENV, home);
@@ -44,6 +50,7 @@ command = "mine"
 "#,
     )
     .expect("write agents.toml");
+    guard
 }
 
 /// Poll until `done` holds or a deadline passes, folding fetches in.
@@ -58,7 +65,7 @@ async fn settle(metrics: &mut Metrics, done: impl Fn(&Metrics) -> bool) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_custom_agent_asserting_claude_reads_claude_usage() {
     let home = tempfile::tempdir().expect("tempdir");
-    isolate(home.path());
+    let _env = isolate(home.path()).await;
 
     let mut metrics = Metrics::new();
     metrics.sample(vec![subject("a", "claude-work"), subject("b", "mine")]);
@@ -86,7 +93,7 @@ async fn a_custom_agent_asserting_claude_reads_claude_usage() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_custom_agent_does_not_borrow_the_local_family() {
     let home = tempfile::tempdir().expect("tempdir");
-    isolate(home.path());
+    let _env = isolate(home.path()).await;
 
     let mut metrics = Metrics::new();
     let mut remote = subject("r", "claude-work");
