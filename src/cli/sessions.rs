@@ -1011,11 +1011,7 @@ fn session_forest(
     root: Option<SessionId>,
     same_host: bool,
 ) -> Vec<(usize, usize)> {
-    let host = |s: &SharedSession| {
-        crate::session::Route::parse(&s.backend_type)
-            .ok()
-            .and_then(|route| route.host().map(str::to_string))
-    };
+    let route = |s: &SharedSession| crate::session::Route::parse(&s.backend_type).ok();
     let at: std::collections::HashMap<SessionId, usize> = sessions
         .iter()
         .enumerate()
@@ -1028,7 +1024,15 @@ fn session_forest(
             .parent_session_id
             .filter(|_| Some(s.id) != root)
             .and_then(|p| at.get(&p))
-            .filter(|&&p| !same_host || host(&sessions[p]) == host(s));
+            .filter(|&&p| {
+                !same_host
+                    || match (route(&sessions[p]), route(s)) {
+                        (Some(parent), Some(child)) => parent.same_machine(&child),
+                        // A route nobody can parse is no evidence of another
+                        // machine; the two nest as the link says.
+                        _ => true,
+                    }
+            });
         match parent {
             Some(&parent) if parent != index => children[parent].push(index),
             _ => roots.push(index),

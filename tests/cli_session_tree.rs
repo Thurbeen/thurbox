@@ -251,7 +251,7 @@ fn a_tree_does_not_nest_a_local_child_under_a_remote_parent() {
     row.backend_type = "ssh:devbox:tmux".into();
     db.upsert_session(&row)
         .expect("make it a mirrored remote row");
-    let kid = seed(&db, "kid", Some(boss), 1);
+    seed(&db, "kid", Some(boss), 1);
 
     assert_eq!(
         rows(home.path(), &["--tree"]),
@@ -260,5 +260,4 @@ fn a_tree_does_not_nest_a_local_child_under_a_remote_parent() {
     // `--parent` still lists what names it as parent, as it always has.
     let listed = rows(home.path(), &["--parent", &boss.to_string()]);
     assert_eq!(listed, named(&[("kid", 0)]));
-    let _ = kid;
 }
