@@ -69,8 +69,8 @@ impl App {
         use thurbox::kernel::command::Command;
         match command {
             // Theme is applied here rather than dispatched: it mutates in-process
-            // state a worker thread cannot reach, and it is instant, so nothing is
-            // gained by making it asynchronous.
+            // state a worker thread cannot reach. Storing it is queued
+            // (`store_chosen_theme`).
             Command::Theme { name } => {
                 if let Err(e) = self.themes.select(name) {
                     self.report(e, Level::Error);

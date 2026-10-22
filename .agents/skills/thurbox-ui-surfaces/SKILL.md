@@ -129,7 +129,7 @@ appear in the picker after the built-ins and persist by name exactly like a pres
 than a colour — which is what lets one plugin look right under all thirty-six. Pick
 one with `Ctrl+Y` (or `F4`, avoiding terminals that take Ctrl+Y as DSUSP); the choice
 persists in SQLite under `metadata.active_theme`, and other thurbox processes pick it
-up within a tick via `PRAGMA data_version`.
+up when they next start.
 
 The picker (`kernel::modals::theme`) filters behind `/`, mirroring the file-viewer
 and review find so its keys stay consistent: `j`/`k` (+ arrows, `PageUp`/`PageDown`,
