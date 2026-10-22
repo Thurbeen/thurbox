@@ -64,6 +64,8 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
     let out = run(
         Action::List {
             parent: None,
+            recursive: false,
+            tree: false,
             deleted: true,
             since: None,
             verify: false,
@@ -86,6 +88,8 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
     let active = run(
         Action::List {
             parent: None,
+            recursive: false,
+            tree: false,
             deleted: false,
             since: None,
             verify: false,
@@ -409,6 +413,8 @@ fn listing(db: &Database, deleted: bool) -> Value {
     run(
         Action::List {
             parent: None,
+            recursive: false,
+            tree: false,
             deleted,
             since: None,
             verify: false,

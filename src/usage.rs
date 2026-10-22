@@ -36,20 +36,24 @@ use tokio::io::AsyncWriteExt;
 use crate::session::{AgentUsage, HostDef, UsageWindow};
 use crate::shell::HostLauncher;
 
-/// Agents we know how to fetch usage for. Others are skipped entirely (no
-/// process spawned, no panel section shown).
+/// Agent families we know how to fetch usage for. Others are skipped entirely
+/// (no process spawned, no panel section shown).
 const SUPPORTED: &[&str] = &["claude", "codex", "antigravity"];
 
-/// Whether [`fetch`] can return real usage for this agent name.
-pub fn is_supported(agent: &str) -> bool {
-    SUPPORTED.contains(&agent)
+/// The usage family of an agent: its own name when that is a supported
+/// built-in, else the family its `hook_schema` asserts — the same claim the
+/// hooks extension honours, so a `claude-work` with `hook_schema = "claude"`
+/// reads claude's usage. `None` when neither names a supported family.
+pub fn family(agent: &str, hook_schema: Option<&str>) -> Option<&'static str> {
+    let supported = |name: &str| SUPPORTED.iter().copied().find(|s| *s == name);
+    supported(agent).or_else(|| hook_schema.and_then(supported))
 }
 
-/// Fetch account usage for `agent` as seen from `host` (`None` = the local
-/// machine). Best-effort; never errors — unavailability is reported via
-/// [`AgentUsage::note`] with no windows.
-pub async fn fetch(agent: &str, host: Option<&HostDef>) -> AgentUsage {
-    match agent {
+/// Fetch account usage for the agent `family` (see [`family`]) as seen from
+/// `host` (`None` = the local machine). Best-effort; never errors —
+/// unavailability is reported via [`AgentUsage::note`] with no windows.
+pub async fn fetch(family: &str, host: Option<&HostDef>) -> AgentUsage {
+    match family {
         "claude" => claude(host).await,
         "codex" => codex(host).await,
         "antigravity" => antigravity(host).await,
@@ -535,11 +539,21 @@ mod tests {
 
     #[test]
     fn supported_set() {
-        assert!(is_supported("claude"));
-        assert!(is_supported("codex"));
-        assert!(is_supported("antigravity"));
-        assert!(!is_supported("aider"));
-        assert!(!is_supported("shell"));
+        assert_eq!(family("claude", None), Some("claude"));
+        assert_eq!(family("codex", None), Some("codex"));
+        assert_eq!(family("antigravity", None), Some("antigravity"));
+        assert_eq!(family("aider", None), None);
+        assert_eq!(family("shell", None), None);
+    }
+
+    #[test]
+    fn a_custom_agent_reads_the_family_its_hook_schema_asserts() {
+        assert_eq!(family("claude-work", Some("claude")), Some("claude"));
+        assert_eq!(family("claude-work", None), None);
+        // A family thurbox has no usage source for buys nothing.
+        assert_eq!(family("mine", Some("aider")), None);
+        // A built-in's own name wins over whatever it asserts.
+        assert_eq!(family("codex", Some("claude")), Some("codex"));
     }
 
     #[test]

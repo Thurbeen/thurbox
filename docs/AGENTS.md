@@ -198,6 +198,27 @@ Agents that declare no `fork_args` (`antigravity`, `aider`, `copilot`, `vibe`,
 `omp`) cannot fork — `Ctrl+F` starts a **fresh** session instead. None of those
 CLIs support forking a conversation to a thurbox-pinned target.
 
+### `claude`: messages held for approval
+
+`message send` hands a body to a claude session over its inbox socket. Claude
+Code can then hold it behind an approval dialog, notably in
+`bypassPermissions`, unless the recipient's settings carry
+`crossSessionInbound: accept`. The socket accepts the body either way, so the
+send reports `delivered_via: "claude-socket"` with `may_hold: true`, and the
+text output says the message may wait on a prompt. `may_hold` describes the
+route: thurbox cannot see the recipient's permission mode or whether a dialog
+was shown. A delivered row is marked read, so it shows under
+`message inbox --all`, not plain `message inbox`.
+
+Thurbox does not set `crossSessionInbound` itself: accepting cross-session
+prompts with no dialog lets any peer session drive the recipient, which is a
+choice for the user to make. To make it, put the setting in your own claude
+settings (`~/.claude/settings.json`, or the one under `CLAUDE_CONFIG_DIR`).
+Claude merges thurbox's `--settings` file over those, so they still apply
+inside thurbox sessions. They also apply outside thurbox. An edit to the hooks
+extension's managed `claude.json` does not last: self-heal rewrites that file
+from the embedded payload.
+
 ### Status hook mechanisms
 
 Every built-in reports status via the **hooks** extension, but *how* the hook is
@@ -436,7 +457,13 @@ different name (e.g. a rebranded-claude CLI called `fleet`): set `hook_schema =
 "claude"` and it inherits claude's `--settings` hook wiring under its own name.
 Only the per-arg-patch families (`claude`, `aider`) need it; the config-dir
 agents (codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own config
-dir, so a rebrand sharing that dir already reports without it. See
+dir, so a rebrand sharing that dir already reports without it. The info
+panel's account usage follows the same claim for a session on this machine: an
+agent with `hook_schema` naming `claude`, `codex` or `antigravity` shows that
+family's usage, read with the same credentials as the built-in. A session on a
+remote host is matched by its name alone, whether or not that host runs its own
+CLI: one that does launches from its own definitions, and the usage lookup does
+not tell the two kinds of host apart. See
 [CONFIG.md](CONFIG.md#agentstoml) and the `AgentDef.hook_schema` doc comment.
 
 ## Adding a new built-in agent

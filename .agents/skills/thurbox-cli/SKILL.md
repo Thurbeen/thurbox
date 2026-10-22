@@ -32,6 +32,8 @@ thurbox-cli session create --name demo --repo-path /a \
 thurbox-cli session list                       # human-readable table
 thurbox-cli session list --json | jq           # machine output for scripts
 thurbox-cli session list --parent <lead-uuid> --json | jq  # direct children only
+thurbox-cli session list --parent <lead-uuid> --recursive  # every descendant
+thurbox-cli session list --tree                # nested as the sidebar nests it
 ```
 
 Subcommands: `ui` (instances/state/actions/action/input for a live local TUI),
@@ -627,8 +629,15 @@ there is no wiring here to be broken, and failing it made bare `session doctor`
 session shape thurbox advertises for drivers.
 
 `session delete <uuid>` tears down immediately by default in every build.
-A flagless `--json` delete stays soft for legacy sharing compatibility; JSON
+A flagless `--json` delete stays soft for legacy sharing compatibility, and
+warns on stderr (one line; never with `--soft`/`--force`); JSON
 scripts must pass `--force` for immediate teardown or `--soft` for undo.
+The delete JSON carries `soft`, `reapable_at` (`deleted_at + UNDO_WINDOW`: the
+reap is allowed then, and happens when a sweep runs), `undo_until` (`deleted_at
++ deleted_retention_days`, null when retention is off) — both null when forced,
+and the host's own values (`session_ops::HostDeadlines`) when a shared host took
+the delete —
+and `session`, the resulting row as `session list --deleted --json` prints it.
 `[features] soft_delete = true` or CLI `--soft` opts into an undoable delete;
 `--force` always tears down immediately. The two flags conflict. A soft delete
 marks the DB row and disables the `send` automations targeting the session
@@ -831,7 +840,16 @@ Sessions carry an optional **`parent_session_id`** so orchestration scripts can
 model lead → worker relationships. `session create --parent <uuid>` sets it (the
 parent must be an existing active session — validated before any side effects);
 `session list`/`get` emit it in the JSON (`null` for top-level) and `session list
---parent <uuid>` filters to direct children. The link is **purely
+--parent <uuid>` filters to direct children; `--recursive` lists every descendant.
+`session list --tree` orders rows as the sidebar nests them (children under their
+parent, siblings and roots in manual order, a row whose parent is not listed at
+the top level) and indents the text table; every `session list` JSON row carries
+`depth` (0 for a row whose parent is not listed: a root, a direct child of
+`--parent`, or a row whose parent a `--key`/`--key-prefix` filter left out). The walk
+(`cli::sessions::session_forest`) visits each row once, so a parent-id cycle
+lists every member rather than hanging or dropping one, and it never nests a
+row under a parent on another machine (`--parent` still lists what names it).
+Unlike the sidebar it does not group by repo. The link is **purely
 informational**: deleting a parent never cascades (orphans render as top-level),
 and the parent is validated when it is set: at creation, or by `session
 reparent <session> <parent>` (`--clear` for top-level), which also refuses a
@@ -928,7 +946,10 @@ without double-processing.
   before each attempt; success marks the row read + `delivered_via` (schema
   v48), failure releases it, and a killed sender's lease just lapses.
   Output: `delivered_via` = `claude-socket` | `codex-queue` | `mailbox`, plus
-  `delivery_note`. `tests/architecture_rules.rs` keeps the multiplexer (`backend`, `agent`)
+  `delivery_note` and `may_hold` — true for `claude-socket`, whose recipient
+  can hold the body behind an approval dialog unless its settings carry
+  `crossSessionInbound: accept` (a fact about the route; thurbox never sees the
+  dialog, and does not set the setting itself — see `docs/AGENTS.md`). `tests/architecture_rules.rs` keeps the multiplexer (`backend`, `agent`)
   unreachable from this path.
 
 - **Identity (the registry key, self-knowable).** A session's `SessionId` is

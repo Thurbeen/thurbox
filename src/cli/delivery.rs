@@ -61,6 +61,15 @@ pub(crate) enum DeliveredVia {
 }
 
 impl DeliveredVia {
+    /// Whether this route can leave the body waiting on an approval prompt in
+    /// the recipient. A fact about the route, not a detected hold: thurbox
+    /// cannot see the recipient's permission mode, and the socket accepts the
+    /// body either way. Claude Code holds a cross-session message behind a
+    /// dialog unless its `crossSessionInbound` setting is `accept`.
+    pub(crate) fn may_hold(self) -> bool {
+        matches!(self, Self::ClaudeSocket)
+    }
+
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeSocket => "claude-socket",

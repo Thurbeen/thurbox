@@ -224,6 +224,8 @@ mod tests {
         let out = crate::cli::sessions::run(
             crate::cli::sessions::Action::List {
                 parent: None,
+                recursive: false,
+                tree: false,
                 deleted: false,
                 since: None,
                 verify: false,

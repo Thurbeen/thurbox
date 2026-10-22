@@ -47,6 +47,18 @@ pub struct ForceDeleteReport {
     pub host_unreachable: Option<String>,
     /// `session.post_delete` hooks that failed. The delete stands regardless.
     pub hook_failures: Vec<String>,
+    /// Set when a shared host took the delete: the undo deadlines it reported
+    /// for its own row. Its retention setting and its clock decide when that
+    /// row goes, so this machine's would be a guess.
+    pub host_deadlines: Option<HostDeadlines>,
+}
+
+/// The undo deadlines a host reports for a delete it took, in epoch
+/// milliseconds on its clock; `None` where it did not say (an older host).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostDeadlines {
+    pub undo_until: Option<u64>,
+    pub reapable_at: Option<u64>,
 }
 
 /// Soft-delete a session and (when `force`) also tear down its runtime
@@ -182,6 +194,12 @@ pub fn delete_session_headless(
                 .get("remote_teardown_error")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string);
+            report.host_deadlines = Some(HostDeadlines {
+                undo_until: answer.get("undo_until").and_then(serde_json::Value::as_u64),
+                reapable_at: answer
+                    .get("reapable_at")
+                    .and_then(serde_json::Value::as_u64),
+            });
             report.disabled_automations = db
                 .disable_send_automations_for_session(session_id)
                 .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
@@ -1660,6 +1678,39 @@ mod tests {
                     .unwrap()
                     .force_deleted
             );
+        }
+    }
+
+    /// A delete the host took reports the host's own undo deadlines: its
+    /// retention and its clock decide when its row goes, not this machine's.
+    /// A host too old to report them leaves both unknown rather than guessed.
+    #[test]
+    fn a_delegated_delete_reports_the_hosts_own_deadlines() {
+        let _guard = configured_host();
+        let db = Database::open_in_memory().unwrap();
+        for (answer, expected) in [
+            (
+                serde_json::json!({"deleted": true, "undo_until": 9_000, "reapable_at": 1_000}),
+                HostDeadlines {
+                    undo_until: Some(9_000),
+                    reapable_at: Some(1_000),
+                },
+            ),
+            (
+                serde_json::json!({"deleted": true}),
+                HostDeadlines::default(),
+            ),
+        ] {
+            let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+            let mut cli = super::super::host_cli::fake::cli();
+            cli.soft_delete_choice = true;
+            super::super::host_cli::fake::force_usable(super::super::host_cli::Usable::Yes(cli));
+            super::super::host_cli::fake::install_runner(Box::new(move |_, _| Ok(answer.clone())));
+            let report =
+                delete_session_headless(&db, &crate::backend::registry::inert(), id, false)
+                    .unwrap();
+            super::super::host_cli::fake::clear();
+            assert_eq!(report.host_deadlines, Some(expected));
         }
     }
 

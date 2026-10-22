@@ -79,6 +79,18 @@ pub enum Action {
         /// Only list children of this parent session UUID.
         #[arg(long)]
         parent: Option<String>,
+        /// With `--parent`: every descendant at any depth, not only the
+        /// direct children.
+        #[arg(long, requires = "parent")]
+        recursive: bool,
+        /// Order rows as the sidebar nests them: each child under its parent,
+        /// siblings and roots in manual order. A row whose parent is not in
+        /// the listing (deleted, or filtered out) or runs on another machine
+        /// shows at the top level.
+        /// Unlike the sidebar, rows are not grouped by repo. Text output
+        /// indents each child; JSON rows carry `depth` either way.
+        #[arg(long, conflicts_with = "deleted")]
+        tree: bool,
         /// List the deleted sessions instead — what a peer thurbox mirroring
         /// this machine reads, with each row's `force_deleted` mark.
         #[arg(long)]
@@ -240,11 +252,24 @@ pub enum Action {
     ///
     /// By default kills owned windows, removes worktrees thurbox created,
     /// and disables send automations immediately. Set `[features] soft_delete`
-    /// = true or pass --soft to keep windows and worktrees for undo instead;
-    /// send automations are disabled either way.
+    /// = true or pass --soft for an undoable delete instead: the worktrees are
+    /// kept; the windows become reapable when the 10 s undo window closes and
+    /// come down at the next sweep (the interface's or the heartbeat's,
+    /// whichever runs) or with `session reap`; and the row stays restorable
+    /// with `session restore` until it is purged — after the window, a restore
+    /// starts the agent again. Send automations are disabled either way.
     /// --force always tears down immediately, regardless of the setting.
-    /// With --json, a flagless delete stays soft for legacy sharing peers;
-    /// JSON callers must pass --force for immediate teardown.
+    /// With --json, a flagless delete stays soft for legacy sharing peers and
+    /// says so on stderr; JSON callers must pass --force for immediate
+    /// teardown, or --soft to ask for the undo explicitly.
+    ///
+    /// The JSON carries `soft`; `reapable_at`, when the undo window closes and
+    /// the windows may be reaped (epoch ms); `undo_until`, when
+    /// `deleted_retention_days` lets the row be purged, null when nothing
+    /// will purge it; and `session`, the resulting row in the shape `session
+    /// list --deleted --json` prints. Both instants are null for a forced
+    /// delete. For a session a shared host deleted they are the host's own,
+    /// and null where an older host does not report them.
     Delete {
         /// Session UUID.
         uuid: String,
@@ -736,6 +761,8 @@ pub fn run(
         } => run_list_deleted(db, since),
         Action::List {
             parent,
+            recursive,
+            tree,
             deleted: false,
             verify,
             key,
@@ -744,7 +771,11 @@ pub fn run(
         } => run_list_active(
             db,
             backends,
-            parent,
+            ListShape {
+                parent,
+                recursive,
+                tree,
+            },
             verify,
             KeyFilter::from_flags(key, key_prefix),
         ),
@@ -956,21 +987,125 @@ impl KeyFilter {
     }
 }
 
+/// `session list --parent` / `--recursive` / `--tree`: which rows, in what
+/// order.
+struct ListShape {
+    parent: Option<String>,
+    recursive: bool,
+    tree: bool,
+}
+
+/// Each row's place in the parent forest of `sessions`, as `(index, depth)`
+/// pairs in tree order: a root, then its subtree depth-first, siblings and
+/// roots in the order `sessions` already has (manual order, from the query).
+///
+/// A row is a root when its parent is not among `sessions`, or when it is
+/// `root`, or — with `same_host` — when its parent runs on another machine:
+/// a drawn tree never crosses hosts, though the link itself may (a local
+/// session can name a mirrored one as its parent). Every row appears exactly
+/// once: a parent-id cycle has no root to be reached from, so its first member
+/// in list order is taken as one, and the walk never revisits a row.
+/// Reparenting refuses cycles, but a mirrored row is not reparented here.
+fn session_forest(
+    sessions: &[SharedSession],
+    root: Option<SessionId>,
+    same_host: bool,
+) -> Vec<(usize, usize)> {
+    let route = |s: &SharedSession| crate::session::Route::parse(&s.backend_type).ok();
+    let at: std::collections::HashMap<SessionId, usize> = sessions
+        .iter()
+        .enumerate()
+        .map(|(index, s)| (s.id, index))
+        .collect();
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); sessions.len()];
+    let mut roots = Vec::new();
+    for (index, s) in sessions.iter().enumerate() {
+        let parent = s
+            .parent_session_id
+            .filter(|_| Some(s.id) != root)
+            .and_then(|p| at.get(&p))
+            .filter(|&&p| {
+                !same_host
+                    || match (route(&sessions[p]), route(s)) {
+                        (Some(parent), Some(child)) => parent.same_machine(&child),
+                        // A route nobody can parse is no evidence of another
+                        // machine; the two nest as the link says.
+                        _ => true,
+                    }
+            });
+        match parent {
+            Some(&parent) if parent != index => children[parent].push(index),
+            _ => roots.push(index),
+        }
+    }
+    let mut seen = vec![false; sessions.len()];
+    let mut order = Vec::with_capacity(sessions.len());
+    for start in roots.into_iter().chain(0..sessions.len()) {
+        let mut stack = vec![(start, 0)];
+        while let Some((index, depth)) = stack.pop() {
+            if std::mem::replace(&mut seen[index], true) {
+                continue;
+            }
+            order.push((index, depth));
+            stack.extend(children[index].iter().rev().map(|&c| (c, depth + 1)));
+        }
+    }
+    order
+}
+
 fn run_list_active(
     db: &Database,
     backends: &super::Backends<'_>,
-    parent: Option<String>,
+    shape: ListShape,
     verify: bool,
     keys: KeyFilter,
 ) -> Result<CommandOutput, CommandError> {
-    let parent_id = parent
+    let parent_id = shape
+        .parent
         .as_deref()
         .map(|reference| resolve(db, reference).map(|s| s.id))
         .transpose()?;
-    let sessions: Vec<SharedSession> = keys
-        .rows(db)?
-        .into_iter()
-        .filter(|s| parent_id.is_none() || s.parent_session_id == parent_id)
+    let mut sessions: Vec<SharedSession> = keys.rows(db)?;
+    if let Some(parent) = parent_id {
+        // Descendants are found over every active row, not only the keyed
+        // ones, so a child reached through an unkeyed session is still found.
+        // The walk is rooted at the parent itself, which is then left out.
+        let keyed: std::collections::HashSet<SessionId> = sessions.iter().map(|s| s.id).collect();
+        let all = db
+            .list_active_sessions()
+            .map_err(|e| format!("list_active_sessions: {e}"))?;
+        // The recorded link, whichever machine each side is on: `--parent`
+        // lists what names it, as it always has.
+        let forest = session_forest(&all, Some(parent), false);
+        let selected: std::collections::HashSet<SessionId> = forest
+            .iter()
+            .position(|&(index, _)| all[index].id == parent)
+            .map(|start| {
+                forest[start + 1..]
+                    .iter()
+                    .take_while(|&&(_, depth)| depth > 0)
+                    .filter(|&&(_, depth)| shape.recursive || depth == 1)
+                    .map(|&(index, _)| all[index].id)
+                    .filter(|id| keyed.contains(id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        sessions = all
+            .into_iter()
+            .filter(|s| selected.contains(&s.id))
+            .collect();
+    }
+    // The tree is drawn over the rows actually listed, so a row whose parent
+    // was filtered out — `--parent` itself, or an unkeyed row between — is a
+    // root rather than indented under a row that is not its parent.
+    let mut placed = session_forest(&sessions, None, true);
+    if !shape.tree {
+        placed.sort_by_key(|&(index, _)| index);
+    }
+    let depths: Vec<usize> = placed.iter().map(|&(_, depth)| depth).collect();
+    let sessions: Vec<SharedSession> = placed
+        .iter()
+        .map(|&(index, _)| sessions[index].clone())
         .collect();
     let facts = SessionFacts::load(db);
     let bases = db.load_base_branches().unwrap_or_default();
@@ -985,7 +1120,8 @@ fn run_list_active(
         sessions
             .iter()
             .zip(&assessments)
-            .map(|(s, hook)| {
+            .zip(&depths)
+            .map(|((s, hook), depth)| {
                 let mut row = crate::session_ops::mirror::session_to_json_assessed(
                     s,
                     hook,
@@ -993,12 +1129,19 @@ fn run_list_active(
                     updated.get(&s.id).copied(),
                 );
                 fields.annotate(db, Some(backends.local()), &registry, s, &mut row);
+                row["depth"] = json!(depth);
                 row
             })
             .collect(),
     );
+    let indents: &[usize] = if shape.tree { &depths } else { &[] };
+    let columns: &[&str] = if shape.tree {
+        &["name", "agent", "state", "depth", "id"]
+    } else {
+        &["name", "agent", "state", "id"]
+    };
     Ok(
-        CommandOutput::new(json, render_session_list(&sessions, &assessments))
+        CommandOutput::new(json, render_session_list(&sessions, &assessments, indents))
             // `state`, not `hook_state`: the raw latched word is null for a
             // session that never reported and carries no age or coverage to
             // judge it by, so an agent reading the default answer would get
@@ -1007,7 +1150,7 @@ fn run_list_active(
             //
             // The id is not decoration: every follow-up command resolves a
             // session by UUID, so omitting it would only buy a second call.
-            .list("sessions", &["name", "agent", "state", "id"])
+            .list("sessions", columns)
             .empty(match (parent_id, &keys) {
                 (Some(id), _) => format!("0 sessions with parent {id}"),
                 (None, KeyFilter::Exact(key)) => format!("0 sessions with key '{key}'"),
@@ -2343,6 +2486,17 @@ fn delete_session(
         }
     }
     push_hook_failures(&mut human, &report.hook_failures);
+    // The row as it now stands, so a caller planning an undo needs no
+    // `list --deleted` round trip. Both instants are measured from the row's
+    // own `deleted_at`, as the reaper and the retention purge measure them.
+    // They are when each becomes *allowed*: the reap and the purge happen
+    // only when a sweep runs (interface, heartbeat, or the verb by hand).
+    let row = db.get_deleted_session_by_id(session.id).ok().flatten();
+    let (undo_until, reapable_at) = undo_deadlines(
+        report.host_deadlines.as_ref(),
+        row.as_ref().filter(|_| !force).map(|r| r.deleted_at),
+        crate::session::settings::global().deleted_retention_days,
+    );
     Ok(CommandOutput::new(
         json!({
             "deleted": true,
@@ -2359,9 +2513,37 @@ fn delete_session(
             "host_unknown": report.host_unknown,
             "host_unreachable": report.host_unreachable,
             "hook_failures": report.hook_failures,
+            "soft": !force,
+            "undo_until": undo_until,
+            "reapable_at": reapable_at,
+            "session": row.as_ref().map(deleted_session_to_json),
         }),
         human,
     ))
+}
+
+/// A delete's `(undo_until, reapable_at)`, in epoch milliseconds.
+///
+/// A delete a shared host took is the host's to time — its row, its retention,
+/// its clock — so its own pair is reported as given. Otherwise both are
+/// measured from this machine's soft-deleted row (`soft_deleted_at`, `None`
+/// for a forced delete), the way the reaper and the retention purge measure
+/// them: the reap is allowed once the undo window closes, the purge once
+/// `retention_days` pass (never, at `0`).
+fn undo_deadlines(
+    host: Option<&crate::session_ops::HostDeadlines>,
+    soft_deleted_at: Option<u64>,
+    retention_days: u64,
+) -> (Option<u64>, Option<u64>) {
+    if let Some(host) = host {
+        return (host.undo_until, host.reapable_at);
+    }
+    (
+        soft_deleted_at
+            .filter(|_| retention_days > 0)
+            .map(|at| at + retention_days.saturating_mul(24 * 60 * 60 * 1000)),
+        soft_deleted_at.map(|at| at + crate::session_ops::UNDO_WINDOW.as_millis() as u64),
+    )
 }
 
 /// The human half of a `--force` delete: teardown counts, plus whichever of the
@@ -2546,18 +2728,31 @@ const CAPTURE_TEXT_CAP: usize = 4000;
 ///
 /// The STATE column is the same word `--json` reports in `state`, so the two
 /// renderings cannot disagree about what a session is doing.
-fn render_session_list(sessions: &[SharedSession], hooks: &[crate::session::Assessment]) -> String {
+/// `depths` indents each name as the sidebar does (`--tree`); empty for a flat
+/// table.
+fn render_session_list(
+    sessions: &[SharedSession],
+    hooks: &[crate::session::Assessment],
+    depths: &[usize],
+) -> String {
     if sessions.is_empty() {
         return "No active sessions.".to_string();
     }
     let rows: Vec<Vec<String>> = sessions
         .iter()
         .zip(hooks)
-        .map(|(s, hook)| {
+        .enumerate()
+        .map(|(at, (s, hook))| {
             // `dash` already maps an empty branch (no worktree) to "-".
             let branch = s.worktrees.first().map(|w| w.branch.as_str());
+            let name = match depths.get(at) {
+                Some(&depth) if depth > 0 => {
+                    format!("{}└ {}", "  ".repeat(depth - 1), s.name)
+                }
+                _ => s.name.clone(),
+            };
             vec![
-                s.name.clone(),
+                name,
                 s.agent.clone(),
                 render_state(hook),
                 s.backend_type.clone(),
@@ -3565,6 +3760,35 @@ fn register_running_session(
 mod tests {
     use super::*;
 
+    /// The deadlines a delete reports: a shared host's own when it took the
+    /// delete, else this machine's, measured from the row's `deleted_at`.
+    #[test]
+    fn undo_deadlines_take_the_hosts_values_or_compute_them_locally() {
+        let window = crate::session_ops::UNDO_WINDOW.as_millis() as u64;
+        let day = 24 * 60 * 60 * 1000;
+        let host = crate::session_ops::HostDeadlines {
+            undo_until: Some(9_000),
+            reapable_at: Some(1_000),
+        };
+        // (undo_until, reapable_at), in that order, from the host as given.
+        assert_eq!(
+            undo_deadlines(Some(&host), Some(50), 3),
+            (Some(9_000), Some(1_000))
+        );
+        assert_eq!(
+            undo_deadlines(Some(&Default::default()), Some(50), 3),
+            (None, None)
+        );
+        // Local: retention bounds the restore, the window the reap.
+        assert_eq!(
+            undo_deadlines(None, Some(50), 2),
+            (Some(50 + 2 * day), Some(50 + window))
+        );
+        assert_eq!(undo_deadlines(None, Some(50), 0), (None, Some(50 + window)));
+        // A forced delete (no soft row) has neither.
+        assert_eq!(undo_deadlines(None, None, 2), (None, None));
+    }
+
     fn db() -> Database {
         Database::open_in_memory().unwrap()
     }
@@ -3615,6 +3839,8 @@ mod tests {
         let v = run(
             Action::List {
                 parent: None,
+                recursive: false,
+                tree: false,
                 deleted: false,
                 since: None,
                 verify: false,
@@ -4070,7 +4296,8 @@ mod tests {
             key: None,
         };
         let hook = crate::session::Assessment::default();
-        let rendered = render_session_list(std::slice::from_ref(&s), std::slice::from_ref(&hook));
+        let rendered =
+            render_session_list(std::slice::from_ref(&s), std::slice::from_ref(&hook), &[]);
         assert!(rendered.contains("NAME"));
         assert!(rendered.contains("demo"));
         assert!(rendered.contains("local-tmux"));
@@ -4108,6 +4335,8 @@ mod tests {
         let v = run(
             Action::List {
                 parent: None,
+                recursive: false,
+                tree: false,
                 deleted: false,
                 since: None,
                 verify: false,
@@ -4164,6 +4393,8 @@ mod tests {
         let v = run(
             Action::List {
                 parent: None,
+                recursive: false,
+                tree: false,
                 deleted: false,
                 since: None,
                 verify: false,
@@ -4186,6 +4417,8 @@ mod tests {
         let v = run(
             Action::List {
                 parent: Some(parent_id.to_string()),
+                recursive: false,
+                tree: false,
                 deleted: false,
                 since: None,
                 verify: false,
@@ -4206,6 +4439,8 @@ mod tests {
         let err = run(
             Action::List {
                 parent: Some("no-such-parent".into()),
+                recursive: false,
+                tree: false,
                 deleted: false,
                 since: None,
                 verify: false,
@@ -4714,6 +4949,8 @@ mod tests {
             run(
                 Action::List {
                     parent: None,
+                    recursive: false,
+                    tree: false,
                     deleted: false,
                     since: None,
                     verify: false,

@@ -707,6 +707,8 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
     let listed = run(
         Action::List {
             parent: None,
+            recursive: false,
+            tree: false,
             deleted: false,
             since: None,
             verify: false,
@@ -948,6 +950,8 @@ fn a_parked_session_says_so_on_get_and_on_list() {
     let listed = run(
         Action::List {
             parent: None,
+            recursive: false,
+            tree: false,
             deleted: false,
             since: None,
             verify: false,
