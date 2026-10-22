@@ -45,7 +45,7 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
    plugin has, so `thurbox.granted` reports the grant instead — a boolean about a
    decision already made, which withholds nothing.
 5. **Anything touching the world runs on a worker** — terminal attach, commands,
-   the snapshot's database reads and writes (`kernel::snapshot_db`), diffs,
+   the interface's database reads and writes (`kernel::snapshot_db`), diffs,
    metrics, git stats, repository reads, update checks, and programs a plugin
    asked for.
 

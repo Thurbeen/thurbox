@@ -185,7 +185,7 @@ with a mechanism rather than a review habit:
    `tests/kernel_mvp.rs`, which enumerates the plugin environment
    global-by-global so a new one has to be added deliberately.
 5. **Anything touching the world runs on a worker** — terminal attach,
-   commands, the snapshot's database reads and writes, diffs, metrics, git
+   commands, the interface's database reads and writes, diffs, metrics, git
    stats, repository reads, update checks, and programs a plugin asked for.
 
 No ad-hoc event handlers, no component-local state, no callback chains.

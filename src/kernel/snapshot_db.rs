@@ -64,13 +64,16 @@ pub(crate) enum Write {
     /// Its stamp may still be the store's provisional one.
     Retire(SessionId, HookRow),
     Perf(String),
+    /// The theme chosen, for every other process to pick up. Last choice wins:
+    /// there is no row state it could have been decided against.
+    Theme(String),
 }
 
 impl Write {
     /// Whether the store corrected a row in place for this write. Only these
     /// are counted against a read: see [`Reply::Rows`].
     pub(crate) fn touches_rows(&self) -> bool {
-        !matches!(self, Self::Perf(_))
+        !matches!(self, Self::Perf(_) | Self::Theme(_))
     }
 }
 
@@ -341,6 +344,12 @@ impl Worker {
                 // snapshot, or none.
                 if let Err(e) = database.set_perf_snapshot(&json) {
                     tracing::warn!("could not publish the perf snapshot: {e}");
+                }
+                return None;
+            }
+            Write::Theme(name) => {
+                if let Err(e) = database.set_active_theme(&name) {
+                    tracing::warn!("could not store the theme {name:?}: {e}");
                 }
                 return None;
             }

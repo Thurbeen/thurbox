@@ -11,7 +11,7 @@ use ratatui::DefaultTerminal;
 
 use thurbox::kernel::bands::Level;
 
-use super::{open_editor, snapshots_db};
+use super::open_editor;
 use crate::{App, TrackedCommand};
 
 impl App {
@@ -21,13 +21,13 @@ impl App {
     /// a queue push and nothing more.
     pub(crate) fn apply_commands(&mut self, terminal: &mut DefaultTerminal) {
         for (chain, command) in self.host.drain_requests() {
-            if self.refuse_ungranted(&chain, &command)
-                || self.apply_local_command(&chain, &command, terminal)
+            if self.refuse_ungranted(&chain, &command) || self.apply_local_command(&chain, &command)
             {
                 continue;
             }
             self.dispatch_tracked(command);
         }
+        self.open_requested_editor(terminal);
     }
 
     /// Refuse a plugin's command that needs a grant its issuer does not hold,
@@ -65,17 +65,17 @@ impl App {
         &mut self,
         chain: &[String],
         command: &thurbox::kernel::command::Command,
-        terminal: &mut DefaultTerminal,
     ) -> bool {
         use thurbox::kernel::command::Command;
         match command {
             // Theme is applied here rather than dispatched: it mutates in-process
-            // state a worker thread cannot reach, and it is instant, so nothing is
-            // gained by making it asynchronous.
+            // state a worker thread cannot reach. Storing it is queued
+            // (`store_chosen_theme`).
             Command::Theme { name } => {
-                if let Err(e) = self.themes.select(name, snapshots_db().as_ref()) {
+                if let Err(e) = self.themes.select(name) {
                     self.report(e, Level::Error);
                 }
+                self.store_chosen_theme();
             }
             // Open a link, or copy it where nothing can open one — a remote
             // session or a bare tty has no browser, and spawning an opener there
@@ -97,8 +97,9 @@ impl App {
                 keys,
             } => self.apply_program(owner, name, program, argv, *close, keys.as_deref()),
             // The editor wants a controlling tty, which only this thread can hand
-            // it — see `Command::Editor`.
-            Command::Editor { session } => self.apply_editor_command(session, terminal),
+            // it — see `Command::Editor`. Its setting is read first, off the
+            // loop (`open_requested_editor`).
+            Command::Editor { session } => self.snapshots.request_editor(session),
             Command::Diff { session } => {
                 // Drop the answer; the request at the top of the next iteration
                 // recomputes it on the worker.
@@ -238,18 +239,38 @@ impl App {
         }
     }
 
-    /// `Command::Editor`: hand the configured editor this thread's tty.
-    pub(crate) fn apply_editor_command(&mut self, session: &str, terminal: &mut DefaultTerminal) {
+    /// Store a theme the picker or a plugin chose. Queued on the snapshot's
+    /// database worker, so a lock another process holds delays the write and
+    /// not the frame (issue #1474).
+    pub(crate) fn store_chosen_theme(&mut self) {
+        if let Some(name) = self.themes.take_chosen() {
+            self.snapshots.persist_theme(&name);
+        }
+    }
+
+    /// `Command::Editor`, once its setting has been read: hand the configured
+    /// editor this thread's tty.
+    ///
+    /// The setting is read off the loop (`SnapshotStore::request_editor`)
+    /// rather than through a connection opened here, whose prune of aged
+    /// history waited out the busy timeout whenever another process held the
+    /// write lock (issue #1474).
+    fn open_requested_editor(&mut self, terminal: &mut DefaultTerminal) {
+        let Some(request) = self.snapshots.take_editor() else {
+            return;
+        };
         let dirs = self
             .snapshots
             .current()
-            .session(session)
+            .session(&request.session)
             .map(|row| row.member_dirs.clone())
             .unwrap_or_default();
-        self.toast(match open_editor(terminal, &dirs) {
-            Ok(message) => message,
-            Err(e) => e,
-        });
+        self.toast(
+            match open_editor(terminal, &dirs, request.command, request.mode) {
+                Ok(message) => message,
+                Err(e) => e,
+            },
+        );
         // The editor had the screen, and coming back clears it — so every cell
         // the next frame prints is a fresh one, and a fresh cell carries none
         // of the hyperlinks the terminal had attached. The frame can otherwise

@@ -1594,7 +1594,9 @@ the bare name to that older tag.
 
 ## SQLite-backed settings
 
-Live in the `metadata` table and apply immediately (no restart):
+Live in the `metadata` table and apply immediately (no restart), except
+`active_theme`: the process that picks it applies it at once, and every other
+thurbox process reads it when it next starts.
 
 | Key | Set via | Purpose |
 |-----|---------|---------|
@@ -1609,7 +1611,8 @@ Live in the `metadata` table and apply immediately (no restart):
 
 These are in the DB rather than a file because they are written
 concurrently by multiple thurbox processes (TUI, CLI, MCP) and picked
-up live via `PRAGMA data_version` polling. The two backoff keys rebuild no
+up live via `PRAGMA data_version` polling — `active_theme` aside, which
+another process reads when it next starts. The two backoff keys rebuild no
 snapshot when they change (schema v55): only the teardown sweep reads them.
 
 `event_cursors` (schema v55) holds what processes take turns at, one row per

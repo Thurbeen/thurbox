@@ -46,6 +46,9 @@ pub struct Themes {
     /// could collide with one a reader had already seen and be mistaken for
     /// "nothing changed".
     version: u64,
+    /// The last theme [`Self::select`] chose, until the loop takes it to be
+    /// stored ([`Self::take_chosen`]).
+    chosen: Option<String>,
 }
 
 impl Themes {
@@ -89,6 +92,7 @@ impl Themes {
             custom,
             warnings,
             version: 0,
+            chosen: None,
         }
     }
 
@@ -117,24 +121,26 @@ impl Themes {
         &self.choices
     }
 
-    /// Make `name` active, persist it, and report whether it resolved.
+    /// Make `name` active, and leave it to be stored ([`Self::take_chosen`]).
     ///
-    /// Persisting an unknown name is refused rather than silently ignored: the
+    /// An unknown name is refused rather than silently ignored: the
     /// alternative is a stored choice that never applies and cannot be
-    /// diagnosed.
-    pub fn select(&mut self, name: &str, db: Option<&Database>) -> Result<(), String> {
+    /// diagnosed. Storing it is the loop's, through the snapshot's database
+    /// worker: written here, it waited out the busy timeout whenever another
+    /// process held the write lock (issue #1474).
+    pub fn select(&mut self, name: &str) -> Result<(), String> {
         if !self.choices.iter().any(|choice| choice.name == name) {
             return Err(format!("unknown theme {name:?}"));
         }
         self.active = resolve(Some(name), &self.custom);
-        // Bumped where the palette actually changes, so a failed persist below
-        // still reports the change that already happened in memory.
         self.mark_changed();
-        if let Some(db) = db {
-            db.set_active_theme(name)
-                .map_err(|e| format!("persist theme: {e}"))?;
-        }
+        self.chosen = Some(name.to_string());
         Ok(())
+    }
+
+    /// The theme [`Self::select`] last chose, once, for the loop to store.
+    pub fn take_chosen(&mut self) -> Option<String> {
+        self.chosen.take()
     }
 
     /// Make `name` active **without persisting it** — the live preview a picker
@@ -155,7 +161,7 @@ impl Themes {
     }
 
     /// Reload from disk and the database, keeping the active choice if it still
-    /// resolves. Called when `themes.toml` changes or another instance switches.
+    /// resolves.
     pub fn refresh(&mut self, db: Option<&Database>) {
         let seen = self.version;
         *self = Self::load(db);
@@ -444,7 +450,7 @@ mod tests {
     fn selecting_an_unknown_theme_is_refused() {
         let mut themes = Themes::load(None);
         let before = themes.active_name().to_string();
-        let error = themes.select("nonsense", None).unwrap_err();
+        let error = themes.select("nonsense").unwrap_err();
         assert!(error.contains("unknown theme"), "{error}");
         assert_eq!(
             themes.active_name(),
@@ -464,7 +470,7 @@ mod tests {
             .name
             .clone();
         let before = themes.roles();
-        themes.select(&other, None).expect("select");
+        themes.select(&other).expect("select");
         assert_eq!(themes.active_name(), other);
         assert_ne!(before, themes.roles(), "the palette should have changed");
     }
@@ -480,7 +486,12 @@ mod tests {
             .expect("more than one theme")
             .name
             .clone();
-        themes.select(&other, Some(&db)).expect("select");
+        themes.select(&other).expect("select");
+        let chosen = themes
+            .take_chosen()
+            .expect("the choice is left to be stored");
+        assert_eq!(themes.take_chosen(), None, "handed out once");
+        db.set_active_theme(&chosen).expect("store");
 
         // A fresh load — as a restart or another instance would do — sees it.
         let reloaded = Themes::load(Some(&db));

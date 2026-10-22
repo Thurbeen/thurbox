@@ -3043,8 +3043,7 @@ One Light, Rosé Pine Dawn, GitHub Light). Press `Ctrl+Y` (or `F4`,
 which avoids terminals that
 intercept `Ctrl+Y` as DSUSP) to pick one. The choice is persisted
 in SQLite under `metadata.active_theme` and survives restarts;
-other Thurbox processes pick it up within one tick via
-`PRAGMA data_version` polling.
+other Thurbox processes pick it up when they next start.
 
 ### The picker at this list length
 
@@ -3914,7 +3913,7 @@ Three properties keep this safe and cheap:
   identical paints anyway, and both are the same thing: cells reprinted
   where nothing changed. A **reflow** forces a full repaint (`App::draw`
   clears the memo), and **returning from an external editor** clears the
-  screen outright (`apply_editor_command` clears it). A reprinted cell
+  screen outright (`open_requested_editor` clears it). A reprinted cell
   carries none of the hyperlinks the terminal had attached to it.
 
 The URL is stripped of control characters before it goes out

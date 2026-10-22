@@ -21,7 +21,6 @@ use ratatui::Frame;
 use super::chrome::{self, Chrome, Hits, Pill, Replay};
 use crate::kernel::theme::{ThemeChoice, Themes};
 use crate::session::theme_config::ThemePalette;
-use crate::storage::Database;
 
 /// Non-list rows the modal always spends: both borders, the filter line, the
 /// theme-id line, the footer, and one spacer. v1's `CHROME`.
@@ -165,12 +164,7 @@ impl ThemeModal {
     ///
     /// Returns `Close` when the modal is done with itself — an `Esc` that had
     /// no filter to close first.
-    pub fn on_key(
-        &mut self,
-        key: &KeyEvent,
-        themes: &mut Themes,
-        db: Option<&Database>,
-    ) -> Outcome {
+    pub fn on_key(&mut self, key: &KeyEvent, themes: &mut Themes) -> Outcome {
         let choices = themes.choices();
         self.settle(choices, themes.active_name());
         let matches = compute_matches(choices, self.filter.as_deref().unwrap_or(""));
@@ -237,13 +231,13 @@ impl ThemeModal {
                 else {
                     return Outcome::Stay(None);
                 };
-                // Applied and persisted where v1 persists it —
-                // `metadata.active_theme` — so every other thurbox process
-                // picks it up on its next `data_version` poll.
+                // Applied here and stored by the loop where v1 persists it —
+                // `metadata.active_theme` — so a restart keeps it and every
+                // other thurbox process takes it when it next starts.
                 // Chosen, so there is nothing to put back — clearing this is
                 // what stops the close below from reverting the choice.
                 self.original = None;
-                return match themes.select(&name, db) {
+                return match themes.select(&name) {
                     Ok(()) => Outcome::Applied(format!("theme: {name}")),
                     Err(e) => Outcome::Stay(Some(e)),
                 };
@@ -742,20 +736,21 @@ mod tests {
     }
 
     #[test]
-    fn enter_applies_and_persists_the_highlighted_theme() {
-        let db = Database::open_in_memory().expect("in-memory database");
-        let mut themes = Themes::load(Some(&db));
+    fn enter_applies_the_highlighted_theme_and_leaves_it_to_be_stored() {
+        let mut themes = Themes::load(None);
         let mut modal = ThemeModal::default();
         let press = |code| KeyEvent::new(code, KeyModifiers::NONE);
-        modal.on_key(&press(KeyCode::Char('j')), &mut themes, Some(&db));
+        modal.on_key(&press(KeyCode::Char('j')), &mut themes);
+        assert_eq!(themes.take_chosen(), None, "a preview is not a choice");
         let wanted = themes.choices()[1].name.clone();
-        match modal.on_key(&press(KeyCode::Enter), &mut themes, Some(&db)) {
+        match modal.on_key(&press(KeyCode::Enter), &mut themes) {
             Outcome::Applied(message) => assert!(message.contains(&wanted), "{message}"),
             Outcome::Stay(message) => panic!("apply did not happen: {message:?}"),
         }
         assert_eq!(themes.active_name(), wanted);
-        // Where v1 persists it, so a restart and every other process agree.
-        assert_eq!(db.get_active_theme().expect("read"), Some(wanted));
+        // The loop stores it where v1 persists it, so a restart and every
+        // other process agree.
+        assert_eq!(themes.take_chosen(), Some(wanted));
     }
 
     #[test]
@@ -769,7 +764,6 @@ mod tests {
         modal.on_key(
             &KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
             &mut themes,
-            None,
         );
         assert!(modal.filtering(), "`/` opens the filter");
 

@@ -96,7 +96,7 @@ the two are equal: 100 bytes a second, the URLs costing nothing once drawn.
 — but that leg is what makes a screen full of links the ordinary case.) The one
 frame that must re-send identical paints is the **reflow**: it reprints every
 cell, and a reprinted cell loses its hyperlink, so `App::draw` drops the memo
-there — as does `apply_editor_command`, since returning from an external editor
+there — as does `open_requested_editor`, since returning from an external editor
 clears the screen and reprints it whole.
 
 The pane half (a `url:` node, `ClickVerb::Url`) walks the
@@ -308,9 +308,14 @@ through the one thread that owns its connection (`kernel::snapshot_db`, from
 issue #1474): the event loop sends the poll and applies the answer when it
 lands, so a write lock another process holds stalls that thread's busy wait,
 never a frame. The loop's own writes — acknowledging a `done`, recording a
-pane, a remote hook report, the perf snapshot — queue on the same thread and are
-corrected in place at once; a read answered before the latest queued write is
-discarded and asked again, so it cannot undo a correction. Each queued write
+pane, a remote hook report — queue on the same thread and are corrected in place
+at once; the perf snapshot and the theme the picker chose queue there too, and
+correct no row. A read answered before the latest queued row write is discarded
+and asked again, so it cannot undo a correction. The loop opens no connection
+of its own: opening one prunes aged history, a write that waits out the busy
+timeout under another process's lock. The editor setting is read on a thread of
+its own when the editor key asks for it, so it never waits behind a queued
+write. Each queued write
 carries what the loop saw when it decided on it — the turn's stamp, the pane the
 row held — and storage checks that again under the write lock, so a write held
 back by another process's lock is dropped, and the rows re-read, once what it

@@ -13,10 +13,11 @@ use ratatui::{DefaultTerminal, Frame};
 
 use thurbox::kernel::host::KeyPress;
 
-/// A connection for reading the persisted theme choice at startup.
+/// A connection for start-up's own reads and repairs, before the loop runs.
 ///
-/// Separate from the snapshot store's: this is read once, and opening a second
-/// short-lived connection is cheaper than threading one through construction.
+/// Never from the loop: opening one prunes aged history, a write that waits out
+/// the busy timeout while another process holds the write lock. The loop's
+/// database work goes through the snapshot store's worker (issue #1474).
 pub(crate) fn snapshots_db() -> Option<thurbox::storage::Database> {
     thurbox::paths::database_file().and_then(|path| thurbox::storage::Database::open(&path).ok())
 }
@@ -130,22 +131,12 @@ pub(crate) fn key_event_from_chord(chord: &str) -> Option<KeyEvent> {
 /// The editor to open a session's directory with.
 ///
 /// v1's chain, from `resolve_editor` (`src/cli/config.rs`): the DB setting
-/// `thurbox-cli editor set` writes, then `$VISUAL`, then `$EDITOR`.
-pub(crate) fn editor_command() -> Option<String> {
-    snapshots_db()
-        .and_then(|db| db.get_editor_command().ok().flatten())
+/// `thurbox-cli editor set` writes (`stored`), then `$VISUAL`, then `$EDITOR`.
+pub(crate) fn editor_command(stored: Option<String>) -> Option<String> {
+    stored
         .or_else(|| std::env::var("VISUAL").ok())
         .or_else(|| std::env::var("EDITOR").ok())
         .filter(|command| !command.trim().is_empty())
-}
-
-/// How the editor should be launched, as configured (`thurbox-cli editor mode`).
-///
-/// `Auto` — the default — leaves the decision to the name-based classification.
-pub(crate) fn editor_mode() -> thurbox::session::settings::EditorMode {
-    snapshots_db()
-        .and_then(|db| db.get_editor_mode().ok())
-        .unwrap_or_default()
 }
 
 /// Run the configured editor over a session's directories.
@@ -164,18 +155,24 @@ pub(crate) fn editor_mode() -> thurbox::session::settings::EditorMode {
 /// A **GUI** editor is spawned detached instead. Handing one a tty is not
 /// harmless: a launcher told to wait (`code --wait`) holds the terminal for the
 /// whole editing session with nothing drawn in it.
+///
+/// `command` and `mode` are the stored setting (`thurbox-cli editor set` and
+/// `editor mode`); `Auto`, the default mode, leaves the decision to the
+/// name-based classification.
 pub(crate) fn open_editor(
     terminal: &mut DefaultTerminal,
     dirs: &[std::path::PathBuf],
+    command: Option<String>,
+    mode: thurbox::session::settings::EditorMode,
 ) -> Result<String, String> {
     let first = dirs
         .first()
         .ok_or("that session has no directory to open")?;
-    let configured = editor_command()
+    let configured = editor_command(command)
         .ok_or("no editor configured — set one with `thurbox-cli editor set <command>`")?;
     let (program, mut args) = super::editor::parse_editor_command(&configured)
         .map_err(|e| format!("the configured editor command is unusable: {e}"))?;
-    let terminal_editor = super::editor::is_terminal_editor(&program, &args, editor_mode());
+    let terminal_editor = super::editor::is_terminal_editor(&program, &args, mode);
     args.extend(dirs.iter().map(|dir| dir.display().to_string()));
 
     let opened = if dirs.len() == 1 {

@@ -10,10 +10,9 @@
 use std::time::{Duration, Instant};
 
 use thurbox::kernel::bands::Level;
-use thurbox::kernel::modals::{ModalKind, Modals};
+use thurbox::kernel::modals::Modals;
 use thurbox::kernel::perf::Counters;
 
-use super::snapshots_db;
 use crate::{App, DEBOUNCE};
 
 /// How soon after a memory rebuild pressure again means the rebuild did not
@@ -274,9 +273,6 @@ impl App {
         &mut self,
         act: impl FnOnce(&mut Modals, &mut thurbox::kernel::modals::World<'_>) -> T,
     ) -> T {
-        let db = matches!(self.modals.kind(), Some(ModalKind::Theme))
-            .then(snapshots_db)
-            .flatten();
         // The settings the modal shows, and the slot a save comes back through.
         // What the *file* holds rather than what is in force: the panel edits the
         // file, and a restart-only change lives only there until the next launch
@@ -298,11 +294,11 @@ impl App {
                 inventory: &inventory,
                 interface_edit: &mut edit,
                 run_action: &mut run,
-                db: db.as_ref(),
             };
             act(&mut self.modals, &mut world)
         };
         self.inventory = inventory;
+        self.store_chosen_theme();
         if let Some(draft) = saved {
             self.apply_settings(draft);
         }

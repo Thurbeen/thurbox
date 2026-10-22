@@ -455,13 +455,20 @@ fn closing_the_picker_by_its_own_chord_also_reverts() {
             run_action: &mut None,
             registry: &mut registry,
             themes: &mut themes,
-            db: None,
         };
         modals.abandon(&mut world);
     }
     modals.toggle(ModalKind::Theme);
     assert!(!modals.is_open());
     assert_eq!(themes.active_name(), opened_with);
+}
+
+/// What the loop does with a theme the picker chose: store it, through the
+/// snapshot's database worker there and directly here.
+fn store_chosen(themes: &mut Themes, db: Option<&Database>) {
+    if let (Some(db), Some(name)) = (db, themes.take_chosen()) {
+        db.set_active_theme(&name).expect("store the theme");
+    }
 }
 
 fn press(code: KeyCode) -> KeyEvent {
@@ -484,10 +491,11 @@ fn send(
         interface_edit: &mut None,
         run_action: &mut None,
         registry,
-        themes,
-        db,
+        themes: &mut *themes,
     };
-    modals.on_key(&key, chord, &mut world)
+    let message = modals.on_key(&key, chord, &mut world);
+    store_chosen(themes, db);
+    message
 }
 
 // --- the layer -------------------------------------------------------------
@@ -1259,10 +1267,11 @@ fn click(
         interface_edit: &mut None,
         run_action: &mut None,
         registry,
-        themes,
-        db,
+        themes: &mut *themes,
     };
-    modals.on_click(x, y, &mut world)
+    let message = modals.on_click(x, y, &mut world);
+    store_chosen(themes, db);
+    message
 }
 
 #[test]
