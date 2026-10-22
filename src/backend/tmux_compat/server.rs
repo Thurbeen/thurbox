@@ -4041,16 +4041,17 @@ enum ServerFound {
 const SEED_CHUNK_BYTES: usize = 4096;
 
 /// `live`, behind the captured history `seed` as chunks of at most
-/// [`SEED_CHUNK_BYTES`].
+/// [`SEED_CHUNK_BYTES`]. Each piece is cut as the reader asks for it, so the
+/// history is never held twice.
 fn seeded(
     seed: Vec<u8>,
     live: crate::backend::contract::PaneOutput,
 ) -> crate::backend::contract::PaneOutput {
-    let pieces: Vec<PaneChunk> = seed
-        .chunks(SEED_CHUNK_BYTES)
-        .map(|piece| PaneChunk::Output(piece.to_vec()))
-        .collect();
-    Box::new(pieces.into_iter().chain(live))
+    let pieces = (0..seed.len()).step_by(SEED_CHUNK_BYTES).map(move |start| {
+        let end = seed.len().min(start + SEED_CHUNK_BYTES);
+        PaneChunk::Output(seed[start..end].to_vec())
+    });
+    Box::new(pieces.chain(live))
 }
 
 /// Read [`LOCATE_BODY`]'s answer; anything else is [`ServerFound::Nothing`].
