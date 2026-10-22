@@ -400,3 +400,19 @@ overflow the banner.
   not own, and per-emulator window control is fragile, especially on Wayland.
 - **Gated by `[features] notifications`** (default on); knobs in `[notifications]`.
   `backend = "off"` is a soft delivery switch distinct from the feature flag.
+
+## Headless evidence and state consumers
+
+The CLI publishes `last_output_at` from bounded local backend metadata (null
+for a remote row, which is never asked over the host link) and
+`transcript_path` for an existing local Claude-family transcript, respecting
+persisted `CLAUDE_CONFIG_DIR`. Unknown timestamps and unsupported/remote
+transcripts are null. These fields do not change the state vocabulary or
+claim completion. `background` is deferred until both parent-session hook
+edges can be reproduced.
+
+`session wait` consumes the same bounded event log as watch, returning a
+current match or the next matching edge (exit 4 timeout; 6 gone/stopped/lost).
+The keeper's `session.state_changed` hooks consume the durable `hooks` cursor,
+at-least-once with `seq` and retention-gap reporting, independent of the TUI.
+The 512-row batch and 30-second phase budget bound each tick.

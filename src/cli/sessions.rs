@@ -11,6 +11,37 @@ use crate::session::SessionId;
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
+#[derive(clap::Args, Debug, Default)]
+pub struct SendWaitArgs {
+    /// Wait for the next working edge after delivery. Exit 4 on timeout, 6 if
+    /// the session is deleted, stopped or lost. Requires hooks that report working.
+    #[arg(long, conflicts_with = "no_enter")]
+    pub wait_turn: bool,
+    /// Seconds to wait for the turn (unlimited when omitted).
+    #[arg(long, requires = "wait_turn")]
+    pub timeout: Option<u64>,
+    /// Fail when submission cannot be confirmed (`submitted: null`).
+    #[arg(long, conflicts_with = "no_enter")]
+    pub strict: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct WaitArgs {
+    /// Session name, UUID, id prefix or key reference.
+    pub session: String,
+    /// Comma-separated target states. An already matched state returns at once.
+    #[arg(long, value_delimiter = ',', required_unless_present = "pane_matches",
+        value_parser = clap::builder::PossibleValuesParser::new(crate::session::SessionState::ALL.iter().map(|state| state.as_str())))]
+    pub state: Vec<String>,
+    /// Match the same plain text as capture (last 1000 lines), at most once
+    /// per second for this session alone. Either condition ends the wait.
+    #[arg(long)]
+    pub pane_matches: Option<String>,
+    /// Stop after this many seconds; omitted means wait until interrupted.
+    #[arg(long)]
+    pub timeout: Option<u64>,
+}
+
 // `Create` carries every spawn option and is far larger than `Stop`/`Key`/…,
 // which is what this lint measures. Boxing it is what the lint wants and what
 // clap cannot take (a `Subcommand` variant's fields are the argument
@@ -361,7 +392,12 @@ pub enum Action {
         /// for it to empty and then leaving the text in the mailbox.
         #[arg(long)]
         force: bool,
+        #[command(flatten)]
+        wait: SendWaitArgs,
     },
+    /// Wait for a state edge or pane text. Exit 0 with one matching event,
+    /// 4 on timeout, 6 when the session is deleted, stopped or lost.
+    Wait(WaitArgs),
     /// Send one named special key to a session's terminal.
     ///
     /// The companion to `session send --no-enter`: `escape` and `ctrl-c`
@@ -750,7 +786,9 @@ pub fn run(
             text,
             no_enter,
             force,
-        } => run_send(db, backends.get(), uuid, text, no_enter, force),
+            wait,
+        } => run_send(db, backends.get(), uuid, text, no_enter, force, wait),
+        Action::Wait(args) => run_wait(db, backends.get(), args),
         Action::Key { uuid, key } => run_key(db, backends.get(), uuid, key),
         Action::Capture { uuid, lines, ansi } => {
             capture_pane(db, backends.get(), &uuid, lines, ansi)
@@ -879,17 +917,20 @@ fn run_list_active(
         .iter()
         .map(|s| facts.assess(&registry, s, verify.then(|| backends.get())))
         .collect();
+    let mut fields = crate::session_ops::read_fields::ReadFields::default();
     let json = Value::Array(
         sessions
             .iter()
             .zip(&assessments)
             .map(|(s, hook)| {
-                crate::session_ops::mirror::session_to_json_assessed(
+                let mut row = crate::session_ops::mirror::session_to_json_assessed(
                     s,
                     hook,
                     bases.get(&s.id).map(String::as_str),
                     updated.get(&s.id).copied(),
-                )
+                );
+                fields.annotate(db, Some(backends.local()), &registry, s, &mut row);
+                row
             })
             .collect(),
     );
@@ -931,16 +972,24 @@ fn run_get(
     let bases = db.load_base_branches().unwrap_or_default();
     let registry = crate::agent::agent_config::load_or_seed();
     let hook = facts.assess(&registry, &session, (!no_verify).then(|| backends.get()));
+    let mut row = crate::session_ops::mirror::session_to_json_assessed(
+        &session,
+        &hook,
+        bases.get(&session.id).map(String::as_str),
+        db.load_updated_at()
+            .unwrap_or_default()
+            .get(&session.id)
+            .copied(),
+    );
+    crate::session_ops::read_fields::ReadFields::default().annotate(
+        db,
+        Some(backends.local()),
+        &registry,
+        &session,
+        &mut row,
+    );
     Ok(CommandOutput::new(
-        crate::session_ops::mirror::session_to_json_assessed(
-            &session,
-            &hook,
-            bases.get(&session.id).map(String::as_str),
-            db.load_updated_at()
-                .unwrap_or_default()
-                .get(&session.id)
-                .copied(),
-        ),
+        row,
         render_session_detail(&session, &hook),
     ))
 }
@@ -1338,7 +1387,135 @@ fn run_reparent(
     ))
 }
 
+fn run_wait(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    args: WaitArgs,
+) -> Result<CommandOutput, CommandError> {
+    let session = resolve(db, &args.session)?;
+    let pane = args
+        .pane_matches
+        .map(|pattern| {
+            regex::Regex::new(&pattern).map_err(|e| {
+                CommandError::with_code(format!("invalid pane regex: {e}"), super::EXIT_USAGE)
+            })
+        })
+        .transpose()?;
+    let mut event = crate::session_ops::wait::run(
+        db,
+        backends,
+        &session,
+        crate::session_ops::wait::Conditions {
+            states: args.state,
+            pane,
+            timeout: args.timeout.map(std::time::Duration::from_secs),
+        },
+        None,
+    )
+    .map_err(wait_error)?;
+    let registry = crate::agent::agent_config::load_or_seed();
+    crate::session_ops::read_fields::ReadFields::default().annotate(
+        db,
+        Some(backends),
+        &registry,
+        &session,
+        &mut event,
+    );
+    Ok(CommandOutput::new(event.clone(), event.to_string()))
+}
+
+fn wait_error(error: crate::session_ops::wait::Error) -> CommandError {
+    use crate::session_ops::wait::Error;
+    match error {
+        Error::Timeout => CommandError::with_code("wait timed out", super::EXIT_TIMEOUT),
+        Error::Gone => {
+            CommandError::with_code("session was deleted, stopped or lost", super::EXIT_GONE)
+        }
+        Error::Failed(e) => e.into(),
+    }
+}
+
 fn run_send(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    uuid: String,
+    text: String,
+    no_enter: bool,
+    force: bool,
+    wait: SendWaitArgs,
+) -> Result<CommandOutput, CommandError> {
+    if !wait.wait_turn && !wait.strict {
+        return run_send_delivery(db, backends, uuid, text, no_enter, force);
+    }
+    let session = resolve(db, &uuid)?;
+    // The plain send's local checks, made before the host is asked.
+    if text.trim().is_empty() {
+        return Err("text must not be empty".into());
+    }
+    refuse_if_parked(db, &session)?;
+    let id = session.id.to_string();
+    let timeout = wait.timeout.map(|s| s.to_string());
+    let mut args = vec!["session", "send", &id, &text];
+    if force {
+        args.push("--force");
+    }
+    if wait.strict {
+        args.push("--strict");
+    }
+    if wait.wait_turn {
+        args.push("--wait-turn");
+    }
+    if let Some(timeout) = &timeout {
+        args.extend(["--timeout", timeout]);
+    }
+    if let Some(remote) = delegate_send_to_host(&session, &args)? {
+        return Ok(remote);
+    }
+    let seq = db.latest_session_event_seq().map_err(|e| e.to_string())?;
+    let mut output = run_send_delivery(db, backends, uuid, text, no_enter, force)?;
+    if output.failure.is_some() {
+        return Ok(output);
+    }
+    if wait.strict && output.json["submitted"].is_null() {
+        return Ok(CommandOutput::failed(
+            output.json,
+            output.human,
+            "submission could not be confirmed".to_string(),
+        ));
+    }
+    if wait.wait_turn {
+        // Text left in the mailbox starts its turn once the agent takes it,
+        // so that is waited for too. Whatever ends the wait, the text was
+        // delivered: the send result stays on the answer, so a driver does
+        // not read a timeout as "send again".
+        output.json["turn"] = Value::Null;
+        match crate::session_ops::wait::run(
+            db,
+            backends,
+            &session,
+            crate::session_ops::wait::Conditions {
+                states: vec!["working".into()],
+                pane: None,
+                timeout: wait.timeout.map(std::time::Duration::from_secs),
+            },
+            Some(seq),
+        ) {
+            Ok(event) => output.json["turn"] = event,
+            Err(e) => {
+                let error = wait_error(e);
+                output.json["error"] = json!(error.message);
+                output.json["error_kind"] = json!(error.error.kind());
+                return Ok(
+                    CommandOutput::failed(output.json, output.human, error.message)
+                        .exiting_with(error.exit_code),
+                );
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn run_send_delivery(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     uuid: String,
@@ -2877,6 +3054,50 @@ fn delegate_to_host(
     session: &SharedSession,
     args: &[&str],
 ) -> Result<Option<CommandOutput>, CommandError> {
+    let Some((host, cli)) = host_cli_for(session)? else {
+        return Ok(None);
+    };
+    let answer = crate::session_ops::host_cli::run(&host, &cli, args)?;
+    Ok(Some(host_output(answer)))
+}
+
+/// [`delegate_to_host`] for a send that waits. A host's failure there — a
+/// timeout, a session that left — comes after the text was delivered, so its
+/// whole answer, `sent` included, is passed on with the host's exit code
+/// rather than reduced to the error.
+fn delegate_send_to_host(
+    session: &SharedSession,
+    args: &[&str],
+) -> Result<Option<CommandOutput>, CommandError> {
+    let Some((host, cli)) = host_cli_for(session)? else {
+        return Ok(None);
+    };
+    match crate::session_ops::host_cli::run_classified(&host, &cli, args) {
+        Ok(answer) => Ok(Some(host_output(answer))),
+        Err(failure) => {
+            let Some(answer) = failure.answer else {
+                return Err(failure.error.into());
+            };
+            let error = CommandError::from(failure.error);
+            Ok(Some(
+                CommandOutput::failed(answer, error.message.clone(), error.message)
+                    .exiting_with(error.exit_code),
+            ))
+        }
+    }
+}
+
+/// The host and its CLI a remote row's verbs are delegated to, or `None` for a
+/// local row or a host that cannot take delegation.
+fn host_cli_for(
+    session: &SharedSession,
+) -> Result<
+    Option<(
+        crate::session::HostDef,
+        crate::session_ops::host_cli::CliInfo,
+    )>,
+    CommandError,
+> {
     if !crate::session::Route::is_remote_key(&session.backend_type) {
         return Ok(None);
     }
@@ -2889,16 +3110,16 @@ fn delegate_to_host(
                 session.name, session.backend_type
             )
         })?;
-    let Some(cli) = crate::session_ops::host_cli::delegated(&host) else {
-        return Ok(None);
-    };
-    let answer = crate::session_ops::host_cli::run(&host, &cli, args)?;
+    Ok(crate::session_ops::host_cli::delegated(&host).map(|cli| (host, cli)))
+}
+
+fn host_output(answer: Value) -> CommandOutput {
     let human = answer
         .get("output")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| answer.to_string());
-    Ok(Some(CommandOutput::new(answer, human)))
+    CommandOutput::new(answer, human)
 }
 
 /// What `session key` says about a spelling it does not know, listing the set
@@ -3841,6 +4062,7 @@ mod tests {
                         text: text.to_string(),
                         no_enter,
                         force: false,
+                        wait: Default::default(),
                     },
                     &db,
                     &crate::cli::Backends::ready(crate::backend::registry::inert()),
@@ -3870,6 +4092,7 @@ mod tests {
                 text: "hello".into(),
                 no_enter: true,
                 force: false,
+                wait: Default::default(),
             },
             Action::Key {
                 uuid: id.to_string(),

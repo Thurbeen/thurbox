@@ -774,6 +774,9 @@ pub struct RunFailure {
     pub message: String,
     pub reach: Reach,
     pub error: super::OpError,
+    /// The host CLI's whole answer, when it answered: a verb that fails after
+    /// it acted (a send whose turn wait timed out) says what it did there.
+    pub answer: Option<Value>,
 }
 
 impl RunFailure {
@@ -787,6 +790,7 @@ impl RunFailure {
             message,
             reach,
             error,
+            answer: None,
         }
     }
 }
@@ -971,6 +975,7 @@ fn run_script_classified(
                 None => "other",
             };
             failure.error = super::OpError::from_kind(kind, failure.message.clone());
+            failure.answer = document.is_object().then_some(document);
         }
         return Err(failure);
     }

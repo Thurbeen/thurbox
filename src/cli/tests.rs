@@ -164,6 +164,7 @@ fn parse_session_send_disambiguates_global_text_flag() {
                 text,
                 no_enter,
                 force,
+                ..
             },
     } = subcommand(cli)
     else {

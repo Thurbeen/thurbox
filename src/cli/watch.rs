@@ -30,7 +30,7 @@ use std::io::{ErrorKind, Write};
 use std::time::{Duration, Instant};
 
 use clap::Args;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::cli::output::Format;
 use crate::cli::CommandError;
@@ -49,7 +49,7 @@ const SWEEP: Duration = Duration::from_secs(3);
 
 /// How many events one wake-up reads. A backlog larger than this is drained
 /// over consecutive reads rather than in one allocation.
-const BATCH: usize = 512;
+const BATCH: usize = crate::session_ops::events::BATCH;
 
 #[derive(Args, Debug)]
 pub struct WatchArgs {
@@ -89,8 +89,9 @@ pub fn run(
     args: WatchArgs,
     format: Format,
 ) -> Result<(), CommandError> {
-    // The lost-pane sweep only ever looks at local rows, so it takes the cheap
-    // registry; only `--verify` reads a pane through the full one.
+    // The lost-pane sweep and the read fields only ever look at local rows, so
+    // they take the cheap registry; only `--verify` reads a pane through the
+    // full one.
     let local = backends.local();
     let backends = args.verify.then(|| backends.get());
     let filter = args
@@ -125,6 +126,7 @@ pub fn run(
     if args.initial {
         let facts = &seed_facts;
         let states = db.load_hook_states().unwrap_or_default();
+        let mut read_fields = crate::session_ops::read_fields::ReadFields::default();
         for session in db.list_active_sessions().unwrap_or_default() {
             if filter.is_some_and(|only| only != session.id) {
                 continue;
@@ -140,7 +142,8 @@ pub fn run(
                 facts.stopped,
                 backends.map(|b| (b, &session)),
             );
-            let line = present(seq, session.id, facts, &hook);
+            let mut line = crate::session_ops::events::present(seq, session.id, facts, &hook);
+            read_fields.annotate(db, Some(local), &registry, &session, &mut line);
             if !out.write(&line) {
                 return Ok(());
             }
@@ -163,6 +166,7 @@ pub fn run(
         backends,
         &mut stopped_state,
         &mut out,
+        local,
     ) {
         return Ok(());
     }
@@ -197,6 +201,7 @@ pub fn run(
             backends,
             &mut stopped_state,
             &mut out,
+            local,
         ) {
             return Ok(());
         }
@@ -225,6 +230,7 @@ fn remaining(deadline: Option<Instant>) -> Option<Duration> {
 /// are the row *as of after the whole batch*, so two events for the same
 /// session sharing a batch — a `state` transition followed by a park, say —
 /// would otherwise both read the park state that only the second one earned.
+#[allow(clippy::too_many_arguments)]
 fn drain(
     db: &Database,
     registry: &crate::session::AgentRegistry,
@@ -233,9 +239,10 @@ fn drain(
     backends: Option<&crate::backend::BackendRegistry>,
     stopped_state: &mut HashMap<SessionId, bool>,
     out: &mut Stream,
+    local: &crate::backend::BackendRegistry,
 ) -> bool {
     loop {
-        let events = match db.session_events_since(*seq, filter, BATCH) {
+        let events = match crate::session_ops::events::drain(db, *seq, filter) {
             Ok(events) => events,
             Err(e) => {
                 tracing::warn!("could not read the event log: {e}");
@@ -249,7 +256,10 @@ fn drain(
         // the row it names is the same row for every event in the batch. Only
         // `stopped` needs point-in-time tracking; the rest doesn't change
         // mid-batch the way a park does.
-        let facts = db.load_session_facts().unwrap_or_default();
+        let ids: Vec<_> = events.iter().map(|e| e.session_id).collect();
+        let facts = db.load_session_facts_for(&ids).unwrap_or_default();
+        let mut fields = crate::session_ops::read_fields::ReadFields::default();
+        let mut gap = db.session_event_gap(*seq).unwrap_or(false);
         for event in &events {
             *seq = event.seq;
             let stopped = match event.reason.as_str() {
@@ -261,7 +271,11 @@ fn drain(
                     .unwrap_or(false),
             };
             stopped_state.insert(event.session_id, stopped);
-            if !out.write(&line(db, registry, &facts, event, stopped, backends)) {
+            let mut value = line(db, registry, &facts, event, stopped, backends);
+            value["gap"] = serde_json::json!(gap);
+            gap = false;
+            fields.annotate_id(db, Some(local), registry, event.session_id, &mut value);
+            if !out.write(&value) {
                 return false;
             }
         }
@@ -316,62 +330,11 @@ fn line(
         stopped,
         backends.zip(row.as_ref()),
     );
-    let mut line = base(event.session_id, facts, &hook);
-    line["seq"] = json!(event.seq);
-    line["event"] = json!(event.event);
-    line["reason"] = json!(event.reason);
-    line["from_state"] = json!(event.from_state);
-    line["to_state"] = json!(event.to_state);
-    line["exit_code"] = json!(event.exit_code);
-    line["detail"] = json!(event.detail);
-    line["stopped"] = json!(stopped);
-    line["at"] = json!(event.at_ms);
-    line
+    crate::session_ops::events::render(event, facts, &hook, stopped)
 }
 
 /// The baseline `--initial` emits: the same shape as an event, with no
 /// transition to report.
-fn present(seq: i64, id: SessionId, facts: &SessionFacts, hook: &Assessment) -> Value {
-    let mut line = base(id, facts, hook);
-    line["seq"] = json!(seq);
-    line["event"] = json!("present");
-    line["reason"] = Value::Null;
-    line["from_state"] = Value::Null;
-    line["to_state"] = json!(hook.hook_state);
-    line["exit_code"] = Value::Null;
-    line["detail"] = Value::Null;
-    line["stopped"] = json!(facts.stopped);
-    line["at"] = json!(crate::sync::current_time_millis());
-    line
-}
-
-/// The fields every line carries whatever produced it.
-///
-/// `state` is [`Assessment::state_word`] — the same one word `session get` and
-/// `session list` answer with, so a driver never has to reconcile two
-/// vocabularies — and the gating fields beside it are what say how much that
-/// word is worth. They are on the line rather than a `session get` away
-/// precisely because a driver reacting to a `blocked` needs to know whether
-/// this agent's `blocked` is a text match on a notification body before it
-/// acts on one.
-fn base(id: SessionId, facts: &SessionFacts, hook: &Assessment) -> Value {
-    json!({
-        "session": id.to_string(),
-        "name": facts.name,
-        "agent": facts.agent,
-        "backend_id": facts.backend_id,
-        "state": hook.state_word(),
-        "hook_state": hook.hook_state,
-        "state_source": hook.state_source.map(|source| source.as_str()),
-        "hook_coverage": hook.coverage.as_str(),
-        "hook_blocked_is_heuristic": hook.blocked_is_heuristic(),
-        "hook_state_contradicted": hook.contradicted,
-        // Which agent is in the pane, when it is not the one the row was
-        // created with — `--verify` only, like every other pane field.
-        "detected_agent": hook.detected_agent(),
-    })
-}
-
 /// What the stored columns — and, with `--verify`, the pane — say about a
 /// session at the moment an event describes.
 ///

@@ -23,6 +23,9 @@ use crate::sync::SharedSession;
 pub fn fire_pre(event: HookEvent, ctx: &HookContext) -> Result<(), super::OpError> {
     debug_assert!(event.is_pre(), "{event} is not a pre-event");
     for hook in crate::agent::hooks_config::hooks_for(event) {
+        if !hook.matches_agent(&ctx.agent) {
+            continue;
+        }
         if let Err(reason) = run_hook(&hook, event, ctx) {
             tracing::warn!("{reason}; refusing the operation");
             return Err(super::OpError::Refused(reason));
@@ -38,6 +41,9 @@ pub fn fire_post(event: HookEvent, ctx: &HookContext) -> Vec<String> {
     debug_assert!(!event.is_pre(), "{event} is not a post-event");
     let mut failures = Vec::new();
     for hook in crate::agent::hooks_config::hooks_for(event) {
+        if !hook.matches_agent(&ctx.agent) {
+            continue;
+        }
         if let Err(reason) = run_hook(&hook, event, ctx) {
             tracing::warn!("{reason}");
             failures.push(reason);
@@ -111,18 +117,51 @@ pub(crate) fn worktree(w: &crate::sync::SharedWorktree) -> crate::session::HookW
 /// before waiting, so a hook that never reads it is not blocked by it), and
 /// nothing of thurbox's own stdio — the TUI owns that terminal.
 pub fn run_hook(hook: &LifecycleHook, event: HookEvent, ctx: &HookContext) -> Result<(), String> {
+    run_payload(hook, event, ctx, ctx.json(event), hook.timeout())
+}
+
+pub(crate) fn run_payload(
+    hook: &LifecycleHook,
+    event: HookEvent,
+    ctx: &HookContext,
+    payload: String,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
     use super::bounded::Exit;
 
     let label = format!("hook `{}` for {event}", elide(&hook.command));
     tracing::debug!("{label}: running");
 
     let mut cmd = super::platform_shell(&hook.command);
+    for (key, _) in
+        std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("THURBOX_"))
+    {
+        cmd.env_remove(key);
+    }
+    if event == HookEvent::StateChanged {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
+            for (field, key) in [
+                ("from_state", "THURBOX_FROM_STATE"),
+                ("to_state", "THURBOX_TO_STATE"),
+            ] {
+                if let Some(state) = value[field].as_str() {
+                    cmd.env(key, state);
+                }
+            }
+            cmd.env("THURBOX_EVENT_SEQ", value["seq"].to_string());
+        }
+    }
     cmd.envs(ctx.env(event))
         .envs(super::thurbox_env_overrides());
-    if let Some(dir) = ctx.workdir() {
+    let cwd = if event == HookEvent::PreLaunch {
+        ctx.cwd.as_deref()
+    } else {
+        ctx.workdir()
+    };
+    if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    let done = super::bounded::run(cmd, Some(ctx.json(event)), hook.timeout());
+    let done = super::bounded::run(cmd, Some(payload), timeout);
     let code = match done.exit {
         Exit::Code(0) => return Ok(()),
         Exit::Code(code) => code.to_string(),
@@ -166,6 +205,8 @@ mod tests {
             event,
             command: command.to_string(),
             timeout_secs,
+            agents: Vec::new(),
+            to: Vec::new(),
         }
     }
 

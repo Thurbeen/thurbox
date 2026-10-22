@@ -77,8 +77,11 @@ impl Database {
     ) -> rusqlite::Result<Option<i64>> {
         let tx = self.write_transaction()?;
         self.conn.execute(
-            "INSERT OR IGNORE INTO event_cursors (consumer, cursor, lease_until) \
-             VALUES (?1, (SELECT COALESCE(MAX(seq), 0) FROM session_events), 0)",
+            &format!(
+                "INSERT OR IGNORE INTO event_cursors (consumer, cursor, lease_until) \
+                 VALUES (?1, ({}), 0)",
+                super::session_events::LATEST_SEQ
+            ),
             [consumer],
         )?;
         let cursor = self

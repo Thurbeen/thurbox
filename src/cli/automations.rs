@@ -742,11 +742,19 @@ fn housekeeping(db: &Database, backends: &crate::backend::BackendRegistry) -> Va
     // Last: a collector that is down costs a request timeout, and nothing
     // above may wait on it.
     let telemetry = export_telemetry(db);
+    let hooks = match crate::session_ops::state_hooks::tick(db) {
+        Ok(report) => report,
+        Err(e) => {
+            tracing::warn!("state hooks: {e}");
+            json!({"error": e})
+        }
+    };
     json!({
         "synced": synced,
         "reaped": reaped,
         "teardowns": teardowns,
         "telemetry": telemetry,
+        "hooks": hooks,
     })
 }
 

@@ -32,6 +32,10 @@ pub const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 30;
 pub enum HookEvent {
     #[serde(rename = "session.pre_create")]
     PreCreate,
+    #[serde(rename = "session.pre_launch")]
+    PreLaunch,
+    #[serde(rename = "session.state_changed")]
+    StateChanged,
     #[serde(rename = "session.post_create")]
     PostCreate,
     #[serde(rename = "session.pre_delete")]
@@ -50,8 +54,10 @@ pub enum HookEvent {
 
 impl HookEvent {
     /// Every event, pre before post, in the order the operations are documented.
-    pub const ALL: [HookEvent; 8] = [
+    pub const ALL: [HookEvent; 10] = [
         HookEvent::PreCreate,
+        HookEvent::PreLaunch,
+        HookEvent::StateChanged,
         HookEvent::PostCreate,
         HookEvent::PreDelete,
         HookEvent::PostDelete,
@@ -65,6 +71,8 @@ impl HookEvent {
     /// `THURBOX_HOOK_EVENT` a hook reads.
     pub fn name(self) -> &'static str {
         match self {
+            HookEvent::PreLaunch => "session.pre_launch",
+            HookEvent::StateChanged => "session.state_changed",
             HookEvent::PreCreate => "session.pre_create",
             HookEvent::PostCreate => "session.post_create",
             HookEvent::PreDelete => "session.pre_delete",
@@ -81,6 +89,7 @@ impl HookEvent {
         matches!(
             self,
             HookEvent::PreCreate
+                | HookEvent::PreLaunch
                 | HookEvent::PreDelete
                 | HookEvent::PreRestart
                 | HookEvent::PreRestore
@@ -104,9 +113,39 @@ pub struct LifecycleHook {
     /// unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    /// Only these agent definitions; empty matches every agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<String>,
+    /// Only these destination states for `session.state_changed`.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "state_filter"
+    )]
+    pub to: Vec<String>,
+}
+
+fn state_filter<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let states = Vec::<String>::deserialize(d)?;
+    for state in &states {
+        // What an edge can carry: a hook word, or a terminal lifecycle reason.
+        // A derived state such as `running` is never an edge's destination.
+        if !super::HOOK_STATES.contains(&state.as_str())
+            && !["stopped", "lost", "exited"].contains(&state.as_str())
+        {
+            return Err(serde::de::Error::custom(format!(
+                "unknown destination state '{state}'"
+            )));
+        }
+    }
+    Ok(states)
 }
 
 impl LifecycleHook {
+    pub fn matches_agent(&self, agent: &str) -> bool {
+        self.agents.is_empty() || self.agents.iter().any(|a| a == agent)
+    }
+
     pub fn timeout(&self) -> Duration {
         Duration::from_secs(self.timeout_secs.unwrap_or(DEFAULT_HOOK_TIMEOUT_SECS))
     }

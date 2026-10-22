@@ -591,9 +591,11 @@ timeout_secs = 120
 
 | Field | Required | Default | Purpose |
 |-------|----------|---------|---------|
-| `event` | yes | — | one of the eight events below |
+| `event` | yes | — | one of the events below |
 | `command` | yes | — | run through `sh -c` (`cmd /C` on Windows) |
 | `timeout_secs` | no | `30` | the hook is killed after this long — with everything it started (its process group; the process tree on Windows) |
+| `agents` | no | `[]` | exact agent names; empty matches all |
+| `to` | no | `[]` | destination states for `session.state_changed`: `working`, `blocked`, `done`, `idle`, `stopped`, `lost`, `exited`; empty matches all; any other word fails validation |
 
 **Events** — a `pre_*` fires before the operation has any side effect, a
 `post_*` after it has fully succeeded (never after a failure):
@@ -609,7 +611,7 @@ Hooks fire **once per operation whichever interface asked**, because
 every interface ends in the same pipeline (`session_ops`). Hooks for one
 event run one at a time, in file order.
 
-**A `pre_*` hook can refuse.** Exit non-zero (or exceed the timeout) and
+**The operation-level `pre_*` hooks can refuse.** Exit non-zero (or exceed the timeout) and
 the operation is aborted before it has done anything — no worktree, no
 process, no row changed — with the hook's command, exit status and the
 tail of its stderr as the reported reason (the in-flight error in the
@@ -620,6 +622,53 @@ a failure is logged to `thurbox.log` and carried in the CLI's JSON
 delivered to interface plugins as an event of the same name (`events = {
 "session.post_create" }` + `on_event`; `docs/PLUGINS.md` → Events) — the
 Lua side of the same vocabulary, informational for the same reason.
+
+**Preparation before launch.** `session.pre_launch` runs locally on create
+(including fork), after worktrees and any multi-repo workspace exist, before
+opening the agent's pane. Its process cwd is the final launch directory and its
+stdin includes all worktrees and additional directories. `agents = ["claude"]`
+limits a preparation command to that agent definition. Non-zero exit, spawn
+failure or timeout refuses the launch. Prepared worktrees and any changes the
+user script made remain available for inspection; no pane or session row is
+created. Use an existing prepared checkout as `--repo-path` when retrying.
+It does not run on restart, start or
+restore, and is not run locally for a remote session; host-side preparation is
+tracked in #1473. It is a user hook, rather than an agent-definition field.
+
+**State edges without an interface.** `session.state_changed` is a post-only
+notification from the session event log, consumed by `automation tick` after
+the status poll. It includes state edges and stopped/lost/exited notifications;
+`to = ["done", "blocked"]` filters the destinations. The stdin object uses the
+same `seq`, `event`, `reason`, `from_state`, `to_state`, session identity and
+coverage fields as `watch --json`, plus `gap`. The environment adds
+`THURBOX_FROM_STATE`, `THURBOX_TO_STATE` and `THURBOX_EVENT_SEQ` to the usual
+identity variables. Terminal lifecycle reasons can have null state fields;
+filter these by `to = ["stopped", "lost", "exited"]`.
+
+Delivery is **at-least-once**, not exactly-once: scripts deduplicate side
+effects on `seq`. A crash after a script runs and before the cursor commits
+replays that batch. Ordinary hook failure is logged and returned in the tick's
+`hooks.failures`; later hooks still run. One lease and compare-and-swap protect
+the `hooks` row in `event_cursors` from overlapping ticks. Each tick reads at
+most 512 events and spends at most 30 seconds on hooks, including their own
+timeouts; each remaining hook gets a share of the remaining phase budget so
+one slow hook cannot starve the rest of its event. Unfinished rows wait for
+the next tick. Reaping and telemetry run
+before this phase, so a slow hook delays only hooks. First use starts at the
+head, skipping history. Pruned history produces `gap: true` once, on the first
+payload a hook receives in that tick; when no hook's filter matches anything
+in that batch, only the tick's own report carries it. The cursor outlives the
+file: removing every state hook pauses delivery, and adding one back resumes
+from where it stopped (at most 512 edges a tick, within retention) rather
+than from the head. An edge whose session row was force-deleted before the
+tick reached it is skipped, since its agent and context are gone with it.
+
+Keeper latency is normally 60 seconds. The existing `features.automations`
+off switch disables automatic keeper startup; manual `automation tick` still
+consumes state hooks. After editing the file, `config validate` arms the keeper
+when state hooks exist and the feature is enabled; startup and session creation
+also arm it. A driver needing lower latency uses `watch` or `session wait`.
+Extensions cannot declare these hook entries; keep them in the user's own file.
 
 **What a hook receives.** Environment variables — **unset** (never
 empty) when the fact is not known at that moment:

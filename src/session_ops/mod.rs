@@ -38,6 +38,7 @@ pub mod builtin_ui_skill;
 pub mod composer;
 pub mod delete;
 pub mod deliver;
+pub mod events;
 pub mod extensions;
 pub mod host_cli;
 pub mod image_drop;
@@ -49,6 +50,7 @@ pub mod lost;
 pub mod mirror;
 pub mod names;
 pub mod purge;
+pub mod read_fields;
 pub mod remote_hooks;
 pub mod rename;
 pub mod reparent;
@@ -58,7 +60,9 @@ pub mod set_key;
 #[cfg(test)]
 mod shared_tests;
 pub mod spawn;
+pub mod state_hooks;
 pub(crate) mod telemetry;
+pub mod wait;
 pub mod windows;
 pub mod wsl_loopback;
 

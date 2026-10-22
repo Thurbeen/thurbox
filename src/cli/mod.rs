@@ -585,7 +585,17 @@ fn dispatch(
         Command::Automation { action } => automations::run(action, db, backends)?,
         Command::Task { action } => tasks::run(action, db, backends)?,
         Command::Message { action } => messages::run(action, db)?,
-        Command::Config { action } => config::run(action, db)?,
+        Command::Config { action } => {
+            let validating = matches!(action, config::Action::Validate);
+            let output = config::run(action, db)?;
+            if validating
+                && output.failure.is_none()
+                && crate::session_ops::state_hooks::configured()
+            {
+                automations::arm_heartbeat(backends.local());
+            }
+            output
+        }
         Command::Extension { action } => extensions::run(action, db, backends)?,
         Command::Version(args) => version::run(args),
         Command::Update(args) => update::run(args),

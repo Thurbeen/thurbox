@@ -3028,6 +3028,14 @@ rebuilds nothing in the interface. A `metadata` key would bump `rows_version`.
 a row of its own rather than a second claim implementation; the same rows hold
 the leases `session_ops::lock` takes (issue #1475).
 
+The `hooks` consumer now uses that same lease/cursor pair for
+`session.state_changed`. Its external process cannot commit a side effect in
+the cursor's SQLite transaction, so delivery is at-least-once and carries
+`seq` for script-side deduplication. Watch and waits keep a process-local
+sequence number and share the bounded event reader and JSON projection with
+hooks. The limits and lifecycle rules live in [CONFIG.md](CONFIG.md#hookstoml)
+and [ORCHESTRATION.md](ORCHESTRATION.md#bounded-waits-and-read-side-evidence).
+
 **Limits**: plain HTTP only. No TLS stack is in the tree, so an `https`
 backend is reached through a local Collector. A Prometheus backend needs the
 Collector's `deltatocumulative` processor (sample config in `docs/CONFIG.md`).

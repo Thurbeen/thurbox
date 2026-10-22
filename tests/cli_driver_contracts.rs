@@ -724,6 +724,132 @@ fn delegated_errors_preserve_kinds_codes_and_transport_reach() {
     assert_eq!(answer["error_kind"], "unreached");
 }
 
+/// A delegated `send --wait-turn` that times out on the host has still
+/// delivered the text. The host's whole answer — `sent` included — reaches the
+/// caller with the host's exit code, so a driver does not read exit 4 as "send
+/// it again" and type the prompt twice.
+#[cfg(unix)]
+#[test]
+fn a_delegated_wait_turn_timeout_keeps_the_hosts_send_result() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let bin = env.path("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let version = env.run(&["version", "--json"]);
+    assert!(version.status.success());
+    std::fs::write(env.path("data/host-version"), version.stdout).unwrap();
+    std::fs::write(
+        env.path("config/hosts.toml"),
+        "[[hosts]]\nname = 'probe'\ndestination = 'probe'\nshare_sessions = true\n",
+    )
+    .unwrap();
+    let ssh = bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        r#"#!/bin/sh
+case "$*" in
+    *'version --json'*)
+        printf '%s\n' '@cli /probe/thurbox-cli' '@status 0'
+        cat "$THURBOX_DATA_DIR/host-version" ;;
+    *session*send*)
+        printf '%s\n' '{"sent":true,"submitted":true,"turn":null,"error":"wait timed out","error_kind":"timeout"}'
+        exit 4 ;;
+    *)
+        exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let id = env.seed("remote-worker", None);
+    let db = env.db();
+    let mut row = db.get_session_by_id(id).unwrap().unwrap();
+    row.backend_type = "ssh:probe".into();
+    db.upsert_session(&row).unwrap();
+    let mut command = env.command(&[
+        "session",
+        "send",
+        &id.to_string(),
+        "hello",
+        "--wait-turn",
+        "--timeout",
+        "1",
+        "--json",
+    ]);
+    command.env(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    let out = command.output().unwrap();
+    assert_eq!(out.status.code(), Some(4), "{}", stdout_of(&out));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["sent"], true, "{answer}");
+    assert_eq!(answer["error_kind"], "timeout", "{answer}");
+    assert!(answer["turn"].is_null(), "{answer}");
+}
+
+/// A waiting send makes the same local checks a plain send makes before it
+/// asks the host: a row parked here is refused here, with the local remedy,
+/// and the host is never asked to type into it.
+#[cfg(unix)]
+#[test]
+fn a_waiting_send_to_a_parked_remote_row_is_refused_locally() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let bin = env.path("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let version = env.run(&["version", "--json"]);
+    assert!(version.status.success());
+    std::fs::write(env.path("data/host-version"), version.stdout).unwrap();
+    std::fs::write(
+        env.path("config/hosts.toml"),
+        "[[hosts]]\nname = 'probe'\ndestination = 'probe'\nshare_sessions = true\n",
+    )
+    .unwrap();
+    let ssh = bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        r#"#!/bin/sh
+case "$*" in
+    *'version --json'*)
+        printf '%s\n' '@cli /probe/thurbox-cli' '@status 0'
+        cat "$THURBOX_DATA_DIR/host-version" ;;
+    *session*send*)
+        touch "$THURBOX_DATA_DIR/host-asked-to-send"
+        printf '%s\n' '{"sent":true,"submitted":true}' ;;
+    *)
+        exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let id = env.seed("parked-remote", None);
+    let db = env.db();
+    let mut row = db.get_session_by_id(id).unwrap().unwrap();
+    row.backend_type = "ssh:probe".into();
+    db.upsert_session(&row).unwrap();
+    db.set_session_stopped(id, true).unwrap();
+    for flag in ["--strict", "--wait-turn"] {
+        let mut command = env.command(&["session", "send", &id.to_string(), "hi", flag, "--json"]);
+        command.env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        );
+        let out = command.output().unwrap();
+        assert!(!out.status.success(), "{flag}: {}", stdout_of(&out));
+        assert!(
+            stdout_of(&out).contains("session start"),
+            "{flag}: {}",
+            stdout_of(&out)
+        );
+        assert!(
+            !env.path("data/host-asked-to-send").exists(),
+            "{flag}: the host was asked to type into a parked row"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_typed_missing_host_row_permits_the_owned_window_fallback() {

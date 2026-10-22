@@ -22,6 +22,10 @@ use super::Database;
 
 const MS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
 
+/// The head of the log: the highest seq ever issued, `0` before the first.
+pub(super) const LATEST_SEQ: &str =
+    "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'session_events'), 0)";
+
 /// What happened to a session row — the vocabulary `watch` has always emitted.
 ///
 /// `present` is not here: it is the baseline `watch --initial` synthesises from
@@ -183,14 +187,21 @@ impl Database {
         Ok(())
     }
 
-    /// The highest seq in the log, or `0` when it is empty. The baseline a
-    /// watcher starts from when it was not given a `--since`.
+    /// The highest seq ever issued, or `0` when nothing ever was. The baseline
+    /// a watcher starts from when it was not given a `--since`. Read from
+    /// `sqlite_sequence` rather than `MAX(seq)`: retention can empty the log,
+    /// and a head of `0` then would call the next edge a gap.
     pub fn latest_session_event_seq(&self) -> rusqlite::Result<i64> {
-        self.conn.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM session_events",
-            [],
-            |r| r.get(0),
-        )
+        self.conn.query_row(LATEST_SEQ, [], |r| r.get(0))
+    }
+
+    /// A cursor predates retained history. A first-run cursor at the head
+    /// cannot report a gap; subsequent readers report this once as they drain.
+    pub fn session_event_gap(&self, since: i64) -> rusqlite::Result<bool> {
+        let oldest: Option<i64> =
+            self.conn
+                .query_row("SELECT MIN(seq) FROM session_events", [], |r| r.get(0))?;
+        Ok(oldest.is_some_and(|oldest| since < oldest.saturating_sub(1)))
     }
 
     /// Events after `since`, oldest first, optionally for one session.
