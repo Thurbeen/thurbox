@@ -267,7 +267,8 @@ pub enum Action {
     /// `deleted_retention_days` lets the row be purged, null when nothing
     /// will purge it; and `session`, the resulting row in the shape `session
     /// list --deleted --json` prints. Both instants are null for a forced
-    /// delete.
+    /// delete. For a session a shared host deleted they are the host's own,
+    /// and null where an older host does not report them.
     Delete {
         /// Session UUID.
         uuid: String,
@@ -2471,14 +2472,22 @@ fn delete_session(
     // own `deleted_at`, as the reaper and the retention purge measure them.
     // They are when each becomes *allowed*: the reap and the purge happen
     // only when a sweep runs (interface, heartbeat, or the verb by hand).
+    // A delete a shared host took is the host's to time: its row, its
+    // retention, its clock.
     let row = db.get_deleted_session_by_id(session.id).ok().flatten();
     let soft_row = row.as_ref().filter(|_| !force);
-    let reapable_at =
-        soft_row.map(|r| r.deleted_at + crate::session_ops::UNDO_WINDOW.as_millis() as u64);
-    let retention_days = crate::session::settings::global().deleted_retention_days;
-    let undo_until = soft_row
-        .filter(|_| retention_days > 0)
-        .map(|r| r.deleted_at + retention_days.saturating_mul(24 * 60 * 60 * 1000));
+    let (undo_until, reapable_at) = match &report.host_deadlines {
+        Some(host) => (host.undo_until, host.reapable_at),
+        None => {
+            let retention_days = crate::session::settings::global().deleted_retention_days;
+            (
+                soft_row
+                    .filter(|_| retention_days > 0)
+                    .map(|r| r.deleted_at + retention_days.saturating_mul(24 * 60 * 60 * 1000)),
+                soft_row.map(|r| r.deleted_at + crate::session_ops::UNDO_WINDOW.as_millis() as u64),
+            )
+        }
+    };
     Ok(CommandOutput::new(
         json!({
             "deleted": true,

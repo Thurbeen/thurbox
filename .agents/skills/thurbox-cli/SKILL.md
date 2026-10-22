@@ -634,7 +634,9 @@ warns on stderr (one line; never with `--soft`/`--force`); JSON
 scripts must pass `--force` for immediate teardown or `--soft` for undo.
 The delete JSON carries `soft`, `reapable_at` (`deleted_at + UNDO_WINDOW`: the
 reap is allowed then, and happens when a sweep runs), `undo_until` (`deleted_at
-+ deleted_retention_days`, null when retention is off) — both null when forced —
++ deleted_retention_days`, null when retention is off) — both null when forced,
+and the host's own values (`session_ops::HostDeadlines`) when a shared host took
+the delete —
 and `session`, the resulting row as `session list --deleted --json` prints it.
 `[features] soft_delete = true` or CLI `--soft` opts into an undoable delete;
 `--force` always tears down immediately. The two flags conflict. A soft delete

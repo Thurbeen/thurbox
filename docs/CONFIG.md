@@ -940,7 +940,9 @@ reaped; `undo_until` (epoch ms), when `deleted_retention_days` lets the row be
 purged, or `null` when retention is off and only `session purge` removes it;
 and `session`, the resulting row in the shape `session list --deleted --json`
 prints, with its `deleted_at` and `force_deleted`. Both instants are `null` for
-a forced delete.
+a forced delete. For a session on a shared host that took the delete, they are
+the host's own (its retention, its clock), and `null` where an older host does
+not report them.
 The capability bit selects flags understood by the receiver; major/schema
 compatibility alone does not identify the caller or its intended deletion mode.
 Users who never set the flag now get immediate teardown for plain CLI/TUI
