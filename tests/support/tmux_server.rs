@@ -49,6 +49,9 @@ pub struct TmuxServer {
     /// because the order is then the language's: the destructor body runs to
     /// completion, reaping, and the directory goes afterwards.
     tmpdir: tempfile::TempDir,
+    /// Whether the server this starts may write a core dump — see
+    /// [`Self::crashable`].
+    core_dumps: bool,
 }
 
 impl TmuxServer {
@@ -95,7 +98,21 @@ impl TmuxServer {
         Self {
             socket: socket.to_string(),
             tmpdir,
+            core_dumps: true,
         }
+    }
+
+    /// [`Self::private`] for a harness that crashes its server on purpose.
+    ///
+    /// The server is started with core dumps off, so a deliberate SIGSEGV
+    /// leaves no dump behind — every run of such a test used to leave one.
+    /// tmux forks the server from the client that starts it, so the limit is
+    /// set on each `tmux` command here. Every other server keeps the runner's
+    /// limit, and with it the evidence of a crash nobody asked for.
+    pub fn crashable(socket: &str) -> Self {
+        let mut server = Self::private(socket);
+        server.core_dumps = false;
+        server
     }
 
     /// The pinned socket name.
@@ -121,8 +138,26 @@ impl TmuxServer {
 
     /// `tmux <args>` on this server.
     pub fn tmux(&self, args: &[&str]) -> Output {
-        Command::new("tmux")
-            .env("TMUX_TMPDIR", self.tmpdir())
+        let mut cmd = Command::new("tmux");
+        #[cfg(unix)]
+        if !self.core_dumps {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: `setrlimit` is async-signal-safe, which is all
+            // `pre_exec` asks.
+            unsafe {
+                cmd.pre_exec(|| {
+                    let none = libc::rlimit {
+                        rlim_cur: 0,
+                        rlim_max: 0,
+                    };
+                    if libc::setrlimit(libc::RLIMIT_CORE, &none) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        cmd.env("TMUX_TMPDIR", self.tmpdir())
             // A suite run inside a tmux pane inherits `TMUX`, and a command
             // that reads it resolves against the operator's server rather than
             // this one however the socket is spelled.
