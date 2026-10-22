@@ -5135,15 +5135,16 @@ mod tests {
             .collect();
         let (last, history) = chunks.split_last().expect("chunks");
         assert_eq!(last, b"live");
-        assert!(
-            history
-                .iter()
-                .all(|c| !c.is_empty() && c.len() <= SEED_CHUNK_BYTES),
-            "seed pieces of {:?} bytes",
-            history.iter().map(Vec::len).collect::<Vec<_>>()
+        // 4096 spelled out, so the bound is pinned rather than whatever the
+        // constant happens to say.
+        assert_eq!(
+            history.iter().map(Vec::len).collect::<Vec<_>>(),
+            [4096, 4096, 1808],
+            "seed pieces"
         );
         assert_eq!(history.concat(), seed);
     }
+
     use crate::backend::identity::agent_window_name;
     use crate::backend::instance::{
         host_socket, known_host_socket, learn_host_socket, TMUX_SOCKET,
