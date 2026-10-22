@@ -2876,10 +2876,12 @@ No auth line is sent: the token is optional on macOS/Linux, where the socket is
 already mode 0600 to the user; native Windows named pipes are out of scope.
 
 A session in `bypassPermissions` holds a peer message for a 5-minute
-approval dialog unless `crossSessionInbound: accept` is set in the settings
-thurbox passes it; the send still reports `claude-socket`, since the socket
-accepted it, and says `may_hold: true` (and, in text, that the message may wait
-on a prompt). See the claude section of [AGENTS.md](AGENTS.md).
+approval dialog unless its Claude settings carry `crossSessionInbound: accept`;
+the send still reports `claude-socket`, since the socket accepted it, and says
+`may_hold: true` (and, in text, that the message may wait on a prompt).
+Thurbox does not set it. A user who wants it puts it in their own Claude
+settings, because self-heal rewrites the hooks extension's managed `claude.json`
+— see the claude section of [AGENTS.md](AGENTS.md).
 
 ### Delivered rows and unread counts
 

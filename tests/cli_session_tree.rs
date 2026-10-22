@@ -177,3 +177,23 @@ fn a_parent_cycle_neither_hangs_nor_drops_a_row() {
     let listed = rows(&["--parent", &a.to_string(), "--recursive"]);
     assert_eq!(listed, named(&[("b", 0)]));
 }
+
+/// The deleted listing is a different document with no parent forest, so
+/// asking for a tree of it is refused rather than answered flat.
+#[test]
+fn tree_of_the_deleted_list_is_refused() {
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate(home.path());
+    let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "list", "--deleted", "--tree", "--json"])
+        .env_remove("THURBOX_SESSION")
+        .env_remove("THURBOX_SOCKET")
+        .env_remove("THURBOX_SOCKET_FOR")
+        .output()
+        .expect("run thurbox-cli");
+    assert!(
+        !out.status.success(),
+        "--deleted --tree must not succeed: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}

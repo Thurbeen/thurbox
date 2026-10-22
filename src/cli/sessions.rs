@@ -88,7 +88,7 @@ pub enum Action {
         /// the listing (deleted, or filtered out) shows at the top level.
         /// Unlike the sidebar, rows are not grouped by repo. Text output
         /// indents each child; JSON rows carry `depth` either way.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "deleted")]
         tree: bool,
         /// List the deleted sessions instead — what a peer thurbox mirroring
         /// this machine reads, with each row's `force_deleted` mark.
