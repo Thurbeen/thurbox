@@ -1747,6 +1747,18 @@ mod tests {
         assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
     }
 
+    /// A kill is the most destructive thing a pane can be named for, and on
+    /// 3.3.7 it ended the active pane instead: it is gated like any other.
+    #[cfg(unix)]
+    #[test]
+    fn no_pane_on_a_too_old_psmux_server_is_killed() {
+        let (_root, psmux, log) = psmux_answering("3.3.7");
+        let err = psmux.kill("%2").unwrap_err().to_string();
+        assert!(err.contains("psmux 3.3.7 is too old"), "{err}");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("kill"), "a kill was sent:\n{sent}");
+    }
+
     /// A one-shot answer is not kept: with no connection, nothing would say
     /// the server it came from had been replaced. A connection's is (see
     /// `each_new_connection_asks_the_server_its_version_once`).

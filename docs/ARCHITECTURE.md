@@ -1201,14 +1201,14 @@ change which binary runs.
 A version with a suffix (`3.3.9-dev`) is not one the gate can hold to the
 floor, and is refused.
 
-Two gaps remain, both needing the server replaced by an older one at that
-instant: a command admitted or written just before a reconnect is sent on the
-replacement unasked (`ctrl_command_list` resends a broken write), and three
-callers spell a target without asking because they must not wait on a round
-trip — the paint's `resize` and the input loop's `claim_size` and `is_dead`.
-Their panes were attached through `target`; after a reconnect they go unasked
-until re-attaching the panes asks again. Where no session exists yet, so no
-server to ask, the binary's `-V` answers before it starts one.
+Three callers must not wait on a round trip — the paint's `resize` and the
+input loop's `claim_size` and `is_dead` — so they never ask: they read whether
+the current connection was admitted (`admitted_here`) and send nothing on one
+that was not, a reconnect to a server not yet asked or refused. One gap
+remains, needing the server replaced by an older one at that instant: a
+command admitted or written just before a reconnect is sent on the replacement
+unasked (`ctrl_command_list` resends a broken write). Where no session exists
+yet, so no server to ask, the binary's `-V` answers before it starts one.
 
 ### A psmux agent reports its own exit, and its relaunches are bounded
 

@@ -1241,6 +1241,18 @@ impl<M: TmuxCompatible> Server<M> {
         (verb, self.spell_target(id))
     }
 
+    /// Whether the server behind the current connection was admitted
+    /// ([`Self::admit_server`]), read without asking: for the paint and input
+    /// loops, which must not wait on that question and must not name a pane to
+    /// a server it has not passed — a reconnect to one never asked, or refused.
+    /// Always true where there is no floor.
+    fn admitted_here(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        M::VERSION_FLOOR.is_none()
+            || self.admitted.load(Ordering::Acquire)
+                == self.connection_generation.load(Ordering::Acquire) + 1
+    }
+
     /// Refuse a multiplexer below [`TmuxCompatible::VERSION_FLOOR`] before a
     /// pane is named to it, or a pane born on it.
     ///
@@ -3167,6 +3179,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         }
         // `-w`: the option belongs to the window, not the pane, so a pane that
         // is split or replaced inside it does not take the identity with it.
+        // Spelled once: on a one-shot path each `target` asks the version.
+        let target = self.target(backend_id)?;
         if !self.attached() {
             // One-shot, for a caller with no connection of its own — a
             // headless restore or `session register` claiming a window.
@@ -3175,18 +3189,10 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 (WINDOW_ROLE_OPTION, role.as_str()),
             ] {
                 if !value.is_empty() {
-                    self.tmux_run(&[
-                        "set-option",
-                        "-w",
-                        "-t",
-                        &self.target(backend_id)?,
-                        option,
-                        value,
-                    ])?;
+                    self.tmux_run(&["set-option", "-w", "-t", &target, option, value])?;
                 }
             }
         } else {
-            let target = self.target(backend_id)?;
             if !session_id.is_empty() {
                 self.ctrl_command(&format!(
                     "set-option -w -t {target} {WINDOW_SESSION_OPTION} {}",
@@ -3465,10 +3471,13 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // that was not leaves the agent wrapping at the old width until some
         // later rect change asks again.
         //
-        // Spelled without `admit_server`, whose question is a round trip the
-        // paint must not wait on. The pane was attached through `target`,
-        // which asked the server then; after a reconnect it goes unasked here
-        // until the next `target` call, which re-attaching the panes makes.
+        // Not `admit_server`, whose question is a round trip the paint must not
+        // wait on: only what is already known of this connection. One not
+        // admitted — a reconnect to a server not yet asked, or refused — is
+        // sent nothing; the pane's next attach asks, and a later paint sizes it.
+        if !self.admitted_here() {
+            return Ok(());
+        }
         let (rows, cols) = tmux_size(rows, cols);
         let target = self.spell_target(backend_id);
         let window = format!("resize-window -t {target} -x {cols} -y {rows}");
@@ -3523,8 +3532,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             return self.resize(backend_id, rows, cols);
         }
         // Unconditional: this is the instance being typed into, which is what
-        // decides who sizes (see `resize`). Spelled without `admit_server`, as
-        // `resize` is: this runs on the input loop.
+        // decides who sizes (see `resize`). Not `admit_server`, as `resize` is
+        // not: this runs on the input loop.
+        if !self.admitted_here() {
+            return Ok(());
+        }
         let (rows, cols) = tmux_size(rows, cols);
         let target = self.spell_target(backend_id);
         Ok(self.ctrl_command_detached(
@@ -3544,8 +3556,16 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // again on a link that had stopped carrying anything — twenty-odd
         // seconds of an interface that answered nothing, to settle a question
         // whose honest answer when the host says nothing is the one the caller
-        // already reads an error as: not known to be dead. Spelled without
-        // `admit_server` for the same reason, as `resize` is.
+        // already reads an error as: not known to be dead. Not `admit_server`
+        // either, for the same reason as `resize`: a connection not admitted
+        // is asked nothing, and answers that error.
+        if !self.admitted_here() {
+            return Err(anyhow::anyhow!(
+                "{} is not admitted on this connection; {backend_id} is not asked",
+                self.name
+            )
+            .into());
+        }
         let target = self.spell_target(backend_id);
         let result = self.ctrl_command_within(
             &format!("display-message -t {target} -p '#{{pane_dead}}'"),
@@ -5427,6 +5447,44 @@ mod tests {
         ] {
             assert_eq!(banner_version(banner), None, "{banner:?}");
         }
+    }
+
+    /// The paint's resize and the input loop's dead-check cannot wait on the
+    /// version question, so they name a pane only on a connection already
+    /// admitted: after a reconnect to a server not yet asked, or refused, they
+    /// send nothing.
+    #[cfg(unix)]
+    #[test]
+    fn the_loops_name_no_pane_on_a_connection_not_admitted() {
+        let resized = |root: &std::path::Path| {
+            std::fs::read_to_string(root.join("floored-mux.log"))
+                .unwrap_or_default()
+                .matches("resize-window")
+                .count()
+        };
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, _asked) = floored_mux(root.path(), "2.0\\n");
+        backend.ensure_control().expect("control client");
+        backend.resize("%1", 24, 80).expect("skipped, not failed");
+        assert!(backend.is_dead("%1").is_err());
+        assert_eq!(resized(root.path()), 0, "named before admission");
+        backend.target("%1").expect("admitted");
+        backend.resize("%1", 24, 80).expect("resized");
+        // Sent detached: the writer thread puts it on the wire in its own time.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while resized(root.path()) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(resized(root.path()), 1);
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, _asked) = floored_mux(root.path(), "1.0\\n");
+        backend.ensure_control().expect("control client");
+        assert!(backend.target("%1").is_err());
+        backend.resize("%1", 24, 80).expect("skipped, not failed");
+        assert!(backend.is_dead("%1").is_err());
+        assert_eq!(resized(root.path()), 0, "named to a refused server");
     }
 
     /// The admission was the connection's: once it is shut down, the next
