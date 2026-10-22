@@ -114,8 +114,8 @@ pub(super) fn target(chosen: Option<String>) -> Result<Instance, CommandError> {
     match instances.len() {
         0 => Err("no running UI instance is reachable".to_string().into()),
         1 => Ok(instances.into_iter().next().unwrap()),
-        _ => Err(CommandError {
-            message: format!(
+        _ => Err(CommandError::with_code(
+            format!(
                 "ambiguous UI instance; select one with --instance: {}",
                 instances
                     .iter()
@@ -126,8 +126,8 @@ pub(super) fn target(chosen: Option<String>) -> Result<Instance, CommandError> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            exit_code: EXIT_AMBIGUOUS,
-        }),
+            EXIT_AMBIGUOUS,
+        )),
     }
 }
 

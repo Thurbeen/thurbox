@@ -483,7 +483,8 @@ session), never on the loop, ADR-P12).
   `session_ops::retry_owed_remote_teardowns` finishes the kill and the worktree
   removals when the host next answers — delegating `session delete --force` to
   a host that runs its own thurbox, killing through the stamp otherwise, and
-  falling through to the direct kill when the host answers "Session not found".
+  falling through to the direct kill when the host answers `not_found` (from
+  a host too old to send `error_kind`, its own "Session not found: …" sentence).
   Driven beside `reap_overdue_soft_deletes` (`automation tick` and the
   interface's `Command::Reap`), reading `hosts.toml` afresh so adding the
   missing entry is enough to make the job possible again, and asking a silent
@@ -528,7 +529,7 @@ session), never on the loop, ADR-P12).
   matches, which is the same conflation one level down: the first unanticipated
   message lands in the wrong branch silently. `ssh` exits **255** for its own
   failures and passes a remote command's status through untouched, and
-  `thurbox-cli` only ever exits 1/2/3 — so 255 means the question never
+  `thurbox-cli` only ever exits 1 to 6 — so 255 means the question never
   arrived, whatever stderr says (`listing_is_absence`,
   `host_cli::classify_failure`). `host_cli::Reach` names the three answers —
   `Unreached` / `Answered` / `Undetermined` — and the third is its own answer,
@@ -622,7 +623,7 @@ session), never on the loop, ADR-P12).
   `tests/shared_sessions.rs` pins it over three real databases.
 - **A delegated delete the host does not know falls through** to the local
   teardown instead of erroring: a fork minted here, a pre-ADR-24 row, or one a
-  peer already deleted there all make the host answer "Session not found", and
+  peer already deleted there all make the host answer `not_found`, and
   aborting left the local row active and attached. The fall-through is recorded
   in `ForceDeleteReport.host_unknown`. A call whose `host_cli::Reach` is not
   `Answered` — `Unreached` or `Undetermined` — falls through the same way,

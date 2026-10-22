@@ -145,7 +145,7 @@ fn rig() -> Rig {
                 if !host.active.iter().any(|s| s.id == id) {
                     // Word for word what the host's own resolver answers for a
                     // row it does not hold — see `cli::session_ref::resolve`.
-                    return Err(fake::answered(&format!("Session not found: {id}")));
+                    return Err(fake::not_found(&format!("Session not found: {id}")));
                 }
                 host.active.retain(|s| s.id != id);
                 let force = rest.contains(&"--force");
@@ -291,7 +291,7 @@ fn the_hosts_refusal_is_the_callers_error_verbatim() {
     rig.host.borrow_mut().refuse_create = Some("Unknown agent 'codex' on devbox".into());
     let err =
         super::spawn_session_headless(&rig.db, &rig.backends, create_request("nope")).unwrap_err();
-    assert_eq!(err, "Unknown agent 'codex' on devbox");
+    assert_eq!(err, "Unknown agent 'codex' on devbox".into());
     assert!(rig.db.list_active_sessions().unwrap().is_empty());
 }
 
@@ -610,7 +610,7 @@ fn any_other_refusal_from_the_host_still_aborts_the_delete() {
     fake::install_runner(Box::new(|_, _| Err(fake::answered("worktree is locked"))));
 
     let err = super::delete_session_headless(&rig.db, &rig.backends, id, true).unwrap_err();
-    assert_eq!(err, "worktree is locked");
+    assert_eq!(err, "worktree is locked".into());
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
 }
 

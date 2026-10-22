@@ -111,6 +111,7 @@ fn run_lock<'a>(
     op: &str,
 ) -> Result<Option<Lock<'a>>, String> {
     lock::lock_for(db, Subject::AutomationRun(id), op, budget + DEADLINE_GRACE)
+        .map_err(|e| e.to_string())
 }
 
 /// Fire every automation due at `now`, and run `housekeeping` while the execs

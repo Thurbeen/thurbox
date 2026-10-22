@@ -346,7 +346,10 @@ fn run_task(
                 .get_session_by_id(*session_id)
                 .map_err(|e| format!("get_session_by_id: {e}"))?
                 .ok_or_else(|| format!("Target session not found: {session_id}"))?;
-            if crate::session_ops::windows::agent_pane(backends, &target)?.is_none() {
+            if crate::session_ops::windows::agent_pane(backends, &target)
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
                 return Err("target session not running".into());
             }
             crate::session_ops::send_text_with_status(db, backends, &target, &prompt, true)
@@ -382,7 +385,10 @@ fn run_task(
                 {
                     continue;
                 }
-                if crate::session_ops::windows::agent_pane(backends, &session)?.is_some() {
+                if crate::session_ops::windows::agent_pane(backends, &session)
+                    .map_err(|e| e.to_string())?
+                    .is_some()
+                {
                     running.push(session);
                 }
             }
@@ -410,9 +416,8 @@ fn run_task(
                 ..Default::default()
             };
             spawn_and_deliver(db, backends, &name, req, &prompt).map_err(|e| match e {
-                SpawnDeliverError::Spawn(msg) | SpawnDeliverError::Deliver { message: msg, .. } => {
-                    msg
-                }
+                SpawnDeliverError::Spawn(error) => error.to_string(),
+                SpawnDeliverError::Deliver { message, .. } => message,
             })?;
             mark_in_progress(db, task)?;
             Ok(json!({ "spawned": name, "id": task.id }))

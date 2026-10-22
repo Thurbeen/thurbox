@@ -240,7 +240,7 @@ fn fire_send(
                 None,
             )
         }
-        Err(e) => return (AutomationRunStatus::Error, e, None),
+        Err(e) => return (AutomationRunStatus::Error, e.to_string(), None),
     }
     match super::super::send_text_with_status(db, backends, &target, &auto.prompt, true) {
         Ok(()) => (
@@ -289,7 +289,7 @@ fn fire_spawn(
             Ok(Some(_)) => running.push(session),
             Ok(None) => {}
             // Not knowing whether it runs must not launch a second one.
-            Err(e) => return (AutomationRunStatus::Error, e, None),
+            Err(e) => return (AutomationRunStatus::Error, e.to_string(), None),
         }
     }
     match running.as_slice() {
@@ -337,7 +337,7 @@ fn fire_spawn(
             session_id,
             message,
         }) => (AutomationRunStatus::Error, message, Some(session_id)),
-        Err(SpawnDeliverError::Spawn(e)) => (AutomationRunStatus::Error, e, None),
+        Err(SpawnDeliverError::Spawn(e)) => (AutomationRunStatus::Error, e.to_string(), None),
     }
 }
 

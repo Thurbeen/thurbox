@@ -5,6 +5,31 @@
 //! operations are synchronous against the SQLite database and the `tmux -L
 //! thurbox` server.
 
+pub use crate::session::OpError;
+
+impl From<crate::backend::BackendError> for OpError {
+    fn from(error: crate::backend::BackendError) -> Self {
+        match error {
+            crate::backend::BackendError::Absent(m) => Self::Gone(m),
+            crate::backend::BackendError::Unreachable(m) => Self::Unreachable(m),
+            crate::backend::BackendError::Refused(m) => Self::Refused(m),
+            crate::backend::BackendError::Busy(m) => Self::Conflict(m),
+            crate::backend::BackendError::Io(m) => Self::Other(m),
+        }
+    }
+}
+impl From<anyhow::Error> for OpError {
+    fn from(error: anyhow::Error) -> Self {
+        if let Some(classified) = error.downcast_ref::<Self>() {
+            return Self::from_kind(classified.kind(), format!("{error:#}"));
+        }
+        if error.is::<crate::backend::BackendError>() {
+            return crate::backend::BackendError::from(error).into();
+        }
+        Self::Other(format!("{error:#}"))
+    }
+}
+
 pub mod automations;
 pub mod bounded;
 pub mod builtin;
@@ -75,9 +100,8 @@ pub fn send_text_with_status(
     session: &SharedSession,
     text: &str,
     submit: bool,
-) -> anyhow::Result<()> {
-    let (backend, pane) =
-        windows::require_agent_pane(backends, session).map_err(anyhow::Error::msg)?;
+) -> Result<(), OpError> {
+    let (backend, pane) = windows::require_agent_pane(backends, session)?;
     let prior = if submit && session.agent == "codex" {
         match db.load_hook_state(session.id) {
             Ok(row) => row,
@@ -91,7 +115,7 @@ pub fn send_text_with_status(
     };
     backend
         .send_text(&pane, text, submit)
-        .map_err(|e| anyhow::anyhow!("session '{}': {e:#}", session.name))?;
+        .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after input: {e}");
@@ -136,10 +160,9 @@ pub fn send_text_confirmed(
     text: &str,
     submit: bool,
     force: bool,
-) -> anyhow::Result<SendOutcome> {
+) -> Result<SendOutcome, OpError> {
     use composer::Composer;
-    let (backend, pane) =
-        windows::require_agent_pane(backends, session).map_err(anyhow::Error::msg)?;
+    let (backend, pane) = windows::require_agent_pane(backends, session)?;
     let backend = backend.as_ref();
     let wait = if force {
         std::time::Duration::ZERO
@@ -193,7 +216,7 @@ fn press_enter(
     backend: &dyn crate::backend::SessionBackend,
     pane: &str,
     session: &SharedSession,
-) -> anyhow::Result<()> {
+) -> Result<(), OpError> {
     let prior = if session.agent == "codex" {
         db.load_hook_state(session.id).unwrap_or_else(|e| {
             tracing::warn!(session_id = %session.id, "could not read Codex status before Enter: {e}");
@@ -207,7 +230,7 @@ fn press_enter(
             pane,
             &crate::backend::Key::parse("enter").expect("enter is a key"),
         )
-        .map_err(|e| anyhow::anyhow!("session '{}': {e:#}", session.name))?;
+        .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after Enter: {e}");
@@ -225,15 +248,17 @@ pub fn send_text_when_booted(
     session_id: crate::session::SessionId,
     text: &str,
     delay: std::time::Duration,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("get session: {e}"))?
-        .ok_or_else(|| format!("session not found: {session_id}"))?;
+        .ok_or_else(|| {
+            crate::session_ops::OpError::NotFound(format!("session not found: {session_id}"))
+        })?;
     let (backend, pane) = windows::require_agent_pane(backends, &session)?;
     backend
         .send_text_after(&pane, text, delay)
-        .map_err(|e| format!("session '{}': {e:#}", session.name))
+        .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))
 }
 
 /// `command` as the platform shell runs it: `sh -c` or, on Windows, `cmd /C`.
@@ -323,13 +348,15 @@ pub const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(
 /// heartbeat running: `thurbox-cli automation tick` every
 /// [`HEARTBEAT_EVERY`], with no interface attached. Where and how it runs is
 /// the backend's; that it is this build's own CLI is this.
-pub fn arm_heartbeat(backends: &crate::backend::BackendRegistry) -> Result<(), String> {
+pub fn arm_heartbeat(
+    backends: &crate::backend::BackendRegistry,
+) -> Result<(), crate::session_ops::OpError> {
     let cli = crate::paths::resolve_cli_binary();
     let args = ["automation".to_string(), "tick".to_string()];
     backends
         .default_backend()
         .ensure_heartbeat(&cli, &args, HEARTBEAT_EVERY)
-        .map_err(|e| format!("{e:#}"))
+        .map_err(OpError::from)
 }
 
 /// Decide whether to pass the agent's resume group vs starting fresh when
@@ -546,7 +573,7 @@ pub fn agent_launch_plan(
     backends: &crate::backend::BackendRegistry,
     agent: &str,
     session: Option<&crate::sync::SharedSession>,
-) -> Result<LaunchPlan, String> {
+) -> Result<LaunchPlan, crate::session_ops::OpError> {
     let registry = crate::agent::agent_config::load_or_seed();
     let def = registry
         .get(agent)
@@ -625,7 +652,7 @@ pub fn agent_launch_plan(
 pub fn session_process_env(
     db: &crate::storage::Database,
     session: &crate::sync::SharedSession,
-) -> Result<BTreeMap<String, String>, String> {
+) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
     let mut config = SessionConfig {
         session_id: Some(session.id),
         agent_session_id: session.agent_session_id.clone(),
@@ -682,11 +709,11 @@ pub fn fork_session_headless(
     backends: &crate::backend::BackendRegistry,
     id: crate::session::SessionId,
     name: &str,
-) -> Result<spawn::SpawnResult, String> {
+) -> Result<spawn::SpawnResult, crate::session_ops::OpError> {
     let source = db
         .get_session_by_id(id)
         .map_err(|e| format!("get session: {e}"))?
-        .ok_or_else(|| format!("session not found: {id}"))?;
+        .ok_or_else(|| crate::session_ops::OpError::NotFound(format!("session not found: {id}")))?;
 
     // The parent's *working directory* — its worktree for a worktree session —
     // not the repository root. A cwd-scoped agent (`opencode --continue`)
@@ -828,13 +855,13 @@ pub(crate) fn recipe_agent_def(recipe: &crate::session::LaunchRecipe) -> crate::
 pub(crate) fn resolve_agent_def(
     requested: Option<&str>,
     platform: crate::session::Platform,
-) -> Result<crate::session::AgentDef, String> {
+) -> Result<crate::session::AgentDef, crate::session_ops::OpError> {
     let registry = crate::agent::agent_config::load_for_launch();
     let def = match requested.filter(|n| !n.is_empty()) {
         Some(name) => registry
             .get(name)
             .cloned()
-            .ok_or_else(|| unknown_agent(&registry, name))?,
+            .ok_or_else(|| OpError::Refused(unknown_agent(&registry, name)))?,
         None => default_agent_def(&registry),
     };
     Ok(shell_for(def, platform))

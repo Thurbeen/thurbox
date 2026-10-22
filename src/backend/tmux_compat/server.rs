@@ -604,6 +604,9 @@ fn listing_output_is_absence(is_ssh: bool, output: &std::process::Output) -> boo
 /// context, so it deliberately searches within a string. Raw process output
 /// has no such wrapper and must match one documented shape from its first byte.
 fn raw_listing_answered_absent(error: &str) -> bool {
+    if error == "psmux: no server running on session" {
+        return true;
+    }
     if let Some(socket) = error.strip_prefix("psmux: no server running on session '") {
         return socket
             .strip_suffix('\'')
@@ -1041,11 +1044,12 @@ impl<M: TmuxCompatible> Server<M> {
 
     /// The error a server out of reach ([`Search::Stuck`]) is reported as.
     fn out_of_reach(&self, why: &str) -> anyhow::Error {
-        anyhow::anyhow!(
+        crate::backend::contract::BackendError::Unreachable(format!(
             "{}: {why}; not starting a second server beside it \
              (see 'An orphaned tmux server' in docs/CONFIG.md)",
             self.name
-        )
+        ))
+        .into()
     }
 
     /// After the session probe found nothing and before anything starts a
@@ -1353,11 +1357,7 @@ impl<M: TmuxCompatible> Server<M> {
         if listing_output_is_absence(self.transport.is_ssh(), &output) {
             return Ok(None);
         }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Plain stderr, as `run_tmux` reports it: `agent` may not reach into
-        // `git` (its stderr cleaner lives there), and the architecture test
-        // enforces that.
-        bail!("tmux {} failed: {}", args.join(" "), stderr.trim())
+        Err(self.command_failure(&args, &output).into())
     }
 
     /// A fresh backend on the same server, with no connection of its own yet —
@@ -1489,7 +1489,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// host's login shell, and `cmd.exe` takes the format's `|` for a pipe.
     fn spawned_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>> {
         if !self.attached() {
-            return self.window_panes(window_name);
+            return Ok(self.window_panes(window_name)?);
         }
         let listing = self.ctrl_command(&format!(
             "list-windows -t {} -F '{WINDOW_PANES_FORMAT}'",
@@ -1605,7 +1605,7 @@ impl<M: TmuxCompatible> Server<M> {
     fn kill_window_oneshot(&self, pane: &str) -> Result<()> {
         let (verb, target) = self.kill_command(pane);
         match self.run_tmux(&[verb, "-t", &target]) {
-            Err(e) if !already_gone(&format!("{e:#}")) => Err(e),
+            Err(e) if !typed_absence(&e) => Err(e),
             _ => Ok(()),
         }
     }
@@ -1625,11 +1625,36 @@ impl<M: TmuxCompatible> Server<M> {
         if !output.status.success()
             || (M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), false))
         {
-            let detail = mux_failure(&output, self.transport.is_ssh());
-            bail!("tmux {} failed: {detail}", args.join(" "));
+            return Err(self.command_failure(args, &output).into());
         }
 
         Ok(output)
+    }
+
+    fn command_failure(
+        &self,
+        args: &[&str],
+        output: &std::process::Output,
+    ) -> crate::backend::contract::BackendError {
+        let detail = mux_failure(output, self.transport.is_ssh());
+        let message = format!("tmux {} failed: {detail}", args.join(" "));
+        if self.transport.is_ssh() && output.status.code() == Some(SSH_ERROR_EXIT) {
+            return crate::backend::contract::BackendError::Unreachable(message);
+        }
+        if output.status.code().is_none() {
+            return crate::backend::contract::BackendError::Io(message);
+        }
+        if listing_output_is_absence(self.transport.is_ssh(), output) {
+            return crate::backend::contract::BackendError::Absent(message);
+        }
+        match control_mode::classify_refusal(&detail, message) {
+            crate::backend::contract::BackendError::Absent(message)
+                if !output.stdout.is_empty() =>
+            {
+                crate::backend::contract::BackendError::Refused(message)
+            }
+            classified => classified,
+        }
     }
 
     /// Check if the thurbox tmux session exists.
@@ -1767,9 +1792,7 @@ impl<M: TmuxCompatible> Server<M> {
             if self.session_exists() {
                 match self.apply_session_config() {
                     Ok(()) => return Ok(()),
-                    Err(e)
-                        if M::RETRY_NO_SERVER_ERROR && mux_answered_absent(&format!("{e:#}")) =>
-                    {
+                    Err(e) if M::RETRY_NO_SERVER_ERROR && typed_absence(&e) => {
                         last_error = e;
                     }
                     Err(e) => return Err(e),
@@ -1784,8 +1807,7 @@ impl<M: TmuxCompatible> Server<M> {
 
     fn retryable_cold_start_error(&self, error: &anyhow::Error) -> bool {
         !crate::agent::preflight::is_missing_dependency(error)
-            && (!self.session_exists()
-                || (M::RETRY_NO_SERVER_ERROR && mux_answered_absent(&format!("{error:#}"))))
+            && (!self.session_exists() || (M::RETRY_NO_SERVER_ERROR && typed_absence(error)))
     }
 
     fn ensure_session_configured_once(&self) -> Result<()> {
@@ -2552,7 +2574,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         &self.name
     }
 
-    fn check_available(&self) -> Result<()> {
+    fn check_available(&self) -> crate::backend::contract::BackendResult<()> {
         // `tmux -L <socket> -V` prints the version without connecting, and over
         // the SSH transport this verifies remote connectivity at the same time.
         let output = self
@@ -2564,7 +2586,9 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("{} -V failed: {}", self.transport.mux(), stderr.trim());
+            return Err(
+                anyhow::anyhow!("{} -V failed: {}", self.transport.mux(), stderr.trim()).into(),
+            );
         }
 
         let version_str = String::from_utf8_lossy(&output.stdout);
@@ -2583,10 +2607,10 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(())
     }
 
-    fn ensure_ready(&self) -> Result<()> {
+    fn ensure_ready(&self) -> crate::backend::contract::BackendResult<()> {
         self.refuse_if_closed()?;
         self.ensure_session_configured()?;
-        self.ensure_control()
+        Ok(self.ensure_control()?)
     }
 
     fn spawn(
@@ -2598,7 +2622,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         env: &HashMap<String, String>,
         rows: u16,
         cols: u16,
-    ) -> Result<SpawnedSession> {
+    ) -> crate::backend::contract::BackendResult<SpawnedSession> {
         // Asked of the server, per spawn: it is the server's code that births
         // the pane, and one started before an upgrade keeps running the old.
         if let Some(refuse_old) = M::VERSION_FLOOR {
@@ -2636,7 +2660,10 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             None => (answer.to_string(), None),
         };
         if !control_mode::is_valid_pane_id(&pane_id) {
-            bail!("tmux new-window returned an invalid pane id: {pane_id:?}");
+            return Err(anyhow::anyhow!(
+                "tmux new-window returned an invalid pane id: {pane_id:?}"
+            )
+            .into());
         }
         // Dropped rather than fatal: a window id that is not one costs this pane
         // the ability to notice its own ending, which is what the pre-#1107
@@ -2667,10 +2694,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         rows: u16,
         cols: u16,
         seed: Option<Vec<u8>>,
-    ) -> Result<AdoptedSession> {
+    ) -> crate::backend::contract::BackendResult<AdoptedSession> {
         // backend_id comes from the shared DB — never interpolate it unvalidated.
         if !control_mode::is_valid_pane_id(backend_id) {
-            bail!("refusing to adopt invalid pane id: {backend_id:?}");
+            return Err(
+                anyhow::anyhow!("refusing to adopt invalid pane id: {backend_id:?}").into(),
+            );
         }
         // Opt-in split timing (THURBOX_PERF_LOG): the history capture is an
         // independent `tmux capture-pane` subprocess, while `connect_pane`
@@ -2690,8 +2719,10 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             Some(seed) => seed,
             None => match self.capture_history(backend_id) {
                 Ok(seed) => seed,
-                Err(e) if already_gone(&format!("{e:#}")) => {
-                    bail!("pane {backend_id} is gone: {e:#}")
+                Err(e) if matches!(e, crate::backend::BackendError::Absent(_)) => {
+                    return Err(crate::backend::BackendError::Absent(format!(
+                        "pane {backend_id} is gone: {e:#}"
+                    )))
                 }
                 Err(e) => {
                     warn!("Failed to capture history for pane {backend_id}: {e}");
@@ -2730,11 +2761,16 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         })
     }
 
-    fn capture_history(&self, backend_id: &str) -> Result<Vec<u8>> {
+    fn capture_history(
+        &self,
+        backend_id: &str,
+    ) -> crate::backend::contract::BackendResult<Vec<u8>> {
         if !control_mode::is_valid_pane_id(backend_id) {
-            bail!("refusing to capture invalid pane id: {backend_id:?}");
+            return Err(
+                anyhow::anyhow!("refusing to capture invalid pane id: {backend_id:?}").into(),
+            );
         }
-        self.capture_history_seed(backend_id)
+        Ok(self.capture_history_seed(backend_id)?)
     }
 
     fn state_seed(&self, backend_id: &str) -> Vec<u8> {
@@ -2751,23 +2787,26 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         M::SNAPSHOTS
     }
 
-    fn request_snapshot(&self, backend_id: &str) -> Result<()> {
+    fn request_snapshot(&self, backend_id: &str) -> crate::backend::contract::BackendResult<()> {
         if !control_mode::is_valid_pane_id(backend_id) {
-            bail!("refusing to snapshot invalid pane id: {backend_id:?}");
+            return Err(
+                anyhow::anyhow!("refusing to snapshot invalid pane id: {backend_id:?}").into(),
+            );
         }
         if !self.supports_snapshots() {
-            bail!(
+            return Err(anyhow::anyhow!(
                 "{} cannot snapshot a pane in step with its output",
                 self.transport.mux()
-            );
+            )
+            .into());
         }
         // Asked on the loop, so it does not wait for the answer. A pane whose output was
         // held back streams again first, so the snapshot sits in its stream
         // ahead of everything it does not already show.
-        self.with_control(|ctrl| {
+        Ok(self.with_control(|ctrl| {
             ctrl.show_pane(backend_id)?;
             ctrl.request_snapshot(backend_id, snapshot_history())
-        })
+        })?)
     }
 
     /// Only over a network, where a pane's output is what the link carries;
@@ -2785,41 +2824,57 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         }
     }
 
-    fn snapshot(&self, backend_id: &str) -> Result<crate::backend::contract::PaneSnapshot> {
+    fn snapshot(
+        &self,
+        backend_id: &str,
+    ) -> crate::backend::contract::BackendResult<crate::backend::contract::PaneSnapshot> {
         if !control_mode::is_valid_pane_id(backend_id) {
-            bail!("refusing to snapshot invalid pane id: {backend_id:?}");
+            return Err(
+                anyhow::anyhow!("refusing to snapshot invalid pane id: {backend_id:?}").into(),
+            );
         }
         if !self.supports_snapshots() {
-            bail!("{} cannot snapshot a pane", self.transport.mux());
+            return Err(anyhow::anyhow!("{} cannot snapshot a pane", self.transport.mux()).into());
         }
         // Asked, then waited for apart from the asking, so several searches'
         // round trips overlap: a search reads many panes at once.
-        self.with_control(|ctrl| ctrl.ask_snapshot(backend_id, snapshot_history()))?
-            .wait()
+        Ok(self
+            .with_control(|ctrl| ctrl.ask_snapshot(backend_id, snapshot_history()))?
+            .wait()?)
     }
 
-    fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()> {
+    fn set_pane_retention(
+        &self,
+        backend_id: &str,
+        keep: bool,
+    ) -> crate::backend::contract::BackendResult<()> {
         // The guard every neighbour carries, for the reason a target makes it
         // worth carrying: tmux resolves `-t` as a window *name* as readily as
         // an id, so a caller passing anything else would quietly set
         // `remain-on-exit` on whatever window that name picked out.
         if !control_mode::is_valid_pane_id(backend_id) {
-            bail!("refusing to set remain-on-exit on invalid pane id: {backend_id:?}");
+            return Err(anyhow::anyhow!(
+                "refusing to set remain-on-exit on invalid pane id: {backend_id:?}"
+            )
+            .into());
         }
         if !M::WINDOW_SETTINGS {
             return Ok(());
         }
         let keep = if keep { "on" } else { "off" };
-        self.tmux_run(&[
+        Ok(self.tmux_run(&[
             "set-window-option",
             "-t",
             &self.target(backend_id),
             "remain-on-exit",
             keep,
-        ])
+        ])?)
     }
 
-    fn window_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>> {
+    fn window_panes(
+        &self,
+        window_name: &str,
+    ) -> crate::backend::contract::BackendResult<Vec<(String, bool)>> {
         // A name lookup rather than an identity one: a program window carries no
         // session id to resolve, only its deterministic name. Matched exactly
         // rather than by prefix — tmux's own name matching is FNMATCH-ish, which
@@ -2834,7 +2889,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(named_panes(&listing, window_name))
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredSession>> {
+    fn discover(&self) -> crate::backend::contract::BackendResult<Vec<DiscoveredSession>> {
         // Before control mode has started, one answered `list-windows`: a
         // headless caller asking what a server holds must neither bring one
         // into being nor read a host that did not answer as a host holding
@@ -2844,14 +2899,14 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // would clear its backoff and ask it every pass.
         if !self.attached() {
             self.known_socket()?;
-            return self.discover_answered();
+            return Ok(self.discover_answered()?);
         }
         // A session the probe cannot see is classified by the answered
         // listing, which tells a server that holds nothing from one that did
         // not answer — read as empty, the second clears a sweep's backoff and
         // lets a relaunch start a second agent.
         if !self.session_exists() {
-            return self.discover_answered();
+            return self.discover_answered().map_err(Into::into);
         }
         // Once control mode is up, route through `ctrl_command` so a dead
         // connection is reconnected, and the listing retried when it never
@@ -2870,16 +2925,19 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             .collect())
     }
 
-    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<PaneId> {
+    fn create_window(
+        &self,
+        spec: &WindowSpec<'_>,
+    ) -> crate::backend::contract::BackendResult<PaneId> {
         if self.transport.is_remote() {
-            return self.create_remote_window(spec);
+            return Ok(self.create_remote_window(spec)?);
         }
         let pane_id = PaneId::new(self.create_local_window(spec)?)?;
         self.confirm_spawned(spec, &pane_id)?;
         Ok(pane_id)
     }
 
-    fn locate(&self, owner: Owner<'_>) -> Result<Placed> {
+    fn locate(&self, owner: Owner<'_>) -> crate::backend::contract::BackendResult<Placed> {
         self.known_socket()?;
         // A one-shot `list-windows`, and deliberately nothing more: starting
         // control mode would bring a server into being where there was none.
@@ -2898,7 +2956,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         })
     }
 
-    fn rename_windows(&self, owner: Owner<'_>, to: &str) -> Result<()> {
+    fn rename_windows(
+        &self,
+        owner: Owner<'_>,
+        to: &str,
+    ) -> crate::backend::contract::BackendResult<()> {
         self.known_socket()?;
         // Located under the name the session *had*, stamp first, so a
         // namesake's window is never the one renamed. The name is more than
@@ -2916,19 +2978,29 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                     ])?;
                 }
                 Located::Absent => {}
-                Located::Unknown => bail!(
-                    "several windows are named after '{}' and none is stamped as this \
+                Located::Unknown => {
+                    return Err(anyhow::anyhow!(
+                        "several windows are named after '{}' and none is stamped as this \
                      session's, so there is no telling which one to rename",
-                    owner.name
-                ),
+                        owner.name
+                    )
+                    .into())
+                }
             }
         }
         Ok(())
     }
 
-    fn stamp_window(&self, backend_id: &str, session_id: &str, role: WindowRole) -> Result<()> {
+    fn stamp_window(
+        &self,
+        backend_id: &str,
+        session_id: &str,
+        role: WindowRole,
+    ) -> crate::backend::contract::BackendResult<()> {
         if !control_mode::is_valid_pane_id(backend_id) {
-            bail!("refusing to stamp an invalid pane id: {backend_id:?}");
+            return Err(
+                anyhow::anyhow!("refusing to stamp an invalid pane id: {backend_id:?}").into(),
+            );
         }
         // Nothing to write where an option is not a window's
         // ([`Self::stamps_are_per_window`]): such a server would take this as
@@ -2983,7 +3055,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(())
     }
 
-    fn send_text(&self, pane: &str, text: &str, submit: bool) -> Result<()> {
+    fn send_text(
+        &self,
+        pane: &str,
+        text: &str,
+        submit: bool,
+    ) -> crate::backend::contract::BackendResult<()> {
         self.known_socket()?;
         self.refuse_exited(pane)?;
         // Bracketed-paste-wrapped either way (see `TmuxCompatible::paste_args`), so the
@@ -3003,7 +3080,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(())
     }
 
-    fn send_text_after(&self, pane: &str, text: &str, delay: std::time::Duration) -> Result<()> {
+    fn send_text_after(
+        &self,
+        pane: &str,
+        text: &str,
+        delay: std::time::Duration,
+    ) -> crate::backend::contract::BackendResult<()> {
         self.known_socket()?;
         // A detached timer on the server: the headless caller exits long
         // before the agent it launched is ready for input.
@@ -3021,7 +3103,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(())
     }
 
-    fn send_key(&self, pane: &str, key: &Key) -> Result<String> {
+    fn send_key(&self, pane: &str, key: &Key) -> crate::backend::contract::BackendResult<String> {
         self.known_socket()?;
         self.refuse_exited(pane)?;
         let name = tmux_key_name(key);
@@ -3032,7 +3114,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(name)
     }
 
-    fn capture(&self, pane: &str, lines: u32, ansi: bool) -> Result<String> {
+    fn capture(
+        &self,
+        pane: &str,
+        lines: u32,
+        ansi: bool,
+    ) -> crate::backend::contract::BackendResult<String> {
         self.known_socket()?;
         let start = format!("-{}", lines.min(MAX_CAPTURE_LINES));
         let target = self.target(pane);
@@ -3044,7 +3131,10 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
-    fn text_before_cursor(&self, pane: &str) -> Result<Option<String>> {
+    fn text_before_cursor(
+        &self,
+        pane: &str,
+    ) -> crate::backend::contract::BackendResult<Option<String>> {
         self.known_socket()?;
         if !M::CURSOR_ROW_CAPTURE {
             return Ok(None);
@@ -3089,7 +3179,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(Some(cells_before(line.trim_end_matches('\n'), col)))
     }
 
-    fn pane_state(&self, pane: &str) -> Result<PaneState> {
+    fn pane_state(&self, pane: &str) -> crate::backend::contract::BackendResult<PaneState> {
         self.known_socket()?;
         // One `display-message` for everything the multiplexer knows, plus at
         // most one `ps` to turn the cheap command *name* into the foreground
@@ -3137,7 +3227,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     /// 1`) — so it would answer for a `doctor` run from the TUI and refuse the
     /// same question typed into a terminal. tmux's own record has no such
     /// rule, and no platform gate either.
-    fn pane_path(&self, pane: &str) -> Result<Option<String>> {
+    fn pane_path(&self, pane: &str) -> crate::backend::contract::BackendResult<Option<String>> {
         self.known_socket()?;
         let format = format!(
             "#{{pane_start_command}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}"
@@ -3154,12 +3244,17 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             window.as_deref(),
             pane_answer_field(&raw, 2).as_deref(),
         ) {
-            bail!("pane {pane} is not there to read");
+            return Err(anyhow::anyhow!("pane {pane} is not there to read").into());
         }
         Ok(path_from_prefix(&start_command))
     }
 
-    fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+    fn resize(
+        &self,
+        backend_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> crate::backend::contract::BackendResult<()> {
         // Sent, not asked. The caller is the render thread matching the pane to
         // the rect it is painting into, and the answer is of no use to the
         // frame: a resize tells the *agent* how to wrap, which is a message to
@@ -3179,7 +3274,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         let pane = format!("resize-pane -t {target} -x {cols} -y {rows}");
         if !M::CONDITIONAL_RESIZE {
             // No `if-shell -F` to decide with: the last instance to paint wins.
-            return self.ctrl_command_detached(&[&window, &pane], 2);
+            return Ok(self.ctrl_command_detached(&[&window, &pane], 2)?);
         }
         // A pane is the size of the rect ONE instance paints it into. Several
         // instances attached to one server each paint their own rect, and when
@@ -3213,10 +3308,16 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         let only_if_mine = |cmd: &str| {
             format!("if-shell -F -t {target} '{mine}' '{cmd}' 'display-message -p \"\"'")
         };
-        self.ctrl_command_detached(&[&settle, &only_if_mine(&window), &only_if_mine(&pane)], 5)
+        Ok(self
+            .ctrl_command_detached(&[&settle, &only_if_mine(&window), &only_if_mine(&pane)], 5)?)
     }
 
-    fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+    fn claim_size(
+        &self,
+        backend_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> crate::backend::contract::BackendResult<()> {
         if !M::CONDITIONAL_RESIZE {
             return self.resize(backend_id, rows, cols);
         }
@@ -3224,17 +3325,17 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // decides who sizes (see `resize`).
         let (rows, cols) = tmux_size(rows, cols);
         let target = self.target(backend_id);
-        self.ctrl_command_detached(
+        Ok(self.ctrl_command_detached(
             &[
                 &format!("set-option -w -t {target} {SIZER_OPTION} {}", self.sizer),
                 &format!("resize-window -t {target} -x {cols} -y {rows}"),
                 &format!("resize-pane -t {target} -x {cols} -y {rows}"),
             ],
             3,
-        )
+        )?)
     }
 
-    fn is_dead(&self, backend_id: &str) -> Result<bool> {
+    fn is_dead(&self, backend_id: &str) -> crate::backend::contract::BackendResult<bool> {
         // Bounded, because the only caller is the interface's own loop deciding
         // where a chord goes (`coordinator::input`'s passthrough gate). The
         // unbounded ask ran out `COMMAND_TIMEOUT`, reconnected and ran out
@@ -3250,7 +3351,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(result.trim() == "1")
     }
 
-    fn kill(&self, backend_id: &str) -> Result<()> {
+    fn kill(&self, backend_id: &str) -> crate::backend::contract::BackendResult<()> {
         if !self.attached() {
             // The teardown path's kill: one-shot, because opening control mode
             // to kill a window would *create* the server and the thurbox
@@ -3258,20 +3359,20 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             // to leave empty servers on other people's machines.
             self.known_socket()?;
             return match self.transport.is_remote() {
-                true => self.kill_window_oneshot(backend_id),
-                false => self.kill_window_at(backend_id),
+                true => Ok(self.kill_window_oneshot(backend_id)?),
+                false => self.kill_window_at(backend_id).map_err(Into::into),
             };
         }
         let _ = self.unregister_pane(backend_id);
         // The window, not only the pane — see `kill_window_oneshot`.
         let (verb, target) = self.kill_command(backend_id);
         match self.ctrl_command(&format!("{verb} -t {target}")) {
-            Err(e) if !already_gone(&format!("{e:#}")) => Err(e),
+            Err(e) if !typed_absence(&e) => Err(e.into()),
             _ => Ok(()),
         }
     }
 
-    fn detach(&self, backend_id: &str) -> Result<()> {
+    fn detach(&self, backend_id: &str) -> crate::backend::contract::BackendResult<()> {
         // Disable output monitoring for this pane.
         if M::PANE_MONITORING {
             let off = format!(
@@ -3287,7 +3388,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(())
     }
 
-    fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>> {
+    fn pane_pid(&self, backend_id: &str) -> crate::backend::contract::BackendResult<Option<u32>> {
         let format =
             format!("#{{pane_pid}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}");
         let target = self.target(backend_id);
@@ -3308,12 +3409,14 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(pane_answer_field(&raw, 0).and_then(|pid| pid.parse().ok()))
     }
 
-    fn pane_pids(&self) -> Result<HashMap<String, u32>> {
+    fn pane_pids(&self) -> crate::backend::contract::BackendResult<HashMap<String, u32>> {
         let result = self.ctrl_command("list-panes -a -F '#{pane_id} #{pane_pid}'")?;
         Ok(control_mode::parse_pane_pids(&result))
     }
 
-    fn pane_ids(&self) -> Result<std::collections::HashSet<String>> {
+    fn pane_ids(
+        &self,
+    ) -> crate::backend::contract::BackendResult<std::collections::HashSet<String>> {
         let result = self.ctrl_command("list-panes -a -F '#{pane_id}'")?;
         Ok(control_mode::parse_pane_ids(&result))
     }
@@ -3354,35 +3457,40 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         M::HOOK_STATUS.then(|| M::hook_signal_command(self))
     }
 
-    fn record_hook_state(&self, pane: &str, state: &str) -> Result<()> {
+    fn record_hook_state(
+        &self,
+        pane: &str,
+        state: &str,
+    ) -> crate::backend::contract::BackendResult<()> {
         self.refuse_without_hook_status()?;
         if !control_mode::is_valid_pane_id(pane) {
-            bail!("'{pane}' is not a pane id");
+            return Err(anyhow::anyhow!("'{pane}' is not a pane id").into());
         }
-        self.one_shot(
-            "set-option (hook state)",
-            &[
-                "set-option",
-                "-p",
-                "-t",
-                &self.target(pane),
-                control_mode::REMOTE_HOOK_STATE_OPTION,
-                state,
-            ],
-        )
-        .map(drop)
+        Ok(self
+            .one_shot(
+                "set-option (hook state)",
+                &[
+                    "set-option",
+                    "-p",
+                    "-t",
+                    &self.target(pane),
+                    control_mode::REMOTE_HOOK_STATE_OPTION,
+                    state,
+                ],
+            )
+            .map(drop)?)
     }
 
     /// Read-only by design — no `ensure_ready`, so a poll never creates the
     /// server or the session. A server that says it has no such session (or
     /// that is not running) holds no states; a question that never reached
     /// one — an unreachable host, a missing binary — is an `Err`.
-    fn hook_states(&self) -> Result<Vec<(String, String)>> {
+    fn hook_states(&self) -> crate::backend::contract::BackendResult<Vec<(String, String)>> {
         self.refuse_without_hook_status()?;
         match self.run_tmux(&["has-session", "-t", &self.session]) {
             Ok(_) => {}
-            Err(e) if mux_answered_absent(&format!("{e:#}")) => return Ok(Vec::new()),
-            Err(e) => return Err(e),
+            Err(e) if typed_absence(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
         }
         let format = format!(
             "#{{pane_id}} #{{{}}}",
@@ -3404,7 +3512,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         program: &Path,
         args: &[String],
         every: std::time::Duration,
-    ) -> Result<()> {
+    ) -> crate::backend::contract::BackendResult<()> {
         // A probe nobody answered is not a reason to stop arming: readying the
         // session below either starts the server or fails with its own error.
         if self.heartbeat_running().unwrap_or(false) {
@@ -3432,11 +3540,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // `create_local_window`. There is no `-P` answer to trust here, so the
         // listing is what says whether the window exists.
         if !out.status.success() && !self.heartbeat_running()? {
-            bail!(
+            return Err(anyhow::anyhow!(
                 "{} new-window (heartbeat) {}",
                 self.transport.mux(),
                 mux_failure(&out, self.transport.is_ssh())
-            );
+            )
+            .into());
         }
         debug!("Armed automation heartbeat keeper window on {}", self.name);
         Ok(())
@@ -3444,7 +3553,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
 
     /// No server, or no session on it, is a heartbeat not running. Any other
     /// failed listing is an unanswered question (`listing_is_absence`).
-    fn heartbeat_running(&self) -> Result<bool> {
+    fn heartbeat_running(&self) -> crate::backend::contract::BackendResult<bool> {
         let out = self
             .mux_command(&["list-windows", "-t", &self.session, "-F", "#{window_name}"])?
             .stdout(Stdio::piped())
@@ -3458,11 +3567,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             if listing_output_is_absence(self.transport.is_ssh(), &out) {
                 return Ok(false);
             }
-            bail!(
+            return Err(anyhow::anyhow!(
                 "{} list-windows (heartbeat) {}",
                 self.transport.mux(),
                 mux_failure(&out, self.transport.is_ssh())
-            );
+            )
+            .into());
         }
         Ok(String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -3471,15 +3581,15 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
 
     /// Automations stop firing headlessly until something arms it again —
     /// which any `automation` write does, so this is a pause, not a removal.
-    fn stop_heartbeat(&self) -> Result<bool> {
+    fn stop_heartbeat(&self) -> crate::backend::contract::BackendResult<bool> {
         if !self.heartbeat_running()? {
             return Ok(false);
         }
         let target = format!("{}:{HEARTBEAT_WINDOW}", self.session);
         match self.run_tmux(&["kill-window", "-t", &target]) {
             Ok(_) => Ok(true),
-            Err(e) if already_gone(&format!("{e:#}")) => Ok(false),
-            Err(e) => Err(e),
+            Err(e) if typed_absence(&e) => Ok(false),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -4520,18 +4630,15 @@ impl<M: TmuxCompatible> Server<M> {
             .mux_command(&[verb, "-t", &target])?
             .output()
             .context("Failed to run tmux kill-window")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if already_gone(&stderr) {
-                return Ok(());
-            }
-            bail!(
-                "tmux kill-window exited {} for {}: {}",
-                output.status,
-                target,
-                stderr.trim()
-            );
+        if !output.status.success()
+            || (M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), false))
+        {
+            return match self.command_failure(&[verb, "-t", &target], &output) {
+                crate::backend::contract::BackendError::Absent(_) => Ok(()),
+                error => Err(error.into()),
+            };
         }
+
         Ok(())
     }
 }
@@ -4724,12 +4831,11 @@ fn path_prefix_args() -> Vec<std::ffi::OsString> {
     Vec::new()
 }
 
-/// Whether a failure says its target is already gone — named by its pane or by
-/// its name: what a kill wanted, and what an adopt must not paper over.
-fn already_gone(error: &str) -> bool {
-    error.contains("can't find window")
-        || error.contains("window not found")
-        || error.contains("can't find pane")
+fn typed_absence(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<crate::backend::contract::BackendError>(),
+        Some(crate::backend::contract::BackendError::Absent(_))
+    )
 }
 
 #[cfg(test)]
@@ -4746,6 +4852,30 @@ mod tests {
     struct TestMux;
 
     type TestBackend = Server<TestMux>;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unfinished_or_mixed_process_reply_is_not_typed_absence() {
+        use std::os::unix::process::ExitStatusExt;
+        let backend = TestBackend::new();
+        for (status, stdout) in [
+            (libc::SIGKILL, Vec::new()),
+            (1 << 8, b"partial listing".to_vec()),
+        ] {
+            let output = std::process::Output {
+                status: std::process::ExitStatus::from_raw(status),
+                stdout,
+                stderr: b"can't find session: thurbox".to_vec(),
+            };
+            assert!(
+                !matches!(
+                    backend.command_failure(&["list-windows"], &output),
+                    crate::backend::BackendError::Absent(_)
+                ),
+                "an incomplete answer cannot authorize relaunch"
+            );
+        }
+    }
 
     #[test]
     fn cells_before_counts_a_wide_character_as_two_columns() {

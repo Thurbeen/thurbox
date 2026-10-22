@@ -63,7 +63,7 @@ pub fn purge_deleted(
     backends: &crate::backend::BackendRegistry,
     age: Age,
     dry_run: bool,
-) -> Result<PurgeReport, String> {
+) -> Result<PurgeReport, crate::session_ops::OpError> {
     let now = crate::sync::current_time_millis();
     let selected = |row: &DeletedSessionInfo| match age {
         Age::All => true,

@@ -19,18 +19,18 @@
 pub(crate) fn backend_for<'r>(
     backends: &'r crate::backend::BackendRegistry,
     backend_type: &str,
-) -> Result<&'r std::sync::Arc<dyn crate::backend::SessionBackend>, String> {
+) -> Result<&'r std::sync::Arc<dyn crate::backend::SessionBackend>, crate::session_ops::OpError> {
     let route = crate::session::Route::parse(backend_type).map_err(|e| e.to_string())?;
     let (hosts, _warnings) = crate::agent::host_config::cached_registry();
     if let Some(name) = route.host() {
         if hosts.host_of(&route).is_none() {
-            return Err(format!("host '{name}' is not in hosts.toml"));
+            return Err(format!("host '{name}' is not in hosts.toml").into());
         }
     }
     let served = hosts.qualify(&route);
-    backends.get(&served).ok_or_else(|| {
+    Ok(backends.get(&served).ok_or_else(|| {
         format!("no backend here serves {served}, so nothing drives '{backend_type}'")
-    })
+    })?)
 }
 
 /// A backend, and a pane on it.
@@ -49,25 +49,26 @@ pub type BackendPane<'r> = (
 pub fn agent_pane<'r>(
     backends: &'r crate::backend::BackendRegistry,
     session: &crate::sync::SharedSession,
-) -> Result<Option<BackendPane<'r>>, String> {
+) -> Result<Option<BackendPane<'r>>, crate::session_ops::OpError> {
     let backend = backend_for(backends, &session.backend_type)?;
     let id = session.id.to_string();
     let owner = crate::backend::Owner::new(&id, &session.name).remembering(
         &session.backend_id,
         session.shell_backend_id.as_deref().unwrap_or(""),
     );
-    let placed = backend
-        .locate(owner)
-        .map_err(|e| format!("could not list the windows on {}: {e:#}", backend.name()))?;
+    let placed = backend.locate(owner).map_err(|e| {
+        crate::session_ops::OpError::from(e)
+            .context(format!("could not list the windows on {}", backend.name()))
+    })?;
     match placed.agent {
         crate::backend::Located::At(pane) => Ok(Some((backend, pane))),
         crate::backend::Located::Absent => Ok(None),
-        crate::backend::Located::Unknown => Err(format!(
+        crate::backend::Located::Unknown => Err(crate::session_ops::OpError::Ambiguous(format!(
             "several windows on {} answer to '{}' and none is stamped as this session's, \
              so there is no telling which one is its own",
             backend.name(),
             session.name
-        )),
+        ))),
     }
 }
 
@@ -76,9 +77,13 @@ pub fn agent_pane<'r>(
 pub fn require_agent_pane<'r>(
     backends: &'r crate::backend::BackendRegistry,
     session: &crate::sync::SharedSession,
-) -> Result<BackendPane<'r>, String> {
-    agent_pane(backends, session)?
-        .ok_or_else(|| format!("session '{}' has no window of its own here", session.name))
+) -> Result<BackendPane<'r>, crate::session_ops::OpError> {
+    agent_pane(backends, session)?.ok_or_else(|| {
+        crate::session_ops::OpError::NotFound(format!(
+            "session '{}' has no window of its own here",
+            session.name
+        ))
+    })
 }
 
 /// Kill the windows `owner` has on `backend` — its agent and its companion
@@ -136,13 +141,13 @@ pub fn claim_running_window(
     backend_type: &str,
     session_id: &str,
     name: &str,
-) -> Result<String, String> {
+) -> Result<String, crate::session_ops::OpError> {
     let backend = backend_for(backends, backend_type)?;
     let pane = live_agent(
         backend.as_ref(),
         crate::backend::Owner::new(session_id, name),
     )
-    .map_err(|e| format!("could not list windows: {e:#}"))?
+    .map_err(|e| crate::session_ops::OpError::from(e).context("could not list windows"))?
     .pane()
     .ok_or_else(|| {
         format!(

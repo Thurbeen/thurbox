@@ -159,7 +159,7 @@ match is **legacy**: pass `--key`.
 | `allow` (default) | create another one; both are then addressable only by id |
 | `adopt` | return the existing session with `created: false` — idempotent, what a driver reconciling desired state wants |
 | `replace` | tear the old one down (`delete --force`) first |
-| `fail` | refuse, naming the id in the way; exit 1 |
+| `fail` | refuse, naming the id in the way; exit 5 |
 
 **The match is scoped to the server the creation lands on** — this machine's
 multiplexer, or its `--host`'s — whichever spelling each row's `backend_type`
@@ -495,7 +495,12 @@ The shape that follows from that:
   quietly.
 - **Errors are structured on stdout, never stderr**, and the exit code says
   which kind: `0` success, `1` the command ran and failed, `2` the invocation
-  was wrong, `3` a session reference matched more than one session. The
+  was wrong, `3` a session reference (or the window it names) matched more than one
+  candidate, `4` a wait timed out, `5` a key, name, run or pane is held, and `6` the subject left during a call.
+  An error's `error_kind` preserves its operation classification through host
+  delegation; unknown tags remain `other`. A peer that sends no tag is `other`
+  too, except its own `Session not found: …` / `Deleted session not found: …`
+  sentences, read as `not_found`; no other wording is inferred. The
   implication runs **one way only**: an `error` key ⇒ a non-zero exit, *never*
   the converse — `session doctor` on a broken session and `config validate` on
   a bad file each exit 1 with a valid, error-free report on stdout, so a driver

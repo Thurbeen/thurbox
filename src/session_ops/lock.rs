@@ -88,7 +88,11 @@ impl Drop for Lock<'_> {
 /// deleted when the lock is dropped and overwritten by the next lock on that
 /// subject otherwise, so a leaked one is bounded by the subjects ever locked
 /// rather than accumulating.
-pub fn lock<'a>(db: &'a Database, subject: Subject, op: &str) -> Result<Option<Lock<'a>>, String> {
+pub fn lock<'a>(
+    db: &'a Database,
+    subject: Subject,
+    op: &str,
+) -> Result<Option<Lock<'a>>, crate::session_ops::OpError> {
     lock_for(db, subject, op, std::time::Duration::ZERO)
 }
 
@@ -100,7 +104,7 @@ pub fn lock_for<'a>(
     subject: Subject,
     op: &str,
     at_least: std::time::Duration,
-) -> Result<Option<Lock<'a>>, String> {
+) -> Result<Option<Lock<'a>>, crate::session_ops::OpError> {
     let now = current_time_millis();
     let ttl = ttl_ms().max(at_least.as_millis() as u64);
     let expires_at = now.saturating_add(ttl);

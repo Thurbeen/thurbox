@@ -20,7 +20,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use thurbox::backend::identity::{window_name_for, WindowIndex};
 use thurbox::backend::{
     AdoptedSession, DiscoveredSession, Key, Located, Owner, PaneState, Placed, SessionBackend,
@@ -211,7 +211,11 @@ impl RecordingBackend {
         let mut state = self.state.lock().unwrap();
         state.calls.push(call);
         if state.unreachable {
-            bail!("{}: the machine did not answer", self.name);
+            return Err(thurbox::backend::BackendError::Unreachable(format!(
+                "{}: the machine did not answer",
+                self.name
+            ))
+            .into());
         }
         Ok(state)
     }
@@ -247,10 +251,18 @@ impl State {
     fn input(&mut self, pane: &str) -> Result<&mut Window> {
         let window = match self.windows.iter_mut().find(|w| w.pane == pane) {
             Some(w) => w,
-            None => bail!("can't find pane: {pane}"),
+            None => {
+                return Err(thurbox::backend::BackendError::Absent(format!(
+                    "can't find pane: {pane}"
+                ))
+                .into())
+            }
         };
         if !window.alive {
-            bail!("its pane {pane} has exited and accepts no input");
+            return Err(thurbox::backend::BackendError::Refused(format!(
+                "its pane {pane} has exited and accepts no input"
+            ))
+            .into());
         }
         Ok(window)
     }
@@ -258,7 +270,9 @@ impl State {
     fn find(&self, pane: &str) -> Result<&Window> {
         match self.windows.iter().find(|w| w.pane == pane) {
             Some(w) => Ok(w),
-            None => bail!("can't find pane: {pane}"),
+            None => Err(
+                thurbox::backend::BackendError::Absent(format!("can't find pane: {pane}")).into(),
+            ),
         }
     }
 
@@ -327,14 +341,14 @@ impl SessionBackend for RecordingBackend {
         &self.name
     }
 
-    fn check_available(&self) -> Result<()> {
-        self.lock("check_available".into()).map(drop)
+    fn check_available(&self) -> thurbox::backend::contract::BackendResult<()> {
+        Ok(self.lock("check_available".into()).map(drop)?)
     }
 
-    fn ensure_ready(&self) -> Result<()> {
+    fn ensure_ready(&self) -> thurbox::backend::contract::BackendResult<()> {
         let state = self.lock("ensure_ready".into())?;
         if state.closed {
-            bail!("{} is shut down", self.name);
+            return Err(anyhow::anyhow!("{} is shut down", self.name).into());
         }
         Ok(())
     }
@@ -348,7 +362,7 @@ impl SessionBackend for RecordingBackend {
         env: &HashMap<String, String>,
         _rows: u16,
         _cols: u16,
-    ) -> Result<SpawnedSession> {
+    ) -> thurbox::backend::contract::BackendResult<SpawnedSession> {
         let mut state = self.lock(format!("spawn {window_name}"))?;
         let pane = state.issue();
         state.windows.push(Window {
@@ -381,7 +395,7 @@ impl SessionBackend for RecordingBackend {
         _rows: u16,
         _cols: u16,
         _seed: Option<Vec<u8>>,
-    ) -> Result<AdoptedSession> {
+    ) -> thurbox::backend::contract::BackendResult<AdoptedSession> {
         let state = self.lock(format!("adopt {backend_id}"))?;
         state.find(backend_id)?;
         Ok(AdoptedSession {
@@ -392,7 +406,10 @@ impl SessionBackend for RecordingBackend {
         })
     }
 
-    fn create_window(&self, spec: &WindowSpec<'_>) -> Result<thurbox::backend::PaneId> {
+    fn create_window(
+        &self,
+        spec: &WindowSpec<'_>,
+    ) -> thurbox::backend::contract::BackendResult<thurbox::backend::PaneId> {
         let name = window_name_for(spec.role, spec.owner.name);
         let mut state = self.lock(format!("create_window {name} {}", spec.owner.session_id))?;
         let pane = state.issue();
@@ -418,10 +435,10 @@ impl SessionBackend for RecordingBackend {
             hook: None,
         });
         state.retire_duplicates(spec.owner.session_id, spec.role);
-        thurbox::backend::PaneId::new(pane)
+        Ok(thurbox::backend::PaneId::new(pane)?)
     }
 
-    fn locate(&self, owner: Owner<'_>) -> Result<Placed> {
+    fn locate(&self, owner: Owner<'_>) -> thurbox::backend::contract::BackendResult<Placed> {
         let callback = self.on_locate.lock().unwrap().take();
         if let Some(callback) = callback {
             callback();
@@ -435,7 +452,11 @@ impl SessionBackend for RecordingBackend {
         })
     }
 
-    fn rename_windows(&self, owner: Owner<'_>, to: &str) -> Result<()> {
+    fn rename_windows(
+        &self,
+        owner: Owner<'_>,
+        to: &str,
+    ) -> thurbox::backend::contract::BackendResult<()> {
         let mut state = self.lock(format!("rename_windows {} {to}", owner.session_id))?;
         for role in [WindowRole::Agent, WindowRole::Shell] {
             match state.place(owner, role) {
@@ -448,13 +469,17 @@ impl SessionBackend for RecordingBackend {
                     window.name = window_name_for(role, to);
                 }
                 Located::Absent => {}
-                Located::Unknown => bail!("several windows are named after '{}'", owner.name),
+                Located::Unknown => {
+                    return Err(
+                        anyhow::anyhow!("several windows are named after '{}'", owner.name).into(),
+                    )
+                }
             }
         }
         Ok(())
     }
 
-    fn discover(&self) -> Result<Vec<DiscoveredSession>> {
+    fn discover(&self) -> thurbox::backend::contract::BackendResult<Vec<DiscoveredSession>> {
         let callback = {
             let mut armed = self.on_discover.lock().unwrap();
             match armed.as_mut() {
@@ -475,7 +500,7 @@ impl SessionBackend for RecordingBackend {
         let mut state = self.lock("discover".into())?;
         state.discovers += 1;
         if state.fail_discover_on == Some(state.discovers) {
-            bail!("scripted listing failure");
+            return Err(anyhow::anyhow!("scripted listing failure").into());
         }
         Ok(state
             .windows
@@ -490,7 +515,12 @@ impl SessionBackend for RecordingBackend {
             .collect())
     }
 
-    fn stamp_window(&self, backend_id: &str, session_id: &str, role: WindowRole) -> Result<()> {
+    fn stamp_window(
+        &self,
+        backend_id: &str,
+        session_id: &str,
+        role: WindowRole,
+    ) -> thurbox::backend::contract::BackendResult<()> {
         let mut state = self.lock(format!("stamp_window {backend_id} {session_id}"))?;
         state.find(backend_id)?;
         let window = state
@@ -506,7 +536,10 @@ impl SessionBackend for RecordingBackend {
         Ok(())
     }
 
-    fn window_panes(&self, window_name: &str) -> Result<Vec<(String, bool)>> {
+    fn window_panes(
+        &self,
+        window_name: &str,
+    ) -> thurbox::backend::contract::BackendResult<Vec<(String, bool)>> {
         let state = self.lock(format!("window_panes {window_name}"))?;
         Ok(state
             .windows
@@ -516,12 +549,21 @@ impl SessionBackend for RecordingBackend {
             .collect())
     }
 
-    fn set_pane_retention(&self, backend_id: &str, keep: bool) -> Result<()> {
+    fn set_pane_retention(
+        &self,
+        backend_id: &str,
+        keep: bool,
+    ) -> thurbox::backend::contract::BackendResult<()> {
         let state = self.lock(format!("set_pane_retention {backend_id} {keep}"))?;
-        state.find(backend_id).map(drop)
+        Ok(state.find(backend_id).map(drop)?)
     }
 
-    fn send_text(&self, pane: &str, text: &str, submit: bool) -> Result<()> {
+    fn send_text(
+        &self,
+        pane: &str,
+        text: &str,
+        submit: bool,
+    ) -> thurbox::backend::contract::BackendResult<()> {
         let mut state = self.lock(format!("send_text {pane} {text}"))?;
         let window = state.input(pane)?;
         window.screen.push_str(text);
@@ -531,7 +573,12 @@ impl SessionBackend for RecordingBackend {
         Ok(())
     }
 
-    fn send_text_after(&self, pane: &str, text: &str, delay: std::time::Duration) -> Result<()> {
+    fn send_text_after(
+        &self,
+        pane: &str,
+        text: &str,
+        delay: std::time::Duration,
+    ) -> thurbox::backend::contract::BackendResult<()> {
         // The fake's time passes at once: what a real timer would type later
         // is on the screen when this returns.
         let mut state = self.lock(format!(
@@ -544,7 +591,7 @@ impl SessionBackend for RecordingBackend {
         Ok(())
     }
 
-    fn send_key(&self, pane: &str, key: &Key) -> Result<String> {
+    fn send_key(&self, pane: &str, key: &Key) -> thurbox::backend::contract::BackendResult<String> {
         let mut state = self.lock(format!("send_key {pane} {}", key.name()))?;
         let window = state.input(pane)?;
         match key.name() {
@@ -554,7 +601,12 @@ impl SessionBackend for RecordingBackend {
         Ok(key.name().to_string())
     }
 
-    fn capture(&self, pane: &str, lines: u32, _ansi: bool) -> Result<String> {
+    fn capture(
+        &self,
+        pane: &str,
+        lines: u32,
+        _ansi: bool,
+    ) -> thurbox::backend::contract::BackendResult<String> {
         let state = self.lock(format!("capture {pane}"))?;
         let screen = &state.find(pane)?.screen;
         let all: Vec<&str> = screen.lines().collect();
@@ -562,7 +614,7 @@ impl SessionBackend for RecordingBackend {
         Ok(all[keep..].join("\n"))
     }
 
-    fn pane_state(&self, pane: &str) -> Result<PaneState> {
+    fn pane_state(&self, pane: &str) -> thurbox::backend::contract::BackendResult<PaneState> {
         let state = self.lock(format!("pane_state {pane}"))?;
         let window = state.find(pane)?;
         Ok(PaneState {
@@ -574,25 +626,30 @@ impl SessionBackend for RecordingBackend {
         })
     }
 
-    fn pane_path(&self, pane: &str) -> Result<Option<String>> {
+    fn pane_path(&self, pane: &str) -> thurbox::backend::contract::BackendResult<Option<String>> {
         let state = self.lock(format!("pane_path {pane}"))?;
         Ok(state.find(pane)?.path.clone())
     }
 
-    fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
+    fn resize(
+        &self,
+        backend_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> thurbox::backend::contract::BackendResult<()> {
         let state = self.lock(format!("resize {backend_id} {rows}x{cols}"))?;
-        state.find(backend_id).map(drop)
+        Ok(state.find(backend_id).map(drop)?)
     }
 
-    fn is_dead(&self, backend_id: &str) -> Result<bool> {
+    fn is_dead(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<bool> {
         let state = self.lock(format!("is_dead {backend_id}"))?;
         Ok(!state.find(backend_id)?.alive)
     }
 
-    fn kill(&self, backend_id: &str) -> Result<()> {
+    fn kill(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<()> {
         let mut state = self.lock(format!("kill {backend_id}"))?;
         if state.refuse_kill {
-            bail!("scripted kill refusal");
+            return Err(anyhow::anyhow!("scripted kill refusal").into());
         }
         // Idempotent, as the contract asks: a pane already gone is the
         // outcome a kill wanted.
@@ -600,21 +657,21 @@ impl SessionBackend for RecordingBackend {
         Ok(())
     }
 
-    fn detach(&self, backend_id: &str) -> Result<()> {
-        self.lock(format!("detach {backend_id}")).map(drop)
+    fn detach(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<()> {
+        Ok(self.lock(format!("detach {backend_id}")).map(drop)?)
     }
 
     fn default_shell(&self) -> String {
         "/bin/sh".to_string()
     }
 
-    fn pane_pid(&self, backend_id: &str) -> Result<Option<u32>> {
+    fn pane_pid(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<Option<u32>> {
         let state = self.lock(format!("pane_pid {backend_id}"))?;
         let window = state.find(backend_id)?;
         Ok(window.alive.then(|| 10_000 + pane_number(&window.pane)))
     }
 
-    fn pane_pids(&self) -> Result<HashMap<String, u32>> {
+    fn pane_pids(&self) -> thurbox::backend::contract::BackendResult<HashMap<String, u32>> {
         let state = self.lock("pane_pids".into())?;
         Ok(state
             .windows
@@ -624,7 +681,7 @@ impl SessionBackend for RecordingBackend {
             .collect())
     }
 
-    fn pane_ids(&self) -> Result<HashSet<String>> {
+    fn pane_ids(&self) -> thurbox::backend::contract::BackendResult<HashSet<String>> {
         let state = self.lock("pane_ids".into())?;
         Ok(state.windows.iter().map(|w| w.pane.clone()).collect())
     }
@@ -635,7 +692,11 @@ impl SessionBackend for RecordingBackend {
         Some(format!("{SIGNAL_COMMAND} "))
     }
 
-    fn record_hook_state(&self, pane: &str, state: &str) -> Result<()> {
+    fn record_hook_state(
+        &self,
+        pane: &str,
+        state: &str,
+    ) -> thurbox::backend::contract::BackendResult<()> {
         let mut state_ = self.lock(format!("record_hook_state {pane} {state}"))?;
         state_.find(pane)?;
         let window = state_
@@ -650,7 +711,7 @@ impl SessionBackend for RecordingBackend {
         Ok(())
     }
 
-    fn hook_states(&self) -> Result<Vec<(String, String)>> {
+    fn hook_states(&self) -> thurbox::backend::contract::BackendResult<Vec<(String, String)>> {
         let state = self.lock("hook_states".into())?;
         Ok(state
             .windows
@@ -668,7 +729,7 @@ impl SessionBackend for RecordingBackend {
         program: &Path,
         args: &[String],
         every: std::time::Duration,
-    ) -> Result<()> {
+    ) -> thurbox::backend::contract::BackendResult<()> {
         let command = std::iter::once(program.display().to_string())
             .chain(args.iter().cloned())
             .collect::<Vec<_>>()
@@ -678,11 +739,11 @@ impl SessionBackend for RecordingBackend {
         Ok(())
     }
 
-    fn heartbeat_running(&self) -> Result<bool> {
+    fn heartbeat_running(&self) -> thurbox::backend::contract::BackendResult<bool> {
         Ok(self.lock("heartbeat_running".into())?.heartbeat.is_some())
     }
 
-    fn stop_heartbeat(&self) -> Result<bool> {
+    fn stop_heartbeat(&self) -> thurbox::backend::contract::BackendResult<bool> {
         Ok(self
             .lock("stop_heartbeat".into())?
             .heartbeat

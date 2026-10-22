@@ -597,3 +597,194 @@ fn an_exit_outside_a_session_records_nothing() {
     let doc: Value = serde_json::from_slice(&out.stdout).expect("JSON");
     assert_eq!(doc["recorded"], Value::Bool(false));
 }
+
+#[test]
+fn missing_session_errors_carry_a_kind_for_remote_callers() {
+    let env = Env::new();
+    let out = env.run(&[
+        "session",
+        "reap",
+        "00000000-0000-0000-0000-000000000001",
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    let document: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(document["error_kind"], "not_found", "{document}");
+}
+
+/// A refusal mentioning an unrelated missing file must never authorize the
+/// fallback which kills the remote session's windows.
+#[cfg(unix)]
+fn remote_reap_reply(document: &str, code: i32) -> (Output, bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let bin = env.path("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let version = env.run(&["version", "--json"]);
+    assert!(version.status.success());
+    std::fs::write(env.path("data/host-version"), version.stdout).unwrap();
+    std::fs::write(
+        env.path("config/hosts.toml"),
+        "[[hosts]]\nname = 'probe'\ndestination = 'probe'\nshare_sessions = true\n",
+    )
+    .unwrap();
+    let ssh = bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        r#"#!/bin/sh
+case "$*" in
+    *'version --json'*)
+        printf '%s\n' '@cli /probe/thurbox-cli' '@status 0'
+        cat "$THURBOX_DATA_DIR/host-version" ;;
+    *session*reap*)
+        cat "$THURBOX_DATA_DIR/peer-error"
+        exit "$(cat "$THURBOX_DATA_DIR/peer-code")" ;;
+    *list-windows*|*kill-window*)
+        touch "$THURBOX_DATA_DIR/fallback-attempted"
+        printf '%s\n' "can't find session: thurbox" >&2
+        exit 1 ;;
+    *)
+        printf '%s\n' "can't find session: thurbox" >&2
+        exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(env.path("data/peer-error"), document).unwrap();
+    std::fs::write(env.path("data/peer-code"), code.to_string()).unwrap();
+    let id = env.seed("refused-reap", None);
+    let db = env.db();
+    let mut row = db.get_session_by_id(id).unwrap().unwrap();
+    row.backend_type = "ssh:probe".into();
+    db.upsert_session(&row).unwrap();
+    db.soft_delete_session(id).unwrap();
+    let mut command = env.command(&["session", "reap", &id.to_string(), "--json"]);
+    command.env(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    let out = command.output().unwrap();
+    (out, env.path("data/fallback-attempted").exists())
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_reap_refusal_is_not_mistaken_for_an_absent_session() {
+    let (out, fallback) = remote_reap_reply(
+        r#"{"error":"policy file not found; teardown refused","error_kind":"refused"}"#,
+        1,
+    );
+    assert!(
+        !fallback,
+        "a refusal must not trigger backend teardown: {}",
+        stdout_of(&out)
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", stdout_of(&out));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "refused");
+}
+
+#[cfg(unix)]
+#[test]
+fn delegated_errors_preserve_kinds_codes_and_transport_reach() {
+    for (kind, code) in [
+        ("usage", 2),
+        ("ambiguous", 3),
+        ("timeout", 4),
+        ("conflict", 5),
+        ("gone", 6),
+        ("unreachable", 1),
+        ("undetermined", 1),
+    ] {
+        let document =
+            serde_json::json!({"error":"same wording for every failure", "error_kind":kind});
+        let (out, fallback) = remote_reap_reply(&document.to_string(), code);
+        assert!(!fallback, "{kind} must not authorize teardown");
+        assert_eq!(out.status.code(), Some(code), "{kind}: {}", stdout_of(&out));
+        let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(answer["error_kind"], kind);
+    }
+    for document in [
+        r#"{"error":"Session not found"}"#,
+        r#"{"error":"Session not found", "error_kind":"future_kind"}"#,
+    ] {
+        let (out, fallback) = remote_reap_reply(document, 1);
+        assert!(!fallback, "an opaque peer error is not absence");
+        let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(answer["error_kind"], "other");
+    }
+    let (out, fallback) =
+        remote_reap_reply(r#"{"error":"missing", "error_kind":"not_found"}"#, 255);
+    assert!(
+        !fallback,
+        "SSH's failure status takes precedence over stdout"
+    );
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "unreached");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_typed_missing_host_row_permits_the_owned_window_fallback() {
+    let (out, fallback) = remote_reap_reply(r#"{"error":"absent", "error_kind":"not_found"}"#, 1);
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    assert!(fallback, "a typed absence still permits backend teardown");
+}
+
+/// A host on an older build sends no `error_kind`. Its own absence sentence is
+/// still absence; any other wording stays opaque (see above).
+#[cfg(unix)]
+#[test]
+fn a_legacy_peers_own_absence_sentence_still_permits_the_owned_window_fallback() {
+    let (out, fallback) = remote_reap_reply(
+        r#"{"error":"Deleted session not found: 00000000-0000-0000-0000-000000000001"}"#,
+        1,
+    );
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    assert!(
+        fallback,
+        "an older host's absence answer must still permit teardown"
+    );
+}
+
+/// The host may hold the row live (restored there) while this machine still
+/// holds it deleted. That is not absence, so it must not let the caller kill
+/// the restored agent's windows.
+#[test]
+fn reaping_a_live_session_is_a_conflict_not_an_absence() {
+    let env = Env::new();
+    let id = env.seed("restored-elsewhere", None);
+    let out = env.run(&["session", "reap", &id.to_string(), "--json"]);
+    assert_eq!(out.status.code(), Some(5), "{}", stdout_of(&out));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "conflict");
+}
+
+#[test]
+fn a_taken_session_key_uses_the_shared_conflict_exit_code() {
+    let env = Env::new();
+    let id = env.seed("existing", None);
+    let db = env.db();
+    let mut row = db.get_session_by_id(id).unwrap().unwrap();
+    row.key = Some("claimed-key".into());
+    db.upsert_session(&row).unwrap();
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "another",
+        "--repo-path",
+        env.path("work").to_str().unwrap(),
+        "--agent",
+        "shell",
+        "--key",
+        "claimed-key",
+        "--on-existing",
+        "fail",
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(5), "{}", stdout_of(&out));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "conflict");
+}

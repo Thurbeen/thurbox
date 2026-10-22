@@ -74,7 +74,8 @@ use output::{CommandOutput, Format, FormatFlags};
 pub const EXIT_ERROR: i32 = 1;
 /// The invocation was wrong: an unknown flag, a missing argument, a bad value.
 pub const EXIT_USAGE: i32 = 2;
-/// The session reference matched more than one session.
+/// The session reference — or, for a pane verb, the window it names — matched
+/// more than one candidate.
 ///
 /// Its own code because the answer is different in kind: "no such session" is
 /// something a driver reconciles by creating one, while "several sessions
@@ -89,33 +90,47 @@ pub const EXIT_AMBIGUOUS: i32 = 3;
 /// every verb that waits or claims (#1470 maps typed errors onto them), so a
 /// new verb takes one of these rather than inventing its own.
 pub const EXIT_TIMEOUT: i32 = 4;
-/// Somebody else already holds it: a key taken under `--on-existing fail`, a
-/// run already in flight.
+/// Somebody else already holds it: a key or name taken under `--on-existing
+/// fail`, a run already in flight, a pane another live session claims.
 pub const EXIT_CONFLICT: i32 = 5;
-/// The subject left while the call was waiting on it: an automation deleted
-/// under `automation run --wait`.
+/// The subject left while the call was waiting on it or acting on it: an
+/// automation deleted under `automation run --wait`, a pane that vanished
+/// mid-call.
 pub const EXIT_GONE: i32 = 6;
 
 /// A failure that left nothing on stdout, and the exit code it deserves.
 ///
-/// Almost every failure in the CLI is a plain sentence and takes
-/// [`EXIT_ERROR`]; those travel as `String` inside the subcommand modules and
-/// convert here. The exception is the one a driver has to branch on — an
-/// ambiguous session reference — which carries [`EXIT_AMBIGUOUS`]. There is
-/// deliberately no `From<CommandError> for String`: dropping the code where a
-/// helper happens to return a `String` is exactly how the distinction was lost
-/// before.
+/// Operation errors keep their classification through JSON and delegated host
+/// calls. Text-only diagnostics use `Other`; display code never infers a kind
+/// from a message.
 #[derive(Debug)]
 pub struct CommandError {
     pub message: String,
     pub exit_code: i32,
+    pub error: crate::session_ops::OpError,
 }
 
 impl From<String> for CommandError {
     fn from(message: String) -> Self {
+        crate::session_ops::OpError::Other(message).into()
+    }
+}
+
+impl From<crate::session_ops::OpError> for CommandError {
+    fn from(error: crate::session_ops::OpError) -> Self {
+        use crate::session_ops::OpError;
+        let exit_code = match &error {
+            OpError::Usage(_) => EXIT_USAGE,
+            OpError::Ambiguous(_) => EXIT_AMBIGUOUS,
+            OpError::Timeout(_) => EXIT_TIMEOUT,
+            OpError::Conflict(_) => EXIT_CONFLICT,
+            OpError::Gone(_) => EXIT_GONE,
+            _ => EXIT_ERROR,
+        };
         Self {
-            message,
-            exit_code: EXIT_ERROR,
+            message: error.to_string(),
+            exit_code,
+            error,
         }
     }
 }
@@ -129,8 +144,18 @@ impl From<&str> for CommandError {
 impl CommandError {
     /// A failure with an exit code of its own.
     pub fn with_code(message: impl Into<String>, exit_code: i32) -> Self {
+        let message = message.into();
+        let kind = match exit_code {
+            EXIT_USAGE => "usage",
+            EXIT_AMBIGUOUS => "ambiguous",
+            EXIT_TIMEOUT => "timeout",
+            EXIT_CONFLICT => "conflict",
+            EXIT_GONE => "gone",
+            _ => "other",
+        };
         Self {
-            message: message.into(),
+            error: crate::session_ops::OpError::from_kind(kind, message.clone()),
+            message,
             exit_code,
         }
     }
@@ -591,8 +616,23 @@ fn dispatch(
 /// `next` is that same advice as something runnable, which is the difference
 /// between an error an agent can act on and one it can only report.
 pub fn error_output(message: &str, suggestion: &str, next: &str, format: Format) -> String {
+    typed_error_output(
+        &crate::session_ops::OpError::Other(message.to_string()),
+        suggestion,
+        next,
+        format,
+    )
+}
+
+pub fn typed_error_output(
+    error: &crate::session_ops::OpError,
+    suggestion: &str,
+    next: &str,
+    format: Format,
+) -> String {
+    let message = error.to_string();
     let out = CommandOutput::new(
-        serde_json::json!({ "error": message, "suggestion": suggestion }),
+        serde_json::json!({ "error": message, "error_kind": error.kind(), "suggestion": suggestion }),
         format!("error: {message}\n  {suggestion}"),
     )
     .help([next]);

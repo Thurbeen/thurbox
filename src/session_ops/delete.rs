@@ -62,8 +62,8 @@ pub struct ForceDeleteReport {
 /// The error [`delete_session_headless`] returns when the row is not there to
 /// delete. One constructor, so a caller that treats "already gone" as done can
 /// tell that error apart from every later step's failure.
-pub(crate) fn session_not_found(session_id: SessionId) -> String {
-    format!("Session not found: {session_id}")
+pub(crate) fn session_not_found(session_id: SessionId) -> super::OpError {
+    super::OpError::NotFound(format!("Session not found: {session_id}"))
 }
 
 pub fn delete_session_headless(
@@ -71,7 +71,7 @@ pub fn delete_session_headless(
     backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     force: bool,
-) -> Result<ForceDeleteReport, String> {
+) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
     let session = db
         .get_session_by_id(session_id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
@@ -121,7 +121,7 @@ pub fn delete_session_headless(
                 // for it to go. Take the delete from here instead: the teardown
                 // is addressed by uuid, so it still reaches exactly this
                 // session's windows on that host if they are there at all.
-                Err(e) if is_unknown_session(&e.message) => {
+                Err(e) if matches!(e.error, super::OpError::NotFound(_)) => {
                     report.host_unknown = Some(format!(
                         "'{}' does not know this session ({e}); deleted from here",
                         host.name
@@ -165,7 +165,7 @@ pub fn delete_session_headless(
                 // could not release. It is up, it heard the question, and the
                 // session may still be running there, so this still aborts and
                 // the row is left exactly as it was.
-                Err(e) => return Err(e.message),
+                Err(e) => return Err(e.error),
             };
             report.killed_window = answer
                 .get("killed_window")
@@ -198,7 +198,7 @@ pub fn delete_session_headless(
 /// The delete taken from here: mark the row, tear down what `force` asks for,
 /// disable the send automations aimed at it, fire the post hooks. Shared by
 /// the plain path and by a delegated delete the host could not take (see
-/// [`is_unknown_session`]).
+/// [`delete_session_headless`]).
 fn finish_locally(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -206,7 +206,7 @@ fn finish_locally(
     force: bool,
     report: ForceDeleteReport,
     hook_ctx: &crate::session::HookContext,
-) -> Result<ForceDeleteReport, String> {
+) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
     finish_locally_with(db, session, force, report, hook_ctx, |session, report| {
         teardown_runtime_resources(backends, session, report);
     })
@@ -221,7 +221,7 @@ fn finish_locally_with(
     mut report: ForceDeleteReport,
     hook_ctx: &crate::session::HookContext,
     teardown: impl FnOnce(&crate::sync::SharedSession, &mut ForceDeleteReport),
-) -> Result<ForceDeleteReport, String> {
+) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
     // Marked **before** anything is torn down. The teardown kills windows and
     // removes worktrees, and a crash or a kill signal partway through used to
     // leave an active, restore-listed row whose worktrees were already gone —
@@ -258,19 +258,14 @@ fn finish_locally_with(
     Ok(report)
 }
 
-/// Whether a host CLI's refusal means "no such session here".
-///
-/// The host resolves the id against its *active* rows, so it answers this for
-/// a session it never knew and for one it has already deleted alike — both of
-/// which are cases where the local row still has to go.
-fn is_unknown_session(error: &str) -> bool {
-    error.contains("Session not found")
-}
-
 /// Mark the row gone. A force delete says so in the same statement rather than
 /// marking twice: the restore list needs to know the worktrees and window were
 /// torn down, and a watcher must not first be told the session is restorable.
-fn delete_row(db: &Database, session_id: SessionId, force: bool) -> Result<(), String> {
+fn delete_row(
+    db: &Database,
+    session_id: SessionId,
+    force: bool,
+) -> Result<(), crate::session_ops::OpError> {
     if force {
         db.force_delete_session(session_id)
             .map_err(|e| format!("force_delete_session: {e}"))?;
@@ -503,20 +498,23 @@ enum Owed {
 /// worktree removals do not.
 fn finish_remote_teardown(
     host: &crate::session::HostDef,
-    backend: Result<&std::sync::Arc<dyn crate::backend::SessionBackend>, String>,
+    backend: Result<
+        &std::sync::Arc<dyn crate::backend::SessionBackend>,
+        crate::session_ops::OpError,
+    >,
     row: &DeletedSessionInfo,
 ) -> Result<(), Owed> {
     let id = row.id.to_string();
     if let Some(cli) = super::host_cli::delegated(host) {
         match super::host_cli::run(host, &cli, &["session", "delete", &id, "--force"]) {
             Ok(_) => return Ok(()),
-            Err(e) if is_unknown_session(&e) => {
+            Err(e) if matches!(e, super::OpError::NotFound(_)) => {
                 tracing::debug!("'{}' is unknown on '{}': {e}", row.name, host.name);
             }
-            Err(e) => return Err(Owed::Unreached(e)),
+            Err(e) => return Err(Owed::Unreached(e.to_string())),
         }
     }
-    let backend = backend.map_err(Owed::Undrivable)?;
+    let backend = backend.map_err(|e| Owed::Undrivable(e.to_string()))?;
     super::windows::kill_owned(backend.as_ref(), deleted_owner(row, &id))
         .map_err(|e| Owed::Unreached(format!("{e:#}")))?;
 
@@ -807,7 +805,7 @@ pub fn reap_soft_deleted(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     id: SessionId,
-) -> Result<bool, String> {
+) -> Result<bool, crate::session_ops::OpError> {
     let Some(row) = db
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get deleted session: {e}"))?
@@ -823,7 +821,7 @@ pub(super) fn reap_selected_soft_delete(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     row: &DeletedSessionInfo,
-) -> Result<bool, String> {
+) -> Result<bool, crate::session_ops::OpError> {
     let still_selected = || {
         db.get_deleted_session_by_id(row.id)
             .map(|current| {
@@ -986,13 +984,14 @@ fn reap_remote(
     backends: &crate::backend::BackendRegistry,
     row: &DeletedSessionInfo,
     still_selected: impl Fn() -> Result<bool, String>,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     let Some(Some(host)) = super::resolve_host(&row.backend_type) else {
         return Err(format!(
             "host {} is not in hosts.toml; \
              the session's windows are left running there",
             row.backend_type
-        ));
+        )
+        .into());
     };
     if let Some(cli) = super::host_cli::delegated(&host) {
         let id = row.id.to_string();
@@ -1001,25 +1000,24 @@ fn reap_remote(
             // The host has no row to reap — the delete was taken here while it
             // was unreachable, and the mirror has not pushed it yet. Its
             // windows are still there, so they come down from here.
-            Err(e) if e.contains("not found") => {
+            Err(super::OpError::NotFound(e)) => {
                 tracing::debug!("'{}' is unknown on '{}': {e}", row.name, host.name);
             }
-            Err(e) => return Err(format!("host '{}': {e}", host.name)),
+            Err(e) => return Err(e.context(format!("host '{}'", host.name))),
         }
     }
     let backend = super::windows::backend_for(backends, &row.backend_type)?;
     let id = row.id.to_string();
-    let placed = backend
-        .locate(deleted_owner(row, &id))
-        .map_err(|e| format!("host '{}': {e:#}", host.name))?;
+    let in_host = |e: crate::backend::BackendError| {
+        crate::session_ops::OpError::from(e).context(format!("host '{}'", host.name))
+    };
+    let placed = backend.locate(deleted_owner(row, &id)).map_err(in_host)?;
     for window in [placed.agent, placed.shell] {
         if let crate::backend::Located::At(pane) = window {
             if !still_selected()? {
                 return Ok(());
             }
-            backend
-                .kill(&pane)
-                .map_err(|e| format!("host '{}': {e:#}", host.name))?;
+            backend.kill(&pane).map_err(in_host)?;
         }
     }
     Ok(())

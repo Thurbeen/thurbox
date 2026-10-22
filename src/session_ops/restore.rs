@@ -114,17 +114,17 @@ pub fn restore_refusal(
 fn refuse_a_taken_name<'a>(
     db: &'a Database,
     deleted: &crate::storage::DeletedSessionInfo,
-) -> Result<super::lock::Lock<'a>, String> {
+) -> Result<super::lock::Lock<'a>, crate::session_ops::OpError> {
     let Some(hold) = super::names::hold(db, &deleted.name, &deleted.backend_type, "restore")?
     else {
-        return Err(format!(
+        return Err(crate::session_ops::OpError::Conflict(format!(
             "'{}' is being created right now on {}; restoring this one would race that \
              creation for the name. Try again once it has finished",
             deleted.name, deleted.backend_type
-        ));
+        )));
     };
     match super::names::window_namesakes(db, &deleted.name, &deleted.backend_type)?.first() {
-        Some(live) => Err(format!(
+        Some(live) => Err(crate::session_ops::OpError::Conflict(format!(
             "'{}' is already the name of a live session on {} ('{}', {}); restoring this \
              one would leave two, and neither could be addressed by name. {}",
             deleted.name,
@@ -132,7 +132,7 @@ fn refuse_a_taken_name<'a>(
             live.name,
             live.id,
             free_the_name_advice(db, &live.name, live.id)
-        )),
+        ))),
         None => Ok(hold),
     }
 }
@@ -178,11 +178,13 @@ pub fn restore_session_headless(
     backends: &crate::backend::BackendRegistry,
     id: SessionId,
     best_effort: bool,
-) -> Result<RestoreReport, String> {
+) -> Result<RestoreReport, crate::session_ops::OpError> {
     let deleted = db
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get deleted session: {e}"))?
-        .ok_or_else(|| format!("deleted session not found: {id}"))?;
+        .ok_or_else(|| {
+            crate::session_ops::OpError::NotFound(format!("deleted session not found: {id}"))
+        })?;
 
     // Recovery the caller would not want is a decision, not a discovery: they
     // have to have been told before it happens. v1's confirm modal and the
@@ -196,7 +198,7 @@ pub fn restore_session_headless(
             &deleted.backend_type,
             &deleted.worktrees,
         ) {
-            return Err(reason);
+            return Err(crate::session_ops::OpError::Refused(reason));
         }
     }
 
@@ -214,7 +216,8 @@ pub fn restore_session_headless(
         return Err(format!(
             "'{}' runs on remote backend '{}'; restoring it is local-only for now",
             deleted.name, deleted.backend_type
-        ));
+        )
+        .into());
     }
     // What relaunches the agent, asked before anything is held, fired or
     // written: a restore marks the row active before it respawns, and a row
@@ -353,7 +356,7 @@ pub fn restore_session_headless(
         best_effort: deleted.force_deleted,
         worktrees_wanted: wanted,
         worktrees_recovered: recovered.len(),
-        respawn_error,
+        respawn_error: respawn_error.map(|e| e.to_string()),
         hook_failures,
         key_dropped,
     })
@@ -425,11 +428,13 @@ fn respawn(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
     id: SessionId,
-) -> Result<(), String> {
+) -> Result<(), crate::session_ops::OpError> {
     let session = db
         .get_session_by_id(id)
         .map_err(|e| format!("load restored session: {e}"))?
-        .ok_or_else(|| format!("restored session not found: {id}"))?;
+        .ok_or_else(|| {
+            crate::session_ops::OpError::NotFound(format!("restored session not found: {id}"))
+        })?;
     // Local by design: `restore_session_headless` refuses a remote session
     // above, since its worktrees cannot be recreated from here.
     //
@@ -495,7 +500,7 @@ fn respawn(
             cwd: plan.cwd.as_deref(),
             env: &plan.env,
         })
-        .map_err(|e| format!("re-spawn: {e:#}"))?;
+        .map_err(|e| crate::session_ops::OpError::from(e).context("re-spawn"))?;
     // The row still carries the pane the delete killed; the fresh one is what
     // every later read must target.
     match db

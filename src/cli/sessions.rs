@@ -1366,7 +1366,7 @@ fn run_send(
     let submit = !no_enter;
     let outcome =
         crate::session_ops::send_text_confirmed(db, backends, &session, &text, submit, force)
-            .map_err(|e| format!("send: {e:#}"))?;
+            .map_err(|e| e.context("send"))?;
     let (submitted, enter_retried) = match outcome {
         SendOutcome::ComposerBusy => return leave_in_mailbox(db, &session, text),
         SendOutcome::Typed {
@@ -1495,9 +1495,10 @@ fn run_key(
     } else {
         None
     };
-    let spelled = backend
-        .send_key(&pane, &resolved)
-        .map_err(|e| format!("send_key: session '{}': {e:#}", session.name))?;
+    let spelled = backend.send_key(&pane, &resolved).map_err(|e| {
+        crate::session_ops::OpError::from(e)
+            .context(format!("send_key: session '{}'", session.name))
+    })?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after Enter: {e}");
@@ -1699,7 +1700,7 @@ fn run_signal(
     // A local row's backend is found among this machine's alone: every agent
     // hook runs this, and the full registry reads every host to be built.
     let recorded = signal_backend(backends, &target.backend_type)
-        .and_then(|backend| backend.record_hook_state(&target.backend_id, &state));
+        .and_then(|backend| Ok(backend.record_hook_state(&target.backend_id, &state)?));
     if let Err(e) = recorded {
         tracing::debug!("could not record the state in the row's backend: {e:#}");
     }
@@ -1742,7 +1743,7 @@ fn run_exited(
     // The window is still open — this runs inside it — so its screen is
     // still there to read. Best-effort: the status is the part that matters.
     let tail = signal_backend(backends, &target.backend_type)
-        .and_then(|backend| backend.capture(&target.backend_id, EXIT_TAIL_LINES, false))
+        .and_then(|backend| Ok(backend.capture(&target.backend_id, EXIT_TAIL_LINES, false)?))
         .map_err(|e| tracing::debug!("could not capture the exited pane: {e:#}"))
         .ok()
         .map(|screen| screen.trim_end().to_string())
@@ -1981,9 +1982,9 @@ fn capture_pane(
         return Ok(remote);
     }
     let (backend, pane) = crate::session_ops::windows::require_agent_pane(backends, &session)?;
-    let output = backend
-        .capture(&pane, lines, ansi)
-        .map_err(|e| format!("capture: session '{}': {e:#}", session.name))?;
+    let output = backend.capture(&pane, lines, ansi).map_err(|e| {
+        crate::session_ops::OpError::from(e).context(format!("capture: session '{}'", session.name))
+    })?;
     // Read after the capture, so a pane that is simply not there fails as it
     // always has rather than reporting a screenful of nothing with null state.
     // The same pane, so the state describes the one just captured.
@@ -2652,7 +2653,7 @@ fn resolve_existing(
     };
     match (mode, found.len()) {
         (OnExisting::Allow, _) | (_, 0) => Ok(Existing::None),
-        (OnExisting::Fail, _) => Err(format!(
+        (OnExisting::Fail, _) => Err(crate::session_ops::OpError::Conflict(format!(
             "{what} is already active on {backend} ({}). Use \
              `--on-existing adopt` to take it as it is, `--on-existing replace` \
              to tear it down first, or pick another {}",
@@ -2665,7 +2666,7 @@ fn resolve_existing(
                 Match::Key(_) => "key",
                 Match::Name(_) => "name",
             }
-        )
+        ))
         .into()),
         (OnExisting::Adopt, 1) => {
             if let Some(declared) = reports_as {
@@ -2714,12 +2715,13 @@ fn rollback_replace(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     existing: &Existing,
-    spawn_error: String,
-) -> String {
+    spawn_error: crate::session_ops::OpError,
+) -> crate::session_ops::OpError {
     let Existing::Replaced(id) = existing else {
         return spawn_error;
     };
-    match crate::session_ops::restore_session_headless(db, backends, *id, true) {
+    // The rollback adds to the sentence; the kind stays the spawn's.
+    let message = match crate::session_ops::restore_session_headless(db, backends, *id, true) {
         Ok(report) => format!(
             "{spawn_error} — the replacement could not be spawned, so '{}' ({id}) was restored \
              best-effort: committed branch state is back, uncommitted work went with the \
@@ -2731,7 +2733,8 @@ fn rollback_replace(
              ({id}) could not be restored either ({e}). `thurbox-cli session restore {id} \
              --best-effort` is the retry"
         ),
-    }
+    };
+    crate::session_ops::OpError::from_kind(spawn_error.kind(), message)
 }
 
 /// Refuse a `--reports-as`/`reports-as` agent thurbox ships no hooks for.
@@ -2873,7 +2876,7 @@ pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, C
 fn delegate_to_host(
     session: &SharedSession,
     args: &[&str],
-) -> Result<Option<CommandOutput>, String> {
+) -> Result<Option<CommandOutput>, CommandError> {
     if !crate::session::Route::is_remote_key(&session.backend_type) {
         return Ok(None);
     }
@@ -3189,6 +3192,21 @@ mod tests {
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    /// A failed create reports the kind its spawn failed with, so a host's
+    /// conflict still exits 5 and an undetermined call still says so.
+    #[test]
+    fn a_failed_spawn_keeps_its_kind_through_the_rollback() {
+        let backends = crate::backend::registry::inert();
+        for error in [
+            crate::session_ops::OpError::Conflict("key taken on the host".into()),
+            crate::session_ops::OpError::Undetermined("host went quiet".into()),
+        ] {
+            let kind = error.kind();
+            let reported = rollback_replace(&db(), &backends, &Existing::None, error);
+            assert_eq!(reported.kind(), kind, "{reported}");
+        }
     }
 
     /// A row on a host `hosts.toml` no longer describes has no known server,

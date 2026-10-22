@@ -105,7 +105,7 @@ pub fn run(
     action: Action,
     db: &Database,
     backends: &super::Backends<'_>,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, crate::cli::CommandError> {
     match action {
         Action::Install {
             target,
@@ -134,7 +134,7 @@ fn install_extension(
     target: String,
     home: Option<String>,
     force: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, crate::cli::CommandError> {
     let report =
         crate::session_ops::install_extension(db, backends, &target, home.as_deref(), force)?;
     // Re-installing a built-in extension clears any prior opt-out.
@@ -152,7 +152,7 @@ fn uninstall_extension(
     backends: &crate::backend::BackendRegistry,
     name: String,
     purge: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, crate::cli::CommandError> {
     let report = crate::session_ops::uninstall_extension(db, backends, &name, purge)?;
     // Uninstalling an auto-activated built-in is an explicit opt-out, so startup
     // self-heal won't reinstall it.
@@ -172,7 +172,7 @@ fn uninstall_extension(
 }
 
 /// Handle `extension list`.
-fn list_extensions(db: &Database) -> Result<CommandOutput, String> {
+fn list_extensions(db: &Database) -> Result<CommandOutput, crate::cli::CommandError> {
     let defs = crate::agent::extension_config::list_manifests();
     let mut healths = Vec::with_capacity(defs.len());
     for def in &defs {
@@ -189,11 +189,11 @@ fn update_extensions(
     name: Option<String>,
     all: bool,
     force: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, crate::cli::CommandError> {
     match name {
         // `--all` alongside a name is contradictory; otherwise a bare name
         // updates one and *no* name updates them all (no flag required).
-        Some(_) if all => Err("pass either a name or --all, not both".to_string()),
+        Some(_) if all => Err("pass either a name or --all, not both".to_string().into()),
         Some(name) => {
             let report = crate::session_ops::update_extension(db, backends, &name, force)?;
             // Arm the heartbeat so the refreshed automations keep firing headlessly.
@@ -245,7 +245,7 @@ fn reinstall_extension(
     backends: &crate::backend::BackendRegistry,
     name: String,
     purge: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, crate::cli::CommandError> {
     let report = crate::session_ops::reinstall_extension(db, backends, &name, purge)?;
     arm_heartbeat(backends);
     let version = report.install.version.as_deref().unwrap_or("?");
@@ -286,7 +286,7 @@ fn activate_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     name: String,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, crate::cli::CommandError> {
     // A built-in extension is installed from embedded assets, not a discovery
     // manifest — clear the opt-out and (re)apply the wiring directly.
     if let Some(builtin) = crate::session_ops::builtin_extension(&name) {
@@ -335,7 +335,7 @@ fn deactivate_extension(
     name: String,
     force: bool,
     purge: bool,
-) -> Result<CommandOutput, String> {
+) -> Result<CommandOutput, crate::cli::CommandError> {
     // Deactivating an auto-activated built-in is an explicit opt-out: record the
     // flag (so self-heal won't resurrect it) and fully reverse the wiring —
     // uninstall removes the agent patches + external files.
@@ -393,7 +393,10 @@ fn deactivate_extension(
 }
 
 /// Handle `extension status` (one extension, or all when no name is given).
-fn status_extension(db: &Database, name: Option<String>) -> Result<CommandOutput, String> {
+fn status_extension(
+    db: &Database,
+    name: Option<String>,
+) -> Result<CommandOutput, crate::cli::CommandError> {
     match name {
         Some(name) => {
             let def = load_manifest(&name)?;
@@ -458,13 +461,15 @@ fn render_extension_detail(h: &crate::session_ops::ExtensionHealth) -> String {
 }
 
 /// Load a manifest by name or error with guidance.
-fn load_manifest(name: &str) -> Result<ExtensionDef, String> {
-    crate::agent::extension_config::load_manifest(name).ok_or_else(|| {
-        format!(
-            "No extension manifest '{name}' found. Install the extension first \
+fn load_manifest(name: &str) -> Result<ExtensionDef, crate::cli::CommandError> {
+    Ok(
+        crate::agent::extension_config::load_manifest(name).ok_or_else(|| {
+            format!(
+                "No extension manifest '{name}' found. Install the extension first \
              (it writes ~/.config/thurbox/extensions/{name}.toml)."
-        )
-    })
+            )
+        })?,
+    )
 }
 
 /// Build the `extension available` result: every official extension with its

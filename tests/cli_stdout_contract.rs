@@ -852,13 +852,13 @@ fn create_answers_an_existing_name_four_ways() {
         ])
     };
 
-    // fail: exit 1, and the error names the session in the way — an integrator
+    // fail: exit 5, and the error names the session in the way — an integrator
     // acts on the id, not on the word "exists".
     let refused = create("fail");
     assert_eq!(
         refused.status.code(),
-        Some(1),
-        "a duplicate name must exit non-zero: {}",
+        Some(5),
+        "a duplicate name must exit with the conflict code: {}",
         String::from_utf8_lossy(&refused.stderr)
     );
     let doc = String::from_utf8_lossy(&refused.stdout);

@@ -406,7 +406,24 @@ Errors are **structured documents on stdout**, not lines on stderr —
 AXI principle 6, because an agent reads one stream and a message on
 stderr is one it has to be told to capture. The exit code carries the
 verdict: `0` success, `1` the command ran and failed, `2` the invocation
-was wrong, `3` a session reference matched more than one session.
+was wrong, `3` a session reference (or the window it names) matched more than one
+candidate, `4` a wait timed out, `5` a key, name, run or pane is already held, and `6` the subject disappeared
+during the call.
+
+Error documents include `error_kind` beside the human-readable `error`.
+Kinds are `not_found`, `ambiguous`, `usage`, `unreachable`, `unreached`,
+`undetermined`, `refused`, `conflict`, `timeout`, `gone`, and `other`.
+`not_found` means the addressed row or required pane does not exist at lookup;
+`gone` means a subject left during an operation. `unreached` and
+`undetermined` remain distinct: the latter may already have performed a write,
+so reconcile before retrying. Unknown kinds are `other`. A peer on an older
+build sends no kind: its answer is `other` too, except thurbox's own two
+absence sentences (`Session not found: …`, `Deleted session not found: …`),
+which stay `not_found` so a host one release behind still lets a teardown fall
+through. No other wording authorizes a destructive fallback. `session reap` or
+`session restore` of a UUID that is live here, not deleted, answers `conflict`.
+The exit status is still authoritative: commands that render a failure report
+may exit nonzero without an `error` field.
 
 The consequence is a trap worth naming. `thurbox-cli … --json | jq -r
 '.field'` exits **0 with empty output** when the command failed: `jq`
