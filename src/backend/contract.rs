@@ -60,6 +60,13 @@ impl From<anyhow::Error> for BackendError {
                 Self::Io(_) => Self::Io(message),
             };
         }
+        // A control-mode reply that never arrived: the reader is gone or the
+        // server stopped answering.
+        if e.chain()
+            .any(|cause| cause.is::<std::sync::mpsc::RecvTimeoutError>())
+        {
+            return Self::Unreachable(format!("{e:#}"));
+        }
         if let Some(io) = e.downcast_ref::<std::io::Error>() {
             return Self::from(std::io::Error::new(io.kind(), format!("{e:#}")));
         }
@@ -949,6 +956,18 @@ pub trait SessionBackend: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A control-mode reply that never came is the backend not answering, not
+    /// an I/O failure of unknown meaning, however much context wraps it.
+    #[test]
+    fn a_reply_timeout_is_unreachable_through_context() {
+        let error =
+            anyhow::Error::new(std::sync::mpsc::RecvTimeoutError::Timeout).context("list-windows");
+        assert!(matches!(
+            BackendError::from(error),
+            BackendError::Unreachable(_)
+        ));
+    }
 
     #[test]
     fn every_named_key_parses_as_itself() {

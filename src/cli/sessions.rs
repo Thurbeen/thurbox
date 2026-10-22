@@ -1076,7 +1076,7 @@ fn run_create(
         // the name released, since the restore takes the same lock.
         Err(e) => {
             drop(name_held);
-            return Err(rollback_replace(db, backends, &existing, e.to_string()).into());
+            return Err(rollback_replace(db, backends, &existing, e).into());
         }
     };
     if let Some(declared) = &reports_as {
@@ -2715,12 +2715,13 @@ fn rollback_replace(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     existing: &Existing,
-    spawn_error: String,
-) -> String {
+    spawn_error: crate::session_ops::OpError,
+) -> crate::session_ops::OpError {
     let Existing::Replaced(id) = existing else {
         return spawn_error;
     };
-    match crate::session_ops::restore_session_headless(db, backends, *id, true) {
+    // The rollback adds to the sentence; the kind stays the spawn's.
+    let message = match crate::session_ops::restore_session_headless(db, backends, *id, true) {
         Ok(report) => format!(
             "{spawn_error} — the replacement could not be spawned, so '{}' ({id}) was restored \
              best-effort: committed branch state is back, uncommitted work went with the \
@@ -2732,7 +2733,8 @@ fn rollback_replace(
              ({id}) could not be restored either ({e}). `thurbox-cli session restore {id} \
              --best-effort` is the retry"
         ),
-    }
+    };
+    crate::session_ops::OpError::from_kind(spawn_error.kind(), message)
 }
 
 /// Refuse a `--reports-as`/`reports-as` agent thurbox ships no hooks for.
@@ -3190,6 +3192,21 @@ mod tests {
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    /// A failed create reports the kind its spawn failed with, so a host's
+    /// conflict still exits 5 and an undetermined call still says so.
+    #[test]
+    fn a_failed_spawn_keeps_its_kind_through_the_rollback() {
+        let backends = crate::backend::registry::inert();
+        for error in [
+            crate::session_ops::OpError::Conflict("key taken on the host".into()),
+            crate::session_ops::OpError::Undetermined("host went quiet".into()),
+        ] {
+            let kind = error.kind();
+            let reported = rollback_replace(&db(), &backends, &Existing::None, error);
+            assert_eq!(reported.kind(), kind, "{reported}");
+        }
     }
 
     /// A row on a host `hosts.toml` no longer describes has no known server,
