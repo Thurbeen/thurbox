@@ -567,6 +567,12 @@ Not mapped, by design:
 - a session on a remote host: its status channel holds one word and cannot
   count, so the edges are no-ops there.
 
+A permission prompt raised by a background subagent stores `blocked`; the
+subagent's next tool call then stores `working`, and its end moves nothing,
+so the session reads `working` until the next prompt — no worse than before
+this state existed, when every such tool call stored `working`. A `blocked`
+cannot say whose block it is, so it is not folded back to `background`.
+
 A missed end edge is forgotten by the next prompt (`UserPromptSubmit` marks
 its `working` as a turn start with `THURBOX_SIGNAL_TURN=start`; the main
 agent's own tool calls, such as those of the turn that reports a finished

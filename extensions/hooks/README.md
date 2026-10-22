@@ -47,7 +47,9 @@ below), do the same.
   `claude` agent, reversibly). claude merges it with your own settings, so your
   hooks are preserved. Events: `SessionStart` → idle (so a just-booted, idle
   session isn't shown as working), `UserPromptSubmit`/`PreToolUse`/`PostToolUse`
-  → working, `Stop` → done. `Notification` → blocked **only for
+  → working (`UserPromptSubmit` marks it a turn start with
+  `THURBOX_SIGNAL_TURN=start`), `Stop` → done, or `background` while a
+  subagent the turn started is still running. `Notification` → blocked **only for
   permission/approval prompts** — claude also fires `Notification` for its
   "waiting for your input" idle nudge, which the hook ignores (matches the
   notification's `message` field alone, not the whole payload — `cwd` and
@@ -64,7 +66,13 @@ below), do the same.
   turn (it writes the project memory), and its tool call otherwise turned `done`
   back into `working` with nothing to end it (verified against Claude Code
   2.1.301). A subagent the turn starts through the Agent tool carries an
-  `agent_type`, so its tool calls still report `working`.
+  `agent_type`: `SubagentStart`/`SubagentStop` report its start and end by its
+  `agent_id` (`session signal --work-start`/`--work-end`), and its tool calls
+  report `working` with that id in `THURBOX_SIGNAL_WORK` — `working` while the
+  turn runs, absorbed into `background` once it rests. The end of the last one
+  stores `done`; a turn start or `SessionStart` forgets any whose end never
+  came. On a remote pane the two edges are the shell's no-op `:` (its status
+  channel holds one word). See `docs/AGENTS.md` → *Background sub-work*.
 - **aider** — `--notifications-command` reports the only edge aider exposes:
   blocked (waiting for input).
 - **opencode** — a plugin dropped into `~/.config/opencode/plugin/` (only when
