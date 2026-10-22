@@ -372,12 +372,9 @@ impl PaneInput for PsmuxInput {
 /// `kill-pane` ending it. 3.3.8 resolves it to the pane it names.
 const MIN_PSMUX_VERSION: (u32, u32, u32) = (3, 3, 8);
 
-/// Refuse a psmux older than [`MIN_PSMUX_VERSION`].
-///
-/// Reads the server's `#{version}` answer (a bare `3.3.6`) as well as a `-V`
-/// banner: psmux 3.3.6 prints `tmux 3.3.6`, later ones add a `psmux X.Y.Z (…)`
-/// line, which wins when present. An answer with no readable version is let
-/// through: it proves nothing about the fix either way.
+/// Refuse a psmux server older than [`MIN_PSMUX_VERSION`] by its `#{version}`
+/// answer (a bare `3.3.6`), which the gate has already read strictly; the
+/// binary's `-V` is [`check_psmux_binary`]'s.
 fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     match psmux_version(version_output) {
         Some(v) if v < MIN_PSMUX_VERSION => bail!(
@@ -1614,10 +1611,9 @@ mod tests {
         assert_eq!(Psmux::SERVER_SCOPE, "-g");
     }
 
-    /// psmux 3.3.6 answers `-V` with a bare `tmux 3.3.6`, which the tmux gate
-    /// reads as tmux 3.3 and passes. Its server then hands panes born after a
-    /// `send-keys C-c` std handles that are no longer the pane's console, and
-    /// the agent reports "stdin is unreadable (EISDIR)" and exits.
+    /// A psmux 3.3.6 server hands panes born after a `send-keys C-c` std
+    /// handles that are no longer the pane's console, and the agent reports
+    /// "stdin is unreadable (EISDIR)" and exits.
     #[test]
     fn psmux_older_than_the_floor_is_refused_with_the_upgrade() {
         let err = check_psmux_version("3.3.6", "thurbox")
@@ -1664,14 +1660,13 @@ mod tests {
 
     #[test]
     fn psmux_3_3_8_and_newer_is_accepted() {
+        for answer in ["3.3.8", "3.4.0", "4.0"] {
+            assert!(check_psmux_version(answer, "thurbox").is_ok(), "{answer}");
+        }
         assert!(
-            check_psmux_version("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n", "thurbox")
+            Psmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n", "thurbox")
                 .is_ok()
         );
-        assert!(check_psmux_version("psmux 3.4.0", "thurbox").is_ok());
-        assert!(check_psmux_version("psmux 4.0", "thurbox").is_ok());
-        // A pre-release suffix on the patch is still that patch, not 0.
-        assert!(check_psmux_version("psmux 3.3.9-dev", "thurbox").is_ok());
     }
 
     /// psmux 3.3.7 reads the pane-slot target thurbox names every pane by
@@ -1681,14 +1676,13 @@ mod tests {
     /// it. 3.3.8 resolves the same spelling to the pane it names.
     #[test]
     fn psmux_3_3_7_is_refused_for_the_pane_targets_it_misreads() {
-        let err = check_psmux_version("tmux 3.3.7\npsmux 3.3.7 (05cc5d4 2026-07-20)\n", "thurbox")
+        let err = check_psmux_version("3.3.7", "thurbox")
             .unwrap_err()
             .to_string();
         assert!(err.contains("psmux 3.3.7 is too old"), "{err}");
         assert!(err.contains("3.3.8"), "{err}");
         assert!(err.contains("active pane"), "{err}");
         assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
-        assert!(check_psmux_version("3.3.7", "thurbox").is_err());
     }
 
     /// A stand-in psmux whose server answers `#{version}` with `version`, and
@@ -1782,6 +1776,27 @@ mod tests {
         assert!(!err.contains("kill-server"), "{err}");
         let sent = std::fs::read_to_string(&log).unwrap_or_default();
         assert!(!sent.contains("%2"), "a pane was named:\n{sent}");
+    }
+
+    /// A pre-release binary is not held to the floor by reading past its own
+    /// line to an older one, nor by dropping its suffix: a `3.3.8-dev` may
+    /// predate the fix.
+    #[cfg(unix)]
+    #[test]
+    fn a_pre_release_psmux_binary_names_no_pane() {
+        for banner in [
+            "printf 'tmux 3.3.7\\npsmux 3.3.8-dev (x)\\n'",
+            "printf 'tmux 3.3.9\\npsmux 3.3.9-dev (x)\\n'",
+        ] {
+            let (_root, psmux, log) = psmux_with_client(banner, "echo 3.3.8");
+            let err = psmux.target("%2").unwrap_err().to_string();
+            assert!(
+                err.contains("did not give a version thurbox can hold to its floor"),
+                "{banner}: {err}"
+            );
+            let sent = std::fs::read_to_string(&log).unwrap_or_default();
+            assert!(!sent.contains("%2"), "a pane was named:\n{sent}");
+        }
     }
 
     /// An answer a floor cannot read is not a version new enough.

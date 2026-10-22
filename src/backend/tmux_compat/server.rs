@@ -1307,13 +1307,15 @@ impl<M: TmuxCompatible> Server<M> {
         // restarting that would end every agent and change nothing.
         let mux = self.transport.mux();
         let banner = self.tmux_output(&["-V"])?;
-        if banner_version(&banner).is_none() {
+        let Some(client) = banner_version(&banner) else {
             bail!(
                 "the {mux} binary did not give a version thurbox can hold to its floor (it \
                  answered {banner:?}); put a released {mux} first on PATH"
             );
-        }
-        M::check_banner(&banner, &self.socket())?;
+        };
+        // The value just read strictly is the one judged: the whole banner,
+        // read leniently, could name another line or drop a suffix.
+        M::check_banner(client, &self.socket())?;
         let answer = match attached {
             true => self
                 .ctrl_command("display-message -p '#{version}'")
@@ -2444,7 +2446,9 @@ impl<M: TmuxCompatible> Server<M> {
         // given a pane id out of the database and nothing else. Best-effort
         // there, as it always was — a backend that cannot answer (one without
         // window events, a reconnecting control mode) keeps the old behaviour of no mapping and
-        // no EOF from a window close, and says so in the log.
+        // no EOF from a window close, and says so in the log. A multiplexer the
+        // version floor refuses (`target`) is the exception: the attach fails,
+        // since nothing could be named to it safely.
         //
         // On tmux the same question also reads the pane's size and who sizes it,
         // for the grid. A pane being adopted may be another instance's to size,
@@ -5046,15 +5050,17 @@ fn is_version_answer(answer: &str) -> bool {
 /// after `psmux ` or `tmux ` on the last line that names one (psmux 3.3.7
 /// prints both, 3.3.6 only the second). `None` when no line does.
 fn banner_version(banner: &str) -> Option<&str> {
-    banner.lines().rev().find_map(|line| {
+    let rest = banner.lines().rev().find_map(|line| {
         let line = line.trim();
-        let rest = line
-            .strip_prefix("psmux ")
-            .or_else(|| line.strip_prefix("tmux "))?;
-        rest.split_whitespace()
-            .next()
-            .filter(|v| is_version_answer(v))
-    })
+        line.strip_prefix("psmux ")
+            .or_else(|| line.strip_prefix("tmux "))
+    })?;
+    // That line or nothing: an earlier line is an older name for the same
+    // binary, and reading past a suffixed one (`3.3.8-dev`) to it would judge
+    // a version the binary does not claim to be.
+    rest.split_whitespace()
+        .next()
+        .filter(|v| is_version_answer(v))
 }
 
 /// What [`Server::admit_server`]'s question found.
@@ -5408,7 +5414,17 @@ mod tests {
         );
         assert_eq!(banner_version("tmux 3.3.6\n"), Some("3.3.6"));
         assert_eq!(banner_version("psmux 3.4.0 (20aa1d7)"), Some("3.4.0"));
-        for banner in ["", "3.3.8", "psmux", "psmux dev", "ERROR: x"] {
+        for banner in [
+            "",
+            "3.3.8",
+            "psmux",
+            "psmux dev",
+            "ERROR: x",
+            // The last line names a pre-release, and an earlier one is not
+            // read in its place.
+            "tmux 3.3.7\npsmux 3.3.8-dev (x)\n",
+            "tmux 3.3.9\npsmux 3.3.9-dev (x)\n",
+        ] {
             assert_eq!(banner_version(banner), None, "{banner:?}");
         }
     }

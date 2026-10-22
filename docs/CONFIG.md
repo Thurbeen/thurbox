@@ -466,7 +466,7 @@ when psmux's floor rose to 3.3.8 (#1557).
 | Multiplexer | Minimum | Code enforcing it | Upstream evidence |
 | --- | --- | --- | --- |
 | [tmux](https://github.com/tmux/tmux) | 3.2 | [`MIN_TMUX_VERSION` and `check_min_version`](../src/backend/tmux.rs) | [3.2 changes](https://github.com/tmux/tmux/blob/3.2/CHANGES): control-client flow control and format subscriptions |
-| [psmux](https://github.com/psmux/psmux) | 3.3.8 | [`MIN_PSMUX_VERSION` and `check_psmux_version`](../src/backend/psmux.rs) | [3.3.8 release](https://github.com/psmux/psmux/releases/tag/v3.3.8): pane-slot targets (`thurbox:.%3`) resolve to that pane; [3.3.7](https://github.com/psmux/psmux/releases/tag/v3.3.7): dead warm-pane fix (psmux#450) |
+| [psmux](https://github.com/psmux/psmux) | 3.3.8 | [`MIN_PSMUX_VERSION`, `check_psmux_version` (server) and `check_psmux_binary` (binary)](../src/backend/psmux.rs) | [3.3.8 release](https://github.com/psmux/psmux/releases/tag/v3.3.8): pane-slot targets (`thurbox:.%3`) resolve to that pane; [3.3.7](https://github.com/psmux/psmux/releases/tag/v3.3.7): dead warm-pane fix (psmux#450) |
 | [RMUX](https://github.com/Helvesec/rmux) | 0.10.0 | [`Rmux::check_banner`](../src/backend/rmux.rs) | [0.10.0 release](https://github.com/Helvesec/rmux/releases/tag/v0.10.0): wire protocol 8, incompatible with 0.9.x daemons |
 
 For tmux, the limiting features are `refresh-client -f pause-after=5`,
@@ -491,7 +491,8 @@ that. 3.3.7 still runs a command aimed at a pane on the session's active pane
 instead, so keystrokes reach another session; 3.3.8 fixes that. The adapter
 checks both the client banner and the running server's `#{version}` before
 any pane is named — a server started before an upgrade must be restarted
-(`psmux -L <socket> kill-server`) before thurbox will use it. RMUX
+(`psmux -L <socket> kill-server`, which ends the agents running on it) before
+thurbox will use it; an old binary only needs replacing. RMUX
 checks its `rmux -V` banner instead: its `#{version}` is the tmux
 compatibility version, not the RMUX release.
 
