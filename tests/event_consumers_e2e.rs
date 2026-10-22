@@ -972,6 +972,18 @@ fn read_fields_never_ask_a_host_for_a_remote_row() {
     assert!(listed[0]["last_output_at"].is_null(), "{listed}");
     let watched = run(&["watch", "--since", "0", "--for-secs", "0"]);
     assert!(watched["last_output_at"].is_null(), "{watched}");
+    // A wait holds the full registry, which can reach the host: the remote
+    // gate is what keeps its read fields local.
+    let waited = run(&[
+        "session",
+        "wait",
+        "worker",
+        "--state",
+        "working",
+        "--timeout",
+        "0",
+    ]);
+    assert!(waited["last_output_at"].is_null(), "{waited}");
 
     let asked = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(asked.is_empty(), "a read field asked the host:\n{asked}");
@@ -1196,4 +1208,29 @@ fn a_wait_matches_a_done_edge_that_was_seen_before_it_was_read() {
     let event: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(event["to_state"], "done");
     assert_eq!(event["state"], "done");
+}
+
+/// A state hook's payload describes the edge as it happened: a `done` the user
+/// looked at before the tick delivered it is still `done` on stdin.
+#[test]
+fn a_state_hook_reports_a_done_edge_seen_before_the_tick_as_done() {
+    let env = Env::new();
+    let id = env.seed();
+    env.hooks(&format!(
+        "[[hooks]]\nevent = 'session.state_changed'\ncommand = 'cat >> {}'\n",
+        env.path("events").display()
+    ));
+    env.ok(&["automation", "tick"]);
+    let db = env.db();
+    db.set_hook_state(id, "done").unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    db.mark_session_seen(id, now + 1_000).unwrap();
+    env.ok(&["automation", "tick"]);
+    let text = std::fs::read_to_string(env.path("events")).unwrap();
+    let event: Value = serde_json::from_str(text.trim()).unwrap();
+    assert_eq!(event["to_state"], "done", "{event}");
+    assert_eq!(event["state"], "done", "{event}");
 }
