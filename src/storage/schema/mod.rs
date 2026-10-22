@@ -17,8 +17,9 @@ use migrations::{
     migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v50_lost_at,
     migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v53_session_key,
     migrate_v54_telemetry_export, migrate_v55_event_cursors, migrate_v55_move_cursors_and_claims,
-    migrate_v56_automation_runs, migrate_v5_session_commands, migrate_v6_worktrees_pk,
-    migrate_v7_shell_backend_id, migrate_v8_vms, migrate_v9_agent_session_id,
+    migrate_v56_automation_runs, migrate_v57_background_work, migrate_v5_session_commands,
+    migrate_v6_worktrees_pk, migrate_v7_shell_backend_id, migrate_v8_vms,
+    migrate_v9_agent_session_id,
 };
 
 use rusqlite::{Connection, OptionalExtension};
@@ -118,7 +119,10 @@ use rusqlite::{Connection, OptionalExtension};
 /// and `deadline_at` to `automation_runs`: an automation an orchestrator can
 /// address and bound, and a run that says how it ended (issues #1507, #1508,
 /// #1515).
-pub const SCHEMA_VERSION: u32 = 56;
+/// v57 adds `background_work` to `sessions`: the sub-work a session has in
+/// flight (and recently ended), so a turn that ends with some still running
+/// stores `background` rather than `done` (issue #1510).
+pub const SCHEMA_VERSION: u32 = 57;
 
 /// The oldest [`SCHEMA_VERSION`] that can still read and write a database this
 /// binary migrated, recorded as `min_reader_version` in `metadata`.
@@ -135,7 +139,9 @@ pub const SCHEMA_VERSION: u32 = 56;
 /// 53, because v54 only adds `telemetry_export`, a table a v53 thurbox never
 /// reads or writes, and v55 only adds `event_cursors`, which no older thurbox
 /// reads either; `telemetry_export` stays for them. v56 only adds nullable
-/// columns and an index on a column no older thurbox writes.
+/// columns and an index on a column no older thurbox writes, and v57 one
+/// nullable column; an older thurbox reads a stored `background` as a word it
+/// does not know, which it already shows as `idle`.
 pub const MIN_READER_VERSION: u32 = 53;
 
 /// A single migration step: applied when the stored version is below `target`,
@@ -342,6 +348,7 @@ fn create_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
             lost_at           INTEGER,
             relaunch_held_at  INTEGER,
             key               TEXT,
+            background_work   TEXT,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
             deleted_at        INTEGER
@@ -642,6 +649,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (55, migrate_v55_event_cursors, Reapply::WhenMissing),
         (55, migrate_v55_move_cursors_and_claims, Reapply::Never),
         (56, migrate_v56_automation_runs, Reapply::WhenMissing),
+        (57, migrate_v57_background_work, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {
@@ -1294,6 +1302,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION.to_string());
+    }
+
+    /// v57 adds the in-flight sub-work column, empty on every existing row,
+    /// and a second pass is a no-op.
+    #[test]
+    fn migrate_from_v56_adds_background_work() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE sessions DROP COLUMN background_work;
+             UPDATE metadata SET value = '56' WHERE key = 'schema_version';
+             INSERT INTO sessions (id, name, created_at, updated_at)
+                VALUES ('old', 'old', 0, 0);",
+        )
+        .unwrap();
+        initialize(&conn).unwrap();
+        initialize(&conn).unwrap();
+
+        assert!(column_exists(&conn, "sessions", "background_work").unwrap());
+        let work: Option<String> = conn
+            .query_row(
+                "SELECT background_work FROM sessions WHERE id = 'old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(work, None);
     }
 
     /// v53 adds the key column and its index to a database that has neither;

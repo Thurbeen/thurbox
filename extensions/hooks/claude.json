@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "p=$(cat); p=${p%%'\"tool_input\"'*}; case \"$p\" in *'\"agent_type\":\"'[!\\\"]*) thurbox-cli session signal --state working >/dev/null 2>&1 ;; *'\"agent_id\"'*) ;; *) thurbox-cli session signal --state working >/dev/null 2>&1 ;; esac; true",
+            "command": "p=$(cat); p=${p%%'\"tool_input\"'*}; case \"$p\" in *'\"agent_type\":\"'[!\\\"]*) w=${p#*'\"agent_id\":\"'}; THURBOX_SIGNAL_WORK=${w%%\\\"*} thurbox-cli session signal --state working >/dev/null 2>&1 ;; *'\"agent_id\"'*) ;; *) thurbox-cli session signal --state working >/dev/null 2>&1 ;; esac; true",
             "timeout": 10
           }
         ]
@@ -38,7 +38,29 @@
         "hooks": [
           {
             "type": "command",
-            "command": "p=$(cat); p=${p%%'\"tool_input\"'*}; case \"$p\" in *'\"agent_type\":\"'[!\\\"]*) thurbox-cli session signal --state working >/dev/null 2>&1 ;; *'\"agent_id\"'*) ;; *) thurbox-cli session signal --state working >/dev/null 2>&1 ;; esac; true",
+            "command": "p=$(cat); p=${p%%'\"tool_input\"'*}; case \"$p\" in *'\"agent_type\":\"'[!\\\"]*) w=${p#*'\"agent_id\":\"'}; THURBOX_SIGNAL_WORK=${w%%\\\"*} thurbox-cli session signal --state working >/dev/null 2>&1 ;; *'\"agent_id\"'*) ;; *) thurbox-cli session signal --state working >/dev/null 2>&1 ;; esac; true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=$(cat); case \"$p\" in *'\"agent_type\":\"'[!\\\"]*) case \"$p\" in *'\"agent_id\":\"'[!\\\"]*) w=${p#*'\"agent_id\":\"'}; thurbox-cli session signal --work-start \"${w%%\\\"*}\" >/dev/null 2>&1 ;; esac ;; esac; true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=$(cat); case \"$p\" in *'\"agent_type\":\"'[!\\\"]*) case \"$p\" in *'\"agent_id\":\"'[!\\\"]*) w=${p#*'\"agent_id\":\"'}; thurbox-cli session signal --work-end \"${w%%\\\"*}\" >/dev/null 2>&1 ;; esac ;; esac; true",
             "timeout": 10
           }
         ]

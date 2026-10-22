@@ -810,8 +810,8 @@ impl Database {
         )?;
         if stopped {
             self.conn.execute(
-                "UPDATE sessions SET hook_state = NULL, hook_state_at = NULL, seen_at = NULL \
-                 WHERE id = ?1",
+                "UPDATE sessions SET hook_state = NULL, hook_state_at = NULL, seen_at = NULL, \
+                 background_work = NULL WHERE id = ?1",
                 params![id_str],
             )?;
         }
@@ -1374,7 +1374,74 @@ impl Database {
     /// a session that has no process to be in it, and every watcher of that row
     /// would see a transition that did not happen.
     pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<bool> {
-        Ok(self.write_hook_state(id, state, false)?.is_some())
+        Ok(self.write_hook_state(id, state, None, false)?.is_some())
+    }
+
+    /// [`Self::set_hook_state`] as `session signal` makes it: `work` names the
+    /// sub-work the report came from, when it came from one. Returns the word
+    /// stored, which the sub-work in flight can make differ from the one
+    /// reported — a `done` with work still running stores `background` (see
+    /// [`crate::session::background_work::settle_report`]) — or `None` when no
+    /// row took it.
+    pub fn signal_hook_state(
+        &self,
+        id: SessionId,
+        state: &str,
+        work: Option<&str>,
+    ) -> rusqlite::Result<Option<String>> {
+        Ok(self
+            .write_hook_state(id, state, work, false)?
+            .map(|written| written.1))
+    }
+
+    /// Record one start or end of a session's sub-work (`session signal
+    /// --work-start`/`--work-end`), moving the state only when the end of the
+    /// last piece finishes a `background` turn — see
+    /// [`crate::session::background_work::settle_edge`]. Returns the state the
+    /// row holds afterwards (`None` for one never reported), or `Err` of
+    /// [`rusqlite::Error::QueryReturnedNoRows`] when no active, unparked row
+    /// has `id`.
+    pub fn signal_work_edge(
+        &self,
+        id: SessionId,
+        edge: crate::session::background_work::WorkEdge,
+        work: &str,
+    ) -> rusqlite::Result<Option<String>> {
+        use crate::session::background_work::{settle_edge, InFlight};
+
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let (previous, previous_at, stored): (Option<String>, Option<i64>, Option<String>) =
+            self.conn.query_row(
+                "SELECT hook_state, hook_state_at, background_work FROM sessions \
+                 WHERE id = ?1 AND deleted_at IS NULL AND stopped_at IS NULL",
+                params![id_str],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let mut in_flight = InFlight::parse(stored.as_deref());
+        let moved = settle_edge(previous.as_deref(), &mut in_flight, edge, work);
+        self.conn.execute(
+            "UPDATE sessions SET background_work = ?1 WHERE id = ?2",
+            params![in_flight.to_column(), id_str],
+        )?;
+        let Some(state) = moved else {
+            tx.commit()?;
+            return Ok(previous);
+        };
+        let now = (current_time_millis() as i64).max(previous_at.unwrap_or(0) + 1);
+        self.conn.execute(
+            "UPDATE sessions SET hook_state = ?1, hook_state_at = ?2 WHERE id = ?3",
+            params![state, now, id_str],
+        )?;
+        self.record_session_event(
+            id,
+            SessionEventKind::Changed,
+            EventReason::State,
+            previous.as_deref(),
+            Some(state),
+        )?;
+        tx.commit()?;
+        Ok(Some(state.to_string()))
     }
 
     /// [`Self::set_hook_state`] for a report that is news only as a *change*:
@@ -1384,31 +1451,44 @@ impl Database {
     /// first is what it is decided against. Returns the stamp written, or
     /// `None` when nothing was.
     pub fn report_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<Option<i64>> {
-        self.write_hook_state(id, state, true)
+        Ok(self
+            .write_hook_state(id, state, None, true)?
+            .map(|written| written.0))
     }
 
+    /// The one write behind every hook report, returning the stamp and the
+    /// word stored. The sub-work in flight is settled in the same transaction
+    /// as the state it decides, so a report and a work edge racing each other
+    /// are each judged against what the other wrote.
     fn write_hook_state(
         &self,
         id: SessionId,
-        state: &str,
+        reported: &str,
+        work: Option<&str>,
         only_a_change: bool,
-    ) -> rusqlite::Result<Option<i64>> {
+    ) -> rusqlite::Result<Option<(i64, String)>> {
+        use crate::session::background_work::{settle_report, InFlight};
+
         let tx = self.write_transaction()?;
         let id_str = id.to_string();
 
-        let before: Option<(Option<String>, Option<i64>)> = self
+        let before: Option<(Option<String>, Option<i64>, Option<String>)> = self
             .conn
             .query_row(
-                "SELECT hook_state, hook_state_at FROM sessions \
+                "SELECT hook_state, hook_state_at, background_work FROM sessions \
                  WHERE id = ?1 AND deleted_at IS NULL AND stopped_at IS NULL",
                 params![id_str],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        let Some((previous, previous_at)) = before else {
+        let Some((previous, previous_at, stored)) = before else {
             return Ok(None);
         };
-        if only_a_change && previous.as_deref() == Some(state) {
+        let before_flight = InFlight::parse(stored.as_deref());
+        let mut in_flight = before_flight.clone();
+        let state = settle_report(previous.as_deref(), &mut in_flight, reported, work);
+        let state = state.as_str();
+        if only_a_change && previous.as_deref() == Some(state) && in_flight == before_flight {
             return Ok(None);
         }
         // Two signals can land in one millisecond. Keep the stamp distinct so
@@ -1416,9 +1496,9 @@ impl Database {
         let now = (current_time_millis() as i64).max(previous_at.unwrap_or(0) + 1);
 
         self.conn.execute(
-            "UPDATE sessions SET hook_state = ?1, hook_state_at = ?2 \
-             WHERE id = ?3 AND deleted_at IS NULL AND stopped_at IS NULL",
-            params![state, now, id_str],
+            "UPDATE sessions SET hook_state = ?1, hook_state_at = ?2, background_work = ?3 \
+             WHERE id = ?4 AND deleted_at IS NULL AND stopped_at IS NULL",
+            params![state, now, in_flight.to_column(), id_str],
         )?;
 
         // The stamp is refreshed whatever happens — a re-report is news about
@@ -1435,7 +1515,7 @@ impl Database {
         }
 
         tx.commit()?;
-        Ok(Some(now))
+        Ok(Some((now, state.to_string())))
     }
 
     /// Record the base branch a session's worktree was forked from. A targeted

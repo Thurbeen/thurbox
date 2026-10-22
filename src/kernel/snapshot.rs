@@ -1285,8 +1285,9 @@ impl SnapshotStore {
             } else {
                 self.hook_state_at.remove(&row.id);
             }
-            // Working/blocked are folded against output each tick. Only
-            // done can change its visible state from a new stamp alone.
+            // Working/blocked/background are folded against output each
+            // tick. Only done can change its visible state from a new stamp
+            // alone.
             if !row.stopped && row.hook_state.as_deref() == Some("done") {
                 let status = derive_state(Some("done"), hook.state_at, hook.seen_at);
                 if row.status != status {
@@ -1579,8 +1580,8 @@ impl SnapshotStore {
         applied
     }
 
-    /// Re-derive every `working` and `blocked` row against terminal quiescence,
-    /// returning how many rows changed.
+    /// Re-derive every `working`, `blocked` and `background` row against
+    /// terminal quiescence, returning how many rows changed.
     ///
     /// Called each tick rather than folded into `refresh`, because the answer
     /// moves with the agent's output and `refresh` runs on the database's
@@ -1597,8 +1598,12 @@ impl SnapshotStore {
     /// this is the only surface that can see that: `state_at` alone cannot say
     /// it, which is why the CLI still reports the latched word.
     ///
+    /// `background` is here only for its pane: sub-work runs out of the pane's
+    /// sight, so quiet output says nothing, but no live pane means nothing is
+    /// left to run it.
+    ///
     /// `quiet_for` is asked only about the rows that are actually in one of
-    /// those two states, and answers `None` for a session with no live pane. A
+    /// those states, and answers `None` for a session with no live pane. A
     /// closure rather than a map because the answer is one atomic load and a map
     /// would allocate every tick to carry the sessions nobody asked about
     /// (ADR-P10).
@@ -1618,7 +1623,12 @@ impl SnapshotStore {
                 .hook_state
                 .as_deref()
                 .and_then(SessionState::from_hook_state)
-                .filter(|s| matches!(s, SessionState::Working | SessionState::Blocked))
+                .filter(|s| {
+                    matches!(
+                        s,
+                        SessionState::Working | SessionState::Blocked | SessionState::Background
+                    )
+                })
             else {
                 continue;
             };

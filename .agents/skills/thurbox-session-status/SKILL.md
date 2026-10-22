@@ -11,7 +11,7 @@ description: Hooks-driven session status in thurbox: the SessionState vocabulary
 
 The session list shows, at a glance, which agents are blocked, working,
 or done. **`SessionState` (`src/session/hook_status.rs`) is the whole
-vocabulary — one enum, every surface.** Four of its words are the agent's own
+vocabulary — one enum, every surface.** Five of its words are the agent's own
 hook report; the rest are thurbox's own, and each is spelled apart from `idle`
 on purpose, because collapsing "nothing here is wired to report" or "the host
 is gone" into "the agent says it is at rest" is exactly the conflation the
@@ -22,6 +22,7 @@ module exists to prevent:
 | `working` | yellow | animated braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running (hook) |
 | `blocked` | red | `◆` | agent needs input or approval (hook) |
 | `done` | blue | `●` (filled) | a turn just finished; shown until you switch away (hook) |
+| `background` | `status_background` (a purple per preset) | `◎` | the turn is at rest and sub-work it started is still running — claude's background subagents (hook, issue #1510) |
 | `idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host down/offline; the ordinary row, derived from a live attach failure, awaiting reconnect |
 | `running` | `status_running` (accent) | `◉`, animated while its pane prints | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
@@ -36,8 +37,8 @@ hook columns alone (`derive_state`), so `hook_state = NULL` answered `Idle` and
 `theme.lua`'s `or STATUS_GLYPHS.idle` drew the green hollow circle — for a
 session a harness had launched an agent into, mid-turn, with nothing wired to
 report it. `idle` means *the agent said it is at rest*; none of these three
-does, and spelling them apart is the whole reason the vocabulary has nine words
-instead of five.
+does, and spelling them apart is the whole reason the vocabulary has ten words
+instead of six.
 
 The interface now derives through the same `Assessment` the CLI does
 (`kernel::snapshot::assess`), which is what makes `running` reachable there —
@@ -206,12 +207,13 @@ own, which is the point.
   only because that path corrects its row directly and never reaches `assess`.
   See `docs/PERFORMANCE.md` → *Freshness is a property of a cached answer*.
 - **The callback.** Agents report transitions with
-  `thurbox-cli session signal --state <working|blocked|done|idle>`
+  `thurbox-cli session signal --state <working|blocked|done|idle|background>`
   (`cli::sessions::Action::Signal`). Identity is the injected
   `THURBOX_SESSION` (falling back to a lookup by `agent_session_id` /
   `THURBOX_SESSION_ID`), so a hook passes no id. It writes the persisted
   state and the TUI picks it up via `PRAGMA data_version` — works headless.
-  (`idle` = agent at rest, e.g. a boot-time hook; `done` = a turn just finished.)
+  (`idle` = agent at rest, e.g. a boot-time hook; `done` = a turn just finished;
+  `background` = the turn is at rest and its sub-work is still running.)
   **Remote** sessions use a different callback with the same downstream:
   the materialized hook file sets a tmux pane user option instead, delivered
   over the control-mode subscription into the same hook columns (see the
@@ -350,7 +352,7 @@ own, which is the point.
   **never** reorders rows (the order is status-independent).
 - **Colours** are tunable theme fields: `status_working` / `status_blocked`
   / `status_done` / `status_idle` / `status_unreachable` / `status_running` /
-  `status_unknown`
+  `status_unknown` / `status_background`
   (`session::theme_config`, all 36 presets + custom-theme overrides), published
   to Lua as theme roles and read by the pane. `status_error` is a separate
   role (a failed *command*, e.g. `bands.rs`'s `Level::Error` — not a session
@@ -407,9 +409,50 @@ The CLI publishes `last_output_at` from bounded local backend metadata (null
 for a remote row, which is never asked over the host link) and
 `transcript_path` for an existing local Claude-family transcript, respecting
 persisted `CLAUDE_CONFIG_DIR`. Unknown timestamps and unsupported/remote
-transcripts are null. These fields do not change the state vocabulary or
-claim completion. `background` is deferred until both parent-session hook
-edges can be reproduced.
+transcripts are null. These fields do not claim completion.
+
+## Background sub-work (issue #1510)
+
+`background` is the fifth hook word: the turn is at rest and sub-work it
+started is still running. Any agent may report it with `session signal --state
+background`; the first mapping is claude's, through two edges the parent
+session sees (the issue's reproduction on Claude Code 2.1.303, and a headless
+run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
+`agent_id` throughout):
+
+- `SubagentStart` / `SubagentStop` for a **typed** subagent (an Agent-tool
+  subagent: `agent_type` non-empty) run `session signal --work-start <id>` /
+  `--work-end <id>`. The ids live in `sessions.background_work` (schema v57,
+  `{"running": [...], "ended": [...]}`, each capped at 64), decided by the
+  pure rules in `session::background_work` inside the hook-state write's own
+  transaction. Ids are idempotent, and an end remembered in `ended` cancels a
+  start that lands after it, so a duplicate or out-of-order delivery never
+  leaves work counted.
+- A `done` reported while any id is running is **stored** as `background`.
+  The end of the last one moves a `background` row to `done`, logged as a
+  `background → done` event, which is what `watch` streams and `session wait
+  --state done` returns on.
+- A typed subagent's tool calls carry their id
+  (`THURBOX_SIGNAL_WORK=<id> thurbox-cli session signal --state working`, an
+  env var so the remote rewrite still sees one bare state word): while the turn
+  rests in `background` with that id running they are absorbed, not a new
+  turn.
+- **Never produced**: claude's own post-turn agent (`agent_id`, no
+  `agent_type`, the #1428 case) — its edges are filtered like its tool calls;
+  `run_in_background` Bash tasks, which fire no end hook; and remote panes,
+  whose one-word pane option cannot count, so `rewrite_hook_signals` turns the
+  edges into the shell's no-op `:` and a remote claude reports as before.
+- **A missed end edge does not stick.** Nothing is keyed on time (sub-work
+  can run for an hour, and keying the stuck-`working` fallback on hook age was
+  the v2 bug). Instead: a `working` with no work id while the turn was at rest
+  (a new prompt) forgets earlier turns' running work; `idle` (claude's
+  `SessionStart`, a new process) forgets all of it; `session stop` clears the
+  column; the interface reads `background` with no live pane as `idle`
+  (`with_output_quiescence` — quiet output is *not* evidence here, the work
+  runs out of the pane's sight); and `contradicts` lets `session get` report a
+  dead or missing pane against it.
+- Coverage: claude's `states` lists `background`, but `is_full` asks only for
+  the four `TURN_STATES`, so no other agent's coverage moved.
 
 `session wait` consumes the same bounded event log as watch, returning a
 current match or the next matching edge (exit 4 timeout; 6 gone/stopped/lost).

@@ -1298,9 +1298,12 @@ alert under `alerts`. Off by default.
 
 ## Session status
 
-Each session's state (Blocked / Working / Done / Idle) is driven by
-**agent hooks** that call `thurbox-cli session signal --state
-<working|blocked|done|idle>`. The state is persisted on the `sessions` row
+Each session's state (Blocked / Working / Background / Done / Idle) is driven
+by **agent hooks** that call `thurbox-cli session signal --state
+<working|blocked|done|idle|background>`. Sub-work a turn may outlive is
+reported by its edges, `--work-start <id>` / `--work-end <id>`; a `done` while
+any is in flight is stored as `background` (see
+[AGENTS.md](AGENTS.md#background-sub-work)). The state is persisted on the `sessions` row
 (`hook_state`, `hook_state_at`, `seen_at` — schema v34) and survives the TUI
 being closed; a hook fired headlessly is picked up via `PRAGMA data_version`.
 Identity comes from the injected `THURBOX_SESSION` env var, so a hook passes
@@ -1311,7 +1314,8 @@ The hooks are wired up automatically by the built-in **hooks** extension
 (auto-activated on first run). Opt out with `thurbox-cli extension deactivate
 hooks`. The status colours are tunable theme keys (`status_working` /
 `status_blocked` / `status_done` / `status_idle` / `status_unreachable` /
-`status_running` / `status_unknown` — see `themes.toml`). `status_running` is
+`status_running` / `status_unknown` / `status_background` — see
+`themes.toml`). `status_running` is
 an agent seen holding a pane that has reported nothing, and `status_unknown`
 the two silences behind it (`uncovered`, `unreported`); both are spelled apart
 from `status_idle`, which is the agent's own report that it is at rest.
@@ -1685,10 +1689,15 @@ launches there, and that agent's own hooks. Anything in the pane can
 therefore report state with
 
 ```bash
-thurbox-cli session signal --state <working|blocked|done|idle>
+thurbox-cli session signal --state <working|blocked|done|idle|background>
 ```
 
 and no arguments at all; from outside the pane, pass `--session <uuid>`.
+Sub-work the turn may outlive is reported the same way, by its edges
+(`--work-start <id>`, `--work-end <id>`), and a `--state` report that comes
+from that work names it with `--work <id>` or `THURBOX_SIGNAL_WORK=<id>` in
+the command's environment — the variable is what the shipped claude hooks use,
+because a remote pane's rewrite keeps a hook to one bare state word.
 That is the supported way to give thurbox agent state for a session it
 did not wire — for instance one created with a bare interactive shell as
 its "agent" because a harness owns the real launch.

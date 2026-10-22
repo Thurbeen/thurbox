@@ -247,6 +247,7 @@ pub fn palette_roles(p: &ThemePalette) -> BTreeMap<&'static str, String> {
         status_unreachable,
         status_running,
         status_unknown,
+        status_background,
         text_primary,
         text_secondary,
         text_muted,
@@ -285,6 +286,7 @@ pub fn palette_roles(p: &ThemePalette) -> BTreeMap<&'static str, String> {
         ("status_unreachable", status_unreachable),
         ("status_running", status_running),
         ("status_unknown", status_unknown),
+        ("status_background", status_background),
         ("text_primary", text_primary),
         ("text_secondary", text_secondary),
         ("text_muted", text_muted),
@@ -401,12 +403,12 @@ mod tests {
 
     #[test]
     fn the_role_table_covers_every_palette_field() {
-        // 33 colours; nerd_font_enabled is a flag, not a role.
+        // 34 colours; nerd_font_enabled is a flag, not a role.
         let palette = ThemePreset::Default.palette();
         let roles = palette_roles(&palette);
         assert_eq!(
             roles.len(),
-            33,
+            34,
             "got {:?}",
             roles.keys().collect::<Vec<_>>()
         );

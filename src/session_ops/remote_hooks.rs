@@ -458,7 +458,7 @@ fn merged_remote_toml_doc(
 /// The hook states a headless poll may write — the same allow-list the
 /// interface's live drain applies (`Terminals::drain_hook_events`): the polled
 /// value is pane-controlled free text, so it is matched, never interpolated.
-const VALID_POLL_STATES: [&str; 4] = crate::session::HOOK_STATES;
+const VALID_POLL_STATES: [&str; 5] = crate::session::HOOK_STATES;
 
 /// Join one backend's polled `(pane_id, state)` pairs against the sessions on
 /// its route, returning the `(session, state)` writes that change anything.

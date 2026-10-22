@@ -398,6 +398,10 @@ session), never on the loop, ADR-P12).
   hands out (`hook_signal_command`). For tmux that is `tmux set-option -p
   @thurbox_state <s>` — no socket, pane id or identity needed inside a pane;
   psmux's form would bake in `-L <socket>` (sanitized to `[A-Za-z0-9._-]`).
+  Sub-work edges (`session signal --work-start/--work-end`, the `background`
+  state's count) become the shell's no-op `:` in that rewrite: a pane option
+  holds one word and cannot count, so a remote claude reports its turns as it
+  did before `background` existed.
   `None` = no channel: no hook config is shipped (the flag+path is stripped,
   config-dir payloads are not provisioned) and the session shows `Hooks:
   degraded` — **unknown, never idle**. Delivery per agent: claude's hooks file

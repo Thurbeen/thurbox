@@ -112,7 +112,7 @@ panel, not the list row.
 
 The colored **status dot** is driven by **agent hooks**, not output
 heuristics. Each agent CLI's lifecycle hooks call `thurbox-cli session
-signal --state <working|blocked|done|idle>` (identity from the injected
+signal --state <working|blocked|done|idle|background>` (identity from the injected
 `THURBOX_SESSION`), and the read-time folds in `session::hook_status` map the
 persisted columns onto a `SessionState` once per tick:
 
@@ -121,6 +121,7 @@ persisted columns onto a `SessionState` once per tick:
 | `working` | yellow | braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running |
 | `blocked` | red | `◆` | agent needs input or approval |
 | `done` | blue | `●` | a turn just finished; shown until you switch away |
+| `background` | purple | `◎` | the turn is at rest and sub-work it started (claude's background subagents) is still running |
 | `idle` | green | `○` | acknowledged, never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host is down/offline; placeholder row awaiting reconnect |
 | `running` | accent | `◉`, spinner while its pane prints | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
