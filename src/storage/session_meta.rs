@@ -55,24 +55,42 @@ impl Database {
         rows.collect()
     }
 
-    /// Every key starting with `prefix`, for every session, in one query — what
-    /// the interface's snapshot read publishes (`ui.*`, issue #1523). The
-    /// caller decides what a key means; this only selects by prefix.
-    pub fn load_session_meta_with_prefix(
+    /// The meta a reader may publish, for every **active** session, in one
+    /// query and bounded as it is read (issue #1523): keys starting with
+    /// `prefix` and at most `key_chars` characters long, the first `keys` of
+    /// them per session in key order, each value cut to `value_chars`.
+    ///
+    /// Bounded here rather than after the read because a value comes from
+    /// whoever has the CLI and has no size limit of its own: a full snapshot
+    /// read must not load what it would only throw away. The caller still
+    /// decides what a key means.
+    pub fn load_active_session_meta(
         &self,
         prefix: &str,
+        key_chars: usize,
+        keys: usize,
+        value_chars: usize,
     ) -> rusqlite::Result<HashMap<SessionId, BTreeMap<String, String>>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT session_id, key, value FROM session_meta \
-             WHERE substr(key, 1, length(?1)) = ?1 ORDER BY session_id, key",
+            "SELECT session_id, key, substr(value, 1, ?4) FROM ( \
+                 SELECT m.session_id, m.key, m.value, ROW_NUMBER() OVER ( \
+                     PARTITION BY m.session_id ORDER BY m.key) AS position \
+                 FROM session_meta m JOIN sessions s ON s.id = m.session_id \
+                 WHERE s.deleted_at IS NULL \
+                   AND substr(m.key, 1, length(?1)) = ?1 \
+                   AND length(m.key) <= ?2) \
+             WHERE position <= ?3",
         )?;
-        let rows = stmt.query_map(params![prefix], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
+        let rows = stmt.query_map(
+            params![prefix, key_chars as i64, keys as i64, value_chars as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
         let mut all: HashMap<SessionId, BTreeMap<String, String>> = HashMap::new();
         for row in rows {
             let (id, key, value) = row?;
@@ -93,5 +111,65 @@ impl Database {
             params![id.to_string(), key],
         )?;
         Ok(removed > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::sync::SharedSession;
+
+    use super::*;
+
+    fn session(db: &Database, name: &str) -> SessionId {
+        let session = SharedSession {
+            id: SessionId::default(),
+            name: name.to_string(),
+            agent: "shell".to_string(),
+            backend_id: String::new(),
+            backend_type: "local-tmux".to_string(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        db.upsert_session(&session).unwrap();
+        session.id
+    }
+
+    #[test]
+    fn the_published_read_is_bounded_and_skips_deleted_sessions() {
+        let db = Database::open_in_memory().unwrap();
+        let live = session(&db, "live");
+        let gone = session(&db, "gone");
+        for key in ["ui.d", "ui.c", "ui.b", "ui.a"] {
+            db.set_session_meta(live, key, "0123456789").unwrap();
+        }
+        db.set_session_meta(live, "ui.far-too-long-a-key", "x")
+            .unwrap();
+        db.set_session_meta(live, "fm.lease", "x").unwrap();
+        db.set_session_meta(gone, "ui.note", "x").unwrap();
+        db.soft_delete_session(gone).unwrap();
+
+        let read = db.load_active_session_meta("ui.", 8, 3, 4).unwrap();
+        assert_eq!(
+            read.keys().collect::<Vec<_>>(),
+            [&live],
+            "no deleted session"
+        );
+        assert_eq!(
+            read[&live].iter().collect::<Vec<_>>(),
+            [
+                (&"ui.a".to_string(), &"0123".to_string()),
+                (&"ui.b".to_string(), &"0123".to_string()),
+                (&"ui.c".to_string(), &"0123".to_string()),
+            ],
+            "the first three short-enough keys, each value cut"
+        );
     }
 }

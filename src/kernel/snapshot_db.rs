@@ -360,16 +360,24 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
     // `session get` reads it: the coverage a state is judged against belongs
     // to the declared agent, not to the shell the row was created with.
     let reports_as = database.load_reports_as().unwrap_or_default();
-    // Cleaned here, on the worker, so a publish only copies strings.
+    // Bounded by the query and cleaned here, on the worker, so a publish only
+    // copies strings.
     let meta = database
-        .load_session_meta_with_prefix(crate::kernel::lua_api::META_PREFIX)
-        .unwrap_or_default()
+        .load_active_session_meta(
+            crate::kernel::lua_api::META_PREFIX,
+            crate::kernel::lua_api::META_KEY_CHARS,
+            crate::kernel::lua_api::META_KEYS,
+            crate::kernel::lua_api::META_VALUE_CHARS,
+        )
+        // An error rather than no labels: the failure path keeps the rows
+        // already published and reads again, where an empty answer would
+        // wipe every note and group until the next unrelated write.
+        .map_err(|e| format!("load session meta: {e}"))?
         .into_iter()
         .map(|(id, keys)| {
             let keys = keys
                 .into_iter()
                 .filter(|(key, _)| crate::kernel::lua_api::is_published_meta_key(key))
-                .take(crate::kernel::lua_api::META_KEYS)
                 .map(|(key, value)| {
                     let value = crate::kernel::lua_api::clean_meta_value(&value);
                     (key, value)

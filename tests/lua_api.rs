@@ -254,6 +254,15 @@ fn full() -> Snapshot {
             next_run_at: Some(2),
             ..AutomationRow::default()
         }],
+        repos: vec![thurbox::kernel::snapshot::RepoRow {
+            path: "/repo".into(),
+            name: "thurbox".into(),
+        }],
+        agents: vec![thurbox::kernel::snapshot::AgentRow {
+            name: "claude".into(),
+            command: "claude".into(),
+            presence: thurbox::agent::preflight::Presence::Present,
+        }],
         hosts: vec![HostRow {
             name: "box".into(),
             detail: "ssh".into(),
@@ -284,8 +293,97 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
     let mut registry = Registry::default();
     let (bindings, settings) = host.declarations();
     registry.declare(bindings, settings);
-    let diffs = thurbox::kernel::diff::DiffStore::new();
-    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    let session = snapshot.sessions[0].id.clone();
+    let mut diffs = thurbox::kernel::diff::DiffStore::new();
+    diffs.set_for_test(
+        &session,
+        thurbox::kernel::diff::Diff::Ready {
+            files: vec![thurbox::kernel::diff::FileSummary {
+                path: "b.rs".into(),
+                added: 1,
+                removed: 2,
+                status: "R",
+                old_path: Some("a.rs".into()),
+            }],
+            body: vec!["+x".into()],
+            truncated: true,
+            raw_bytes: 3,
+            untracked_omitted: 1,
+        },
+    );
+    // Every creation-flow read served at once, `branches` as a failure so the
+    // `error` field is published too.
+    let mut repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    repos.set_bookmarks_for_test(
+        "",
+        vec![thurbox::kernel::repos::BookmarkRow {
+            path: "/src/a".into(),
+            name: "a".into(),
+            parent: Some("/src".into()),
+            is_parent: false,
+            is_git: Some(true),
+            label: Some("A".into()),
+            offered: true,
+        }],
+    );
+    repos.set_listing_for_test(
+        "",
+        "/src",
+        thurbox::kernel::repos::Listing::Ready(vec![thurbox::kernel::repos::BrowseEntry {
+            name: "a".into(),
+            is_git: true,
+        }]),
+    );
+    repos.set_branches_for_test(
+        "",
+        "/src/a",
+        thurbox::kernel::repos::Branches::Failed("no remote".into()),
+    );
+    repos.set_worktrees_for_test(
+        "",
+        "/src/a",
+        thurbox::kernel::repos::Worktrees::Ready(vec![thurbox::git::ExistingWorktree {
+            path: PathBuf::from("/src/a-wt"),
+            branch: "b".into(),
+        }]),
+    );
+    let wants = thurbox::kernel::repos::Wants {
+        bookmarks: Some(String::new()),
+        browse: Some((String::new(), "/src".into())),
+        branches: Some((String::new(), "/src/a".into())),
+        worktrees: Some((String::new(), "/src/a".into())),
+    };
+    let search = thurbox::kernel::search::Answer {
+        request: thurbox::kernel::search::Request {
+            query: "x".into(),
+            sessions: Some(vec![session.clone()]),
+        },
+        hits: vec![thurbox::kernel::search::Hit {
+            session: session.clone(),
+            shell: false,
+            text: "x".into(),
+            ranges: vec![(0, 1)],
+            back: 1,
+            scroll: 0,
+            row: 2,
+            exact: true,
+            score: 3,
+        }],
+        total: 1,
+        error: Some("bad regex".into()),
+        ..Default::default()
+    };
+    let inventory = [thurbox::kernel::inventory::Row {
+        path: "plugins/10_x.lua".into(),
+        name: "x".into(),
+        kind: thurbox::kernel::inventory::Kind::Pane,
+        slot: "a".into(),
+        source: thurbox::kernel::bundled::Source::User,
+        state: thurbox::kernel::inventory::State::Failed,
+        error: Some("10_x: broken".into()),
+        capabilities: Vec::new(),
+        trust: thurbox::kernel::inventory::Trust::NotAsked,
+    }];
     let links: HashMap<String, Vec<(String, usize, usize)>> = HashMap::from([(
         "lead#shell".to_string(),
         vec![("https://x".to_string(), 1, 2)],
@@ -315,16 +413,16 @@ fn publish(host: &LuaHost, snapshot: &Snapshot) {
         registry: &registry,
         diffs: &diffs,
         links: &links,
-        search: None,
+        search: Some(&search),
         meta: &Default::default(),
         metrics: &Default::default(),
         status_rows: 0,
         can_open: true,
-        inventory: &[],
+        inventory: &inventory,
         ui_dir: "ui",
         settings: &Default::default(),
         repos: &repos,
-        wants: &Default::default(),
+        wants: &wants,
         focus: Some("walk"),
         selection: Some("text"),
         hovered: Some(&hovered),
@@ -375,6 +473,16 @@ fn the_walk_names_a_published_key_left_undeclared() {
     let (_dir, host) = host_with(&walker(&shape(&API_ROOT, Some("api"))));
     publish(&host, &full());
     assert_eq!(render_text(&host), "thurbox.api is not declared");
+
+    // An optional field two levels down, on a row of a list.
+    let api = shape(&API_ROOT, None).replacen(", [\"merged\"] = { kind = \"leaf\" }", "", 1);
+    assert_ne!(api, shape(&API_ROOT, None), "the declaration was removed");
+    let (_dir, host) = host_with(&walker(&api));
+    publish(&host, &full());
+    assert_eq!(
+        render_text(&host),
+        "thurbox.sessions[].git.merged is not declared"
+    );
 }
 
 // ── The contract number ───────────────────────────────────────────────────
@@ -692,5 +800,34 @@ mod meta {
         let drawn = screen(&list, "sessions", 60, 12);
         assert!(!drawn.contains("for CI"), "{drawn}");
         assert!(!drawn.contains("release"), "{drawn}");
+    }
+
+    #[test]
+    fn a_failed_meta_read_keeps_the_labels_and_says_why() {
+        let env = Env::new();
+        env.seed("worker", "/src/alpha");
+        ok(&env.cli(&["session", "meta", "set", "worker", "ui.group", "release"]));
+        let mut rows_store = store(&env);
+        let meta = |rows: &Snapshot| rows.sessions[0].meta.get("ui.group").cloned();
+        assert_eq!(meta(&reread(&mut rows_store)).as_deref(), Some("release"));
+
+        // Make the next full read fail at the meta query, and give it a reason
+        // to run: a row change moves the snapshot's generation.
+        let raw = rusqlite::Connection::open(env.path("data").join("thurbox.db")).expect("open");
+        raw.execute_batch("DROP TABLE session_meta; UPDATE sessions SET name = 'renamed';")
+            .expect("break the meta read");
+        let rows = reread(&mut rows_store);
+        assert_eq!(
+            meta(&rows).as_deref(),
+            Some("release"),
+            "a read that failed is not a read that found no labels"
+        );
+        assert!(
+            rows.error
+                .as_deref()
+                .is_some_and(|e| e.contains("session meta")),
+            "{:?}",
+            rows.error
+        );
     }
 }
