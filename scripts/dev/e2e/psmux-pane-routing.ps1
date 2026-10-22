@@ -72,6 +72,18 @@ function Wait-Line([string]$name, [string]$text) {
 }
 try {
     $mux = (& psmux -V) -join ' '
+    if ($PsmuxDir) {
+        # The psmux asked for, not whichever `psmux` PATH falls back to when
+        # that one cannot run (an antivirus block, a missing file).
+        $exe = Join-Path (Resolve-Path $PsmuxDir).Path 'psmux.exe'
+        if (-not (Test-Path $exe)) { throw "no psmux.exe in $PsmuxDir (removed, or quarantined by an antivirus)" }
+        $ErrorActionPreference='Continue'
+        $wanted = (& $exe -V 2>&1) -join ' '
+        $ErrorActionPreference='Stop'
+        if ($LASTEXITCODE -ne 0 -or $wanted -ne $mux) {
+            throw "the psmux in $PsmuxDir did not run as the one on PATH (it said: $wanted; PATH's said: $mux)"
+        }
+    }
     Write-Output "psmux: $mux"
     if ($ServerPsmuxDir) {
         # thurbox's session: a dev build's is `thurbox-dev` (TMUX_SESSION).

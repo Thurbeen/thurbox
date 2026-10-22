@@ -565,6 +565,10 @@ fn psmux_listing_rejects_status_zero_error_output() {
     std::fs::write(
         &mux,
         r#"#!/bin/sh
+case "$*" in
+*' -V') printf '%s\n' 'tmux 3.3.8' 'psmux 3.3.8 (test)' ; exit 0 ;;
+*'#{version}'*) printf '%s\n' '3.3.8' ; exit 0 ;;
+esac
 case "$3" in
 capture-pane) printf '%s\n' 'ERROR: agent message' ;;
 *) printf '%s\n' "ERROR: can't find window: =tb-demo" ;;

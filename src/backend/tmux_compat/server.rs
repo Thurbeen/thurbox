@@ -147,11 +147,12 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// adapter), before the command itself.
     const DISPLAY_FLAGS: &[&str];
 
-    /// Refuse a server too old to give a new pane its own console or to read
-    /// the pane targets thurbox sends, from its `-V` banner or its
+    /// Refuse a multiplexer too old to give a new pane its own console or to
+    /// read the pane targets thurbox sends, from its `-V` banner or its
     /// `#{version}` answer, or `None` when nothing is known to need refusing.
-    /// Asked of the running server before a pane is named to it or born on it
-    /// (`Server::admit_server`), and of the binary before it starts one.
+    /// Asked of the running server and of the binary before a pane is named or
+    /// born (`Server::admit_server`), and of the binary before it starts a
+    /// server.
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>>;
 
     /// Refuse a `-V` banner this adapter cannot work with, or that would start
@@ -237,23 +238,6 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     fn hook_signal_command(server: &Server<Self>) -> String
     where
         Self: Sized;
-}
-
-/// A `-V` banner's verdict, overruled by the running server: a banner refused
-/// for its version floor stands only when no server answered (`running` is
-/// `None`), or the one that did is below [`TmuxCompatible::VERSION_FLOOR`]
-/// too. A binary older than the server it would talk to starts nothing.
-pub fn admit_banner<M: TmuxCompatible>(
-    banner: Result<()>,
-    running: Option<String>,
-    socket: &str,
-) -> Result<()> {
-    match (banner, running, M::VERSION_FLOOR) {
-        (Err(refused), Some(version), Some(refuse_old)) => {
-            refuse_old(&version, socket).map_err(|_| refused)
-        }
-        (banner, ..) => banner,
-    }
 }
 
 /// The tmux session name grouping every thurbox window. Dev builds use
@@ -759,16 +743,18 @@ pub struct Server<M: TmuxCompatible> {
     /// server started since: what an admission ([`Self::admit_server`]) is
     /// good for.
     connection_generation: std::sync::atomic::AtomicU64,
-    /// The `connection_generation` the running server was found new enough at,
-    /// plus one; zero for never.
+    /// The `connection_generation` the server was found new enough at over
+    /// that connection, plus one; zero for never.
     admitted: std::sync::atomic::AtomicU64,
-    /// Held while the server is asked, so callers arriving together — every
-    /// pane re-registered after a reconnect — wait for one answer; holds why
-    /// the last question failed, which those waiting behind it are given
-    /// rather than each asking a server that is not answering in turn.
-    admitting: Mutex<Option<String>>,
-    /// Counts the questions asked, so a waiter can tell one was asked while it
-    /// waited.
+    /// Held while the multiplexer is asked, so callers arriving together —
+    /// every pane re-registered after a reconnect — wait for one question:
+    /// they take a connection's answer from `admitted`, and a failure from the
+    /// generation and reason held here, rather than each asking a server that
+    /// is not answering in turn. A one-shot's success is not kept, so each of
+    /// them asks again.
+    admitting: Mutex<Option<(u64, String)>>,
+    /// Counts the questions settled, so a waiter can tell one was answered
+    /// while it waited.
     questions: std::sync::atomic::AtomicU64,
     /// This backend's name in [`SIZER_OPTION`] — see [`Self::resize`].
     pub(in crate::backend) sizer: String,
@@ -1255,16 +1241,17 @@ impl<M: TmuxCompatible> Server<M> {
         (verb, self.spell_target(id))
     }
 
-    /// Refuse a running server below [`TmuxCompatible::VERSION_FLOOR`] before
-    /// a pane is named to it, or a pane born on it.
+    /// Refuse a multiplexer below [`TmuxCompatible::VERSION_FLOOR`] before a
+    /// pane is named to it, or a pane born on it.
     ///
-    /// The running server, not the binary on `PATH`: an upgrade leaves a
-    /// server started before it on the old code, and psmux 3.3.7's runs a
-    /// command meant for one pane on another (#1557). Asked once per
-    /// connection. Let through unasked only where nothing is there to name a
-    /// pane to — no server, or no session on it — and refused when the
-    /// question fails any other way: a busy server that times out still runs
-    /// the command that follows.
+    /// Both halves of it: the running server, since an upgrade leaves a server
+    /// started before it on the old code, and the client binary, since psmux
+    /// before 3.3.8 resolves a `-t` in the client too (#1557). Asked once per
+    /// control connection; a one-shot answer is not kept, since nothing would
+    /// tell it the server had been replaced. Only a server that is not there —
+    /// psmux's own words for that, nothing broader — is let through, since
+    /// nothing named to it can arrive; any other answer that is not a version
+    /// new enough refuses.
     fn admit_server(&self) -> Result<()> {
         use std::sync::atomic::Ordering;
         let Some(refuse_old) = M::VERSION_FLOOR else {
@@ -1286,59 +1273,93 @@ impl<M: TmuxCompatible> Server<M> {
         if self.admitted.load(Ordering::Acquire) == generation {
             return Ok(());
         }
+        // A question settled while this caller waited, and failed on this
+        // connection: asking again would wait it out once more.
         if self.questions.load(Ordering::Acquire) != asked_before {
-            if let Some(failure) = last_failure.as_ref() {
-                bail!("{failure}");
+            if let Some((failed_at, failure)) = last_failure.as_ref() {
+                if *failed_at == generation {
+                    bail!("{failure}");
+                }
             }
         }
-        self.questions.fetch_add(1, Ordering::AcqRel);
         let attached = self.attached();
-        let answer = match attached {
-            true => self.ctrl_command("display-message -p '#{version}'"),
-            false => {
-                self.tmux_output(&["display-message", "-t", &self.session, "-p", "#{version}"])
-            }
-        };
-        let version = match answer {
-            Ok(version) => version,
-            Err(e) if !attached && typed_absence(&e) => {
-                *last_failure = None;
-                return Ok(());
-            }
-            Err(e) => {
-                let e = e.context("could not ask the server its version");
-                *last_failure = Some(format!("{e:#}"));
-                return Err(e);
-            }
-        };
-        let version = version.trim();
-        // A one-shot that answered nothing proves nothing either way, and is
-        // asked again next time. One reporting a failure on stdout with status
-        // 0 (`EXIT_ZERO_ERRORS`) is judged like a refusal: absent, or not
-        // saying. An answer over control mode that is not a version may be a
-        // reply that belonged to another command.
-        let reported = version
-            .strip_prefix("ERROR:")
-            .filter(|_| M::EXIT_ZERO_ERRORS);
-        let absent = reported.is_some_and(|error| {
-            matches!(
-                control_mode::classify_refusal(error, String::new()),
-                crate::backend::contract::BackendError::Absent(_)
-            )
-        });
-        if !attached && (version.is_empty() || absent) {
-            *last_failure = None;
-            return Ok(());
+        let outcome = self.ask_versions(attached, refuse_old);
+        *last_failure = outcome
+            .as_ref()
+            .err()
+            .map(|e| (generation, format!("{e:#}")));
+        self.questions.fetch_add(1, Ordering::AcqRel);
+        if matches!(outcome?, Admission::Admitted) && attached {
+            self.admitted.store(generation, Ordering::Release);
         }
-        if !version.starts_with(|c: char| c.is_ascii_digit()) {
-            let failure = format!("the server did not say its version (it answered {version:?})");
-            *last_failure = Some(failure.clone());
-            bail!("{failure}");
-        }
-        *last_failure = None;
-        refuse_old(version, &self.socket())?;
-        self.admitted.store(generation, Ordering::Release);
         Ok(())
+    }
+
+    /// [`Self::admit_server`]'s question, to the client binary and then the
+    /// server.
+    fn ask_versions(
+        &self,
+        attached: bool,
+        refuse_old: fn(&str, &str) -> Result<()>,
+    ) -> Result<Admission> {
+        let banner = self.tmux_output(&["-V"])?;
+        let Some(client) = banner_version(&banner) else {
+            bail!("the multiplexer did not say its version (it answered {banner:?})");
+        };
+        refuse_old(client, &self.socket())?;
+        let answer = match attached {
+            true => self
+                .ctrl_command("display-message -p '#{version}'")
+                .context("could not ask the server its version")?,
+            false => match self.ask_version_once()? {
+                Some(answer) => answer,
+                None => return Ok(Admission::NothingThere),
+            },
+        };
+        let version = answer.trim();
+        if !is_version_answer(version) {
+            bail!("the server did not say its version (it answered {version:?})");
+        }
+        refuse_old(version, &self.socket())?;
+        Ok(Admission::Admitted)
+    }
+
+    /// The server's `#{version}` from a one-shot, or `None` when the
+    /// multiplexer said in its own words that there is no server or no session
+    /// — and only then: `can't find window` is also what psmux 3.3.8 says of a
+    /// live server refusing a target, and that server runs what comes next.
+    fn ask_version_once(&self) -> Result<Option<String>> {
+        let args = ["display-message", "-t", &self.session, "-p", "#{version}"];
+        let output = self
+            .mux_command(&args)?
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| {
+                self.transport
+                    .launch_failure("Failed to ask the server its version", e)
+            })?;
+        let is_ssh = self.transport.is_ssh();
+        if listing_output_is_absence(is_ssh, &output) {
+            return Ok(None);
+        }
+        if !output.status.success() || !mux_stderr(&output, is_ssh).trim().is_empty() {
+            return Err(anyhow::Error::from(self.command_failure(&args, &output))
+                .context("could not ask the server its version"));
+        }
+        let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // psmux reports some failures on stdout with status 0
+        // (`EXIT_ZERO_ERRORS`).
+        if let Some(error) = answer
+            .strip_prefix("ERROR:")
+            .filter(|_| M::EXIT_ZERO_ERRORS)
+        {
+            if !error.contains('\n') && raw_listing_answered_absent(error.trim()) {
+                return Ok(None);
+            }
+            bail!("the server refused the version question: {answer}");
+        }
+        Ok(Some(answer))
     }
 
     /// Refuse a status verb on a server whose hooks have no channel
@@ -1708,10 +1729,10 @@ impl<M: TmuxCompatible> Server<M> {
     /// A question that goes unanswered reads as "not dead", so a hiccup costs a
     /// send attempt rather than silently dropping a prompt; a missing pane is
     /// then refused by the send itself.
-    fn refuse_exited(&self, pane: &str) -> Result<()> {
-        let target = self.target(pane)?;
+    /// `target` is `pane` as [`Self::target`] spelled it, admitted already.
+    fn refuse_exited(&self, pane: &str, target: &str) -> Result<()> {
         let dead = self
-            .tmux_output(&["display-message", "-p", "-t", &target, "#{pane_dead}"])
+            .tmux_output(&["display-message", "-p", "-t", target, "#{pane_dead}"])
             .is_ok_and(|answer| parse_pane_dead(&answer));
         if dead {
             bail!("its pane {pane} has exited and accepts no input");
@@ -2724,17 +2745,10 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         }
 
         let version_str = String::from_utf8_lossy(&output.stdout);
-        let banner = M::check_banner(&version_str, &self.socket());
-        // Only asked when the banner was refused: the running server, not the
-        // binary on `PATH`, is what births panes.
-        let running = match (&banner, M::VERSION_FLOOR) {
-            (Err(_), Some(_)) => self
-                .tmux_output(&["display-message", "-t", &self.session, "-p", "#{version}"])
-                .ok()
-                .filter(|v| !v.is_empty()),
-            _ => None,
-        };
-        admit_banner::<M>(banner, running, &self.socket())?;
+        // The binary's own verdict, whatever server it would talk to: psmux
+        // before 3.3.8 reads `-t` in the client, so a new server does not make
+        // an old binary safe (`admit_server` holds it to that per pane too).
+        M::check_banner(&version_str, &self.socket())?;
         debug!("multiplexer version: {}", version_str.trim());
         Ok(())
     }
@@ -3191,12 +3205,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         submit: bool,
     ) -> crate::backend::contract::BackendResult<()> {
         self.known_socket()?;
-        self.refuse_exited(pane)?;
+        let target = self.target(pane)?;
+        self.refuse_exited(pane, &target)?;
         // Bracketed-paste-wrapped either way (see `TmuxCompatible::paste_args`), so the
         // text arrives literally: no shell is involved, and the wrap is also
         // what keeps a leading `-` from reading as a flag and a newline from
         // submitting the line before it.
-        let target = self.target(pane)?;
         for paste in M::paste_args(&target, text) {
             let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
             self.one_shot(&paste[0], &argv)?;
@@ -3237,11 +3251,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
 
     fn send_key(&self, pane: &str, key: &Key) -> crate::backend::contract::BackendResult<String> {
         self.known_socket()?;
-        self.refuse_exited(pane)?;
+        let target = self.target(pane)?;
+        self.refuse_exited(pane, &target)?;
         let name = tmux_key_name(key);
         self.one_shot(
             &format!("send-keys ({name})"),
-            &["send-keys", "-t", &self.target(pane)?, &name],
+            &["send-keys", "-t", &target, &name],
         )?;
         Ok(name)
     }
@@ -3497,9 +3512,10 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             return self.resize(backend_id, rows, cols);
         }
         // Unconditional: this is the instance being typed into, which is what
-        // decides who sizes (see `resize`).
+        // decides who sizes (see `resize`). Spelled without `admit_server`, as
+        // `resize` is: this runs on the input loop.
         let (rows, cols) = tmux_size(rows, cols);
-        let target = self.target(backend_id)?;
+        let target = self.spell_target(backend_id);
         Ok(self.ctrl_command_detached(
             &[
                 &format!("set-option -w -t {target} {SIZER_OPTION} {}", self.sizer),
@@ -3539,9 +3555,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 false => self.kill_window_at(backend_id).map_err(Into::into),
             };
         }
-        let _ = self.unregister_pane(backend_id);
+        // Admitted before the reader is let go: a refused kill leaves the pane
+        // running, and it must keep its reader.
         // The window, not only the pane — see `kill_window_oneshot`.
         let (verb, target) = self.kill_command(backend_id)?;
+        let _ = self.unregister_pane(backend_id);
         match self.ctrl_command(&format!("{verb} -t {target}")) {
             Err(e) if !typed_absence(&e) => Err(e.into()),
             _ => Ok(()),
@@ -3606,7 +3624,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // reconnecting. Idempotent: the mutex holds `None` afterwards.
         self.closed
             .store(true, std::sync::atomic::Ordering::Release);
-        let taken = self.control.lock().ok().and_then(|mut c| c.take());
+        let taken = self.control.lock().ok().and_then(|mut c| {
+            // The admission was the connection's, and goes with it.
+            self.connection_generation
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            c.take()
+        });
         if let Some(control) = taken {
             control.close();
         }
@@ -4997,6 +5020,43 @@ fn path_prefix_args() -> Vec<std::ffi::OsString> {
     Vec::new()
 }
 
+/// Whether a server's `#{version}` answer is a version and nothing else:
+/// dotted numbers, at least two (`3.3.8`, `3.4`). What [`admit_server`]
+/// will hold a floor against — a floor check lets an answer it cannot read
+/// through, which is right for a banner and wrong for the server a pane is
+/// about to be named to.
+///
+/// [`admit_server`]: Server::admit_server
+fn is_version_answer(answer: &str) -> bool {
+    let parts: Vec<&str> = answer.split('.').collect();
+    parts.len() >= 2
+        && parts
+            .iter()
+            .all(|part| part.bytes().all(|b| b.is_ascii_digit()) && part.parse::<u32>().is_ok())
+}
+
+/// The version a `-V` banner names, held to [`is_version_answer`]: the last
+/// line's word after `psmux ` or `tmux ` (psmux 3.3.7 prints both, 3.3.6 only
+/// the second). `None` when no line names one.
+fn banner_version(banner: &str) -> Option<&str> {
+    banner.lines().rev().find_map(|line| {
+        let line = line.trim();
+        let rest = line
+            .strip_prefix("psmux ")
+            .or_else(|| line.strip_prefix("tmux "))?;
+        rest.split_whitespace()
+            .next()
+            .filter(|v| is_version_answer(v))
+    })
+}
+
+/// What [`Server::admit_server`]'s question found.
+enum Admission {
+    /// The multiplexer said there is no server or no session.
+    NothingThere,
+    Admitted,
+}
+
 fn typed_absence(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<crate::backend::contract::BackendError>(),
@@ -5267,6 +5327,7 @@ mod tests {
                        case \"$line\" in *'#{{version}}'*) printf '{answer}' ;; esac\n\
                        printf '%%end 1 1 0\\n'\n\
                      done ;;\n\
+                   *' -V'*) printf 'tmux 2.0\\n' ;;\n\
                    *) printf '%s\\n' \"$*\" >> \"$0.log\"\n\
                       case \"$*\" in *'#{{version}}'*) printf '{answer}' ;; esac ;;\n\
                  esac\n"
@@ -5310,6 +5371,41 @@ mod tests {
         assert_eq!(asked(), 3);
     }
 
+    #[test]
+    fn only_dotted_numbers_are_a_version_answer() {
+        for answer in ["3.3.8", "3.4", "10.0.1"] {
+            assert!(is_version_answer(answer), "{answer}");
+        }
+        for answer in [
+            "",
+            " ",
+            "3",
+            "3.",
+            ".3",
+            "3.3.7a",
+            "tmux 3.3.8",
+            "3.3.8\n3.3.7",
+            "ERROR: x",
+            "3.4294967296",
+            "+3.3",
+        ] {
+            assert!(!is_version_answer(answer), "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn a_banner_names_the_version_on_its_last_line_that_has_one() {
+        assert_eq!(
+            banner_version("tmux 3.3.7\npsmux 3.3.7 (05cc5d4 2026-07-20)\n"),
+            Some("3.3.7")
+        );
+        assert_eq!(banner_version("tmux 3.3.6\n"), Some("3.3.6"));
+        assert_eq!(banner_version("psmux 3.4.0 (20aa1d7)"), Some("3.4.0"));
+        for banner in ["", "3.3.8", "psmux", "psmux dev", "ERROR: x"] {
+            assert_eq!(banner_version(banner), None, "{banner:?}");
+        }
+    }
+
     /// Over control mode an answer that is not a version may be a reply that
     /// belonged to another command, so it admits nothing.
     #[cfg(unix)]
@@ -5319,7 +5415,7 @@ mod tests {
         let (backend, _asked) = floored_mux(root.path(), "");
         backend.ensure_control().expect("control client");
         let err = backend.target("%1").unwrap_err().to_string();
-        assert!(err.contains("did not say its version"), "{err}");
+        assert!(err.contains("the server did not say its version"), "{err}");
     }
 
     #[cfg(unix)]

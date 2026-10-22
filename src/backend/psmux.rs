@@ -140,9 +140,9 @@ impl TmuxCompatible for Psmux {
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = Some(check_psmux_version);
 
     /// The 3.3.8 floor, on the binary that would start a server: psmux numbers
-    /// itself independently, so this is its own floor and never tmux's. A
-    /// running server is judged by its own `#{version}` before a pane is named
-    /// to it ([`Self::VERSION_FLOOR`]).
+    /// itself independently, so this is its own floor and never tmux's. The
+    /// binary and the running server are both held to it again before a pane
+    /// is named ([`Self::VERSION_FLOOR`]).
     fn check_banner(banner: &str, socket: &str) -> Result<()> {
         check_psmux_version(banner, socket)
     }
@@ -1175,7 +1175,10 @@ mod tests {
         let mux = root.path().join("psmux-recording");
         let log = root.path().join("lines");
         let script = format!(
-            "#!/bin/sh\necho \"$*\" >> '{}'\n[ \"$3\" = display-message ] && echo 0\nexit 0\n",
+            "#!/bin/sh\necho \"$*\" >> '{}'\n\
+             case \"$*\" in *' -V') echo 'psmux 3.3.8'; exit 0 ;; \
+             *'#{{version}}'*) echo 3.3.8; exit 0 ;; esac\n\
+             [ \"$3\" = display-message ] && echo 0\nexit 0\n",
             log.display()
         );
         std::fs::write(&mux, script).expect("write fake psmux");
@@ -1611,18 +1614,12 @@ mod tests {
         assert!(Psmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (x)\n", "thurbox").is_ok());
     }
 
-    /// An old binary on `PATH` beside a server that is new enough is no
-    /// reason to refuse: the server is what births panes. Without a server, or
-    /// with an old one, the banner's refusal stands.
+    /// An old binary is refused whatever server it would talk to: psmux
+    /// before 3.3.8 reads a `-t` in the client, so a new server behind it
+    /// does not make it safe (`an_old_psmux_client_names_no_pane_to_a_new_server`).
     #[test]
-    fn a_safe_running_server_outranks_an_old_binary() {
-        use crate::backend::tmux_compat::server::admit_banner;
-        let old = Psmux::check_banner("tmux 3.3.6\n", "thurbox");
-        assert!(admit_banner::<Psmux>(old, Some("3.3.8".into()), "thurbox").is_ok());
-        let old = Psmux::check_banner("tmux 3.3.6\n", "thurbox");
-        assert!(admit_banner::<Psmux>(old, Some("3.3.6".into()), "thurbox").is_err());
-        let old = Psmux::check_banner("tmux 3.3.6\n", "thurbox");
-        assert!(admit_banner::<Psmux>(old, None, "thurbox").is_err());
+    fn an_old_binary_is_refused_beside_a_new_server() {
+        assert!(Psmux::check_banner("tmux 3.3.7\npsmux 3.3.7 (x)\n", "thurbox").is_err());
     }
 
     #[test]
@@ -1667,9 +1664,19 @@ mod tests {
         psmux_asked_its_version(&format!("echo '{version}'"))
     }
 
-    /// [`psmux_answering`], running `answer` — shell — for the version.
+    /// [`psmux_answering`], running `answer` — shell — for the version, behind
+    /// a psmux 3.3.8 client.
     #[cfg(unix)]
     fn psmux_asked_its_version(
+        answer: &str,
+    ) -> (tempfile::TempDir, PsmuxBackend, std::path::PathBuf) {
+        psmux_with_client("printf 'tmux 3.3.8\\npsmux 3.3.8 (test)\\n'", answer)
+    }
+
+    /// [`psmux_asked_its_version`] behind a client whose `-V` runs `banner`.
+    #[cfg(unix)]
+    fn psmux_with_client(
+        banner: &str,
         answer: &str,
     ) -> (tempfile::TempDir, PsmuxBackend, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -1679,7 +1686,7 @@ mod tests {
             &mux,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.log\"\n\
-                 case \"$*\" in\n  *'#{{version}}'*) {answer} ;;\nesac\n"
+                 case \"$*\" in\n  *' -V') {banner} ;;\n  *'#{{version}}'*) {answer} ;;\nesac\n"
             ),
         )
         .expect("write fake psmux");
@@ -1712,15 +1719,44 @@ mod tests {
         assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
     }
 
-    /// Admitted once: a new enough server is not asked again for every pane.
+    /// A one-shot answer is not kept: with no connection, nothing would say
+    /// the server it came from had been replaced. A connection's is (see
+    /// `each_new_connection_asks_the_server_its_version_once`).
     #[cfg(unix)]
     #[test]
-    fn a_new_enough_psmux_server_is_asked_its_version_once() {
+    fn a_one_shot_admission_is_asked_for_each_pane() {
         let (_root, psmux, log) = psmux_answering("3.3.8");
         assert_eq!(psmux.target("%2").unwrap(), "thurbox:.%2");
         assert_eq!(psmux.target("%3").unwrap(), "thurbox:.%3");
         let sent = std::fs::read_to_string(&log).unwrap_or_default();
-        assert_eq!(sent.matches("#{version}").count(), 1, "{sent}");
+        assert_eq!(sent.matches("#{version}").count(), 2, "{sent}");
+    }
+
+    /// psmux before 3.3.8 reads `-t` in the client too, so an old binary in
+    /// front of a new server names nothing either.
+    #[cfg(unix)]
+    #[test]
+    fn an_old_psmux_client_names_no_pane_to_a_new_server() {
+        let (_root, psmux, log) =
+            psmux_with_client("printf 'tmux 3.3.7\\npsmux 3.3.7 (x)\\n'", "echo 3.3.8");
+        let err = psmux.target("%2").unwrap_err().to_string();
+        assert!(err.contains("psmux 3.3.7 is too old"), "{err}");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("%2"), "a pane was named:\n{sent}");
+    }
+
+    /// An answer a floor cannot read is not a version new enough.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_version_names_no_pane() {
+        for answer in ["echo 3", "echo 3.3.7a", "echo 3.4294967296"] {
+            let (_root, psmux, _log) = psmux_asked_its_version(answer);
+            let err = psmux.target("%2").unwrap_err().to_string();
+            assert!(
+                err.contains("the server did not say its version"),
+                "{answer}: {err}"
+            );
+        }
     }
 
     /// A server that is there but does not say what it is — a busy one whose
@@ -1746,6 +1782,18 @@ mod tests {
         assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
     }
 
+    /// A psmux client before 3.3.8 answers a server that stalled with nothing
+    /// at status 0, and that server still runs what is sent next.
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_answer_for_the_version_names_no_pane() {
+        let (_root, psmux, log) = psmux_asked_its_version("true");
+        let err = psmux.target("%2").unwrap_err().to_string();
+        assert!(err.contains("the server did not say its version"), "{err}");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
+    }
+
     /// No server at all has no pane to misroute to; the answer is not kept, so
     /// the server a later command starts is asked.
     #[cfg(unix)]
@@ -1761,21 +1809,29 @@ mod tests {
     }
 
     /// psmux reports some failures on stdout with status 0
-    /// ([`Psmux::EXIT_ZERO_ERRORS`]): one saying the session is not there is
-    /// the same absence as a refusal on stderr; any other is a failure to say.
+    /// ([`Psmux::EXIT_ZERO_ERRORS`]). One saying the session is not there is
+    /// the absence a refusal on stderr would be; `can't find window` is also
+    /// what 3.3.8 says of a live server refusing a target, and refuses, as
+    /// does any other.
     #[cfg(unix)]
     #[test]
-    fn a_status_zero_error_for_the_version_is_judged_like_a_refusal() {
-        let (_root, psmux, log) =
-            psmux_asked_its_version("echo \"ERROR: can't find window: =tb-demo\"");
+    fn a_status_zero_error_for_the_version_lets_through_only_a_missing_session() {
+        let (_root, psmux, _log) =
+            psmux_asked_its_version("echo \"ERROR: can't find session: thurbox\"");
         assert_eq!(psmux.target("%2").unwrap(), "thurbox:.%2");
-        assert_eq!(psmux.target("%3").unwrap(), "thurbox:.%3");
-        let sent = std::fs::read_to_string(&log).unwrap_or_default();
-        assert_eq!(sent.matches("#{version}").count(), 2, "{sent}");
 
-        let (_root, psmux, _log) = psmux_asked_its_version("echo 'ERROR: server is busy'");
-        let err = psmux.target("%2").unwrap_err().to_string();
-        assert!(err.contains("ERROR: server is busy"), "{err}");
+        for answer in [
+            "echo \"ERROR: can't find window: =tb-demo\"",
+            "echo \"ERROR: can't find pane: %2\"",
+            "echo 'ERROR: server is busy'",
+        ] {
+            let (_root, psmux, _log) = psmux_asked_its_version(answer);
+            let err = psmux.target("%2").unwrap_err().to_string();
+            assert!(
+                err.contains("refused the version question"),
+                "{answer}: {err}"
+            );
+        }
     }
 
     /// A bare `kill-window -t @7` killed another session's `@7` (measured on
@@ -1820,8 +1876,10 @@ mod tests {
         );
     }
 
-    /// A banner this cannot read says nothing about the fix, and refusing it
-    /// would lock out every later psmux that changes how it prints `-V`.
+    /// A banner this cannot read says nothing about the fix, so the early check
+    /// a server is started behind lets it through. No pane is named behind it,
+    /// though: the gate before every pane (`admit_server`) takes only a
+    /// version it can read — `3.3.9-dev` included, which it refuses.
     #[test]
     fn an_unreadable_psmux_banner_is_not_refused() {
         assert!(check_psmux_version("", "thurbox").is_ok());

@@ -1161,29 +1161,49 @@ aimed at a pane on the session's active pane instead (above, #1557): typing
 into one session wrote into another, and stopping one killed another's agent,
 with no error anywhere.
 
-So no pane is named to, or born on, a psmux server older than 3.3.8 (the psmux
+So no pane is named to, or born on, a psmux older than 3.3.8 (the psmux
 adapter's `VERSION_FLOOR`, `check_psmux_version`). Every pane target is spelled
-by `Server::target`, which first asks the **server** its `#{version}`
-(`admit_server`), not the binary: upgrading psmux leaves a server started
-before it on the old code, and the message says to restart it. The answer is
-kept for the control connection it was asked on (a generation bumped as each
-connection is installed), since a replacement may be to a server started
-since, and callers arriving together share one question — and its failure,
-rather than each waiting out a server that is not answering. Only a typed
-absence (no server, or no session on it, with no connection open) or a
-one-shot that answers nothing is let through, unremembered, because nothing
-named to it can arrive; any other failure refuses, since a busy server that
-times out still runs the command after it, and an answer over control mode
-that is not a version may be another command's reply. One gap remains: a
-command written when its connection broke is sent again on the replacement
-unasked (`ctrl_command_list`), which matters only if the server was replaced
-by an older one in that instant. Where no
-session exists yet, so no server to ask, the binary's `-V` answers — before it
-starts one that every command would then refuse. Two callers spell a target
-without asking, because they must not wait on a round trip: the paint's
-`resize` and the input loop's `is_dead`. Their panes were attached through
-`target`; after a reconnect they go unasked until re-attaching the panes asks
-again.
+by `Server::target`, which first asks (`admit_server`) both halves of the
+multiplexer:
+
+- **The running server**, its `#{version}`: upgrading psmux leaves a server
+  started before it on the old code, and the message says to restart it.
+- **The client binary**, its `-V`: psmux before 3.3.8 reads a `-t` in the
+  client too, and drops the target from some commands there (3.3.7's
+  `kill-pane`). So an old binary is refused beside a new server as well, here
+  and by the `-V` check a server is started behind (`check_available`).
+
+What either answers must be a version, dotted numbers each a `u32`
+(`is_version_answer`), new enough. Anything else refuses: a busy server that
+times out still runs the command after it, an answer over control mode that is
+not a version may be another command's reply, and a psmux client before 3.3.8
+answers a stalled server with nothing at status 0. The one exception is psmux
+saying, in its own words for it, that there is no server or no session
+(`listing_output_is_absence`, or the same words as a status-0 `ERROR:`); that
+is let through, unremembered, because nothing named to it can arrive. Those
+words are the multiplexer's own for an absent server or session, tmux's and
+psmux's; `can't find window` is not among them: 3.3.8 says it of a live server refusing
+a target.
+
+The answer is kept for the control connection it was asked on (a generation
+bumped as each connection is installed), since a replacement may be to a
+server started since; a one-shot answer is not kept, since nothing would say
+the server it came from had gone, so a one-shot caller (`thurbox-cli`) asks
+for each pane it names — one `-V` and one `display-message` more, about 30 ms
+each locally and an ssh exec each on a remote host. Callers arriving together
+wait for one question: they take a connection's answer, or a failure on the
+same connection, rather than each waiting out a server that is not answering.
+A version with a suffix (`3.3.9-dev`) is not one the gate can hold to the
+floor, and is refused.
+
+Two gaps remain, both needing the server replaced by an older one at that
+instant: a command admitted or written just before a reconnect is sent on the
+replacement unasked (`ctrl_command_list` resends a broken write), and three
+callers spell a target without asking because they must not wait on a round
+trip — the paint's `resize` and the input loop's `claim_size` and `is_dead`.
+Their panes were attached through `target`; after a reconnect they go unasked
+until re-attaching the panes asks again. Where no session exists yet, so no
+server to ask, the binary's `-V` answers before it starts one.
 
 ### A psmux agent reports its own exit, and its relaunches are bounded
 
