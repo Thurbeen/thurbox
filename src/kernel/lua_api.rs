@@ -1144,7 +1144,11 @@ pub fn std_probe() -> String {
 /// Replace the region between the `BEGIN`/`END` marker lines of `text` (each
 /// marker a whole line of `comment` + marker) with `body`. `None` when the
 /// markers are missing or out of order.
+///
+/// The answer always has `\n` line ends: the files are committed that way,
+/// and a Windows checkout with `core.autocrlf` reads them back with `\r\n`.
 pub fn splice(text: &str, comment: &str, body: &str) -> Option<String> {
+    let text = &text.replace("\r\n", "\n");
     let begin = format!("{comment}{BEGIN}\n");
     let end = format!("{comment}{END}\n");
     let start = text.find(&begin)? + begin.len();
@@ -1187,5 +1191,15 @@ mod tests {
             format!("a\n-- {BEGIN}\nnew\n-- {END}\nb\n")
         );
         assert!(splice("no markers\n", "-- ", "x").is_none());
+    }
+
+    #[test]
+    fn splice_finds_the_region_in_a_crlf_checkout() {
+        // What a Windows checkout with `core.autocrlf` hands the drift test.
+        let text = format!("a\r\n-- {BEGIN}\r\nold\r\n-- {END}\r\nb\r\n");
+        assert_eq!(
+            splice(&text, "-- ", "new\n").as_deref(),
+            Some(format!("a\n-- {BEGIN}\nnew\n-- {END}\nb\n").as_str())
+        );
     }
 }

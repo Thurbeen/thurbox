@@ -38,7 +38,10 @@ fn holds(path: &Path, expected: &str) -> Result<(), String> {
         std::fs::write(path, expected).expect("write a generated file");
         return Ok(());
     }
-    let actual = std::fs::read_to_string(path).expect("read a generated file");
+    // Line ends aside: a Windows checkout may carry `\r\n` (see `splice`).
+    let actual = std::fs::read_to_string(path)
+        .expect("read a generated file")
+        .replace("\r\n", "\n");
     if actual == expected {
         Ok(())
     } else {
