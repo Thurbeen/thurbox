@@ -5,7 +5,7 @@
 //! adapter can produce does not belong here.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -112,8 +112,9 @@ pub(in crate::backend) fn unpack_size(packed: u32) -> Option<(u16, u16)> {
 }
 
 impl PaneSize {
-    /// The pane is now `rows` × `cols`. Called by the reader, which then
-    /// interrupts its read so the size is applied before any later byte.
+    /// The pane is now `rows` × `cols`. Called by the pane's stream as it
+    /// hands over a [`PaneChunk::Resized`], so the size is applied before any
+    /// later byte.
     pub fn report(&self, rows: u16, cols: u16) {
         let packed = pack_size(rows, cols);
         self.0.pending.store(packed, Ordering::Relaxed);
@@ -172,77 +173,47 @@ pub struct PaneSnapshot {
     pub alternate: Option<Vec<String>>,
 }
 
-/// How a [`PaneSnapshot`] reaches a `Read`er: a backend's pane reader returns
-/// it as an [`std::io::ErrorKind::Interrupted`] error carrying this.
-///
-/// The reader loop reads panes through `Box<dyn Read>` — an adopted pane's
-/// output is its history seed chained ahead of this reader — so an error kind
-/// that means "nothing read, call again" is how an item that is not bytes gets
-/// through without a second channel, and so without a second ordering to keep.
-/// A reader that does not know about snapshots simply retries, as `Interrupted`
-/// asks.
-#[derive(Debug)]
-pub struct SnapshotArrived {
-    pub snapshot: Box<PaneSnapshot>,
-    /// Whether the reader's output was dropped for want of room, so the grid
-    /// it has is missing what the dropped bytes drew and this replaces it.
-    /// Otherwise the snapshot only rebuilds a grid that was dropped.
-    pub resync: bool,
+/// What a pane's reader is handed, in the order the pane's output stream
+/// carried it. Every item that is not bytes travels in the same stream as the
+/// bytes, so the reader takes it at exactly the point it belongs to: there is
+/// no second channel, and so no second ordering to keep.
+#[derive(Debug, Clone)]
+pub enum PaneChunk {
+    /// Bytes the pane printed.
+    Output(Vec<u8>),
+    /// The pane as the multiplexer holds it at exactly this point of its
+    /// output: every byte handed over before this chunk is in it, and none
+    /// handed over after. It rebuilds a grid that was dropped
+    /// ([`WiredPane::restore`](crate::backend::pane::WiredPane::restore)).
+    Snapshot(Box<PaneSnapshot>),
+    /// A snapshot as [`Self::Snapshot`] is, for a reader whose output was
+    /// dropped for want of room: it replaces the grid the reader has, which
+    /// is missing whatever the dropped bytes drew.
+    Resync(Box<PaneSnapshot>),
+    /// The pane is now this size. In the stream rather than beside it for the
+    /// reason a snapshot is: output a program writes after its window was
+    /// resized is laid out for the new size, and whatever was queued before
+    /// it for the old one.
+    Resized { rows: u16, cols: u16 },
+    /// Whether another client is named as the pane's sizer. A hint with no
+    /// place in the stream, carried here only because this is where the pane's
+    /// reader listens.
+    SizedElsewhere(bool),
+    /// The title and input modes of a pane whose output is held back
+    /// ([`SessionBackend::hide_output`]), as terminal bytes to parse but not
+    /// to count as output: the report of what the pane already was.
+    State(Vec<u8>),
 }
 
-impl std::fmt::Display for SnapshotArrived {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "a pane snapshot arrived in the output stream")
+impl From<Vec<u8>> for PaneChunk {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::Output(bytes)
     }
 }
 
-impl std::error::Error for SnapshotArrived {}
-
-impl SnapshotArrived {
-    /// What an error carries, if it is one of these.
-    pub fn take(err: std::io::Error) -> Option<Self> {
-        if err.kind() != std::io::ErrorKind::Interrupted {
-            return None;
-        }
-        err.into_inner()?
-            .downcast::<SnapshotArrived>()
-            .ok()
-            .map(|arrived| *arrived)
-    }
-}
-
-/// Terminal state for a pane whose output is not being streamed — its title
-/// and input modes, as the multiplexer holds them — handed to the reader the
-/// way a [`SnapshotArrived`] is: an [`std::io::ErrorKind::Interrupted`] error
-/// carrying it, so the reader parses it without taking it for output (see
-/// [`SessionBackend::hide_output`]).
-#[derive(Debug)]
-pub struct StateArrived(pub Vec<u8>);
-
-impl std::fmt::Display for StateArrived {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "a pane's terminal state arrived in the output stream")
-    }
-}
-
-impl std::error::Error for StateArrived {}
-
-impl StateArrived {
-    /// The bytes an error carries if it is one of these, or the error back.
-    pub fn take(err: std::io::Error) -> Result<Vec<u8>, std::io::Error> {
-        let kind = err.kind();
-        if kind != std::io::ErrorKind::Interrupted {
-            return Err(err);
-        }
-        match err.into_inner() {
-            Some(inner) => inner
-                .downcast::<StateArrived>()
-                .map(|state| state.0)
-                .map_err(|other| std::io::Error::new(kind, other)),
-            None => Err(kind.into()),
-        }
-    }
-}
+/// A pane's output as its reader takes it: chunks in stream order, ending when
+/// the pane is let go of. `next` blocks until the next chunk is there.
+pub type PaneOutput = Box<dyn Iterator<Item = PaneChunk> + Send>;
 
 /// What a thurbox window holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -565,8 +536,8 @@ impl BackendLiveness {
 pub struct SpawnedSession {
     /// Backend-specific session identifier.
     pub backend_id: String,
-    /// Streaming output bytes from the session.
-    pub output: Box<dyn Read + Send>,
+    /// The session's output stream.
+    pub output: PaneOutput,
     /// Input write handle to send bytes to the session.
     pub input: Box<dyn Write + Send>,
     /// Where the pane's real size is reported, when the backend can say.
@@ -575,8 +546,8 @@ pub struct SpawnedSession {
 
 /// A reconnected session from the backend.
 pub struct AdoptedSession {
-    /// Streaming output bytes from the session.
-    pub output: Box<dyn Read + Send>,
+    /// The session's output stream.
+    pub output: PaneOutput,
     /// Input write handle to send bytes to the session.
     pub input: Box<dyn Write + Send>,
     /// Bytes at the front of `output` that are replayed history rather than
@@ -667,9 +638,8 @@ pub trait SessionBackend: Send + Sync {
     }
 
     /// Ask for the pane's state to arrive **in its own output stream**, at the
-    /// byte it describes, as a
-    /// [`SnapshotArrived`] the
-    /// reader loop takes up in order. Returns once asked, not once answered.
+    /// byte it describes, as a [`PaneChunk::Snapshot`] the reader loop takes
+    /// up in order. Returns once asked, not once answered.
     fn request_snapshot(&self, _backend_id: &str) -> BackendResult<()> {
         Err(anyhow::anyhow!("this backend cannot snapshot a pane").into())
     }

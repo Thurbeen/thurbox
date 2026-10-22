@@ -8,7 +8,6 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -18,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, info, warn};
 
 use crate::backend::contract::{
-    AdoptedSession, DiscoveredSession, Key, Owner, PaneId, PaneSize, PaneState, Placed,
+    AdoptedSession, DiscoveredSession, Key, Owner, PaneChunk, PaneId, PaneSize, PaneState, Placed,
     SessionBackend, SpawnedSession, WindowRole, WindowSpec,
 };
 use crate::backend::identity::{window_name_for, Located, WindowIndex, SHELL_WINDOW_PREFIX};
@@ -2920,7 +2919,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // `Session::reader_loop`).
         let seed_len = seed.len();
         Ok(AdoptedSession {
-            output: Box::new(Cursor::new(seed).chain(connected.output)),
+            output: Box::new(std::iter::once(PaneChunk::Output(seed)).chain(connected.output)),
             input: connected.input,
             seed_len,
             size: connected.size,
@@ -5517,7 +5516,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_unmonitored_pane_streams_output_without_refreshing_on_attach_or_detach() {
-        use std::io::Read;
         use std::os::unix::fs::PermissionsExt;
 
         let root = tempfile::tempdir().expect("tempdir");
@@ -5552,21 +5550,23 @@ mod tests {
         .expect("control client");
         *backend.control.lock().unwrap() = Some(Arc::new(control));
 
-        let pane = backend
+        let mut pane = backend
             .connect_pane("%1", Some("@1"), 24, 80)
             .expect("attach without monitoring command");
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let reader = std::thread::spawn(move || {
-            let mut output = [0; 8];
-            let mut pane_output = pane.output;
-            let _ = tx.send(pane_output.read_exact(&mut output).map(|_| output));
+            let output = pane.output.find_map(|chunk| match chunk {
+                PaneChunk::Output(bytes) => Some(bytes),
+                _ => None,
+            });
+            let _ = tx.send(output);
         });
         let output = rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("streamed output arrived")
             .expect("streamed output read");
         reader.join().expect("reader thread");
-        assert_eq!(&output, b"streamed");
+        assert_eq!(output, b"streamed");
         backend.detach("%1").expect("detach");
         drop(backend);
         let commands = std::fs::read_to_string(mux.with_extension("log")).expect("command log");
@@ -5582,7 +5582,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_overflowed_pane_is_caught_up_without_blocking_control() {
-        use std::io::Read;
         use std::os::unix::fs::PermissionsExt;
         use std::time::Duration;
 
@@ -5661,7 +5660,7 @@ done
             .expect("control client"),
         );
         *backend.control.lock().unwrap() = Some(Arc::clone(&control));
-        let (mut reader, _) = backend
+        let (reader, _) = backend
             .register_pane("%1", Some("@1"))
             .expect("resident pane");
 
@@ -5679,17 +5678,8 @@ done
         // resync fails the test at its deadline instead of hanging it.
         let (items, received) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 256];
-            loop {
-                let item = match reader.read(&mut buf) {
-                    Ok(0) => return,
-                    Ok(n) => Ok(buf[..n].to_vec()),
-                    Err(e) => match crate::backend::contract::SnapshotArrived::take(e) {
-                        Some(arrived) => Err(arrived),
-                        None => continue,
-                    },
-                };
-                if items.send(item).is_err() {
+            for chunk in reader {
+                if items.send(chunk).is_err() {
                     return;
                 }
             }
@@ -5701,19 +5691,19 @@ done
         };
 
         let mut queued = 0;
-        let arrived = loop {
+        let snapshot = loop {
             match next() {
-                Ok(bytes) => {
+                PaneChunk::Output(bytes) => {
                     assert_eq!(bytes, b"\x1b[", "only output from before the gap");
                     queued += 1;
                 }
-                Err(arrived) => break arrived,
+                PaneChunk::Resync(snapshot) => break snapshot,
+                other => panic!("a resync, which replaces a grid it has, not {other:?}"),
             }
         };
         assert!(queued <= PANE_CHANNEL_CAPACITY, "{queued}");
-        assert!(arrived.resync, "a resync, which replaces a grid it has");
         assert_eq!(
-            *arrived.snapshot,
+            *snapshot,
             crate::backend::contract::PaneSnapshot {
                 cols: 20,
                 rows: 4,
@@ -5725,7 +5715,10 @@ done
         control
             .send_command("display-message -p suffix")
             .expect("output after recovery");
-        assert_eq!(next().ok(), Some(b"!".to_vec()), "output flows again");
+        assert!(
+            matches!(next(), PaneChunk::Output(bytes) if bytes == b"!"),
+            "output flows again"
+        );
     }
 
     /// A control server standing in for a host whose link has gone slow: every

@@ -606,9 +606,17 @@ an instance).
 demultiplexed by pane ID into per-pane broadcast channels. Multiple
 instances can simultaneously register the same pane; output is
 broadcast to all registered channels (`PaneSendersMap`, one `PaneSender` per
-reader). Each channel feeds a `ControlModeReader` (implements `Read`) consumed
-by the existing `Session::reader_loop`. This allows multiple instances
+reader). Each channel feeds a `ControlModeReader`, the pane's `PaneOutput`
+consumed by `Session::reader_loop`. This allows multiple instances
 to independently parse and render terminal state in real-time.
+
+**A pane's stream is chunks, not bytes** (#1472): `PaneOutput` is an iterator
+of `PaneChunk`s in stream order — output, a snapshot, a resync, a size, a hidden
+pane's state — so whatever is not bytes reaches the reader loop as a value at
+exactly the point of the stream it belongs to. It replaced a `Read` that
+carried those as `Interrupted` errors recovered by downcasting, a channel any
+`Read` adapter that retries interruptions would have emptied silently. An
+adopted pane's history seed is one `Output` chunk ahead of the live stream.
 
 **A full channel is caught up, not left corrupt** (#1472): the reader thread
 never blocks, so output that finds a pane's channel full is dropped, and the
