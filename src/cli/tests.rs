@@ -60,6 +60,8 @@ fn pretty_flag_is_global() {
         Command::Session {
             action: sessions::Action::List {
                 parent: None,
+                recursive: false,
+                tree: false,
                 deleted: false,
                 verify: false,
                 ..
@@ -383,6 +385,8 @@ fn parse_session_list_accepts_parent_filter() {
         action:
             sessions::Action::List {
                 parent,
+                recursive: false,
+                tree: false,
                 deleted: false,
                 verify: false,
                 ..

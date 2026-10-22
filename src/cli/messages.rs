@@ -30,6 +30,13 @@ pub enum Action {
     /// tool calls, or as a new turn when idle); Codex sessions through
     /// `codex queue`. Any other agent keeps it in the mailbox for `message
     /// inbox` — nothing is ever typed into the recipient's pane.
+    ///
+    /// A Claude Code recipient can hold the message behind an approval dialog
+    /// unless its settings carry `crossSessionInbound: accept`; the socket
+    /// accepts the body either way. The result then says `may_hold: true`, a
+    /// fact about the route: thurbox cannot see whether a dialog was shown or
+    /// answered. The mailbox row stays readable with `message inbox`
+    /// regardless.
     Send {
         /// Recipient session (UUID or name).
         #[arg(long)]
@@ -343,6 +350,14 @@ pub(crate) fn enqueue_and_deliver(
             via.as_str()
         ),
     };
+    let human = if outcome.via.may_hold() {
+        format!(
+            "{human} The recipient may hold it behind an approval prompt unless its \
+             Claude Code settings set crossSessionInbound to accept."
+        )
+    } else {
+        human
+    };
     Ok(CommandOutput::new(
         json!({
             "enqueued": true,
@@ -351,6 +366,7 @@ pub(crate) fn enqueue_and_deliver(
             "to_session_name": recipient.name,
             "delivered_via": outcome.via.as_str(),
             "delivery_note": outcome.note,
+            "may_hold": outcome.via.may_hold(),
         }),
         human,
     ))

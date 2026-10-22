@@ -518,6 +518,10 @@ pub fn run(cli: Cli, db: &Database, backends: &Backends<'_>) -> Result<Outcome, 
             // Legacy sharing peers send exactly `session delete <id> --json`.
             // It is indistinguishable from a local JSON caller, so preserve undo
             // for both; new peers and destructive JSON callers specify the mode.
+            // stderr says so, because stdout is the caller's document and a
+            // script moving to `--json` otherwise changes what it deletes
+            // without a word. A peer reads stderr only from a failed call.
+            let mut kept_soft = false;
             if cli.json {
                 if let Command::Session {
                     action:
@@ -526,10 +530,19 @@ pub fn run(cli: Cli, db: &Database, backends: &Backends<'_>) -> Result<Outcome, 
                         },
                 } = &mut command
                 {
+                    kept_soft = !*soft;
                     *soft = true;
                 }
             }
-            dispatch(command, db, backends)?
+            let output = dispatch(command, db, backends)?;
+            if kept_soft {
+                eprintln!(
+                    "warning: a flagless `session delete --json` is a soft delete (restorable, \
+                     windows reaped after the undo window); pass --force for immediate teardown \
+                     or --soft to keep this behaviour without this warning"
+                );
+            }
+            output
         }
     };
     if cli.full {

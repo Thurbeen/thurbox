@@ -52,12 +52,15 @@ pub struct SessionResources {
     pub memory_bytes: u64,
 }
 
-/// The scope account usage is fetched for: an agent, as seen from a host.
+/// The scope account usage is fetched for: an agent family
+/// ([`crate::usage::family`]), as seen from a host.
 ///
 /// Usage is account-global, but *which* account depends on the credentials on
 /// the machine the agent runs on — so a session on `ssh:devbox` may report a
-/// different account than a local one. v1 keys its cache the same way.
-type UsageKey = (String, Option<String>);
+/// different account than a local one. v1 keys its cache the same way. The
+/// family rather than the agent name, so `claude` and a custom agent asserting
+/// `hook_schema = "claude"` share one fetch: both read the same credentials.
+type UsageKey = (&'static str, Option<String>);
 
 /// One session's sampling inputs, reduced to what crosses a thread boundary:
 /// its id, where its statusline file is, and the handle its pid is resolved
@@ -99,6 +102,9 @@ pub struct Metrics {
     resources: HashMap<String, SessionResources>,
     agents: HashMap<String, AgentMetrics>,
     usage: HashMap<UsageKey, AgentUsage>,
+    /// Each agent name's usage family as of the last fetch, so [`Self::usage`]
+    /// can be asked by the name a row carries.
+    families: HashMap<String, &'static str>,
     /// Parked between samples so CPU deltas survive. `None` while a worker has
     /// it, which is also what keeps a second sample from starting.
     collector: Option<Box<sysinfo::System>>,
@@ -120,6 +126,7 @@ impl Metrics {
             resources: HashMap::new(),
             agents: HashMap::new(),
             usage: HashMap::new(),
+            families: HashMap::new(),
             collector: Some(Box::new(sysinfo::System::new())),
             last_sample: None,
             last_usage: None,
@@ -148,10 +155,17 @@ impl Metrics {
     }
 
     /// Account usage for a session's (agent, host) scope, when it has been
-    /// fetched.
+    /// fetched. The agent is a name; it reads its family's usage. A built-in
+    /// name needs no registry to find its family, so a session started since
+    /// the last fetch shows the usage already held for it; a custom name is
+    /// learned at the next fetch.
     pub fn usage(&self, agent: &str, host: Option<&str>) -> Option<&AgentUsage> {
-        self.usage
-            .get(&(agent.to_string(), host.map(str::to_string)))
+        let family = self
+            .families
+            .get(agent)
+            .copied()
+            .or_else(|| crate::usage::family(agent, None))?;
+        self.usage.get(&(family, host.map(str::to_string)))
     }
 
     /// Whether the next [`Self::sample`] would actually start work — the
@@ -246,12 +260,25 @@ impl Metrics {
         self.last_usage = Some(Instant::now());
 
         let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+        // The generation the interface already adopted (no file read there);
+        // a custom agent's `hook_schema` names the family whose usage it reads.
+        let agents = crate::agent::agent_config::load_for_launch();
+        self.families = subjects
+            .iter()
+            .filter_map(|subject| {
+                let schema = agents
+                    .get(&subject.agent)
+                    .and_then(|def| def.hook_schema.as_deref());
+                crate::usage::family(&subject.agent, schema)
+                    .map(|family| (subject.agent.clone(), family))
+            })
+            .collect();
         let mut planned: std::collections::HashSet<UsageKey> = std::collections::HashSet::new();
         for subject in subjects {
-            if !crate::usage::is_supported(&subject.agent) {
+            let Some(&family) = self.families.get(&subject.agent) else {
                 continue;
-            }
-            let key: UsageKey = (subject.agent.clone(), subject.host.clone());
+            };
+            let key: UsageKey = (family, subject.host.clone());
             if !planned.insert(key.clone()) {
                 continue;
             }
@@ -273,9 +300,8 @@ impl Metrics {
                 },
             };
             let tx = self.usage_tx.clone();
-            let agent = key.0.clone();
             tokio::spawn(async move {
-                let usage = crate::usage::fetch(&agent, host.as_ref()).await;
+                let usage = crate::usage::fetch(key.0, host.as_ref()).await;
                 let _ = tx.send((key, usage));
             });
         }

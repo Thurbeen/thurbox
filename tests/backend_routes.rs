@@ -361,6 +361,8 @@ fn listing(db: &Database, deleted: bool) -> Value {
     run(
         Action::List {
             parent: None,
+            recursive: false,
+            tree: false,
             deleted,
             since: None,
             verify: false,

@@ -139,6 +139,8 @@ fn a_send_after_codex_new_does_not_queue_on_the_abandoned_thread() {
 
     let before = send(&row, "before /new", &path, &log);
     assert_eq!(before["delivered_via"], "codex-queue", "{before}");
+    // Codex queues the body as the thread's next turn; nothing asks first.
+    assert_eq!(before["may_hold"], false, "{before}");
 
     let second = "22222222-2222-4222-8222-222222222222";
     codex_session_start(&row, second, "startup");
@@ -436,4 +438,115 @@ fn codex_hook_waits_for_the_restarted_pane_to_be_published() {
             .as_deref(),
         Some("11111111-1111-4111-8111-111111111111")
     );
+}
+
+/// What a running Claude Code leaves behind for session `row`: a process
+/// carrying its identity, an inbox socket, and a registry entry naming both.
+/// Returns the process and a reader that yields the first line the socket gets.
+#[cfg(target_os = "linux")]
+fn stand_in_claude(
+    home: &Path,
+    row: &SharedSession,
+) -> (std::process::Child, std::thread::JoinHandle<String>) {
+    use std::io::BufRead;
+    use std::os::unix::net::UnixListener;
+
+    let socket = home.join("inbox.sock");
+    let listener = UnixListener::bind(&socket).expect("bind inbox");
+    let reader = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        let mut line = String::new();
+        let _ = std::io::BufReader::new(stream).read_line(&mut line);
+        line
+    });
+    let agent = Command::new("sleep")
+        .arg("60")
+        .env("THURBOX_SESSION", row.id.to_string())
+        .spawn()
+        .expect("spawn stand-in agent");
+    let registry = home.join("claude").join("sessions");
+    std::fs::create_dir_all(&registry).expect("mkdir registry");
+    std::fs::write(
+        registry.join(format!("{}.json", agent.id())),
+        serde_json::json!({
+            "pid": agent.id(),
+            "kind": "interactive",
+            "messagingSocketPath": socket,
+            "startedAt": 1,
+        })
+        .to_string(),
+    )
+    .expect("write registry entry");
+    (agent, reader)
+}
+
+#[cfg(target_os = "linux")]
+fn claude_row(agent_session_id: &str) -> SharedSession {
+    SharedSession {
+        agent: "claude".into(),
+        ..codex_row(agent_session_id)
+    }
+}
+
+/// A send over a Claude inbox socket is reported as one that may be held
+/// (issue #1521): the socket takes the body, and Claude Code can then hold it
+/// behind an approval dialog unless the recipient accepts cross-session input.
+/// The field describes the route; thurbox cannot see the dialog.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_claude_socket_send_says_it_may_be_held() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = isolate(home.path());
+    let row = claude_row("33333333-3333-4333-8333-333333333333");
+    db.upsert_session(&row).expect("insert row");
+    let (mut agent, reader) = stand_in_claude(home.path(), &row);
+
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let sent = send(
+        &row,
+        "are you there",
+        &path,
+        &home.path().join("unused.log"),
+    );
+    let _ = agent.kill();
+    let _ = agent.wait();
+
+    assert_eq!(sent["delivered_via"], "claude-socket", "{sent}");
+    assert_eq!(sent["may_hold"], true, "{sent}");
+    assert!(
+        reader.join().expect("reader").contains("are you there"),
+        "the body reached the socket"
+    );
+}
+
+/// The text form says so too, naming the setting that removes the hold.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_claude_socket_send_says_so_in_text() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = isolate(home.path());
+    let row = claude_row("44444444-4444-4444-8444-444444444444");
+    db.upsert_session(&row).expect("insert row");
+    let (mut agent, reader) = stand_in_claude(home.path(), &row);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["message", "send", "--to", &row.name, "--kind", "note"])
+        .args(["--body", "hello", "--text"])
+        .env_remove("THURBOX_SESSION")
+        .output()
+        .expect("run message send");
+    let _ = agent.kill();
+    let _ = agent.wait();
+
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("claude-socket"), "{text}");
+    assert!(text.contains("approval"), "{text}");
+    assert!(text.contains("crossSessionInbound"), "{text}");
+    // Joined last: it returns only once the socket was written to.
+    let _ = reader.join();
 }

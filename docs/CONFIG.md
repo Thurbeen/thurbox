@@ -926,7 +926,21 @@ remains soft on an upgraded host, preserving both the peer's undo and the host's
 windows/worktrees. That request carries no caller marker and is identical to a
 local JSON command: **local flagless `--json` deletes also remain soft**.
 JSON scripts must pass `--force` for immediate cleanup or `--soft` for undo.
+A flagless `--json` delete writes a one-line warning to stderr saying it was
+soft; stdout is unchanged, and neither `--soft` nor `--force` gets the warning.
 Plain local CLI and TUI deletes still follow `soft_delete`, defaulting to hard.
+
+A soft delete keeps the worktrees, not the windows: those become reapable once
+the undo window (10 s) closes, and come down at the next sweep by the interface
+or the heartbeat, whichever is running, or with `session reap`. The row stays
+restorable with `session restore` until it is purged; a restore after the
+window starts the agent again. The delete's JSON says which happened: `soft`;
+`reapable_at` (epoch ms), when the undo window closes and the windows may be
+reaped; `undo_until` (epoch ms), when `deleted_retention_days` lets the row be
+purged, or `null` when retention is off and only `session purge` removes it;
+and `session`, the resulting row in the shape `session list --deleted --json`
+prints, with its `deleted_at` and `force_deleted`. Both instants are `null` for
+a forced delete.
 The capability bit selects flags understood by the receiver; major/schema
 compatibility alone does not identify the caller or its intended deletion mode.
 Users who never set the flag now get immediate teardown for plain CLI/TUI
