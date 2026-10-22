@@ -447,6 +447,21 @@ fn spawn(
         .into_iter()
         .collect();
 
+    if host.is_none() {
+        hook_ctx.cwd = Some(launch_cwd.clone());
+        hook_ctx.worktrees = worktrees
+            .iter()
+            .map(super::lifecycle_hooks::worktree)
+            .collect();
+        hook_ctx.additional_dirs = additional_dirs.clone();
+        super::fire_pre(crate::session::HookEvent::PreLaunch, &hook_ctx).map_err(|reason| {
+            format!(
+                "{reason}; launch refused, prepared directories remain at {}",
+                launch_cwd.display()
+            )
+        })?;
+    }
+
     report(SpawnPhase::Launching);
     // The window is stamped with the row's id as it is created (ADR-25), which
     // is what every later lookup resolves: a window *name* is not unique (two

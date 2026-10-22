@@ -526,28 +526,36 @@ pub fn claude_transcript_exists(
     agent_session_id: &str,
     config_dir_override: Option<&Path>,
 ) -> bool {
+    claude_transcript_path(agent_session_id, config_dir_override).is_some()
+}
+
+/// The existing Claude transcript, if this host and account can see it.
+pub fn claude_transcript_path(
+    agent_session_id: &str,
+    config_dir_override: Option<&Path>,
+) -> Option<PathBuf> {
+    if agent_session_id.contains(['/', '\\']) || agent_session_id.is_empty() {
+        return None;
+    }
     let root = if let Some(p) = config_dir_override {
         p.to_path_buf()
     } else if let Some(env) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         PathBuf::from(env)
     } else {
-        match home_dir() {
-            Some(h) => h.join(".claude"),
-            None => return false,
-        }
+        home_dir()?.join(".claude")
     };
 
     let projects = root.join("projects");
     let Ok(entries) = std::fs::read_dir(&projects) else {
-        return false;
+        return None;
     };
     let target = format!("{agent_session_id}.jsonl");
     for entry in entries.flatten() {
         if entry.path().join(&target).is_file() {
-            return true;
+            return Some(entry.path().join(&target));
         }
     }
-    false
+    None
 }
 
 /// Override path resolution for all paths to use a custom base directory.

@@ -126,6 +126,25 @@ fn install(
     }
     let home_str = home.to_string_lossy().to_string();
 
+    // User lifecycle hooks execute with the user's rights. An extension's
+    // install declaration must never turn itself into that trusted caller.
+    for path in def
+        .external_files
+        .iter()
+        .map(|f| &f.path)
+        .chain(def.config_merges.iter().map(|m| &m.path))
+    {
+        protect_user_hooks(&crate::agent::extension_config::expand_tilde(
+            &path.replace(HOME_TOKEN, &home_str),
+        ))?;
+    }
+    for file in &def.files {
+        protect_user_hooks(&safe_join(&home, &file.path)?)?;
+    }
+    for link in &def.symlinks {
+        protect_user_hooks(&safe_join(&home, &link.link)?)?;
+    }
+
     let current = crate::agent::extension_config::binary_version();
     let mut report = InstallReport {
         name: def.name.clone(),
@@ -247,6 +266,7 @@ fn install_payload_file(
     // Reject absolute / `..` destinations and sources so a manifest can't
     // write or read outside the home / source dir (path-traversal guard).
     let dest = safe_join(home, &f.path)?;
+    protect_user_hooks(&dest)?;
     ensure_safe_relative(f.source_path())?;
     if f.if_absent && dest.exists() && !force {
         report.files_skipped.push(f.path.clone());
@@ -280,6 +300,70 @@ fn install_payload_file(
     Ok(())
 }
 
+/// Resolve existing symlinked ancestors even when the final file is absent.
+fn destination(path: &Path) -> Result<std::path::PathBuf, String> {
+    fn resolve(path: &Path, links: usize) -> Result<std::path::PathBuf, String> {
+        if links >= 32 {
+            return Err(
+                "too many extension destination symlinks; user hooks.toml is protected".into(),
+            );
+        }
+        if let Ok(path) = path.canonicalize() {
+            return Ok(path);
+        }
+        // canonicalize cannot resolve a dangling symlink, but write follows
+        // it. Follow its target explicitly before considering the parent.
+        if let Ok(target) = std::fs::read_link(path) {
+            let target = if target.is_absolute() {
+                target
+            } else {
+                path.parent().unwrap_or(Path::new(".")).join(target)
+            };
+            return resolve(&target, links + 1);
+        }
+        match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => Ok(resolve(parent, links)?.join(name)),
+            _ => Ok(path.to_path_buf()),
+        }
+    }
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("resolve extension destination: {e}"))?
+            .join(path)
+    };
+    resolve(&path, 0)
+}
+
+fn protect_user_hooks(path: &Path) -> Result<(), String> {
+    if path
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return Err(
+            "extension destinations may not contain '..' (user hooks.toml is protected)".into(),
+        );
+    }
+    let Some(hooks) = crate::agent::hooks_config::hooks_config_path() else {
+        return Err("cannot locate the user's hooks.toml; refusing extension writes".into());
+    };
+    let same = if cfg!(windows) {
+        destination(path)?
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&destination(&hooks)?.to_string_lossy())
+    } else {
+        destination(path)? == destination(&hooks)?
+    };
+    if same {
+        return Err(
+            "extensions may not write the user's hooks.toml; configure lifecycle hooks yourself"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Whether `dest` already holds exactly `content` (so a rewrite would be a no-op).
 fn file_has_content(dest: &Path, content: &str) -> bool {
     std::fs::read_to_string(dest).is_ok_and(|existing| existing == content)
@@ -304,6 +388,7 @@ fn install_external_file(
         }
     }
     let dest = crate::agent::extension_config::expand_tilde(&f.path);
+    protect_user_hooks(&dest)?;
     if f.if_absent && dest.exists() && !force {
         report.external_files_skipped.push(f.path.clone());
         return Ok(());
@@ -411,6 +496,7 @@ fn install_config_merge(
         }
     }
     let dest = crate::agent::extension_config::expand_tilde(&m.path);
+    protect_user_hooks(&dest)?;
     let source_text = crate::agent::extension_config::fetch_file(source, m.source_path())?;
     // A user's malformed target must NOT abort the whole install: this runs every
     // startup + heartbeat tick, so one broken file would degrade every agent's
@@ -567,6 +653,7 @@ fn install_symlink(
     // Validate both ends before touching the filesystem, so a bad target
     // can't leave a removed symlink behind.
     let link = safe_join(home, &s.link)?;
+    protect_user_hooks(&link)?;
     ensure_safe_relative(&s.target)?;
     match std::fs::symlink_metadata(&link) {
         Ok(m) if m.file_type().is_symlink() => {

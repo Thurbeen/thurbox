@@ -980,10 +980,36 @@ impl Database {
     /// included. One lean scan with no worktree join: `thurbox-cli watch` reads
     /// it once per wake to name the sessions its events are about.
     pub fn load_session_facts(&self) -> rusqlite::Result<HashMap<SessionId, SessionFacts>> {
-        let mut stmt = self.conn.prepare_cached(
+        self.session_facts_query(
             "SELECT id, name, agent, backend_id, stopped_at, seen_at FROM sessions",
-        )?;
-        let rows = stmt.query_map([], |row| {
+            [],
+        )
+    }
+
+    /// Naming facts for a bounded batch of event subjects, without scanning
+    /// unrelated sessions. Waits pass one id; cursor consumers pass ≤512.
+    pub fn load_session_facts_for(
+        &self,
+        ids: &[SessionId],
+    ) -> rusqlite::Result<HashMap<SessionId, SessionFacts>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let slots = vec!["?"; ids.len()].join(",");
+        let sql = format!("SELECT id, name, agent, backend_id, stopped_at, seen_at FROM sessions WHERE id IN ({slots})");
+        self.session_facts_query(
+            &sql,
+            rusqlite::params_from_iter(ids.iter().map(ToString::to_string)),
+        )
+    }
+
+    fn session_facts_query(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> rusqlite::Result<HashMap<SessionId, SessionFacts>> {
+        let mut stmt = self.conn.prepare_cached(sql)?;
+        let rows = stmt.query_map(params, |row| {
             let id: String = row.get(0)?;
             Ok((
                 id,

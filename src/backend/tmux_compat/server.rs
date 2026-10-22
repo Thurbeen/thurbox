@@ -3114,6 +3114,44 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(name)
     }
 
+    fn output_times(&self) -> Result<std::collections::HashMap<String, u64>> {
+        if !self.stamps_are_per_window() {
+            return Ok(std::collections::HashMap::new());
+        }
+        // A stale row's pane id may now belong to somebody else. Read only
+        // windows whose own stamps identify the session, excluding its shell.
+        let output = self.run_tmux(&[
+            "list-windows",
+            "-a",
+            "-F",
+            "#{@thurbox_session}\t#{@thurbox_role}\t#{window_activity}",
+        ])?;
+        let mut times: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut fields = line.split('\t');
+            let (Some(owner), Some(role), Some(at)) = (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if owner.parse::<crate::session::SessionId>().is_err() || role == "shell" {
+                continue;
+            }
+            let Some(at) = at
+                .parse::<u64>()
+                .ok()
+                .and_then(|at| at.checked_mul(1000))
+                .filter(|at| *at > 0)
+            else {
+                continue;
+            };
+            times
+                .entry(owner.to_string())
+                .and_modify(|stored| *stored = (*stored).max(at))
+                .or_insert(at);
+        }
+        Ok(times)
+    }
+
     fn capture(
         &self,
         pane: &str,

@@ -1207,8 +1207,8 @@ in the kernel or the Lua interface knows hooks exist. They run on the
 thread that runs the operation — a worker in the TUI — never the render
 loop.
 
-**Pre hooks veto, post hooks inform** — git's `pre-commit` model. A
-`pre_*` that exits non-zero (or hangs past its timeout, default 30 s) aborts
+**Operation pre hooks veto, post hooks inform** — git's `pre-commit` model.
+An operation-level `pre_*` that exits non-zero (or hangs past its timeout, default 30 s) aborts
 the operation before its first side effect, with its stderr tail as the
 reported reason; a `post_*` fires only after full success, every one
 runs, and a failure is logged and reported (`hook_failures` in the CLI
@@ -1220,6 +1220,17 @@ so a `thurbox-cli` it runs hits the right database, runs in the primary
 repository (the one path that exists at every event) with no terminal,
 and — for a remote session — runs *locally*, told the host by
 `THURBOX_HOST`. Full reference: `docs/CONFIG.md` → hooks.toml.
+
+Two additional events share this runner. `session.pre_launch` prepares a
+local create/fork in its final cwd, after worktrees exist and before the agent
+starts; refusal leaves prepared directories for inspection. It does not run on
+restart/start/restore or for remote preparation. `session.state_changed` is a
+post-only heartbeat consumer of the event log, with agent and destination-state
+filters. Delivery is at-least-once with `seq` for deduplication; its cursor,
+retention-gap behavior and bounded tick budget are specified in
+[CONFIG.md](CONFIG.md#hookstoml). `session wait` and `send --wait-turn` consume
+the same stream; [ORCHESTRATION.md](ORCHESTRATION.md#bounded-waits-and-read-side-evidence)
+covers their exit codes and the output/transcript read fields.
 
 Deliberately not the same thing as the built-in `hooks` *extension*
 (`<config>/hooks/`), which is the reverse direction: files thurbox

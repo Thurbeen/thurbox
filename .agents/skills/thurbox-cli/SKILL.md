@@ -750,7 +750,7 @@ including session teardown during `extension deactivate`.
 ### Session lifecycle hooks (`hooks.toml`)
 
 The user's own commands, run **by thurbox** before and after it creates,
-deletes, restarts or restores a session — eight events, `session.{pre,post}_
+deletes, restarts or restores a session — the eight operation events, `session.{pre,post}_
 {create,delete,restart,restore}`, declared as `[[hooks]] { event, command,
 timeout_secs }` in `~/.config/thurbox/hooks.toml` (seeded commented-out; read
 at fire time, no cache, no restart). **Not** the `hooks` extension: that
@@ -796,6 +796,28 @@ the pre-create hooks run, so the placeholder row says so.
   surfaces through the command bus, a post failure leaves the session
   running); unit tests beside each module. User docs: `docs/CONFIG.md` →
   hooks.toml.
+
+`session.pre_launch` additionally runs on local create/fork after the final
+cwd/worktrees exist and before opening the pane, with an `agents = [...]`
+filter and the same bounded, fail-closed runner. It is excluded from remote,
+restart, start and restore paths.
+
+`session.state_changed` is the heartbeat consumer in
+`session_ops::state_hooks`: `events::drain` reads at most 512 rows, a `hooks`
+cursor/lease prevents concurrent ticks, and scripts get the watch event JSON
+plus `seq` and `gap`. Delivery is at-least-once; first use starts at the head.
+A tick budgets 30 seconds for hooks after housekeeping. `to = [...]` filters
+known destination states; failures are reported and later hooks still run.
+`config validate` arms the existing keeper for these hooks when automations
+are enabled. No new daemon or interface work is involved.
+
+`session wait` and `send --wait-turn` use `session_ops::wait`, the same event
+batch reader as watch, with a process-local cursor taken before baseline/send.
+Waits return one matching event (or pane text in `detail`); exit 4 is timeout,
+6 deleted/stopped/lost. Pane capture is at most once per second for one session.
+Strict send opts into failure on `submitted: null`; legacy sends preserve their
+exit behavior. Read fields (`last_output_at`, `transcript_path`) are added by
+`session_ops::read_fields`, without a pane attachment or transcript parsing.
 
 ### Parent sessions (lead/worker)
 

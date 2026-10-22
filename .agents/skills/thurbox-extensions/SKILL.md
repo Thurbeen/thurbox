@@ -187,3 +187,12 @@ declares it.
 (`installed_with`/`is_stale`), and the full self-heal contract are in ADR-21 of
 `docs/ARCHITECTURE.md`.**
 
+
+### User lifecycle hooks stay user-owned
+
+Installation refuses payload, symlink, external-file and config-merge targets
+that resolve to Thurbox's own `hooks.toml`, including existing symlink aliases.
+Extension destinations cannot contain parent traversal. This is separate from
+agent status-hook files (`hooks.json`, `.vibe/hooks.toml`, etc.), which remain
+supported. Extensions do not install `session.pre_launch` or
+`session.state_changed` entries with the user's shell privileges.

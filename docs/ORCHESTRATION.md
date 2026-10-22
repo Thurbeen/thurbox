@@ -261,6 +261,52 @@ runs, and it writes only local, gitignored files.
 Five facts shape any headless orchestration built on thurbox. Each
 costs real time to rediscover.
 
+### Bounded waits and read-side evidence
+
+```sh
+thurbox-cli session wait worker --state done,blocked --timeout 120 --json
+thurbox-cli session wait worker --pane-matches 'Ready|Proceed\?' --timeout 30 --json
+thurbox-cli session send worker 'run the checks' --wait-turn --timeout 30 --strict --json
+```
+
+A wait returns one event in the `watch` shape: a matching current state is a
+`present` event; otherwise every event after its entry cursor is considered in
+order. Pane text is the plain `session capture --lines 1000` text, checked at
+most once per second for that session alone, and returned as `detail` with
+`event: "pane_match"`. Either condition matching ends the wait. Exit 0 means
+matched, 4 means timeout (a structured error, no matching event), 6 means the
+session was deleted, stopped or lost, 1 is another failure and 3 an ambiguous
+reference. Bad flags or an invalid regex exit 2.
+
+`send --wait-turn` takes its cursor **before** sending and waits for the next
+`working` edge, even if the agent is already working. It preserves the send
+result and adds the matching event as `turn`. Only agents whose hooks report
+`working` can confirm this; a silent agent times out. `--strict` makes an
+unconfirmable submission (`submitted: null`) fail. Without it the existing
+success code for null is preserved. Neither option is used with `--no-enter`.
+Remote sends delegate these flags to the host CLI; the host must support them.
+A wait reads the mirrored event log where `watch` does; its remote latency is
+therefore the host poll/mirror cadence. Remote text waits use the one session's
+backend capture, never a stream of every pane.
+
+`session get`, `session list`, `watch` and waits add `last_output_at` (epoch
+milliseconds, null when the backend cannot report it) and `transcript_path`
+(an existing local file, otherwise null). Both are local evidence: a row on a
+host answers null for each rather than costing a round trip to the host on
+every listing and `watch` batch. Output times come from a bounded metadata
+listing per local backend, using the agent window's own session stamp
+rather than a potentially reused pane-id hint. Backends without reliable
+ownership stamps report null. This does not attach or stream output; servers
+reporting whole seconds have that precision. A listing failure stays null.
+Claude-family transcripts use the session's persisted `CLAUDE_CONFIG_DIR`,
+falling back to the agent's default directory. Other families and remote rows
+have null transcripts; a coincident local path is never a remote transcript.
+Thurbox does not parse agent transcripts to infer state.
+
+These fields are supervision evidence. A `background` state remains deferred
+until a reproduction demonstrates both start and end hooks in the parent
+session; a state with no observable end could remain stuck forever.
+
 ### The status field is not a completion signal
 
 `session get`/`list --json` **do** carry the `working`/`blocked`/`done`/
@@ -514,3 +560,7 @@ that exists on one machine, so it ships a `__REPO_PATH__` placeholder that
 `uv run fleet install-extension` renders with the clone's absolute path
 before installing. A leading `~` would not help: it names a home
 directory, not a clone, so the placeholder is the permanent answer.
+
+`version --json` advertises these additive event-consumer features as
+`session_wait`, `session_state_hooks` and `session_pre_launch`, so a driver
+checks a boolean rather than scraping `--help`.

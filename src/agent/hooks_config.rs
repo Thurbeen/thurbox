@@ -40,6 +40,7 @@ pub const SEED_HOOKS_TOML: &str = r#"# Thurbox session lifecycle hooks  —  ~/.
 #   session.pre_delete    session.post_delete
 #   session.pre_restart   session.post_restart
 #   session.pre_restore   session.post_restore
+#   session.pre_launch    session.state_changed
 #
 # A `pre_*` hook can REFUSE the operation: exit non-zero (or exceed the
 # timeout) and nothing happens — no worktree, no process, no row changed —
@@ -87,12 +88,34 @@ pub const SEED_HOOKS_TOML: &str = r#"# Thurbox session lifecycle hooks  —  ~/.
 #
 # Fields per [[hooks]] entry:
 #
-#   event          (string, required)   one of the eight event names above
+#   event          (string, required)   one of the event names above
+#   agents         (array, optional)    agent names; empty matches all
+#   to             (array, optional)    destination states for state_changed
 #   command        (string, required)   the shell command
 #   timeout_secs   (integer, optional, default: 30)
 #
+# pre_launch runs locally in the final cwd on create/fork, after worktrees
+# exist and before the agent starts. A failure refuses launch. Host-side
+# preparation is not supported yet; it never runs locally for a remote path.
+#
+# state_changed is post-only, delivered by automation tick (normally every
+# 60s). Delivery is at-least-once: deduplicate external effects by seq. First
+# use starts at the log head. A retention gap reports gap = true once.
+# Each tick reads at most 512 rows and spends at most 30s running hooks.
+# A failed post hook is recorded, then processing continues.
+#
 config_version = 1
 
+# [[hooks]]
+# event = "session.pre_launch"
+# agents = ["claude"]
+# command = 'my-trust-script "$THURBOX_CWD"'
+#
+# [[hooks]]
+# event = "session.state_changed"
+# to = ["done", "blocked"]
+# command = 'my-state-handler'
+#
 # ──────────────────────────────────────────────────────────────────────────
 # Examples — every entry below is commented out. Uncomment and edit to use.
 # ──────────────────────────────────────────────────────────────────────────

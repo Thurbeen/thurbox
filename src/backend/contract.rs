@@ -686,6 +686,13 @@ pub trait SessionBackend: Send + Sync {
     /// what a remote session costs the link, shown or not.
     fn hide_output(&self, _backend_id: &str) {}
 
+    /// Last output of each session's agent window, keyed by its owning
+    /// session id, in epoch milliseconds. Empty when ownership or output
+    /// times cannot be reported. This never streams output.
+    fn output_times(&self) -> Result<std::collections::HashMap<String, u64>> {
+        Ok(std::collections::HashMap::new())
+    }
+
     /// The pane's current title and mouse modes replayed as terminal bytes, or
     /// nothing — the part of [`Self::capture_history`] that is not history, for
     /// an adopt that captures no history ([`Session::adopt_dormant`](crate::backend::Session::adopt_dormant)). An agent's title

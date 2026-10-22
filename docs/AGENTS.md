@@ -510,3 +510,27 @@ automatically. Work the checklist top to bottom:
   a new built-in appears for **fresh installs**; existing users keep their file
   and add the entry themselves (this is intentional — thurbox never rewrites a
   user's edited config).
+
+## Local preparation before an agent starts
+
+Use the user's `hooks.toml`, rather than a wrapper or a `pre_launch` field in
+`agents.toml`, to prepare a fresh directory:
+
+```toml
+[[hooks]]
+event = "session.pre_launch"
+agents = ["claude"]
+command = 'my-trust-script "$THURBOX_CWD"'
+timeout_secs = 10
+```
+
+The script is yours: Thurbox supplies the final cwd and worktree paths without
+knowing an agent's trust-file format. It runs on local create/fork before the
+agent starts; failure refuses launch. Restart, start, restore and remote-host
+preparation are excluded. See [CONFIG.md](CONFIG.md#hookstoml).
+
+`last_output_at` and `transcript_path` are read-side supervision fields, null
+for a session on a remote host. The latter is an existing local Claude-family transcript under the session's
+account directory, or null for other families/remote sessions. Neither is a
+completion signal. No `background` state is claimed without evidence that the
+agent reports both lifecycle edges in its parent session.

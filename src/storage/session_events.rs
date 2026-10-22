@@ -193,6 +193,15 @@ impl Database {
         )
     }
 
+    /// A cursor predates retained history. A first-run cursor at the head
+    /// cannot report a gap; subsequent readers report this once as they drain.
+    pub fn session_event_gap(&self, since: i64) -> rusqlite::Result<bool> {
+        let oldest: Option<i64> =
+            self.conn
+                .query_row("SELECT MIN(seq) FROM session_events", [], |r| r.get(0))?;
+        Ok(oldest.is_some_and(|oldest| since < oldest.saturating_sub(1)))
+    }
+
     /// Events after `since`, oldest first, optionally for one session.
     ///
     /// `limit` bounds one read, not the stream: a caller that gets `limit` rows
