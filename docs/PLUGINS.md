@@ -2,10 +2,13 @@
 
 > **The API is settled in its essentials, not frozen.** The four node kinds and
 > the snapshot-read/command-write split are load-bearing and asserted by tests.
-> What still moves is the published `thurbox.*` shape: a field can be added,
-> renamed or dropped in a minor release. `plugins.lock` records the commit each
-> installed pane resolved to, so pin what you install and re-run
-> `thurbox-cli plugin check` after an upgrade.
+> What still moves is the published `thurbox.*` shape, and `thurbox.api` says
+> how: any release may add a field, and removing one or changing what it means
+> moves that integer. Declare `requires_api = N` in your plugin's table for the
+> contract you wrote against, and a thurbox serving an older one refuses to load
+> it with that reason instead of drawing against a field that is not there.
+> `plugins.lock` records the commit each installed pane resolved to, so pin what
+> you install and re-run `thurbox-cli plugin check` after an upgrade.
 >
 > **Plugins are trusted code.** They run in-process with whatever capabilities
 > the kernel grants, exactly like an extension's shell scripts. Install one the
@@ -347,6 +350,8 @@ and takes no input, and the message band says why, once per failure.
 | `store` | Shared by every plugin — the bus between them. Same lifetime as `state` |
 | `files.list/read` | Directory entries and file text, rooted at a session's directory. Needs the `files` capability and your trust |
 | `text.width/truncate/pad` | Display width in terminal COLUMNS, and the two cuts that spend a budget in it |
+| `thurbox.api` | The plugin API contract number. It moves only when a published field is removed or changes meaning; `requires_api` in your declaration table names the one you need |
+| `session.meta` | On each `thurbox.sessions` row: the session's `ui.*` meta keys by full key (`meta["ui.note"]`), as `thurbox-cli session meta set <ref> ui.note "…"` wrote them. Absent when there are none. Anyone with the CLI writes these, agents included, so treat them as untrusted text: one line, control and invisible format characters (bidi overrides, zero-width spaces) stripped, at most 256 characters, 32 keys per session. Other keys are never published, and `thurbox.*` keys cannot be set or unset. The bundled list draws `ui.note` muted on the row and groups by `ui.group` |
 | `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
 | `thurbox.search` | The content search's answer: lines found in every session's terminals, scrollback included, ranked, each with how far back it is (`back`) and the scroll offset that shows it (`scroll`). Served only while `store.want_content` holds a query (optionally narrowed by `store["want_content.sessions"]`), off the render thread; an empty query reads every history into the cache and matches nothing, so an open search strip is ready before the first keystroke; nil until the first answer lands |
 | `thurbox.bookmarks/browse/branches/worktrees` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list, the worktrees a repo already has — each served only while `store.want_bookmarks`/`want_browse`/`want_branches`/`want_worktrees` asks for it |
@@ -422,6 +427,13 @@ check the table against. The second and third need nothing — `command` and
 Those three examples are literally `tests/fixtures/lua_types/`, and
 `scripts/ci/check-lua-types.sh` fails if any of them stops being reported.
 
+The published half of both files is not written by hand. `src/kernel/lua_api.rs`
+declares the `thurbox.*` shape once, and the generated region of
+`thurbox.d.lua`, the `thurbox.*` entries of `thurbox.yml` and
+`tests/fixtures/lua_std/reads.lua` are rendered from it (`just lua-api`).
+`tests/lua_api.rs` fails when one of them drifts from it, and when a real publish
+serves a key it does not declare.
+
 `selene` checks the same names from the other side, against `thurbox.yml`. That
 file declares **fields**, not only tables, so `thurbox.platform.os`,
 `thurbox.granted.program`, `thurbox.metrics.system.cpu_percent` and
@@ -429,11 +441,9 @@ file declares **fields**, not only tables, so `thurbox.platform.os`,
 stops being checked at the first `[…]` — `thurbox.sessions[i].name` is yours to
 get wrong — which is why a list is declared only as far as the list itself.
 `tests/fixtures/lua_std/` and `scripts/ci/check-lua-std.sh` are that half's
-probes: `reads.lua` reads every field on `granted`, `platform`, `metrics`,
-`hover`, `preflight.mux`, `settings`, `theme.roles`, the four creation-flow reads
-and `runs` — the tables no bundled pane reads in a form selene can see — and must
-lint clean, while `typos/` holds one pane per table misspelling one field, each of
-which must not.
+probes: `reads.lua` reads every path `thurbox.yml` declares and must lint clean,
+while `typos/` holds one pane per table misspelling one field, each of which must
+not.
 
 ## The four node kinds
 

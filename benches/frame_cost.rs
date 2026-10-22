@@ -123,6 +123,7 @@ fn snapshot(sessions: usize) -> Snapshot {
                 detected_agent: None,
                 shell_backend_id: None,
                 member_dirs: vec![format!("{repo}/worktrees/w{nth}").into()],
+                meta: Default::default(),
             }
         })
         .collect();

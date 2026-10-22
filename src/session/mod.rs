@@ -51,6 +51,17 @@ pub use route::{Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
 pub use task::{Task, TaskStatus, SOURCE_LOCAL};
 pub use theme_config::{ThemePalette, ThemePreset};
 
+/// The session meta keys published to interface plugins as `session.meta`
+/// (ADR-40). The snapshot reader, `session meta` and `fork` all name this one
+/// constant, so they cannot disagree about which keys a plugin sees.
+pub const PUBLISHED_META_PREFIX: &str = "ui.";
+
+/// The session meta keys thurbox writes for itself — an agent's messaging
+/// socket, a Codex conversation id — which `session meta set` and `unset`
+/// refuse, since a change from outside would point delivery or a resume at
+/// something else.
+pub const RESERVED_META_PREFIX: &str = "thurbox.";
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;

@@ -12,8 +12,9 @@
 #
 # The probes are what notices:
 #
-#   reads.lua  every field on those tables, as a plain dotted path. Must lint
-#              CLEAN, so a table that regresses to a bare property fails here.
+#   reads.lua  every path `thurbox.yml` declares, as a plain dotted path —
+#              generated with it from `src/kernel/lua_api.rs`. Must lint CLEAN,
+#              so a table that regresses to a bare property fails here.
 #   typos/     one file per table, each misspelling one field. Each must still
 #              be reported, so the fix cannot be a wildcard that accepts
 #              whatever is asked for.
@@ -24,8 +25,8 @@
 # globbing, and why declaring a further table takes a file here *and* its name in
 # that list.
 #
-# This covers those five tables, not everything `LuaHost::publish` serves — a path
-# stops being checked at the first `[…]`, so a list has nothing below it to probe.
+# A path stops being checked at the first `[…]`, so a list has nothing below it
+# to probe; that a publish serves nothing undeclared is `tests/lua_api.rs`'s job.
 #
 # Read through selene's `Json2` display style, and asserted on the `code` field.
 # That code is selene's own lint identifier — the same name `selene.toml`'s

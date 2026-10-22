@@ -659,7 +659,10 @@ pub enum MetaAction {
     Set {
         /// Session name, UUID, or unique id prefix.
         session: String,
-        /// Key, conventionally namespaced (`fm.task_id`, `gc.bead`).
+        /// Key, conventionally namespaced (`fm.task_id`, `gc.bead`). `ui.*`
+        /// keys are published to interface plugins as `session.meta` (one
+        /// line, control and invisible format characters stripped, at most
+        /// 256 characters); `thurbox.*` keys are thurbox's own and refused.
         key: String,
         /// Value; read from stdin when omitted.
         value: Option<String>,
@@ -2638,7 +2641,22 @@ fn exec_in_session(
     })
 }
 
-/// `session meta` — storage, and nothing more. Nothing here interprets a key.
+/// Refuse a change to one of thurbox's own meta keys
+/// ([`crate::session::RESERVED_META_PREFIX`]).
+fn refuse_reserved_meta(key: &str) -> Result<(), CommandError> {
+    let reserved = crate::session::RESERVED_META_PREFIX;
+    if key.starts_with(reserved) {
+        return Err(CommandError::with_code(
+            format!("{key}: `{reserved}*` keys are thurbox's own"),
+            super::EXIT_USAGE,
+        ));
+    }
+    Ok(())
+}
+
+/// `session meta` — the driver's key/value space. Thurbox reads none of it
+/// back except the `ui.*` keys it publishes to plugins (ADR-40), and refuses
+/// changes to its own `thurbox.*` keys.
 fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, CommandError> {
     match action {
         MetaAction::Set {
@@ -2646,6 +2664,7 @@ fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, CommandE
             key,
             value,
         } => {
+            refuse_reserved_meta(&key)?;
             let target = resolve(db, &session)?;
             // Stdin when no argument: a value can be long, multi-line, or start
             // with a dash, none of which survive being an argv token reliably.
@@ -2703,6 +2722,7 @@ fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, CommandE
             )
         }
         MetaAction::Unset { session, key } => {
+            refuse_reserved_meta(&key)?;
             let target = resolve(db, &session)?;
             let removed = db
                 .unset_session_meta(target.id, &key)
@@ -3691,8 +3711,8 @@ mod tests {
 
     #[test]
     fn meta_round_trips_and_says_when_a_key_was_not_there() {
-        // Storage, and nothing more: whatever a driver puts here comes back
-        // byte for byte, and thurbox never interprets a key or a value.
+        // A driver's own key comes back byte for byte: thurbox interprets
+        // only `ui.*` (published) and `thurbox.*` (refused), ADR-40.
         let db = db();
         let session = make_test_session("worker");
         db.upsert_session(&session).unwrap();
@@ -3761,6 +3781,52 @@ mod tests {
         )
         .unwrap();
         assert_eq!(again["removed"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn meta_set_and_unset_refuse_thurbox_keys_and_leave_the_stored_one() {
+        let db = db();
+        let session = make_test_session("worker");
+        db.upsert_session(&session).unwrap();
+        db.set_session_meta(session.id, "thurbox.codex_conversation_id", "real")
+            .unwrap();
+
+        let err = run(
+            Action::Meta {
+                action: MetaAction::Set {
+                    session: "worker".into(),
+                    key: "thurbox.codex_conversation_id".into(),
+                    value: Some("forged".into()),
+                },
+            },
+            &db,
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
+        )
+        .unwrap_err();
+        assert_eq!(err.exit_code, crate::cli::EXIT_USAGE);
+        assert!(err.contains("thurbox.*"), "got {err}");
+        let err = run(
+            Action::Meta {
+                action: MetaAction::Unset {
+                    session: "worker".into(),
+                    key: "thurbox.codex_conversation_id".into(),
+                },
+            },
+            &db,
+            &crate::cli::Backends::ready(crate::backend::registry::inert()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.exit_code,
+            crate::cli::EXIT_USAGE,
+            "removing one is refused too"
+        );
+        assert_eq!(
+            db.get_session_meta(session.id, "thurbox.codex_conversation_id")
+                .unwrap()
+                .as_deref(),
+            Some("real")
+        );
     }
 
     #[test]

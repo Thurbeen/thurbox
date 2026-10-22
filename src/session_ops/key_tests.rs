@@ -102,6 +102,22 @@ fn a_fork_does_not_copy_the_key() {
 }
 
 #[test]
+fn a_fork_copies_the_ui_meta_and_no_other_key() {
+    let rig = rig();
+    let lead = create(&rig, "lead", None).unwrap();
+    rig.db
+        .set_session_meta(lead, "ui.group", "release")
+        .unwrap();
+    rig.db.set_session_meta(lead, "fm.lease", "lead's").unwrap();
+    let fork = super::fork_session_headless(&rig.db, &rig.backends, lead, "").unwrap();
+    let copied = rig.db.list_session_meta(fork.session_id).unwrap();
+    assert_eq!(
+        copied.into_iter().collect::<Vec<_>>(),
+        [("ui.group".to_string(), "release".to_string())]
+    );
+}
+
+#[test]
 fn set_key_gives_changes_and_clears_a_key_but_never_makes_a_twin() {
     let rig = rig();
     let a = create(&rig, "a", None).unwrap();

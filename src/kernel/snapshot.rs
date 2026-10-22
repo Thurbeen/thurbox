@@ -156,6 +156,11 @@ pub struct SessionRow {
     /// still reads [`SessionState::Running`], because presence is observed;
     /// only the name is withheld. See [`crate::session::Corroboration`].
     pub detected_agent: Option<String>,
+    /// The session's `ui.*` meta keys (issue #1523), cleaned for publishing
+    /// ([`crate::kernel::lua_api::clean_meta_value`]) and capped at
+    /// [`crate::kernel::lua_api::META_KEYS`]; empty when it has none. Every
+    /// other key is a driver's or thurbox's own and never reaches a plugin.
+    pub meta: std::collections::BTreeMap<String, String>,
 }
 
 /// A session that was deleted but not purged.
@@ -1751,10 +1756,25 @@ impl SnapshotStore {
             bases,
             stopped,
             reports_as,
+            meta,
             deleted,
             tasks,
             automations,
         } = read;
+        // A meta read that failed keeps each row's labels as last read, and
+        // the error says so; the rows themselves still move.
+        let (mut meta, meta_error) = match meta {
+            Ok(meta) => (meta, None),
+            Err(error) => (
+                self.current
+                    .sessions
+                    .iter()
+                    .filter(|row| !row.meta.is_empty())
+                    .filter_map(|row| Some((row.id.parse::<SessionId>().ok()?, row.meta.clone())))
+                    .collect(),
+                Some(error),
+            ),
+        };
         self.hook_state_at = hooks
             .iter()
             .filter_map(|(id, row)| Some((id.to_string(), row.state_at?)))
@@ -1823,6 +1843,7 @@ impl SnapshotStore {
                     reports_as: declared,
                     detected_agent,
                     member_dirs,
+                    meta: meta.remove(&session.id).unwrap_or_default(),
                 }
             })
             .collect();
@@ -1857,7 +1878,7 @@ impl SnapshotStore {
             hosts: self.hosts.clone(),
             mux: self.mux.clone(),
             taken_at_ms,
-            error: None,
+            error: meta_error,
         };
         self.attach_git_stats();
         self.mark_changed();

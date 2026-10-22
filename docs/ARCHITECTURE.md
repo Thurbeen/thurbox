@@ -3104,3 +3104,39 @@ to kill windows. A missing policy file could therefore authorize a teardown.
 A typed absence is evidence; a sentence is only a diagnosis. Discovery also
 keeps confirmed absence, transport failure, and other inconclusive probes
 separate so only absence can authorize relaunch.
+
+## ADR-40: The plugin API is declared once in Rust, and versioned
+
+**Decision:** `kernel::lua_api` declares every field `LuaHost::publish` and
+`LuaHost::enter` serve on `thurbox`, with its luals type and one line of
+documentation. The published region of `ui/lib/thurbox.d.lua`, the `thurbox.*`
+entries of `thurbox.yml` and `tests/fixtures/lua_std/reads.lua` are rendered
+from it by `just lua-api`, between `BEGIN GENERATED`/`END GENERATED` markers.
+`tests/lua_api.rs` fails when a file differs from the rendering, and when a
+plugin walking a fully populated publish meets a key the schema does not
+declare. `thurbox.api` publishes `lua_api::API`, an integer that moves only
+when a field is removed or changes meaning; a plugin's `requires_api` above it
+is a load error naming the file. The first field added under it is
+`session.meta`: a session's `ui.*` meta keys, cleaned on the snapshot worker
+(control and invisible format characters stripped, 256 characters, 32 keys,
+active sessions only, bounded in the query), with `thurbox.*` keys refused by
+`session meta set` and `unset`. A meta read that fails keeps each row's labels
+as last read and records the error; the rows still move.
+
+**Why:** the same shape was written by hand in four places, nothing compared
+them, and a table published without its fields passed CI (#1133). Plugins saw
+only the application version, while a field could be renamed in a minor
+release and an edited bundled pane is kept forever, so the rename broke it with
+no message. Generating the declarations from the publish side's own list makes
+an undeclared field a test failure, and the contract number gives a plugin
+something to state rather than a release to guess (#1476). Meta under a fixed
+prefix lets a driver label a row without the CLI round trip a pane would
+otherwise make per session, while every other key stays the driver's or
+thurbox's own (#1523).
+
+**Limits:** the schema covers what is published, not node props, `ctx`, the
+event payloads or command verbs, which `thurbox.d.lua` still keeps by hand. A
+load stays all-or-nothing, so a plugin needing a newer API fails the reload as
+any broken pane does, and the inventory names it. A meta value is stripped of
+the characters that would act on the terminal or reorder the row, not of
+everything unusual; it is untrusted text, which a pane renders as text.

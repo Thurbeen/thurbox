@@ -825,7 +825,8 @@ pub(super) fn migrate_v40_bookmark_git_kind(conn: &Connection) -> rusqlite::Resu
 ///
 /// `session_meta` is per-session key/value for whoever is driving: a task id,
 /// a lease, a correlation key. Namespaced by convention (`fm.*`, `gc.*`) so two
-/// drivers against one database do not collide, and never interpreted here.
+/// drivers against one database do not collide, and never interpreted here
+/// (ADR-40 later gave `ui.*` and `thurbox.*` a meaning above this layer).
 pub(super) fn migrate_v41_joinable(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_absent(conn, "sessions", "launch_command", "TEXT")?;
     add_column_if_absent(conn, "sessions", "launch_args", "TEXT")?;

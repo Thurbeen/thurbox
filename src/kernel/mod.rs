@@ -19,6 +19,7 @@ pub mod focus;
 pub mod host;
 pub mod inventory;
 pub mod layout;
+pub mod lua_api;
 pub mod messages;
 pub mod metrics;
 pub mod modals;

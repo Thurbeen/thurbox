@@ -112,6 +112,9 @@ pub(crate) struct RowsRead {
     pub bases: HashMap<SessionId, String>,
     pub stopped: HashSet<SessionId>,
     pub reports_as: HashMap<SessionId, String>,
+    /// Each session's published meta, already cleaned and capped, or why it
+    /// could not be read.
+    pub meta: Result<HashMap<SessionId, std::collections::BTreeMap<String, String>>, String>,
     pub deleted: Vec<DeletedRow>,
     pub tasks: Vec<TaskRow>,
     pub automations: Vec<AutomationRow>,
@@ -358,6 +361,36 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
     // `session get` reads it: the coverage a state is judged against belongs
     // to the declared agent, not to the shell the row was created with.
     let reports_as = database.load_reports_as().unwrap_or_default();
+    // Bounded by the query and cleaned here, on the worker, so a publish only
+    // copies strings.
+    let meta = database
+        .load_active_session_meta(
+            crate::kernel::lua_api::META_PREFIX,
+            crate::kernel::lua_api::META_KEY_CHARS,
+            crate::kernel::lua_api::META_KEYS,
+            // Raw characters, above the published cap: cleaning drops control
+            // characters first, and they must not cost a visible one.
+            crate::kernel::lua_api::META_VALUE_CHARS * 4,
+        )
+        // Carried rather than raised, and never defaulted to empty: the
+        // store keeps the labels it has and says why, so a failing meta query
+        // neither wipes every note and group nor holds back the rows.
+        .map_err(|e| format!("load session meta: {e}"))
+        .map(|all| {
+            all.into_iter()
+                .map(|(id, keys)| {
+                    let keys = keys
+                        .into_iter()
+                        .filter(|(key, _)| crate::kernel::lua_api::is_published_meta_key(key))
+                        .map(|(key, value)| {
+                            let value = crate::kernel::lua_api::clean_meta_value(&value);
+                            (key, value)
+                        })
+                        .collect();
+                    (id, keys)
+                })
+                .collect()
+        });
 
     // Deleted sessions, so a restore surface has something to list.
     let deleted = database
@@ -482,6 +515,7 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
         bases,
         stopped,
         reports_as,
+        meta,
         deleted,
         tasks,
         automations,
