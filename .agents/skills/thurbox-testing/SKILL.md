@@ -297,7 +297,12 @@ On native Windows, `tests/session_lifetime.rs` runs
 `scripts/dev/e2e/psmux-exit-control.ps1` when psmux is installed. It creates a
 random socket and disposable config/data profile, opts out of agent wiring in
 that fresh profile, and checks a real TUI's crash-loop message and failed-command
-event after three actual CLI relaunches. Cleanup runs in `finally`.
+event after three actual CLI relaunches. Cleanup runs in `finally`. It runs
+`scripts/dev/e2e/psmux-pane-routing.ps1` the same way (#1557): three sessions of
+a fixture agent that logs what it reads, each sent its own line, then one
+stopped; it passes when every line reached its own session and only that window
+ended, or when thurbox refused the psmux as too old. `-PsmuxDir` puts a given
+psmux first on `PATH`, which is how it was run against 3.3.7, 3.3.8 and 3.4.0.
 
 One family under `scripts/dev/e2e/` (`linux-container.sh` = ephemeral Podman,
 `windows-vm.sh` = ephemeral dockur Windows VM, `real-host.sh` = a machine you own)

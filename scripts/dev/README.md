@@ -44,6 +44,15 @@ a built binary pair directly:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev/e2e/psmux-exit-control.ps1 -BinaryDir target/debug
 ```
 
+`e2e/psmux-pane-routing.ps1` runs beside it (#1557): every session's input must
+reach that session and a stop end only its window, unless thurbox refuses the
+psmux as too old. `-PsmuxDir <dir>` tests the psmux.exe in that directory
+instead of the one on `PATH`.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev/e2e/psmux-pane-routing.ps1 -BinaryDir target/debug -PsmuxDir C:\psmux-3.3.7
+```
+
 ```bash
 scripts/dev/e2e/linux-container.sh up      # then: … test
 scripts/dev/e2e/windows-vm.sh up           # first run installs Windows (~10-20 min)

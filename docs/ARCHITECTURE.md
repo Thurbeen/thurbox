@@ -1103,19 +1103,26 @@ reference to read before touching that path.
   `kill-window -t @7` killed the other session's `@7`. So every pane or window
   id a command targets goes out qualified (`TmuxCompatible::SESSION_SCOPED_IDS`,
   `qualify_target`): a pane in the pane slot (`thurbox:.%2`), a window in the
-  window slot (`thurbox:@7`). That form was checked against `display-message`,
-  `capture-pane`, `send-keys`, `send-paste`, `resize-pane`, `resize-window`,
-  `rename-window`, `set-option -w` and `kill-pane`. 3.3.8 refuses an ambiguous
-  bare `%N` (#569) and documents the pane-slot form. tmux ids are server-wide
-  and its targets are unchanged.
+  window slot (`thurbox:@7`). 3.3.8 refuses an ambiguous bare `%N` (#569) and
+  documents the pane-slot form. tmux ids are server-wide and its targets are
+  unchanged.
+- **3.3.7 reads the pane slot as no pane at all.** Its target parser takes
+  `thurbox:.%3` for a session with no pane in it, so the command runs on the
+  session's *active* pane (#1557). Measured on Windows 11 against 3.3.7, 3.3.8
+  and 3.4.0, over control mode and the one-shot CLI: on 3.3.7
+  `display-message` answered for the active pane, `send-keys` typed into it
+  and `kill-pane` killed it; 3.3.8 and 3.4.0 reached `%3` every time.
+  `thurbox:%3` worked on 3.3.7 but the 3.3.8 CLI refuses it
+  (`can't find window`), so no one spelling serves both, and 3.3.8 is the floor
+  (below).
 - **`kill-window` misreads a pane id in the pane slot.** On 3.3.7,
   `kill-window -t thurbox:.%8` killed the session's *active* window, not `%8`'s
-  (fixed in 3.3.8, dc183e3). `kill-pane` with the same target kills `%8`, and a
-  thurbox window holds one pane, so the adapter kills that way
+  (fixed in 3.3.8, dc183e3). `kill-pane` with the same target kills `%8` on
+  3.3.8, and a thurbox window holds one pane, so the adapter kills that way
   (`TmuxCompatible::KILL_BY_PANE`).
-- **An unknown pane is answered for the active one.** In control mode 3.3.7
+- **An unknown pane is answered for the active one.** In control mode psmux
   answers `display-message -t thurbox:.%9` for a pane that does not exist with
-  the *active* pane's fields and no error (3.3.8, #545, errors instead).
+  the *active* pane's fields and no error (measured on 3.3.7 and 3.3.8).
   `register_pane` therefore asks for `#{pane_id}` alongside the window and
   records the window only when the answer is the pane it asked about
   (`parse_pane_location`). Otherwise the active window's next close would end
@@ -1132,9 +1139,9 @@ reference to read before touching that path.
   is unregistered the next time the pane has output or an event for it
   (`ControlMode::prune_senders`), so a close check never counts it as a reader.
 
-### psmux 3.3.7 is the floor, asked of the server at each spawn
+### psmux 3.3.8 is the floor, asked of the server before a pane is named
 
-Before psmux 3.3.7 (psmux#450) the server's console attach/detach — which every
+Two defects set it. Before psmux 3.3.7 (psmux#450) the server's console attach/detach — which every
 `send-keys C-c`, bracketed paste and mouse or VT injection performs, so ordinary
 use of an agent pane — leaves the server's std handle slots on freed, recycled
 handle values, and every pane born afterwards inherits them. The pane still has
@@ -1149,14 +1156,23 @@ on the existing-worktree flow) only because a long-lived server that has been
 typed into is the precondition, not anything about the session.
 
 The window command cannot work around it — the handles are corrupt from the
-pane's birth, before any PowerShell of ours runs — so `spawn` and the headless
-`create_window` refuse to create a pane on psmux older than 3.3.7 (the psmux
-adapter's `VERSION_FLOOR`, `check_psmux_version`). They ask the **server** (`#{version}`), not the binary:
-upgrading psmux leaves a server started before it on the old code, and the
-message says to restart it. Only where no session exists yet, so no server to
-ask, does the binary's `-V` answer — before it starts one that every spawn
-would then refuse. Attaching to existing panes is not gated, so an
-old server's sessions stay reachable until then.
+pane's birth, before any PowerShell of ours runs. And 3.3.7 runs every command
+aimed at a pane on the session's active pane instead (above, #1557): typing
+into one session wrote into another, and stopping one killed another's agent,
+with no error anywhere.
+
+So no pane is named to, or born on, a psmux server older than 3.3.8 (the psmux
+adapter's `VERSION_FLOOR`, `check_psmux_version`). Every pane target is spelled
+by `Server::target`, which first asks the **server** its `#{version}`
+(`admit_server`), not the binary: upgrading psmux leaves a server started
+before it on the old code, and the message says to restart it. The answer is
+kept until the control connection is replaced, which may be by a server
+started since. A server that does not answer is not refused — nothing named to
+it arrives either. Only where no session exists yet, so no server to ask, does
+the binary's `-V` answer — before it starts one that every command would then
+refuse. Two callers spell a target without asking, because they must not wait
+on a round trip: the paint's `resize` and the input loop's `is_dead`. The pane
+each names was admitted when it was attached.
 
 ### A psmux agent reports its own exit, and its relaunches are bounded
 
@@ -1204,9 +1220,8 @@ neither piece exists and nothing changes:
 The back-off counts relaunches rather than `exited` events. A window that
 vanished without reporting is the same loop: it was killed outside thurbox,
 or the machine has no `thurbox-cli` on PATH. psmux ≥ 3.3.8 does implement
-`remain-on-exit`, but the adapter still declares none. Turning it on would
-need a per-server version gate on a const answer, and the reporting above
-works on the 3.3.7 floor.
+`remain-on-exit`, but the adapter still declares none: turning it on is a
+change of its own, and the reporting above does not depend on it.
 
 ### A psmux create names its pane, and only that pane proves it started
 

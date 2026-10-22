@@ -460,13 +460,13 @@ input, capture, and fork.
 ### Multiplexer requirements and RMUX setup
 
 Use the latest stable release of the selected multiplexer. These are the
-minimums enforced by the adapters, checked against upstream on 2026-10-03;
-no runtime floor changed in this documentation update.
+minimums enforced by the adapters, checked against upstream on 2026-10-22,
+when psmux's floor rose to 3.3.8 (#1557).
 
 | Multiplexer | Minimum | Code enforcing it | Upstream evidence |
 | --- | --- | --- | --- |
 | [tmux](https://github.com/tmux/tmux) | 3.2 | [`MIN_TMUX_VERSION` and `check_min_version`](../src/backend/tmux.rs) | [3.2 changes](https://github.com/tmux/tmux/blob/3.2/CHANGES): control-client flow control and format subscriptions |
-| [psmux](https://github.com/psmux/psmux) | 3.3.7 | [`MIN_PSMUX_VERSION` and `check_psmux_version`](../src/backend/psmux.rs) | [3.3.7 release](https://github.com/psmux/psmux/releases/tag/v3.3.7): dead warm-pane fix (psmux#450) |
+| [psmux](https://github.com/psmux/psmux) | 3.3.8 | [`MIN_PSMUX_VERSION` and `check_psmux_version`](../src/backend/psmux.rs) | [3.3.8 release](https://github.com/psmux/psmux/releases/tag/v3.3.8): pane-slot targets (`thurbox:.%3`) resolve to that pane; [3.3.7](https://github.com/psmux/psmux/releases/tag/v3.3.7): dead warm-pane fix (psmux#450) |
 | [RMUX](https://github.com/Helvesec/rmux) | 0.10.0 | [`Rmux::check_banner`](../src/backend/rmux.rs) | [0.10.0 release](https://github.com/Helvesec/rmux/releases/tag/v0.10.0): wire protocol 8, incompatible with 0.9.x daemons |
 
 For tmux, the limiting features are `refresh-client -f pause-after=5`,
@@ -487,16 +487,22 @@ rejection is tolerated on 3.2–3.4. See ADR-12 for the control setup.
 
 psmux's floor is its own release version, not a claim of tmux feature parity.
 Older releases can spawn dead panes after console attach/detach; 3.3.7 fixes
-that. The adapter checks both the client banner and the running server's
-`#{version}`. RMUX checks its `rmux -V` banner instead: its `#{version}` is
-the tmux compatibility version, not the RMUX release.
+that. 3.3.7 still runs a command aimed at a pane on the session's active pane
+instead, so keystrokes reach another session; 3.3.8 fixes that. The adapter
+checks both the client banner and the running server's `#{version}`, the
+server's before any pane is named to it — an upgrade needs
+`psmux -L <socket> kill-server` before thurbox will use the server. RMUX
+checks its `rmux -V` banner instead: its `#{version}` is the tmux
+compatibility version, not the RMUX release.
 
 Recorded integration evidence is tmux 3.2/3.2a and 3.5a/3.7c (ADR-12),
 psmux 3.3.8 on Windows 11 (ADR-13), and RMUX 0.10.0 on Linux
 ([#1322](https://github.com/Thurbeen/thurbox/pull/1322)). This is historical
 evidence, not a claim that every platform was retested for this doc change.
 The latest upstream stable releases checked on 2026-10-03 were tmux 3.7c,
-psmux 3.3.8, and RMUX 0.10.0.
+psmux 3.3.8, and RMUX 0.10.0; psmux 3.4.0 followed on 2026-10-13, and
+[`psmux-pane-routing.ps1`](../scripts/dev/e2e/psmux-pane-routing.ps1) passes
+against 3.3.8 and 3.4.0 on Windows 11.
 
 RMUX is a Rust terminal multiplexer with a tmux-compatible command interface.
 It is opt-in and never changes the platform defaults. Install it separately

@@ -139,10 +139,10 @@ impl TmuxCompatible for Psmux {
 
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = Some(check_psmux_version);
 
-    /// The 3.3.7 floor, on the binary that would start a server: psmux numbers
+    /// The 3.3.8 floor, on the binary that would start a server: psmux numbers
     /// itself independently, so this is its own floor and never tmux's. A
-    /// running server is judged by its own `#{version}` where panes are born
-    /// ([`Self::VERSION_FLOOR`]).
+    /// running server is judged by its own `#{version}` before a pane is named
+    /// to it ([`Self::VERSION_FLOOR`]).
     fn check_banner(banner: &str, socket: &str) -> Result<()> {
         check_psmux_version(banner, socket)
     }
@@ -353,7 +353,8 @@ impl PaneInput for PsmuxInput {
     }
 }
 
-/// The first psmux whose server gives every new pane its own console.
+/// The first psmux whose server both gives every new pane its own console and
+/// reads the pane target thurbox names every pane by.
 ///
 /// Before 3.3.7 (psmux#450) the server's console attach/detach — which every
 /// `send-keys C-c`, bracketed paste and mouse or VT injection performs — left
@@ -364,7 +365,12 @@ impl PaneInput for PsmuxInput {
 /// falls into `--print` and exits, and nothing it writes reaches the pane.
 /// Measured on Windows 11: after a burst of `send-keys C-c`, every window 3.3.6
 /// created was born that way and every one 3.3.8 created was not.
-const MIN_PSMUX_VERSION: (u32, u32, u32) = (3, 3, 7);
+///
+/// 3.3.7 reads the pane-slot target (`thurbox:.%3`, `qualify_target`) as
+/// naming no pane and runs the command on the session's active pane (#1557):
+/// keystrokes typed into another session, `display-message` answering for it,
+/// `kill-pane` ending it. 3.3.8 resolves it to the pane it names.
+const MIN_PSMUX_VERSION: (u32, u32, u32) = (3, 3, 8);
 
 /// Refuse a psmux older than [`MIN_PSMUX_VERSION`].
 ///
@@ -391,10 +397,11 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
     });
     match version {
         Some(v) if v < MIN_PSMUX_VERSION => bail!(
-            "psmux {}.{}.{} is too old: its server can start an agent with a stdin that is \
-             not its pane (\"stdin is unreadable (EISDIR)\"). Upgrade psmux to {}.{}.{} or \
-             newer, then restart its server (`psmux -L {socket} kill-server`) — a running \
-             server keeps the old code",
+            "psmux {}.{}.{} is too old: its server runs a command meant for one pane on the \
+             session's active pane — keystrokes typed into another session, the wrong pane \
+             read or killed — and, before 3.3.7, starts agents with a stdin that is not their \
+             pane. Upgrade psmux to {}.{}.{} or newer, then restart its server (`psmux -L \
+             {socket} kill-server`) — a running server keeps the old code",
             v.0,
             v.1,
             v.2,
@@ -1582,12 +1589,12 @@ mod tests {
     /// `send-keys C-c` std handles that are no longer the pane's console, and
     /// the agent reports "stdin is unreadable (EISDIR)" and exits.
     #[test]
-    fn psmux_older_than_3_3_7_is_refused_with_the_upgrade() {
+    fn psmux_older_than_the_floor_is_refused_with_the_upgrade() {
         let err = check_psmux_version("tmux 3.3.6\n", "thurbox")
             .unwrap_err()
             .to_string();
         assert!(err.contains("3.3.6"), "{err}");
-        assert!(err.contains("3.3.7"), "{err}");
+        assert!(err.contains("3.3.8"), "{err}");
         assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
         assert!(check_psmux_version("tmux 3.3.5", "thurbox").is_err());
         assert!(check_psmux_version("psmux 3.2.9", "thurbox").is_err());
@@ -1625,37 +1632,108 @@ mod tests {
     }
 
     #[test]
-    fn psmux_3_3_7_and_newer_is_accepted() {
+    fn psmux_3_3_8_and_newer_is_accepted() {
         assert!(
             check_psmux_version("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n", "thurbox")
                 .is_ok()
         );
-        assert!(check_psmux_version("tmux 3.3.7\npsmux 3.3.7", "thurbox").is_ok());
         assert!(check_psmux_version("psmux 3.4.0", "thurbox").is_ok());
         assert!(check_psmux_version("psmux 4.0", "thurbox").is_ok());
         // A pre-release suffix on the patch is still that patch, not 0.
         assert!(check_psmux_version("psmux 3.3.9-dev", "thurbox").is_ok());
     }
 
-    /// Measured on psmux 3.3.7: `kill-window -t thurbox:.%8` killed the
-    /// session's active window, and a bare `kill-window -t @7` another
-    /// session's `@7`. A pane's window goes by `kill-pane` on the qualified
-    /// pane; a window by id goes qualified; a window by name is already
-    /// qualified and is left as it is.
+    /// psmux 3.3.7 reads the pane-slot target thurbox names every pane by
+    /// (`thurbox:.%3`) as naming no pane, and runs the command on the session's
+    /// active one (measured on Windows 11, #1557): keystrokes typed into
+    /// another session, `display-message` answering for it, `kill-pane` ending
+    /// it. 3.3.8 resolves the same spelling to the pane it names.
+    #[test]
+    fn psmux_3_3_7_is_refused_for_the_pane_targets_it_misreads() {
+        let err = check_psmux_version("tmux 3.3.7\npsmux 3.3.7 (05cc5d4 2026-07-20)\n", "thurbox")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("psmux 3.3.7 is too old"), "{err}");
+        assert!(err.contains("3.3.8"), "{err}");
+        assert!(err.contains("active pane"), "{err}");
+        assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
+        assert!(check_psmux_version("3.3.7", "thurbox").is_err());
+    }
+
+    /// A stand-in psmux whose server answers `#{version}` with `version`, and
+    /// which logs every command line it is given beside itself (`psmux.log`).
+    #[cfg(unix)]
+    fn psmux_answering(version: &str) -> (tempfile::TempDir, PsmuxBackend, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().expect("tempdir");
+        let mux = root.path().join("psmux");
+        std::fs::write(
+            &mux,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.log\"\n\
+                 case \"$*\" in\n  *'#{{version}}'*) echo '{version}' ;;\nesac\n"
+            ),
+        )
+        .expect("write fake psmux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let backend = PsmuxBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy()),
+            "test",
+            "thurbox",
+            "local:psmux",
+        );
+        (root, backend, mux.with_extension("log"))
+    }
+
+    /// The server a binary upgrade left running keeps its old code, so the
+    /// floor is held against the server before any pane is named to it — here
+    /// by `session key`, which never opens control mode.
+    #[cfg(unix)]
+    #[test]
+    fn no_pane_on_a_too_old_psmux_server_is_addressed() {
+        let (_root, psmux, log) = psmux_answering("3.3.7");
+        let err = psmux
+            .send_key(
+                "%2",
+                &crate::backend::contract::Key::parse("Enter").unwrap(),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("psmux 3.3.7 is too old"), "{err}");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
+    }
+
+    /// Admitted once: a new enough server is not asked again for every pane.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_enough_psmux_server_is_asked_its_version_once() {
+        let (_root, psmux, log) = psmux_answering("3.3.8");
+        assert_eq!(psmux.target("%2").unwrap(), "thurbox:.%2");
+        assert_eq!(psmux.target("%3").unwrap(), "thurbox:.%3");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert_eq!(sent.matches("#{version}").count(), 1, "{sent}");
+    }
+
+    /// A bare `kill-window -t @7` killed another session's `@7` (measured on
+    /// psmux 3.3.7), and 3.3.7 sent a `kill-window -t thurbox:.%8` to the
+    /// session's active window (fixed in 3.3.8, dc183e3). A pane's window goes
+    /// by `kill-pane` on the qualified pane; a window by id goes qualified; a
+    /// window by name is already qualified and is left as it is.
     #[test]
     fn a_psmux_kill_reaches_the_pane_it_names_in_thurboxs_session() {
         let psmux = PsmuxBackend::local();
         let session = psmux.session.clone();
         assert_eq!(
-            psmux.kill_command("%8"),
+            psmux.kill_spelling("%8"),
             ("kill-pane", format!("{session}:.%8").into())
         );
         assert_eq!(
-            psmux.kill_command("@7"),
+            psmux.kill_spelling("@7"),
             ("kill-window", format!("{session}:@7").into())
         );
         assert_eq!(
-            psmux.kill_command("thurbox:=tb-x"),
+            psmux.kill_spelling("thurbox:=tb-x"),
             ("kill-window", "thurbox:=tb-x".into())
         );
     }
@@ -1665,7 +1743,7 @@ mod tests {
     #[test]
     fn a_psmux_pane_target_names_thurboxs_session() {
         let psmux = PsmuxBackend::local();
-        assert_eq!(psmux.target("%2"), format!("{}:.%2", psmux.session));
+        assert_eq!(psmux.spell_target("%2"), format!("{}:.%2", psmux.session));
     }
 
     /// A close is confirmed against the session's own panes, listed in the
