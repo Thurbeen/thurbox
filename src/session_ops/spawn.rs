@@ -169,6 +169,10 @@ pub struct SpawnResult {
     /// `false` when a delegated create's host answered with a session it
     /// already had (`--on-existing adopt` there) instead of making one.
     pub created: bool,
+    /// For such a session, what the host said of it — whether it is parked,
+    /// and its state word. The mirror carries neither, so this is the only
+    /// place they are known here; `None` for a session this call created.
+    pub found: Option<(bool, String)>,
 }
 
 /// Spawn a new session on its resolved backend and persist it to SQLite.
@@ -303,6 +307,11 @@ fn spawn(
     if let Some(note) = &sharing {
         tracing::warn!("'{}': {note}", req.name);
     }
+
+    // Only on this side: a delegated id is the host's to answer — its rows are
+    // the record, and a retry finds its own session there — while the rows
+    // here are a mirror of them.
+    id_is_free(db, req.session_id)?;
 
     // Below the delegation, because a delegated session's key is the host's to
     // arbitrate against the rows it authors (ADR-24) — asked here, it would be
@@ -604,6 +613,7 @@ fn spawn(
         warnings,
         sharing,
         created: true,
+        found: None,
     })
 }
 
@@ -625,19 +635,6 @@ pub fn validate_request(
         );
     }
     validate_parent_session(db, req.parent_session_id)?;
-    if let Some(id) = req.session_id {
-        let live = db
-            .get_session_by_id(id)
-            .map_err(|e| format!("get_session_by_id: {e}"))?;
-        let deleted = db
-            .get_deleted_session_by_id(id)
-            .map_err(|e| format!("get_deleted_session_by_id: {e}"))?;
-        if live.is_some() || deleted.is_some() {
-            return Err(crate::session_ops::OpError::Conflict(format!(
-                "session id {id} is already taken"
-            )));
-        }
-    }
     Ok(())
 }
 
@@ -1013,6 +1010,7 @@ fn spawn_delegated(
     report(SpawnPhase::Host);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut created = true;
+    let mut found = None;
     let session_id =
         match super::host_cli::run_classified_with_stdin(host, cli, &arg_refs, stdin.as_deref()) {
             Ok(answer) => {
@@ -1020,6 +1018,19 @@ fn spawn_delegated(
                     .get("created")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true);
+                if !created {
+                    found = Some((
+                        answer
+                            .get("stopped")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false),
+                        answer
+                            .get("state")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    ));
+                }
                 answer
                     .get("id")
                     .and_then(serde_json::Value::as_str)
@@ -1120,7 +1131,28 @@ fn spawn_delegated(
         warnings: Vec::new(),
         sharing: None,
         created,
+        found,
     })
+}
+
+/// A caller-chosen id must name no row here, live or deleted — a deleted one
+/// would collide with that session's restore.
+fn id_is_free(db: &Database, id: Option<SessionId>) -> Result<(), crate::session_ops::OpError> {
+    let Some(id) = id else {
+        return Ok(());
+    };
+    let live = db
+        .get_session_by_id(id)
+        .map_err(|e| format!("get_session_by_id: {e}"))?;
+    let deleted = db
+        .get_deleted_session_by_id(id)
+        .map_err(|e| format!("get_deleted_session_by_id: {e}"))?;
+    if live.is_some() || deleted.is_some() {
+        return Err(crate::session_ops::OpError::Conflict(format!(
+            "session id {id} is already taken"
+        )));
+    }
+    Ok(())
 }
 
 /// Validate that the requested parent session, if any, exists and is active.

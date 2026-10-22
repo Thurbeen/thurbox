@@ -914,3 +914,151 @@ fn a_taken_session_key_uses_the_shared_conflict_exit_code() {
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(answer["error_kind"], "conflict");
 }
+
+/// An id a deleted session still holds is not free: reusing it would collide
+/// with that row's restore. Refused before anything is spawned, with the
+/// shared conflict code.
+#[test]
+fn a_create_under_a_deleted_sessions_id_is_a_conflict() {
+    let env = Env::new();
+    let id = env.seed("gone", None);
+    env.db().soft_delete_session(id).unwrap();
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "again",
+        "--repo-path",
+        env.path("work").to_str().unwrap(),
+        "--agent",
+        "shell",
+        "--id",
+        &id.to_string(),
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(5), "{}", stdout_of(&out));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "conflict");
+}
+
+/// `session create --env-stdin` with `stdin` written to it.
+fn create_with_env_stdin(env: &Env, stdin: &str, extra: &[&str]) -> Output {
+    use std::io::Write;
+    let work = env.path("work");
+    let mut args = vec![
+        "session",
+        "create",
+        "--name",
+        "piped",
+        "--repo-path",
+        work.to_str().unwrap(),
+        "--env-stdin",
+        "--json",
+    ];
+    args.extend_from_slice(extra);
+    let mut child = env
+        .command(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run thurbox-cli");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+/// What `--env-stdin` cannot read is a usage error, as a malformed `--env`
+/// is: a key that is no variable name, or anything but one object of strings.
+#[test]
+fn env_stdin_refuses_what_is_not_an_environment() {
+    let env = Env::new();
+    for stdin in [r#"{"A=B":"x"}"#, r#"{"":"x"}"#, r#"{"A":1}"#, "not json"] {
+        let out = create_with_env_stdin(&env, stdin, &["--agent", "shell"]);
+        assert_eq!(out.status.code(), Some(2), "{stdin}: {}", stdout_of(&out));
+        let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(answer["error_kind"], "usage", "{stdin}");
+    }
+}
+
+/// `--env` wins a clash with `--env-stdin`, and what only stdin names still
+/// arrives.
+#[cfg(unix)]
+#[test]
+fn env_on_the_command_line_wins_over_env_stdin() {
+    if thurbox::paths::resolve_on_path("tmux").is_none() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let seen = env.path("work").join("seen");
+    let script = format!(
+        "printf '%s|%s' \"$K\" \"$J\" > '{}'; exec sleep 600",
+        seen.display()
+    );
+    let out = create_with_env_stdin(
+        &env,
+        r#"{"K":"from-stdin","J":"only-stdin"}"#,
+        &[
+            "--command",
+            "sh",
+            "--arg",
+            "-c",
+            "--arg",
+            &script,
+            "--env",
+            "K=from-flag",
+        ],
+    );
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let written = loop {
+        if let Ok(text) = std::fs::read_to_string(&seen) {
+            if !text.is_empty() {
+                break text;
+            }
+        }
+        assert!(std::time::Instant::now() < deadline, "the pane never wrote");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert_eq!(written, "from-flag|only-stdin");
+}
+
+/// A deleted id makes the creation impossible, so it is refused before
+/// `--on-existing replace` tears anything down: tearing down a live namesake
+/// for a creation that then fails costs that session its uncommitted work.
+#[test]
+fn replace_with_a_deleted_id_tears_nothing_down() {
+    let env = Env::new();
+    let victim = env.seed("victim", None);
+    let gone = env.seed("gone", None);
+    env.db().soft_delete_session(gone).unwrap();
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "victim",
+        "--repo-path",
+        env.path("work").to_str().unwrap(),
+        "--agent",
+        "shell",
+        "--id",
+        &gone.to_string(),
+        "--on-existing",
+        "replace",
+        "--json",
+    ]);
+    assert_eq!(out.status.code(), Some(5), "{}", stdout_of(&out));
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "conflict");
+    let error = answer["error"].as_str().unwrap_or_default();
+    assert!(
+        !error.contains("could not be spawned"),
+        "the namesake was replaced before the id was refused: {error}"
+    );
+    assert!(env.db().get_session_by_id(victim).unwrap().is_some());
+}

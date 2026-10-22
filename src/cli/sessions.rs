@@ -1294,15 +1294,42 @@ fn run_create(
             })
         })
         .transpose()?;
+    // A creation the host's own CLI carries out is the host's to arbitrate
+    // (ADR-24): its rows are the record, and this machine's mirror of them
+    // can be a pass behind — a session deleted or renamed there since would
+    // be adopted, refused or torn down here on a picture that is no longer
+    // true. The id, the name and `--on-existing` all travel to the host
+    // instead, which applies them as it applies its own creations.
+    let delegated = host
+        .as_deref()
+        .and_then(crate::session_ops::configured_host)
+        .is_some_and(|host| {
+            matches!(
+                crate::session_ops::host_cli::usable(&host),
+                crate::session_ops::host_cli::Usable::Yes(_)
+            )
+        });
     // A retry: the id is the caller's, so a session under it is the one an
     // earlier attempt made — whose answer the caller never saw. Answered as
-    // it is, before any `--on-existing` rule could refuse or replace it.
-    if let Some(id) = session_id {
+    // it is, before any `--on-existing` rule could refuse or replace it. An
+    // id a deleted session holds is refused here too, before `replace` could
+    // tear anything down for a creation that cannot happen.
+    if let Some(id) = session_id.filter(|_| !delegated) {
         if let Some(existing) = db
             .get_session_by_id(id)
             .map_err(|e| format!("get_session_by_id: {e}"))?
         {
             return Ok(existing_session_output(db, backends, &existing));
+        }
+        if db
+            .get_deleted_session_by_id(id)
+            .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
+            .is_some()
+        {
+            return Err(crate::session_ops::OpError::Conflict(format!(
+                "session id {id} is already taken by a deleted session"
+            ))
+            .into());
         }
     }
     let parent_session_id = parent
@@ -1339,6 +1366,7 @@ fn run_create(
     // on nobody. A key is locked by the spawn itself, and a keyed lookup never
     // asks about the name.
     let name_held = match (&key, on_existing) {
+        _ if delegated => None,
         (None, OnExisting::Fail | OnExisting::Adopt | OnExisting::Replace) => Some(
             crate::session_ops::names::hold(db, &name, &backend, "create")?.ok_or_else(|| {
                 format!(
@@ -1349,17 +1377,21 @@ fn run_create(
         ),
         _ => None,
     };
-    let existing = resolve_existing(
-        db,
-        backends,
-        match &key {
-            Some(key) => Match::Key(key),
-            None => Match::Name(&name),
-        },
-        on_existing,
-        &backend,
-        reports_as.as_deref(),
-    )?;
+    let existing = if delegated {
+        Existing::None
+    } else {
+        resolve_existing(
+            db,
+            backends,
+            match &key {
+                Some(key) => Match::Key(key),
+                None => Match::Name(&name),
+            },
+            on_existing,
+            &backend,
+            reports_as.as_deref(),
+        )?
+    };
     if let Existing::Answered(output) = existing {
         return Ok(*output);
     }
@@ -1477,9 +1509,10 @@ fn run_create(
             // Present here only so `--on-existing adopt` can answer in
             // the same shape: a session that was just spawned is
             // running by construction and has said nothing yet, while
-            // one that was already there may be parked.
-            "stopped": false,
-            "state": state,
+            // one that was already there — here, or found by a host —
+            // may be parked, and is described as it was found.
+            "stopped": res.found.as_ref().is_some_and(|(stopped, _)| *stopped),
+            "state": res.found.as_ref().map_or(state, |(_, word)| word.as_str()),
             "created": res.created,
         }),
         human,

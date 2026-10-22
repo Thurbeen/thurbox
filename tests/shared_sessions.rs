@@ -1278,4 +1278,76 @@ mod delegated_create {
             1
         );
     }
+
+    /// An adopted session is described as the host found it, not as one that
+    /// was just spawned: a driver reads `stopped` to decide whether it still
+    /// owes a `session start`.
+    #[test]
+    fn an_adopted_session_reports_the_hosts_own_state() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let parked = created_id(&pair.create_on_host(&["--name", "parked", "--key", "k3"]));
+        let mut stop = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        stop.args(["session", "stop", &parked.to_string(), "--json"])
+            .env("HOME", pair.path("host-home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+            .env("THURBOX_DATA_DIR", pair.path("host-data"))
+            .env_remove("THURBOX_SESSION");
+        pair.host_server.scope(&mut stop);
+        let stopped = stop.output().expect("run the host's thurbox-cli");
+        assert!(
+            stopped.status.success(),
+            "{}",
+            String::from_utf8_lossy(&stopped.stdout)
+        );
+
+        let out = pair.create(&["--name", "parked", "--key", "k3", "--on-existing", "adopt"]);
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["id"], parked.to_string(), "{doc}");
+        assert_eq!(doc["created"], false, "{doc}");
+        assert_eq!(doc["stopped"], true, "{doc}");
+        assert_eq!(doc["state"], "stopped", "{doc}");
+    }
+
+    /// A delegated create asks the host, not the caller's mirror, whether the
+    /// session is already there: one the host deleted since the last mirror
+    /// pass is not adopted back from a stale row.
+    #[test]
+    fn a_delegated_adopt_does_not_answer_from_a_stale_mirror_row() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let first = created_id(&pair.create(&["--name", "stale", "--key", "k4"]));
+        assert!(pair.caller_db().get_session_by_id(first).unwrap().is_some());
+        let mut delete = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        delete
+            .args(["session", "delete", &first.to_string(), "--force", "--json"])
+            .env("HOME", pair.path("host-home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+            .env("THURBOX_DATA_DIR", pair.path("host-data"))
+            .env_remove("THURBOX_SESSION");
+        pair.host_server.scope(&mut delete);
+        let deleted = delete.output().expect("run the host's thurbox-cli");
+        assert!(
+            deleted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&deleted.stdout)
+        );
+        assert!(
+            pair.caller_db().get_session_by_id(first).unwrap().is_some(),
+            "the caller's mirror has not caught up"
+        );
+
+        let out = pair.create(&["--name", "stale", "--key", "k4", "--on-existing", "adopt"]);
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["created"], true, "{doc}");
+        assert_ne!(doc["id"], first.to_string(), "{doc}");
+    }
 }
