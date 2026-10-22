@@ -1300,9 +1300,17 @@ fn run_create(
     // be adopted, refused or torn down here on a picture that is no longer
     // true. The id, the name and `--on-existing` all travel to the host
     // instead, which applies them as it applies its own creations.
-    let delegated = host
-        .as_deref()
-        .and_then(crate::session_ops::configured_host)
+    //
+    // The host is read off the resolved backend, as the spawn reads it, so
+    // every spelling `--host` takes (`box`, `ssh:box`) reaches the same
+    // answer here as it does there.
+    let backend = crate::session_ops::spawn::backend_type_for_choice(
+        backends,
+        host.as_deref(),
+        multiplexer.as_deref(),
+    )?;
+    let delegated = crate::session_ops::resolve_host(&backend)
+        .flatten()
         .is_some_and(|host| {
             matches!(
                 crate::session_ops::host_cli::usable(&host),
@@ -1355,11 +1363,6 @@ fn run_create(
     // caller makes rather than something thurbox assumes — and it is a
     // decision about *this* backend, since a mirrored host's rows share
     // the namespace.
-    let backend = crate::session_ops::spawn::backend_type_for_choice(
-        backends,
-        host.as_deref(),
-        multiplexer.as_deref(),
-    )?;
     // `fail`, `adopt` and `replace` each promise the caller the only session
     // of that name, so the name is locked from the lookup to the row — the
     // lock self-heal and restore take. `allow` accepts a namesake, so it waits

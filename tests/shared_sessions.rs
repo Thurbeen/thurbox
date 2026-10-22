@@ -947,8 +947,13 @@ mod delegated_create {
 
         /// `session create --host probe` from the caller.
         fn create(&self, args: &[&str]) -> Output {
+            self.create_via("probe", args)
+        }
+
+        /// [`create`](Self::create), naming the host as `host`.
+        fn create_via(&self, host: &str, args: &[&str]) -> Output {
             let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-            cmd.args(["session", "create", "--host", "probe", "--repo-path"])
+            cmd.args(["session", "create", "--host", host, "--repo-path"])
                 .arg(self.path("work"))
                 .args(args)
                 .arg("--json")
@@ -1322,32 +1327,83 @@ mod delegated_create {
             eprintln!("skipping: tmux is not installed");
             return;
         }
-        let pair = Pair::new();
-        let first = created_id(&pair.create(&["--name", "stale", "--key", "k4"]));
-        assert!(pair.caller_db().get_session_by_id(first).unwrap().is_some());
-        let mut delete = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-        delete
-            .args(["session", "delete", &first.to_string(), "--force", "--json"])
-            .env("HOME", pair.path("host-home"))
-            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
-            .env("THURBOX_DATA_DIR", pair.path("host-data"))
-            .env_remove("THURBOX_SESSION");
-        pair.host_server.scope(&mut delete);
-        let deleted = delete.output().expect("run the host's thurbox-cli");
-        assert!(
-            deleted.status.success(),
-            "{}",
-            String::from_utf8_lossy(&deleted.stdout)
-        );
-        assert!(
-            pair.caller_db().get_session_by_id(first).unwrap().is_some(),
-            "the caller's mirror has not caught up"
-        );
+        // Both spellings `--host` takes: the gate that hands the decision to
+        // the host has to see the host the spawn will delegate to.
+        for (n, host) in ["probe", "ssh:probe"].into_iter().enumerate() {
+            let pair = Pair::new();
+            let key = format!("k4-{n}");
+            let first = created_id(&pair.create_via(host, &["--name", "stale", "--key", &key]));
+            assert!(pair.caller_db().get_session_by_id(first).unwrap().is_some());
+            let mut delete = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+            delete
+                .args(["session", "delete", &first.to_string(), "--force", "--json"])
+                .env("HOME", pair.path("host-home"))
+                .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+                .env("THURBOX_DATA_DIR", pair.path("host-data"))
+                .env_remove("THURBOX_SESSION");
+            pair.host_server.scope(&mut delete);
+            let deleted = delete.output().expect("run the host's thurbox-cli");
+            assert!(
+                deleted.status.success(),
+                "{}",
+                String::from_utf8_lossy(&deleted.stdout)
+            );
+            assert!(
+                pair.caller_db().get_session_by_id(first).unwrap().is_some(),
+                "the caller's mirror has not caught up"
+            );
 
-        let out = pair.create(&["--name", "stale", "--key", "k4", "--on-existing", "adopt"]);
-        let doc = answer(&out);
-        assert!(out.status.success(), "{doc}");
-        assert_eq!(doc["created"], true, "{doc}");
-        assert_ne!(doc["id"], first.to_string(), "{doc}");
+            let out = pair.create_via(
+                host,
+                &["--name", "stale", "--key", &key, "--on-existing", "adopt"],
+            );
+            let doc = answer(&out);
+            assert!(out.status.success(), "{host}: {doc}");
+            assert_eq!(doc["created"], true, "{host}: {doc}");
+            assert_ne!(doc["id"], first.to_string(), "{host}: {doc}");
+        }
+    }
+
+    /// An id a row here holds for a session on another machine is not the
+    /// host's to reuse: the mirror pass after the creation would relabel that
+    /// row as the host's, leaving its own pane untracked — or revive a
+    /// deleted one as the host's live session.
+    #[test]
+    fn a_delegated_create_refuses_an_id_this_machine_holds_elsewhere() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let db = pair.caller_db();
+        let mine = SessionId::default();
+        db.upsert_session(&super::row(mine, "mine", "local-tmux"))
+            .unwrap();
+        let tombstone = SessionId::default();
+        db.upsert_session(&super::row(tombstone, "gone", "local-tmux"))
+            .unwrap();
+        db.soft_delete_session(tombstone).unwrap();
+
+        for id in [mine, tombstone] {
+            let out = pair.create(&["--name", "borrowed", "--id", &id.to_string()]);
+            assert_eq!(
+                out.status.code(),
+                Some(5),
+                "{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert_eq!(answer(&out)["error_kind"], "conflict");
+        }
+        assert_eq!(
+            db.get_session_by_id(mine).unwrap().unwrap().backend_type,
+            "local-tmux",
+            "the local session is still this machine's"
+        );
+        assert!(db.get_session_by_id(tombstone).unwrap().is_none());
+        assert!(pair
+            .host_db()
+            .find_sessions_by_name("borrowed")
+            .unwrap()
+            .is_empty());
     }
 }

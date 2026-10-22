@@ -288,6 +288,7 @@ fn spawn(
             super::host_cli::Usable::Yes(cli)
                 if req.fork_session_id.is_none() && req.inherit_worktrees.is_empty() =>
             {
+                id_is_free(db, req.session_id, Some(&backend_type))?;
                 return spawn_delegated(db, req, h, &cli, &choice, &report);
             }
             super::host_cli::Usable::Yes(_) => {
@@ -308,10 +309,7 @@ fn spawn(
         tracing::warn!("'{}': {note}", req.name);
     }
 
-    // Only on this side: a delegated id is the host's to answer — its rows are
-    // the record, and a retry finds its own session there — while the rows
-    // here are a mirror of them.
-    id_is_free(db, req.session_id)?;
+    id_is_free(db, req.session_id, None)?;
 
     // Below the delegation, because a delegated session's key is the host's to
     // arbitrate against the rows it authors (ADR-24) — asked here, it would be
@@ -1137,22 +1135,35 @@ fn spawn_delegated(
 
 /// A caller-chosen id must name no row here, live or deleted — a deleted one
 /// would collide with that session's restore.
-fn id_is_free(db: &Database, id: Option<SessionId>) -> Result<(), crate::session_ops::OpError> {
+///
+/// `delegated_to` is the host a delegated create goes to. A row of that host's
+/// is only this machine's mirror of it, and the host answers a retry under the
+/// id itself; any other holder would be taken over by the mirror pass after
+/// the creation — a local session relabelled as the host's with its pane left
+/// untracked, a tombstone revived as the host's live row.
+fn id_is_free(
+    db: &Database,
+    id: Option<SessionId>,
+    delegated_to: Option<&str>,
+) -> Result<(), crate::session_ops::OpError> {
     let Some(id) = id else {
         return Ok(());
     };
     let live = db
         .get_session_by_id(id)
-        .map_err(|e| format!("get_session_by_id: {e}"))?;
+        .map_err(|e| format!("get_session_by_id: {e}"))?
+        .map(|row| row.backend_type);
     let deleted = db
         .get_deleted_session_by_id(id)
-        .map_err(|e| format!("get_deleted_session_by_id: {e}"))?;
-    if live.is_some() || deleted.is_some() {
-        return Err(crate::session_ops::OpError::Conflict(format!(
-            "session id {id} is already taken"
-        )));
+        .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
+        .map(|row| row.backend_type);
+    match live.or(deleted) {
+        None => Ok(()),
+        Some(held) if delegated_to.is_some_and(|host| super::same_machine(&held, host)) => Ok(()),
+        Some(held) => Err(crate::session_ops::OpError::Conflict(format!(
+            "session id {id} is already taken, by a session on {held}"
+        ))),
     }
-    Ok(())
 }
 
 /// Validate that the requested parent session, if any, exists and is active.
