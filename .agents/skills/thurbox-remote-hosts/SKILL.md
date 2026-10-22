@@ -108,8 +108,8 @@ evidence and protocol limits live in `docs/CONFIG.md` → *Multiplexer requireme
 and RMUX setup*. The
 tmux control-mode protocol is identical over SSH and WSL, with
 **psmux divergences** (verified against psmux 3.3.6, each a body in the psmux
-adapter, never a branch on the binary's name; spawning needs psmux ≥ 3.3.7,
-asked of the server by `check_psmux_version` — ADR-13 has why) — older psmux lacks `send-keys -H`, and psmux does not join
+adapter, never a branch on the binary's name; naming or spawning a pane needs psmux ≥ 3.3.8,
+asked of the server and the client by `admit_server` — ADR-13 has why) — older psmux lacks `send-keys -H`, and psmux does not join
 `new-window` trailing tokens or honour its `-e`, implements no control-mode
 paste command, and has **no per-window options**. So thurbox re-encodes
 keystrokes from the primitives psmux does support (`psmux_send_keys_commands`),

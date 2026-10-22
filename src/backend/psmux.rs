@@ -139,12 +139,12 @@ impl TmuxCompatible for Psmux {
 
     const VERSION_FLOOR: Option<fn(&str, &str) -> Result<()>> = Some(check_psmux_version);
 
-    /// The 3.3.7 floor, on the binary that would start a server: psmux numbers
-    /// itself independently, so this is its own floor and never tmux's. A
-    /// running server is judged by its own `#{version}` where panes are born
-    /// ([`Self::VERSION_FLOOR`]).
-    fn check_banner(banner: &str, socket: &str) -> Result<()> {
-        check_psmux_version(banner, socket)
+    /// The 3.3.8 floor, on the binary that would start a server: psmux numbers
+    /// itself independently, so this is its own floor and never tmux's. The
+    /// binary and the running server are both held to it again before a pane
+    /// is named ([`Self::VERSION_FLOOR`]).
+    fn check_banner(banner: &str, _socket: &str) -> Result<()> {
+        check_psmux_binary(banner)
     }
 
     fn check_listing(listing: &str) -> Result<()> {
@@ -353,7 +353,8 @@ impl PaneInput for PsmuxInput {
     }
 }
 
-/// The first psmux whose server gives every new pane its own console.
+/// The first psmux whose server both gives every new pane its own console and
+/// reads the pane target thurbox names every pane by.
 ///
 /// Before 3.3.7 (psmux#450) the server's console attach/detach — which every
 /// `send-keys C-c`, bracketed paste and mouse or VT injection performs — left
@@ -364,16 +365,61 @@ impl PaneInput for PsmuxInput {
 /// falls into `--print` and exits, and nothing it writes reaches the pane.
 /// Measured on Windows 11: after a burst of `send-keys C-c`, every window 3.3.6
 /// created was born that way and every one 3.3.8 created was not.
-const MIN_PSMUX_VERSION: (u32, u32, u32) = (3, 3, 7);
-
-/// Refuse a psmux older than [`MIN_PSMUX_VERSION`].
 ///
-/// Reads the server's `#{version}` answer (a bare `3.3.6`) as well as a `-V`
-/// banner: psmux 3.3.6 prints `tmux 3.3.6`, later ones add a `psmux X.Y.Z (…)`
-/// line, which wins when present. An answer with no readable version is let
-/// through: it proves nothing about the fix either way.
+/// 3.3.7 reads the pane-slot target (`thurbox:.%3`, `qualify_target`) as
+/// naming no pane and runs the command on the session's active pane (#1557):
+/// keystrokes typed into another session, `display-message` answering for it,
+/// `kill-pane` ending it. 3.3.8 resolves it to the pane it names.
+const MIN_PSMUX_VERSION: (u32, u32, u32) = (3, 3, 8);
+
+/// Refuse a psmux server older than [`MIN_PSMUX_VERSION`] by its `#{version}`
+/// answer (a bare `3.3.6`), which the gate has already read strictly; the
+/// binary's `-V` is [`check_psmux_binary`]'s.
 fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
-    let version = version_output.lines().rev().find_map(|line| {
+    match psmux_version(version_output) {
+        Some(v) if v < MIN_PSMUX_VERSION => bail!(
+            "psmux {}.{}.{} is too old: its server runs a command meant for one pane on the \
+             session's active pane — keystrokes typed into another session, the wrong pane \
+             read or killed — and, before 3.3.7, starts agents with a stdin that is not their \
+             pane. A running server keeps the code it started with: restart it on psmux \
+             {}.{}.{} or newer (`psmux -L {socket} kill-server`, which ends the agents running \
+             on it)",
+            v.0,
+            v.1,
+            v.2,
+            MIN_PSMUX_VERSION.0,
+            MIN_PSMUX_VERSION.1,
+            MIN_PSMUX_VERSION.2,
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Refuse a psmux binary older than [`MIN_PSMUX_VERSION`] by its `-V`, with
+/// advice about the binary alone: nothing has been started by it, and
+/// restarting a server would not change which binary runs.
+fn check_psmux_binary(banner: &str) -> Result<()> {
+    match psmux_version(banner) {
+        Some(v) if v < MIN_PSMUX_VERSION => bail!(
+            "the psmux binary is {}.{}.{}, too old to name a pane through: upgrade it to \
+             {}.{}.{} or newer, or put a newer psmux first on PATH; restarting a server would \
+             not change this",
+            v.0,
+            v.1,
+            v.2,
+            MIN_PSMUX_VERSION.0,
+            MIN_PSMUX_VERSION.1,
+            MIN_PSMUX_VERSION.2,
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// The version a `-V` banner or a `#{version}` answer names, read leniently:
+/// the last line that has one, `psmux ` or `tmux ` before it, a pre-release
+/// suffix ignored. `None` when nothing in it reads as a version.
+fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
+    output.lines().rev().find_map(|line| {
         let line = line.trim();
         let rest = line
             .strip_prefix("psmux ")
@@ -388,22 +434,7 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
             parts.next()??,
             parts.next().flatten().unwrap_or(0),
         ))
-    });
-    match version {
-        Some(v) if v < MIN_PSMUX_VERSION => bail!(
-            "psmux {}.{}.{} is too old: its server can start an agent with a stdin that is \
-             not its pane (\"stdin is unreadable (EISDIR)\"). Upgrade psmux to {}.{}.{} or \
-             newer, then restart its server (`psmux -L {socket} kill-server`) — a running \
-             server keeps the old code",
-            v.0,
-            v.1,
-            v.2,
-            MIN_PSMUX_VERSION.0,
-            MIN_PSMUX_VERSION.1,
-            MIN_PSMUX_VERSION.2,
-        ),
-        _ => Ok(()),
-    }
+    })
 }
 
 /// What an agent window runs once its agent returns: the exit status, piped to
@@ -1168,7 +1199,10 @@ mod tests {
         let mux = root.path().join("psmux-recording");
         let log = root.path().join("lines");
         let script = format!(
-            "#!/bin/sh\necho \"$*\" >> '{}'\n[ \"$3\" = display-message ] && echo 0\nexit 0\n",
+            "#!/bin/sh\necho \"$*\" >> '{}'\n\
+             case \"$*\" in *' -V') echo 'psmux 3.3.8'; exit 0 ;; \
+             *'#{{version}}'*) echo 3.3.8; exit 0 ;; esac\n\
+             [ \"$3\" = display-message ] && echo 0\nexit 0\n",
             log.display()
         );
         std::fs::write(&mux, script).expect("write fake psmux");
@@ -1577,45 +1611,45 @@ mod tests {
         assert_eq!(Psmux::SERVER_SCOPE, "-g");
     }
 
-    /// psmux 3.3.6 answers `-V` with a bare `tmux 3.3.6`, which the tmux gate
-    /// reads as tmux 3.3 and passes. Its server then hands panes born after a
-    /// `send-keys C-c` std handles that are no longer the pane's console, and
-    /// the agent reports "stdin is unreadable (EISDIR)" and exits.
+    /// A psmux 3.3.6 server hands panes born after a `send-keys C-c` std
+    /// handles that are no longer the pane's console, and the agent reports
+    /// "stdin is unreadable (EISDIR)" and exits.
     #[test]
-    fn psmux_older_than_3_3_7_is_refused_with_the_upgrade() {
-        let err = check_psmux_version("tmux 3.3.6\n", "thurbox")
+    fn psmux_older_than_the_floor_is_refused_with_the_upgrade() {
+        let err = check_psmux_version("3.3.6", "thurbox")
             .unwrap_err()
             .to_string();
         assert!(err.contains("3.3.6"), "{err}");
-        assert!(err.contains("3.3.7"), "{err}");
+        assert!(err.contains("3.3.8"), "{err}");
         assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
-        assert!(check_psmux_version("tmux 3.3.5", "thurbox").is_err());
-        assert!(check_psmux_version("psmux 3.2.9", "thurbox").is_err());
+        assert!(check_psmux_version("3.3.5", "thurbox").is_err());
+        assert!(check_psmux_version("3.2.9", "thurbox").is_err());
     }
 
-    /// `#{version}` is answered by the running server, which is what matters:
-    /// upgrading the binary leaves a server started before it on the old code.
-    /// The heartbeat asks a backend's `check_available` before it starts a
-    /// server, so an old psmux is refused there too, not only where panes are
-    /// born.
+    /// The binary is held to the floor before it starts a server, as the
+    /// running server is before a pane is named: the heartbeat asks a
+    /// backend's `check_available` first, so an old psmux is refused there too,
+    /// with the binary's advice and never the server's `kill-server`.
     #[test]
     fn an_old_psmux_banner_is_refused_before_a_server_starts() {
-        assert!(Psmux::check_banner("tmux 3.3.6\n", "thurbox").is_err());
+        let err = Psmux::check_banner("tmux 3.3.6\n", "thurbox")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("psmux binary is 3.3.6, too old"), "{err}");
+        assert!(!err.contains("kill-server"), "{err}");
         assert!(Psmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (x)\n", "thurbox").is_ok());
     }
 
-    /// An old binary on `PATH` beside a server that is new enough is no
-    /// reason to refuse: the server is what births panes. Without a server, or
-    /// with an old one, the banner's refusal stands.
+    /// An old binary is refused whatever server it would talk to: psmux
+    /// before 3.3.8 reads a `-t` in the client, so a new server behind it
+    /// does not make it safe (`an_old_psmux_client_names_no_pane_to_a_new_server`).
     #[test]
-    fn a_safe_running_server_outranks_an_old_binary() {
-        use crate::backend::tmux_compat::server::admit_banner;
-        let old = Psmux::check_banner("tmux 3.3.6\n", "thurbox");
-        assert!(admit_banner::<Psmux>(old, Some("3.3.8".into()), "thurbox").is_ok());
-        let old = Psmux::check_banner("tmux 3.3.6\n", "thurbox");
-        assert!(admit_banner::<Psmux>(old, Some("3.3.6".into()), "thurbox").is_err());
-        let old = Psmux::check_banner("tmux 3.3.6\n", "thurbox");
-        assert!(admit_banner::<Psmux>(old, None, "thurbox").is_err());
+    fn an_old_binary_is_refused_beside_a_new_server() {
+        let err = Psmux::check_banner("tmux 3.3.7\npsmux 3.3.7 (x)\n", "thurbox")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("psmux binary is 3.3.7, too old"), "{err}");
+        assert!(!err.contains("kill-server"), "{err}");
     }
 
     #[test]
@@ -1625,37 +1659,266 @@ mod tests {
     }
 
     #[test]
-    fn psmux_3_3_7_and_newer_is_accepted() {
+    fn psmux_3_3_8_and_newer_is_accepted() {
+        for answer in ["3.3.8", "3.4.0", "4.0"] {
+            assert!(check_psmux_version(answer, "thurbox").is_ok(), "{answer}");
+        }
         assert!(
-            check_psmux_version("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n", "thurbox")
+            Psmux::check_banner("tmux 3.3.8\npsmux 3.3.8 (66cf613 2026-08-18)\n", "thurbox")
                 .is_ok()
         );
-        assert!(check_psmux_version("tmux 3.3.7\npsmux 3.3.7", "thurbox").is_ok());
-        assert!(check_psmux_version("psmux 3.4.0", "thurbox").is_ok());
-        assert!(check_psmux_version("psmux 4.0", "thurbox").is_ok());
-        // A pre-release suffix on the patch is still that patch, not 0.
-        assert!(check_psmux_version("psmux 3.3.9-dev", "thurbox").is_ok());
     }
 
-    /// Measured on psmux 3.3.7: `kill-window -t thurbox:.%8` killed the
-    /// session's active window, and a bare `kill-window -t @7` another
-    /// session's `@7`. A pane's window goes by `kill-pane` on the qualified
-    /// pane; a window by id goes qualified; a window by name is already
-    /// qualified and is left as it is.
+    /// psmux 3.3.7 reads the pane-slot target thurbox names every pane by
+    /// (`thurbox:.%3`) as naming no pane, and runs the command on the session's
+    /// active one (measured on Windows 11, #1557): keystrokes typed into
+    /// another session, `display-message` answering for it, `kill-pane` ending
+    /// it. 3.3.8 resolves the same spelling to the pane it names.
+    #[test]
+    fn psmux_3_3_7_is_refused_for_the_pane_targets_it_misreads() {
+        let err = check_psmux_version("3.3.7", "thurbox")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("psmux 3.3.7 is too old"), "{err}");
+        assert!(err.contains("3.3.8"), "{err}");
+        assert!(err.contains("active pane"), "{err}");
+        assert!(err.contains("`psmux -L thurbox kill-server`"), "{err}");
+    }
+
+    /// A stand-in psmux whose server answers `#{version}` with `version`, and
+    /// which logs every command line it is given beside itself (`psmux.log`).
+    #[cfg(unix)]
+    fn psmux_answering(version: &str) -> (tempfile::TempDir, PsmuxBackend, std::path::PathBuf) {
+        psmux_asked_its_version(&format!("echo '{version}'"))
+    }
+
+    /// [`psmux_answering`], running `answer` — shell — for the version, behind
+    /// a psmux 3.3.8 client.
+    #[cfg(unix)]
+    fn psmux_asked_its_version(
+        answer: &str,
+    ) -> (tempfile::TempDir, PsmuxBackend, std::path::PathBuf) {
+        psmux_with_client("printf 'tmux 3.3.8\\npsmux 3.3.8 (test)\\n'", answer)
+    }
+
+    /// [`psmux_asked_its_version`] behind a client whose `-V` runs `banner`.
+    #[cfg(unix)]
+    fn psmux_with_client(
+        banner: &str,
+        answer: &str,
+    ) -> (tempfile::TempDir, PsmuxBackend, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().expect("tempdir");
+        let mux = root.path().join("psmux");
+        std::fs::write(
+            &mux,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.log\"\n\
+                 case \"$*\" in\n  *' -V') {banner} ;;\n  *'#{{version}}'*) {answer} ;;\nesac\n"
+            ),
+        )
+        .expect("write fake psmux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let backend = PsmuxBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy()),
+            "test",
+            "thurbox",
+            "local:psmux",
+        );
+        (root, backend, mux.with_extension("log"))
+    }
+
+    /// The server a binary upgrade left running keeps its old code, so the
+    /// floor is held against the server before any pane is named to it — here
+    /// by `session key`, which never opens control mode.
+    #[cfg(unix)]
+    #[test]
+    fn no_pane_on_a_too_old_psmux_server_is_addressed() {
+        let (_root, psmux, log) = psmux_answering("3.3.7");
+        let err = psmux
+            .send_key(
+                "%2",
+                &crate::backend::contract::Key::parse("Enter").unwrap(),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("psmux 3.3.7 is too old"), "{err}");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
+    }
+
+    /// A kill is the most destructive thing a pane can be named for, and on
+    /// 3.3.7 it ended the active pane instead: it is gated like any other.
+    #[cfg(unix)]
+    #[test]
+    fn no_pane_on_a_too_old_psmux_server_is_killed() {
+        let (_root, psmux, log) = psmux_answering("3.3.7");
+        let err = psmux.kill("%2").unwrap_err().to_string();
+        assert!(err.contains("psmux 3.3.7 is too old"), "{err}");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("kill"), "a kill was sent:\n{sent}");
+    }
+
+    /// A one-shot answer is not kept: with no connection, nothing would say
+    /// the server it came from had been replaced. A connection's is (see
+    /// `each_new_connection_asks_the_server_its_version_once`).
+    #[cfg(unix)]
+    #[test]
+    fn a_one_shot_admission_is_asked_for_each_pane() {
+        let (_root, psmux, log) = psmux_answering("3.3.8");
+        assert_eq!(psmux.target("%2").unwrap(), "thurbox:.%2");
+        assert_eq!(psmux.target("%3").unwrap(), "thurbox:.%3");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert_eq!(sent.matches("#{version}").count(), 2, "{sent}");
+    }
+
+    /// psmux before 3.3.8 reads `-t` in the client too, so an old binary in
+    /// front of a new server names nothing either.
+    #[cfg(unix)]
+    #[test]
+    fn an_old_psmux_client_names_no_pane_to_a_new_server() {
+        let (_root, psmux, log) =
+            psmux_with_client("printf 'tmux 3.3.7\\npsmux 3.3.7 (x)\\n'", "echo 3.3.8");
+        let err = psmux.target("%2").unwrap_err().to_string();
+        assert!(err.contains("binary is 3.3.7, too old"), "{err}");
+        assert!(
+            err.contains("restarting a server would not change this"),
+            "{err}"
+        );
+        assert!(!err.contains("kill-server"), "{err}");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("%2"), "a pane was named:\n{sent}");
+    }
+
+    /// A pre-release binary is not held to the floor by reading past its own
+    /// line to an older one, nor by dropping its suffix: a `3.3.8-dev` may
+    /// predate the fix.
+    #[cfg(unix)]
+    #[test]
+    fn a_pre_release_psmux_binary_names_no_pane() {
+        for banner in [
+            "printf 'tmux 3.3.7\\npsmux 3.3.8-dev (x)\\n'",
+            "printf 'tmux 3.3.9\\npsmux 3.3.9-dev (x)\\n'",
+        ] {
+            let (_root, psmux, log) = psmux_with_client(banner, "echo 3.3.8");
+            let err = psmux.target("%2").unwrap_err().to_string();
+            assert!(
+                err.contains("did not give a version thurbox can hold to its floor"),
+                "{banner}: {err}"
+            );
+            let sent = std::fs::read_to_string(&log).unwrap_or_default();
+            assert!(!sent.contains("%2"), "a pane was named:\n{sent}");
+        }
+    }
+
+    /// An answer a floor cannot read is not a version new enough.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_version_names_no_pane() {
+        for answer in ["echo 3", "echo 3.3.7a", "echo 3.4294967296"] {
+            let (_root, psmux, _log) = psmux_asked_its_version(answer);
+            let err = psmux.target("%2").unwrap_err().to_string();
+            assert!(
+                err.contains("the server did not say its version"),
+                "{answer}: {err}"
+            );
+        }
+    }
+
+    /// A server that is there but does not say what it is — a busy one whose
+    /// answer timed out — still runs whatever is sent next, so nothing is named
+    /// to it.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_that_fails_to_say_its_version_is_named_no_pane() {
+        let (_root, psmux, log) =
+            psmux_asked_its_version("echo 'psmux: command timed out' >&2; exit 1");
+        let err = psmux
+            .send_key(
+                "%2",
+                &crate::backend::contract::Key::parse("Enter").unwrap(),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("could not ask the server its version"),
+            "{err}"
+        );
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
+    }
+
+    /// A psmux client before 3.3.8 answers a server that stalled with nothing
+    /// at status 0, and that server still runs what is sent next.
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_answer_for_the_version_names_no_pane() {
+        let (_root, psmux, log) = psmux_asked_its_version("true");
+        let err = psmux.target("%2").unwrap_err().to_string();
+        assert!(err.contains("the server did not say its version"), "{err}");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
+    }
+
+    /// No server at all has no pane to misroute to; the answer is not kept, so
+    /// the server a later command starts is asked.
+    #[cfg(unix)]
+    #[test]
+    fn no_server_is_let_through_and_asked_again() {
+        let (_root, psmux, log) = psmux_asked_its_version(
+            "echo \"psmux: no server running on session 'test__thurbox'\" >&2; exit 1",
+        );
+        assert_eq!(psmux.target("%2").unwrap(), "thurbox:.%2");
+        assert_eq!(psmux.target("%3").unwrap(), "thurbox:.%3");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert_eq!(sent.matches("#{version}").count(), 2, "{sent}");
+    }
+
+    /// psmux reports some failures on stdout with status 0
+    /// ([`Psmux::EXIT_ZERO_ERRORS`]). One saying the session is not there is
+    /// the absence a refusal on stderr would be; `can't find window` is also
+    /// what 3.3.8 says of a live server refusing a target, and refuses, as
+    /// does any other.
+    #[cfg(unix)]
+    #[test]
+    fn a_status_zero_error_for_the_version_lets_through_only_a_missing_session() {
+        let (_root, psmux, _log) =
+            psmux_asked_its_version("echo \"ERROR: can't find session: thurbox\"");
+        assert_eq!(psmux.target("%2").unwrap(), "thurbox:.%2");
+
+        for answer in [
+            "echo \"ERROR: can't find window: =tb-demo\"",
+            "echo \"ERROR: can't find pane: %2\"",
+            "echo 'ERROR: server is busy'",
+        ] {
+            let (_root, psmux, _log) = psmux_asked_its_version(answer);
+            let err = psmux.target("%2").unwrap_err().to_string();
+            assert!(
+                err.contains("refused the version question"),
+                "{answer}: {err}"
+            );
+        }
+    }
+
+    /// A bare `kill-window -t @7` killed another session's `@7` (measured on
+    /// psmux 3.3.7), and 3.3.7 sent a `kill-window -t thurbox:.%8` to the
+    /// session's active window (fixed in 3.3.8, dc183e3). A pane's window goes
+    /// by `kill-pane` on the qualified pane; a window by id goes qualified; a
+    /// window by name is already qualified and is left as it is.
     #[test]
     fn a_psmux_kill_reaches_the_pane_it_names_in_thurboxs_session() {
         let psmux = PsmuxBackend::local();
         let session = psmux.session.clone();
         assert_eq!(
-            psmux.kill_command("%8"),
+            psmux.kill_spelling("%8"),
             ("kill-pane", format!("{session}:.%8").into())
         );
         assert_eq!(
-            psmux.kill_command("@7"),
+            psmux.kill_spelling("@7"),
             ("kill-window", format!("{session}:@7").into())
         );
         assert_eq!(
-            psmux.kill_command("thurbox:=tb-x"),
+            psmux.kill_spelling("thurbox:=tb-x"),
             ("kill-window", "thurbox:=tb-x".into())
         );
     }
@@ -1665,7 +1928,7 @@ mod tests {
     #[test]
     fn a_psmux_pane_target_names_thurboxs_session() {
         let psmux = PsmuxBackend::local();
-        assert_eq!(psmux.target("%2"), format!("{}:.%2", psmux.session));
+        assert_eq!(psmux.spell_target("%2"), format!("{}:.%2", psmux.session));
     }
 
     /// A close is confirmed against the session's own panes, listed in the
@@ -1679,12 +1942,14 @@ mod tests {
         );
     }
 
-    /// A banner this cannot read says nothing about the fix, and refusing it
-    /// would lock out every later psmux that changes how it prints `-V`.
+    /// A banner this cannot read says nothing about the fix, so the early check
+    /// a server is started behind lets it through. No pane is named behind it,
+    /// though: the gate before every pane (`admit_server`) takes only a
+    /// version it can read — `3.3.9-dev` included, which it refuses.
     #[test]
     fn an_unreadable_psmux_banner_is_not_refused() {
-        assert!(check_psmux_version("", "thurbox").is_ok());
-        assert!(check_psmux_version("psmux (dev build)", "thurbox").is_ok());
+        assert!(Psmux::check_banner("", "thurbox").is_ok());
+        assert!(Psmux::check_banner("psmux (dev build)", "thurbox").is_ok());
     }
 
     /// psmux gets its own `send-paste`: the bracketed markers are psmux's to add,
