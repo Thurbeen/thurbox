@@ -27,7 +27,7 @@
 //!   state nothing can leave). A `working` the agent reports from inside a
 //!   turn — its own tool calls, including those of the turn claude starts to
 //!   report a finished subagent back — forgets nothing;
-//! - `session stop` clears the column with the hook state;
+//! - `session stop` and a restart clear the column with the hook state;
 //! - `session get --verify` reports a dead pane as contradicting it. The
 //!   interface does not fold it by the terminal: sub-work runs out of the
 //!   pane's sight, and an interface not yet attached has no answer either.

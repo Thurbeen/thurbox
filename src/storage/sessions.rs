@@ -1850,10 +1850,12 @@ impl Database {
         Ok(())
     }
 
-    /// Clear a session's hooks-driven status (NULL all three columns), returning
-    /// it to the never-reported `Idle` default. Called on **restart**: the agent
-    /// is re-spawned fresh, so a stale `Blocked`/`Working`/`Done` must not linger
-    /// until the agent's hooks re-report (which a resumed agent may not do).
+    /// Clear a session's hooks-driven status (NULL the three columns, and the
+    /// sub-work the old process counted), returning it to the never-reported
+    /// `Idle` default. Called on **restart**: the agent is re-spawned fresh, so
+    /// a stale `Blocked`/`Working`/`Done` must not linger until the agent's
+    /// hooks re-report (which a resumed agent may not do), and work that died
+    /// with the old process must not make the new one's turns `background`.
     ///
     /// Parking clears the same columns inside
     /// [`set_session_stopped`](Self::set_session_stopped), which reports the
@@ -1870,8 +1872,8 @@ impl Database {
             )
             .optional()?;
         self.conn.execute(
-            "UPDATE sessions SET hook_state = NULL, hook_state_at = NULL, seen_at = NULL \
-             WHERE id = ?1",
+            "UPDATE sessions SET hook_state = NULL, hook_state_at = NULL, seen_at = NULL, \
+             background_work = NULL WHERE id = ?1",
             params![id_str],
         )?;
         if let Some(Some(previous)) = previous {

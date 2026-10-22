@@ -452,8 +452,8 @@ run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
   `working` from inside a turn forgets nothing: the turn claude starts to
   report one finished subagent back makes tool calls of its own while others
   still run, and those must stay counted. `idle` (claude's
-  `SessionStart`, a new process) forgets all of it; `session stop` clears the
-  column; and `contradicts` lets `session get --verify` report a dead or
+  `SessionStart`, a new process) forgets all of it; `session stop` and a
+  restart (`clear_hook_state`) clear the column; and `contradicts` lets `session get --verify` report a dead or
   missing pane against it. `with_output_quiescence` does **not** fold
   `background`: quiet output is not evidence (the work runs out of the pane's
   sight), and a missing quiet answer is not either — an interface that has not

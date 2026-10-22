@@ -502,6 +502,38 @@ fn an_interrupted_subagent_does_not_outlive_the_next_prompt() {
     assert_eq!(env.hook_state().as_deref(), Some("done"));
 }
 
+/// A restart replaces the agent's process (`session_ops::restart` clears the
+/// hook columns), so whatever work the old one counted died with it. An agent
+/// driving `--work-start` itself need not send `idle` or `--turn-start` after
+/// coming back, and its next turn must not end as `background` for work
+/// nothing will ever end.
+#[test]
+fn a_restart_forgets_the_work_the_old_process_counted() {
+    let env = Env::new("codex");
+    let signal = |args: &[&str]| {
+        let out = env
+            .command(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(["--json", "session", "signal"])
+            .args(args)
+            .output()
+            .expect("signal");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    signal(&["--state", "working"]);
+    signal(&["--work-start", "w1"]);
+    signal(&["--state", "done"]);
+    assert_eq!(env.hook_state().as_deref(), Some("background"));
+
+    env.db().clear_hook_state(env.id).expect("restart");
+    signal(&["--state", "working"]);
+    signal(&["--state", "done"]);
+    assert_eq!(env.hook_state().as_deref(), Some("done"));
+}
+
 /// An agent with no mapping reports exactly what it reported before: the same
 /// states, in the same order, and never `background`.
 #[test]
