@@ -582,4 +582,5 @@ contradicting it. The interface does not fold `background` by the terminal:
 the work runs out of the pane's sight, and an interface that has not attached
 yet has no answer either. Because `session signal` publishes to the pane's
 status channel after it stores, a late `background` read back from that
-channel is refused once the session's counted work has all ended.
+channel — by the interface or by `automation tick`'s status poll — is refused
+once the session's counted work has all ended.

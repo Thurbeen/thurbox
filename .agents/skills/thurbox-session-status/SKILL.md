@@ -461,7 +461,9 @@ run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
 - **The status channel is read back as an echo.** `session signal` publishes
   the word it stored to the pane option after its transaction, so two hook
   processes can publish out of the order they stored in. The interface's
-  drain writes through `report_hook_state` as `ReportFrom::Echo`, which
+  drain and the heartbeat's status poll (`remote_hooks::poll_hook_states`,
+  which reads local panes too) both write through `report_hook_state` as
+  `ReportFrom::Echo`, which
   refuses a `background` once the session's counted work has all ended — a
   late `Stop` echo cannot undo the `done` the last `SubagentStop` stored. A
   session that never counted work (a remote pane, which cannot) still takes

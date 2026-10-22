@@ -558,10 +558,13 @@ pub(crate) fn poll_hook_states(
             })
             .collect();
         for (id, state) in hook_status_updates(&polled, &rows) {
-            match db.set_hook_state(id, &state) {
+            // An echo of what `session signal` published, in the order its
+            // writers published rather than stored: `report_hook_state` refuses
+            // a late `background` for work that has all ended (issue #1510).
+            match db.report_hook_state(id, &state) {
                 // A parked session takes nothing, and that is not a failure:
                 // `session stop` killed the pane the backend still reports.
-                Ok(taken) => written += usize::from(taken),
+                Ok(taken) => written += usize::from(taken.is_some()),
                 Err(e) => tracing::debug!("status poll write failed for {id}: {e}"),
             }
         }

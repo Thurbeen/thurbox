@@ -35,8 +35,9 @@
 //! The ids are also what makes a backend's status channel safe to read back.
 //! `session signal` publishes the word it stored after its transaction, so a
 //! `background` published late can arrive after the end of the last work was
-//! stored as `done`; read back as a [`ReportFrom::Echo`], it is refused for a
-//! session whose work was counted and has all ended.
+//! stored as `done`; read back as a [`ReportFrom::Echo`] (by the interface's
+//! drain or the heartbeat's status poll), it is refused for a session whose
+//! work was counted and has all ended.
 
 /// How many ids each list remembers at most. A start whose end never comes
 /// should not grow the row without bound; the oldest is forgotten first.
