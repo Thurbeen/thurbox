@@ -166,7 +166,8 @@ match is **legacy**: pass `--key`.
 `session create --id <uuid>` creates under the caller's id, and is the one
 answer that comes **before** `--on-existing`: an id already active is the
 session an earlier attempt made, answered as it is (`created: false`); a
-deleted one is a conflict (exit 5). A delegated create passes one to every
+deleted one is a conflict (exit 5), and so is one held here for a session on
+another machine. A delegated create passes one to every
 host CLI reporting `create_parity` (#1471), and forwards `--on-existing`, which
 the host then applies against its own rows: an `adopt` it answers comes back
 `created: false` with the host's id. `--env-stdin` reads more environment as one JSON object of strings —

@@ -827,7 +827,11 @@ has the rationale; the shape:
   the caller finds it by that id instead of reporting a failure a retry
   would turn into a second session — and when it cannot tell, its error
   names the id to retry with. `session create --id <id>` with an id
-  already active answers that session (`"created": false`). These
+  already active answers that session (`"created": false`), with the
+  `--reports-as` it already has; an id a deleted session holds, or one
+  this machine holds for a session on another machine, is a conflict
+  (exit 5). A delegated create leaves the id lookup, the name lock and
+  `--on-existing` to the host, whose rows are the record. These
   flags need a host CLI reporting `create_parity` in `version --json`:
   an older one is not handed an id, and is refused a caller's `--id`,
   an `--env` or a worktree to open.

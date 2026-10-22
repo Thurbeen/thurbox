@@ -325,6 +325,28 @@ fn a_fork_is_not_delegated_and_says_why() {
 }
 
 #[test]
+fn a_fork_without_a_pinned_conversation_is_not_delegated_either() {
+    // A parent with no agent conversation id forks with no `fork_session_id`,
+    // but still shares its checkout — which the host's `create` would drop,
+    // and which `delegated_create_args` refuses. The worktrees it inherits are
+    // what make it a fork, so it stays on this side as well.
+    let rig = rig();
+    let mut req = create_request("forked-bare");
+    req.inherit_worktrees = vec![crate::sync::SharedWorktree {
+        repo_path: PathBuf::from("/srv/repo"),
+        worktree_path: PathBuf::from("/srv/worktrees/parent"),
+        branch: "parent".into(),
+        created_by_thurbox: true,
+    }];
+    // Driven from here, it fails later, at the worktree; delegated, it would
+    // be refused up front as a fork the host's CLI cannot take.
+    if let Err(e) = super::spawn_session_headless(&rig.db, &rig.backends, req) {
+        assert!(!e.contains("a fork cannot be handed"), "{e}");
+    }
+    assert!(fake::calls().is_empty(), "{:?}", fake::calls());
+}
+
+#[test]
 fn a_delete_is_performed_by_the_host_and_mirrored_here() {
     let rig = rig();
     let id = SessionId::default();

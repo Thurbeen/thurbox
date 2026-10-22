@@ -1406,4 +1406,47 @@ mod delegated_create {
             .unwrap()
             .is_empty());
     }
+
+    /// A session the host answers as already there keeps the declaration it
+    /// has: the host does not apply a retry's `--reports-as`, so the caller
+    /// neither records nor reports one of its own.
+    #[test]
+    fn a_found_session_keeps_the_hosts_declaration() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = SessionId::default();
+        let made = pair.create_on_host(&[
+            "--name",
+            "declared",
+            "--id",
+            &id.to_string(),
+            "--reports-as",
+            "claude",
+        ]);
+        assert_eq!(created_id(&made), id);
+
+        let out = pair.create(&[
+            "--name",
+            "declared",
+            "--id",
+            &id.to_string(),
+            "--reports-as",
+            "codex",
+        ]);
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["created"], false, "{doc}");
+        assert_eq!(doc["reports_as"], "claude", "{doc}");
+        assert_eq!(
+            pair.caller_db()
+                .load_reports_as()
+                .unwrap()
+                .get(&id)
+                .map(String::as_str),
+            Some("claude")
+        );
+    }
 }

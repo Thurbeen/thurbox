@@ -1441,6 +1441,17 @@ fn run_create(
     // write is reported as exactly that and never rolls a `replace` back. A
     // delegated session's row is the mirror of the host's, which carries no
     // declaration; this machine's own reading needs it too.
+    // A session the host answered as already there keeps the declaration the
+    // host holds for it; this machine's mirror copies that one.
+    let reports_as = match &res.found {
+        Some(found) => {
+            if let Err(e) = db.set_reports_as(res.session_id, found.reports_as.as_deref()) {
+                tracing::warn!("'{}': mirroring reports-as failed: {e}", res.name);
+            }
+            None
+        }
+        None => reports_as,
+    };
     if let Some(declared) = &reports_as {
         if let Err(e) = db.set_reports_as(res.session_id, Some(declared)) {
             return Err(format!(
@@ -1508,14 +1519,17 @@ fn run_create(
             "hook_failures": res.hook_failures,
             "warnings": res.warnings,
             "sharing": res.sharing,
-            "reports_as": reports_as,
+            "reports_as": res
+                .found
+                .as_ref()
+                .map_or(reports_as.as_deref(), |found| found.reports_as.as_deref()),
             // Present here only so `--on-existing adopt` can answer in
             // the same shape: a session that was just spawned is
             // running by construction and has said nothing yet, while
             // one that was already there — here, or found by a host —
             // may be parked, and is described as it was found.
-            "stopped": res.found.as_ref().is_some_and(|(stopped, _)| *stopped),
-            "state": res.found.as_ref().map_or(state, |(_, word)| word.as_str()),
+            "stopped": res.found.as_ref().is_some_and(|found| found.stopped),
+            "state": res.found.as_ref().map_or(state, |found| found.state.as_str()),
             "created": res.created,
         }),
         human,

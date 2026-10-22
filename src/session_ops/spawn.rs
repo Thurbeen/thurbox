@@ -169,10 +169,21 @@ pub struct SpawnResult {
     /// `false` when a delegated create's host answered with a session it
     /// already had (`--on-existing adopt` there) instead of making one.
     pub created: bool,
-    /// For such a session, what the host said of it — whether it is parked,
-    /// and its state word. The mirror carries neither, so this is the only
-    /// place they are known here; `None` for a session this call created.
-    pub found: Option<(bool, String)>,
+    /// For such a session, what the host said of it. The mirror carries none
+    /// of it, so this is the only place it is known here; `None` for a session
+    /// this call created.
+    pub found: Option<FoundSession>,
+}
+
+/// A session a delegated create's host answered as already there, as the host
+/// describes it.
+#[derive(Debug, Clone)]
+pub struct FoundSession {
+    pub stopped: bool,
+    pub state: String,
+    /// The declaration the host holds — not the caller's `--reports-as`, which
+    /// the host does not apply to a session it answers this way.
+    pub reports_as: Option<String>,
 }
 
 /// Spawn a new session on its resolved backend and persist it to SQLite.
@@ -1017,17 +1028,20 @@ fn spawn_delegated(
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true);
                 if !created {
-                    found = Some((
+                    let text = |key: &str| {
                         answer
+                            .get(key)
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    };
+                    found = Some(FoundSession {
+                        stopped: answer
                             .get("stopped")
                             .and_then(serde_json::Value::as_bool)
                             .unwrap_or(false),
-                        answer
-                            .get("state")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                    ));
+                        state: text("state").unwrap_or_default(),
+                        reports_as: text("reports_as"),
+                    });
                 }
                 answer
                     .get("id")
@@ -1046,7 +1060,10 @@ fn spawn_delegated(
             // The answer was lost, not the question: the host may have created the
             // session before the link went. The id is ours, so whether it did is a
             // lookup — and creating again is exactly the duplicate the id exists
-            // to prevent.
+            // to prevent. Found this way it counts as created by this call; a
+            // caller-chosen id the host already had before this call, whose
+            // `created: false` answer was then lost too, cannot be told apart
+            // from that without the record of owed creations #1469 adds.
             Err(failure) => match minted {
                 Some(id)
                     if failure.reach != super::host_cli::Reach::Answered
