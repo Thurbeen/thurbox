@@ -1018,7 +1018,12 @@ fn spawn_delegated(
 
     report(SpawnPhase::Host);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut created = true;
+    let created: bool;
+    // Asked before the call: a caller-chosen id already mirrored here names a
+    // session that existed before it, whatever a lost answer leaves unsaid.
+    let known_before = req
+        .session_id
+        .is_some_and(|id| db.get_session_by_id(id).ok().flatten().is_some());
     let mut found = None;
     let session_id =
         match super::host_cli::run_classified_with_stdin(host, cli, &arg_refs, stdin.as_deref()) {
@@ -1060,10 +1065,12 @@ fn spawn_delegated(
             // The answer was lost, not the question: the host may have created the
             // session before the link went. The id is ours, so whether it did is a
             // lookup — and creating again is exactly the duplicate the id exists
-            // to prevent. Found this way it counts as created by this call; a
-            // caller-chosen id the host already had before this call, whose
-            // `created: false` answer was then lost too, cannot be told apart
-            // from that without the record of owed creations #1469 adds.
+            // to prevent. Found this way it counts as created by this call —
+            // unless it was already mirrored here before the call. A
+            // caller-chosen id the host had but this machine had not yet
+            // mirrored, whose `created: false` answer was then lost too, still
+            // cannot be told apart without the record of owed creations #1469
+            // adds.
             Err(failure) => match minted {
                 Some(id)
                     if failure.reach != super::host_cli::Reach::Answered
@@ -1071,11 +1078,12 @@ fn spawn_delegated(
                         && db.get_session_by_id(id).ok().flatten().is_some() =>
                 {
                     tracing::warn!(
-                        "'{}': host '{}' created session {id}, but its answer was lost: {}",
+                        "'{}': host '{}' holds session {id}, but its answer was lost: {}",
                         req.name,
                         host.name,
                         failure.message
                     );
+                    created = !known_before;
                     id
                 }
                 // Not found, or not askable: the host may still be making it, and

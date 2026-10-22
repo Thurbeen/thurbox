@@ -1449,4 +1449,44 @@ mod delegated_create {
             Some("claude")
         );
     }
+
+    /// A retry under an id this machine already mirrors names a session that
+    /// was there before the call: when its answer is lost too, finding the id
+    /// is not evidence of a creation, so nothing is announced again.
+    #[test]
+    fn a_lost_answer_to_a_retry_of_a_known_id_is_not_a_new_session() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let log = pair.path("post-create.log");
+        std::fs::write(
+            pair.path("config/hooks.toml"),
+            format!(
+                "[[hooks]]\nevent = \"session.post_create\"\n\
+                 command = 'echo \"$THURBOX_SESSION\" >> {}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let id = created_id(&pair.create(&["--name", "known"]));
+        assert!(pair.caller_db().get_session_by_id(id).unwrap().is_some());
+
+        std::fs::write(pair.path("drop-answer"), "").unwrap();
+        let out = pair.create(&["--name", "known", "--id", &id.to_string()]);
+        std::fs::remove_file(pair.path("drop-answer")).unwrap();
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["id"], id.to_string(), "{doc}");
+        assert_eq!(doc["created"], false, "{doc}");
+        assert_eq!(
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .count(),
+            1,
+            "post-create fired again for a session that already existed"
+        );
+    }
 }
