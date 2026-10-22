@@ -1962,10 +1962,13 @@ status — and performs every write there by running the host's own
 `thurbox-cli`: `session create|delete|restart|restore`, inside the four
 `session_ops` pipelines, so every caller delegates without knowing it
 (`session_ops::host_cli`, `session_ops::mirror`). Which side carries out a
-verb on an existing session is decided in one place,
+verb on a live session is decided in one place,
 `session_ops::Executor::for_backend` (#1471) — the host's CLI when it is
 usable, this process otherwise — and each verb keeps only its own answer for
-a host `hosts.toml` no longer names. Create, which has no session yet, asks
+a host `hosts.toml` no longer names. The teardown sweeps over deleted rows
+(`delete::finish_remote_teardown`, `delete::reap_remote`) still ask
+`host_cli::delegated` themselves: they act on a host they already hold, and
+fall back to its windows when the host has no row. Create, which has no session yet, asks
 `host_cli::usable` itself, for the reason a session made from here reports;
 a fork stays on this side either way. A delegated create forwards every
 `SpawnRequest` field or refuses it by name (`spawn::delegated_create_args`,

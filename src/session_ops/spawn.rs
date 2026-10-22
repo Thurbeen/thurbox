@@ -1091,9 +1091,11 @@ fn spawn_delegated(
         .iter()
         .map(super::lifecycle_hooks::worktree)
         .collect();
-    // An adopted session was created by somebody else, whose post-create
-    // hooks already ran for it.
-    let hook_failures = if created {
+    // A session the host adopted was created by somebody else, whose
+    // post-create hooks already ran for it. One under the id this caller
+    // minted is its own earlier attempt, whose answer — and so whose hooks —
+    // was lost with the link.
+    let hook_failures = if created || minted == Some(session_id) {
         super::fire_post(crate::session::HookEvent::PostCreate, &hook_ctx)
     } else {
         Vec::new()

@@ -1437,7 +1437,7 @@ fn run_create(
         if res.created {
             "Created"
         } else {
-            "Adopted the host's"
+            "Found the existing"
         },
         res.name,
         res.agent,

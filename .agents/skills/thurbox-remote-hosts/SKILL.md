@@ -331,7 +331,8 @@ session), never on the loop, ADR-P12).
   force-delete promotions of older rows. Older hosts are read whole), and performs create/delete/restart/restore by
   running `thurbox-cli session …` **on the host** (`session_ops::host_cli`,
   branched inside the four pipelines so every caller delegates; the choice
-  per verb is `session_ops::Executor`, #1471). A delegated create forwards
+  per verb on a live session is `session_ops::Executor`, #1471 — the
+  deleted-row teardown sweeps in `delete` still ask `host_cli::delegated`). A delegated create forwards
   every `SpawnRequest` field or refuses it by name
   (`spawn::delegated_create_args`, an exhaustive destructure): `--env` goes
   as JSON on stdin (`--env-stdin`), an opened worktree as
