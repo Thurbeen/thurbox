@@ -29,6 +29,8 @@ rustPlatform.buildRustPackage {
       ../examples
       # Named by Cargo.toml's [[bench]], so the manifest does not load without it.
       ../benches
+      # The `[patch.crates-io]` crates Cargo.toml points at.
+      ../vendor
     ];
   };
 

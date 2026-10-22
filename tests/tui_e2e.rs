@@ -7519,6 +7519,104 @@ fn remote_shell_session_with(
     Some((profile, link, tui))
 }
 
+/// Record the focused agent's input after the real PTY, event parser, routing,
+/// SSH stand-in and tmux control connection have all handled it.
+fn record_remote_input(profile: &Profile, tui: &mut Tui) -> PathBuf {
+    let recorded = profile.path("agent-input");
+    tui.send(
+        format!(
+            "stty raw -echo; printf 'tb-recording-''ready'; exec cat > {}\r",
+            shell_word(&recorded)
+        )
+        .as_bytes(),
+    );
+    tui.wait_for("tb-recording-ready");
+    recorded
+}
+
+fn assert_recorded_input(recorded: &Path, expected: &[u8]) {
+    // A trailing marker is an input fence: reaching it proves the agent read
+    // the preceding bytes, without judging absence from a quiet screen.
+    const FENCE: &[u8] = b"input-fence";
+    assert!(expected.ends_with(FENCE));
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let actual = std::fs::read(recorded).unwrap_or_default();
+        if actual.ends_with(FENCE) {
+            assert_eq!(
+                actual,
+                expected,
+                "terminal replies became agent input: {:?}",
+                String::from_utf8_lossy(&actual)
+            );
+            return;
+        }
+        assert!(Instant::now() < deadline, "agent input fence never arrived");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn secondary_device_attributes_do_not_type_into_a_remote_agent() {
+    let Some((profile, _link, mut tui)) = remote_shell_session() else {
+        return;
+    };
+    let recorded = record_remote_input(&profile, &mut tui);
+
+    tui.send(b"before\x1b[>0;10cafterinput-fence");
+    assert_recorded_input(&recorded, b"beforeafterinput-fence");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn fragmented_secondary_device_attributes_do_not_type_into_a_remote_agent() {
+    let Some((profile, _link, mut tui)) = remote_shell_session() else {
+        return;
+    };
+    let recorded = record_remote_input(&profile, &mut tui);
+
+    // Pace the relay after incomplete CSI prefixes, never after a lone ESC:
+    // a standalone Escape is also a legitimate key on a legacy terminal.
+    for fragment in [b"before\x1b[".as_slice(), b">0;", b"10"] {
+        tui.send(fragment);
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    tui.send(b"cafterinput-fence");
+    assert_recorded_input(&recorded, b"beforeafterinput-fence");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn primary_device_attributes_do_not_type_into_a_remote_agent() {
+    let Some((profile, _link, mut tui)) = remote_shell_session() else {
+        return;
+    };
+    let recorded = record_remote_input(&profile, &mut tui);
+
+    tui.send(b"before\x1b[?62;22cafterinput-fence");
+    assert_recorded_input(&recorded, b"beforeafterinput-fence");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn terminal_reply_shaped_typing_and_paste_still_reach_a_remote_agent() {
+    let Some((profile, _link, mut tui)) = remote_shell_session() else {
+        return;
+    };
+    let recorded = record_remote_input(&profile, &mut tui);
+
+    tui.send(b"literal 0;10c\x1b[D\x1bx");
+    tui.send(b"\x1b[200~pasted \x1b[>0;10c\x1b[201~");
+    tui.send(b"input-fence");
+    // The paste keeps the reply's text but not its ESC: `paste_safe` removes
+    // every control character from a paste, so none can end it early.
+    assert_recorded_input(
+        &recorded,
+        b"literal 0;10c\x1b[D\x1bxpasted [>0;10cinput-fence",
+    );
+    assert!(tui.quit().success());
+}
+
 #[test]
 fn connected_host_markers_keep_arrows_without_a_circle() {
     let Some((profile, _link, mut tui)) = remote_shell_session() else {
