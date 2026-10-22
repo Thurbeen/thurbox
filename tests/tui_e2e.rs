@@ -766,6 +766,61 @@ fn a_held_database_write_lock_does_not_stop_the_interface_painting() {
     assert!(tui.quit().success());
 }
 
+/// Choosing a theme while another process holds the write lock does not stop
+/// the interface, and the choice is stored once the lock goes (issue #1474).
+/// The picker used to store it through a connection of the loop's own, so the
+/// write waited out the busy timeout on the loop. A lock held past that
+/// timeout still loses the choice; it is only no longer the frame that waits.
+#[test]
+fn choosing_a_theme_under_a_held_write_lock_keeps_painting_and_stores_it() {
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+
+    let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
+    db.busy_timeout(WAIT).expect("busy timeout");
+    let stored = |db: &rusqlite::Connection| -> Option<String> {
+        db.query_row(
+            "SELECT value FROM metadata WHERE key = 'active_theme'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+    };
+    let before = stored(&db);
+    db.execute_batch("BEGIN IMMEDIATE")
+        .expect("take the write lock");
+
+    tui.send(CTRL_Y);
+    tui.wait_within(
+        Duration::from_secs(2),
+        "the theme picker to open under the write lock",
+        |frame| frame.contains("/ filter themes"),
+    );
+    tui.send(b"\x1b[B");
+    tui.send(b"\r");
+    tui.send(F1);
+    tui.wait_within(
+        Duration::from_secs(2),
+        "the help overlay to paint after a theme was chosen under the write lock",
+        |frame| frame.contains("Keybindings"),
+    );
+
+    db.execute_batch("ROLLBACK")
+        .expect("release the write lock");
+    let deadline = Instant::now() + WAIT;
+    while stored(&db) == before {
+        assert!(
+            Instant::now() < deadline,
+            "the theme chosen under the write lock was never stored (still {before:?})"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+    assert!(tui.quit().success());
+}
+
 // --- diagnostic logs over OTLP ---------------------------------------------
 
 /// `export_diagnostic_logs` bridges the interface's own `tracing` events to the
@@ -10203,6 +10258,105 @@ fn a_terminal_editor_runs_with_the_keyboard_flags_popped() {
     wait(&tui, "the flags to be pushed again", &|| depth() == (0, 1));
     assert!(tui.quit().success());
     tui.assert_keyboard_flags_popped();
+}
+
+/// Opening the editor while another process holds the write lock starts the
+/// configured editor and leaves the interface painting (issue #1474). The
+/// editor setting used to be read through a fresh connection, and opening one
+/// prunes aged history: a write, which waited out the busy timeout under the
+/// lock, once for the command and once for the mode.
+#[test]
+fn the_editor_opens_under_a_held_write_lock() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let interface = interface_plus(
+        "91_edit.lua",
+        r#"return {
+  name = "edit",
+  slot = "edit",
+  strip = true,
+  size = { len = 1 },
+  focusable = false,
+  keys = { { key = "f7", action = "edit.open", scope = "global" } },
+  on_action = function(action)
+    if action ~= "edit.open" then return false end
+    command("editor", { session = thurbox.sessions[1].id })
+    return true
+  end,
+  render = function() return { type = "text", text = "EDIT" } end,
+}"#,
+    );
+    let profile = Profile::new();
+    std::fs::write(
+        profile.path("config/agents.toml"),
+        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
+    )
+    .expect("seed agents");
+    let repo = repo(profile.root.path());
+    profile.cli(&[
+        "session",
+        "create",
+        "--name",
+        "probe",
+        "--repo-path",
+        repo.to_str().expect("utf-8 path"),
+        "--agent",
+        "shell",
+    ]);
+    profile.cli(&["config", "accept-interface"]);
+    let started = profile.path("editor-started");
+    let editor = profile.path("bin/fake-gui-editor");
+    std::fs::write(
+        &editor,
+        format!("#!/bin/sh\ntouch '{}'\n", started.display()),
+    )
+    .expect("editor script");
+    std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    profile.cli(&["editor", "set", editor.to_str().expect("utf-8 path")]);
+    profile.cli(&["editor", "mode", "gui"]);
+
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+        cmd.env_remove("VISUAL");
+        cmd.env_remove("EDITOR");
+    });
+    tui.wait_for("probe");
+
+    let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
+    // The interface may be writing too, recording the pane it just attached.
+    db.busy_timeout(WAIT).expect("busy timeout");
+    // An entry past the retention window, as a long-running interface
+    // accumulates: what makes opening a connection prune, which is a write.
+    db.execute(
+        "INSERT INTO audit_log (timestamp, entity_type, entity_id, action) \
+         VALUES (1, 'session', 'aged', 'created')",
+        [],
+    )
+    .expect("an aged audit entry");
+    db.execute_batch("BEGIN IMMEDIATE")
+        .expect("take the write lock");
+    tui.send(b"\x1b[18~");
+    tui.send(F1);
+    tui.wait_within(
+        Duration::from_secs(2),
+        "the help overlay to paint after the editor key under the write lock",
+        |frame| frame.contains("Keybindings"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !started.exists() {
+        if Instant::now() > deadline {
+            tui.give_up("the configured editor to start under the write lock");
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+
+    db.execute_batch("ROLLBACK")
+        .expect("release the write lock");
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+    assert!(tui.quit().success());
 }
 
 /// The loop's `frames` counter from the first perf snapshot captured after

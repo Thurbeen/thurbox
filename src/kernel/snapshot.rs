@@ -745,6 +745,15 @@ impl PaneProbe {
     }
 }
 
+/// An editor request, answered: the session to open it over and the editor
+/// setting as stored (`thurbox-cli editor set` / `editor mode`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorRequest {
+    pub session: String,
+    pub command: Option<String>,
+    pub mode: crate::session::settings::EditorMode,
+}
+
 /// Owns the snapshot and decides when to rebuild it.
 ///
 /// Refresh happens on the kernel's schedule, never inside a plugin call, and
@@ -811,6 +820,15 @@ pub struct SnapshotStore {
     /// A focus request another process left, claimed during a full read
     /// and handed out by [`Self::take_focus_request`].
     pending_focus: Option<String>,
+    /// The database file, for a read that must not queue behind the worker's
+    /// writes ([`Self::request_editor`]). `None` without a database.
+    db_path: Option<PathBuf>,
+    /// Editor settings read for [`Self::request_editor`], each handed out once
+    /// by [`Self::take_editor`].
+    editor: (
+        std::sync::mpsc::Sender<EditorRequest>,
+        std::sync::mpsc::Receiver<EditorRequest>,
+    ),
     /// When each row's `hook_state` was stamped, by session id.
     ///
     /// Beside the rows rather than on [`SessionRow`] because it is an input to
@@ -849,8 +867,13 @@ impl SnapshotStore {
         let registry = read_registry();
         crate::agent::agent_config::publish_registry(&registry);
         let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
+        let db_path = database
+            .is_some()
+            .then(crate::paths::database_file)
+            .flatten();
         let mut store = Self {
             db: database.map(DbWorker::spawn),
+            db_path,
             reading: false,
             reread: false,
             writes: 0,
@@ -878,6 +901,7 @@ impl SnapshotStore {
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
+            editor: std::sync::mpsc::channel(),
             hook_state_at: std::collections::HashMap::new(),
         };
         store.refresh();
@@ -890,8 +914,14 @@ impl SnapshotStore {
         let registry = read_registry();
         crate::agent::agent_config::publish_registry(&registry);
         let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
+        let db_path = database
+            .conn_ref()
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from);
         let mut store = Self {
             db: Some(DbWorker::spawn(database)),
+            db_path,
             reading: false,
             reread: false,
             writes: 0,
@@ -916,6 +946,7 @@ impl SnapshotStore {
             pending_hooks: Vec::new(),
             version: 0,
             pending_focus: None,
+            editor: std::sync::mpsc::channel(),
             hook_state_at: std::collections::HashMap::new(),
         };
         store.refresh();
@@ -981,6 +1012,46 @@ impl SnapshotStore {
             return None;
         }
         Some(Ok(warnings))
+    }
+
+    /// Store the chosen theme, for every other process to pick up. Queued,
+    /// never waited for: a lock held elsewhere delays the write, not a frame.
+    pub fn persist_theme(&mut self, name: &str) {
+        self.send_write(Write::Theme(name.to_string()));
+    }
+
+    /// Ask for the editor setting, to open the editor over `session` once it
+    /// is read ([`Self::take_editor`]).
+    ///
+    /// Read on a thread of its own over [`Database::open_existing`], not on
+    /// the worker: the worker's queue can hold a write waiting out another
+    /// process's lock, and the key would then open the editor seconds later,
+    /// over whatever the user had moved on to. A WAL read waits for no writer,
+    /// and `open_existing` skips the prunes that make an open write. Anything
+    /// that cannot be read answers "none stored", so `$VISUAL`/`$EDITOR` still
+    /// apply.
+    pub fn request_editor(&mut self, session: &str) {
+        let session = session.to_string();
+        let path = self.db_path.clone();
+        let answer = self.editor.0.clone();
+        std::thread::spawn(move || {
+            let db = path.and_then(|path| Database::open_existing(&path).ok());
+            let _ = answer.send(EditorRequest {
+                session,
+                command: db
+                    .as_ref()
+                    .and_then(|db| db.get_editor_command().ok().flatten()),
+                mode: db
+                    .as_ref()
+                    .and_then(|db| db.get_editor_mode().ok())
+                    .unwrap_or_default(),
+            });
+        });
+    }
+
+    /// An editor setting a [`Self::request_editor`] asked for, once read.
+    pub fn take_editor(&mut self) -> Option<EditorRequest> {
+        self.editor.1.try_recv().ok()
     }
 
     /// Publish telemetry through our connection, without invalidating our rows.
@@ -2954,6 +3025,52 @@ mod tests {
         driver.conn_ref().execute_batch("COMMIT").unwrap();
         store.settle();
         store.settle();
+    }
+
+    /// A theme is chosen while another process holds the write lock. The
+    /// store queues it rather than waiting, and it lands once the lock goes.
+    #[test]
+    fn a_theme_chosen_under_a_held_lock_is_stored_once_it_is_released() {
+        let (_temp, driver, mut store, _id) = store_with_one_session("ssh:fixture", "working");
+        driver.conn_ref().execute_batch("BEGIN IMMEDIATE").unwrap();
+        store.persist_theme("nord");
+        driver.conn_ref().execute_batch("COMMIT").unwrap();
+        store.settle();
+        assert_eq!(driver.get_active_theme().unwrap().as_deref(), Some("nord"));
+    }
+
+    #[test]
+    fn an_editor_request_is_answered_once_under_a_held_lock() {
+        let (_temp, driver, mut store, id) = store_with_one_session("ssh:fixture", "working");
+        driver.set_editor_command("nvim -p").unwrap();
+        driver
+            .set_editor_mode(crate::session::settings::EditorMode::Terminal)
+            .unwrap();
+        // Under a held write lock: the read must neither wait for it nor queue
+        // behind a write that does.
+        driver.conn_ref().execute_batch("BEGIN IMMEDIATE").unwrap();
+        store.set_perf_snapshot("{}");
+        store.request_editor(&id);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let answer = loop {
+            if let Some(answer) = store.take_editor() {
+                break Some(answer);
+            }
+            if Instant::now() > deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        driver.conn_ref().execute_batch("COMMIT").unwrap();
+        assert_eq!(
+            answer,
+            Some(EditorRequest {
+                session: id,
+                command: Some("nvim -p".into()),
+                mode: crate::session::settings::EditorMode::Terminal,
+            })
+        );
+        assert_eq!(store.take_editor(), None, "handed out once");
     }
 
     /// The store decided to write this remote report because the row showed

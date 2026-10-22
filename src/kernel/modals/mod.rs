@@ -39,7 +39,6 @@ use ratatui::Frame;
 use self::chrome::{Chrome, Hits, Hover};
 use super::registry::{binding_from, Binding, Pill, Registry};
 use super::theme::Themes;
-use crate::storage::Database;
 
 /// The declaring "plugin" of a modal's chord.
 ///
@@ -177,9 +176,6 @@ pub struct World<'a> {
     /// that runs an action. Same shape as `save_settings`, for the same reason
     /// — and the modal has closed itself by the time the loop reads it.
     pub run_action: &'a mut Option<palette::Dispatch>,
-    /// Where the theme choice is persisted. `None` when the database could not
-    /// be opened — the choice then applies for this run only.
-    pub db: Option<&'a Database>,
 }
 
 enum Open {
@@ -320,7 +316,7 @@ impl Modals {
                     }
                 }
             }
-            Open::Theme(modal) => match modal.on_key(key, world.themes, world.db) {
+            Open::Theme(modal) => match modal.on_key(key, world.themes) {
                 theme::Outcome::Stay(message) => message,
                 // Closed on apply, so the palette that was just chosen is
                 // visible rather than hidden behind the picker.
@@ -508,7 +504,6 @@ mod tests {
             inventory: &[],
             interface_edit: Box::leak(Box::new(None)),
             run_action: Box::leak(Box::new(None)),
-            db: None,
         }
     }
 

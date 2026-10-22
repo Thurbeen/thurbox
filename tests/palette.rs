@@ -106,7 +106,6 @@ fn modal_key(
         run_action: &mut run,
         registry,
         themes,
-        db: None,
     };
     modals.on_key(&key, chord, &mut world);
     run

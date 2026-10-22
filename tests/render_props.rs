@@ -515,7 +515,6 @@ fn no_key_sequence_makes_the_palette_throw_or_stop_drawing() {
                 run_action: &mut run,
                 registry: &mut registry,
                 themes: &mut themes,
-                db: None,
             };
             let chord = format!("{:?}", key.code).to_lowercase();
             modals.on_key(key, &chord, &mut world);
