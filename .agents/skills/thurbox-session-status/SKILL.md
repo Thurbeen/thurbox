@@ -453,10 +453,19 @@ run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
   report one finished subagent back makes tool calls of its own while others
   still run, and those must stay counted. `idle` (claude's
   `SessionStart`, a new process) forgets all of it; `session stop` clears the
-  column; the interface reads `background` with no live pane as `idle`
-  (`with_output_quiescence` — quiet output is *not* evidence here, the work
-  runs out of the pane's sight); and `contradicts` lets `session get` report a
-  dead or missing pane against it.
+  column; and `contradicts` lets `session get --verify` report a dead or
+  missing pane against it. `with_output_quiescence` does **not** fold
+  `background`: quiet output is not evidence (the work runs out of the pane's
+  sight), and a missing quiet answer is not either — an interface that has not
+  attached to the session yet (pending, or failed) gives none.
+- **The status channel is read back as an echo.** `session signal` publishes
+  the word it stored to the pane option after its transaction, so two hook
+  processes can publish out of the order they stored in. The interface's
+  drain writes through `report_hook_state` as `ReportFrom::Echo`, which
+  refuses a `background` once the session's counted work has all ended — a
+  late `Stop` echo cannot undo the `done` the last `SubagentStop` stored. A
+  session that never counted work (a remote pane, which cannot) still takes
+  `background` from its channel.
 - Coverage: claude's `states` lists `background`, but `is_full` asks only for
   the four `TURN_STATES`, so no other agent's coverage moved.
 

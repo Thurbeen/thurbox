@@ -28,9 +28,15 @@
 //!   turn — its own tool calls, including those of the turn claude starts to
 //!   report a finished subagent back — forgets nothing;
 //! - `session stop` clears the column with the hook state;
-//! - an interface with no live pane for the session reads `background` as
-//!   `idle` (`with_output_quiescence`), and `session get --verify` reports a
-//!   dead pane as contradicting it.
+//! - `session get --verify` reports a dead pane as contradicting it. The
+//!   interface does not fold it by the terminal: sub-work runs out of the
+//!   pane's sight, and an interface not yet attached has no answer either.
+//!
+//! The ids are also what makes a backend's status channel safe to read back.
+//! `session signal` publishes the word it stored after its transaction, so a
+//! `background` published late can arrive after the end of the last work was
+//! stored as `done`; read back as a [`ReportFrom::Echo`], it is refused for a
+//! session whose work was counted and has all ended.
 
 /// How many ids each list remembers at most. A start whose end never comes
 /// should not grow the row without bound; the oldest is forgotten first.
@@ -50,6 +56,9 @@ pub enum ReportFrom<'a> {
     TurnStart,
     /// Sub-work `id`, reporting on itself.
     Work(&'a str),
+    /// A backend's status channel handing back a word written to it — in the
+    /// order the writers published, which need not be the order they stored.
+    Echo,
 }
 
 /// One edge of a piece of sub-work.
@@ -92,6 +101,11 @@ impl InFlight {
     /// How much work is running.
     pub fn len(&self) -> usize {
         self.running.len()
+    }
+
+    /// Whether work was counted here and all of it has ended.
+    fn all_ended(&self) -> bool {
+        self.running.is_empty() && !self.ended.is_empty()
     }
 
     /// Whether `id` is running.
@@ -162,6 +176,9 @@ pub fn settle_report(
             return "background".into();
         }
         ("working", ReportFrom::TurnStart) => in_flight.forget_running(),
+        ("background", ReportFrom::Echo) if in_flight.all_ended() => {
+            return previous.unwrap_or(reported).to_string();
+        }
         ("done", _) if !in_flight.is_empty() => return "background".into(),
         _ => {}
     }
@@ -375,6 +392,33 @@ mod tests {
         );
         assert_eq!(
             settle_report(Some("working"), &mut work, "done", ReportFrom::Agent),
+            "background"
+        );
+    }
+
+    /// A late echo of `background` is refused once the counted work has all
+    /// ended; with nothing ever counted (a remote pane) it is the report.
+    #[test]
+    fn a_background_echo_needs_work_still_running() {
+        let mut work = started(&["a"]);
+        settle_edge(Some("background"), &mut work, WorkEdge::End, "a");
+        assert_eq!(
+            settle_report(Some("done"), &mut work, "background", ReportFrom::Echo),
+            "done"
+        );
+        let mut none = InFlight::default();
+        assert_eq!(
+            settle_report(Some("done"), &mut none, "background", ReportFrom::Echo),
+            "background"
+        );
+        let mut running = started(&["b"]);
+        assert_eq!(
+            settle_report(
+                Some("working"),
+                &mut running,
+                "background",
+                ReportFrom::Echo
+            ),
             "background"
         );
     }

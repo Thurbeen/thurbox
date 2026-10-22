@@ -1453,9 +1453,14 @@ impl Database {
     /// unseen again. Decided under the write lock, so a writer that got there
     /// first is what it is decided against. Returns the stamp written, or
     /// `None` when nothing was.
+    ///
+    /// What the interface drains from a backend's status channel lands here,
+    /// read as a [`ReportFrom::Echo`]: a late `background` for work that has
+    /// all ended is refused rather than written back over the `done` its end
+    /// stored.
     pub fn report_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<Option<i64>> {
         Ok(self
-            .write_hook_state(id, state, ReportFrom::Agent, true)?
+            .write_hook_state(id, state, ReportFrom::Echo, true)?
             .map(|written| written.0))
     }
 

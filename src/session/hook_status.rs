@@ -908,10 +908,11 @@ pub const WORKING_QUIET_MS: u64 = 10_000;
 /// producing output, so that reads as quiet too. This is where v1's `exited →
 /// Idle` branch lands: a pane whose stream ended is dropped from the live set.
 ///
-/// `background` is not time-gated either: sub-work runs out of the pane's
-/// sight, so a quiet pane is exactly what a real one looks like. Only its
-/// process can end one here — with no live pane there is nothing left to be
-/// running it, and it reads `idle` like a `working` one would.
+/// `background` passes through untouched: sub-work runs out of the pane's
+/// sight, so a quiet pane is exactly what a real one looks like, and `None`
+/// says no more — an interface that has not attached yet (pending, or failed)
+/// answers it for a session whose subagent is running. What ends a stuck one
+/// is the session moving on (see `session::background_work`).
 ///
 /// `blocked` is **not** time-gated, and for the reason this fold used to say it
 /// was exempt altogether: a standing request for input says nothing about
@@ -934,9 +935,6 @@ pub fn with_output_quiescence(
         return with_output_quiescence(SessionState::Working, quiet_for_ms, None);
     }
     if state == SessionState::Working && quiet_for_ms.unwrap_or(u64::MAX) > WORKING_QUIET_MS {
-        return SessionState::Idle;
-    }
-    if state == SessionState::Background && quiet_for_ms.is_none() {
         return SessionState::Idle;
     }
     state
@@ -1397,16 +1395,18 @@ mod tests {
     }
 
     /// Sub-work runs out of the pane's sight, so a quiet pane is what a real
-    /// `background` looks like; only a pane that is gone ends one.
+    /// `background` looks like. `None` is no answer either way: an interface
+    /// that has not attached to the session yet (pending, or failed) gives it
+    /// for a session whose subagent is running.
     #[test]
-    fn background_ends_with_its_pane_and_not_with_quiet() {
+    fn background_is_not_ended_by_the_terminal() {
         assert_eq!(
             with_output_quiescence(SessionState::Background, Some(WORKING_QUIET_MS * 100), None),
             SessionState::Background
         );
         assert_eq!(
             with_output_quiescence(SessionState::Background, None, None),
-            SessionState::Idle
+            SessionState::Background
         );
         assert_eq!(
             derive_state(Some("background"), Some(NOW), Some(NOW)),

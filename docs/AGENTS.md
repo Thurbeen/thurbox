@@ -577,5 +577,9 @@ A missed end edge is forgotten by the next prompt (`UserPromptSubmit` marks
 its `working` as a turn start with `THURBOX_SIGNAL_TURN=start`; the main
 agent's own tool calls, such as those of the turn that reports a finished
 subagent back, forget nothing), by the agent starting again (`SessionStart` →
-`idle`) and by `session stop`; the interface also
-reads `background` as `idle` once the session has no live pane.
+`idle`) and by `session stop`; `session get --verify` reports a dead pane as
+contradicting it. The interface does not fold `background` by the terminal:
+the work runs out of the pane's sight, and an interface that has not attached
+yet has no answer either. Because `session signal` publishes to the pane's
+status channel after it stores, a late `background` read back from that
+channel is refused once the session's counted work has all ended.

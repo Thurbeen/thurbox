@@ -362,6 +362,36 @@ fn duplicate_and_out_of_order_edges_do_not_strand_the_session() {
     assert_eq!(done_edges, 1, "{transitions:?}");
 }
 
+/// `session signal` publishes the word it stored to the pane's status channel
+/// after its transaction, and the interface drains that channel back into the
+/// row (`report_hook_state`). The turn's `Stop` (stored `background`) can
+/// publish late, after the subagent's `SubagentStop` has stored and published
+/// `done`; that stale `background` must not land on a row with nothing left
+/// running.
+#[test]
+fn a_late_background_echo_does_not_undo_the_end_of_the_work() {
+    let env = Env::new("claude");
+    turn_that_starts_a_background_subagent(&env, SUBAGENT);
+    env.claude("SubagentStop", typed("SubagentStop", SUBAGENT));
+    assert_eq!(env.hook_state().as_deref(), Some("done"));
+
+    let stored = env
+        .db()
+        .report_hook_state(env.id, "background")
+        .expect("drain write");
+    assert_eq!(stored, None, "the stale echo was written");
+    assert_eq!(env.hook_state().as_deref(), Some("done"));
+
+    // A session that counted nothing still takes `background` from its
+    // channel: that is how a remote pane, which cannot count, reports it.
+    let remote = Env::new("claude");
+    remote
+        .db()
+        .report_hook_state(remote.id, "background")
+        .expect("drain write");
+    assert_eq!(remote.hook_state().as_deref(), Some("background"));
+}
+
 /// The #1428 case: claude's own post-turn agent carries an `agent_id` and no
 /// `agent_type`, runs tool calls after `Stop`, and fires no end anything waits
 /// on. It must never make a finished session read anything but `done`.
