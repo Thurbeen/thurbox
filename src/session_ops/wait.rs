@@ -39,8 +39,11 @@ pub fn run(
     let registry = crate::agent::agent_config::load_or_seed();
     // A session already marked lost has no pane to reach any state, and its
     // `lost` edge predates the cursor, so the mark itself ends the wait — before
-    // a latched state could answer for a process that is gone.
-    if db.session_lost_at(session.id).map_err(failed)?.is_some() {
+    // a latched state could answer for a process that is gone. An explicit
+    // cursor (`send --wait-turn`'s, taken before delivery) may have edges
+    // queued after it, a turn ahead of the loss among them: those are read in
+    // order first, and the loop's idle check ends the wait on the mark after.
+    if since.is_none() && db.session_lost_at(session.id).map_err(failed)?.is_some() {
         return Err(Error::Gone);
     }
     let mut stopped = db.session_stopped_at(session.id).map_err(failed)?.is_some();
@@ -185,4 +188,58 @@ fn baseline(
         .iter()
         .any(|s| s == hook.state_word())
         .then(|| super::events::present(seq, id, facts, &hook)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `send --wait-turn` takes its cursor before delivery. A turn recorded
+    /// after that cursor answers the wait even when a loss was recorded after
+    /// the turn and before the wait started reading: the queued edges are read
+    /// in order before the lost mark can end the wait.
+    #[test]
+    fn an_explicit_cursor_reads_a_turn_recorded_before_a_loss() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let session = SharedSession {
+            id: SessionId::default(),
+            name: "worker".into(),
+            agent: "shell".into(),
+            backend_id: "%1".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        db.upsert_session(&session).unwrap();
+        let cursor = db.latest_session_event_seq().unwrap();
+        db.set_hook_state(session.id, "working").unwrap();
+        assert!(db.record_session_lost(session.id, "%1").unwrap());
+
+        let answer = run(
+            &db,
+            &crate::backend::registry::inert(),
+            &session,
+            Conditions {
+                states: vec!["working".into()],
+                pane: None,
+                timeout: Some(Duration::from_secs(2)),
+            },
+            Some(cursor),
+        );
+
+        let Ok(event) = answer else {
+            panic!("the recorded turn went unconfirmed");
+        };
+        assert_eq!(event["to_state"], "working");
+    }
 }

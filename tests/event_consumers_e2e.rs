@@ -23,7 +23,14 @@ impl Env {
             "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
         )
         .unwrap();
-        std::fs::write(root.path().join("config/agents.toml"), "default = 'shell'\n[[agents]]\nname = 'shell'\ncommand = 'sh'\n[[agents]]\nname = 'claude'\ncommand = 'sh'\nhook_schema = 'claude'\n").unwrap();
+        // The shell is pinned, prompt included, as tests/send_keys_e2e.rs pins
+        // it, so the shell and its prompt are the same on every machine: `sh`
+        // is bash on one and dash on another.
+        std::fs::write(
+            root.path().join("config/agents.toml"),
+            "default = 'shell'\n[[agents]]\nname = 'shell'\ncommand = 'env'\nargs = ['PS1=bash-5.3$ ', 'bash', '--norc', '--noprofile', '-i']\n[[agents]]\nname = 'claude'\ncommand = 'sh'\nhook_schema = 'claude'\n",
+        )
+        .unwrap();
         Self {
             root,
             server: tmux_server::TmuxServer::private("event-consumers"),
@@ -118,7 +125,7 @@ impl Env {
             if capture["output"]
                 .as_str()
                 .unwrap_or_default()
-                .contains(['$', '#'])
+                .contains("bash-5.3$")
             {
                 return created;
             }
