@@ -108,7 +108,8 @@ try {
         if ($r.code -ne 0) {
             # A refusal passes only for a psmux this run has and the floor
             # really excludes: refusing 3.3.8 would be a bug of its own.
-            if ("$($r.out)$($r.err)" -match 'psmux (\d+\.\d+\.\d+) is too old') {
+            # The server's refusal, or the binary's (which needs no restart).
+            if ("$($r.out)$($r.err)" -match 'psmux (?:binary is )?(\d+\.\d+\.\d+),? (?:is )?too old') {
                 $refused = $matches[1]
                 if ([version]$refused -ge [version]'3.3.8' -or $mux -notmatch "(psmux|tmux) $([regex]::Escape($refused))\b") {
                     throw "thurbox refused psmux $refused, which this run ($mux) does not make too old"

@@ -490,8 +490,8 @@ Older releases can spawn dead panes after console attach/detach; 3.3.7 fixes
 that. 3.3.7 still runs a command aimed at a pane on the session's active pane
 instead, so keystrokes reach another session; 3.3.8 fixes that. The adapter
 checks both the client banner and the running server's `#{version}` before
-any pane is named — an upgrade needs `psmux -L <socket> kill-server` before
-thurbox will use the server. RMUX
+any pane is named — a server started before an upgrade must be restarted
+(`psmux -L <socket> kill-server`) before thurbox will use it. RMUX
 checks its `rmux -V` banner instead: its `#{version}` is the tmux
 compatibility version, not the RMUX release.
 

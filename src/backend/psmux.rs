@@ -143,8 +143,8 @@ impl TmuxCompatible for Psmux {
     /// itself independently, so this is its own floor and never tmux's. The
     /// binary and the running server are both held to it again before a pane
     /// is named ([`Self::VERSION_FLOOR`]).
-    fn check_banner(banner: &str, socket: &str) -> Result<()> {
-        check_psmux_version(banner, socket)
+    fn check_banner(banner: &str, _socket: &str) -> Result<()> {
+        check_psmux_binary(banner)
     }
 
     fn check_listing(listing: &str) -> Result<()> {
@@ -379,23 +379,7 @@ const MIN_PSMUX_VERSION: (u32, u32, u32) = (3, 3, 8);
 /// line, which wins when present. An answer with no readable version is let
 /// through: it proves nothing about the fix either way.
 fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
-    let version = version_output.lines().rev().find_map(|line| {
-        let line = line.trim();
-        let rest = line
-            .strip_prefix("psmux ")
-            .or_else(|| line.strip_prefix("tmux "))
-            .unwrap_or(line);
-        let mut parts = rest.split_whitespace().next()?.split('.').map(|p| {
-            let digits: String = p.chars().take_while(char::is_ascii_digit).collect();
-            digits.parse::<u32>().ok()
-        });
-        Some((
-            parts.next()??,
-            parts.next()??,
-            parts.next().flatten().unwrap_or(0),
-        ))
-    });
-    match version {
+    match psmux_version(version_output) {
         Some(v) if v < MIN_PSMUX_VERSION => bail!(
             "psmux {}.{}.{} is too old: its server runs a command meant for one pane on the \
              session's active pane — keystrokes typed into another session, the wrong pane \
@@ -411,6 +395,48 @@ fn check_psmux_version(version_output: &str, socket: &str) -> Result<()> {
         ),
         _ => Ok(()),
     }
+}
+
+/// Refuse a psmux binary older than [`MIN_PSMUX_VERSION`] by its `-V`, with
+/// advice about the binary alone: nothing has been started by it, and
+/// restarting a server would not change which binary runs.
+fn check_psmux_binary(banner: &str) -> Result<()> {
+    match psmux_version(banner) {
+        Some(v) if v < MIN_PSMUX_VERSION => bail!(
+            "the psmux binary is {}.{}.{}, too old to name a pane through: upgrade it to \
+             {}.{}.{} or newer, or put a newer psmux first on PATH; restarting a server would \
+             not change this",
+            v.0,
+            v.1,
+            v.2,
+            MIN_PSMUX_VERSION.0,
+            MIN_PSMUX_VERSION.1,
+            MIN_PSMUX_VERSION.2,
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// The version a `-V` banner or a `#{version}` answer names, read leniently:
+/// the last line that has one, `psmux ` or `tmux ` before it, a pre-release
+/// suffix ignored. `None` when nothing in it reads as a version.
+fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
+    output.lines().rev().find_map(|line| {
+        let line = line.trim();
+        let rest = line
+            .strip_prefix("psmux ")
+            .or_else(|| line.strip_prefix("tmux "))
+            .unwrap_or(line);
+        let mut parts = rest.split_whitespace().next()?.split('.').map(|p| {
+            let digits: String = p.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u32>().ok()
+        });
+        Some((
+            parts.next()??,
+            parts.next()??,
+            parts.next().flatten().unwrap_or(0),
+        ))
+    })
 }
 
 /// What an agent window runs once its agent returns: the exit status, piped to
@@ -1619,7 +1645,11 @@ mod tests {
     /// does not make it safe (`an_old_psmux_client_names_no_pane_to_a_new_server`).
     #[test]
     fn an_old_binary_is_refused_beside_a_new_server() {
-        assert!(Psmux::check_banner("tmux 3.3.7\npsmux 3.3.7 (x)\n", "thurbox").is_err());
+        let err = Psmux::check_banner("tmux 3.3.7\npsmux 3.3.7 (x)\n", "thurbox")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("psmux binary is 3.3.7, too old"), "{err}");
+        assert!(!err.contains("kill-server"), "{err}");
     }
 
     #[test]
@@ -1740,7 +1770,12 @@ mod tests {
         let (_root, psmux, log) =
             psmux_with_client("printf 'tmux 3.3.7\\npsmux 3.3.7 (x)\\n'", "echo 3.3.8");
         let err = psmux.target("%2").unwrap_err().to_string();
-        assert!(err.contains("psmux 3.3.7 is too old"), "{err}");
+        assert!(err.contains("binary is 3.3.7, too old"), "{err}");
+        assert!(
+            err.contains("restarting a server would not change this"),
+            "{err}"
+        );
+        assert!(!err.contains("kill-server"), "{err}");
         let sent = std::fs::read_to_string(&log).unwrap_or_default();
         assert!(!sent.contains("%2"), "a pane was named:\n{sent}");
     }

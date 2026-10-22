@@ -748,10 +748,11 @@ pub struct Server<M: TmuxCompatible> {
     admitted: std::sync::atomic::AtomicU64,
     /// Held while the multiplexer is asked, so callers arriving together —
     /// every pane re-registered after a reconnect — wait for one question:
-    /// they take a connection's answer from `admitted`, and a failure from the
-    /// generation and reason held here, rather than each asking a server that
-    /// is not answering in turn. A one-shot's success is not kept, so each of
-    /// them asks again.
+    /// they take a connection's answer from `admitted`, and a failure on the
+    /// same connection from the generation and reason held here. A timeout
+    /// reconnects, which is a new connection, so those behind it ask that
+    /// one afresh; a one-shot's success is not kept, so each of them asks
+    /// again.
     admitting: Mutex<Option<(u64, String)>>,
     /// Counts the questions settled, so a waiter can tell one was answered
     /// while it waited.
@@ -1248,10 +1249,10 @@ impl<M: TmuxCompatible> Server<M> {
     /// started before it on the old code, and the client binary, since psmux
     /// before 3.3.8 resolves a `-t` in the client too (#1557). Asked once per
     /// control connection; a one-shot answer is not kept, since nothing would
-    /// tell it the server had been replaced. Only a server that is not there —
-    /// psmux's own words for that, nothing broader — is let through, since
-    /// nothing named to it can arrive; any other answer that is not a version
-    /// new enough refuses.
+    /// tell it the server had been replaced. Only the multiplexer's own words
+    /// for a missing server or a missing session on it — nothing broader — are
+    /// let through, since nothing named there can arrive; any other answer
+    /// that is not a version new enough refuses.
     fn admit_server(&self) -> Result<()> {
         use std::sync::atomic::Ordering;
         let Some(refuse_old) = M::VERSION_FLOOR else {
@@ -1302,11 +1303,22 @@ impl<M: TmuxCompatible> Server<M> {
         attached: bool,
         refuse_old: fn(&str, &str) -> Result<()>,
     ) -> Result<Admission> {
+        // The binary's own refusal, not the server's: its server may be fine,
+        // and restarting that would end every agent and change nothing.
+        let mux = self.transport.mux();
         let banner = self.tmux_output(&["-V"])?;
         let Some(client) = banner_version(&banner) else {
-            bail!("the multiplexer did not say its version (it answered {banner:?})");
+            bail!(
+                "the {mux} binary did not give a version thurbox can hold to its floor (it \
+                 answered {banner:?}); put a released {mux} first on PATH"
+            );
         };
-        refuse_old(client, &self.socket())?;
+        if refuse_old(client, &self.socket()).is_err() {
+            bail!(
+                "the {mux} binary is {client}, too old to name a pane through: upgrade it, or \
+                 put a newer {mux} first on PATH; restarting a server would not change this"
+            );
+        }
         let answer = match attached {
             true => self
                 .ctrl_command("display-message -p '#{version}'")
@@ -5035,9 +5047,9 @@ fn is_version_answer(answer: &str) -> bool {
             .all(|part| part.bytes().all(|b| b.is_ascii_digit()) && part.parse::<u32>().is_ok())
 }
 
-/// The version a `-V` banner names, held to [`is_version_answer`]: the last
-/// line's word after `psmux ` or `tmux ` (psmux 3.3.7 prints both, 3.3.6 only
-/// the second). `None` when no line names one.
+/// The version a `-V` banner names, held to [`is_version_answer`]: the word
+/// after `psmux ` or `tmux ` on the last line that names one (psmux 3.3.7
+/// prints both, 3.3.6 only the second). `None` when no line does.
 fn banner_version(banner: &str) -> Option<&str> {
     banner.lines().rev().find_map(|line| {
         let line = line.trim();
@@ -5404,6 +5416,21 @@ mod tests {
         for banner in ["", "3.3.8", "psmux", "psmux dev", "ERROR: x"] {
             assert_eq!(banner_version(banner), None, "{banner:?}");
         }
+    }
+
+    /// The admission was the connection's: once it is shut down, the next
+    /// name asks again rather than ride on it.
+    #[cfg(unix)]
+    #[test]
+    fn a_shut_down_connection_takes_its_admission_with_it() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (backend, asked) = floored_mux(root.path(), "2.0\\n");
+        backend.ensure_control().expect("control client");
+        backend.target("%1").expect("admitted on the connection");
+        assert_eq!(asked(), 1);
+        backend.shutdown();
+        backend.target("%1").expect("asked again with a one-shot");
+        assert_eq!(asked(), 2);
     }
 
     /// Over control mode an answer that is not a version may be a reply that

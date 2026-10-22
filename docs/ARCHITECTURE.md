@@ -1192,7 +1192,12 @@ the server it came from had gone, so a one-shot caller (`thurbox-cli`) asks
 for each pane it names — one `-V` and one `display-message` more, about 30 ms
 each locally and an ssh exec each on a remote host. Callers arriving together
 wait for one question: they take a connection's answer, or a failure on the
-same connection, rather than each waiting out a server that is not answering.
+same connection. A timeout reconnects, and those behind it ask the new
+connection afresh, so a server that stops answering can still cost each of
+them a timeout in turn. An old binary beside a new server is refused with its
+own message, here and before a server is started (`check_banner`): upgrade the
+binary or put a newer one first on `PATH` — restarting a server would not
+change which binary runs.
 A version with a suffix (`3.3.9-dev`) is not one the gate can hold to the
 floor, and is refused.
 
