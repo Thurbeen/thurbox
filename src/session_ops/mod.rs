@@ -798,15 +798,14 @@ pub fn fork_session_headless(
         key: None,
         ..Default::default()
     };
-    // The source's `ui.*` meta — a note, a group label, the prefix
-    // `kernel::lua_api::META_PREFIX` publishes — describes the work, which the
-    // fork carries on. Every other key is one session's own state (a lease, a
+    // The source's published meta — a note, a group label — describes the
+    // work, which the fork carries on. Every other key is one session's own state (a lease, a
     // conversation id) and stays with it (issue #1523).
     let ui_meta: Vec<(String, String)> = db
         .list_session_meta(source.id)
         .map_err(|e| format!("read session meta: {e}"))?
         .into_iter()
-        .filter(|(key, _)| key.starts_with("ui."))
+        .filter(|(key, _)| key.starts_with(crate::session::PUBLISHED_META_PREFIX))
         .collect();
     let forked = spawn::spawn_session_headless(db, backends, request)?;
     for (key, value) in ui_meta {

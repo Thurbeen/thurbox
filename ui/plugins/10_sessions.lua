@@ -197,7 +197,8 @@ local function session_line(item, width, elapsed, is_selected, work, search)
     -- What whoever drives the session said about it (`ui.note` meta, issue
     -- #1523) — "waiting for CI" — which the agent's own title cannot carry.
     -- First, because somebody set it on purpose; muted, like activity. A
-    -- blocked row keeps its attention message to itself.
+    -- blocked row keeps its attention message to itself, and an unreachable
+    -- one its reason: neither line can afford the width.
     local note = session.meta and session.meta["ui.note"]
     note = note and note:match("^%s*(.-)%s*$")
     if note and note ~= "" and session.status ~= "unreachable" then

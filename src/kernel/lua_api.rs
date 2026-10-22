@@ -19,16 +19,16 @@
 
 /// The plugin API contract number, published as `thurbox.api`.
 ///
-/// Bumped only when a published field is removed or changes meaning — the rule
-/// `cli_contract` follows for the command line. Additions never bump it: a
-/// plugin reads a newer field defensively, as it reads any optional one.
+/// Bumped only when a published field is removed or changes meaning (ADR-40).
+/// Additions never bump it: a plugin reads a newer field defensively, as it
+/// reads any optional one.
 pub const API: u32 = 1;
 
 /// The prefix of the session meta keys published as `session.meta`.
 ///
 /// Fixed, so a key a driver keeps for itself (`fm.lease`) or thurbox keeps for
 /// itself (`thurbox.codex_conversation_id`) never reaches a plugin.
-pub const META_PREFIX: &str = "ui.";
+pub const META_PREFIX: &str = crate::session::PUBLISHED_META_PREFIX;
 
 /// The longest published meta value, in characters. A row note is one line.
 pub const META_VALUE_CHARS: usize = 256;
@@ -43,14 +43,30 @@ pub const META_KEY_CHARS: usize = 64;
 pub const META_KEYS: usize = 32;
 
 /// The published form of one meta value: control characters (newlines
-/// included) removed and the length capped. Anyone with the CLI writes these,
-/// agents included, so they reach a pane as untrusted plain text.
+/// included) and invisible format characters removed, and the length capped.
+/// Anyone with the CLI writes these, agents included, so they reach a pane as
+/// untrusted plain text.
 pub fn clean_meta_value(value: &str) -> String {
     value
         .chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_invisible_format(*c))
         .take(META_VALUE_CHARS)
         .collect()
+}
+
+/// The format characters that change how the text around them is drawn
+/// without being drawn themselves: zero-width spaces and joiners, bidi marks,
+/// embeddings, overrides and isolates, and the byte-order mark. Left in, a
+/// note could reorder the row it is drawn on.
+fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+    )
 }
 
 /// Whether a stored meta key is one a plugin may see.
@@ -231,7 +247,7 @@ pub static SESSION: Class = Class {
             .doc("What the agent said about itself."),
         leaf("notification", "string").opt(),
         leaf("meta", "table<string, string>").opt().doc(
-            "The session's `ui.*` meta keys, by full key (`meta[\"ui.note\"]`). Untrusted text anyone with the CLI can write: one line, control characters stripped, at most 256 characters, 32 keys. Absent when it has none.",
+            "The session's `ui.*` meta keys, by full key (`meta[\"ui.note\"]`). Untrusted text anyone with the CLI can write: one line, control and invisible format characters stripped, at most 256 characters, 32 keys. Absent when it has none.",
         ),
         leaf("display_order", "integer"),
         field("git", Ty::Record(&GIT_STATS)).opt(),
@@ -1165,6 +1181,12 @@ mod tests {
         assert_eq!(
             clean_meta_value("waiting\non CI\u{1b}[31m"),
             "waitingon CI[31m"
+        );
+        // Invisible format characters: a right-to-left override, zero-width
+        // space and joiner, a bidi isolate, a byte-order mark.
+        assert_eq!(
+            clean_meta_value("ab\u{202e}c\u{200b}d\u{200d}e\u{2066}f\u{feff}g"),
+            "abcdefg"
         );
         let long = "é".repeat(META_VALUE_CHARS + 10);
         assert_eq!(clean_meta_value(&long).chars().count(), META_VALUE_CHARS);

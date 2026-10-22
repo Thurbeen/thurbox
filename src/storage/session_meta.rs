@@ -7,8 +7,9 @@
 //! not force on anyone.
 //!
 //! Keys are namespaced by convention (`fm.*`, `gc.*`, `you.*`) so two drivers
-//! against one database do not collide. Nothing here interprets a key or a
-//! value: this table is storage, and that is the whole contract.
+//! against one database do not collide. This module interprets nothing; above
+//! it, thurbox publishes `ui.*` keys to plugins and keeps `thurbox.*` for itself
+//! (ADR-40).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -18,6 +19,18 @@ use crate::session::SessionId;
 use crate::sync::current_time_millis;
 
 use super::Database;
+
+/// A GLOB matching any key that holds a control character (C0, DEL or C1),
+/// which no reader publishes: excluded before the per-session count, so such a
+/// key never takes the place of one that is.
+fn control_in_key() -> String {
+    let class: String = (1u32..0x20)
+        .chain([0x7f])
+        .chain(0x80..0xa0)
+        .filter_map(char::from_u32)
+        .collect();
+    format!("*[{class}]*")
+}
 
 impl Database {
     /// Set one metadata key, replacing any previous value.
@@ -56,9 +69,11 @@ impl Database {
     }
 
     /// The meta a reader may publish, for every **active** session, in one
-    /// query and bounded as it is read (issue #1523): keys starting with
-    /// `prefix` and at most `key_chars` characters long, the first `keys` of
-    /// them per session in key order, each value cut to `value_chars`.
+    /// query and bounded as it is read (issue #1523): keys longer than
+    /// `prefix`, starting with it, at most `key_chars` characters long and
+    /// free of control characters, the first `keys` of them per session in
+    /// key order, each value cut to `value_chars` as stored. The caller cleans
+    /// a value before its own cap, so it passes a raw bound above that cap.
     ///
     /// Bounded here rather than after the read because a value comes from
     /// whoever has the CLI and has no size limit of its own: a full snapshot
@@ -78,11 +93,19 @@ impl Database {
                  FROM session_meta m JOIN sessions s ON s.id = m.session_id \
                  WHERE s.deleted_at IS NULL \
                    AND substr(m.key, 1, length(?1)) = ?1 \
-                   AND length(m.key) <= ?2) \
+                   AND length(m.key) > length(?1) \
+                   AND length(m.key) <= ?2 \
+                   AND m.key NOT GLOB ?5) \
              WHERE position <= ?3",
         )?;
         let rows = stmt.query_map(
-            params![prefix, key_chars as i64, keys as i64, value_chars as i64],
+            params![
+                prefix,
+                key_chars as i64,
+                keys as i64,
+                value_chars as i64,
+                control_in_key()
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -152,6 +175,12 @@ mod tests {
         }
         db.set_session_meta(live, "ui.far-too-long-a-key", "x")
             .unwrap();
+        // Sort first and are never published — a bare prefix, keys with
+        // control characters — so none may take a slot.
+        db.set_session_meta(live, "ui.", "x").unwrap();
+        for key in ["ui.\u{1}a", "ui.\nb", "ui.\u{85}c"] {
+            db.set_session_meta(live, key, "x").unwrap();
+        }
         db.set_session_meta(live, "fm.lease", "x").unwrap();
         db.set_session_meta(gone, "ui.note", "x").unwrap();
         db.soft_delete_session(gone).unwrap();

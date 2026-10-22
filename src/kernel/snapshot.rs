@@ -1756,11 +1756,25 @@ impl SnapshotStore {
             bases,
             stopped,
             reports_as,
-            mut meta,
+            meta,
             deleted,
             tasks,
             automations,
         } = read;
+        // A meta read that failed keeps each row's labels as last read, and
+        // the error says so; the rows themselves still move.
+        let (mut meta, meta_error) = match meta {
+            Ok(meta) => (meta, None),
+            Err(error) => (
+                self.current
+                    .sessions
+                    .iter()
+                    .filter(|row| !row.meta.is_empty())
+                    .filter_map(|row| Some((row.id.parse::<SessionId>().ok()?, row.meta.clone())))
+                    .collect(),
+                Some(error),
+            ),
+        };
         self.hook_state_at = hooks
             .iter()
             .filter_map(|(id, row)| Some((id.to_string(), row.state_at?)))
@@ -1864,7 +1878,7 @@ impl SnapshotStore {
             hosts: self.hosts.clone(),
             mux: self.mux.clone(),
             taken_at_ms,
-            error: None,
+            error: meta_error,
         };
         self.attach_git_stats();
         self.mark_changed();

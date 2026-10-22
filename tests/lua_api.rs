@@ -803,10 +803,36 @@ mod meta {
         let drawn = screen(&list, "sessions", 60, 12);
         assert!(!drawn.contains("for CI"), "{drawn}");
         assert!(!drawn.contains("release"), "{drawn}");
+
+        // The cap counts what is published: a newline the cleaning drops
+        // costs no visible character.
+        let long = format!("{}\n{}", "x".repeat(255), "y");
+        ok(&env.cli(&["session", "meta", "set", "worker", "ui.note", &long]));
+        let rows = reread(&mut rows_store);
+        assert_eq!(
+            rows.sessions
+                .iter()
+                .find(|row| row.name == "worker")
+                .and_then(|row| row.meta.get("ui.note"))
+                .map(String::as_str),
+            Some(format!("{}y", "x".repeat(255)).as_str())
+        );
+        ok(&env.cli(&["session", "meta", "unset", "worker", "ui.note"]));
+
+        // A blank label is no label: the row stays in its repo group.
+        ok(&env.cli(&["session", "meta", "set", "worker", "ui.group", "   "]));
+        let rows = reread(&mut rows_store);
+        publish(&list, &rows);
+        let drawn = screen(&list, "sessions", 60, 12);
+        assert_eq!(drawn.matches("alpha").count(), 1, "{drawn}");
+        assert!(
+            drawn.contains("worker") && drawn.contains("other"),
+            "{drawn}"
+        );
     }
 
     #[test]
-    fn a_failed_meta_read_keeps_the_labels_and_says_why() {
+    fn a_failed_meta_read_keeps_the_labels_and_the_rows_moving() {
         let env = Env::new();
         env.seed("worker", "/src/alpha");
         ok(&env.cli(&["session", "meta", "set", "worker", "ui.group", "release"]));
@@ -820,6 +846,10 @@ mod meta {
         raw.execute_batch("DROP TABLE session_meta; UPDATE sessions SET name = 'renamed';")
             .expect("break the meta read");
         let rows = reread(&mut rows_store);
+        assert_eq!(
+            rows.sessions[0].name, "renamed",
+            "a label that cannot be read holds back no other change to the rows"
+        );
         assert_eq!(
             meta(&rows).as_deref(),
             Some("release"),

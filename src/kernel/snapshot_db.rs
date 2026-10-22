@@ -112,8 +112,9 @@ pub(crate) struct RowsRead {
     pub bases: HashMap<SessionId, String>,
     pub stopped: HashSet<SessionId>,
     pub reports_as: HashMap<SessionId, String>,
-    /// Each session's published meta, already cleaned and capped.
-    pub meta: HashMap<SessionId, std::collections::BTreeMap<String, String>>,
+    /// Each session's published meta, already cleaned and capped, or why it
+    /// could not be read.
+    pub meta: Result<HashMap<SessionId, std::collections::BTreeMap<String, String>>, String>,
     pub deleted: Vec<DeletedRow>,
     pub tasks: Vec<TaskRow>,
     pub automations: Vec<AutomationRow>,
@@ -367,25 +368,29 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
             crate::kernel::lua_api::META_PREFIX,
             crate::kernel::lua_api::META_KEY_CHARS,
             crate::kernel::lua_api::META_KEYS,
-            crate::kernel::lua_api::META_VALUE_CHARS,
+            // Raw characters, above the published cap: cleaning drops control
+            // characters first, and they must not cost a visible one.
+            crate::kernel::lua_api::META_VALUE_CHARS * 4,
         )
-        // An error rather than no labels: the failure path keeps the rows
-        // already published and reads again, where an empty answer would
-        // wipe every note and group until the next unrelated write.
-        .map_err(|e| format!("load session meta: {e}"))?
-        .into_iter()
-        .map(|(id, keys)| {
-            let keys = keys
-                .into_iter()
-                .filter(|(key, _)| crate::kernel::lua_api::is_published_meta_key(key))
-                .map(|(key, value)| {
-                    let value = crate::kernel::lua_api::clean_meta_value(&value);
-                    (key, value)
+        // Carried rather than raised, and never defaulted to empty: the
+        // store keeps the labels it has and says why, so a failing meta query
+        // neither wipes every note and group nor holds back the rows.
+        .map_err(|e| format!("load session meta: {e}"))
+        .map(|all| {
+            all.into_iter()
+                .map(|(id, keys)| {
+                    let keys = keys
+                        .into_iter()
+                        .filter(|(key, _)| crate::kernel::lua_api::is_published_meta_key(key))
+                        .map(|(key, value)| {
+                            let value = crate::kernel::lua_api::clean_meta_value(&value);
+                            (key, value)
+                        })
+                        .collect();
+                    (id, keys)
                 })
-                .collect();
-            (id, keys)
-        })
-        .collect();
+                .collect()
+        });
 
     // Deleted sessions, so a restore surface has something to list.
     let deleted = database
