@@ -2919,7 +2919,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // `Session::reader_loop`).
         let seed_len = seed.len();
         Ok(AdoptedSession {
-            output: Box::new(std::iter::once(PaneChunk::Output(seed)).chain(connected.output)),
+            output: seeded(seed, connected.output),
             input: connected.input,
             seed_len,
             size: connected.size,
@@ -4035,6 +4035,24 @@ enum ServerFound {
     Nothing,
 }
 
+/// The largest piece of an adopted pane's history handed to the reader at
+/// once. The reader parses a chunk under the parser's lock, which a paint also
+/// takes, so a scrollback replayed whole would hold a frame for all of it.
+const SEED_CHUNK_BYTES: usize = 4096;
+
+/// `live`, behind the captured history `seed` as chunks of at most
+/// [`SEED_CHUNK_BYTES`].
+fn seeded(
+    seed: Vec<u8>,
+    live: crate::backend::contract::PaneOutput,
+) -> crate::backend::contract::PaneOutput {
+    let pieces: Vec<PaneChunk> = seed
+        .chunks(SEED_CHUNK_BYTES)
+        .map(|piece| PaneChunk::Output(piece.to_vec()))
+        .collect();
+    Box::new(pieces.into_iter().chain(live))
+}
+
 /// Read [`LOCATE_BODY`]'s answer; anything else is [`ServerFound::Nothing`].
 fn parse_located(answer: &str) -> ServerFound {
     let line = answer.lines().next().unwrap_or("").trim_end();
@@ -5099,6 +5117,32 @@ fn typed_absence(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An adopted pane's history reaches the reader in pieces, so replaying a
+    /// long scrollback never holds the parser's lock (and a paint behind it)
+    /// for the whole of it; every byte still comes, in order, before any live
+    /// output.
+    #[test]
+    fn an_adopt_seed_is_handed_over_in_bounded_pieces_ahead_of_live_output() {
+        let seed: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        let live = Box::new(std::iter::once(PaneChunk::Output(b"live".to_vec())));
+        let chunks: Vec<Vec<u8>> = seeded(seed.clone(), live)
+            .map(|chunk| match chunk {
+                PaneChunk::Output(bytes) => bytes,
+                other => panic!("expected output, got {other:?}"),
+            })
+            .collect();
+        let (last, history) = chunks.split_last().expect("chunks");
+        assert_eq!(last, b"live");
+        assert!(
+            history
+                .iter()
+                .all(|c| !c.is_empty() && c.len() <= SEED_CHUNK_BYTES),
+            "seed pieces of {:?} bytes",
+            history.iter().map(Vec::len).collect::<Vec<_>>()
+        );
+        assert_eq!(history.concat(), seed);
+    }
     use crate::backend::identity::agent_window_name;
     use crate::backend::instance::{
         host_socket, known_host_socket, learn_host_socket, TMUX_SOCKET,

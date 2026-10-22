@@ -64,14 +64,6 @@ use crate::backend::contract::{PaneChunk, PaneSize, PaneSnapshot};
 /// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
 pub const PANE_CHANNEL_CAPACITY: usize = 4096;
 
-// Why a [`PaneChunk::Snapshot`] spliced into a pane's channel is exact: tmux
-// queues a pane's `%output` in the same callback that parses those bytes into
-// its own screen, and queues a command's reply behind every block already
-// queued (`window.c`, `control.c`), so the reply to a capture sits in the
-// stream at the byte its capture describes. The reader thread sees both in
-// that order, which is why it — and not the thread that asked — puts the
-// snapshot into the pane's channel.
-
 /// The format [`snapshot_commands`] asks `display-message` for, and
 /// [`parse_snapshot`] reads back.
 const SNAPSHOT_FORMAT: &str =
@@ -476,6 +468,14 @@ impl PaneSender {
     /// snapshot to one in step. `None` for a snapshot that failed, which puts
     /// a reader behind back in step — nothing will catch it up, and dropping
     /// its output for good would be worse than the gap.
+    ///
+    /// Why a snapshot spliced in here is exact: tmux queues a pane's
+    /// `%output` in the same callback that parses those bytes into its own
+    /// screen, and queues a command's reply behind every block already queued
+    /// (`window.c`, `control.c`), so the reply to a capture sits in the stream
+    /// at the byte its capture describes. The reader thread sees both in that
+    /// order, which is why it — and not the thread that asked — puts the
+    /// snapshot into the pane's channel.
     fn send_snapshot(&self, snapshot: Option<&PaneSnapshot>) -> Sent {
         if let Some(resync) = self.resync.as_ref().filter(|r| r.is_behind()) {
             let Ok(mut state) = resync.state.lock() else {

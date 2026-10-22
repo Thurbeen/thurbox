@@ -1295,7 +1295,7 @@ impl Session {
     /// Lifecycle contract: every path that retires a `Session` must call
     /// `kill()`/`detach()` so the backend unregisters the pane and this
     /// thread sees the stream end — a silent drop leaks the thread (blocked
-    /// in a read) for the process lifetime.
+    /// waiting for the next chunk) for the process lifetime.
     ///
     /// `seed_len` is the number of bytes at the front of `reader` that are
     /// replayed history (an adopt's scrollback seed, chained ahead of the
