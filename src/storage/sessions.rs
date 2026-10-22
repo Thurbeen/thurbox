@@ -846,6 +846,20 @@ impl Database {
         Ok(at.flatten().map(|v| v as u64))
     }
 
+    /// When `id` was marked lost, if it is now — see
+    /// [`record_session_lost`](Self::record_session_lost).
+    pub fn session_lost_at(&self, id: SessionId) -> rusqlite::Result<Option<i64>> {
+        let at: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT lost_at FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(at.flatten())
+    }
+
     /// Record that `id`'s pane `backend_id` is gone although nobody parked or
     /// deleted it — the `changed`/`lost` event, and the row's `lost_at` mark.
     /// Returns whether one was written.

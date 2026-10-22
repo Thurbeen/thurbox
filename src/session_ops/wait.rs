@@ -37,6 +37,12 @@ pub fn run(
         .unwrap_or_else(|| db.latest_session_event_seq())
         .map_err(failed)?;
     let registry = crate::agent::agent_config::load_or_seed();
+    // A session already marked lost has no pane to reach any state, and its
+    // `lost` edge predates the cursor, so the mark itself ends the wait — before
+    // a latched state could answer for a process that is gone.
+    if db.session_lost_at(session.id).map_err(failed)?.is_some() {
+        return Err(Error::Gone);
+    }
     let mut stopped = db.session_stopped_at(session.id).map_err(failed)?.is_some();
     // An explicit cursor is the next edge, never the current latched state.
     if since.is_none() {
@@ -111,6 +117,7 @@ pub fn run(
             dirty = false;
             if db.get_session_by_id(session.id).map_err(failed)?.is_none()
                 || db.session_stopped_at(session.id).map_err(failed)?.is_some()
+                || db.session_lost_at(session.id).map_err(failed)?.is_some()
             {
                 return Err(Error::Gone);
             }

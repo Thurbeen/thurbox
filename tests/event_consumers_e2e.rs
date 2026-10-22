@@ -98,8 +98,11 @@ impl Env {
     fn hooks(&self, text: &str) {
         std::fs::write(self.path("config/hooks.toml"), text).unwrap();
     }
+    /// Create the `worker` shell session and wait for its prompt: a send into
+    /// a shell that has not drawn one yet cannot confirm its submission, and
+    /// how soon it draws one depends on the machine.
     fn create(&self) -> Value {
-        self.ok(&[
+        let created = self.ok(&[
             "session",
             "create",
             "--name",
@@ -108,7 +111,20 @@ impl Env {
             "shell",
             "--repo-path",
             self.path("work").to_str().unwrap(),
-        ])
+        ]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let capture = self.ok(&["session", "capture", "worker"]);
+            if capture["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(['$', '#'])
+            {
+                return created;
+            }
+            assert!(std::time::Instant::now() < deadline, "no prompt: {capture}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
@@ -871,11 +887,16 @@ fn send_wait_turn_observes_a_new_working_edge_even_when_already_working() {
     let db = env.db();
     db.set_hook_state(id, "working").unwrap();
     let before = db.latest_session_event_seq().unwrap();
+    // The binary under test, by path: a `thurbox-cli` on the pane's PATH is
+    // whatever happens to be installed on the machine, or nothing at all.
+    let cli = env!("CARGO_BIN_EXE_thurbox-cli");
+    let signals =
+        format!("'{cli}' session signal --state blocked; '{cli}' session signal --state working");
     let result = env.ok(&[
         "session",
         "send",
         "worker",
-        "thurbox-cli session signal --state blocked; thurbox-cli session signal --state working",
+        &signals,
         "--force",
         "--wait-turn",
         "--timeout",
@@ -1065,4 +1086,61 @@ fn a_first_claim_on_an_emptied_log_reports_no_gap() {
     let text = std::fs::read_to_string(env.path("events")).unwrap();
     let event: Value = serde_json::from_str(text.trim()).unwrap();
     assert_eq!(event["gap"], false, "{event}");
+}
+
+/// A session already marked lost has no pane to reach any state: its `lost`
+/// edge predates the wait's cursor, so the mark itself ends the wait.
+#[test]
+fn a_wait_on_an_already_lost_session_exits_six() {
+    let env = Env::new();
+    let id = env.seed();
+    let db = env.db();
+    db.set_hook_state(id, "done").unwrap();
+    assert!(db.record_session_lost(id, "%999").unwrap());
+    for state in ["done", "blocked"] {
+        let out = env.run(&[
+            "session",
+            "wait",
+            "worker",
+            "--state",
+            state,
+            "--timeout",
+            "2",
+        ]);
+        assert_eq!(
+            out.status.code(),
+            Some(6),
+            "{state}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+/// The saved manifest is a write too. A symlink in the extensions directory
+/// named like the extension must not carry that write to hooks.toml.
+#[test]
+fn an_extension_manifest_alias_cannot_overwrite_hooks() {
+    let env = Env::new();
+    let hooks = "config_version = 1\n[[hooks]]\nevent = 'session.pre_create'\ncommand = 'true'\n";
+    env.hooks(hooks);
+    std::fs::create_dir_all(env.path("config/extensions")).unwrap();
+    std::os::unix::fs::symlink(
+        env.path("config/hooks.toml"),
+        env.path("config/extensions/alias.toml"),
+    )
+    .unwrap();
+    let source = env.path("extension");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("extension.toml"), "name = 'alias'\n").unwrap();
+    let out = env.run(&["extension", "install", source.to_str().unwrap(), "--force"]);
+    assert!(
+        !out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("hooks.toml"));
+    assert_eq!(
+        std::fs::read_to_string(env.path("config/hooks.toml")).unwrap(),
+        hooks
+    );
 }

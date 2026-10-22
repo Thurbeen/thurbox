@@ -1463,7 +1463,7 @@ fn run_send(
     if let Some(timeout) = &timeout {
         args.extend(["--timeout", timeout]);
     }
-    if let Some(remote) = delegate_to_host(&session, &args)? {
+    if let Some(remote) = delegate_send_to_host(&session, &args)? {
         return Ok(remote);
     }
     let seq = db.latest_session_event_seq().map_err(|e| e.to_string())?;
@@ -3049,6 +3049,50 @@ fn delegate_to_host(
     session: &SharedSession,
     args: &[&str],
 ) -> Result<Option<CommandOutput>, CommandError> {
+    let Some((host, cli)) = host_cli_for(session)? else {
+        return Ok(None);
+    };
+    let answer = crate::session_ops::host_cli::run(&host, &cli, args)?;
+    Ok(Some(host_output(answer)))
+}
+
+/// [`delegate_to_host`] for a send that waits. A host's failure there — a
+/// timeout, a session that left — comes after the text was delivered, so its
+/// whole answer, `sent` included, is passed on with the host's exit code
+/// rather than reduced to the error.
+fn delegate_send_to_host(
+    session: &SharedSession,
+    args: &[&str],
+) -> Result<Option<CommandOutput>, CommandError> {
+    let Some((host, cli)) = host_cli_for(session)? else {
+        return Ok(None);
+    };
+    match crate::session_ops::host_cli::run_classified(&host, &cli, args) {
+        Ok(answer) => Ok(Some(host_output(answer))),
+        Err(failure) => {
+            let Some(answer) = failure.answer else {
+                return Err(failure.error.into());
+            };
+            let error = CommandError::from(failure.error);
+            Ok(Some(
+                CommandOutput::failed(answer, error.message.clone(), error.message)
+                    .exiting_with(error.exit_code),
+            ))
+        }
+    }
+}
+
+/// The host and its CLI a remote row's verbs are delegated to, or `None` for a
+/// local row or a host that cannot take delegation.
+fn host_cli_for(
+    session: &SharedSession,
+) -> Result<
+    Option<(
+        crate::session::HostDef,
+        crate::session_ops::host_cli::CliInfo,
+    )>,
+    CommandError,
+> {
     if !crate::session::Route::is_remote_key(&session.backend_type) {
         return Ok(None);
     }
@@ -3061,16 +3105,16 @@ fn delegate_to_host(
                 session.name, session.backend_type
             )
         })?;
-    let Some(cli) = crate::session_ops::host_cli::delegated(&host) else {
-        return Ok(None);
-    };
-    let answer = crate::session_ops::host_cli::run(&host, &cli, args)?;
+    Ok(crate::session_ops::host_cli::delegated(&host).map(|cli| (host, cli)))
+}
+
+fn host_output(answer: Value) -> CommandOutput {
     let human = answer
         .get("output")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| answer.to_string());
-    Ok(Some(CommandOutput::new(answer, human)))
+    CommandOutput::new(answer, human)
 }
 
 /// What `session key` says about a spelling it does not know, listing the set

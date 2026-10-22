@@ -155,6 +155,11 @@ fn install(
     for link in &def.symlinks {
         protect_user_hooks(&safe_join(&home, &link.link)?)?;
     }
+    // The saved manifest is a write too, through whatever already sits at its
+    // path in the extensions directory.
+    if let Some(manifest) = crate::agent::extension_config::manifest_path(&def.name) {
+        protect_user_hooks(&manifest)?;
+    }
 
     let current = crate::agent::extension_config::binary_version();
     let mut report = InstallReport {
