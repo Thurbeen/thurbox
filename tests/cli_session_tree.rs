@@ -239,3 +239,26 @@ fn a_key_filtered_subtree_does_not_nest_under_a_hidden_parent() {
         named(&[("direct", 0), ("visible", 0)])
     );
 }
+
+/// A tree never crosses machines: a local session naming a mirrored remote
+/// one as its parent is listed at the top level, not nested under it.
+#[test]
+fn a_tree_does_not_nest_a_local_child_under_a_remote_parent() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = isolate(home.path());
+    let boss = seed(&db, "boss", None, 0);
+    let mut row = db.get_session_by_id(boss).expect("read").expect("row");
+    row.backend_type = "ssh:devbox:tmux".into();
+    db.upsert_session(&row)
+        .expect("make it a mirrored remote row");
+    let kid = seed(&db, "kid", Some(boss), 1);
+
+    assert_eq!(
+        rows(home.path(), &["--tree"]),
+        named(&[("boss", 0), ("kid", 0)])
+    );
+    // `--parent` still lists what names it as parent, as it always has.
+    let listed = rows(home.path(), &["--parent", &boss.to_string()]);
+    assert_eq!(listed, named(&[("kid", 0)]));
+    let _ = kid;
+}

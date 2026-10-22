@@ -847,8 +847,9 @@ the top level) and indents the text table; every `session list` JSON row carries
 `depth` (0 for a row whose parent is not listed: a root, a direct child of
 `--parent`, or a row whose parent a `--key`/`--key-prefix` filter left out). The walk
 (`cli::sessions::session_forest`) visits each row once, so a parent-id cycle
-lists every member rather than hanging or dropping one. Unlike the sidebar it
-does not group by repo. The link is **purely
+lists every member rather than hanging or dropping one, and it never nests a
+row under a parent on another machine (`--parent` still lists what names it).
+Unlike the sidebar it does not group by repo. The link is **purely
 informational**: deleting a parent never cascades (orphans render as top-level),
 and the parent is validated when it is set: at creation, or by `session
 reparent <session> <parent>` (`--clear` for top-level), which also refuses a

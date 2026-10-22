@@ -85,7 +85,8 @@ pub enum Action {
         recursive: bool,
         /// Order rows as the sidebar nests them: each child under its parent,
         /// siblings and roots in manual order. A row whose parent is not in
-        /// the listing (deleted, or filtered out) shows at the top level.
+        /// the listing (deleted, or filtered out) or runs on another machine
+        /// shows at the top level.
         /// Unlike the sidebar, rows are not grouped by repo. Text output
         /// indents each child; JSON rows carry `depth` either way.
         #[arg(long, conflicts_with = "deleted")]
@@ -999,11 +1000,22 @@ struct ListShape {
 /// roots in the order `sessions` already has (manual order, from the query).
 ///
 /// A row is a root when its parent is not among `sessions`, or when it is
-/// `root`. Every row appears exactly once: a parent-id cycle has no root to be
-/// reached from, so its first member in list order is taken as one, and the
-/// walk never revisits a row. Reparenting refuses cycles, but a mirrored row
-/// is not reparented here.
-fn session_forest(sessions: &[SharedSession], root: Option<SessionId>) -> Vec<(usize, usize)> {
+/// `root`, or — with `same_host` — when its parent runs on another machine:
+/// a drawn tree never crosses hosts, though the link itself may (a local
+/// session can name a mirrored one as its parent). Every row appears exactly
+/// once: a parent-id cycle has no root to be reached from, so its first member
+/// in list order is taken as one, and the walk never revisits a row.
+/// Reparenting refuses cycles, but a mirrored row is not reparented here.
+fn session_forest(
+    sessions: &[SharedSession],
+    root: Option<SessionId>,
+    same_host: bool,
+) -> Vec<(usize, usize)> {
+    let host = |s: &SharedSession| {
+        crate::session::Route::parse(&s.backend_type)
+            .ok()
+            .and_then(|route| route.host().map(str::to_string))
+    };
     let at: std::collections::HashMap<SessionId, usize> = sessions
         .iter()
         .enumerate()
@@ -1015,7 +1027,8 @@ fn session_forest(sessions: &[SharedSession], root: Option<SessionId>) -> Vec<(u
         let parent = s
             .parent_session_id
             .filter(|_| Some(s.id) != root)
-            .and_then(|p| at.get(&p));
+            .and_then(|p| at.get(&p))
+            .filter(|&&p| !same_host || host(&sessions[p]) == host(s));
         match parent {
             Some(&parent) if parent != index => children[parent].push(index),
             _ => roots.push(index),
@@ -1057,7 +1070,9 @@ fn run_list_active(
         let all = db
             .list_active_sessions()
             .map_err(|e| format!("list_active_sessions: {e}"))?;
-        let forest = session_forest(&all, Some(parent));
+        // The recorded link, whichever machine each side is on: `--parent`
+        // lists what names it, as it always has.
+        let forest = session_forest(&all, Some(parent), false);
         let selected: std::collections::HashSet<SessionId> = forest
             .iter()
             .position(|&(index, _)| all[index].id == parent)
@@ -1079,7 +1094,7 @@ fn run_list_active(
     // The tree is drawn over the rows actually listed, so a row whose parent
     // was filtered out — `--parent` itself, or an unkeyed row between — is a
     // root rather than indented under a row that is not its parent.
-    let mut placed = session_forest(&sessions, None);
+    let mut placed = session_forest(&sessions, None, true);
     if !shape.tree {
         placed.sort_by_key(|&(index, _)| index);
     }
