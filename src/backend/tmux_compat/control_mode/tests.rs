@@ -1970,6 +1970,29 @@ fn a_resync_that_finds_the_channel_full_comes_once_it_is_drained() {
     assert_eq!(read_item(&mut reader), Ok(b"after".to_vec()));
 }
 
+/// The reader can find its channel empty, and the reader thread can then fill
+/// it, overflow and park a snapshot before the reader takes the lock. The
+/// output queued in that window is older than the snapshot, so it comes first.
+#[test]
+fn a_parked_resync_never_overtakes_output_queued_before_it() {
+    let (senders, reader, resync) = resyncing_reader(1);
+    // Where the reader stands: it saw an empty channel and is about to lock.
+    ControlMode::dispatch_output(&senders, "%7", b"queued".to_vec());
+    ControlMode::dispatch_output(&senders, "%7", b"lost".to_vec());
+    let snapshot = caught_up_snapshot();
+    ControlMode::dispatch_snapshot(&senders, "%7", Some(&snapshot));
+
+    match reader.take_parked(&resync) {
+        Some(Ok(PaneChunk::Output(bytes))) => assert_eq!(bytes, b"queued"),
+        Some(Ok(PaneChunk::Resync(_))) => panic!("the snapshot overtook older output"),
+        other => panic!("expected the queued output, got {other:?}"),
+    }
+    match reader.take_parked(&resync) {
+        Some(Ok(PaneChunk::Resync(taken))) => assert_eq!(*taken, snapshot),
+        other => panic!("expected the parked snapshot, got {other:?}"),
+    }
+}
+
 /// Output the pane prints while a resync is parked is not in it, so the
 /// parked one is dropped rather than handed over stale.
 #[test]

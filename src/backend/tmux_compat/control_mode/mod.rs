@@ -753,10 +753,9 @@ impl ControlModeReader {
 
     /// The next chunk, blocking for it. A snapshot parked for this reader
     /// ([`Resync`]) comes once the channel is drained, and is taken under the
-    /// lock it was parked under: the reader thread parks one only after
-    /// finding the channel full, so a reader that has emptied the channel
-    /// since cannot miss it, and one that finds nothing parked can block —
-    /// anything sent from then on lands in the channel and wakes it.
+    /// lock it was parked under (see [`Self::take_parked`]), so one that finds
+    /// nothing parked can block: anything sent from then on lands in the
+    /// channel and wakes it.
     fn next_chunk(&self) -> Result<PaneChunk, std::sync::mpsc::RecvError> {
         let Some(resync) = &self.resync else {
             return self.receiver.recv();
@@ -768,13 +767,35 @@ impl ControlModeReader {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
-        if let Ok(mut state) = resync.state.lock() {
-            if let Some(snapshot) = state.parked.take() {
-                resync.behind.store(false, Ordering::Release);
-                return Ok(PaneChunk::Resync(snapshot));
-            }
+        match self.take_parked(resync) {
+            Some(chunk) => chunk,
+            None => self.receiver.recv(),
         }
-        self.receiver.recv()
+    }
+
+    /// The step of [`Self::next_chunk`] that runs under the lock a snapshot is
+    /// parked under: the next chunk, the parked snapshot once there is none,
+    /// or `None` when neither is there.
+    ///
+    /// The channel is looked at again under that lock. Between the reader
+    /// finding it empty and taking the lock, the reader thread can fill it,
+    /// overflow and park a snapshot; what it queued then is older than the
+    /// snapshot, and must not be parsed onto the grid the snapshot rebuilds.
+    fn take_parked(
+        &self,
+        resync: &Resync,
+    ) -> Option<Result<PaneChunk, std::sync::mpsc::RecvError>> {
+        let mut state = resync.state.lock().ok()?;
+        match self.receiver.try_recv() {
+            Ok(chunk) => return Some(Ok(chunk)),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Some(Err(std::sync::mpsc::RecvError))
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        let snapshot = state.parked.take()?;
+        resync.behind.store(false, Ordering::Release);
+        Some(Ok(PaneChunk::Resync(snapshot)))
     }
 
     /// Where this reader leaves the sizes tmux reports for its pane, for the
