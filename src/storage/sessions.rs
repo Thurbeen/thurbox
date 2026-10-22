@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use rusqlite::{params, OptionalExtension};
 
+use crate::session::background_work::ReportFrom;
 use crate::session::SessionId;
 use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
 
@@ -1374,11 +1375,13 @@ impl Database {
     /// a session that has no process to be in it, and every watcher of that row
     /// would see a transition that did not happen.
     pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<bool> {
-        Ok(self.write_hook_state(id, state, None, false)?.is_some())
+        Ok(self
+            .write_hook_state(id, state, ReportFrom::Agent, false)?
+            .is_some())
     }
 
-    /// [`Self::set_hook_state`] as `session signal` makes it: `work` names the
-    /// sub-work the report came from, when it came from one. Returns the word
+    /// [`Self::set_hook_state`] as `session signal` makes it: `from` says
+    /// whether the report started a turn or came from sub-work. Returns the word
     /// stored, which the sub-work in flight can make differ from the one
     /// reported — a `done` with work still running stores `background` (see
     /// [`crate::session::background_work::settle_report`]) — or `None` when no
@@ -1387,10 +1390,10 @@ impl Database {
         &self,
         id: SessionId,
         state: &str,
-        work: Option<&str>,
+        from: ReportFrom<'_>,
     ) -> rusqlite::Result<Option<String>> {
         Ok(self
-            .write_hook_state(id, state, work, false)?
+            .write_hook_state(id, state, from, false)?
             .map(|written| written.1))
     }
 
@@ -1398,15 +1401,15 @@ impl Database {
     /// --work-start`/`--work-end`), moving the state only when the end of the
     /// last piece finishes a `background` turn — see
     /// [`crate::session::background_work::settle_edge`]. Returns the state the
-    /// row holds afterwards (`None` for one never reported), or `Err` of
-    /// [`rusqlite::Error::QueryReturnedNoRows`] when no active, unparked row
-    /// has `id`.
+    /// row holds afterwards (`None` for one never reported) and whether this
+    /// edge moved it, or `Err` of [`rusqlite::Error::QueryReturnedNoRows`]
+    /// when no active, unparked row has `id`.
     pub fn signal_work_edge(
         &self,
         id: SessionId,
         edge: crate::session::background_work::WorkEdge,
         work: &str,
-    ) -> rusqlite::Result<Option<String>> {
+    ) -> rusqlite::Result<(Option<String>, bool)> {
         use crate::session::background_work::{settle_edge, InFlight};
 
         let tx = self.write_transaction()?;
@@ -1426,7 +1429,7 @@ impl Database {
         )?;
         let Some(state) = moved else {
             tx.commit()?;
-            return Ok(previous);
+            return Ok((previous, false));
         };
         let now = (current_time_millis() as i64).max(previous_at.unwrap_or(0) + 1);
         self.conn.execute(
@@ -1441,7 +1444,7 @@ impl Database {
             Some(state),
         )?;
         tx.commit()?;
-        Ok(Some(state.to_string()))
+        Ok((Some(state.to_string()), true))
     }
 
     /// [`Self::set_hook_state`] for a report that is news only as a *change*:
@@ -1452,7 +1455,7 @@ impl Database {
     /// `None` when nothing was.
     pub fn report_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<Option<i64>> {
         Ok(self
-            .write_hook_state(id, state, None, true)?
+            .write_hook_state(id, state, ReportFrom::Agent, true)?
             .map(|written| written.0))
     }
 
@@ -1464,7 +1467,7 @@ impl Database {
         &self,
         id: SessionId,
         reported: &str,
-        work: Option<&str>,
+        from: ReportFrom<'_>,
         only_a_change: bool,
     ) -> rusqlite::Result<Option<(i64, String)>> {
         use crate::session::background_work::{settle_report, InFlight};
@@ -1486,7 +1489,7 @@ impl Database {
         };
         let before_flight = InFlight::parse(stored.as_deref());
         let mut in_flight = before_flight.clone();
-        let state = settle_report(previous.as_deref(), &mut in_flight, reported, work);
+        let state = settle_report(previous.as_deref(), &mut in_flight, reported, from);
         let state = state.as_str();
         if only_a_change && previous.as_deref() == Some(state) && in_flight == before_flight {
             return Ok(None);

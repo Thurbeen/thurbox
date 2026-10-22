@@ -324,8 +324,9 @@ pub(super) fn doom_palette() -> ThemePalette {
         base_bg: bg_dark,
     }
     .build();
-    // `status_background` is `role_name` by default, but its `role_name` is the accent `running` wears, and red besides; a violet the
-    // palette otherwise lacks keeps `background` apart from both.
+    // `status_background` is `role_name` by default, but its `role_name` is the
+    // accent `running` wears, and red besides; a violet the palette otherwise
+    // lacks keeps `background` apart from both.
     palette.status_background = Color::Rgb(0xB0, 0x6C, 0xFF);
     palette
 }
@@ -483,7 +484,8 @@ pub(super) fn rose_pine_moon_palette() -> ThemePalette {
         base_bg: base,
     }
     .build();
-    // `status_background` is `role_name` by default, but `role_name` is iris, the accent `running` wears.
+    // `status_background` is `role_name` by default, but `role_name` is iris, the
+    // accent `running` wears.
     palette.status_background = rose;
     palette
 }
@@ -1069,8 +1071,9 @@ pub(super) fn iceberg_palette() -> ThemePalette {
         base_bg: bg,
     }
     .build();
-    // `status_background` is `role_name` by default, but its purple sits too close to the blue `done` and `running` wear; a lighter
-    // lilac keeps the hue and the distance.
+    // `status_background` is `role_name` by default, but its purple sits too close
+    // to the blue `done` and `running` wear; a lighter lilac keeps the hue and the
+    // distance.
     palette.status_background = Color::Rgb(0xB8, 0x9C, 0xE6);
     palette
 }
@@ -1341,7 +1344,8 @@ pub(super) fn rose_pine_dawn_palette() -> ThemePalette {
         base_bg: base,
     }
     .build();
-    // `status_background` is `role_name` by default, but `role_name` is iris, the accent `running` wears.
+    // `status_background` is `role_name` by default, but `role_name` is iris, the
+    // accent `running` wears.
     palette.status_background = rose;
     palette
 }

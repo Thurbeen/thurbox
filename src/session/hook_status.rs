@@ -43,6 +43,8 @@
 //! callers gather the facts (a backend's `pane_state`, the agent registry, the
 //! hook columns) and ask this module what they mean.
 
+#[cfg(doc)]
+use super::HOOK_STATES;
 use super::{AgentRegistry, TURN_STATES};
 
 /// How the built-in `hooks` extension delivers an agent's status hooks.
@@ -745,7 +747,7 @@ impl StateSource {
 
 /// The one word every surface answers with, and the whole vocabulary of them.
 ///
-/// Five of these are [`HOOK_STATES`](super::HOOK_STATES) — the agent's own report, verbatim. The
+/// Five of these are [`HOOK_STATES`] — the agent's own report, verbatim. The
 /// rest are thurbox's own, and each is spelled apart from `idle` deliberately:
 /// collapsing "nothing here is wired to report" or "the host is gone" into
 /// "the agent says it is at rest" is the conflation this whole module exists
@@ -786,7 +788,7 @@ pub enum SessionState {
     Unreachable,
     /// An agent holds the pane and nothing has signalled.
     ///
-    /// Outside [`HOOK_STATES`](super::HOOK_STATES) on purpose: no amount of process inspection
+    /// Outside [`HOOK_STATES`] on purpose: no amount of process inspection
     /// distinguishes a turn in flight from a prompt waiting for input, and
     /// spelling it `working` would launder an observation into a claim the
     /// observation cannot support.
@@ -832,7 +834,7 @@ impl SessionState {
     }
 
     /// The state a hook's own word names — `None` for anything outside
-    /// [`HOOK_STATES`](super::HOOK_STATES), which is how a stored word nothing recognises stops
+    /// [`HOOK_STATES`], which is how a stored word nothing recognises stops
     /// short of being reported as an agent's report.
     pub fn from_hook_state(word: &str) -> Option<Self> {
         match word {

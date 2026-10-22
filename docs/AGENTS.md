@@ -567,6 +567,9 @@ Not mapped, by design:
 - a session on a remote host: its status channel holds one word and cannot
   count, so the edges are no-ops there.
 
-A missed end edge is forgotten by the next prompt, by the agent starting
-again (`SessionStart` → `idle`) and by `session stop`; the interface also
+A missed end edge is forgotten by the next prompt (`UserPromptSubmit` marks
+its `working` as a turn start with `THURBOX_SIGNAL_TURN=start`; the main
+agent's own tool calls, such as those of the turn that reports a finished
+subagent back, forget nothing), by the agent starting again (`SessionStart` →
+`idle`) and by `session stop`; the interface also
 reads `background` as `idle` once the session has no live pane.

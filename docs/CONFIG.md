@@ -1696,8 +1696,10 @@ and no arguments at all; from outside the pane, pass `--session <uuid>`.
 Sub-work the turn may outlive is reported the same way, by its edges
 (`--work-start <id>`, `--work-end <id>`), and a `--state` report that comes
 from that work names it with `--work <id>` or `THURBOX_SIGNAL_WORK=<id>` in
-the command's environment — the variable is what the shipped claude hooks use,
-because a remote pane's rewrite keeps a hook to one bare state word.
+the command's environment, and the `working` that starts a turn says so with
+`--turn-start` or `THURBOX_SIGNAL_TURN=start` (it forgets work earlier turns
+left counted). The variables are what the shipped claude hooks use, because a
+remote pane's rewrite keeps a hook to one bare state word.
 That is the supported way to give thurbox agent state for a session it
 did not wire — for instance one created with a bare interactive shell as
 its "agent" because a harness owns the real launch.

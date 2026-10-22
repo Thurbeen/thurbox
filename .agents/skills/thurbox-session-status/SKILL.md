@@ -434,7 +434,8 @@ run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
   --state done` returns on.
 - A typed subagent's tool calls carry their id
   (`THURBOX_SIGNAL_WORK=<id> thurbox-cli session signal --state working`, an
-  env var so the remote rewrite still sees one bare state word): while the turn
+  env var — like `THURBOX_SIGNAL_TURN` — so the remote rewrite still sees one
+  bare state word): while the turn
   rests in `background` with that id running they are absorbed, not a new
   turn.
 - **Never produced**: claude's own post-turn agent (`agent_id`, no
@@ -444,8 +445,13 @@ run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
   edges into the shell's no-op `:` and a remote claude reports as before.
 - **A missed end edge does not stick.** Nothing is keyed on time (sub-work
   can run for an hour, and keying the stuck-`working` fallback on hook age was
-  the v2 bug). Instead: a `working` with no work id while the turn was at rest
-  (a new prompt) forgets earlier turns' running work; `idle` (claude's
+  the v2 bug). Instead: a turn start — `--state working --turn-start`, which
+  claude's `UserPromptSubmit` sends as `THURBOX_SIGNAL_TURN=start` — forgets
+  earlier turns' running work whatever the state (so an interrupted subagent,
+  which fires no `SubagentStop`, cannot outlive the next prompt either). A
+  `working` from inside a turn forgets nothing: the turn claude starts to
+  report one finished subagent back makes tool calls of its own while others
+  still run, and those must stay counted. `idle` (claude's
   `SessionStart`, a new process) forgets all of it; `session stop` clears the
   column; the interface reads `background` with no live pane as `idle`
   (`with_output_quiescence` — quiet output is *not* evidence here, the work

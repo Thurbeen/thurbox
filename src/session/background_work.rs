@@ -19,10 +19,14 @@
 //!
 //! - the agent starting again (`idle`, claude's `SessionStart`) forgets
 //!   everything: whatever was in flight died with the previous process;
-//! - a new turn — a `working` report with no work id, made while the turn was
-//!   at rest — forgets the earlier turns' work, so the end of that turn reads
-//!   `done` (a subagent that outlives a new prompt is no longer counted, which
-//!   errs toward today's `done` rather than toward a state nothing can leave);
+//! - a new turn — a `working` report marked as a turn start (claude's
+//!   `UserPromptSubmit`) — forgets the earlier turns' work whatever the state
+//!   was, so an interrupted subagent cannot outlive its turn either, and the
+//!   end of that turn reads `done` (a subagent that outlives a new prompt is
+//!   no longer counted, which errs toward today's `done` rather than toward a
+//!   state nothing can leave). A `working` the agent reports from inside a
+//!   turn — its own tool calls, including those of the turn claude starts to
+//!   report a finished subagent back — forgets nothing;
 //! - `session stop` clears the column with the hook state;
 //! - an interface with no live pane for the session reads `background` as
 //!   `idle` (`with_output_quiescence`), and `session get --verify` reports a
@@ -35,6 +39,18 @@ pub const MAX_IN_FLIGHT: usize = 64;
 /// The longest work id kept, in bytes. Ids are opaque words a hook extracts
 /// from its agent's payload (claude's `agent_id` is 17 hex digits).
 pub const MAX_WORK_ID: usize = 128;
+
+/// Where a state report came from, which decides what it does to the work in
+/// flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportFrom<'a> {
+    /// The agent, from inside a turn or about one (a tool call, a stop).
+    Agent,
+    /// The agent starting a turn: a prompt was submitted.
+    TurnStart,
+    /// Sub-work `id`, reporting on itself.
+    Work(&'a str),
+}
 
 /// One edge of a piece of sub-work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,23 +144,24 @@ pub fn valid_work_id(id: &str) -> bool {
 /// What a reported state becomes, given what the row held and the work in
 /// flight — and the work in flight after it.
 ///
-/// `work` is the sub-work the report came from, when it came from one: a
-/// subagent's own tool call says `working` about the subagent, not about the
-/// turn, so while the turn rests in `background` it is that, not a new turn.
+/// A subagent's own tool call says `working` about the subagent, not about
+/// the turn, so while the turn rests in `background` it is that, not a new
+/// turn. Only a [`ReportFrom::TurnStart`] forgets running work: the agent's
+/// other reports cannot tell a turn starting from one already under way.
 pub fn settle_report(
     previous: Option<&str>,
     in_flight: &mut InFlight,
     reported: &str,
-    work: Option<&str>,
+    from: ReportFrom<'_>,
 ) -> String {
-    match (reported, work) {
+    match (reported, from) {
         ("idle", _) => in_flight.forget_all(),
-        ("working", Some(id)) if previous == Some("background") && in_flight.contains(id) => {
+        ("working", ReportFrom::Work(id))
+            if previous == Some("background") && in_flight.contains(id) =>
+        {
             return "background".into();
         }
-        ("working", None) if !matches!(previous, Some("working" | "blocked")) => {
-            in_flight.forget_running();
-        }
+        ("working", ReportFrom::TurnStart) => in_flight.forget_running(),
         ("done", _) if !in_flight.is_empty() => return "background".into(),
         _ => {}
     }
@@ -194,7 +211,7 @@ mod tests {
     fn a_turn_that_ends_with_work_in_flight_is_background() {
         let mut work = started(&["a"]);
         assert_eq!(
-            settle_report(Some("working"), &mut work, "done", None),
+            settle_report(Some("working"), &mut work, "done", ReportFrom::Agent),
             "background"
         );
         assert_eq!(work.len(), 1);
@@ -204,7 +221,7 @@ mod tests {
     fn a_turn_that_ends_with_nothing_in_flight_is_done() {
         let mut work = InFlight::default();
         assert_eq!(
-            settle_report(Some("working"), &mut work, "done", None),
+            settle_report(Some("working"), &mut work, "done", ReportFrom::Agent),
             "done"
         );
     }
@@ -231,7 +248,7 @@ mod tests {
             None
         );
         assert_eq!(
-            settle_report(Some("working"), &mut work, "done", None),
+            settle_report(Some("working"), &mut work, "done", ReportFrom::Agent),
             "done"
         );
     }
@@ -263,7 +280,7 @@ mod tests {
         settle_edge(Some("working"), &mut work, WorkEdge::Start, "a");
         assert!(work.is_empty());
         assert_eq!(
-            settle_report(Some("working"), &mut work, "done", None),
+            settle_report(Some("working"), &mut work, "done", ReportFrom::Agent),
             "done"
         );
     }
@@ -291,12 +308,22 @@ mod tests {
     fn the_work_s_own_activity_keeps_a_resting_turn_in_background() {
         let mut work = started(&["a"]);
         assert_eq!(
-            settle_report(Some("background"), &mut work, "working", Some("a")),
+            settle_report(
+                Some("background"),
+                &mut work,
+                "working",
+                ReportFrom::Work("a")
+            ),
             "background"
         );
         // Work nothing counted is reported as it always was.
         assert_eq!(
-            settle_report(Some("background"), &mut work, "working", Some("b")),
+            settle_report(
+                Some("background"),
+                &mut work,
+                "working",
+                ReportFrom::Work("b")
+            ),
             "working"
         );
         assert_eq!(work.len(), 1);
@@ -306,12 +333,17 @@ mod tests {
     fn a_new_turn_forgets_the_work_of_earlier_ones() {
         let mut work = started(&["orphan"]);
         assert_eq!(
-            settle_report(Some("background"), &mut work, "working", None),
+            settle_report(
+                Some("background"),
+                &mut work,
+                "working",
+                ReportFrom::TurnStart
+            ),
             "working"
         );
         assert!(work.is_empty());
         assert_eq!(
-            settle_report(Some("working"), &mut work, "done", None),
+            settle_report(Some("working"), &mut work, "done", ReportFrom::Agent),
             "done"
         );
     }
@@ -320,21 +352,50 @@ mod tests {
     fn the_turn_s_own_tool_calls_forget_nothing() {
         let mut work = started(&["a"]);
         assert_eq!(
-            settle_report(Some("working"), &mut work, "working", None),
+            settle_report(Some("working"), &mut work, "working", ReportFrom::Agent),
             "working"
         );
         assert_eq!(
-            settle_report(Some("blocked"), &mut work, "working", None),
+            settle_report(Some("blocked"), &mut work, "working", ReportFrom::Agent),
             "working"
         );
         assert_eq!(work.len(), 1);
+    }
+
+    /// The turn claude starts to report one finished subagent back may make
+    /// tool calls of its own; they are not a new prompt, and the subagent
+    /// still running must still be counted when that turn stops.
+    #[test]
+    fn a_wake_up_turn_s_tool_calls_keep_the_other_work_counted() {
+        let mut work = started(&["a", "b"]);
+        settle_edge(Some("background"), &mut work, WorkEdge::End, "a");
+        assert_eq!(
+            settle_report(Some("background"), &mut work, "working", ReportFrom::Agent),
+            "working"
+        );
+        assert_eq!(
+            settle_report(Some("working"), &mut work, "done", ReportFrom::Agent),
+            "background"
+        );
+    }
+
+    /// An interrupted turn fires no stop, so its state is still `working` when
+    /// the next prompt arrives; that prompt still forgets the work it started.
+    #[test]
+    fn a_turn_start_forgets_work_whatever_the_state() {
+        let mut work = started(&["interrupted"]);
+        assert_eq!(
+            settle_report(Some("working"), &mut work, "working", ReportFrom::TurnStart),
+            "working"
+        );
+        assert!(work.is_empty());
     }
 
     #[test]
     fn the_agent_starting_again_forgets_everything() {
         let mut work = started(&["a", "b"]);
         assert_eq!(
-            settle_report(Some("background"), &mut work, "idle", None),
+            settle_report(Some("background"), &mut work, "idle", ReportFrom::Agent),
             "idle"
         );
         assert!(work.is_empty());

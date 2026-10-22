@@ -324,7 +324,11 @@ fn the_last_of_several_subagents_ends_the_background() {
     assert_eq!(env.hook_state().as_deref(), Some("background"));
 
     env.claude("SubagentStop", typed("SubagentStop", "first"));
-    // The wake-up turn that reports the first one back.
+    // The wake-up turn that reports the first one back. Its own tool calls are
+    // not a new prompt, so the second subagent stays counted through them.
+    env.claude("PreToolUse", main_tool("PreToolUse", "Read"));
+    env.claude("PostToolUse", main_tool("PostToolUse", "Read"));
+    assert_eq!(env.hook_state().as_deref(), Some("working"));
     env.claude("Stop", event("Stop", json!({})));
     assert_eq!(env.hook_state().as_deref(), Some("background"));
 
@@ -447,6 +451,22 @@ fn a_missed_end_is_forgotten_by_session_stop() {
     let db = env.db();
     db.set_session_stopped(env.id, true).expect("stop");
     db.set_session_stopped(env.id, false).expect("start");
+    env.claude("UserPromptSubmit", event("UserPromptSubmit", json!({})));
+    env.claude("Stop", event("Stop", json!({})));
+    assert_eq!(env.hook_state().as_deref(), Some("done"));
+}
+
+/// An interrupted turn fires no `Stop` and its subagent no `SubagentStop`, so
+/// the session still reads `working` when the next prompt arrives; that prompt
+/// starts a turn of its own, which must not end as `background`.
+#[test]
+fn an_interrupted_subagent_does_not_outlive_the_next_prompt() {
+    let env = Env::new("claude");
+    env.claude("UserPromptSubmit", event("UserPromptSubmit", json!({})));
+    env.claude("PreToolUse", main_tool("PreToolUse", "Agent"));
+    env.claude("SubagentStart", typed("SubagentStart", SUBAGENT));
+    assert_eq!(env.hook_state().as_deref(), Some("working"));
+
     env.claude("UserPromptSubmit", event("UserPromptSubmit", json!({})));
     env.claude("Stop", event("Stop", json!({})));
     assert_eq!(env.hook_state().as_deref(), Some("done"));

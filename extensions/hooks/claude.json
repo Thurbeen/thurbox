@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state working >/dev/null 2>&1 || true",
+            "command": "THURBOX_SIGNAL_TURN=start thurbox-cli session signal --state working >/dev/null 2>&1 || true",
             "timeout": 10
           }
         ]

@@ -592,8 +592,8 @@ pub enum Action {
     /// Sub-work a turn starts and may outlive (claude's background subagents)
     /// is reported by its edges, `--work-start <id>` and `--work-end <id>`. A
     /// `done` while any is in flight is stored as `background`, and the end of
-    /// the last one stores `done`. A new turn or `--state idle` forgets work
-    /// whose end never came.
+    /// the last one stores `done`. A turn start (`--turn-start`) or `--state
+    /// idle` forgets work whose end never came.
     ///
     /// This is a **supported integration point**, not an internal of the hooks
     /// extension: $THURBOX_SESSION is set on the pane and inherited by every
@@ -626,6 +626,11 @@ pub enum Action {
         #[arg(long, value_name = "ID", requires = "state",
             conflicts_with_all = ["work_start", "work_end"])]
         work: Option<String>,
+        /// This `--state working` starts a turn (a prompt was submitted): it
+        /// forgets sub-work earlier turns left counted. Defaults to
+        /// $THURBOX_SIGNAL_TURN=start, for the same reason as --work.
+        #[arg(long, requires = "state", conflicts_with_all = ["work_start", "work_end", "work"])]
+        turn_start: bool,
         /// Override the calling session (UUID). Defaults to $THURBOX_SESSION,
         /// then a lookup by the agent conversation id ($THURBOX_SESSION_ID).
         #[arg(long)]
@@ -851,6 +856,7 @@ pub fn run(
             work_start,
             work_end,
             work,
+            turn_start,
             session,
         } => {
             let report = match (state, work_start, work_end) {
@@ -861,6 +867,8 @@ pub fn run(
                             .ok()
                             .filter(|id| !id.is_empty())
                     }),
+                    turn_start: turn_start
+                        || std::env::var(SIGNAL_TURN_ENV).is_ok_and(|v| v == "start"),
                 },
                 (None, Some(id), _) => SignalReport::Work(WorkEdge::Start, id),
                 (None, None, Some(id)) => SignalReport::Work(WorkEdge::End, id),
@@ -1900,10 +1908,19 @@ fn run_fork(
 /// backend's own one-word status command, which takes no further arguments.
 const SIGNAL_WORK_ENV: &str = "THURBOX_SIGNAL_WORK";
 
+/// The variable a hook sets (`=start`) to say its `--state working` starts a
+/// turn — an environment variable for the same reason as [`SIGNAL_WORK_ENV`].
+const SIGNAL_TURN_ENV: &str = "THURBOX_SIGNAL_TURN";
+
 /// What one `session signal` reports.
 enum SignalReport {
-    /// A state, and the sub-work it came from when it came from one.
-    State { state: String, work: Option<String> },
+    /// A state, the sub-work it came from when it came from one, and whether
+    /// it starts a turn.
+    State {
+        state: String,
+        work: Option<String>,
+        turn_start: bool,
+    },
     /// One edge of a piece of sub-work.
     Work(WorkEdge, String),
 }
@@ -1923,16 +1940,23 @@ fn run_signal(
         )
         .into()
     };
-    let (state, work) = match &report {
-        SignalReport::State { state, work } => {
-            let work = work
-                .as_deref()
-                .filter(|id| crate::session::background_work::valid_work_id(id));
+    let (state, moved, work) = match &report {
+        SignalReport::State {
+            state,
+            work,
+            turn_start,
+        } => {
+            use crate::session::background_work::{valid_work_id, ReportFrom};
+            let from = match work.as_deref().filter(|id| valid_work_id(id)) {
+                Some(id) => ReportFrom::Work(id),
+                None if *turn_start => ReportFrom::TurnStart,
+                None => ReportFrom::Agent,
+            };
             let stored = db
-                .signal_hook_state(target.id, state, work)
+                .signal_hook_state(target.id, state, from)
                 .map_err(|e| format!("set_hook_state: {e}"))?
                 .ok_or_else(parked)?;
-            (Some(stored), None)
+            (Some(stored), true, None)
         }
         SignalReport::Work(edge, id) => {
             if !crate::session::background_work::valid_work_id(id) {
@@ -1944,11 +1968,11 @@ fn run_signal(
                     super::EXIT_USAGE,
                 ));
             }
-            let stored = match db.signal_work_edge(target.id, *edge, id) {
+            let (stored, moved) = match db.signal_work_edge(target.id, *edge, id) {
                 Err(rusqlite::Error::QueryReturnedNoRows) => return Err(parked()),
                 other => other.map_err(|e| format!("signal_work_edge: {e}"))?,
             };
-            (stored, Some((*edge, id.as_str())))
+            (stored, moved, Some((*edge, id.as_str())))
         }
     };
     // A signal from the agent's own hook carries the environment Claude Code
@@ -1965,7 +1989,7 @@ fn run_signal(
     // A local row's backend is found among this machine's alone: every agent
     // hook runs this, and the full registry reads every host to be built.
     // A work edge that moved nothing has nothing new to record there.
-    if let Some(state) = state.as_deref() {
+    if let Some(state) = state.as_deref().filter(|_| moved) {
         let recorded = signal_backend(backends, &target.backend_type)
             .and_then(|backend| Ok(backend.record_hook_state(&target.backend_id, state)?));
         if let Err(e) = recorded {
@@ -3619,6 +3643,7 @@ mod tests {
                 work_start: None,
                 work_end: None,
                 work: None,
+                turn_start: false,
                 session: Some(id.to_string()),
             },
             &db,
@@ -3644,6 +3669,7 @@ mod tests {
                 work_start: None,
                 work_end: None,
                 work: None,
+                turn_start: false,
                 session: None,
             },
             &db,
