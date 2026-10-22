@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 const CONSUMER: &str = "hooks";
 const LEASE_MS: i64 = 90_000;
 const BUDGET: Duration = Duration::from_secs(30);
-/// Less budget than this left is too little to start another hook: it would
-/// be killed before doing anything, so the rest of the event waits for the
-/// next tick instead.
+/// Less budget than this left, for every hook still to run on an event, is too
+/// little to start the next one: the rest of the event waits for the next
+/// tick, which delivers it again whole.
 const MIN_LEFT: Duration = Duration::from_millis(100);
 
 pub fn configured() -> bool {
@@ -144,7 +144,8 @@ fn drain(
     Ok(json!({"cursor": cursor, "attempted": attempted, "gap": gap, "failures": failures}))
 }
 
-#[cfg(test)]
+// The hooks run through `platform_shell`, which is `cmd /C` on Windows.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::session::{LifecycleHook, SessionId};
