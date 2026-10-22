@@ -273,7 +273,11 @@ A wait returns one event in the `watch` shape: a matching current state is a
 `present` event; otherwise every event after its entry cursor is considered in
 order. Pane text is the plain `session capture --lines 1000` text, checked at
 most once per second for that session alone, and returned as `detail` with
-`event: "pane_match"`. Either condition matching ends the wait. Exit 0 means
+`event: "pane_match"`. Either condition matching ends the wait. An event is
+judged as of the moment it happened: a `done` the user has looked at since is
+still `done` to a wait and to a state hook, whereas `watch` reports the row's
+acknowledgement (`idle`). An acknowledgement writes no event, so a wait for
+`idle` is not answered by the user looking at a `done` session. Exit 0 means
 matched, 4 means timeout (a structured error, no matching event), 6 means the
 session was deleted, stopped or lost, 1 is another failure and 3 an ambiguous
 reference. Bad flags or an invalid regex exit 2.

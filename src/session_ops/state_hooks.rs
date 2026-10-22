@@ -10,6 +10,11 @@ use std::time::{Duration, Instant};
 const CONSUMER: &str = "hooks";
 const LEASE_MS: i64 = 90_000;
 const BUDGET: Duration = Duration::from_secs(30);
+/// When less budget than this is left in total, no further hook of the event
+/// starts: the event waits for the next tick, which delivers it again whole.
+/// It is a floor on what is left, not on a hook's share of it, which can be
+/// smaller when several hooks remain.
+const MIN_LEFT: Duration = Duration::from_millis(100);
 
 pub fn configured() -> bool {
     !crate::agent::hooks_config::hooks_for(HookEvent::StateChanged).is_empty()
@@ -29,7 +34,7 @@ pub fn tick(db: &Database) -> Result<Value, String> {
     else {
         return Ok(json!({"leased": true}));
     };
-    let result = drain(db, &hooks, from);
+    let result = drain(db, &hooks, from, BUDGET);
     if result.is_err() {
         let _ = db.release_cursor(CONSUMER);
     }
@@ -40,6 +45,7 @@ fn drain(
     db: &Database,
     hooks: &[crate::session::LifecycleHook],
     from: i64,
+    budget: Duration,
 ) -> Result<Value, String> {
     let events = super::events::drain(db, from, None).map_err(|e| e.to_string())?;
     let gap = db.session_event_gap(from).map_err(|e| e.to_string())?;
@@ -52,7 +58,7 @@ fn drain(
     let mut attempted = 0;
     let mut gap_pending = gap;
     for event in events {
-        if started.elapsed() >= BUDGET {
+        if started.elapsed() >= budget {
             break;
         }
         // State edges, terminal lifecycle edges included. A rename or pane
@@ -101,8 +107,8 @@ fn drain(
         payload["gap"] = json!(gap_pending);
         let mut complete = true;
         for (index, hook) in matching.iter().enumerate() {
-            let left = BUDGET.saturating_sub(started.elapsed());
-            if left.is_zero() {
+            let left = budget.saturating_sub(started.elapsed());
+            if left < MIN_LEFT {
                 complete = false;
                 break;
             }
@@ -137,4 +143,72 @@ fn drain(
         return Err("state-hook cursor changed during the batch".into());
     }
     Ok(json!({"cursor": cursor, "attempted": attempted, "gap": gap, "failures": failures}))
+}
+
+// The hooks run through `platform_shell`, which is `cmd /C` on Windows.
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::session::{LifecycleHook, SessionId};
+    use crate::sync::SharedSession;
+
+    fn hook(command: String) -> LifecycleHook {
+        LifecycleHook {
+            event: HookEvent::StateChanged,
+            command,
+            timeout_secs: None,
+            agents: Vec::new(),
+            to: Vec::new(),
+        }
+    }
+
+    /// A budget that runs out partway through an event leaves that event
+    /// uncommitted, so the next tick delivers it again — rather than
+    /// committing an event whose later hooks never ran.
+    #[test]
+    fn an_event_the_budget_cuts_short_is_delivered_again() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let session = SharedSession {
+            id: SessionId::default(),
+            name: "worker".into(),
+            agent: "shell".into(),
+            backend_id: "%1".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        db.upsert_session(&session).unwrap();
+        let claim = || {
+            db.claim_cursor(CONSUMER, current_time_millis() as i64, LEASE_MS)
+                .unwrap()
+                .expect("the hooks cursor")
+        };
+        let from = claim();
+        db.set_hook_state(session.id, "done").unwrap();
+        let marker = temp.path().join("later-hook");
+        let hooks = [
+            hook("sleep 5".into()),
+            hook(format!("touch '{}'", marker.display())),
+        ];
+
+        // The first hook takes its half of 150 ms; what is left cannot run
+        // the second one.
+        let cut = drain(&db, &hooks, from, Duration::from_millis(150)).unwrap();
+        assert_eq!(cut["cursor"], from, "{cut}");
+        assert!(!marker.exists(), "the later hook ran on a spent budget");
+
+        let replay = drain(&db, &hooks[1..], claim(), BUDGET).unwrap();
+        assert!(replay["cursor"].as_i64() > Some(from), "{replay}");
+        assert!(marker.exists(), "the cut event was not delivered again");
+    }
 }

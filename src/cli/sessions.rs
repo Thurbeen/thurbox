@@ -1452,10 +1452,7 @@ fn run_send(
     }
     let session = resolve(db, &uuid)?;
     // The plain send's local checks, made before the host is asked.
-    if text.trim().is_empty() {
-        return Err("text must not be empty".into());
-    }
-    refuse_if_parked(db, &session)?;
+    check_send(db, &session, &text)?;
     let id = session.id.to_string();
     let timeout = wait.timeout.map(|s| s.to_string());
     let mut args = vec!["session", "send", &id, &text];
@@ -1528,10 +1525,7 @@ fn run_send_delivery(
 ) -> Result<CommandOutput, CommandError> {
     use crate::session_ops::SendOutcome;
     let session = resolve(db, &uuid)?;
-    if text.trim().is_empty() {
-        return Err("text must not be empty".into());
-    }
-    refuse_if_parked(db, &session)?;
+    check_send(db, &session, &text)?;
     let id = session.id.to_string();
     let mut args = vec!["session", "send", &id, &text];
     if no_enter {
@@ -3025,6 +3019,15 @@ fn existing_session_output(
         ),
     )
     .help(["thurbox-cli session get <id>   what it is doing now"])
+}
+
+/// What every send checks here before it types or asks a host: one place, so
+/// a waiting send and a plain one cannot drift apart.
+fn check_send(db: &Database, session: &SharedSession, text: &str) -> Result<(), CommandError> {
+    if text.trim().is_empty() {
+        return Err("text must not be empty".into());
+    }
+    Ok(refuse_if_parked(db, session)?)
 }
 
 /// Refuse a pane verb pointed at a **parked** session, naming the fix.

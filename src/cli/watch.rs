@@ -333,8 +333,6 @@ fn line(
     crate::session_ops::events::render(event, facts, &hook, stopped)
 }
 
-/// The baseline `--initial` emits: the same shape as an event, with no
-/// transition to report.
 /// What the stored columns — and, with `--verify`, the pane — say about a
 /// session at the moment an event describes.
 ///

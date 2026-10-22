@@ -652,8 +652,9 @@ replays that batch. Ordinary hook failure is logged and returned in the tick's
 the `hooks` row in `event_cursors` from overlapping ticks. Each tick reads at
 most 512 events and spends at most 30 seconds on hooks, including their own
 timeouts; each remaining hook gets a share of the remaining phase budget so
-one slow hook cannot starve the rest of its event. Unfinished rows wait for
-the next tick. Reaping and telemetry run
+one slow hook cannot starve the rest of its event. No hook starts on less
+than 100 ms of budget; an event cut short that way is not committed and is
+delivered again, whole, on the next tick. Reaping and telemetry run
 before this phase, so a slow hook delays only hooks. First use starts at the
 head, skipping history. Pruned history produces `gap: true` once, on the first
 payload a hook receives in that tick; when no hook's filter matches anything

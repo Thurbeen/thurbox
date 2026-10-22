@@ -140,7 +140,7 @@ fn install(
     // hooks.toml is the user's own file: an extension may not ship entries
     // for it, so none may write it by any path. This guards that one file and
     // is not a sandbox — external files and config merges still write other
-    // paths under the home by design.
+    // paths, by design.
     for path in def
         .external_files
         .iter()
