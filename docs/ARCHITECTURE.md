@@ -616,7 +616,8 @@ pane's state — so whatever is not bytes reaches the reader loop as a value at
 exactly the point of the stream it belongs to. It replaced a `Read` that
 carried those as `Interrupted` errors recovered by downcasting, a channel any
 `Read` adapter that retries interruptions would have emptied silently. An
-adopted pane's history seed is one `Output` chunk ahead of the live stream.
+adopted pane's history seed is `Output` chunks of at most 4096 bytes ahead of the
+live stream, so replaying a long scrollback never holds the parser for all of it.
 
 **A full channel is caught up, not left corrupt** (#1472): the reader thread
 never blocks, so output that finds a pane's channel full is dropped, and the
