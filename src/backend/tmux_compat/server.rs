@@ -12,7 +12,6 @@ use std::io::{Cursor, Read};
 use std::marker::PhantomData;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
@@ -26,8 +25,8 @@ use crate::backend::identity::{window_name_for, Located, WindowIndex, SHELL_WIND
 use crate::backend::instance::{host_socket, known_host_socket, learned_host_socket, local_socket};
 use crate::backend::tmux_compat::control_mode::{
     self, is_broken_pipe, is_recv_timeout, mouse_seed_bytes, shell_escape, title_seed_bytes,
-    ControlMode, ControlModeReader, ControlModeWriter, ControlPolicy, PaneInput,
-    PANE_CHANNEL_CAPACITY, SIZED_BY, SIZER_OPTION,
+    ControlMode, ControlModeReader, ControlModeWriter, ControlPolicy, PaneInput, SIZED_BY,
+    SIZER_OPTION,
 };
 use crate::backend::tmux_compat::transport::{SocketDir, TmuxTransport};
 use crate::session::{HostDef, Multiplexer, Platform};
@@ -2338,11 +2337,12 @@ impl<M: TmuxCompatible> Server<M> {
                 }
             }
         };
-        let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
-        let reader = ControlModeReader::new(rx);
         let reports = window_id.is_some() && M::WINDOW_EVENTS;
-        let size = reports.then(|| reader.size());
-        self.with_control(|ctrl| {
+        let (reader, size) = self.with_control(|ctrl| {
+            // A pane whose output overflowed its channel is caught up by a
+            // snapshot, where one can be taken.
+            let (tx, reader) = ctrl.pane_channel(pane_id, M::SNAPSHOTS.then(snapshot_history));
+            let size = reports.then(|| reader.size());
             let mut senders = ctrl
                 .pane_senders
                 .lock()
@@ -2353,7 +2353,7 @@ impl<M: TmuxCompatible> Server<M> {
                 .push(tx);
             drop(senders);
             let Some(window_id) = window_id else {
-                return Ok(());
+                return Ok((reader, size));
             };
             let mut windows = ctrl
                 .pane_windows
@@ -2367,7 +2367,7 @@ impl<M: TmuxCompatible> Server<M> {
                     .map_err(|e| anyhow::anyhow!("pane_sizes lock: {e}"))?
                     .insert(pane_id.to_string(), size.clone());
             }
-            Ok(())
+            Ok((reader, size))
         })?;
         // Before any byte is read, so the history seed — captured at this size
         // — is parsed at it.
@@ -4845,6 +4845,7 @@ mod tests {
     use crate::backend::instance::{
         host_socket, known_host_socket, learn_host_socket, TMUX_SOCKET,
     };
+    use crate::backend::tmux_compat::control_mode::PANE_CHANNEL_CAPACITY;
 
     /// A multiplexer for the shared code's own tests, which may name no
     /// adapter: tmux's name, so the routes read as a row's would, and POSIX
@@ -5076,6 +5077,160 @@ mod tests {
         let commands = std::fs::read_to_string(mux.with_extension("log")).expect("command log");
         assert!(commands.contains("resize-window"), "{commands}");
         assert!(!commands.contains("refresh-client -A"), "{commands}");
+    }
+
+    /// Exercise overflow through the subprocess, control reader and bounded
+    /// pane channel, up to the reader a pane's grid is fed from. Not reading
+    /// makes the overflow deterministic without depending on how quickly a
+    /// real tmux batches bytes. Installing what comes out onto a grid is
+    /// `pane`'s, tested there: this module may not name it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_overflowed_pane_is_caught_up_without_blocking_control() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let mux = root.path().join("overflow-mux");
+        std::fs::write(
+            &mux,
+            format!(
+                r#"#!/bin/sh
+reply() {{
+    printf '%%begin 1 1 0\n'
+    [ "$#" -eq 0 ] || printf '%s\n' "$1"
+    printf '%%end 1 1 0\n'
+}}
+while IFS= read -r line; do
+    case "$line" in
+        *'display-message -p flood'*)
+            i=0
+            while [ "$i" -lt {chunks} ]; do
+                printf '%s\n' '%output %1 \033['
+                i=$((i + 1))
+            done
+            printf '%s\n' '%output %1 32mRECOVERED\033[0m'
+            reply ;;
+        *'capture-pane'*)
+            reply '20 4 9 0 0'
+            reply "$(printf '\033[32mRECOVERED\033[0m')"
+            reply ;;
+        *'display-message -p suffix'*)
+            printf '%s\n' '%output %1 !'
+            reply ;;
+        *'resize-window'*)
+            reply; reply; reply; reply; reply ;;
+        *'#{{pane_id}} #{{window_id}}'*) reply '%1 @1 4 20' ;;
+        *) reply ;;
+    esac
+done
+"#,
+                chunks = PANE_CHANNEL_CAPACITY + 64,
+            ),
+        )
+        .expect("write control server");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let transport = TmuxTransport::local(mux.to_string_lossy());
+        let backend = Arc::new(TestBackend::with_transport(
+            transport.clone(),
+            "unused",
+            "unused",
+            "local:tmux",
+        ));
+        // Shut down even on assertion failure, so the runtime's blocking reader
+        // cannot outlive the subprocess that owns its channel.
+        struct Shutdown(Arc<TestBackend>);
+        impl Drop for Shutdown {
+            fn drop(&mut self) {
+                self.0.shutdown();
+            }
+        }
+        let _shutdown = Shutdown(Arc::clone(&backend));
+        let control = Arc::new(
+            ControlMode::start(
+                &transport,
+                "unused",
+                "unused",
+                "tests",
+                &ControlPolicy {
+                    flow_control_command: None,
+                    implicit_attach_reply: false,
+                    tagged_blocks: true,
+                    command_list_single_reply: false,
+                    subscriptions: false,
+                    status_poll: None,
+                    confirm_close: None,
+                },
+            )
+            .expect("control client"),
+        );
+        *backend.control.lock().unwrap() = Some(Arc::clone(&control));
+        let (mut reader, _) = backend
+            .register_pane("%1", Some("@1"))
+            .expect("resident pane");
+
+        control
+            .send_command("display-message -p flood")
+            .expect("control replies still arrive while the pane channel is full");
+        // A barrier after the flood proves that all notifications reached the
+        // dispatcher before the consumer is released. No further output is
+        // needed to trigger recovery, even if the snapshot itself found no room.
+        control
+            .send_command("display-message -p barrier")
+            .expect("another command is not held behind the flooded pane");
+
+        // Read on a thread of its own, so a reader that is never handed the
+        // resync fails the test at its deadline instead of hanging it.
+        let (items, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 256];
+            loop {
+                let item = match reader.read(&mut buf) {
+                    Ok(0) => return,
+                    Ok(n) => Ok(buf[..n].to_vec()),
+                    Err(e) => match crate::backend::contract::SnapshotArrived::take(e) {
+                        Some(arrived) => Err(arrived),
+                        None => continue,
+                    },
+                };
+                if items.send(item).is_err() {
+                    return;
+                }
+            }
+        });
+        let next = || {
+            received
+                .recv_timeout(Duration::from_secs(5))
+                .expect("overflowed resident pane was never caught up")
+        };
+
+        let mut queued = 0;
+        let arrived = loop {
+            match next() {
+                Ok(bytes) => {
+                    assert_eq!(bytes, b"\x1b[", "only output from before the gap");
+                    queued += 1;
+                }
+                Err(arrived) => break arrived,
+            }
+        };
+        assert!(queued <= PANE_CHANNEL_CAPACITY, "{queued}");
+        assert!(arrived.resync, "a resync, which replaces a grid it has");
+        assert_eq!(
+            *arrived.snapshot,
+            crate::backend::contract::PaneSnapshot {
+                cols: 20,
+                rows: 4,
+                cursor: (9, 0),
+                normal: vec!["\x1b[32mRECOVERED\x1b[0m".into()],
+                alternate: None,
+            }
+        );
+        control
+            .send_command("display-message -p suffix")
+            .expect("output after recovery");
+        assert_eq!(next().ok(), Some(b"!".to_vec()), "output flows again");
     }
 
     /// A control server standing in for a host whose link has gone slow: every
