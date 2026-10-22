@@ -286,6 +286,10 @@ fn pre_launch_runs_in_final_directory_and_can_refuse_the_launch() {
         String::from_utf8_lossy(&out.stdout)
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("preparation-refused"));
+    // A refusal, typed as the pre_create one is, so a driver tells "a hook said
+    // no" from a failure without matching the sentence.
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "refused", "{answer}");
     assert!(env.db().list_active_sessions().unwrap().is_empty());
 }
 
@@ -1150,4 +1154,46 @@ fn an_extension_manifest_alias_cannot_overwrite_hooks() {
         std::fs::read_to_string(env.path("config/hooks.toml")).unwrap(),
         hooks
     );
+}
+
+/// A `done` edge is the moment the turn finished, before anyone looked at it.
+/// The user acknowledging the session before the wait reads that edge must not
+/// turn it into `idle` and leave the wait for `done` hanging.
+#[test]
+fn a_wait_matches_a_done_edge_that_was_seen_before_it_was_read() {
+    let env = Env::new();
+    let id = env.seed();
+    env.db().set_hook_state(id, "working").unwrap();
+    let mut cmd = env.command(&[
+        "session",
+        "wait",
+        "worker",
+        "--state",
+        "done",
+        "--timeout",
+        "5",
+    ]);
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700));
+        let db = env.db();
+        db.set_hook_state(id, "done").unwrap();
+        // What the interface does when the user looks: seen as of now.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        db.mark_session_seen(id, now + 1_000).unwrap();
+        env
+    });
+    let out = cmd.output().unwrap();
+    let _env = writer.join().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let event: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(event["to_state"], "done");
+    assert_eq!(event["state"], "done");
 }

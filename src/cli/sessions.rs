@@ -1448,6 +1448,11 @@ fn run_send(
         return run_send_delivery(db, backends, uuid, text, no_enter, force);
     }
     let session = resolve(db, &uuid)?;
+    // The plain send's local checks, made before the host is asked.
+    if text.trim().is_empty() {
+        return Err("text must not be empty".into());
+    }
+    refuse_if_parked(db, &session)?;
     let id = session.id.to_string();
     let timeout = wait.timeout.map(|s| s.to_string());
     let mut args = vec!["session", "send", &id, &text];

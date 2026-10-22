@@ -46,7 +46,11 @@ pub fn run(
     if since.is_none() && db.session_lost_at(session.id).map_err(failed)?.is_some() {
         return Err(Error::Gone);
     }
-    let mut stopped = db.session_stopped_at(session.id).map_err(failed)?.is_some();
+    // With an explicit cursor the park is replayed from the edges like
+    // everything else: a turn recorded before it still answers, and a park
+    // that predates the cursor ends the wait at the loop's idle check.
+    let mut stopped =
+        since.is_none() && db.session_stopped_at(session.id).map_err(failed)?.is_some();
     // An explicit cursor is the next edge, never the current latched state.
     if since.is_none() {
         if let Some(value) = baseline(db, &registry, session.id, seq, &conditions.states)? {
@@ -86,10 +90,14 @@ pub fn run(
                 let hook = super::events::assess(
                     &registry,
                     facts,
+                    // An edge is judged as of the moment it happened, when
+                    // nobody had seen it yet: the row's later acknowledgement
+                    // would turn a `done` edge into `idle` and hang a wait
+                    // for `done`.
                     &HookRow {
                         state: event.to_state.clone(),
                         state_at: Some(event.at_ms),
-                        seen_at: facts.seen_at,
+                        seen_at: None,
                     },
                     stopped,
                 );
@@ -194,16 +202,9 @@ fn baseline(
 mod tests {
     use super::*;
 
-    /// `send --wait-turn` takes its cursor before delivery. A turn recorded
-    /// after that cursor answers the wait even when a loss was recorded after
-    /// the turn and before the wait started reading: the queued edges are read
-    /// in order before the lost mark can end the wait.
-    #[test]
-    fn an_explicit_cursor_reads_a_turn_recorded_before_a_loss() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let db = Database::open_in_memory().unwrap();
-        let session = SharedSession {
+    /// A local row with a pane to lose.
+    fn row() -> SharedSession {
+        SharedSession {
             id: SessionId::default(),
             name: "worker".into(),
             agent: "shell".into(),
@@ -219,25 +220,58 @@ mod tests {
             tombstone: false,
             tombstone_at: None,
             key: None,
-        };
-        db.upsert_session(&session).unwrap();
-        let cursor = db.latest_session_event_seq().unwrap();
-        db.set_hook_state(session.id, "working").unwrap();
-        assert!(db.record_session_lost(session.id, "%1").unwrap());
+        }
+    }
 
-        let answer = run(
-            &db,
+    fn turn(db: &Database, session: &SharedSession, cursor: i64) -> Result<Value, Error> {
+        run(
+            db,
             &crate::backend::registry::inert(),
-            &session,
+            session,
             Conditions {
                 states: vec!["working".into()],
                 pane: None,
                 timeout: Some(Duration::from_secs(2)),
             },
             Some(cursor),
-        );
+        )
+    }
 
-        let Ok(event) = answer else {
+    /// The same ordering as a loss: a turn recorded after the cursor answers
+    /// the wait even when the session was parked right after it.
+    #[test]
+    fn an_explicit_cursor_reads_a_turn_recorded_before_a_stop() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let session = row();
+        db.upsert_session(&session).unwrap();
+        let cursor = db.latest_session_event_seq().unwrap();
+        db.set_hook_state(session.id, "working").unwrap();
+        db.set_session_stopped(session.id, true).unwrap();
+
+        let Ok(event) = turn(&db, &session, cursor) else {
+            panic!("the recorded turn went unconfirmed");
+        };
+        assert_eq!(event["to_state"], "working");
+    }
+
+    /// `send --wait-turn` takes its cursor before delivery. A turn recorded
+    /// after that cursor answers the wait even when a loss was recorded after
+    /// the turn and before the wait started reading: the queued edges are read
+    /// in order before the lost mark can end the wait.
+    #[test]
+    fn an_explicit_cursor_reads_a_turn_recorded_before_a_loss() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let session = row();
+        db.upsert_session(&session).unwrap();
+        let cursor = db.latest_session_event_seq().unwrap();
+        db.set_hook_state(session.id, "working").unwrap();
+        assert!(db.record_session_lost(session.id, "%1").unwrap());
+
+        let Ok(event) = turn(&db, &session, cursor) else {
             panic!("the recorded turn went unconfirmed");
         };
         assert_eq!(event["to_state"], "working");

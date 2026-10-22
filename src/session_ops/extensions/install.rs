@@ -137,8 +137,10 @@ fn install(
     }
     let home_str = home.to_string_lossy().to_string();
 
-    // User lifecycle hooks execute with the user's rights. An extension's
-    // install declaration must never turn itself into that trusted caller.
+    // hooks.toml is the user's own file: an extension may not ship entries
+    // for it, so none may write it by any path. This guards that one file and
+    // is not a sandbox — external files and config merges still write other
+    // paths under the home by design.
     for path in def
         .external_files
         .iter()

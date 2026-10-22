@@ -454,11 +454,13 @@ fn spawn(
             .map(super::lifecycle_hooks::worktree)
             .collect();
         hook_ctx.additional_dirs = additional_dirs.clone();
+        // Still a refusal, typed like pre_create's, with the directories it
+        // leaves behind named.
         super::fire_pre(crate::session::HookEvent::PreLaunch, &hook_ctx).map_err(|reason| {
-            format!(
+            crate::session_ops::OpError::Refused(format!(
                 "{reason}; launch refused, prepared directories remain at {}",
                 launch_cwd.display()
-            )
+            ))
         })?;
     }
 

@@ -89,10 +89,11 @@ fn drain(
         let hook = super::events::assess(
             &registry,
             facts,
+            // The edge as it happened, before anyone saw it (see `wait`).
             &HookRow {
                 state: event.to_state.clone(),
                 state_at: Some(event.at_ms),
-                seen_at: facts.seen_at,
+                seen_at: None,
             },
             event.reason == "stopped",
         );
