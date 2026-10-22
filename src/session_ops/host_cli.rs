@@ -2010,8 +2010,11 @@ mod tests {
     /// truncated delivery takes. Measured on a host as a 6,815,232-byte
     /// executable whose ELF header declared its section headers at 12,627,792:
     /// 54% of itself, and a segfault on every invocation.
+    ///
+    /// A real SIGSEGV, so the caller sees the signal death it is about, but
+    /// with core dumps off first: every run used to leave one behind.
     #[cfg(unix)]
-    const SEGFAULTS: &str = "#!/bin/sh\nkill -SEGV $$\n";
+    const SEGFAULTS: &str = "#!/bin/sh\nulimit -c 0\nkill -SEGV $$\n";
 
     /// A `thurbox-cli` this binary would accept: same major, same schema.
     #[cfg(unix)]
@@ -2038,6 +2041,35 @@ mod tests {
         std::fs::write(&cli, body).unwrap();
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
         cli.to_string_lossy().into_owned()
+    }
+
+    /// Every run of the tests above segfaulted a shell, and every segfault
+    /// left a core dump behind wherever the runner's limit allowed one.
+    ///
+    /// The soft limit is raised as far as the hard limit lets it first, so a
+    /// runner that already disables dumps cannot pass this for the fixture;
+    /// and only the final signal is intercepted, so the real fixture reports
+    /// the limit in effect at its crash point without producing another dump.
+    #[cfg(unix)]
+    #[test]
+    fn the_segfaulting_cli_fixture_disables_core_dumps() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cli = plant_cli(temp.path(), SEGFAULTS);
+        let out = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "ulimit -c \"$(ulimit -H -c)\"; kill() { ulimit -c; }; . \"$1\"",
+                "core-limit-probe",
+                &cli,
+            ])
+            .output()
+            .expect("run the planted CLI's crash path");
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "0",
+            "the fixture must disable core dumps before its deliberate SIGSEGV"
+        );
     }
 
     #[cfg(unix)]

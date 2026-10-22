@@ -45,6 +45,44 @@ fn have_tmux() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// Every crash below left a tmux core dump behind wherever the runner's limit
+/// allowed one — over a thousand of them on one machine.
+///
+/// The soft limit is raised to the hard one first, so a runner that already
+/// disables dumps cannot pass this for the harness. Then the server's child is
+/// asked rather than this process: tmux daemonizes, and it is the daemon that
+/// receives the deliberate SIGSEGV.
+#[cfg(unix)]
+#[test]
+fn a_server_used_for_crash_tests_disables_core_dumps() {
+    if !have_tmux() {
+        return;
+    }
+    // SAFETY: plain syscalls on a local struct; nothing else here reads it.
+    unsafe {
+        let mut limit: libc::rlimit = std::mem::zeroed();
+        assert_eq!(libc::getrlimit(libc::RLIMIT_CORE, &mut limit), 0);
+        limit.rlim_cur = limit.rlim_max;
+        assert_eq!(libc::setrlimit(libc::RLIMIT_CORE, &limit), 0);
+    }
+    let env = Env::new();
+    env.window("core-limit");
+    let report = env.path("core-limit");
+    let script = format!(
+        "ulimit -c > {}",
+        thurbox::shell::posix_quote(&report.to_string_lossy())
+    );
+    let out = env.tmux(&["run-shell", &script]);
+    assert!(out.status.success(), "tmux could not query its core limit");
+    assert_eq!(
+        std::fs::read_to_string(report)
+            .expect("server's core limit")
+            .trim(),
+        "0",
+        "the server receiving a deliberate SIGSEGV must not write a core dump"
+    );
+}
+
 struct Env {
     root: tempfile::TempDir,
     /// The private server the sessions live on, and the one `watch` lists.
@@ -59,7 +97,7 @@ impl Env {
         }
         Self {
             root,
-            server: TmuxServer::private(SOCKET),
+            server: TmuxServer::crashable(SOCKET),
         }
     }
 
