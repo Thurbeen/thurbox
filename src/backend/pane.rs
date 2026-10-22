@@ -1311,7 +1311,9 @@ impl Session {
     /// installing it before the next read is what keeps a rebuilt grid from
     /// losing or repeating a byte. A partial character held in `carry` stays
     /// held: its first bytes came before the snapshot, which cannot show a
-    /// character tmux has not finished either, and the rest come after.
+    /// character tmux has not finished either, and the rest come after. Not
+    /// across a resync: the rest of that character may be in the output it
+    /// replaces.
     fn reader_loop(
         mut reader: Box<dyn Read + Send>,
         parser: Arc<Mutex<SessionParser>>,
@@ -1381,8 +1383,11 @@ impl Session {
                         }
                         Err(e) => e,
                     };
-                    if let Some(snapshot) = SnapshotArrived::take(e) {
-                        Self::install(&parser, &residency, &snapshot);
+                    if let Some(arrived) = SnapshotArrived::take(e) {
+                        if arrived.resync {
+                            carry.clear();
+                        }
+                        Self::install(&parser, &residency, &arrived.snapshot, arrived.resync);
                         // A rebuilt grid is new content to paint, like output.
                         signals.output_seq.fetch_add(1, Ordering::Release);
                         crate::backend::output_wake::notify(&signals.output_seq);
@@ -1405,12 +1410,29 @@ impl Session {
     /// stood in for it, and wake whoever is waiting for it.
     ///
     /// A pane that has its grid already ignores a snapshot: that grid is
-    /// exact, and one rebuilt from a capture is only as exact as tmux's.
-    fn install(parser: &Mutex<SessionParser>, residency: &Residency, snapshot: &PaneSnapshot) {
+    /// exact, and one rebuilt from a capture is only as exact as tmux's —
+    /// unless it is a `resync`, which comes because output was dropped from
+    /// that grid. A pane without a grid takes a resync only when it asked for
+    /// its grid back ([`WiredPane::restore`]), whose answer this is then:
+    /// otherwise there is no grid to correct.
+    fn install(
+        parser: &Mutex<SessionParser>,
+        residency: &Residency,
+        snapshot: &PaneSnapshot,
+        resync: bool,
+    ) {
         if let Ok(mut parser) = parser.lock() {
-            if !residency.is_resident() {
+            let rebuild = if residency.is_resident() {
+                resync
+            } else {
+                !resync || residency.requested_at.load(Ordering::Acquire) != 0
+            };
+            if rebuild {
                 let seed = snapshot_seed(snapshot, parser.screen());
-                let signals = std::mem::take(parser.callbacks_mut());
+                let mut signals = std::mem::take(parser.callbacks_mut());
+                // Positions on the grid being replaced, as `evict` drops them.
+                signals.hyperlinks = HyperlinkTable::default();
+                signals.pending_link = None;
                 let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
                 let mut rebuilt = vt100::Parser::new_with_callbacks(
                     rows,
@@ -2250,6 +2272,96 @@ mod tests {
         let rows: Vec<String> = parser.screen().rows(0, 10).collect();
         assert_eq!(rows[..3], ["aaaaaaaaaa", "bbbbbbbbbb", "bbbbb"]);
         assert_eq!(size.current(), pack_size(4, 10));
+    }
+
+    /// A reader whose output was dropped ends up with whatever a cut escape
+    /// sequence left on its grid; the resync that follows replaces that grid,
+    /// resident as it is, and the output after it lands on the replacement. A
+    /// plain snapshot still leaves a resident grid alone.
+    #[test]
+    fn reader_loop_replaces_a_resident_grid_with_a_resync() {
+        struct Script(Vec<Result<&'static [u8], bool>>);
+        impl Read for Script {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0.is_empty() {
+                    return Ok(0);
+                }
+                match self.0.remove(0) {
+                    Ok(bytes) => {
+                        buf[..bytes.len()].copy_from_slice(bytes);
+                        Ok(bytes.len())
+                    }
+                    Err(resync) => Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        SnapshotArrived {
+                            snapshot: Box::new(PaneSnapshot {
+                                cols: 20,
+                                rows: 4,
+                                cursor: (9, 0),
+                                normal: vec!["\x1b[32mRECOVERED\x1b[0m".into()],
+                                alternate: None,
+                            }),
+                            resync,
+                        },
+                    )),
+                }
+            }
+        }
+        let run = |script: Script| {
+            let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+                4,
+                20,
+                0,
+                TermSignals::default(),
+            )));
+            Session::reader_loop(
+                Box::new(script),
+                Arc::clone(&parser),
+                ReaderSignals {
+                    exited: Arc::new(AtomicBool::new(false)),
+                    last_output_at: Arc::new(AtomicU64::new(0)),
+                    output_seq: Arc::new(AtomicU64::new(0)),
+                },
+                Arc::default(),
+                0,
+                None,
+            );
+            let parser = parser.lock().unwrap();
+            let screen = parser.screen();
+            (screen.contents(), screen.cell(0, 0).unwrap().fgcolor())
+        };
+
+        // `\x1b[` and then, after the gap, `!`: parsed as one sequence.
+        let (contents, _) = run(Script(vec![
+            Ok(b"old\x1b[".as_slice()),
+            Ok(b"!".as_slice()),
+        ]));
+        assert_eq!(contents, "old", "the gap corrupts the grid");
+
+        let (contents, colour) = run(Script(vec![
+            Ok(b"old\x1b[".as_slice()),
+            Err(true),
+            Ok(b"!".as_slice()),
+        ]));
+        assert_eq!(contents, "RECOVERED!");
+        assert_eq!(colour, vt100::Color::Idx(2));
+
+        let (contents, _) = run(Script(vec![Ok(b"old".as_slice()), Err(false)]));
+        assert_eq!(contents, "old", "a plain snapshot keeps a resident grid");
+
+        // A character's first byte held from before the gap must not join
+        // bytes that follow the resync, even ones that would complete it.
+        let (contents, _) = run(Script(vec![
+            Ok(b"old\xc3".as_slice()),
+            Err(true),
+            Ok(b"\xa9!".as_slice()),
+        ]));
+        assert!(contents.starts_with("RECOVERED"), "{contents:?}");
+        assert!(contents.ends_with('!'), "{contents:?}");
+        assert!(
+            !contents.contains('\u{e9}'),
+            "joined across the gap: {contents:?}"
+        );
     }
 
     /// The redraw signal moves for the replayed seed too, and only once the

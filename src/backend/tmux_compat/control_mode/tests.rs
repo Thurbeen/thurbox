@@ -227,7 +227,10 @@ fn window_close_gives_its_panes_eof() {
     let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
     let windows: PaneWindowsMapShared = Arc::new(Mutex::new(HashMap::new()));
     let (tx, rx) = sync_channel(4);
-    senders.lock().unwrap().insert("%7".to_string(), vec![tx]);
+    senders
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), vec![tx.into()]);
     windows
         .lock()
         .unwrap()
@@ -249,7 +252,10 @@ fn window_close_leaves_other_windows_alone() {
     let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
     let windows: PaneWindowsMapShared = Arc::new(Mutex::new(HashMap::new()));
     let (tx, rx) = sync_channel(4);
-    senders.lock().unwrap().insert("%7".to_string(), vec![tx]);
+    senders
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), vec![tx.into()]);
     windows
         .lock()
         .unwrap()
@@ -305,7 +311,7 @@ fn a_dropped_readers_sender_is_unregistered() {
     senders
         .lock()
         .unwrap()
-        .insert("%7".to_string(), vec![gone_tx, kept_tx]);
+        .insert("%7".to_string(), vec![gone_tx.into(), kept_tx.into()]);
     drop(ControlModeReader::new(gone_rx));
 
     ControlMode::dispatch_output(&senders, "%7", b"hi".to_vec());
@@ -368,7 +374,7 @@ fn a_window_close_is_confirmed_before_a_reader_ends() {
             .pane_senders
             .lock()
             .unwrap()
-            .insert("%7".to_string(), vec![tx]);
+            .insert("%7".to_string(), vec![tx.into()]);
         control
             .pane_windows
             .lock()
@@ -445,11 +451,14 @@ fn a_window_resize_interrupts_its_panes_readers_in_order() {
     let windows: PaneWindowsMapShared = Arc::new(Mutex::new(HashMap::new()));
     let (tx, rx) = sync_channel(8);
     let (other_tx, other_rx) = sync_channel(8);
-    senders.lock().unwrap().insert("%7".to_string(), vec![tx]);
     senders
         .lock()
         .unwrap()
-        .insert("%8".to_string(), vec![other_tx]);
+        .insert("%7".to_string(), vec![tx.into()]);
+    senders
+        .lock()
+        .unwrap()
+        .insert("%8".to_string(), vec![other_tx.into()]);
     windows
         .lock()
         .unwrap()
@@ -487,7 +496,10 @@ fn a_resize_into_a_full_channel_still_reaches_the_reader() {
     let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
     let windows: PaneWindowsMapShared = Arc::new(Mutex::new(HashMap::new()));
     let (tx, rx) = sync_channel(1);
-    senders.lock().unwrap().insert("%7".to_string(), vec![tx]);
+    senders
+        .lock()
+        .unwrap()
+        .insert("%7".to_string(), vec![tx.into()]);
     windows
         .lock()
         .unwrap()
@@ -1858,9 +1870,203 @@ fn a_snapshot_comes_out_of_the_reader_between_the_bytes_around_it() {
     assert_eq!(&buf[..n], b"before");
     let err = reader.read(&mut buf).expect_err("the snapshot interrupts");
     assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
-    assert_eq!(SnapshotArrived::take(err).as_deref(), Some(&snapshot));
+    let arrived = SnapshotArrived::take(err).expect("a snapshot");
+    assert_eq!(*arrived.snapshot, snapshot);
+    assert!(!arrived.resync);
     let n = reader.read(&mut buf).unwrap();
     assert_eq!(&buf[..n], b"after");
+}
+
+// --- catching up a reader whose channel overflowed (`Resync`) ---
+
+/// A reader of `%7` with a channel of `capacity` that is caught up after an
+/// overflow, on no connection: what it would ask for goes nowhere, and the
+/// tests hand it the answer themselves.
+fn resyncing_reader(capacity: usize) -> (PaneSendersMapShared, ControlModeReader, Arc<Resync>) {
+    let (tx, rx) = sync_channel(capacity);
+    let resync = Arc::new(Resync {
+        pane: "%7".into(),
+        history: 0,
+        command_list_single_reply: false,
+        outbox: Weak::new(),
+        response_queue: Weak::new(),
+        behind: AtomicBool::new(false),
+        state: Mutex::default(),
+    });
+    let mut reader = ControlModeReader::new(rx);
+    reader.resync = Some(Arc::clone(&resync));
+    let sender = PaneSender {
+        tx,
+        resync: Some(Arc::clone(&resync)),
+    };
+    let senders = Arc::new(Mutex::new(HashMap::from([(
+        "%7".to_string(),
+        vec![sender],
+    )])));
+    (senders, reader, resync)
+}
+
+fn caught_up_snapshot() -> PaneSnapshot {
+    PaneSnapshot {
+        cols: 20,
+        rows: 4,
+        cursor: (2, 0),
+        normal: vec!["ok".into()],
+        alternate: None,
+    }
+}
+
+/// Read one item: the bytes of an output chunk, or the snapshot an
+/// interrupted read carries with whether it is a resync.
+fn read_item(reader: &mut ControlModeReader) -> Result<Vec<u8>, (PaneSnapshot, bool)> {
+    let mut buf = [0u8; 64];
+    match reader.read(&mut buf) {
+        Ok(n) => Ok(buf[..n].to_vec()),
+        Err(e) => {
+            let arrived = SnapshotArrived::take(e).expect("a snapshot");
+            Err((*arrived.snapshot, arrived.resync))
+        }
+    }
+}
+
+/// Output after a gap is never handed over: only the snapshot that follows
+/// it, as a resync, and then the output behind that snapshot.
+#[test]
+fn a_reader_that_lost_output_takes_none_until_a_resync() {
+    let (senders, mut reader, resync) = resyncing_reader(2);
+    for chunk in ["a", "b", "lost"] {
+        ControlMode::dispatch_output(&senders, "%7", chunk.into());
+    }
+    assert!(resync.is_behind());
+    assert_eq!(read_item(&mut reader), Ok(b"a".to_vec()));
+    assert_eq!(read_item(&mut reader), Ok(b"b".to_vec()));
+    // Room again, but this is still behind the gap.
+    ControlMode::dispatch_output(&senders, "%7", b"also lost".to_vec());
+
+    let snapshot = caught_up_snapshot();
+    ControlMode::dispatch_snapshot(&senders, "%7", Some(&snapshot));
+    ControlMode::dispatch_output(&senders, "%7", b"after".to_vec());
+
+    assert!(!resync.is_behind());
+    assert_eq!(read_item(&mut reader), Err((snapshot, true)));
+    assert_eq!(read_item(&mut reader), Ok(b"after".to_vec()));
+}
+
+/// A resync with no room waits for the reader to drain its channel, and
+/// comes after everything that was in it.
+#[test]
+fn a_resync_that_finds_the_channel_full_comes_once_it_is_drained() {
+    let (senders, mut reader, resync) = resyncing_reader(1);
+    ControlMode::dispatch_output(&senders, "%7", b"queued".to_vec());
+    ControlMode::dispatch_output(&senders, "%7", b"lost".to_vec());
+    let snapshot = caught_up_snapshot();
+    ControlMode::dispatch_snapshot(&senders, "%7", Some(&snapshot));
+    assert!(resync.is_behind(), "parked, not yet taken");
+
+    assert_eq!(read_item(&mut reader), Ok(b"queued".to_vec()));
+    assert_eq!(read_item(&mut reader), Err((snapshot, true)));
+    assert!(!resync.is_behind());
+    ControlMode::dispatch_output(&senders, "%7", b"after".to_vec());
+    assert_eq!(read_item(&mut reader), Ok(b"after".to_vec()));
+}
+
+/// The reader can find its channel empty, and the reader thread can then fill
+/// it, overflow and park a snapshot before the reader takes the lock. The
+/// output queued in that window is older than the snapshot, so it comes first.
+#[test]
+fn a_parked_resync_never_overtakes_output_queued_before_it() {
+    let (senders, reader, resync) = resyncing_reader(1);
+    // Where the reader stands: it saw an empty channel and is about to lock.
+    ControlMode::dispatch_output(&senders, "%7", b"queued".to_vec());
+    ControlMode::dispatch_output(&senders, "%7", b"lost".to_vec());
+    let snapshot = caught_up_snapshot();
+    ControlMode::dispatch_snapshot(&senders, "%7", Some(&snapshot));
+
+    match reader.take_parked(&resync) {
+        Some(Ok(PaneChunk::Output(bytes))) => assert_eq!(bytes, b"queued"),
+        Some(Ok(PaneChunk::Resync(_))) => panic!("the snapshot overtook older output"),
+        other => panic!("expected the queued output, got {other:?}"),
+    }
+    match reader.take_parked(&resync) {
+        Some(Ok(PaneChunk::Resync(taken))) => assert_eq!(*taken, snapshot),
+        other => panic!("expected the parked snapshot, got {other:?}"),
+    }
+}
+
+/// Output the pane prints while a resync is parked is not in it, so the
+/// parked one is dropped rather than handed over stale.
+#[test]
+fn output_after_a_parked_resync_makes_it_stale() {
+    let (senders, mut reader, resync) = resyncing_reader(1);
+    ControlMode::dispatch_output(&senders, "%7", b"queued".to_vec());
+    ControlMode::dispatch_output(&senders, "%7", b"lost".to_vec());
+    ControlMode::dispatch_snapshot(&senders, "%7", Some(&caught_up_snapshot()));
+    ControlMode::dispatch_output(&senders, "%7", b"not in it".to_vec());
+
+    assert!(resync.state.lock().unwrap().parked.is_none());
+    assert!(resync.is_behind());
+    assert_eq!(read_item(&mut reader), Ok(b"queued".to_vec()));
+    assert!(matches!(
+        reader.receiver.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+}
+
+/// Anything else handed to a reader while a resync is parked — a resize, a
+/// state report — sits in the stream after the moment the snapshot shows, so
+/// the reader is handed the event, and the parked snapshot is dropped rather
+/// than handed over stale behind it; a fresh one is asked for instead.
+#[test]
+fn an_event_after_a_parked_resync_makes_it_stale() {
+    let (senders, mut reader, resync) = resyncing_reader(1);
+    ControlMode::dispatch_output(&senders, "%7", b"queued".to_vec());
+    ControlMode::dispatch_output(&senders, "%7", b"lost".to_vec());
+    ControlMode::dispatch_snapshot(&senders, "%7", Some(&caught_up_snapshot()));
+    assert_eq!(read_item(&mut reader), Ok(b"queued".to_vec()));
+
+    assert!(ControlMode::send_event(
+        &senders,
+        "%7",
+        PaneChunk::Resized {
+            rows: 30,
+            cols: 100
+        }
+    ));
+
+    assert!(matches!(
+        reader.receiver.try_recv(),
+        Ok(PaneChunk::Resized {
+            rows: 30,
+            cols: 100
+        })
+    ));
+    assert!(resync.state.lock().unwrap().parked.is_none());
+    assert!(resync.is_behind(), "still owed a fresh snapshot");
+}
+
+/// A snapshot that failed catches nothing up, so the reader goes back to
+/// taking output rather than losing all of it for good.
+#[test]
+fn a_failed_resync_puts_the_reader_back_in_step() {
+    let (senders, mut reader, resync) = resyncing_reader(1);
+    ControlMode::dispatch_output(&senders, "%7", b"queued".to_vec());
+    ControlMode::dispatch_output(&senders, "%7", b"lost".to_vec());
+    ControlMode::dispatch_snapshot(&senders, "%7", None);
+    assert!(!resync.is_behind());
+
+    assert_eq!(read_item(&mut reader), Ok(b"queued".to_vec()));
+    ControlMode::dispatch_output(&senders, "%7", b"after".to_vec());
+    assert_eq!(read_item(&mut reader), Ok(b"after".to_vec()));
+}
+
+/// A reader in step is handed a spliced snapshot as it always was: a plain
+/// one, which a grid it already has ignores.
+#[test]
+fn a_reader_in_step_takes_a_plain_snapshot() {
+    let (senders, mut reader, _) = resyncing_reader(4);
+    let snapshot = caught_up_snapshot();
+    ControlMode::dispatch_snapshot(&senders, "%7", Some(&snapshot));
+    assert_eq!(read_item(&mut reader), Err((snapshot, false)));
 }
 
 // --- hidden panes (`ControlMode::hide_pane`) ---
@@ -1929,8 +2135,10 @@ fn a_hidden_report_carries_its_activity_and_a_title_with_separators() {
 #[test]
 fn a_hidden_pane_reads_as_printing_only_when_its_activity_moves() {
     let (tx, rx) = sync_channel(16);
-    let senders: PaneSendersMapShared =
-        Arc::new(Mutex::new(HashMap::from([("%7".to_string(), vec![tx])])));
+    let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::from([(
+        "%7".to_string(),
+        vec![tx.into()],
+    )])));
     let hidden: HiddenPanes = Arc::new(Mutex::new(HashMap::from([("%7".to_string(), None)])));
     let report = |activity: &str| format!("{activity}|0,0,0,1|0,0,0,0,0,0|host|t");
     let kind = |chunk: PaneChunk| match chunk {
@@ -2017,7 +2225,7 @@ fn a_server_that_stops_reading_stalls_neither_output_nor_callers() {
         .pane_senders
         .lock()
         .unwrap()
-        .insert("%7".to_string(), vec![tx]);
+        .insert("%7".to_string(), vec![tx.into()]);
     let flood = flood_keys(&control);
     // Long enough for the flood to fill the pipe and park whatever writes it.
     std::thread::sleep(std::time::Duration::from_millis(300));

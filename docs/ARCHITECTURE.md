@@ -605,10 +605,24 @@ an instance).
 **Output streaming**: `%output` notifications from control mode,
 demultiplexed by pane ID into per-pane broadcast channels. Multiple
 instances can simultaneously register the same pane; output is
-broadcast to all registered channels via `HashMap<String, Vec<SyncSender>>`.
-Each channel feeds a `ControlModeReader` (implements `Read`) consumed
+broadcast to all registered channels (`PaneSendersMap`, one `PaneSender` per
+reader). Each channel feeds a `ControlModeReader` (implements `Read`) consumed
 by the existing `Session::reader_loop`. This allows multiple instances
 to independently parse and render terminal state in real-time.
+
+**A full channel is caught up, not left corrupt** (#1472): the reader thread
+never blocks, so output that finds a pane's channel full is dropped, and the
+bytes after a gap cannot be parsed onto that grid — the gap may have cut an
+escape sequence. A reader that lost a chunk is therefore *behind*: it is handed
+no more output and the reader thread asks for one snapshot of the pane, spliced
+into the stream where its answer arrives exactly as ADR-P27's restore is. It
+reaches the reader as `PaneChunk::Resync`, which replaces even a resident grid,
+and output flows again behind it. When the channel is still full at that point
+the snapshot is parked for the reader to take once it has drained the channel —
+nothing newer can be queued, since a reader behind is handed no output — and
+anything handed to it meanwhile makes the parked one stale and asks again. A
+snapshot that fails puts the reader back in step. A server that cannot snapshot
+a pane (psmux) keeps dropping the chunk.
 
 **Input**: `send-keys -H <hex>` through the connection's shared outbox,
 wrapped in a `ControlModeWriter` (implements `Write`), which encodes

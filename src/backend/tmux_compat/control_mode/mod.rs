@@ -81,6 +81,10 @@ pub enum PaneChunk {
     /// order, which is why it — and not the thread that asked — puts the
     /// snapshot into the pane's channel.
     Snapshot(Box<PaneSnapshot>),
+    /// A snapshot as [`Self::Snapshot`] is, for a reader whose output was
+    /// dropped for want of room: it replaces the grid the reader has, which
+    /// is missing whatever the dropped bytes drew (see `Resync`).
+    Resync(Box<PaneSnapshot>),
     /// The pane's window is now this size — see [`Notification::LayoutChange`].
     ///
     /// In this channel rather than beside it for the reason a snapshot is: the
@@ -356,8 +360,195 @@ pub(in crate::backend) fn title_seed_bytes(host_short: &str, title: &str) -> Vec
 pub const SIZED_BY: &str = concat!("#{?#{==:#{session_attached},1},,#{", sizer_option!(), "}}");
 
 /// Maps pane IDs to sync senders for multi-instance output broadcast.
-pub type PaneSendersMap = HashMap<String, Vec<SyncSender<PaneChunk>>>;
+pub type PaneSendersMap = HashMap<String, Vec<PaneSender>>;
 pub type PaneSendersMapShared = Arc<Mutex<PaneSendersMap>>;
+
+/// One reader of a pane: its channel, and — on a server that can snapshot a
+/// pane — how it is caught up after the channel overflowed (see `Resync`).
+pub struct PaneSender {
+    tx: SyncSender<PaneChunk>,
+    resync: Option<Arc<Resync>>,
+}
+
+impl From<SyncSender<PaneChunk>> for PaneSender {
+    /// A reader that is never caught up: output that finds its channel full
+    /// is lost.
+    fn from(tx: SyncSender<PaneChunk>) -> Self {
+        Self { tx, resync: None }
+    }
+}
+
+/// A reader that is still there to take what it is handed, or not.
+enum Sent {
+    Kept,
+    Gone,
+}
+
+/// How a reader whose channel overflowed gets back in step with its pane.
+///
+/// The reader thread must never block, so output that finds a pane's channel
+/// full is dropped. What follows a gap cannot be parsed onto the grid either:
+/// the gap may have cut an escape sequence, and the grid is missing whatever
+/// the dropped bytes drew. So a reader that lost a chunk is *behind*: it is
+/// handed no more output, and one snapshot is asked for. Its answer is
+/// spliced into the stream where it arrives, as a [`PaneChunk::Resync`] —
+/// exact at that byte, the way every spliced snapshot is — and output flows
+/// again behind it.
+///
+/// A channel can still be full when that answer comes. The snapshot is then
+/// *parked* here, and the reader takes it once it has drained its channel —
+/// nothing queued after the snapshot was taken can be in the channel, since
+/// a reader that is behind is handed no output. Anything else handed to it
+/// meanwhile, or any output the pane prints, makes the parked snapshot stale,
+/// and another one is asked for.
+pub(in crate::backend) struct Resync {
+    pane: String,
+    /// Rows of history a snapshot carries.
+    history: usize,
+    command_list_single_reply: bool,
+    /// Weak, so a reader's sender does not keep a closed connection's writer
+    /// thread waiting for lines.
+    outbox: Weak<Mutex<Outbox>>,
+    response_queue: Weak<Mutex<VecDeque<Waiter>>>,
+    /// Set only by the reader thread, which is the one that drops output, and
+    /// cleared under `state`'s lock. So that thread finds a reader in step
+    /// without taking a lock, which is every chunk of a pane's output.
+    behind: AtomicBool,
+    state: Mutex<ResyncState>,
+}
+
+#[derive(Default)]
+struct ResyncState {
+    /// A snapshot is asked for and not yet answered.
+    asked: bool,
+    /// A snapshot that found the channel full, for the reader to take.
+    parked: Option<Box<PaneSnapshot>>,
+}
+
+impl Resync {
+    fn is_behind(&self) -> bool {
+        self.behind.load(Ordering::Acquire)
+    }
+
+    /// Ask for a snapshot unless one is already on its way.
+    fn ask(&self, state: &mut ResyncState) {
+        if state.asked {
+            return;
+        }
+        let (Some(outbox), Some(queue)) = (self.outbox.upgrade(), self.response_queue.upgrade())
+        else {
+            return;
+        };
+        match ControlMode::enqueue_snapshot(
+            &outbox,
+            &queue,
+            self.command_list_single_reply,
+            &self.pane,
+            self.history,
+        ) {
+            Ok(()) => state.asked = true,
+            Err(e) => debug!(pane_id = %self.pane, "could not ask for a resync: {e:#}"),
+        }
+    }
+}
+
+impl PaneSender {
+    /// Hand output over without blocking. A reader that is behind takes none,
+    /// and output that finds the channel full puts it behind.
+    fn send_output(&self, chunk: PaneChunk) -> Sent {
+        // Only this thread puts a reader behind, so one seen in step is.
+        // `map_or(true, ..)`: `is_none_or` is newer than this crate's MSRV.
+        let in_step = self.resync.as_ref().map_or(true, |r| !r.is_behind());
+        let chunk = if in_step {
+            match self.tx.try_send(chunk) {
+                Ok(()) => return Sent::Kept,
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return Sent::Gone,
+                Err(std::sync::mpsc::TrySendError::Full(chunk)) => chunk,
+            }
+        } else {
+            chunk
+        };
+        let Some(resync) = &self.resync else {
+            debug!("Pane output channel full, dropping chunk");
+            return Sent::Kept;
+        };
+        let Ok(mut state) = resync.state.lock() else {
+            return Sent::Kept;
+        };
+        if !in_step && !resync.is_behind() {
+            // It took a parked snapshot since: in step again.
+            drop(state);
+            return self.send_output(chunk);
+        }
+        if in_step {
+            debug!(pane_id = %resync.pane, "Pane output channel full, dropping output until a snapshot catches it up");
+        }
+        resync.behind.store(true, Ordering::Release);
+        state.parked = None;
+        resync.ask(&mut state);
+        Sent::Kept
+    }
+
+    /// Hand over something that is not output, without blocking. Whether the
+    /// reader took it — or `Gone`.
+    fn send_event(&self, event: PaneChunk) -> Result<bool, ()> {
+        if let Some(resync) = self.resync.as_ref().filter(|r| r.is_behind()) {
+            if let Ok(mut state) = resync.state.lock() {
+                if state.parked.take().is_some() {
+                    resync.ask(&mut state);
+                }
+            }
+        }
+        match self.tx.try_send(event) {
+            Ok(()) => Ok(true),
+            Err(std::sync::mpsc::TrySendError::Full(_)) => Ok(false),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Err(()),
+        }
+    }
+
+    /// Hand over the answer to a spliced snapshot: as a resync to a reader
+    /// that is behind, parked when its channel has no room, and as a plain
+    /// snapshot to one in step. `None` for a snapshot that failed, which puts
+    /// a reader behind back in step — nothing will catch it up, and dropping
+    /// its output for good would be worse than the gap.
+    fn send_snapshot(&self, snapshot: Option<&PaneSnapshot>) -> Sent {
+        if let Some(resync) = self.resync.as_ref().filter(|r| r.is_behind()) {
+            let Ok(mut state) = resync.state.lock() else {
+                return Sent::Kept;
+            };
+            if resync.is_behind() {
+                state.asked = false;
+                let Some(snapshot) = snapshot else {
+                    resync.behind.store(false, Ordering::Release);
+                    return Sent::Kept;
+                };
+                let chunk = PaneChunk::Resync(Box::new(snapshot.clone()));
+                return match self.tx.try_send(chunk) {
+                    Ok(()) => {
+                        state.parked = None;
+                        resync.behind.store(false, Ordering::Release);
+                        Sent::Kept
+                    }
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        state.parked = Some(Box::new(snapshot.clone()));
+                        Sent::Kept
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Sent::Gone,
+                };
+            }
+        }
+        let Some(snapshot) = snapshot else {
+            return Sent::Kept;
+        };
+        match self
+            .tx
+            .try_send(PaneChunk::Snapshot(Box::new(snapshot.clone())))
+        {
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Sent::Gone,
+            _ => Sent::Kept,
+        }
+    }
+}
 
 /// Which window each registered pane lives in, so a window's closing can be
 /// turned into EOF for the readers of the panes that went with it.
@@ -545,6 +736,8 @@ pub struct ControlModeReader {
     buffer: Vec<u8>,
     pos: usize,
     size: PaneSize,
+    /// Where a snapshot that found this reader's channel full is parked.
+    resync: Option<Arc<Resync>>,
 }
 
 impl ControlModeReader {
@@ -554,7 +747,55 @@ impl ControlModeReader {
             buffer: Vec::new(),
             pos: 0,
             size: PaneSize::default(),
+            resync: None,
         }
+    }
+
+    /// The next chunk, blocking for it. A snapshot parked for this reader
+    /// ([`Resync`]) comes once the channel is drained, and is taken under the
+    /// lock it was parked under (see [`Self::take_parked`]), so one that finds
+    /// nothing parked can block: anything sent from then on lands in the
+    /// channel and wakes it.
+    fn next_chunk(&self) -> Result<PaneChunk, std::sync::mpsc::RecvError> {
+        let Some(resync) = &self.resync else {
+            return self.receiver.recv();
+        };
+        match self.receiver.try_recv() {
+            Ok(chunk) => return Ok(chunk),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err(std::sync::mpsc::RecvError)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        match self.take_parked(resync) {
+            Some(chunk) => chunk,
+            None => self.receiver.recv(),
+        }
+    }
+
+    /// The step of [`Self::next_chunk`] that runs under the lock a snapshot is
+    /// parked under: the next chunk, the parked snapshot once there is none,
+    /// or `None` when neither is there.
+    ///
+    /// The channel is looked at again under that lock. Between the reader
+    /// finding it empty and taking the lock, the reader thread can fill it,
+    /// overflow and park a snapshot; what it queued then is older than the
+    /// snapshot, and must not be parsed onto the grid the snapshot rebuilds.
+    fn take_parked(
+        &self,
+        resync: &Resync,
+    ) -> Option<Result<PaneChunk, std::sync::mpsc::RecvError>> {
+        let mut state = resync.state.lock().ok()?;
+        match self.receiver.try_recv() {
+            Ok(chunk) => return Some(Ok(chunk)),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Some(Err(std::sync::mpsc::RecvError))
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        let snapshot = state.parked.take()?;
+        resync.behind.store(false, Ordering::Release);
+        Some(Ok(PaneChunk::Resync(snapshot)))
     }
 
     /// Where this reader leaves the sizes tmux reports for its pane, for the
@@ -584,11 +825,23 @@ impl Read for ControlModeReader {
         // has been returned and none after it has, so the caller resizes its
         // grid at exactly the point in the stream tmux resized the pane.
         loop {
-            match self.receiver.recv() {
+            match self.next_chunk() {
                 Ok(PaneChunk::Snapshot(snapshot)) => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
-                        SnapshotArrived(snapshot),
+                        SnapshotArrived {
+                            snapshot,
+                            resync: false,
+                        },
+                    ))
+                }
+                Ok(PaneChunk::Resync(snapshot)) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        SnapshotArrived {
+                            snapshot,
+                            resync: true,
+                        },
                     ))
                 }
                 Ok(PaneChunk::Resized { rows, cols }) => {
@@ -1872,13 +2125,13 @@ impl ControlMode {
         let mut all = true;
         let mut gone = Vec::new();
         for (i, tx) in tx_vec.iter().enumerate() {
-            match tx.try_send(event.clone()) {
-                Ok(()) => {}
-                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+            match tx.send_event(event.clone()) {
+                Ok(true) => {}
+                Ok(false) => {
                     debug!(pane_id = %pane_id, "Pane channel full, dropping an event");
                     all = false;
                 }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => gone.push(i),
+                Err(()) => gone.push(i),
             }
         }
         if !gone.is_empty() {
@@ -1908,15 +2161,10 @@ impl ControlMode {
 
     /// Broadcast a `%output` payload to every reader registered for `pane_id`.
     ///
-    /// Uses `try_send` so the reader thread never blocks: a full channel drops
-    /// the chunk rather than stalling (which would deadlock `%pause` handling).
+    /// Never blocks, which would deadlock `%pause` handling: a reader whose
+    /// channel is full loses the chunk, and is caught up by a snapshot
+    /// ([`Resync`]) where its server can take one.
     fn dispatch_output(pane_senders: &PaneSendersMapShared, pane_id: &str, data: Vec<u8>) {
-        Self::dispatch(pane_senders, pane_id, PaneChunk::Output(data));
-    }
-
-    /// Hand `chunk` to every reader registered for `pane_id`, never blocking —
-    /// see [`Self::dispatch_output`].
-    fn dispatch(pane_senders: &PaneSendersMapShared, pane_id: &str, chunk: PaneChunk) {
         let Ok(mut senders) = pane_senders.lock() else {
             return;
         };
@@ -1926,25 +2174,45 @@ impl ControlMode {
         // Single-sender is the dominant case (one reader per pane): move the
         // chunk into it instead of cloning. Only fan-out (multiple registered
         // instances) pays for a clone.
-        let mut chunk = Some(chunk);
+        let mut data = Some(data);
         let mut gone = Vec::new();
         for (i, tx) in tx_vec.iter().enumerate() {
             let this = if i + 1 == tx_vec.len() {
-                chunk.take()
+                data.take()
             } else {
-                chunk.clone()
+                data.clone()
             };
             let Some(this) = this else {
                 break;
             };
-            match tx.try_send(this) {
-                Ok(()) => {}
-                Err(std::sync::mpsc::TrySendError::Full(_dropped)) => {
-                    debug!(pane_id = %pane_id, "Pane output channel full, dropping chunk");
-                }
-                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => gone.push(i),
+            if let Sent::Gone = tx.send_output(PaneChunk::Output(this)) {
+                gone.push(i);
             }
         }
+        if !gone.is_empty() {
+            Self::prune_senders(&mut senders, pane_id, &gone);
+        }
+    }
+
+    /// Hand the answer to a spliced snapshot of `pane_id` — `None` when it
+    /// failed — to every reader of it ([`PaneSender::send_snapshot`]).
+    fn dispatch_snapshot(
+        pane_senders: &PaneSendersMapShared,
+        pane_id: &str,
+        snapshot: Option<&PaneSnapshot>,
+    ) {
+        let Ok(mut senders) = pane_senders.lock() else {
+            return;
+        };
+        let Some(tx_vec) = senders.get(pane_id) else {
+            return;
+        };
+        let gone: Vec<usize> = tx_vec
+            .iter()
+            .enumerate()
+            .filter(|(_, tx)| matches!(tx.send_snapshot(snapshot), Sent::Gone))
+            .map(|(i, _)| i)
+            .collect();
         if !gone.is_empty() {
             Self::prune_senders(&mut senders, pane_id, &gone);
         }
@@ -1989,10 +2257,11 @@ impl ControlMode {
         // Here, on this thread, and before the next line is read: every
         // `%output` ahead of this answer has been handed to the pane already and
         // none behind it has, which is the one place the snapshot is exact.
-        if let (false, Some(pane)) = (is_error, &answer.waiter.splice) {
-            if let Some(snapshot) = parse_snapshot(answer.blocks.clone()) {
-                Self::dispatch(pane_senders, pane, PaneChunk::Snapshot(Box::new(snapshot)));
-            }
+        if let Some(pane) = &answer.waiter.splice {
+            let snapshot = (!is_error)
+                .then(|| parse_snapshot(answer.blocks.clone()))
+                .flatten();
+            Self::dispatch_snapshot(pane_senders, pane, snapshot.as_ref());
         }
         let _ = answer.waiter.tx.send(Ok(CommandResponse {
             blocks: answer.blocks,
@@ -2440,16 +2709,34 @@ impl ControlMode {
     /// put into the pane's own output stream as a [`PaneChunk::Snapshot`], at
     /// the byte it describes, for that pane's reader to take up in order.
     pub(in crate::backend) fn request_snapshot(&self, pane_id: &str, history: usize) -> Result<()> {
-        let cmds = if self.command_list_single_reply {
+        Self::enqueue_snapshot(
+            &self.outbox,
+            &self.response_queue,
+            self.command_list_single_reply,
+            pane_id,
+            history,
+        )
+    }
+
+    /// [`Self::request_snapshot`], for the reader thread as well
+    /// ([`Resync::ask`]).
+    fn enqueue_snapshot(
+        outbox: &SharedOutbox,
+        response_queue: &ResponseQueue,
+        command_list_single_reply: bool,
+        pane_id: &str,
+        history: usize,
+    ) -> Result<()> {
+        let cmds = if command_list_single_reply {
             snapshot_commands_one_block(pane_id, history, true)
         } else {
             snapshot_commands(pane_id, history, true)
         };
         Self::enqueue_command_on(
-            &self.outbox,
-            &self.response_queue,
+            outbox,
+            response_queue,
             &cmds.join(" ; "),
-            if self.command_list_single_reply {
+            if command_list_single_reply {
                 1
             } else {
                 cmds.len()
@@ -2457,6 +2744,32 @@ impl ControlMode {
             Some(pane_id.to_string()),
         )
         .map(drop)
+    }
+
+    /// A new reader of `pane_id`: the sender to register for it, and the
+    /// reader. `resync_history` is the rows of history a snapshot that catches
+    /// it up carries, when its server can take one ([`Resync`]); without, its
+    /// output is lost when its channel is full.
+    pub(in crate::backend) fn pane_channel(
+        &self,
+        pane_id: &str,
+        resync_history: Option<usize>,
+    ) -> (PaneSender, ControlModeReader) {
+        let (tx, rx) = sync_channel(PANE_CHANNEL_CAPACITY);
+        let mut reader = ControlModeReader::new(rx);
+        let resync = resync_history.map(|history| {
+            Arc::new(Resync {
+                pane: pane_id.to_string(),
+                history,
+                command_list_single_reply: self.command_list_single_reply,
+                outbox: Arc::downgrade(&self.outbox),
+                response_queue: Arc::downgrade(&self.response_queue),
+                behind: AtomicBool::new(false),
+                state: Mutex::default(),
+            })
+        });
+        reader.resync = resync.clone();
+        (PaneSender { tx, resync }, reader)
     }
 
     /// Ask for a [`PaneSnapshot`] of `pane_id` as unstyled text, handed back to

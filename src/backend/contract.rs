@@ -182,7 +182,13 @@ pub struct PaneSnapshot {
 /// A reader that does not know about snapshots simply retries, as `Interrupted`
 /// asks.
 #[derive(Debug)]
-pub struct SnapshotArrived(pub Box<PaneSnapshot>);
+pub struct SnapshotArrived {
+    pub snapshot: Box<PaneSnapshot>,
+    /// Whether the reader's output was dropped for want of room, so the grid
+    /// it has is missing what the dropped bytes drew and this replaces it.
+    /// Otherwise the snapshot only rebuilds a grid that was dropped.
+    pub resync: bool,
+}
 
 impl std::fmt::Display for SnapshotArrived {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -193,15 +199,15 @@ impl std::fmt::Display for SnapshotArrived {
 impl std::error::Error for SnapshotArrived {}
 
 impl SnapshotArrived {
-    /// The snapshot an error carries, if it is one of these.
-    pub fn take(err: std::io::Error) -> Option<Box<PaneSnapshot>> {
+    /// What an error carries, if it is one of these.
+    pub fn take(err: std::io::Error) -> Option<Self> {
         if err.kind() != std::io::ErrorKind::Interrupted {
             return None;
         }
         err.into_inner()?
             .downcast::<SnapshotArrived>()
             .ok()
-            .map(|arrived| arrived.0)
+            .map(|arrived| *arrived)
     }
 }
 
