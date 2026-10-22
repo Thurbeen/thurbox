@@ -59,8 +59,16 @@ function Invoke-Tbx([string[]]$a) {
     return [pscustomobject]@{ code = $LASTEXITCODE; out = $out; err = (Get-Content -Raw "$run/last-cli-stderr") }
 }
 function Get-Windows {
+    # A listing that failed is not an empty one: the checks reading it would
+    # pass without proving anything.
     $ErrorActionPreference='Continue'
-    @(& psmux -L $socket list-windows -a -F '#{window_name}' 2> $null | ForEach-Object { $_.Trim() })
+    $names=@(& psmux -L $socket list-windows -a -F '#{window_name}' 2> $null | ForEach-Object { $_.Trim() })
+    $code=$LASTEXITCODE
+    $ErrorActionPreference='Stop'
+    if ($code -ne 0 -or @($names | Where-Object { $_ -like 'ERROR:*' }).Count -gt 0) {
+        throw "listing the windows failed (exit $code): $($names -join ' | ')"
+    }
+    $names
 }
 function Wait-Line([string]$name, [string]$text) {
     $deadline=[DateTime]::UtcNow.AddSeconds(20)
@@ -92,8 +100,15 @@ try {
         $session = if ($version -eq '0.0.0-dev') { 'thurbox-dev' } else { 'thurbox' }
         $old = (Resolve-Path "$ServerPsmuxDir/psmux.exe").Path
         & $old -L $socket new-session -d -s $session 2>&1 | Out-Null
-        $ErrorActionPreference='Stop'
+        $started=$LASTEXITCODE
         Start-Sleep -Seconds 6
+        # The older server must be the one running, or a later command starts
+        # a newer one and the run tests another scenario than it names.
+        $listed=@(& $old -L $socket list-sessions -F '#{session_name}' 2> $null | ForEach-Object { $_.Trim() })
+        $ErrorActionPreference='Stop'
+        if ($started -ne 0 -or $listed -notcontains $session) {
+            throw "the older psmux did not start session $session (exit $started; sessions: $($listed -join ', '))"
+        }
         $mux = "server " + ((& $old -V) -join ' ') + ", client $mux"
         Write-Output "running: $mux"
     }
@@ -134,12 +149,15 @@ try {
         }
     }
     $before=Get-Windows
+    foreach ($window in @('tb-route-a','tb-route-b','tb-route-c')) {
+        if ($before -notcontains $window) { throw "$window was not listed before the stop: $($before -join ', ')" }
+    }
     $r=Invoke-Tbx @('session','stop',$sessions['route-b'])
     Start-Sleep -Seconds 3
     $after=Get-Windows
     if ($after -contains 'tb-route-b') { $failures+="stopping route-b left its window ($($r.out) $($r.err))" }
     foreach ($kept in @('tb-route-a','tb-route-c')) {
-        if ($before -contains $kept -and $after -notcontains $kept) { $failures+="stopping route-b killed $kept" }
+        if ($after -notcontains $kept) { $failures+="stopping route-b killed $kept" }
     }
     # With no server left, a key has nowhere to go: refused as absent, never
     # held up by the version question that finds nothing to ask.
