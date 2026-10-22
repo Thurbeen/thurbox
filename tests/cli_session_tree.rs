@@ -191,9 +191,17 @@ fn tree_of_the_deleted_list_is_refused() {
         .env_remove("THURBOX_SOCKET_FOR")
         .output()
         .expect("run thurbox-cli");
+    // A usage error naming the conflict, not just any failure: a database
+    // error would also exit non-zero and hide a dropped conflict.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(2), "{stdout}");
+    let error: Value = serde_json::from_str(&stdout).expect("a JSON error");
+    assert_eq!(error["error_kind"], "usage", "{stdout}");
     assert!(
-        !out.status.success(),
-        "--deleted --tree must not succeed: {}",
-        String::from_utf8_lossy(&out.stdout)
+        error["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("--tree"),
+        "{stdout}"
     );
 }
