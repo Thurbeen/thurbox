@@ -35,8 +35,8 @@ pub enum Action {
     /// unless its settings carry `crossSessionInbound: accept`; the socket
     /// accepts the body either way. The result then says `may_hold: true`, a
     /// fact about the route: thurbox cannot see whether a dialog was shown or
-    /// answered. The mailbox row stays readable with `message inbox`
-    /// regardless.
+    /// answered. A delivered row is marked read, so `message inbox --all`
+    /// still shows it while it waits.
     Send {
         /// Recipient session (UUID or name).
         #[arg(long)]

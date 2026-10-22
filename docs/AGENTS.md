@@ -207,7 +207,8 @@ Code can then hold it behind an approval dialog, notably in
 send reports `delivered_via: "claude-socket"` with `may_hold: true`, and the
 text output says the message may wait on a prompt. `may_hold` describes the
 route: thurbox cannot see the recipient's permission mode or whether a dialog
-was shown. The mailbox row stays readable with `message inbox` either way.
+was shown. A delivered row is marked read, so it shows under
+`message inbox --all`, not plain `message inbox`.
 
 Thurbox does not set `crossSessionInbound` itself: accepting cross-session
 prompts with no dialog lets any peer session drive the recipient, which is a
@@ -457,9 +458,11 @@ different name (e.g. a rebranded-claude CLI called `fleet`): set `hook_schema =
 Only the per-arg-patch families (`claude`, `aider`) need it; the config-dir
 agents (codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own config
 dir, so a rebrand sharing that dir already reports without it. The info
-panel's account usage follows the same claim: an agent with `hook_schema` naming
-`claude`, `codex` or `antigravity` shows that family's usage, read with the same
-credentials as the built-in on that host. See
+panel's account usage follows the same claim for a session on this machine: an
+agent with `hook_schema` naming `claude`, `codex` or `antigravity` shows that
+family's usage, read with the same credentials as the built-in. A session on a
+remote host is matched by its name alone, since a host running its own CLI
+launches from its own definitions. See
 [CONFIG.md](CONFIG.md#agentstoml) and the `AgentDef.hook_schema` doc comment.
 
 ## Adding a new built-in agent

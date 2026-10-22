@@ -102,9 +102,9 @@ pub struct Metrics {
     resources: HashMap<String, SessionResources>,
     agents: HashMap<String, AgentMetrics>,
     usage: HashMap<UsageKey, AgentUsage>,
-    /// Each agent name's usage family as of the last fetch, so [`Self::usage`]
-    /// can be asked by the name a row carries.
-    families: HashMap<String, &'static str>,
+    /// Each (agent name, host) scope's usage family as of the last fetch, so
+    /// [`Self::usage`] can be asked by the name a row carries.
+    families: HashMap<(String, Option<String>), &'static str>,
     /// Parked between samples so CPU deltas survive. `None` while a worker has
     /// it, which is also what keeps a second sample from starting.
     collector: Option<Box<sysinfo::System>>,
@@ -160,12 +160,13 @@ impl Metrics {
     /// the last fetch shows the usage already held for it; a custom name is
     /// learned at the next fetch.
     pub fn usage(&self, agent: &str, host: Option<&str>) -> Option<&AgentUsage> {
+        let host = host.map(str::to_string);
         let family = self
             .families
-            .get(agent)
+            .get(&(agent.to_string(), host.clone()))
             .copied()
             .or_else(|| crate::usage::family(agent, None))?;
-        self.usage.get(&(family, host.map(str::to_string)))
+        self.usage.get(&(family, host))
     }
 
     /// Whether the next [`Self::sample`] would actually start work — the
@@ -262,20 +263,25 @@ impl Metrics {
         let (hosts, _warnings) = crate::agent::host_config::cached_registry();
         // The generation the interface already adopted (no file read there);
         // a custom agent's `hook_schema` names the family whose usage it reads.
+        // Only for a local session: a host that runs its own CLI launches from
+        // its own definitions, which may give the same name another family, so
+        // a remote session is matched by its name alone.
         let agents = crate::agent::agent_config::load_for_launch();
         self.families = subjects
             .iter()
             .filter_map(|subject| {
                 let schema = agents
                     .get(&subject.agent)
+                    .filter(|_| subject.host.is_none())
                     .and_then(|def| def.hook_schema.as_deref());
                 crate::usage::family(&subject.agent, schema)
-                    .map(|family| (subject.agent.clone(), family))
+                    .map(|family| ((subject.agent.clone(), subject.host.clone()), family))
             })
             .collect();
         let mut planned: std::collections::HashSet<UsageKey> = std::collections::HashSet::new();
         for subject in subjects {
-            let Some(&family) = self.families.get(&subject.agent) else {
+            let scope = (subject.agent.clone(), subject.host.clone());
+            let Some(&family) = self.families.get(&scope) else {
                 continue;
             };
             let key: UsageKey = (family, subject.host.clone());

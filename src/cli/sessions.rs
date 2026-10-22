@@ -1048,35 +1048,37 @@ fn run_list_active(
         .map(|reference| resolve(db, reference).map(|s| s.id))
         .transpose()?;
     let mut sessions: Vec<SharedSession> = keys.rows(db)?;
-    let mut placed: Vec<(usize, usize)> = match parent_id {
-        None => session_forest(&sessions, None),
-        Some(parent) => {
-            // Descendants are found over every active row, not only the keyed
-            // ones, so a child reached through an unkeyed session is still
-            // found; the key filter applies to what is listed. The walk is
-            // rooted at the parent itself, which is then left out: depth 0 is
-            // a direct child of `--parent`.
-            let keyed: std::collections::HashSet<SessionId> =
-                sessions.iter().map(|s| s.id).collect();
-            sessions = db
-                .list_active_sessions()
-                .map_err(|e| format!("list_active_sessions: {e}"))?;
-            let forest = session_forest(&sessions, Some(parent));
-            let start = forest
-                .iter()
-                .position(|&(index, _)| sessions[index].id == parent);
-            match start {
-                Some(start) => forest[start + 1..]
+    if let Some(parent) = parent_id {
+        // Descendants are found over every active row, not only the keyed
+        // ones, so a child reached through an unkeyed session is still found.
+        // The walk is rooted at the parent itself, which is then left out.
+        let keyed: std::collections::HashSet<SessionId> = sessions.iter().map(|s| s.id).collect();
+        let all = db
+            .list_active_sessions()
+            .map_err(|e| format!("list_active_sessions: {e}"))?;
+        let forest = session_forest(&all, Some(parent));
+        let selected: std::collections::HashSet<SessionId> = forest
+            .iter()
+            .position(|&(index, _)| all[index].id == parent)
+            .map(|start| {
+                forest[start + 1..]
                     .iter()
                     .take_while(|&&(_, depth)| depth > 0)
-                    .map(|&(index, depth)| (index, depth - 1))
-                    .filter(|&(_, depth)| shape.recursive || depth == 0)
-                    .filter(|&(index, _)| keyed.contains(&sessions[index].id))
-                    .collect(),
-                None => Vec::new(),
-            }
-        }
-    };
+                    .filter(|&&(_, depth)| shape.recursive || depth == 1)
+                    .map(|&(index, _)| all[index].id)
+                    .filter(|id| keyed.contains(id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        sessions = all
+            .into_iter()
+            .filter(|s| selected.contains(&s.id))
+            .collect();
+    }
+    // The tree is drawn over the rows actually listed, so a row whose parent
+    // was filtered out — `--parent` itself, or an unkeyed row between — is a
+    // root rather than indented under a row that is not its parent.
+    let mut placed = session_forest(&sessions, None);
     if !shape.tree {
         placed.sort_by_key(|&(index, _)| index);
     }

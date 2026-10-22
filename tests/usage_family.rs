@@ -23,17 +23,15 @@ fn subject(session: &str, agent: &str) -> Subject {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_custom_agent_asserting_claude_reads_claude_usage() {
-    let home = tempfile::tempdir().expect("tempdir");
-    thurbox::paths::set_test_dir(home.path());
-    std::env::set_var(thurbox::paths::CONFIG_DIR_OVERRIDE_ENV, home.path());
-    std::env::set_var(thurbox::paths::DATA_DIR_OVERRIDE_ENV, home.path());
+fn isolate(home: &std::path::Path) {
+    thurbox::paths::set_test_dir(home);
+    std::env::set_var(thurbox::paths::CONFIG_DIR_OVERRIDE_ENV, home);
+    std::env::set_var(thurbox::paths::DATA_DIR_OVERRIDE_ENV, home);
     // No credentials anywhere: the fetch answers "not logged in" locally.
-    std::env::set_var("HOME", home.path());
-    std::env::set_var("CLAUDE_CONFIG_DIR", home.path().join("claude"));
+    std::env::set_var("HOME", home);
+    std::env::set_var("CLAUDE_CONFIG_DIR", home.join("claude"));
     std::fs::write(
-        home.path().join("agents.toml"),
+        home.join("agents.toml"),
         r#"
 [[agents]]
 name = "claude-work"
@@ -46,15 +44,25 @@ command = "mine"
 "#,
     )
     .expect("write agents.toml");
+}
 
-    let mut metrics = Metrics::new();
-    metrics.sample(vec![subject("a", "claude-work"), subject("b", "mine")]);
-
+/// Poll until `done` holds or a deadline passes, folding fetches in.
+async fn settle(metrics: &mut Metrics, done: impl Fn(&Metrics) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while metrics.usage("claude-work", None).is_none() && Instant::now() < deadline {
+    while !done(metrics) && Instant::now() < deadline {
         metrics.poll();
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_custom_agent_asserting_claude_reads_claude_usage() {
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate(home.path());
+
+    let mut metrics = Metrics::new();
+    metrics.sample(vec![subject("a", "claude-work"), subject("b", "mine")]);
+    settle(&mut metrics, |m| m.usage("claude-work", None).is_some()).await;
 
     let usage = metrics
         .usage("claude-work", None)
@@ -70,4 +78,32 @@ command = "mine"
     // The family's own name reads the same fetch.
     assert_eq!(metrics.usage("claude", None), Some(usage));
     assert!(metrics.usage("mine", None).is_none());
+}
+
+/// A remote host launches its agents from its own definitions, so this
+/// machine's `hook_schema` says nothing about a session there: a custom name
+/// on a host gets no family, as before family matching existed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_remote_custom_agent_does_not_borrow_the_local_family() {
+    let home = tempfile::tempdir().expect("tempdir");
+    isolate(home.path());
+
+    let mut metrics = Metrics::new();
+    let mut remote = subject("r", "claude-work");
+    remote.host = Some("elsewhere".into());
+    let mut builtin = subject("b", "claude");
+    builtin.host = Some("elsewhere".into());
+    metrics.sample(vec![remote, builtin]);
+    settle(&mut metrics, |m| {
+        m.usage("claude", Some("elsewhere")).is_some()
+    })
+    .await;
+
+    // The built-in name on the host still has its usage scope (here: a host
+    // with no definition, reported as such).
+    assert!(metrics.usage("claude", Some("elsewhere")).is_some());
+    assert!(
+        metrics.usage("claude-work", Some("elsewhere")).is_none(),
+        "a remote custom agent must not read a family from local agents.toml"
+    );
 }

@@ -205,3 +205,29 @@ fn tree_of_the_deleted_list_is_refused() {
         "{stdout}"
     );
 }
+
+/// A key filter can hide a row between a listed child and `--parent`: the
+/// listed row is then at the top of what is shown, not indented under a row
+/// that is not its parent.
+#[test]
+fn a_key_filtered_subtree_does_not_nest_under_a_hidden_parent() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = isolate(home.path());
+    let lead = seed(&db, "lead", None, 0);
+    let hidden = seed(&db, "hidden", Some(lead), 1);
+    let direct = seed(&db, "direct", Some(lead), 2);
+    let visible = seed(&db, "visible", Some(hidden), 3);
+    for (id, key) in [(direct, "k.direct"), (visible, "k.visible")] {
+        let mut row = db.get_session_by_id(id).expect("read").expect("row");
+        row.key = Some(key.into());
+        db.upsert_session(&row).expect("key the row");
+    }
+
+    let lead = lead.to_string();
+    let args = ["--parent", &lead, "--recursive", "--key-prefix", "k."];
+    assert_eq!(
+        rows(&[&args[..], &["--tree"]].concat()),
+        named(&[("direct", 0), ("visible", 0)])
+    );
+    assert_eq!(rows(&args), named(&[("direct", 0), ("visible", 0)]));
+}
