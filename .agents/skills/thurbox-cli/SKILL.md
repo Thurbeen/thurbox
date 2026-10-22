@@ -842,7 +842,8 @@ parent must be an existing active session — validated before any side effects)
 `session list --tree` orders rows as the sidebar nests them (children under their
 parent, siblings and roots in manual order, a row whose parent is not listed at
 the top level) and indents the text table; every `session list` JSON row carries
-`depth` (0 for a root, or for a direct child of `--parent`). The walk
+`depth` (0 for a row whose parent is not listed: a root, a direct child of
+`--parent`, or a row whose parent a `--key`/`--key-prefix` filter left out). The walk
 (`cli::sessions::session_forest`) visits each row once, so a parent-id cycle
 lists every member rather than hanging or dropping one. Unlike the sidebar it
 does not group by repo. The link is **purely

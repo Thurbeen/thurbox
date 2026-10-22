@@ -461,8 +461,9 @@ dir, so a rebrand sharing that dir already reports without it. The info
 panel's account usage follows the same claim for a session on this machine: an
 agent with `hook_schema` naming `claude`, `codex` or `antigravity` shows that
 family's usage, read with the same credentials as the built-in. A session on a
-remote host is matched by its name alone, since a host running its own CLI
-launches from its own definitions. See
+remote host is matched by its name alone, whether or not that host runs its own
+CLI: one that does launches from its own definitions, and the usage lookup does
+not tell the two kinds of host apart. See
 [CONFIG.md](CONFIG.md#agentstoml) and the `AgentDef.hook_schema` doc comment.
 
 ## Adding a new built-in agent
