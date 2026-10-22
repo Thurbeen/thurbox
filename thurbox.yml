@@ -522,6 +522,8 @@ globals:
     property: read-only
   thurbox.theme.roles.selection_fg:
     property: read-only
+  thurbox.theme.roles.status_background:
+    property: read-only
   thurbox.theme.roles.status_blocked:
     property: read-only
   thurbox.theme.roles.status_done:

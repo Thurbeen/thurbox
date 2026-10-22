@@ -296,18 +296,77 @@ fn parse_session_signal_accepts_state_and_rejects_garbage() {
     let cli =
         Cli::try_parse_from(["thurbox-cli", "session", "signal", "--state", "blocked"]).unwrap();
     let Command::Session {
-        action: sessions::Action::Signal { state, session },
+        action: sessions::Action::Signal { state, session, .. },
     } = subcommand(cli)
     else {
         panic!("expected Session::Signal");
     };
-    assert_eq!(state, "blocked");
+    assert_eq!(state.as_deref(), Some("blocked"));
     assert_eq!(session, None);
 
     // The value_parser allow-list rejects unknown states.
     assert!(
         Cli::try_parse_from(["thurbox-cli", "session", "signal", "--state", "exploded",]).is_err()
     );
+}
+
+#[test]
+fn parse_session_signal_takes_a_state_or_one_work_edge() {
+    let cli =
+        Cli::try_parse_from(["thurbox-cli", "session", "signal", "--state", "background"]).unwrap();
+    let Command::Session {
+        action: sessions::Action::Signal { state, .. },
+    } = subcommand(cli)
+    else {
+        panic!("expected Session::Signal");
+    };
+    assert_eq!(state.as_deref(), Some("background"));
+
+    let cli =
+        Cli::try_parse_from(["thurbox-cli", "session", "signal", "--work-start", "a1"]).unwrap();
+    let Command::Session {
+        action: sessions::Action::Signal {
+            state, work_start, ..
+        },
+    } = subcommand(cli)
+    else {
+        panic!("expected Session::Signal");
+    };
+    assert_eq!(state, None);
+    assert_eq!(work_start.as_deref(), Some("a1"));
+
+    for argv in [
+        &["thurbox-cli", "session", "signal"][..],
+        &[
+            "thurbox-cli",
+            "session",
+            "signal",
+            "--state",
+            "done",
+            "--work-end",
+            "a1",
+        ],
+        &[
+            "thurbox-cli",
+            "session",
+            "signal",
+            "--work-start",
+            "a1",
+            "--work-end",
+            "a1",
+        ],
+        &[
+            "thurbox-cli",
+            "session",
+            "signal",
+            "--work-end",
+            "a1",
+            "--work",
+            "a1",
+        ],
+    ] {
+        assert!(Cli::try_parse_from(argv).is_err(), "{argv:?} parsed");
+    }
 }
 
 #[test]

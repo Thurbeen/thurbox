@@ -301,7 +301,7 @@ pub(super) fn doom_palette() -> ThemePalette {
     let surface = Color::Rgb(0x2A, 0x0F, 0x12);
     let bg_dark = Color::Rgb(0x1A, 0x08, 0x0A);
     let highlight = Color::Rgb(0x40, 0x15, 0x1E);
-    PaletteSlots {
+    let mut palette = PaletteSlots {
         accent: bright_red,
         accent_bright: bright_green,
         green: bright_green,
@@ -323,7 +323,12 @@ pub(super) fn doom_palette() -> ThemePalette {
         modal_border: bright_red,
         base_bg: bg_dark,
     }
-    .build()
+    .build();
+    // `status_background` is `role_name` by default, but its `role_name` is the
+    // accent `running` wears, and red besides; a violet the palette otherwise
+    // lacks keeps `background` apart from both.
+    palette.status_background = Color::Rgb(0xB0, 0x6C, 0xFF);
+    palette
 }
 
 pub(super) fn nord_palette() -> ThemePalette {
@@ -456,7 +461,7 @@ pub(super) fn rose_pine_moon_palette() -> ThemePalette {
     let highlight_med = Color::Rgb(0x44, 0x41, 0x5A);
     let surface = Color::Rgb(0x2A, 0x27, 0x3F);
     let base = Color::Rgb(0x23, 0x21, 0x36);
-    PaletteSlots {
+    let mut palette = PaletteSlots {
         accent: iris,
         accent_bright: rose,
         green: foam,
@@ -478,7 +483,11 @@ pub(super) fn rose_pine_moon_palette() -> ThemePalette {
         modal_border: iris,
         base_bg: base,
     }
-    .build()
+    .build();
+    // `status_background` is `role_name` by default, but `role_name` is iris, the
+    // accent `running` wears.
+    palette.status_background = rose;
+    palette
 }
 
 pub(super) fn everforest_palette() -> ThemePalette {
@@ -1039,7 +1048,7 @@ pub(super) fn iceberg_palette() -> ThemePalette {
     let line = Color::Rgb(0x3E, 0x44, 0x51);
     let surface = Color::Rgb(0x1E, 0x21, 0x32);
     let bg = Color::Rgb(0x16, 0x18, 0x21);
-    PaletteSlots {
+    let mut palette = PaletteSlots {
         accent: blue,
         accent_bright: cyan,
         green,
@@ -1061,7 +1070,12 @@ pub(super) fn iceberg_palette() -> ThemePalette {
         modal_border: blue,
         base_bg: bg,
     }
-    .build()
+    .build();
+    // `status_background` is `role_name` by default, but its purple sits too close
+    // to the blue `done` and `running` wear; a lighter lilac keeps the hue and the
+    // distance.
+    palette.status_background = Color::Rgb(0xB8, 0x9C, 0xE6);
+    palette
 }
 
 pub(super) fn vesper_palette() -> ThemePalette {
@@ -1307,7 +1321,7 @@ pub(super) fn rose_pine_dawn_palette() -> ThemePalette {
     let highlight_med = Color::Rgb(0xDF, 0xDA, 0xD9);
     let surface = Color::Rgb(0xFF, 0xFA, 0xF3);
     let base = Color::Rgb(0xFA, 0xF4, 0xED);
-    PaletteSlots {
+    let mut palette = PaletteSlots {
         accent: iris,
         accent_bright: rose,
         green: foam,
@@ -1329,7 +1343,11 @@ pub(super) fn rose_pine_dawn_palette() -> ThemePalette {
         modal_border: iris,
         base_bg: base,
     }
-    .build()
+    .build();
+    // `status_background` is `role_name` by default, but `role_name` is iris, the
+    // accent `running` wears.
+    palette.status_background = rose;
+    palette
 }
 
 pub(super) fn github_light_palette() -> ThemePalette {

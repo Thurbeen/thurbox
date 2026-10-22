@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
+use crate::session::background_work::WorkEdge;
 use crate::session::SessionId;
 use crate::storage::Database;
 use crate::sync::SharedSession;
@@ -584,9 +585,15 @@ pub enum Action {
     /// Report an agent lifecycle transition (called from an agent hook).
     ///
     /// Records the session's state so the TUI can render it (working/blocked/
-    /// done/idle) — works headless; the TUI picks it up via its data_version
-    /// poll. Identity defaults to the calling session ($THURBOX_SESSION,
-    /// injected at spawn), so an agent hook passes no id.
+    /// done/idle/background) — works headless; the TUI picks it up via its
+    /// data_version poll. Identity defaults to the calling session
+    /// ($THURBOX_SESSION, injected at spawn), so an agent hook passes no id.
+    ///
+    /// Sub-work a turn starts and may outlive (claude's background subagents)
+    /// is reported by its edges, `--work-start <id>` and `--work-end <id>`. A
+    /// `done` while any is in flight is stored as `background`, and the end of
+    /// the last one stores `done`. A turn start (`--turn-start`) or `--state
+    /// idle` forgets work whose end never came.
     ///
     /// This is a **supported integration point**, not an internal of the hooks
     /// extension: $THURBOX_SESSION is set on the pane and inherited by every
@@ -597,9 +604,33 @@ pub enum Action {
     /// launch the agent with so that its hooks exist to do the reporting.
     Signal {
         /// The reported state. `idle` = agent ready/at-rest (e.g. a fresh
-        /// session boot); `done` = a turn just finished (shows until you look).
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(crate::session::HOOK_STATES))]
-        state: String,
+        /// session boot); `done` = a turn just finished (shows until you look);
+        /// `background` = the turn is at rest and sub-work it started is still
+        /// running.
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(crate::session::HOOK_STATES),
+            required_unless_present_any = ["work_start", "work_end"],
+            conflicts_with_all = ["work_start", "work_end"])]
+        state: Option<String>,
+        /// Sub-work `<ID>` started; the turn it belongs to ends as
+        /// `background` while it runs.
+        #[arg(long, value_name = "ID", conflicts_with = "work_end")]
+        work_start: Option<String>,
+        /// Sub-work `<ID>` ended; the end of the last one moves a `background`
+        /// session to `done`.
+        #[arg(long, value_name = "ID")]
+        work_end: Option<String>,
+        /// The sub-work this `--state` report comes from, so a subagent's own
+        /// activity keeps a resting turn `background` rather than starting a
+        /// new one. Defaults to $THURBOX_SIGNAL_WORK, which a hook can set on
+        /// the command without changing its arguments.
+        #[arg(long, value_name = "ID", requires = "state",
+            conflicts_with_all = ["work_start", "work_end"])]
+        work: Option<String>,
+        /// This `--state working` starts a turn (a prompt was submitted): it
+        /// forgets sub-work earlier turns left counted. Defaults to
+        /// $THURBOX_SIGNAL_TURN=start, for the same reason as --work.
+        #[arg(long, requires = "state", conflicts_with_all = ["work_start", "work_end", "work"])]
+        turn_start: bool,
         /// Override the calling session (UUID). Defaults to $THURBOX_SESSION,
         /// then a lookup by the agent conversation id ($THURBOX_SESSION_ID).
         #[arg(long)]
@@ -820,7 +851,36 @@ pub fn run(
         } => run_set_key(db, &session, key.as_deref().filter(|_| !clear)),
         Action::Meta { action } => run_meta(action, db),
         Action::Doctor { uuid } => super::session_doctor::run(db, backends, uuid.as_deref()),
-        Action::Signal { state, session } => run_signal(db, backends, state, session),
+        Action::Signal {
+            state,
+            work_start,
+            work_end,
+            work,
+            turn_start,
+            session,
+        } => {
+            let report = match (state, work_start, work_end) {
+                (Some(state), _, _) => SignalReport::State {
+                    state,
+                    work: work.or_else(|| {
+                        std::env::var(SIGNAL_WORK_ENV)
+                            .ok()
+                            .filter(|id| !id.is_empty())
+                    }),
+                    turn_start: turn_start
+                        || std::env::var(SIGNAL_TURN_ENV).is_ok_and(|v| v == "start"),
+                },
+                (None, Some(id), _) => SignalReport::Work(WorkEdge::Start, id),
+                (None, None, Some(id)) => SignalReport::Work(WorkEdge::End, id),
+                (None, None, None) => {
+                    return Err(CommandError::with_code(
+                        "pass --state, --work-start or --work-end",
+                        super::EXIT_USAGE,
+                    ))
+                }
+            };
+            run_signal(db, backends, report, session)
+        }
         Action::BindCodex => run_bind_codex(db),
         Action::Exited => run_exited(db, backends),
     }
@@ -1842,24 +1902,79 @@ fn run_fork(
     ))
 }
 
+/// The variable a hook sets to say which sub-work its `--state` report comes
+/// from. An environment variable rather than only `--work` because a remote
+/// pane's hooks are rewritten by replacing `session signal --state ` with the
+/// backend's own one-word status command, which takes no further arguments.
+const SIGNAL_WORK_ENV: &str = "THURBOX_SIGNAL_WORK";
+
+/// The variable a hook sets (`=start`) to say its `--state working` starts a
+/// turn — an environment variable for the same reason as [`SIGNAL_WORK_ENV`].
+const SIGNAL_TURN_ENV: &str = "THURBOX_SIGNAL_TURN";
+
+/// What one `session signal` reports.
+enum SignalReport {
+    /// A state, the sub-work it came from when it came from one, and whether
+    /// it starts a turn.
+    State {
+        state: String,
+        work: Option<String>,
+        turn_start: bool,
+    },
+    /// One edge of a piece of sub-work.
+    Work(WorkEdge, String),
+}
+
 fn run_signal(
     db: &Database,
     backends: &super::Backends<'_>,
-    state: String,
+    report: SignalReport,
     session: Option<String>,
 ) -> Result<CommandOutput, CommandError> {
     let target = resolve_signal_target(db, session.as_deref())?;
-    if !db
-        .set_hook_state(target.id, &state)
-        .map_err(|e| format!("set_hook_state: {e}"))?
-    {
-        return Err(format!(
+    let parked = || -> CommandError {
+        format!(
             "'{}' is parked, so it has no turn to report; \
              thurbox-cli session start {} first",
             target.name, target.id
         )
-        .into());
-    }
+        .into()
+    };
+    let (state, moved, work) = match &report {
+        SignalReport::State {
+            state,
+            work,
+            turn_start,
+        } => {
+            use crate::session::background_work::{valid_work_id, ReportFrom};
+            let from = match work.as_deref().filter(|id| valid_work_id(id)) {
+                Some(id) => ReportFrom::Work(id),
+                None if *turn_start => ReportFrom::TurnStart,
+                None => ReportFrom::Agent,
+            };
+            let stored = db
+                .signal_hook_state(target.id, state, from)
+                .map_err(|e| format!("set_hook_state: {e}"))?
+                .ok_or_else(parked)?;
+            (Some(stored), true, None)
+        }
+        SignalReport::Work(edge, id) => {
+            if !crate::session::background_work::valid_work_id(id) {
+                return Err(CommandError::with_code(
+                    format!(
+                        "a work id is a non-blank word of at most {} bytes",
+                        crate::session::background_work::MAX_WORK_ID
+                    ),
+                    super::EXIT_USAGE,
+                ));
+            }
+            let (stored, moved) = match db.signal_work_edge(target.id, *edge, id) {
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Err(parked()),
+                other => other.map_err(|e| format!("signal_work_edge: {e}"))?,
+            };
+            (stored, moved, Some((*edge, id.as_str())))
+        }
+    };
     // A signal from the agent's own hook carries the environment Claude Code
     // publishes its inbox socket in; it is recorded only once proven to be
     // the target's own. With an explicit `--session` the environment is the
@@ -1873,20 +1988,36 @@ fn run_signal(
     // Best-effort: a backend with no status channel has nowhere to put it.
     // A local row's backend is found among this machine's alone: every agent
     // hook runs this, and the full registry reads every host to be built.
-    let recorded = signal_backend(backends, &target.backend_type)
-        .and_then(|backend| Ok(backend.record_hook_state(&target.backend_id, &state)?));
-    if let Err(e) = recorded {
-        tracing::debug!("could not record the state in the row's backend: {e:#}");
+    // A work edge that moved nothing has nothing new to record there.
+    if let Some(state) = state.as_deref().filter(|_| moved) {
+        let recorded = signal_backend(backends, &target.backend_type)
+            .and_then(|backend| Ok(backend.record_hook_state(&target.backend_id, state)?));
+        if let Err(e) = recorded {
+            tracing::debug!("could not record the state in the row's backend: {e:#}");
+        }
     }
-    Ok(CommandOutput::new(
-        json!({
-            "signaled": true,
-            "session_id": target.id.to_string(),
-            "session_name": target.name,
-            "state": state,
-        }),
-        format!("Signaled {state} for '{}'.", target.name),
-    ))
+    let mut json = json!({
+        "signaled": true,
+        "session_id": target.id.to_string(),
+        "session_name": target.name,
+        "state": state,
+    });
+    let human = match work {
+        Some((edge, id)) => {
+            let edge = match edge {
+                WorkEdge::Start => "start",
+                WorkEdge::End => "end",
+            };
+            json["work"] = json!({ "id": id, "edge": edge });
+            format!("Signaled the {edge} of work {id} for '{}'.", target.name)
+        }
+        None => format!(
+            "Signaled {} for '{}'.",
+            state.as_deref().unwrap_or_default(),
+            target.name
+        ),
+    };
+    Ok(CommandOutput::new(json, human))
 }
 
 /// How much of an exited agent's screen `session exited` keeps.
@@ -3508,7 +3639,11 @@ mod tests {
 
         let out = run(
             Action::Signal {
-                state: "blocked".into(),
+                state: Some("blocked".into()),
+                work_start: None,
+                work_end: None,
+                work: None,
+                turn_start: false,
                 session: Some(id.to_string()),
             },
             &db,
@@ -3530,7 +3665,11 @@ mod tests {
         std::env::remove_var("THURBOX_SESSION_ID");
         let err = run(
             Action::Signal {
-                state: "done".into(),
+                state: Some("done".into()),
+                work_start: None,
+                work_end: None,
+                work: None,
+                turn_start: false,
                 session: None,
             },
             &db,

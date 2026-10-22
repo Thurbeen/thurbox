@@ -1,5 +1,6 @@
 pub mod agent_def;
 pub mod automation;
+pub mod background_work;
 pub mod extension_def;
 pub mod hook_def;
 pub mod hook_status;
@@ -88,7 +89,19 @@ pub const PENDING_FOCUS_SESSION_ID_KEY: &str = "pending_focus_session_id";
 /// (`session_ops::remote_hooks::poll_hook_states`). One list, so a future state (e.g. `error`
 /// once exit-code derivation lands) can't be accepted by the CLI yet silently
 /// dropped by the remote channels.
-pub const HOOK_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
+///
+/// `background` is the one word here that is not a turn edge: the turn is at
+/// rest and sub-work it started is still running (issue #1510). Any agent may
+/// signal it; claude reaches it through `session signal --work-start`, which
+/// counts the work in flight so a turn that ends with some still running
+/// stores `background` instead of `done`. [`TURN_STATES`] is the other four.
+pub const HOOK_STATES: [&str; 5] = ["working", "blocked", "done", "idle", "background"];
+
+/// The four turn edges of [`HOOK_STATES`] — what an agent's wiring has to
+/// report to cover a turn in full. `background` is left out: it exists only
+/// for an agent that can see its own sub-work start and end, so an agent that
+/// cannot is not the less covered for it.
+pub const TURN_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
 
 /// How to start a session's process when there is no `agents.toml` entry to
 /// look it up in — a session created from a raw command.

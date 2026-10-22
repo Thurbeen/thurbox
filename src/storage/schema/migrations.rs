@@ -1172,10 +1172,18 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
             .prepare("SELECT name FROM pragma_table_info(?1)")?
             .query_map([&table], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        // `background_work` (v57) is the sub-work count behind a state, not
+        // anything on screen: the state it moves is its own column. Left out
+        // by name rather than by absence, so a database that gained it after
+        // this step ran and one created with it answer the same.
         let differences = columns
             .iter()
             .filter(|column| {
-                table != "sessions" || !matches!(column.as_str(), "hook_state_at" | "seen_at")
+                table != "sessions"
+                    || !matches!(
+                        column.as_str(),
+                        "hook_state_at" | "seen_at" | "background_work"
+                    )
             })
             .map(|column| {
                 let column = quote(column);
@@ -1241,4 +1249,13 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
         )?;
     }
     Ok(())
+}
+
+/// See [`super::SCHEMA_VERSION`] v57: NULL on every existing row — nothing
+/// before this version counted sub-work, so no session has any in flight.
+pub(super) fn migrate_v57_background_work(conn: &Connection) -> rusqlite::Result<()> {
+    if !table_exists(conn, "sessions")? {
+        return Ok(());
+    }
+    add_column_if_absent(conn, "sessions", "background_work", "TEXT")
 }

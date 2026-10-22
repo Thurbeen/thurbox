@@ -215,7 +215,8 @@ embedded hook assets live in
 - **`agent_patches` (arg injection)** — appends args to the agent's launch
   command, reversibly.
   - `claude`: `--settings {home}/claude.json` (claude *merges* it with the user's
-    own settings, never clobbering). Full lifecycle: idle/working/blocked/done.
+    own settings, never clobbering). Full lifecycle: idle/working/blocked/done,
+    plus `background` (see [Background sub-work](#background-sub-work)).
     Its tool hooks skip a call whose payload has a top-level `agent_id` and no
     `agent_type` (an `agent_id` inside `tool_input`/`tool_response` does not
     count): the background agent claude starts after a turn (it writes
@@ -532,5 +533,54 @@ preparation are excluded. See [CONFIG.md](CONFIG.md#hookstoml).
 `last_output_at` and `transcript_path` are read-side supervision fields, null
 for a session on a remote host. The latter is an existing local Claude-family transcript under the session's
 account directory, or null for other families/remote sessions. Neither is a
-completion signal. No `background` state is claimed without evidence that the
-agent reports both lifecycle edges in its parent session.
+completion signal.
+
+### Background sub-work
+
+`background` means the turn is at rest and sub-work it started is still
+running. Any agent's hooks may report it with `thurbox-cli session signal
+--state background`. It is claimed only where both edges of the sub-work reach
+the parent session:
+
+| Agent | Start edge | End edge | Maps to |
+|---|---|---|---|
+| `claude` | `SubagentStart` with a non-empty `agent_type` | `SubagentStop`, same `agent_id` | `--work-start <id>` / `--work-end <id>` |
+| every other built-in | — | — | nothing: reports exactly as before |
+
+Evidence: the issue's reproduction on Claude Code 2.1.303 (headless, three
+runs) and a headless run on 2.1.308, both recording `SubagentStart` → `Stop`
+→ `SubagentStop` → `Stop` in the parent session for a background Agent-tool
+subagent, with one `agent_id` and `agent_type: general-purpose`. Interactive
+mode was not checked. A `done` while any counted work is running is stored as
+`background`; the end of the last one stores `done`, which `watch` streams and
+`session wait --state done` returns on. A typed subagent's own tool calls carry
+its id (`THURBOX_SIGNAL_WORK`) and keep a resting turn in `background` rather
+than starting a new one. A repeated edge counts once, and an end that arrives
+before its own start cancels it.
+
+Not mapped, by design:
+
+- claude's own post-turn agent (an `agent_id` with no `agent_type`), whose end
+  nothing waits on;
+- `run_in_background` Bash tasks, which fire no end hook in the parent — a
+  session whose turn ended with one running reads `done`;
+- a session on a remote host: its status channel holds one word and cannot
+  count, so the edges are no-ops there.
+
+A permission prompt raised by a background subagent stores `blocked`; the
+subagent's next tool call then stores `working`, and its end moves nothing,
+so the session reads `working` until the next prompt — no worse than before
+this state existed, when every such tool call stored `working`. A `blocked`
+cannot say whose block it is, so it is not folded back to `background`.
+
+A missed end edge is forgotten by the next prompt (`UserPromptSubmit` marks
+its `working` as a turn start with `THURBOX_SIGNAL_TURN=start`; the main
+agent's own tool calls, such as those of the turn that reports a finished
+subagent back, forget nothing), by the agent starting again (`SessionStart` →
+`idle`), by `session stop` and by a restart; `session get --verify` reports a dead pane as
+contradicting it. The interface does not fold `background` by the terminal:
+the work runs out of the pane's sight, and an interface that has not attached
+yet has no answer either. Because `session signal` publishes to the pane's
+status channel after it stores, a late `background` read back from that
+channel — by the interface or by `automation tick`'s status poll — is refused
+once the session's counted work has all ended.

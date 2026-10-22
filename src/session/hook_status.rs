@@ -43,7 +43,9 @@
 //! callers gather the facts (a backend's `pane_state`, the agent registry, the
 //! hook columns) and ask this module what they mean.
 
-use super::{AgentRegistry, HOOK_STATES};
+#[cfg(doc)]
+use super::HOOK_STATES;
+use super::{AgentRegistry, TURN_STATES};
 
 /// How the built-in `hooks` extension delivers an agent's status hooks.
 ///
@@ -109,9 +111,11 @@ impl AgentHookCoverage {
         matches!(self.delivery, HookDelivery::Args)
     }
 
-    /// Whether this agent can report every state in [`HOOK_STATES`].
+    /// Whether this agent can report every turn edge ([`TURN_STATES`]).
+    /// `background` is not asked for: an agent that cannot see its sub-work
+    /// still covers its turns in full.
     pub fn is_full(&self) -> bool {
-        HOOK_STATES.iter().all(|s| self.states.contains(s))
+        TURN_STATES.iter().all(|s| self.states.contains(s))
     }
 }
 
@@ -122,7 +126,9 @@ impl AgentHookCoverage {
 pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
     AgentHookCoverage {
         agent: "claude",
-        states: &["working", "blocked", "done", "idle"],
+        // `background` through `SubagentStart`/`SubagentStop`, which bracket an
+        // Agent-tool subagent in the parent session (issue #1510).
+        states: &["working", "blocked", "done", "idle", "background"],
         delivery: HookDelivery::Args,
         hook_file: Some("claude.json"),
         // A `Notification`'s `message` is matched against
@@ -702,17 +708,17 @@ pub fn classify_foreground(
 
 /// Whether the reported state and the pane contradict each other.
 ///
-/// Only the two *active* states can be contradicted: `working` and `blocked`
-/// both assert that an agent is there to be working or waiting, and an empty,
-/// dead or missing pane says it is not. `done` and `idle` assert nothing about
-/// a live process — an agent that finished its turn and exited is not a
-/// contradiction.
+/// Only the *active* states can be contradicted: `working`, `blocked` and
+/// `background` all assert that an agent is there to be working, waiting or
+/// running sub-work, and an empty, dead or missing pane says it is not. `done`
+/// and `idle` assert nothing about a live process — an agent that finished its
+/// turn and exited is not a contradiction.
 ///
 /// A contradiction is **reported, never applied**: the stored `hook_state` is
 /// left exactly as the agent wrote it, because overwriting an agent's own
 /// report with an inference is how a state becomes unfalsifiable.
 pub fn contradicts(state: Option<&str>, corroboration: &Corroboration) -> bool {
-    matches!(state, Some("working" | "blocked"))
+    matches!(state, Some("working" | "blocked" | "background"))
         && matches!(
             corroboration,
             Corroboration::Shell | Corroboration::Dead | Corroboration::Missing
@@ -741,7 +747,7 @@ impl StateSource {
 
 /// The one word every surface answers with, and the whole vocabulary of them.
 ///
-/// Four of these are [`HOOK_STATES`] — the agent's own report, verbatim. The
+/// Five of these are [`HOOK_STATES`] — the agent's own report, verbatim. The
 /// rest are thurbox's own, and each is spelled apart from `idle` deliberately:
 /// collapsing "nothing here is wired to report" or "the host is gone" into
 /// "the agent says it is at rest" is the conflation this whole module exists
@@ -759,6 +765,11 @@ pub enum SessionState {
     Working,
     /// The agent is waiting on input or approval (hook).
     Blocked,
+    /// The turn is at rest and sub-work it started is still running (hook):
+    /// claude's background subagents. Not `done`, because the work is not, and
+    /// not `working`, because nothing is happening in the pane — a driver that
+    /// reads it as finished tears the work down early (issue #1510).
+    Background,
     /// A turn finished and nobody has looked at it yet (hook).
     Done,
     /// At rest: acknowledged, never active, or a stored word nothing knows.
@@ -796,6 +807,7 @@ impl SessionState {
     pub const ALL: &[SessionState] = &[
         SessionState::Working,
         SessionState::Blocked,
+        SessionState::Background,
         SessionState::Done,
         SessionState::Idle,
         SessionState::Stopped,
@@ -810,6 +822,7 @@ impl SessionState {
         match self {
             SessionState::Working => "working",
             SessionState::Blocked => "blocked",
+            SessionState::Background => "background",
             SessionState::Done => "done",
             SessionState::Idle => "idle",
             SessionState::Stopped => "stopped",
@@ -827,6 +840,7 @@ impl SessionState {
         match word {
             "working" => Some(SessionState::Working),
             "blocked" => Some(SessionState::Blocked),
+            "background" => Some(SessionState::Background),
             "done" => Some(SessionState::Done),
             "idle" => Some(SessionState::Idle),
             _ => None,
@@ -893,6 +907,12 @@ pub const WORKING_QUIET_MS: u64 = 10_000;
 /// `quiet_for_ms` is `None` when the session has no live pane — nothing can be
 /// producing output, so that reads as quiet too. This is where v1's `exited →
 /// Idle` branch lands: a pane whose stream ended is dropped from the live set.
+///
+/// `background` passes through untouched: sub-work runs out of the pane's
+/// sight, so a quiet pane is exactly what a real one looks like, and `None`
+/// says no more — an interface that has not attached yet (pending, or failed)
+/// answers it for a session whose subagent is running. What ends a stuck one
+/// is the session moving on (see `session::background_work`).
 ///
 /// `blocked` is **not** time-gated, and for the reason this fold used to say it
 /// was exempt altogether: a standing request for input says nothing about
@@ -1254,7 +1274,7 @@ impl Assessment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::AgentDef;
+    use crate::session::{AgentDef, HOOK_STATES};
 
     fn registry(defs: Vec<AgentDef>) -> AgentRegistry {
         AgentRegistry {
@@ -1372,6 +1392,53 @@ mod tests {
             with_output_quiescence(SessionState::Done, Some(WORKING_QUIET_MS * 10), None),
             SessionState::Done
         );
+    }
+
+    /// Sub-work runs out of the pane's sight, so a quiet pane is what a real
+    /// `background` looks like. `None` is no answer either way: an interface
+    /// that has not attached to the session yet (pending, or failed) gives it
+    /// for a session whose subagent is running.
+    #[test]
+    fn background_is_not_ended_by_the_terminal() {
+        assert_eq!(
+            with_output_quiescence(SessionState::Background, Some(WORKING_QUIET_MS * 100), None),
+            SessionState::Background
+        );
+        assert_eq!(
+            with_output_quiescence(SessionState::Background, None, None),
+            SessionState::Background
+        );
+        assert_eq!(
+            derive_state(Some("background"), Some(NOW), Some(NOW)),
+            SessionState::Background,
+            "acknowledging a finished turn does not finish its sub-work"
+        );
+    }
+
+    #[test]
+    fn background_is_a_hook_state_that_asserts_a_live_agent() {
+        assert!(HOOK_STATES.contains(&"background"));
+        assert_eq!(
+            SessionState::from_hook_state("background"),
+            Some(SessionState::Background)
+        );
+        assert!(contradicts(Some("background"), &Corroboration::Dead));
+        assert!(contradicts(Some("background"), &Corroboration::Missing));
+    }
+
+    /// Adding `background` does not make any agent less covered: coverage is
+    /// about the turn edges, which every full agent still reports.
+    #[test]
+    fn background_does_not_change_any_agents_coverage() {
+        for c in AGENT_HOOK_COVERAGE {
+            let turns = TURN_STATES.iter().all(|s| c.states.contains(s));
+            assert_eq!(c.is_full(), turns, "{}", c.agent);
+        }
+        let codex = AGENT_HOOK_COVERAGE
+            .iter()
+            .find(|c| c.agent == "codex")
+            .unwrap();
+        assert_eq!(Coverage::of(Some(codex)), Coverage::Full);
     }
 
     /// The captain's report: a session whose agent finished minutes ago still

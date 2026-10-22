@@ -516,3 +516,56 @@ fn the_heartbeat_is_kept_by_the_local_backend() {
     assert_eq!(status["automation_heartbeat"], Value::Bool(false));
     instance.assert_untouched("runtime status and stop");
 }
+
+/// `session signal` publishes the word it stored to the pane's status channel
+/// after its transaction, so a turn's `Stop` (stored `background` while a
+/// subagent ran) can publish after that subagent's end stored `done`. The
+/// channel then holds the stale `background`, and the heartbeat's status poll
+/// reads it back like any other word: it must not land on a row whose counted
+/// work has all ended (issue #1510). A row that never counted work — the
+/// remote shape, whose channel cannot count — still takes it.
+#[test]
+fn automation_tick_refuses_a_late_background_for_work_that_ended() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux not installed");
+        return;
+    }
+    use thurbox::session::background_work::{ReportFrom, WorkEdge};
+    let instance = Instance::new(false);
+    let db = instance.db();
+    let routes = Routes::new();
+
+    let counted = seed_row(&db, "counted", &local_probe().format(), "pane-0");
+    let pane = routes
+        .local
+        .open("tb-counted", &counted.to_string(), WindowRole::Agent);
+    db.signal_work_edge(counted, WorkEdge::Start, "a2a3df31469ca24ca")
+        .expect("start");
+    assert_eq!(
+        db.signal_hook_state(counted, "done", ReportFrom::Agent)
+            .expect("stop")
+            .as_deref(),
+        Some("background")
+    );
+    db.signal_work_edge(counted, WorkEdge::End, "a2a3df31469ca24ca")
+        .expect("end");
+    assert_eq!(hook_state(&db, counted).as_deref(), Some("done"));
+    routes.local.hook(&pane, "background");
+
+    let never = seed_row(&db, "never-counted", &far_probe().format(), "pane-0");
+    let far = routes
+        .far
+        .open("tb-never", &never.to_string(), WindowRole::Agent);
+    routes.far.hook(&far, "background");
+
+    let backends = thurbox::cli::Backends::ready(routes.registry());
+    cli(&db, &backends, &["automation", "tick"]).expect("automation tick");
+
+    assert_eq!(
+        hook_state(&db, counted).as_deref(),
+        Some("done"),
+        "the poll wrote a stale background over the end of the work"
+    );
+    assert_eq!(hook_state(&db, never).as_deref(), Some("background"));
+    instance.assert_untouched("automation tick");
+}

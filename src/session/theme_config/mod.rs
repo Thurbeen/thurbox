@@ -48,6 +48,11 @@ pub struct ThemePalette {
     /// agent is wired to report nothing) and `unreported` (it can report and
     /// has not yet). Muted, because the honest content of both is an absence.
     pub status_unknown: Color,
+    /// Colour of the "background" status glyph: the turn is at rest and
+    /// sub-work it started is still running. Its own hue — not `status_done`,
+    /// which would say the work is finished, and not `status_working`, which
+    /// would say the pane is busy.
+    pub status_background: Color,
 
     pub text_primary: Color,
     pub text_secondary: Color,
@@ -473,6 +478,8 @@ pub struct CustomThemeDef {
     #[serde(default)]
     pub status_unknown: Option<String>,
     #[serde(default)]
+    pub status_background: Option<String>,
+    #[serde(default)]
     pub text_primary: Option<String>,
     #[serde(default)]
     pub text_secondary: Option<String>,
@@ -554,7 +561,7 @@ impl CustomThemeDef {
     /// (`override_array_covers_every_color_field`) asserts it matches the
     /// struct's colour-field count, so a forgotten row can't silently make a
     /// colour un-overridable.
-    const COLOR_OVERRIDE_COUNT: usize = 33;
+    const COLOR_OVERRIDE_COUNT: usize = 34;
 
     /// Materialise the theme: base preset palette + overrides. Unparsable
     /// colours and an unknown base degrade to warnings, never to a hard
@@ -614,6 +621,11 @@ impl CustomThemeDef {
                 "status_unknown",
                 &self.status_unknown,
                 &mut palette.status_unknown,
+            ),
+            (
+                "status_background",
+                &self.status_background,
+                &mut palette.status_background,
             ),
             (
                 "text_primary",
@@ -725,6 +737,7 @@ fn default_palette() -> ThemePalette {
         status_unreachable: Color::DarkGray,
         status_running: Color::Cyan,
         status_unknown: Color::DarkGray,
+        status_background: Color::Magenta,
 
         text_primary: Color::White,
         text_secondary: Color::Gray,
@@ -811,6 +824,10 @@ impl PaletteSlots {
             status_running: self.accent,
             // Dimmest of all: "nothing reported" has no content to look at.
             status_unknown: self.text_muted,
+            // The palette's purple slot: a hue none of the other status words
+            // wear. A preset whose `role_name` collides with one of them
+            // overrides this after `build()`.
+            status_background: self.role_name,
             text_primary: self.text_primary,
             text_secondary: self.text_secondary,
             text_muted: self.text_muted,
@@ -1020,6 +1037,44 @@ mod tests {
         let (entry, warnings) = def.resolve();
         assert!(warnings.is_empty());
         assert_eq!(entry.palette.diff_added, Color::Rgb(0, 0xff, 0));
+    }
+
+    /// `background` has to read as its own word next to every status a row
+    /// can hold beside it, in every preset: equal colours are the obvious
+    /// failure, and two RGB colours a few steps apart are the same one on
+    /// screen. 40 is a little under the closest pair the presets ship.
+    #[test]
+    fn every_preset_draws_background_apart_from_the_other_statuses() {
+        fn distance(a: Color, b: Color) -> Option<f64> {
+            match (a, b) {
+                (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+                    let d = |x: u8, y: u8| (f64::from(x) - f64::from(y)).powi(2);
+                    Some((d(r1, r2) + d(g1, g2) + d(b1, b2)).sqrt())
+                }
+                _ => None,
+            }
+        }
+        for preset in ThemePreset::all() {
+            let p = preset.palette();
+            for (word, other) in [
+                ("working", p.status_working),
+                ("blocked", p.status_blocked),
+                ("done", p.status_done),
+                ("idle", p.status_idle),
+                ("running", p.status_running),
+            ] {
+                assert_ne!(
+                    p.status_background, other,
+                    "{preset:?}: background wears {word}'s colour"
+                );
+                if let Some(d) = distance(p.status_background, other) {
+                    assert!(
+                        d >= 40.0,
+                        "{preset:?}: background is {d:.0} from {word}, too close to tell apart"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

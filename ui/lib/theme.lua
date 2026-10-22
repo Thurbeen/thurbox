@@ -93,6 +93,11 @@ local STATUS_GLYPHS = {
   working = "◐",
   blocked = "◆",
   done = "●",
+  -- The turn is at rest and sub-work it started is still running. A ring
+  -- around a centre: done's circle, with something still inside it. Static,
+  -- because the work runs out of the pane's sight and nothing on screen says
+  -- it is moving.
+  background = "◎",
   idle = "○",
   error = "✗",
   unreachable = "⊘",
@@ -118,6 +123,7 @@ local STATUS_ROLES = {
   working = "status_working",
   blocked = "status_blocked",
   done = "status_done",
+  background = "status_background",
   idle = "status_idle",
   error = "status_error",
   unreachable = "status_unreachable",

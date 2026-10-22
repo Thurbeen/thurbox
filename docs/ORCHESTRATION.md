@@ -348,7 +348,7 @@ gone — and each one comes with what it takes to judge it:
 `state` is always a word, and one of `SessionState`'s — the single
 vocabulary `session get`, `session list`, `thurbox-cli watch` and the
 interface all derive through, so no two of them answer differently for
-one row. Besides the four an agent can signal it can read `unreported`
+one row. Besides the five an agent can signal it can read `unreported`
 (nothing has reported for this session), `uncovered` (its agent is wired
 to report nothing), `stopped` (the session is parked) or `running` (an
 agent holds the pane and has not signalled — `session get`'s probe only).
@@ -439,7 +439,7 @@ Three things close that, and all are **stable contract**:
 - **`THURBOX_SESSION` is in the pane's environment**, and every child
   process inherits it. So anything running in the pane — the driver, the
   agent, one of the agent's own hooks — can call
-  `thurbox-cli session signal --state <working|blocked|done|idle>` with
+  `thurbox-cli session signal --state <working|blocked|done|idle|background>` with
   **no arguments**: identity resolves from the environment. From outside
   the pane, pass `--session <uuid>`. This is the supported way to report
   state for an agent thurbox did not launch. `session exec` carries the

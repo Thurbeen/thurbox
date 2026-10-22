@@ -115,6 +115,7 @@ return {
       tostring(thurbox.theme.roles.search_bar),
       tostring(thurbox.theme.roles.selection_bg),
       tostring(thurbox.theme.roles.selection_fg),
+      tostring(thurbox.theme.roles.status_background),
       tostring(thurbox.theme.roles.status_blocked),
       tostring(thurbox.theme.roles.status_done),
       tostring(thurbox.theme.roles.status_error),

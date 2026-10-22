@@ -59,13 +59,23 @@ pub(crate) fn rewrite_hook_signals(contents: &str, command: &str) -> String {
     // A remotely provisioned hook reports through its backend: it cannot
     // write to the local session database. Leave its status signal intact but
     // drop the local-only Codex ID binding command from that payload.
+    //
+    // Sub-work edges (`--work-start`/`--work-end`) become the shell's no-op
+    // `:`: the backend's channel holds one word and cannot count work in
+    // flight, so a remote pane reports its turns exactly as it did before
+    // `background` existed rather than half of a count.
     contents
         .replace(
             "thurbox-cli session bind-codex >/dev/null 2>&1 || true; ",
             "",
         )
+        .replace(WORK_EDGE_MARKER, ": --work-")
         .replace(SIGNAL_MARKER, command)
 }
+
+/// Prefix of the hook commands that report one edge of a piece of sub-work —
+/// see [`rewrite_hook_signals`] for what a remote pane does with them.
+const WORK_EDGE_MARKER: &str = "thurbox-cli session signal --work-";
 
 /// Whether agent status hooks are wired — i.e. the user has not opted out of
 /// the built-in extension that installs them. The launch paths consult this
@@ -157,11 +167,17 @@ mod tests {
             "SessionStart",
             "UserPromptSubmit",
             "PreToolUse",
+            "SubagentStart",
+            "SubagentStop",
             "Notification",
             "Stop",
         ] {
             assert!(hooks.contains_key(event), "missing hook event {event}");
         }
+        // The work edges cannot be counted in a pane option, so they run as the
+        // shell's no-op there and a remote claude reports what it always did.
+        assert!(rewritten.contains(": --work-start "));
+        assert!(rewritten.contains(": --work-end "));
     }
 
     #[test]
@@ -232,10 +248,11 @@ mod tests {
             // newline) is fine, but ANY flagged invocation — including one
             // whose flags drifted, e.g. `--quiet --state` — must carry the
             // exact marker prefix, or the remote rewrite silently misses it.
+            // A sub-work edge is the other spelling the rewrite knows.
             let occurrences = asset.matches("thurbox-cli session signal --").count();
             assert!(occurrences > 0, "{name} carries no session-signal command");
             assert_eq!(
-                asset.matches(SIGNAL_MARKER).count(),
+                asset.matches(SIGNAL_MARKER).count() + asset.matches(WORK_EDGE_MARKER).count(),
                 occurrences,
                 "a `thurbox-cli session signal --…` command in {name} doesn't match SIGNAL_MARKER"
             );
@@ -244,6 +261,11 @@ mod tests {
             CLAUDE_SETTINGS.matches(SIGNAL_MARKER).count(),
             8,
             "claude.json hook count changed — review the rewrite"
+        );
+        assert_eq!(
+            CLAUDE_SETTINGS.matches(WORK_EDGE_MARKER).count(),
+            2,
+            "claude.json's sub-work edges changed — review the rewrite"
         );
     }
 
@@ -698,6 +720,15 @@ mod tests {
             })
             .filter(|state| !state.is_empty())
             .collect();
+        // A payload that reports its sub-work's start can store `background`:
+        // a turn that ends while that work runs does (`session signal
+        // --work-start`).
+        if commands
+            .iter()
+            .any(|command| command.contains("thurbox-cli session signal --work-start "))
+        {
+            states.push("background".to_string());
+        }
         states.sort();
         states.dedup();
         states
