@@ -112,6 +112,8 @@ pub(crate) struct RowsRead {
     pub bases: HashMap<SessionId, String>,
     pub stopped: HashSet<SessionId>,
     pub reports_as: HashMap<SessionId, String>,
+    /// Each session's published meta, already cleaned and capped.
+    pub meta: HashMap<SessionId, std::collections::BTreeMap<String, String>>,
     pub deleted: Vec<DeletedRow>,
     pub tasks: Vec<TaskRow>,
     pub automations: Vec<AutomationRow>,
@@ -358,6 +360,24 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
     // `session get` reads it: the coverage a state is judged against belongs
     // to the declared agent, not to the shell the row was created with.
     let reports_as = database.load_reports_as().unwrap_or_default();
+    // Cleaned here, on the worker, so a publish only copies strings.
+    let meta = database
+        .load_session_meta_with_prefix(crate::kernel::lua_api::META_PREFIX)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, keys)| {
+            let keys = keys
+                .into_iter()
+                .filter(|(key, _)| crate::kernel::lua_api::is_published_meta_key(key))
+                .take(crate::kernel::lua_api::META_KEYS)
+                .map(|(key, value)| {
+                    let value = crate::kernel::lua_api::clean_meta_value(&value);
+                    (key, value)
+                })
+                .collect();
+            (id, keys)
+        })
+        .collect();
 
     // Deleted sessions, so a restore surface has something to list.
     let deleted = database
@@ -482,6 +502,7 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
         bases,
         stopped,
         reports_as,
+        meta,
         deleted,
         tasks,
         automations,

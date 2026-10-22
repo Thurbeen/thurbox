@@ -10,7 +10,7 @@
 //! against one database do not collide. Nothing here interprets a key or a
 //! value: this table is storage, and that is the whole contract.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use rusqlite::params;
 
@@ -53,6 +53,36 @@ impl Database {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         rows.collect()
+    }
+
+    /// Every key starting with `prefix`, for every session, in one query — what
+    /// the interface's snapshot read publishes (`ui.*`, issue #1523). The
+    /// caller decides what a key means; this only selects by prefix.
+    pub fn load_session_meta_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> rusqlite::Result<HashMap<SessionId, BTreeMap<String, String>>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT session_id, key, value FROM session_meta \
+             WHERE substr(key, 1, length(?1)) = ?1 ORDER BY session_id, key",
+        )?;
+        let rows = stmt.query_map(params![prefix], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut all: HashMap<SessionId, BTreeMap<String, String>> = HashMap::new();
+        for row in rows {
+            let (id, key, value) = row?;
+            // A row whose id does not parse belongs to no session a reader can
+            // name, so it is skipped rather than failing every other row.
+            if let Ok(id) = id.parse::<SessionId>() {
+                all.entry(id).or_default().insert(key, value);
+            }
+        }
+        Ok(all)
     }
 
     /// Remove one key. Returns whether it was there — so an `unset` can say

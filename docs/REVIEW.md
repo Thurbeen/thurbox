@@ -100,10 +100,12 @@ assertions stay out of the test suite (ADR-P5); the deterministic half is
 asserted on counters and change-signals instead, in tests/kernel_frame_cost.rs
 and tests/kernel_perf.rs.
 
-A newly published thurbox.* field also goes into thurbox.yml at the repo root:
-it is selene's standard library for the Lua tree, so a field LuaHost::publish
-adds but it does not declare is a lint error in every plugin that uses it. The
-change originates here, in a diff that need not touch ui/ at all.
+A newly published thurbox.* field is declared in src/kernel/lua_api.rs and
+rendered into thurbox.yml and ui/lib/thurbox.d.lua by `just lua-api`;
+tests/lua_api.rs fails a field LuaHost::publish serves undeclared, and a
+generated file that was edited by hand. Removing a field, or changing what one
+means, bumps lua_api::API (ADR-40). The change originates here, in a diff that
+need not touch ui/ beyond the regenerated files.
 
 This repository is test-driven: a bug fix starts with a test that reproduces
 the bug, so it fails before the fix and passes after it. That test goes
@@ -134,9 +136,9 @@ unreachable code left behind.
 
 This is the Lua interface running on the Rust kernel, and the plugin sandbox is
 enforced by absence: os, io, debug, package, print and the loaders are not in
-the environment. thurbox.yml is selene's standard library for this tree and
-must stay in step with LuaHost::publish, so a newly published thurbox field is
-added there too.
+the environment. thurbox.yml is selene's standard library for this tree; its
+thurbox.* entries, like the published half of ui/lib/thurbox.d.lua, are
+generated from src/kernel/lua_api.rs and are not edited by hand.
 
 There are four node kinds - text, box, input, surface - and everything else
 composes in ui/lib/widgets.lua; do not propose a fifth. Panes declare size

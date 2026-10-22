@@ -325,9 +325,14 @@ their allowed values, `ctx`, the `hit`/`key`/`wheel` payloads, the declaration
 table, every published `thurbox.*` row shape, every `command` verb's options, and
 the theme roles. It is declarations only; nothing loads it into the VM (which is
 why `selene.toml` excludes it — describing a global means assigning one, and that
-is the one thing the sandbox forbids). Keep it in step with `node.rs`/`convert.rs`,
-`host/load.rs`, `host/publish.rs`, `command/mod.rs` and `theme.rs`, the same way
-`thurbox.yml` is kept in step with `LuaHost::publish`.
+is the one thing the sandbox forbids). Its published `thurbox.*` half and the
+theme roles are generated from `src/kernel/lua_api.rs`, as are `thurbox.yml`'s
+`thurbox.*` entries and `tests/fixtures/lua_std/reads.lua`: add a published field
+there, run `just lua-api`, and `tests/lua_api.rs` holds the files and every key a
+real publish serves to it. Removing a field or changing its meaning bumps
+`lua_api::API` (`thurbox.api`; a plugin's `requires_api` is checked against it at
+load). Keep the rest in step with `node.rs`/`convert.rs`, `host/load.rs` and
+`command/mod.rs`.
 
 Two shapes do the catching, because lua-language-server does **not** flag an extra
 key in a table constructor: every kind and every verb declares the field it cannot
@@ -342,9 +347,9 @@ table declared without its fields rejects `thurbox.platform.os`, and no bundled
 pane reads one by name to notice.
 
 The two files split by LIFETIME. A global, or a field of a published table, is a
-name selene can see, and it belongs in `thurbox.yml` — kept in step with
-`LuaHost::publish` *and* `LuaHost::enter`, which sets `thurbox.runs` and
-`thurbox.granted` per plugin. The shape of a value that exists only while a call
+name selene can see, and it belongs in `thurbox.yml` — generated from
+`lua_api.rs`, which covers `LuaHost::publish` *and* `LuaHost::enter`, which sets
+`thurbox.runs` and `thurbox.granted` per plugin. The shape of a value that exists only while a call
 is running — a `hit`, a `key`, a `wheel`, a row out of a list — is unreachable
 from there and is `thurbox.d.lua`'s. Neither file can do the other's half.
 

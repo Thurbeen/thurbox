@@ -9,6 +9,7 @@ use super::api::{clean_error, plugin_env, EnvParts};
 use super::{
     instruction_budget, memory_limit, plugin_stdlib, Arrangement, Capability, Float, Plugin,
 };
+use crate::kernel::lua_api::API;
 use crate::kernel::node::Size;
 use crate::kernel::registry::{
     binding_from, ActionArgument, ActionDecl, Binding, CommandDecl, Pill, Scope, Setting,
@@ -145,6 +146,21 @@ pub(super) fn load_plugin(
         });
     if name == "kernel" {
         return Err(format!("{file}.name: kernel is reserved"));
+    }
+
+    // Refused before the rest of the declaration is read: a plugin written
+    // against a newer contract may misread every field below, and why it did
+    // not load is the one thing its author needs to see in the inventory.
+    let requires_api = def
+        .get::<Option<u32>>("requires_api")
+        .map_err(|e| format!("{file}.requires_api: {e}"))?;
+    if let Some(needed) = requires_api.filter(|needed| *needed > API) {
+        // `{file}:` first, which is what lets the inventory pin the failure on
+        // this file (`inventory::blames`).
+        return Err(format!(
+            "{file}: requires_api = {needed}, but this thurbox serves plugin API {API}; \
+             update thurbox, or use a version of the plugin written for API {API}"
+        ));
     }
 
     let slot: String = def

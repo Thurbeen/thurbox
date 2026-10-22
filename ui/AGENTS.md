@@ -220,8 +220,9 @@ exact styles and text it draws, or writes into a module's tables.
 This is a compatibility promise rather than a version number. A preserved file is
 frozen at whichever release it was edited in. A version could only tell that file
 it no longer fits; it could not make it work. Side-by-side copies of `lib/` would
-mean landing every fix once per copy, and published plugins declare no version to
-pin to. The thurbox repository's test suite holds `lib/` to this promise. It
+mean landing every fix once per copy, and a published plugin declares at most the
+`thurbox.*` contract it needs (`requires_api`, against `thurbox.api`), never a
+`lib/` version to pin to. The thurbox repository's test suite holds `lib/` to this promise. It
 loads edited files frozen from an old release, and it pins a list of every
 exported name.
 

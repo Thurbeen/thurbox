@@ -258,7 +258,7 @@ the base functions (`pairs`, `ipairs`, `type`, `tostring`, `tonumber`, `select`,
 
 | Global | What it is |
 |---|---|
-| `thurbox` | the read side — the snapshot. `thurbox.sessions`, `.settings`, `.theme`, `.repos`, `.runs`, `.diffs`, `.metrics`, `.chrome`, `.ui_dir`, … |
+| `thurbox` | the read side — the snapshot. `thurbox.sessions`, `.settings`, `.theme`, `.repos`, `.runs`, `.diffs`, `.metrics`, `.chrome`, `.ui_dir`, … and `.api`, the contract number a plugin's `requires_api` is checked against |
 | `command(name, args)` | the write side. Accepted now, applied by the kernel later. |
 | `text` | display width in COLUMNS: `text.width`, `text.truncate`, `text.pad` |
 | `store` | scratch state that survives a frame, and how you *ask* for things (`store.want_branches`, `store.want_worktrees`, `store.want_content`, …) |

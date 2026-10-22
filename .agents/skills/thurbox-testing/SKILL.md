@@ -61,20 +61,23 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   drops in silence (a node prop, a command option, a theme role) and each must
   still be reported. `--check ui` proves the panes are clean; this proves the
   types have teeth. Runs in the Lua Lint job and in `just lint`.
-- **`scripts/ci/check-lua-std.sh`** — the same trick for `thurbox.yml`. The panes
-  in `tests/fixtures/lua_std/` read `granted`, `platform`, `keyboard`, `metrics`, `hover`,
-  `preflight.mux`, `settings`, `theme.roles`, the four creation-flow reads and
-  `runs` — the tables no bundled pane reads in a form selene can see:
-  `reads.lua` reads every field on them and must lint clean, and `typos/`
-  holds one pane per table misspelling one field, each of which must not. It
-  asserts on selene's `incorrect_standard_library_use` code from its `Json2`
-  output and attributes a finding by the file it came from, so no assertion
-  depends on message wording. It covers the records, not everything
-  `LuaHost::publish` serves — a checked path stops at the first `[…]`, so a list
-  has nothing below it to probe, and `runs` is the one map whose keys are the
-  plugin's own literals rather than a session id. Those tables were declared
-  without their fields for as long as nothing read them (issue #1133). Same two
-  runners.
+- **`scripts/ci/check-lua-std.sh`** — the same trick for `thurbox.yml`.
+  `tests/fixtures/lua_std/reads.lua`, generated from `src/kernel/lua_api.rs`
+  with the `thurbox.*` entries it lints against, reads every declared path and
+  must lint clean, and `typos/` holds one pane per table misspelling one field,
+  each of which must not. It asserts on selene's `incorrect_standard_library_use`
+  code from its `Json2` output and attributes a finding by the file it came
+  from, so no assertion depends on message wording. A checked path stops at the
+  first `[…]`, so a list has nothing below it to probe, and `runs` is the one map
+  whose keys are the plugin's own literals rather than a session id. Those tables
+  were declared without their fields for as long as nothing read them (issue
+  #1133). Same two runners.
+- **`tests/lua_api.rs`** — the plugin API against `kernel::lua_api` (issue
+  #1476): the generated declaration files equal what it renders
+  (`THURBOX_REGENERATE=1`, i.e. `just lua-api`, rewrites them), a pane walking
+  every key of a fully populated publish finds none undeclared, and
+  `thurbox.api`/`requires_api` hold; its `meta` module drives `ui.*` session
+  meta from the real `thurbox-cli` to the bundled session list.
 - **`tests/frames.rs`** — the bundled panes' frames pinned cell for cell, as
   literals in the file (no snapshot tool): the session list grouped, nested,
   windowed, narrow and under double-width names; the selection as a *style*;

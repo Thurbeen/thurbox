@@ -66,6 +66,11 @@ lint:
 fmt-lua:
     stylua ui examples
 
+# Regenerate the plugin API declarations (`thurbox.d.lua`, `thurbox.yml`, the
+# selene probe) from `src/kernel/lua_api.rs`, after editing it.
+lua-api:
+    THURBOX_REGENERATE=1 cargo nextest run --test lua_api the_declaration_files_are_what_the_schema_renders
+
 # Architecture-rule + doc checks.
 arch:
     cargo test --test architecture_rules

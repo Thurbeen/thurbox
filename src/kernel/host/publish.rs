@@ -182,6 +182,10 @@ impl LuaHost {
         // an env var, and hardcoding it in Lua would leave every shipped copy
         // claiming whatever version it was written against.
         set(&table, "version", env!("THURBOX_VERSION"))?;
+        // The contract a plugin is written against, which `version` cannot
+        // say: a minor release may add fields but never removes or re-means
+        // one without moving this (`kernel::lua_api::API`).
+        set(&table, "api", crate::kernel::lua_api::API)?;
         // What the pointer is over, as `id` and `role`, so a plugin can match
         // whichever it used to mark the affordance. The common case is nothing
         // hovered, which is one shared empty table (a constant key never
@@ -786,6 +790,19 @@ fn build_sessions(
             "notification",
             opt_lua_string(lua, agent_meta.and_then(|m| m.notification.as_deref()))?,
         )?;
+        // What whoever drives the session wrote under `ui.*` (issue #1523):
+        // a status note, a group label. Already cleaned on the snapshot's
+        // worker, and absent rather than empty so a row with none costs no
+        // table.
+        if !row.meta.is_empty() {
+            let meta = lua
+                .create_table_with_capacity(0, row.meta.len())
+                .map_err(|e| e.to_string())?;
+            for (key, value) in &row.meta {
+                set(&meta, key, to_lua_string(lua, value)?)?;
+            }
+            set(&entry, "meta", meta)?;
+        }
         // Manual position. Without this a plugin cannot honour the order a
         // reorder command just wrote, and the list silently ignores it.
         set(&entry, "display_order", row.display_order)?;

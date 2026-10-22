@@ -22,6 +22,22 @@ local NO_REPO = "(no repo)"
 --- with a real repo set.
 local FLAT_KEY = "\0flat"
 
+--- The key prefix of a group a driver named (`ui.group`). `\0` cannot occur in
+--- a repo name, so a label spelled like a repo still forms a group of its own.
+local LABEL_KEY = "\0group\0"
+
+--- The group label whoever drives the session gave it, through the session's
+--- `ui.group` meta (issue #1523), or nil. Untrusted text, already one line;
+--- blank counts as unset.
+local function labelled_group(session)
+  local label = session.meta and session.meta["ui.group"]
+  label = label and label:match("^%s*(.-)%s*$")
+  if label == "" then
+    return nil
+  end
+  return label
+end
+
 --- The grouping key for sessions on this machine. Local rows stay above remote
 --- hosts and have their own fold handle.
 ---
@@ -209,7 +225,8 @@ local function group_label(names)
   return table.concat(names, " + ")
 end
 
---- Group by repo set and order exactly as v1's `compute_session_order` does:
+--- Group by repo set — or by the label a driver set, which wins over it — and
+--- order exactly as v1's `compute_session_order` does:
 --- members by (manual order, original index), groups by (lowest member order,
 --- label). "Never moved" sorts *after* everything ordered, in creation order —
 --- not alphabetically.
@@ -225,7 +242,10 @@ local function ordered_groups(rows, grouping, by_host)
   local groups, by_key = {}, {}
   for index, session in ipairs(rows) do
     local key, label
-    if grouping then
+    local named = grouping and labelled_group(session)
+    if named then
+      key, label = LABEL_KEY .. named, named
+    elseif grouping then
       local names = repo_set(session)
       key, label = group_key(names), group_label(names)
     else

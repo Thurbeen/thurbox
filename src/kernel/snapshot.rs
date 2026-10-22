@@ -156,6 +156,11 @@ pub struct SessionRow {
     /// still reads [`SessionState::Running`], because presence is observed;
     /// only the name is withheld. See [`crate::session::Corroboration`].
     pub detected_agent: Option<String>,
+    /// The session's `ui.*` meta keys (issue #1523), cleaned for publishing
+    /// ([`crate::kernel::lua_api::clean_meta_value`]) and capped at
+    /// [`crate::kernel::lua_api::META_KEYS`]; empty when it has none. Every
+    /// other key is a driver's or thurbox's own and never reaches a plugin.
+    pub meta: std::collections::BTreeMap<String, String>,
 }
 
 /// A session that was deleted but not purged.
@@ -1751,6 +1756,7 @@ impl SnapshotStore {
             bases,
             stopped,
             reports_as,
+            mut meta,
             deleted,
             tasks,
             automations,
@@ -1823,6 +1829,7 @@ impl SnapshotStore {
                     reports_as: declared,
                     detected_agent,
                     member_dirs,
+                    meta: meta.remove(&session.id).unwrap_or_default(),
                 }
             })
             .collect();

@@ -167,19 +167,22 @@ but not to a table's fields, so `os.time()` passed review while `dofile` was
 caught.
 
 It also declares the published shape of `thurbox`, so `thurbox.sesions` is a lint
-error rather than a silently-nil pane. Keep it in step with **both** publish
-paths: `LuaHost::publish`, and `LuaHost::enter`, which sets `thurbox.runs` and
-`thurbox.granted` per plugin and is easy to miss because it is not named
-"publish". A newly published field used by a plugin fails lint until it is added. selene
+error rather than a silently-nil pane. That shape is **generated**: `src/kernel/lua_api.rs`
+declares every published `thurbox.*` field once (both publish paths, `LuaHost::publish`
+and `LuaHost::enter`, which sets `thurbox.runs` and `thurbox.granted` per plugin), and
+`just lua-api` renders it into the generated regions of `thurbox.yml` and
+`ui/lib/thurbox.d.lua` and into `tests/fixtures/lua_std/reads.lua`. `tests/lua_api.rs`
+fails when a file drifts from it and when a real publish serves a key it does not
+declare, so a new field is an edit to `lua_api.rs` plus `just lua-api`. Removing a field
+or changing its meaning bumps `lua_api::API` (`thurbox.api`), which a plugin's
+`requires_api` is checked against at load. selene
 checks a **dotted** path one segment at a time and stops at the first `[…]`, so a
 table read as `thurbox.platform.os` needs an entry per field while a list read as
 `thurbox.sessions[i].name` stops at the list. `selene ui examples` cannot notice a
 table left at the table — no bundled pane reads one by name — so
 `scripts/ci/check-lua-std.sh` runs the panes in `tests/fixtures/lua_std/`:
-`reads.lua` reads every field on `granted`, `platform`, `keyboard`, `metrics`, `hover`,
-`preflight.mux`, `settings`, `theme.roles`, the four creation-flow reads and
-`runs` and must lint clean, and `typos/` holds one pane per table
-misspelling one field, each of which must not. The assertion is selene's
+`reads.lua` reads every declared path and must lint clean, and `typos/` holds one pane
+per table misspelling one field, each of which must not. The assertion is selene's
 `incorrect_standard_library_use` code out of its `Json2` output, and the table a
 finding belongs to is the file it was found in — neither depends on the wording
 of a message, which a selene release could change under us.
