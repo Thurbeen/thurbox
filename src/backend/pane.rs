@@ -2348,6 +2348,20 @@ mod tests {
 
         let (contents, _) = run(Script(vec![Ok(b"old".as_slice()), Err(false)]));
         assert_eq!(contents, "old", "a plain snapshot keeps a resident grid");
+
+        // A character's first byte held from before the gap must not join
+        // bytes that follow the resync, even ones that would complete it.
+        let (contents, _) = run(Script(vec![
+            Ok(b"old\xc3".as_slice()),
+            Err(true),
+            Ok(b"\xa9!".as_slice()),
+        ]));
+        assert!(contents.starts_with("RECOVERED"), "{contents:?}");
+        assert!(contents.ends_with('!'), "{contents:?}");
+        assert!(
+            !contents.contains('\u{e9}'),
+            "joined across the gap: {contents:?}"
+        );
     }
 
     /// The redraw signal moves for the replayed seed too, and only once the

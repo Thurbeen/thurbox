@@ -2012,6 +2012,38 @@ fn output_after_a_parked_resync_makes_it_stale() {
     ));
 }
 
+/// Anything else handed to a reader while a resync is parked — a resize, a
+/// state report — sits in the stream after the moment the snapshot shows, so
+/// the reader is handed the event, and the parked snapshot is dropped rather
+/// than handed over stale behind it; a fresh one is asked for instead.
+#[test]
+fn an_event_after_a_parked_resync_makes_it_stale() {
+    let (senders, mut reader, resync) = resyncing_reader(1);
+    ControlMode::dispatch_output(&senders, "%7", b"queued".to_vec());
+    ControlMode::dispatch_output(&senders, "%7", b"lost".to_vec());
+    ControlMode::dispatch_snapshot(&senders, "%7", Some(&caught_up_snapshot()));
+    assert_eq!(read_item(&mut reader), Ok(b"queued".to_vec()));
+
+    assert!(ControlMode::send_event(
+        &senders,
+        "%7",
+        PaneChunk::Resized {
+            rows: 30,
+            cols: 100
+        }
+    ));
+
+    assert!(matches!(
+        reader.receiver.try_recv(),
+        Ok(PaneChunk::Resized {
+            rows: 30,
+            cols: 100
+        })
+    ));
+    assert!(resync.state.lock().unwrap().parked.is_none());
+    assert!(resync.is_behind(), "still owed a fresh snapshot");
+}
+
 /// A snapshot that failed catches nothing up, so the reader goes back to
 /// taking output rather than losing all of it for good.
 #[test]
