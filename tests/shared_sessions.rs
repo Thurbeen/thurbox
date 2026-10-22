@@ -1204,6 +1204,50 @@ mod delegated_create {
         );
     }
 
+    /// The caller's post-create hooks fire for the sessions this call created
+    /// — a lost answer recovered by its id included — and not for one the host
+    /// answered as already there under that id.
+    #[test]
+    fn the_caller_fires_post_create_only_for_a_session_it_created() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let log = pair.path("post-create.log");
+        std::fs::write(
+            pair.path("config/hooks.toml"),
+            format!(
+                "[[hooks]]\nevent = \"session.post_create\"\n\
+                 command = 'echo \"$THURBOX_SESSION\" >> {}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let fired = || std::fs::read_to_string(&log).unwrap_or_default();
+
+        let plain = created_id(&pair.create(&["--name", "plain"]));
+        std::fs::write(pair.path("drop-answer"), "").unwrap();
+        let recovered = created_id(&pair.create(&["--name", "recovered"]));
+        std::fs::remove_file(pair.path("drop-answer")).unwrap();
+        assert_eq!(
+            fired().lines().collect::<Vec<_>>(),
+            [plain.to_string(), recovered.to_string()],
+            "one post-create per session this caller created"
+        );
+
+        let elsewhere = SessionId::default();
+        let made = pair.create_on_host(&["--name", "elsewhere", "--id", &elsewhere.to_string()]);
+        assert_eq!(created_id(&made), elsewhere);
+        let answered = pair.create(&["--name", "elsewhere", "--id", &elsewhere.to_string()]);
+        assert_eq!(answer(&answered)["created"], false);
+        assert!(
+            !fired().contains(&elsewhere.to_string()),
+            "a session the host answered as already there is not this caller's to announce: {}",
+            fired()
+        );
+    }
+
     /// `--on-existing` is the host's to apply: its rows are the record, and
     /// the caller's mirror may not have seen the session yet. Here the host
     /// already holds the key, the caller has never mirrored it, and `adopt`
