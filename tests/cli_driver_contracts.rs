@@ -1062,3 +1062,60 @@ fn replace_with_a_deleted_id_tears_nothing_down() {
     );
     assert!(env.db().get_session_by_id(victim).unwrap().is_some());
 }
+
+/// What each verb does with a session on a host `hosts.toml` no longer names
+/// (`session_ops::Executor`). Those that drive the session's own machine —
+/// rename, set-key, restart — refuse: doing it here would act on the wrong
+/// one. A parent link and a delete are this side's own record, so they are
+/// taken here.
+#[test]
+fn each_verb_keeps_its_answer_for_a_host_hosts_toml_no_longer_names() {
+    let env = Env::new();
+    let seed = |name: &str| {
+        let id = env.seed(name, None);
+        let db = env.db();
+        let mut row = db.get_session_by_id(id).unwrap().unwrap();
+        row.backend_type = "ssh:forgotten".into();
+        db.upsert_session(&row).unwrap();
+        id.to_string()
+    };
+
+    let id = seed("orphan");
+    for args in [
+        vec!["session", "rename", id.as_str(), "renamed"],
+        vec!["session", "set-key", id.as_str(), "k9"],
+        vec!["session", "restart", id.as_str()],
+    ] {
+        let mut args = args.clone();
+        args.push("--json");
+        let out = env.run(&args);
+        assert!(!out.status.success(), "{args:?} acted: {}", stdout_of(&out));
+        let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in hosts.toml"),
+            "{args:?}: {answer}"
+        );
+    }
+
+    let row = env
+        .db()
+        .get_session_by_id(id.parse().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.name, "orphan", "refused, so nothing was written here");
+    assert_eq!(row.key, None);
+
+    let reparented = env.run(&["session", "reparent", &id, "--clear", "--json"]);
+    assert!(reparented.status.success(), "{}", stdout_of(&reparented));
+
+    let deleted = env.run(&["session", "delete", &id, "--force", "--json"]);
+    assert!(deleted.status.success(), "{}", stdout_of(&deleted));
+    let id: SessionId = id.parse().unwrap();
+    assert!(
+        env.db().get_session_by_id(id).unwrap().is_none(),
+        "deleted here"
+    );
+}
