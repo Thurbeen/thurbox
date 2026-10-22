@@ -2777,6 +2777,9 @@ fn the_spawn_pipeline_reports_the_stage_it_reached() {
             fork_session_id: None,
             inherit_worktrees: Vec::new(),
             key: None,
+            session_id: None,
+            reports_as: None,
+            on_existing: None,
         },
         Some(&recorder),
     );

@@ -45,25 +45,15 @@ pub fn set_session_key_headless(
         });
     }
 
-    let host = super::resolve_host(&session.backend_type).ok_or_else(|| {
-        format!(
-            "Session '{}' runs on backend '{}', which is not in hosts.toml — \
-             cannot reach the machine it lives on",
-            session.name, session.backend_type
-        )
-    })?;
-    if let Some((host, cli)) = host
-        .as_ref()
-        .and_then(|h| super::host_cli::delegated(h).map(|cli| (h, cli)))
-    {
+    if let super::Executor::HostCli { host, cli } = super::Executor::for_session(&session)? {
         let id = session_id.to_string();
         let mut args = vec!["session", "set-key", id.as_str()];
         match key {
             Some(key) => args.push(key),
             None => args.push("--clear"),
         }
-        super::host_cli::run(host, &cli, &args)?;
-        if let Err(e) = super::mirror::mirror_host(db, host, &cli) {
+        super::host_cli::run(&host, &cli, &args)?;
+        if let Err(e) = super::mirror::mirror_host(db, &host, &cli) {
             tracing::warn!("mirror of '{}' after set-key failed: {e}", host.name);
         }
         return Ok(SetKeyReport {

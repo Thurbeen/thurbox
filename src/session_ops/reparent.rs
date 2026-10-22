@@ -29,16 +29,18 @@ pub fn reparent_session_headless(
         refuse_cycle(db, &session.name, id, parent)?;
     }
 
-    if let Some(Some(host)) = super::resolve_host(&session.backend_type) {
-        if let Some(cli) = super::host_cli::delegated(&host) {
-            let id = id.to_string();
-            let target = parent.map_or_else(|| "--clear".to_string(), |p| p.to_string());
-            super::host_cli::run(&host, &cli, &["session", "reparent", &id, &target])?;
-            if let Err(e) = super::mirror::mirror_host(db, &host, &cli) {
-                tracing::warn!("mirror of '{}' after reparent failed: {e}", host.name);
-            }
-            return Ok(());
+    // A host `hosts.toml` no longer names is still a row here, and a parent
+    // link is only a column: it is set on this side.
+    if let Some(super::Executor::HostCli { host, cli }) =
+        super::Executor::for_backend(&session.backend_type)
+    {
+        let id = id.to_string();
+        let target = parent.map_or_else(|| "--clear".to_string(), |p| p.to_string());
+        super::host_cli::run(&host, &cli, &["session", "reparent", &id, &target])?;
+        if let Err(e) = super::mirror::mirror_host(db, &host, &cli) {
+            tracing::warn!("mirror of '{}' after reparent failed: {e}", host.name);
         }
+        return Ok(());
     }
 
     match db.set_session_parent(id, parent) {

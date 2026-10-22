@@ -55,6 +55,7 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
                 "session_pre_launch": true,
                 "deleted_since": true,
                 "deleted_changes_since": true,
+                "create_parity": true,
             }),
             format!("thurbox {current}"),
         );
@@ -155,6 +156,7 @@ mod tests {
         assert_eq!(out["session_revision"], true);
         assert_eq!(out["deleted_since"], true);
         assert_eq!(out["deleted_changes_since"], true);
+        assert_eq!(out["create_parity"], true);
         assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
         assert!(out.failure.is_none(), "plain version never fails");
     }

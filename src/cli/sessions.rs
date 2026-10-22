@@ -173,6 +173,11 @@ pub enum Action {
         /// Base branch for the worktree (default: main).
         #[arg(long)]
         base_branch: Option<String>,
+        /// Open this existing worktree instead of creating one: it becomes the
+        /// cwd as it is, with `--worktree-branch` naming the branch checked out
+        /// there. No `git worktree add` runs.
+        #[arg(long, requires = "worktree_branch")]
+        existing_worktree: Option<PathBuf>,
         /// Remote host to run the session on (name from `hosts.toml`). The
         /// worktree and window are created on that host, over SSH or in its WSL
         /// distro.
@@ -246,6 +251,20 @@ pub enum Action {
         /// declaration `session reports-as` makes, at creation time.
         #[arg(long = "reports-as")]
         reports_as: Option<String>,
+        /// Create the session under this id rather than a fresh one.
+        ///
+        /// What makes a creation safe to retry: when a session with this id
+        /// is already active, it is answered as it is (`"created": false`),
+        /// whatever `--on-existing` says, and nothing is spawned. A delegated
+        /// creation passes one to every host CLI that takes it.
+        #[arg(long)]
+        id: Option<String>,
+        /// Read more environment from stdin, as one JSON object of string
+        /// values, under the same rules as `--env` — which wins on a clash.
+        /// For values that must not appear on a command line, where `ps`
+        /// shows them to every user of the machine.
+        #[arg(long = "env-stdin")]
+        env_stdin: bool,
     },
     /// Delete a session and its runtime resources. (`remove` is an alias.)
     #[command(alias = "remove")]
@@ -786,6 +805,7 @@ pub fn run(
             agent,
             worktree_branch,
             base_branch,
+            existing_worktree,
             host,
             multiplexer,
             parent,
@@ -798,6 +818,8 @@ pub fn run(
             key,
             on_existing,
             reports_as,
+            id,
+            env_stdin,
         } => run_create(
             db,
             backends.get(),
@@ -807,6 +829,7 @@ pub fn run(
                 agent,
                 worktree_branch,
                 base_branch,
+                existing_worktree,
                 host,
                 multiplexer,
                 parent,
@@ -819,6 +842,8 @@ pub fn run(
                 key,
                 on_existing,
                 reports_as,
+                id,
+                env_stdin,
             },
         ),
         Action::Delete { uuid, force, soft } => {
@@ -1209,6 +1234,7 @@ struct CreateArgs {
     agent: Option<String>,
     worktree_branch: Option<String>,
     base_branch: Option<String>,
+    existing_worktree: Option<PathBuf>,
     host: Option<String>,
     multiplexer: Option<String>,
     parent: Option<String>,
@@ -1221,6 +1247,8 @@ struct CreateArgs {
     key: Option<String>,
     on_existing: OnExisting,
     reports_as: Option<String>,
+    id: Option<String>,
+    env_stdin: bool,
 }
 
 fn run_create(
@@ -1234,6 +1262,7 @@ fn run_create(
         agent,
         worktree_branch,
         base_branch,
+        existing_worktree,
         host,
         multiplexer,
         parent,
@@ -1246,18 +1275,48 @@ fn run_create(
         key,
         on_existing,
         reports_as,
+        id,
+        env_stdin,
     } = args;
     // Before anything else: a key that could not be stored is a usage error,
     // and the `--on-existing` lookup below would otherwise run on it.
     if let Some(key) = &key {
         crate::session_ops::names::validate_key(key)?;
     }
+    let session_id = id
+        .as_deref()
+        .map(|id| {
+            id.parse::<SessionId>().map_err(|e| {
+                CommandError::with_code(
+                    format!("--id '{id}' is not a session id: {e}"),
+                    super::EXIT_USAGE,
+                )
+            })
+        })
+        .transpose()?;
+    // A retry: the id is the caller's, so a session under it is the one an
+    // earlier attempt made — whose answer the caller never saw. Answered as
+    // it is, before any `--on-existing` rule could refuse or replace it.
+    if let Some(id) = session_id {
+        if let Some(existing) = db
+            .get_session_by_id(id)
+            .map_err(|e| format!("get_session_by_id: {e}"))?
+        {
+            return Ok(existing_session_output(db, backends, &existing));
+        }
+    }
     let parent_session_id = parent
         .as_deref()
         .map(|reference| resolve(db, reference).map(|s| s.id))
         .transpose()?;
     let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
-    let env = parse_env(&env)?;
+    let mut env_all = if env_stdin {
+        env_from_stdin()?
+    } else {
+        Default::default()
+    };
+    env_all.extend(parse_env(&env)?);
+    let env = env_all;
     let registry = crate::agent::agent_config::load_or_seed();
     // Checked before anything is spawned: a typo here is silent
     // otherwise, and the session it would have described is already
@@ -1309,6 +1368,7 @@ fn run_create(
         repo_path,
         worktree_branch,
         base_branch,
+        existing_worktree,
         agent,
         host,
         multiplexer,
@@ -1319,6 +1379,14 @@ fn run_create(
         env,
         resume_session_id: resume,
         key,
+        session_id,
+        reports_as: reports_as.clone(),
+        on_existing: (on_existing != OnExisting::Allow).then(|| {
+            clap::ValueEnum::to_possible_value(&on_existing)
+                .expect("no variant is skipped")
+                .get_name()
+                .to_string()
+        }),
         ..Default::default()
     };
     let spawned = crate::session_ops::deliver::ensure_hooks_wired_for(db, backends, &req)
@@ -1334,6 +1402,10 @@ fn run_create(
             return Err(rollback_replace(db, backends, &existing, e).into());
         }
     };
+    // Here rather than in the spawn: the session exists by now, so a failed
+    // write is reported as exactly that and never rolls a `replace` back. A
+    // delegated session's row is the mirror of the host's, which carries no
+    // declaration; this machine's own reading needs it too.
     if let Some(declared) = &reports_as {
         if let Err(e) = db.set_reports_as(res.session_id, Some(declared)) {
             return Err(format!(
@@ -1361,7 +1433,12 @@ fn run_create(
     // the tick (status polls, extension self-heal, reaping).
     super::automations::arm_heartbeat(backends);
     let mut human = format!(
-        "Created session '{}' ({}) — {}\ncwd: {}",
+        "{} session '{}' ({}) — {}\ncwd: {}",
+        if res.created {
+            "Created"
+        } else {
+            "Adopted the host's"
+        },
         res.name,
         res.agent,
         res.session_id,
@@ -1403,7 +1480,7 @@ fn run_create(
             // one that was already there may be parked.
             "stopped": false,
             "state": state,
-            "created": true,
+            "created": res.created,
         }),
         human,
     ))
@@ -3059,6 +3136,28 @@ fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, CommandE
     }
 }
 
+/// `--env-stdin`: one JSON object of string values, each key held to
+/// `--env`'s rules (non-empty, no `=`).
+fn env_from_stdin() -> Result<std::collections::BTreeMap<String, String>, CommandError> {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+        .map_err(|e| format!("--env-stdin: read stdin: {e}"))?;
+    let env: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&input).map_err(|e| {
+            CommandError::with_code(
+                format!("--env-stdin: expected one JSON object of string values: {e}"),
+                super::EXIT_USAGE,
+            )
+        })?;
+    if let Some(key) = env.keys().find(|k| k.is_empty() || k.contains('=')) {
+        return Err(CommandError::with_code(
+            format!("--env-stdin: '{key}' is not an environment variable name"),
+            super::EXIT_USAGE,
+        ));
+    }
+    Ok(env)
+}
+
 /// Read repeatable `--env KEY=VALUE` tokens into a map.
 ///
 /// Split on the **first** `=` so a value may contain more (`--env
@@ -3450,16 +3549,10 @@ fn host_cli_for(
     if !crate::session::Route::is_remote_key(&session.backend_type) {
         return Ok(None);
     }
-    let host = crate::session_ops::resolve_host(&session.backend_type)
-        .flatten()
-        .ok_or_else(|| {
-            format!(
-                "session '{}' runs on backend '{}', which is not in hosts.toml — \
-                 cannot reach the machine it lives on",
-                session.name, session.backend_type
-            )
-        })?;
-    Ok(crate::session_ops::host_cli::delegated(&host).map(|cli| (host, cli)))
+    Ok(match crate::session_ops::Executor::for_session(session)? {
+        crate::session_ops::Executor::HostCli { host, cli } => Some((host, cli)),
+        crate::session_ops::Executor::Local => None,
+    })
 }
 
 fn host_output(answer: Value) -> CommandOutput {

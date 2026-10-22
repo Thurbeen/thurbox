@@ -1961,7 +1961,17 @@ local rows on `ssh:<name>` / `wsl:<name>` — same id, the host's facts and hook
 status — and performs every write there by running the host's own
 `thurbox-cli`: `session create|delete|restart|restore`, inside the four
 `session_ops` pipelines, so every caller delegates without knowing it
-(`session_ops::host_cli`, `session_ops::mirror`). A host with no CLI is
+(`session_ops::host_cli`, `session_ops::mirror`). Which side carries out a
+verb on an existing session is decided in one place,
+`session_ops::Executor::for_backend` (#1471) — the host's CLI when it is
+usable, this process otherwise — and each verb keeps only its own answer for
+a host `hosts.toml` no longer names. Create, which has no session yet, asks
+`host_cli::usable` itself, for the reason a session made from here reports;
+a fork stays on this side either way. A delegated create forwards every
+`SpawnRequest` field or refuses it by name (`spawn::delegated_create_args`,
+whose destructure has no `..`, so a new field does not compile until it is
+placed); its id is minted by the caller, so an answer lost to a dropped link
+is recovered by looking that id up rather than by creating twice. A host with no CLI is
 **provisioned** one: the release archive of this binary's version for the
 host's platform, checksum-verified by the code `thurbox-cli update` uses,
 placed under `~/.local/share/thurbox/bin/` on the host — never on PATH — and

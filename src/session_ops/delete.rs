@@ -116,98 +116,97 @@ pub fn delete_session_headless(
     // A session on a shareable host is the host's to delete: its CLI kills the
     // window and removes the worktrees where they are, and marks its own row;
     // the local row is marked from its answer. Soft or forced as asked.
-    if let Some(host) = super::resolve_host(&session.backend_type).flatten() {
-        if let Some(cli) = super::host_cli::delegated(&host) {
-            let id = session_id.to_string();
-            let mut args = vec!["session", "delete", &id];
-            if force {
-                args.push("--force");
-            } else if cli.soft_delete_choice {
-                // The peer's preference cannot change the caller's decision.
-                args.push("--soft");
-            }
-            let answer = match super::host_cli::run_classified(&host, &cli, &args) {
-                Ok(answer) => answer,
-                // The host does not know this row, so there is nothing there to
-                // delegate to — but the row here is real and the caller asked
-                // for it to go. Take the delete from here instead: the teardown
-                // is addressed by uuid, so it still reaches exactly this
-                // session's windows on that host if they are there at all.
-                Err(e) if matches!(e.error, super::OpError::NotFound(_)) => {
-                    report.host_unknown = Some(format!(
-                        "'{}' does not know this session ({e}); deleted from here",
-                        host.name
-                    ));
-                    return finish_locally(db, backends, &session, force, report, &hook_ctx);
-                }
-                // The question never arrived — the launcher would not start,
-                // or ssh failed on its own account — so nothing there acted on
-                // it and there is nothing there to have deleted. Taken from
-                // here instead, exactly as the legacy (non-delegated) path
-                // already does for the same host being down: the row is marked
-                // and, on a force delete, `owes_remote_teardown` records what
-                // the local teardown could not reach for the sweep to retry.
-                //
-                // Decided by which layer failed, never by reading the message
-                // (`host_cli::Reach`): the two branches here are "delete it
-                // from here anyway" and "leave it alone", and choosing between
-                // them by matching substrings of somebody else's error text
-                // gets the first unanticipated wording wrong, silently.
-                //
-                // `Undetermined` comes here with `Unreached` on purpose. An
-                // error whose layer cannot be told is an unanswered question,
-                // and the one thing an unanswered question must not do is
-                // stand in for the host saying no — which is what aborting
-                // would make it. Falling back is also the branch that still
-                // *does* something about the processes: the teardown is
-                // addressed by the window's own stamp, so on a host that is up
-                // (exit 127 — reached it, found no thurbox-cli there) it
-                // reaches exactly this session's windows, and on one that is
-                // not it records the owed teardown for the sweep. Aborting
-                // reaches nothing and records nothing, which is how a session
-                // on a host with a broken CLI became undeletable.
-                Err(e) if e.reach != crate::session_ops::host_cli::Reach::Answered => {
-                    report.host_unreachable = Some(format!(
-                        "'{}' did not answer the delete ({e}); deleted from here",
-                        host.name
-                    ));
-                    return finish_locally(db, backends, &session, force, report, &hook_ctx);
-                }
-                // The host itself refused — a locked database, a worktree it
-                // could not release. It is up, it heard the question, and the
-                // session may still be running there, so this still aborts and
-                // the row is left exactly as it was.
-                Err(e) => return Err(e.error),
-            };
-            report.killed_window = answer
-                .get("killed_window")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            report.removed_worktrees = string_list(&answer, "removed_worktrees");
-            report.kept_worktrees = string_list(&answer, "kept_worktrees");
-            report.worktree_errors = string_list(&answer, "worktree_errors");
-            // Reported, not adopted: a teardown the *host* could not finish is
-            // owed on the host's own row, and its sweep is the one that can
-            // finish it. Taking the mark here would send this machine after
-            // windows on a third machine it may not even have an entry for.
-            report.remote_teardown_error = answer
-                .get("remote_teardown_error")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string);
-            report.host_deadlines = Some(HostDeadlines {
-                undo_until: answer.get("undo_until").and_then(serde_json::Value::as_u64),
-                reapable_at: answer
-                    .get("reapable_at")
-                    .and_then(serde_json::Value::as_u64),
-            });
-            report.disabled_automations = db
-                .disable_send_automations_for_session(session_id)
-                .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
-            delete_row(db, session_id, force)?;
-            report.hook_failures =
-                super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
-            return Ok(report);
+    if let Some(super::Executor::HostCli { host, cli }) =
+        super::Executor::for_backend(&session.backend_type)
+    {
+        let id = session_id.to_string();
+        let mut args = vec!["session", "delete", &id];
+        if force {
+            args.push("--force");
+        } else if cli.soft_delete_choice {
+            // The peer's preference cannot change the caller's decision.
+            args.push("--soft");
         }
+        let answer = match super::host_cli::run_classified(&host, &cli, &args) {
+            Ok(answer) => answer,
+            // The host does not know this row, so there is nothing there to
+            // delegate to — but the row here is real and the caller asked
+            // for it to go. Take the delete from here instead: the teardown
+            // is addressed by uuid, so it still reaches exactly this
+            // session's windows on that host if they are there at all.
+            Err(e) if matches!(e.error, super::OpError::NotFound(_)) => {
+                report.host_unknown = Some(format!(
+                    "'{}' does not know this session ({e}); deleted from here",
+                    host.name
+                ));
+                return finish_locally(db, backends, &session, force, report, &hook_ctx);
+            }
+            // The question never arrived — the launcher would not start,
+            // or ssh failed on its own account — so nothing there acted on
+            // it and there is nothing there to have deleted. Taken from
+            // here instead, exactly as the legacy (non-delegated) path
+            // already does for the same host being down: the row is marked
+            // and, on a force delete, `owes_remote_teardown` records what
+            // the local teardown could not reach for the sweep to retry.
+            //
+            // Decided by which layer failed, never by reading the message
+            // (`host_cli::Reach`): the two branches here are "delete it
+            // from here anyway" and "leave it alone", and choosing between
+            // them by matching substrings of somebody else's error text
+            // gets the first unanticipated wording wrong, silently.
+            //
+            // `Undetermined` comes here with `Unreached` on purpose. An
+            // error whose layer cannot be told is an unanswered question,
+            // and the one thing an unanswered question must not do is
+            // stand in for the host saying no — which is what aborting
+            // would make it. Falling back is also the branch that still
+            // *does* something about the processes: the teardown is
+            // addressed by the window's own stamp, so on a host that is up
+            // (exit 127 — reached it, found no thurbox-cli there) it
+            // reaches exactly this session's windows, and on one that is
+            // not it records the owed teardown for the sweep. Aborting
+            // reaches nothing and records nothing, which is how a session
+            // on a host with a broken CLI became undeletable.
+            Err(e) if e.reach != crate::session_ops::host_cli::Reach::Answered => {
+                report.host_unreachable = Some(format!(
+                    "'{}' did not answer the delete ({e}); deleted from here",
+                    host.name
+                ));
+                return finish_locally(db, backends, &session, force, report, &hook_ctx);
+            }
+            // The host itself refused — a locked database, a worktree it
+            // could not release. It is up, it heard the question, and the
+            // session may still be running there, so this still aborts and
+            // the row is left exactly as it was.
+            Err(e) => return Err(e.error),
+        };
+        report.killed_window = answer
+            .get("killed_window")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        report.removed_worktrees = string_list(&answer, "removed_worktrees");
+        report.kept_worktrees = string_list(&answer, "kept_worktrees");
+        report.worktree_errors = string_list(&answer, "worktree_errors");
+        // Reported, not adopted: a teardown the *host* could not finish is
+        // owed on the host's own row, and its sweep is the one that can
+        // finish it. Taking the mark here would send this machine after
+        // windows on a third machine it may not even have an entry for.
+        report.remote_teardown_error = answer
+            .get("remote_teardown_error")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        report.host_deadlines = Some(HostDeadlines {
+            undo_until: answer.get("undo_until").and_then(serde_json::Value::as_u64),
+            reapable_at: answer
+                .get("reapable_at")
+                .and_then(serde_json::Value::as_u64),
+        });
+        report.disabled_automations = db
+            .disable_send_automations_for_session(session_id)
+            .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
+        delete_row(db, session_id, force)?;
+        report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
+        return Ok(report);
     }
 
     finish_locally(db, backends, &session, force, report, &hook_ctx)

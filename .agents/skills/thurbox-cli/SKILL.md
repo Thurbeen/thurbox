@@ -163,6 +163,15 @@ match is **legacy**: pass `--key`.
 | `replace` | tear the old one down (`delete --force`) first |
 | `fail` | refuse, naming the id in the way; exit 5 |
 
+`session create --id <uuid>` creates under the caller's id, and is the one
+answer that comes **before** `--on-existing`: an id already active is the
+session an earlier attempt made, answered as it is (`created: false`); a
+deleted one is a conflict (exit 5). A delegated create passes one to every
+host CLI reporting `create_parity` (#1471), and forwards `--on-existing`, which
+the host then applies against its own rows: an `adopt` it answers comes back
+`created: false` with the host's id. `--env-stdin` reads more environment as one JSON object of strings —
+`--env` wins a clash — for values that must not be on a command line.
+
 **The match is scoped to the server the creation lands on** — this machine's
 multiplexer, or its `--host`'s — whichever spelling each row's `backend_type`
 carries (`session_ops::server_key`: a legacy `ssh:devbox` row and a new

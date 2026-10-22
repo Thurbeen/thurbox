@@ -193,6 +193,9 @@ fn spawn(
             fork_session_id: None,
             inherit_worktrees: Vec::new(),
             key: None,
+            session_id: None,
+            reports_as: None,
+            on_existing: None,
         },
     );
     match result {
