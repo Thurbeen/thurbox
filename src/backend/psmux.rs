@@ -1664,6 +1664,14 @@ mod tests {
     /// which logs every command line it is given beside itself (`psmux.log`).
     #[cfg(unix)]
     fn psmux_answering(version: &str) -> (tempfile::TempDir, PsmuxBackend, std::path::PathBuf) {
+        psmux_asked_its_version(&format!("echo '{version}'"))
+    }
+
+    /// [`psmux_answering`], running `answer` — shell — for the version.
+    #[cfg(unix)]
+    fn psmux_asked_its_version(
+        answer: &str,
+    ) -> (tempfile::TempDir, PsmuxBackend, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().expect("tempdir");
         let mux = root.path().join("psmux");
@@ -1671,7 +1679,7 @@ mod tests {
             &mux,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$0.log\"\n\
-                 case \"$*\" in\n  *'#{{version}}'*) echo '{version}' ;;\nesac\n"
+                 case \"$*\" in\n  *'#{{version}}'*) {answer} ;;\nesac\n"
             ),
         )
         .expect("write fake psmux");
@@ -1713,6 +1721,61 @@ mod tests {
         assert_eq!(psmux.target("%3").unwrap(), "thurbox:.%3");
         let sent = std::fs::read_to_string(&log).unwrap_or_default();
         assert_eq!(sent.matches("#{version}").count(), 1, "{sent}");
+    }
+
+    /// A server that is there but does not say what it is — a busy one whose
+    /// answer timed out — still runs whatever is sent next, so nothing is named
+    /// to it.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_that_fails_to_say_its_version_is_named_no_pane() {
+        let (_root, psmux, log) =
+            psmux_asked_its_version("echo 'psmux: command timed out' >&2; exit 1");
+        let err = psmux
+            .send_key(
+                "%2",
+                &crate::backend::contract::Key::parse("Enter").unwrap(),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("could not ask the server its version"),
+            "{err}"
+        );
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("%2"), "a pane was named to it:\n{sent}");
+    }
+
+    /// No server at all has no pane to misroute to; the answer is not kept, so
+    /// the server a later command starts is asked.
+    #[cfg(unix)]
+    #[test]
+    fn no_server_is_let_through_and_asked_again() {
+        let (_root, psmux, log) = psmux_asked_its_version(
+            "echo \"psmux: no server running on session 'test__thurbox'\" >&2; exit 1",
+        );
+        assert_eq!(psmux.target("%2").unwrap(), "thurbox:.%2");
+        assert_eq!(psmux.target("%3").unwrap(), "thurbox:.%3");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert_eq!(sent.matches("#{version}").count(), 2, "{sent}");
+    }
+
+    /// psmux reports some failures on stdout with status 0
+    /// ([`Psmux::EXIT_ZERO_ERRORS`]): one saying the session is not there is
+    /// the same absence as a refusal on stderr; any other is a failure to say.
+    #[cfg(unix)]
+    #[test]
+    fn a_status_zero_error_for_the_version_is_judged_like_a_refusal() {
+        let (_root, psmux, log) =
+            psmux_asked_its_version("echo \"ERROR: can't find window: =tb-demo\"");
+        assert_eq!(psmux.target("%2").unwrap(), "thurbox:.%2");
+        assert_eq!(psmux.target("%3").unwrap(), "thurbox:.%3");
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert_eq!(sent.matches("#{version}").count(), 2, "{sent}");
+
+        let (_root, psmux, _log) = psmux_asked_its_version("echo 'ERROR: server is busy'");
+        let err = psmux.target("%2").unwrap_err().to_string();
+        assert!(err.contains("ERROR: server is busy"), "{err}");
     }
 
     /// A bare `kill-window -t @7` killed another session's `@7` (measured on

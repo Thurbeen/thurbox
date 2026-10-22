@@ -94,8 +94,14 @@ try {
     foreach ($name in $names) {
         $r=Invoke-Tbx @('session','create','--name',$name,'--repo-path',"$run/repo",'--command',$ps,'--arg','-NoProfile','--arg','-ExecutionPolicy','--arg','Bypass','--arg','-File','--arg',"$run/agent.ps1",'--arg',$name)
         if ($r.code -ne 0) {
-            if ("$($r.out)$($r.err)" -match 'psmux \S+ is too old') {
-                Write-Output "PASS psmux refused before any pane was addressed: $($matches[0])"
+            # A refusal passes only for a psmux this run has and the floor
+            # really excludes: refusing 3.3.8 would be a bug of its own.
+            if ("$($r.out)$($r.err)" -match 'psmux (\d+\.\d+\.\d+) is too old') {
+                $refused = $matches[1]
+                if ([version]$refused -ge [version]'3.3.8' -or $mux -notmatch "(psmux|tmux) $([regex]::Escape($refused))\b") {
+                    throw "thurbox refused psmux $refused, which this run ($mux) does not make too old"
+                }
+                Write-Output "PASS psmux $refused refused before any pane was addressed"
                 exit 0
             }
             throw "session create $name failed ($($r.code)): $($r.out) $($r.err)"
@@ -122,8 +128,22 @@ try {
     foreach ($kept in @('tb-route-a','tb-route-c')) {
         if ($before -contains $kept -and $after -notcontains $kept) { $failures+="stopping route-b killed $kept" }
     }
+    # With no server left, a key has nowhere to go: refused as absent, never
+    # held up by the version question that finds nothing to ask.
+    $ErrorActionPreference='Continue'
+    & psmux -L $socket kill-server 2>&1 | Out-Null
+    $ErrorActionPreference='Stop'
+    Start-Sleep -Seconds 2
+    $r=Invoke-Tbx @('session','key',$sessions['route-a'],'Enter')
+    if ($r.code -eq 0) { $failures+="a key to a server that is gone reported success" }
+    if ("$($r.out)$($r.err)" -match 'could not ask the server its version|is too old') {
+        $failures+="a server that is gone was refused as unanswering: $($r.out) $($r.err)"
+    }
     if ($failures.Count -gt 0) { throw "pane commands reached the wrong pane on $mux`n" + ($failures -join "`n") }
-    Write-Output "PASS each session's input reached that session only, and a stop ended only its own window"
+    Write-Output "PASS each session's input reached that session only, a stop ended only its own window, and a key to a server that is gone failed as absent"
+    # The kill-server in `finally` finds no server and fails; that status is
+    # not this run's verdict.
+    exit 0
 } finally {
     $ErrorActionPreference='Continue'
     & psmux -L $socket kill-server 2>&1 | Out-Null

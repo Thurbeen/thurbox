@@ -301,8 +301,10 @@ event after three actual CLI relaunches. Cleanup runs in `finally`. It runs
 `scripts/dev/e2e/psmux-pane-routing.ps1` the same way (#1557): three sessions of
 a fixture agent that logs what it reads, each sent its own line, then one
 stopped; it passes when every line reached its own session and only that window
-ended, or when thurbox refused the psmux as too old. `-PsmuxDir` puts a given
-psmux first on `PATH`, which is how it was run against 3.3.7, 3.3.8 and 3.4.0.
+ended, or when thurbox refused a psmux older than 3.3.8. `-PsmuxDir` puts a
+given psmux first on `PATH`, which is how it was run against 3.3.7, 3.3.8 and
+3.4.0; `-ServerPsmuxDir` starts thurbox's server with an older psmux first, the
+server an upgrade leaves running.
 
 One family under `scripts/dev/e2e/` (`linux-container.sh` = ephemeral Podman,
 `windows-vm.sh` = ephemeral dockur Windows VM, `real-host.sh` = a machine you own)

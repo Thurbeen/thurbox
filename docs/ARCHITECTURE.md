@@ -1166,13 +1166,24 @@ adapter's `VERSION_FLOOR`, `check_psmux_version`). Every pane target is spelled
 by `Server::target`, which first asks the **server** its `#{version}`
 (`admit_server`), not the binary: upgrading psmux leaves a server started
 before it on the old code, and the message says to restart it. The answer is
-kept until the control connection is replaced, which may be by a server
-started since. A server that does not answer is not refused — nothing named to
-it arrives either. Only where no session exists yet, so no server to ask, does
-the binary's `-V` answer — before it starts one that every command would then
-refuse. Two callers spell a target without asking, because they must not wait
-on a round trip: the paint's `resize` and the input loop's `is_dead`. The pane
-each names was admitted when it was attached.
+kept for the control connection it was asked on (a generation bumped as each
+connection is installed), since a replacement may be to a server started
+since, and callers arriving together share one question — and its failure,
+rather than each waiting out a server that is not answering. Only a typed
+absence (no server, or no session on it, with no connection open) or a
+one-shot that answers nothing is let through, unremembered, because nothing
+named to it can arrive; any other failure refuses, since a busy server that
+times out still runs the command after it, and an answer over control mode
+that is not a version may be another command's reply. One gap remains: a
+command written when its connection broke is sent again on the replacement
+unasked (`ctrl_command_list`), which matters only if the server was replaced
+by an older one in that instant. Where no
+session exists yet, so no server to ask, the binary's `-V` answers — before it
+starts one that every command would then refuse. Two callers spell a target
+without asking, because they must not wait on a round trip: the paint's
+`resize` and the input loop's `is_dead`. Their panes were attached through
+`target`; after a reconnect they go unasked until re-attaching the panes asks
+again.
 
 ### A psmux agent reports its own exit, and its relaunches are bounded
 

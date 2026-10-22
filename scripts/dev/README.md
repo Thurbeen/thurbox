@@ -46,8 +46,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev/e2e/psmux-exit-c
 
 `e2e/psmux-pane-routing.ps1` runs beside it (#1557): every session's input must
 reach that session and a stop end only its window, unless thurbox refuses the
-psmux as too old. `-PsmuxDir <dir>` tests the psmux.exe in that directory
-instead of the one on `PATH`.
+psmux as too old — and only one older than 3.3.8. `-PsmuxDir <dir>` tests the
+psmux.exe in that directory instead of the one on `PATH`; `-ServerPsmuxDir <dir>`
+first starts thurbox's server with an older one, the server an upgrade of the
+psmux on `PATH` leaves running.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev/e2e/psmux-pane-routing.ps1 -BinaryDir target/debug -PsmuxDir C:\psmux-3.3.7
