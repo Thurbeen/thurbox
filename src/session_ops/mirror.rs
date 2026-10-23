@@ -4,7 +4,8 @@
 //! record; this module reconciles the local rows on that host's backend to it
 //! — adopting what is new, updating what changed, deleting and restoring what
 //! the host says was deleted and restored — and writes nothing when nothing
-//! moved, so an idle mirror does not bump `data_version` for every peer. The
+//! moved (past stamping, once, a row mirrored before the host's clock was
+//! kept), so an idle mirror does not bump `data_version` for every peer. The
 //! observer keeps what is its own: display order, the companion shell, and a
 //! pane id the host does not report.
 //!
@@ -379,10 +380,20 @@ pub fn apply(
         .collect();
     let hook_rows = db.load_hook_states().unwrap_or_default();
     let bases = db.load_base_branches().unwrap_or_default();
+    // `None` when it cannot be read: then no row is taken for unstamped, so a
+    // failed read never turns into a write per row per pass.
+    let clocked = db.mirrored_session_ids().ok();
 
     for row in active {
         let id = row.session.id;
         let plan = plan_row(&local_active, &local_deleted, row);
+        // A row mirrored before the host's clock was kept (schema v45) and
+        // unchanged since is never rewritten, so it is stamped here, once:
+        // the clock is what marks a row as the host's to forget with it.
+        if matches!(plan, RowPlan::Unchanged) && clocked.as_ref().is_some_and(|c| !c.contains(&id))
+        {
+            record_host_clock(db, id, row.updated_at);
+        }
         if !apply_plan(db, row, plan, &mut report) {
             continue;
         }

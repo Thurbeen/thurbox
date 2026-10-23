@@ -998,16 +998,40 @@ fn a_loopback_entrys_rows_are_left_to_the_wsl_repair() {
     let wsl = bin.join("wsl.exe");
     std::fs::write(&wsl, "#!/bin/sh\n").unwrap();
     std::fs::set_permissions(&wsl, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let saved = std::env::var_os("PATH");
-    std::env::set_var("PATH", &bin);
-    crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
-        crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
-            mirror::sync(&rig.db, None, false).unwrap();
+    crate::paths::with_path(&bin, || {
+        crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+            crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+                mirror::sync(&rig.db, None, false).unwrap();
+            });
         });
     });
-    match saved {
-        Some(p) => std::env::set_var("PATH", p),
-        None => std::env::remove_var("PATH"),
-    }
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
+}
+
+/// A row mirrored before the host's clock was recorded (schema v45) and
+/// unchanged since: every pass finds it already up to date, so the pass that
+/// first confirms it must stamp it, or a removed host leaves it for good.
+#[test]
+fn a_mirror_from_before_the_hosts_clock_is_forgotten_with_its_host() {
+    let rig = rig();
+    let id = SessionId::default();
+    rig.host
+        .borrow_mut()
+        .active
+        .push(host_session(id, "old-mirror"));
+    // The row exactly as a mirror holds it, minus the clock an older thurbox
+    // never wrote.
+    let elsewhere = Database::open_in_memory().unwrap();
+    mirror::sync(&elsewhere, None, false).unwrap();
+    let held = elsewhere.get_session_by_id(id).unwrap().unwrap();
+    rig.db.upsert_session(&held).unwrap();
+    mirror::forget_lists();
+    mirror::sync(&rig.db, None, false).unwrap();
+
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(path, "").unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_session_by_id(id).unwrap().is_none());
 }
