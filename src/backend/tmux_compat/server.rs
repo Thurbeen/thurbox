@@ -3629,12 +3629,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             self.tmux_output(&["display-message", "-p", "-t", &target, format])
                 .unwrap_or_default()
         };
-        let mut fields = raw.trim_end_matches(['\r', '\n']).splitn(3, ' ');
-        let (pid, pane, window) = (fields.next(), fields.next(), fields.next());
-        if !answered_for(backend_id, window, pane) {
-            return Ok(None);
-        }
-        Ok(pid.and_then(|pid| pid.parse().ok()))
+        Ok(parse_pane_pid_answer(backend_id, &raw))
     }
 
     fn pane_pids(&self) -> crate::backend::contract::BackendResult<HashMap<String, u32>> {
@@ -4217,6 +4212,21 @@ fn answered_for(target: &str, window: Option<&str>, pane: Option<&str>) -> bool 
         Some((_, name)) => window == Some(name),
         None => pane == Some(target),
     }
+}
+
+/// `pane_pid`'s `#{pane_pid} #{pane_id} #{window_name}` answer, or `None`
+/// unless it is `target`'s own.
+///
+/// Read off the last line: RMUX's control mode can put a pane's `%output`
+/// ahead of it in the same reply, and the answer is always one line.
+fn parse_pane_pid_answer(target: &str, raw: &str) -> Option<u32> {
+    let answer = raw.trim_end_matches(['\r', '\n']).lines().last()?;
+    let mut fields = answer.splitn(3, ' ');
+    let (pid, pane, window) = (fields.next(), fields.next(), fields.next());
+    if !answered_for(target, window, pane) {
+        return None;
+    }
+    pid.and_then(|pid| pid.parse().ok())
 }
 
 /// Where `register_pane` learnt a pane lives.
@@ -5122,6 +5132,21 @@ fn typed_absence(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RMUX's control mode can deliver a pane's `%output` inside a command's
+    /// reply (captured from `a_missing_rmux_window_never_borrows_a_live_panes_pid`
+    /// failing intermittently); the answer is still its last line.
+    #[test]
+    fn a_pane_pid_answer_is_read_past_pane_output_in_the_reply() {
+        let raw = "%output %0 \\033[?1h\\033=\\033[?2004h\n1826732 %1 tb-live\n";
+        assert_eq!(parse_pane_pid_answer("%1", raw), Some(1826732));
+        assert_eq!(parse_pane_pid_answer("s:=tb-live", raw), Some(1826732));
+        assert_eq!(parse_pane_pid_answer("s:=tb-gone", raw), None);
+        assert_eq!(
+            parse_pane_pid_answer("s:=tb-two words", "7 %2 tb-two words"),
+            Some(7)
+        );
+    }
 
     /// An adopted pane's history reaches the reader in pieces, so replaying a
     /// long scrollback never holds the parser's lock (and a paint behind it)
