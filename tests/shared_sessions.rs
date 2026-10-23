@@ -17,6 +17,11 @@ use thurbox::session_ops::mirror::{self, HostDeletedRow, MirrorReport, Transitiv
 use thurbox::storage::Database;
 use thurbox::sync::{SharedSession, SharedWorktree};
 
+/// The guard every tmux server in this file is reaped by — see its own doc.
+#[cfg(unix)]
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
 const BACKEND: &str = "ssh:devbox";
 
 /// `register` shells out to list windows on this machine's tmux server, so
@@ -641,6 +646,14 @@ fn host_row(id: SessionId, name: &str) -> SharedSession {
 /// can stand a different `thurbox-cli` in front of the real one.
 #[cfg(unix)]
 fn write_ssh(bin: &std::path::Path, root: &std::path::Path) {
+    write_ssh_with(bin, root, "");
+}
+
+/// [`write_ssh`], with `extra` shell lines run on the "host" just before the
+/// remote command — where a test points it at its own multiplexer, or makes
+/// the link misbehave.
+#[cfg(unix)]
+fn write_ssh_with(bin: &std::path::Path, root: &std::path::Path, extra: &str) {
     let cli_dir = std::path::Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .parent()
         .unwrap()
@@ -660,6 +673,7 @@ export HOME='{root}/host-home'
 export THURBOX_CONFIG_DIR='{root}/host-config'
 export THURBOX_DATA_DIR='{root}/host-data'
 export PATH='{root}/host-bin':'{cli_dir}':/usr/bin:/bin
+{extra}
 exec sh -c "$*"
 "#,
         root = root.display(),
@@ -829,5 +843,810 @@ fn a_host_a_schema_ahead_in_the_same_major_is_delegated_to() {
         thurbox::session_ops::host_cli::Usable::No(why) => {
             panic!("a host one minor release ahead is not shared with: {why}")
         }
+    }
+}
+
+/// A session created on a host that shares its sessions is created by the
+/// host's own `thurbox-cli` — and must come out the way the caller asked for
+/// it (#1471).
+///
+/// Two real instances: the caller, and the "host" behind [`write_ssh_with`],
+/// each with its own config, data, home and tmux server. Only the network hop
+/// is not real: every flag the caller forwards is parsed by the real host CLI,
+/// and stdin crosses the stand-in as it would cross ssh.
+#[cfg(unix)]
+mod delegated_create {
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Output};
+    use std::time::{Duration, Instant};
+
+    use serde_json::Value;
+    use thurbox::session::SessionId;
+    use thurbox::storage::Database;
+
+    use super::tmux_server::TmuxServer;
+
+    const SETTINGS: &str =
+        "[features]\nautomations = false\nversion_check = false\nauto_update = false\n";
+
+    /// The host's registry: a `shell` default that idles, and an agent that
+    /// pins a conversation id through `resume_args`.
+    const HOST_AGENTS: &str = "default = \"shell\"\n\n\
+         [[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = [\"-c\", \"exec sleep 600\"]\n\n\
+         [[agents]]\nname = \"resumer\"\ncommand = \"sh\"\nargs = []\n\
+         resume_args = [\"-c\", \"exec sleep 600 {id}\"]\nresume_latest = false\n";
+
+    /// The caller, wired to reach the host through the stand-in `ssh`.
+    struct Pair {
+        root: tempfile::TempDir,
+        caller_server: TmuxServer,
+        host_server: TmuxServer,
+    }
+
+    impl Pair {
+        fn new() -> Self {
+            let root = tempfile::TempDir::new().expect("tempdir");
+            for sub in [
+                "bin",
+                "home",
+                "config",
+                "data",
+                "work",
+                "host-home",
+                "host-config",
+                "host-data",
+            ] {
+                std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
+            }
+            let path = |sub: &str| root.path().join(sub);
+            std::fs::write(path("config/settings.toml"), SETTINGS).unwrap();
+            std::fs::write(path("host-config/settings.toml"), SETTINGS).unwrap();
+            std::fs::write(path("host-config/agents.toml"), HOST_AGENTS).unwrap();
+            std::fs::write(
+                path("config/hosts.toml"),
+                "[[hosts]]\nname = 'probe'\ndestination = 'probe'\nshare_sessions = true\n",
+            )
+            .unwrap();
+            let caller_server = TmuxServer::private("tbx-dc-caller");
+            let host_server = TmuxServer::private("tbx-dc-host");
+            // The host's own multiplexer, and a link that can be made to drop
+            // the answer of a `session create` the host has already carried out.
+            super::write_ssh_with(
+                &path("bin"),
+                root.path(),
+                &format!(
+                    "export TMUX_TMPDIR='{tmpdir}' THURBOX_SOCKET='{socket}'\n\
+                     unset THURBOX_SOCKET_FOR THURBOX_SESSION THURBOX_SESSION_ID\n\
+                     case \"$*\" in\n\
+                     \x20 *' session create '*)\n\
+                     \x20   if [ -e '{refuse}' ]; then exit 255; fi\n\
+                     \x20   if [ -e '{drop}' ]; then sh -c \"$*\" >/dev/null 2>&1; exit 255; fi ;;\n\
+                     \x20 *' session get '*)\n\
+                     \x20   if [ -e '{other}' ]; then\n\
+                     \x20     printf '%s\\n' '{{\"id\":\"00000000-0000-0000-0000-000000000001\"}}'; exit 0\n\
+                     \x20   fi ;;\n\
+                     esac",
+                    other = path("get-answers-another").display(),
+                    tmpdir = host_server.tmpdir().display(),
+                    socket = host_server.socket(),
+                    drop = path("drop-answer").display(),
+                    refuse = path("never-arrives").display(),
+                ),
+            );
+            Self {
+                root,
+                caller_server,
+                host_server,
+            }
+        }
+
+        fn path(&self, sub: &str) -> PathBuf {
+            self.root.path().join(sub)
+        }
+
+        fn host_db(&self) -> Database {
+            Database::open(&self.path("host-data/thurbox.db")).expect("open the host database")
+        }
+
+        fn caller_db(&self) -> Database {
+            Database::open(&self.path("data/thurbox.db")).expect("open the caller database")
+        }
+
+        /// `session create --host probe` from the caller.
+        fn create(&self, args: &[&str]) -> Output {
+            self.create_via("probe", args)
+        }
+
+        /// [`create`](Self::create), naming the host as `host`.
+        fn create_via(&self, host: &str, args: &[&str]) -> Output {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+            cmd.args(["session", "create", "--host", host, "--repo-path"])
+                .arg(self.path("work"))
+                .args(args)
+                .arg("--json")
+                .env("HOME", self.path("home"))
+                .env("USERPROFILE", self.path("home"))
+                .env("THURBOX_CONFIG_DIR", self.path("config"))
+                .env("THURBOX_DATA_DIR", self.path("data"))
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        self.path("bin").display(),
+                        std::env::var("PATH").unwrap()
+                    ),
+                )
+                .env_remove("THURBOX_SESSION")
+                .env_remove("THURBOX_SESSION_ID");
+            self.caller_server.scope(&mut cmd);
+            cmd.output().expect("run thurbox-cli")
+        }
+
+        /// `session create` run by the host's own CLI, as a thurbox there
+        /// would.
+        fn create_on_host(&self, args: &[&str]) -> Output {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+            cmd.args(["session", "create", "--repo-path"])
+                .arg(self.path("work"))
+                .args(args)
+                .arg("--json")
+                .env("HOME", self.path("host-home"))
+                .env("USERPROFILE", self.path("host-home"))
+                .env("THURBOX_CONFIG_DIR", self.path("host-config"))
+                .env("THURBOX_DATA_DIR", self.path("host-data"))
+                .env_remove("THURBOX_SESSION")
+                .env_remove("THURBOX_SESSION_ID");
+            self.host_server.scope(&mut cmd);
+            cmd.output().expect("run the host's thurbox-cli")
+        }
+
+        /// Every remote command the stand-in was handed.
+        fn ssh_log(&self) -> String {
+            std::fs::read_to_string(self.path("ssh.log")).unwrap_or_default()
+        }
+    }
+
+    fn answer(out: &Output) -> Value {
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "stdout is JSON ({e}): {}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        })
+    }
+
+    fn created_id(out: &Output) -> SessionId {
+        let doc = answer(out);
+        assert!(out.status.success(), "create failed: {doc}");
+        doc["id"].as_str().expect("an id").parse().expect("a uuid")
+    }
+
+    /// Wait for `path` to hold something, for as long as a pane takes to
+    /// start.
+    fn wait_for_file(path: &Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{} was never written",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// `--command`, `--arg`, `--env` and `--reports-as` reach the host's CLI;
+    /// the environment's values never reach a command line on the way.
+    #[test]
+    fn a_delegated_create_carries_the_command_its_args_and_its_env() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let seen = pair.path("seen");
+        let script = format!(
+            "printf '%s' \"$FM_SECRET\" > '{}'; exec sleep 600",
+            seen.display()
+        );
+        let out = pair.create(&[
+            "--name",
+            "carried",
+            "--command",
+            "sh",
+            "--arg",
+            "-c",
+            "--arg",
+            &script,
+            "--env",
+            "FM_SECRET=env-secret",
+            "--reports-as",
+            "claude",
+        ]);
+        let id = created_id(&out);
+
+        assert_eq!(
+            wait_for_file(&seen),
+            "env-secret",
+            "the host must launch the caller's command, in the caller's environment"
+        );
+        let host = pair.host_db();
+        assert!(
+            host.get_session_by_id(id).unwrap().is_some(),
+            "the host's own row"
+        );
+        let recipe = host
+            .load_launch_recipe(id)
+            .unwrap()
+            .expect("a command session records its recipe on the host");
+        assert_eq!(recipe.command, "sh");
+        assert_eq!(
+            host.load_reports_as().unwrap().get(&id).map(String::as_str),
+            Some("claude"),
+            "the declaration belongs where the hooks that read it run"
+        );
+        let caller = pair.caller_db();
+        assert!(
+            caller.get_session_by_id(id).unwrap().is_some(),
+            "the caller mirrors the host's row under the same id"
+        );
+        assert_eq!(
+            caller
+                .load_reports_as()
+                .unwrap()
+                .get(&id)
+                .map(String::as_str),
+            Some("claude"),
+            "and reads the row against the same agent the host does"
+        );
+        let log = pair.ssh_log();
+        assert!(
+            log.contains("session create") && !log.contains("env-secret"),
+            "an --env value reached ssh's command line, readable in ps: {log}"
+        );
+    }
+
+    /// `--resume` reaches the host: the session continues the conversation it
+    /// was asked to, rather than starting a fresh one under a new id.
+    #[test]
+    fn a_delegated_create_resumes_the_conversation_it_was_given() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let out = pair.create(&[
+            "--name", "resumed", "--agent", "resumer", "--resume", "conv-7",
+        ]);
+        let id = created_id(&out);
+        let row = pair.host_db().get_session_by_id(id).unwrap().expect("row");
+        assert_eq!(row.agent, "resumer");
+        assert_eq!(row.agent_session_id.as_deref(), Some("conv-7"));
+    }
+
+    /// The link drops after the host created the session: the caller finds it
+    /// by the id it minted, rather than reporting a failure that a retry would
+    /// turn into a second session.
+    #[test]
+    fn a_create_whose_answer_was_lost_is_found_by_its_id_not_made_twice() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        std::fs::write(pair.path("drop-answer"), "").unwrap();
+        let out = pair.create(&["--name", "dropped"]);
+        let id = created_id(&out);
+        std::fs::remove_file(pair.path("drop-answer")).unwrap();
+
+        let host = pair.host_db();
+        let named: Vec<_> = host
+            .find_sessions_by_name("dropped")
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(
+            named,
+            vec![id],
+            "exactly the one session, under the reported id"
+        );
+
+        // A driver retrying with the id it was given is answered, not
+        // duplicated.
+        let again = pair.create(&["--name", "dropped", "--id", &id.to_string()]);
+        let doc = answer(&again);
+        assert!(again.status.success(), "{doc}");
+        assert_eq!(doc["id"], id.to_string());
+        assert_eq!(doc["created"], false, "{doc}");
+        assert_eq!(host.find_sessions_by_name("dropped").unwrap().len(), 1);
+    }
+
+    /// A retry the caller's mirror has not caught up with reaches the host,
+    /// which answers its own session under that id — `created: false`, and
+    /// before `--on-existing` is asked anything, so even `replace` leaves the
+    /// running session exactly as it was.
+    #[test]
+    fn the_host_answers_a_known_id_whatever_on_existing_says() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = SessionId::default();
+        let made =
+            pair.create_on_host(&["--name", "known", "--key", "k2", "--id", &id.to_string()]);
+        assert_eq!(created_id(&made), id);
+        let before = pair.host_db().get_session_by_id(id).unwrap().expect("row");
+        assert!(
+            pair.caller_db().get_session_by_id(id).unwrap().is_none(),
+            "the caller has not mirrored it yet"
+        );
+
+        // `replace` first, while only the host knows the id; `fail` then meets
+        // the caller's own mirror of it.
+        for mode in ["replace", "fail"] {
+            let out = pair.create(&[
+                "--name",
+                "known",
+                "--key",
+                "k2",
+                "--id",
+                &id.to_string(),
+                "--on-existing",
+                mode,
+            ]);
+            let doc = answer(&out);
+            assert!(out.status.success(), "{mode}: {doc}");
+            assert_eq!(doc["id"], id.to_string(), "{mode}: {doc}");
+            assert_eq!(doc["created"], false, "{mode}: {doc}");
+        }
+        let host = pair.host_db();
+        assert_eq!(host.find_sessions_by_name("known").unwrap().len(), 1);
+        let after = host.get_session_by_id(id).unwrap().expect("still there");
+        assert_eq!(
+            after.backend_id, before.backend_id,
+            "replace tore down the session it was answered with"
+        );
+    }
+
+    /// The caller's post-create hooks fire for the sessions this call created
+    /// — a lost answer recovered by its id included — and not for one the host
+    /// answered as already there under that id.
+    #[test]
+    fn the_caller_fires_post_create_only_for_a_session_it_created() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let log = pair.path("post-create.log");
+        std::fs::write(
+            pair.path("config/hooks.toml"),
+            format!(
+                "[[hooks]]\nevent = \"session.post_create\"\n\
+                 command = 'echo \"$THURBOX_SESSION\" >> {}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let fired = || std::fs::read_to_string(&log).unwrap_or_default();
+
+        let plain = created_id(&pair.create(&["--name", "plain"]));
+        std::fs::write(pair.path("drop-answer"), "").unwrap();
+        let recovered = created_id(&pair.create(&["--name", "recovered"]));
+        std::fs::remove_file(pair.path("drop-answer")).unwrap();
+        assert_eq!(
+            fired().lines().collect::<Vec<_>>(),
+            [plain.to_string(), recovered.to_string()],
+            "one post-create per session this caller created"
+        );
+
+        let elsewhere = SessionId::default();
+        let made = pair.create_on_host(&["--name", "elsewhere", "--id", &elsewhere.to_string()]);
+        assert_eq!(created_id(&made), elsewhere);
+        let answered = pair.create(&["--name", "elsewhere", "--id", &elsewhere.to_string()]);
+        assert_eq!(answer(&answered)["created"], false);
+        assert!(
+            !fired().contains(&elsewhere.to_string()),
+            "a session the host answered as already there is not this caller's to announce: {}",
+            fired()
+        );
+    }
+
+    /// `--on-existing` is the host's to apply: its rows are the record, and
+    /// the caller's mirror may not have seen the session yet. Here the host
+    /// already holds the key, the caller has never mirrored it, and `adopt`
+    /// must answer with the host's session rather than refuse or make another.
+    #[test]
+    fn on_existing_is_applied_by_the_host_against_its_own_rows() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let theirs = created_id(&pair.create_on_host(&["--name", "keyed", "--key", "k1"]));
+        assert!(
+            pair.caller_db()
+                .get_session_by_id(theirs)
+                .unwrap()
+                .is_none(),
+            "the caller has not mirrored it yet"
+        );
+
+        let out = pair.create(&["--name", "keyed", "--key", "k1", "--on-existing", "adopt"]);
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["id"], theirs.to_string(), "{doc}");
+        assert_eq!(doc["created"], false, "{doc}");
+        assert_eq!(
+            pair.host_db().find_sessions_by_name("keyed").unwrap().len(),
+            1
+        );
+    }
+
+    /// An adopted session is described as the host found it, not as one that
+    /// was just spawned: a driver reads `stopped` to decide whether it still
+    /// owes a `session start`.
+    #[test]
+    fn an_adopted_session_reports_the_hosts_own_state() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let parked = created_id(&pair.create_on_host(&["--name", "parked", "--key", "k3"]));
+        let mut stop = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        stop.args(["session", "stop", &parked.to_string(), "--json"])
+            .env("HOME", pair.path("host-home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+            .env("THURBOX_DATA_DIR", pair.path("host-data"))
+            .env_remove("THURBOX_SESSION");
+        pair.host_server.scope(&mut stop);
+        let stopped = stop.output().expect("run the host's thurbox-cli");
+        assert!(
+            stopped.status.success(),
+            "{}",
+            String::from_utf8_lossy(&stopped.stdout)
+        );
+
+        let out = pair.create(&["--name", "parked", "--key", "k3", "--on-existing", "adopt"]);
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["id"], parked.to_string(), "{doc}");
+        assert_eq!(doc["created"], false, "{doc}");
+        assert_eq!(doc["stopped"], true, "{doc}");
+        assert_eq!(doc["state"], "stopped", "{doc}");
+    }
+
+    /// A delegated create asks the host, not the caller's mirror, whether the
+    /// session is already there: one the host deleted since the last mirror
+    /// pass is not adopted back from a stale row.
+    #[test]
+    fn a_delegated_adopt_does_not_answer_from_a_stale_mirror_row() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        // Both spellings `--host` takes: the gate that hands the decision to
+        // the host has to see the host the spawn will delegate to.
+        for (n, host) in ["probe", "ssh:probe"].into_iter().enumerate() {
+            let pair = Pair::new();
+            let key = format!("k4-{n}");
+            let first = created_id(&pair.create_via(host, &["--name", "stale", "--key", &key]));
+            assert!(pair.caller_db().get_session_by_id(first).unwrap().is_some());
+            let mut delete = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+            delete
+                .args(["session", "delete", &first.to_string(), "--force", "--json"])
+                .env("HOME", pair.path("host-home"))
+                .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+                .env("THURBOX_DATA_DIR", pair.path("host-data"))
+                .env_remove("THURBOX_SESSION");
+            pair.host_server.scope(&mut delete);
+            let deleted = delete.output().expect("run the host's thurbox-cli");
+            assert!(
+                deleted.status.success(),
+                "{}",
+                String::from_utf8_lossy(&deleted.stdout)
+            );
+            assert!(
+                pair.caller_db().get_session_by_id(first).unwrap().is_some(),
+                "the caller's mirror has not caught up"
+            );
+
+            let out = pair.create_via(
+                host,
+                &["--name", "stale", "--key", &key, "--on-existing", "adopt"],
+            );
+            let doc = answer(&out);
+            assert!(out.status.success(), "{host}: {doc}");
+            assert_eq!(doc["created"], true, "{host}: {doc}");
+            assert_ne!(doc["id"], first.to_string(), "{host}: {doc}");
+        }
+    }
+
+    /// An id a row here holds for a session on another machine is not the
+    /// host's to reuse: the mirror pass after the creation would relabel that
+    /// row as the host's, leaving its own pane untracked — or revive a
+    /// deleted one as the host's live session.
+    #[test]
+    fn a_delegated_create_refuses_an_id_this_machine_holds_elsewhere() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let db = pair.caller_db();
+        let mine = SessionId::default();
+        db.upsert_session(&super::row(mine, "mine", "local-tmux"))
+            .unwrap();
+        let tombstone = SessionId::default();
+        db.upsert_session(&super::row(tombstone, "gone", "local-tmux"))
+            .unwrap();
+        db.soft_delete_session(tombstone).unwrap();
+
+        for id in [mine, tombstone] {
+            let out = pair.create(&["--name", "borrowed", "--id", &id.to_string()]);
+            assert_eq!(
+                out.status.code(),
+                Some(5),
+                "{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert_eq!(answer(&out)["error_kind"], "conflict");
+        }
+        assert_eq!(
+            db.get_session_by_id(mine).unwrap().unwrap().backend_type,
+            "local-tmux",
+            "the local session is still this machine's"
+        );
+        assert!(db.get_session_by_id(tombstone).unwrap().is_none());
+        assert!(pair
+            .host_db()
+            .find_sessions_by_name("borrowed")
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A session the host answers as already there keeps the declaration it
+    /// has: the host does not apply a retry's `--reports-as`, so the caller
+    /// neither records nor reports one of its own.
+    #[test]
+    fn a_found_session_keeps_the_hosts_declaration() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = SessionId::default();
+        let made = pair.create_on_host(&[
+            "--name",
+            "declared",
+            "--id",
+            &id.to_string(),
+            "--reports-as",
+            "claude",
+        ]);
+        assert_eq!(created_id(&made), id);
+
+        let out = pair.create(&[
+            "--name",
+            "declared",
+            "--id",
+            &id.to_string(),
+            "--reports-as",
+            "codex",
+        ]);
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["created"], false, "{doc}");
+        assert_eq!(doc["reports_as"], "claude", "{doc}");
+        assert_eq!(
+            pair.caller_db()
+                .load_reports_as()
+                .unwrap()
+                .get(&id)
+                .map(String::as_str),
+            Some("claude")
+        );
+    }
+
+    /// A retry under an id this machine already mirrors names a session that
+    /// was there before the call: when its answer is lost too, finding the id
+    /// is not evidence of a creation, so nothing is announced again.
+    #[test]
+    fn a_lost_answer_to_a_retry_of_a_known_id_is_not_a_new_session() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let log = pair.path("post-create.log");
+        std::fs::write(
+            pair.path("config/hooks.toml"),
+            format!(
+                "[[hooks]]\nevent = \"session.post_create\"\n\
+                 command = 'echo \"$THURBOX_SESSION\" >> {}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let id = created_id(&pair.create(&["--name", "known", "--reports-as", "claude"]));
+        assert!(pair.caller_db().get_session_by_id(id).unwrap().is_some());
+
+        std::fs::write(pair.path("drop-answer"), "").unwrap();
+        let out = pair.create(&[
+            "--name",
+            "known",
+            "--id",
+            &id.to_string(),
+            "--reports-as",
+            "codex",
+        ]);
+        std::fs::remove_file(pair.path("drop-answer")).unwrap();
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["id"], id.to_string(), "{doc}");
+        assert_eq!(doc["created"], false, "{doc}");
+        // The lost answer is replaced by the host's own `session get`, which
+        // reports the declaration the host holds — the retry's was never
+        // applied.
+        assert_eq!(doc["reports_as"], "claude", "{doc}");
+        assert_eq!(
+            pair.caller_db()
+                .load_reports_as()
+                .unwrap()
+                .get(&id)
+                .map(String::as_str),
+            Some("claude")
+        );
+        assert_eq!(
+            std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .count(),
+            1,
+            "post-create fired again for a session that already existed"
+        );
+    }
+
+    /// A known-id retry whose answer is lost is described by the host itself,
+    /// not by this machine's mirror, which carries no parked mark: a session
+    /// parked there must not read as running, or a driver skips its
+    /// `session start`.
+    #[test]
+    fn a_lost_answer_to_a_known_id_retry_reports_a_parked_session_as_parked() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = created_id(&pair.create(&["--name", "napping"]));
+        let mut stop = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        stop.args(["session", "stop", &id.to_string(), "--json"])
+            .env("HOME", pair.path("host-home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+            .env("THURBOX_DATA_DIR", pair.path("host-data"))
+            .env_remove("THURBOX_SESSION");
+        pair.host_server.scope(&mut stop);
+        assert!(stop.output().unwrap().status.success());
+
+        std::fs::write(pair.path("drop-answer"), "").unwrap();
+        let out = pair.create(&["--name", "napping", "--id", &id.to_string()]);
+        std::fs::remove_file(pair.path("drop-answer")).unwrap();
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["created"], false, "{doc}");
+        assert_eq!(doc["stopped"], true, "{doc}");
+        assert_eq!(doc["state"], "stopped", "{doc}");
+    }
+
+    /// A create that never reached the host is not recovered by a row this
+    /// machine still holds for the id: only the host listing the session is
+    /// evidence that it exists.
+    #[test]
+    fn a_create_that_never_arrived_is_not_recovered_from_a_stale_row() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = SessionId::default();
+        pair.caller_db()
+            .upsert_session(&super::row(id, "ghost", "ssh:probe:tmux"))
+            .unwrap();
+
+        std::fs::write(pair.path("never-arrives"), "").unwrap();
+        let out = pair.create(&["--name", "ghost", "--id", &id.to_string()]);
+        std::fs::remove_file(pair.path("never-arrives")).unwrap();
+        assert!(
+            !out.status.success(),
+            "reported a session the host never made: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        // The one thing a driver needs to retry without making a second
+        // session is the id, so the error names it.
+        let doc = answer(&out);
+        assert!(
+            doc["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("retry with `--id {id}`")),
+            "{doc}"
+        );
+        assert!(pair.host_db().get_session_by_id(id).unwrap().is_none());
+    }
+
+    /// A recovered session is described by the host however it was found,
+    /// including under an id this machine had not mirrored: one already parked
+    /// there must not read as freshly running.
+    #[test]
+    fn a_lost_answer_for_an_unmirrored_id_reports_a_parked_session_as_parked() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = SessionId::default();
+        assert_eq!(
+            created_id(&pair.create_on_host(&["--name", "dozing", "--id", &id.to_string()])),
+            id
+        );
+        let mut stop = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        stop.args(["session", "stop", &id.to_string(), "--json"])
+            .env("HOME", pair.path("host-home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+            .env("THURBOX_DATA_DIR", pair.path("host-data"))
+            .env_remove("THURBOX_SESSION");
+        pair.host_server.scope(&mut stop);
+        assert!(stop.output().unwrap().status.success());
+        assert!(pair.caller_db().get_session_by_id(id).unwrap().is_none());
+
+        std::fs::write(pair.path("drop-answer"), "").unwrap();
+        let out = pair.create(&["--name", "dozing", "--id", &id.to_string()]);
+        std::fs::remove_file(pair.path("drop-answer")).unwrap();
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["id"], id.to_string(), "{doc}");
+        assert_eq!(doc["stopped"], true, "{doc}");
+        assert_eq!(doc["state"], "stopped", "{doc}");
+    }
+
+    /// Recovery takes the host's word only for the session it asked about: an
+    /// answer naming another id is no evidence that this one exists.
+    #[test]
+    fn a_lookup_answered_for_another_session_is_not_a_recovery() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = SessionId::default();
+        std::fs::write(pair.path("never-arrives"), "").unwrap();
+        std::fs::write(pair.path("get-answers-another"), "").unwrap();
+        let out = pair.create(&["--name", "elsewhere", "--id", &id.to_string()]);
+        std::fs::remove_file(pair.path("never-arrives")).unwrap();
+        std::fs::remove_file(pair.path("get-answers-another")).unwrap();
+        assert!(
+            !out.status.success(),
+            "recovered on an answer about another session: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        // Not taken for a recovery that then went wrong: the answer is the
+        // unanswered question's, naming the id a retry needs.
+        let doc = answer(&out);
+        assert!(
+            doc["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("retry with `--id {id}`")),
+            "{doc}"
+        );
     }
 }

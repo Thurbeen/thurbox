@@ -103,6 +103,30 @@ pub struct SpawnRequest {
     /// the target host already has it ([`super::names::claim_key`]). Never set
     /// by a fork: a fork is a second session, and a key names one.
     pub key: Option<String>,
+    /// The id the session is created under, when the caller mints it.
+    ///
+    /// This is what makes a creation safe to retry: a second creation with
+    /// the same id finds the first session instead of making another
+    /// (`session create --id`). A delegated creation mints one for every host
+    /// CLI that takes it (`create_parity`), so a link that drops after the
+    /// host created the session is recovered by looking the id up rather than
+    /// by creating twice (#1471).
+    pub session_id: Option<SessionId>,
+    /// The agent the pane will actually run, when that is not what thurbox
+    /// launches — `session create --reports-as`. A delegated create forwards
+    /// it, so the host's hooks read it; the spawn records it nowhere, because
+    /// the CLI does that on this side once the spawn has succeeded — outside
+    /// the `--on-existing replace` rollback, which a session that exists must
+    /// never trigger.
+    pub reports_as: Option<String>,
+    /// `session create --on-existing`, as its word, when it is not `allow`.
+    ///
+    /// The CLI applies it on this side before spawning, so a local spawn
+    /// ignores it. A delegated one forwards it: this side matched against a
+    /// mirror, and the host's own rows are the record a name or key is
+    /// arbitrated against (ADR-24). A retry under a known `session_id` is
+    /// answered before it, whatever it says.
+    pub on_existing: Option<String>,
 }
 
 /// Result returned on successful headless spawn.
@@ -142,6 +166,46 @@ pub struct SpawnResult {
     /// or provisioned there — so it was driven from here the way every remote
     /// session used to be. `None` for a local session and for a shared one.
     pub sharing: Option<String>,
+    /// `false` when a delegated create's host answered with a session it
+    /// already had (`--on-existing adopt` there) instead of making one.
+    pub created: bool,
+    /// For such a session — and for any session recovered after a lost
+    /// answer — what the host said of it. The mirror carries none of it, so
+    /// this is the only place it is known here; `None` for a session this call
+    /// created and heard back about.
+    pub found: Option<FoundSession>,
+}
+
+/// A session a delegated create's host answered as already there, as the host
+/// describes it.
+#[derive(Debug, Clone)]
+pub struct FoundSession {
+    pub stopped: bool,
+    pub state: String,
+    /// The declaration the host holds — not the caller's `--reports-as`, which
+    /// the host does not apply to a session it answers this way.
+    pub reports_as: Option<String>,
+}
+
+impl FoundSession {
+    /// From the host's own description of the session: its `create` answer
+    /// or its `session get`, which share these fields.
+    fn from_host(answer: &serde_json::Value) -> Self {
+        let text = |key: &str| {
+            answer
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        };
+        Self {
+            stopped: answer
+                .get("stopped")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            state: text("state").unwrap_or_default(),
+            reports_as: text("reports_as"),
+        }
+    }
 }
 
 /// Spawn a new session on its resolved backend and persist it to SQLite.
@@ -252,7 +316,12 @@ fn spawn(
     let mut sharing = None;
     if let Some(h) = host.as_ref() {
         match super::host_cli::usable(h) {
-            super::host_cli::Usable::Yes(cli) if req.fork_session_id.is_none() => {
+            // A fork of a session with no pinned conversation still shares its
+            // parent's checkout, which is just as much a fork.
+            super::host_cli::Usable::Yes(cli)
+                if req.fork_session_id.is_none() && req.inherit_worktrees.is_empty() =>
+            {
+                id_is_free(db, req.session_id, Some(&backend_type))?;
                 return spawn_delegated(db, req, h, &cli, &choice, &report);
             }
             super::host_cli::Usable::Yes(_) => {
@@ -272,6 +341,8 @@ fn spawn(
     if let Some(note) = &sharing {
         tracing::warn!("'{}': {note}", req.name);
     }
+
+    id_is_free(db, req.session_id, None)?;
 
     // Below the delegation, because a delegated session's key is the host's to
     // arbitrate against the rows it authors (ADR-24) — asked here, it would be
@@ -299,11 +370,12 @@ fn spawn(
     };
     let agent_name = agent_def.name.clone();
 
-    // Both ids are minted before anything happens, so the pre-create hook can
+    // Both ids are settled before anything happens — the session's minted
+    // here unless the caller chose it — so the pre-create hook can
     // name the session it is being asked about — and correlate with the
     // post-create one — and so `THURBOX_SESSION` is in the process env before
     // the agent launches.
-    let session_id = SessionId::default();
+    let session_id = req.session_id.unwrap_or_default();
     let agent_session_id = req
         .agent_session_id
         .clone()
@@ -571,6 +643,8 @@ fn spawn(
         hook_failures,
         warnings,
         sharing,
+        created: true,
+        found: None,
     })
 }
 
@@ -715,12 +789,179 @@ fn delegated_mux_option(
     }
 }
 
+/// What a host's `thurbox-cli session create` is handed for `req`: its
+/// arguments, and the caller's environment for its stdin (#1471).
+///
+/// Every field of [`SpawnRequest`] is named below and the destructure has no
+/// `..`, so a field added to the request does not compile until it is either
+/// forwarded or refused here. Dropping one without a word is what the
+/// delegated path used to do: a `--command` session came up as the host's
+/// default agent, and its `--env` never arrived.
+///
+/// The environment travels on stdin, never as arguments — a value on ssh's
+/// command line is readable through `ps` by every user of both machines. It is
+/// only the caller's own: what thurbox injects (`THURBOX_*`, telemetry) the
+/// host computes for itself, from its own configuration.
+fn delegated_create_args(
+    req: &SpawnRequest,
+    minted: Option<SessionId>,
+    host: &HostDef,
+    cli: &super::host_cli::CliInfo,
+) -> Result<(Vec<String>, Option<Vec<u8>>), crate::session_ops::OpError> {
+    let SpawnRequest {
+        name,
+        repo_path,
+        worktree_branch,
+        base_branch,
+        existing_worktree,
+        agent,
+        command,
+        args: command_args,
+        env,
+        resume_session_id,
+        agent_session_id,
+        // Both already chose this route, and `--multiplexer` is
+        // `delegated_mux_option`'s.
+        host: _,
+        multiplexer: _,
+        parent_session_id,
+        task_id,
+        extra_repos,
+        fork_session_id,
+        inherit_worktrees,
+        key,
+        on_existing,
+        // Forwarded as `minted`: this, or one made for the call — or none,
+        // for a host CLI without `create_parity` (`spawn_delegated` refuses
+        // a caller's own id there).
+        session_id: _,
+        reports_as,
+    } = req;
+    type Args = (Vec<String>, Option<Vec<u8>>);
+    let refuse = |what: &str| -> Result<Args, crate::session_ops::OpError> {
+        Err(crate::session_ops::OpError::Refused(format!(
+            "{what} cannot be handed to host '{}''s thurbox-cli; create the session on that \
+             host itself, or set `share_sessions = false` for it in hosts.toml",
+            host.name
+        )))
+    };
+    if agent_session_id.is_some() {
+        return refuse("a preset agent conversation id");
+    }
+    // The task is a row in this machine's database; `THURBOX_TASK` on the
+    // host would name a task there, or none.
+    if task_id.is_some() {
+        return refuse("a task id");
+    }
+    // `spawn` keeps every fork on this side (see there); refused rather than
+    // trusted, so a caller that ever reaches here with one is told.
+    if fork_session_id.is_some() || !inherit_worktrees.is_empty() {
+        return refuse("a fork");
+    }
+    if existing_worktree.is_some() && !cli.create_parity {
+        return Err(format!(
+            "host '{}' has an older thurbox-cli that cannot open an existing worktree; \
+             update that CLI before creating this session",
+            host.name
+        )
+        .into());
+    }
+    // A Windows host's CLI runs under `powershell -EncodedCommand`, and that
+    // a native child of it reads the stream ssh delivers is unverified; a
+    // creation whose environment might not arrive is refused, not guessed.
+    if !env.is_empty() && host.is_windows() {
+        return Err(format!(
+            "--env cannot be handed to host '{}''s thurbox-cli yet: it is a Windows host; \
+             create the session on that host itself, or set `share_sessions = false` for it",
+            host.name
+        )
+        .into());
+    }
+    if !env.is_empty() && !cli.create_parity {
+        return Err(format!(
+            "host '{}' has an older thurbox-cli that cannot take --env without putting the \
+             values on its command line; update that CLI before creating this session",
+            host.name
+        )
+        .into());
+    }
+
+    let mut out: Vec<String> = vec![
+        "session".into(),
+        "create".into(),
+        "--name".into(),
+        name.clone(),
+        "--repo-path".into(),
+        repo_path.to_string_lossy().into_owned(),
+    ];
+    let mut flag = |name: &str, value: &str| out.extend([name.to_string(), value.to_string()]);
+    if let Some(id) = minted {
+        flag("--id", &id.to_string());
+    }
+    if let Some(agent) = agent {
+        flag("--agent", agent);
+    }
+    if let Some(command) = command {
+        flag("--command", command);
+    }
+    for arg in command_args {
+        flag("--arg", arg);
+    }
+    if let Some(resume) = resume_session_id {
+        flag("--resume", resume);
+    }
+    if let Some(branch) = worktree_branch {
+        flag("--worktree-branch", branch);
+    }
+    if let Some(base) = base_branch {
+        flag("--base-branch", base);
+    }
+    if let Some(worktree) = existing_worktree {
+        flag("--existing-worktree", &worktree.to_string_lossy());
+    }
+    if let Some(parent) = parent_session_id {
+        flag("--parent", &parent.to_string());
+    }
+    // Forwarded, not checked here: the host enforces a key's uniqueness among
+    // its own rows, and refuses this creation itself when it is taken there.
+    if let Some(key) = key {
+        flag("--key", key);
+    }
+    if let Some(declared) = reports_as {
+        flag("--reports-as", declared);
+    }
+    if let Some(mode) = on_existing {
+        flag("--on-existing", mode);
+    }
+    for extra in extra_repos {
+        let path = extra.repo_path.to_string_lossy().into_owned();
+        if extra.worktree {
+            let spec = match &extra.base_branch {
+                Some(base) => format!("{path}@{base}"),
+                None => path,
+            };
+            flag("--add-repo", &spec);
+        } else {
+            flag("--add-dir", &path);
+        }
+    }
+    let stdin = if env.is_empty() {
+        None
+    } else {
+        out.push("--env-stdin".into());
+        Some(serde_json::to_vec(env).map_err(|e| format!("encode --env: {e}"))?)
+    };
+    Ok((out, stdin))
+}
+
 /// Create the session by running `thurbox-cli session create` **on the host**.
 ///
 /// The host's CLI does what the rest of this file does — resolves the
 /// repository, makes the worktrees, wires the hooks, launches the agent,
-/// persists the row — with the host's own `agents.toml` and `hooks.toml`, and
-/// mints the id. The local row is then a mirror of the host's, taken by the
+/// persists the row — with the host's own `agents.toml` and `hooks.toml`. The
+/// id is minted here and handed over, so a link that drops after the host
+/// created the session is answered by finding that id rather than by creating
+/// a second one. The local row is then a mirror of the host's, taken by the
 /// same pass the mirror worker runs. The caller's own `hooks.toml` fires here,
 /// around the delegated call, with `THURBOX_HOST` set; the host's fires there.
 fn spawn_delegated(
@@ -752,6 +993,22 @@ fn spawn_delegated(
             ).into());
         }
     }
+    // A host CLI too old to take an id mints its own, as every host once did;
+    // that only costs the retry its idempotency — unless the caller chose the
+    // id, which would then be dropped.
+    if req.session_id.is_some() && !cli.create_parity {
+        return Err(format!(
+            "host '{}' has an older thurbox-cli that cannot take --id; update that CLI \
+             before creating this session",
+            host.name
+        )
+        .into());
+    }
+    let minted = cli
+        .create_parity
+        .then(|| req.session_id.unwrap_or_default());
+    let (mut args, stdin) = delegated_create_args(&req, minted, host, cli)?;
+    args.extend(mux_option);
 
     report(SpawnPhase::Hooks);
     let base_branch = req.worktree_branch.as_ref().map(|_| {
@@ -761,6 +1018,7 @@ fn spawn_delegated(
             .to_string()
     });
     let mut hook_ctx = crate::session::HookContext {
+        session_id: minted,
         name: req.name.clone(),
         agent: req.agent.clone().unwrap_or_default(),
         repo: Some(req.repo_path.clone()),
@@ -781,58 +1039,91 @@ fn spawn_delegated(
     super::fire_pre(crate::session::HookEvent::PreCreate, &hook_ctx)?;
 
     report(SpawnPhase::Host);
-    let repo = req.repo_path.to_string_lossy().into_owned();
-    let mut args: Vec<String> = vec![
-        "session".into(),
-        "create".into(),
-        "--name".into(),
-        req.name.clone(),
-        "--repo-path".into(),
-        repo,
-    ];
-    if let Some(agent) = &req.agent {
-        args.extend(["--agent".to_string(), agent.clone()]);
-    }
-    args.extend(mux_option);
-    if let Some(branch) = &req.worktree_branch {
-        args.extend(["--worktree-branch".to_string(), branch.clone()]);
-    }
-    if let Some(base) = &req.base_branch {
-        args.extend(["--base-branch".to_string(), base.clone()]);
-    }
-    if let Some(parent) = req.parent_session_id {
-        args.extend(["--parent".to_string(), parent.to_string()]);
-    }
-    // Forwarded, not checked here: the host enforces a key's uniqueness among
-    // its own rows, and refuses this creation itself when it is taken there.
-    if let Some(key) = &req.key {
-        args.extend(["--key".to_string(), key.clone()]);
-    }
-    for extra in &req.extra_repos {
-        let path = extra.repo_path.to_string_lossy().into_owned();
-        if extra.worktree {
-            let spec = match &extra.base_branch {
-                Some(base) => format!("{path}@{base}"),
-                None => path,
-            };
-            args.extend(["--add-repo".to_string(), spec]);
-        } else {
-            args.extend(["--add-dir".to_string(), path]);
-        }
-    }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let created = super::host_cli::run(host, cli, &arg_refs)?;
-    let session_id: SessionId = created
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| {
-            format!(
-                "host '{}' created the session but reported no id",
-                host.name
-            )
-        })?
-        .parse()
-        .map_err(|e| format!("host '{}' reported a malformed session id: {e}", host.name))?;
+    let created: bool;
+    // Asked before the call: a caller-chosen id already mirrored here names a
+    // session that existed before it, whatever a lost answer leaves unsaid.
+    let known_before = req
+        .session_id
+        .is_some_and(|id| db.get_session_by_id(id).ok().flatten().is_some());
+    let mut found = None;
+    let session_id =
+        match super::host_cli::run_classified_with_stdin(host, cli, &arg_refs, stdin.as_deref()) {
+            Ok(answer) => {
+                created = answer
+                    .get("created")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+                if !created {
+                    found = Some(FoundSession::from_host(&answer));
+                }
+                answer
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        format!(
+                            "host '{}' created the session but reported no id",
+                            host.name
+                        )
+                    })?
+                    .parse::<SessionId>()
+                    .map_err(|e| {
+                        format!("host '{}' reported a malformed session id: {e}", host.name)
+                    })?
+            }
+            // The answer was lost, not the question: the host may have created the
+            // session before the link went. The id is ours, so whether it did is a
+            // lookup — and creating again is exactly the duplicate the id exists
+            // to prevent. The lookup is the host's own `session get`: a row here
+            // is no evidence, since the mirror keeps one the host lists nowhere.
+            // Found this way it counts as created by this call unless it was
+            // already mirrored here before the call, and either way it is
+            // described as the host describes it. A caller-chosen id the host had but this machine
+            // had not yet mirrored, whose `created: false` answer was then lost
+            // too, still cannot be told apart without the record of owed
+            // creations #1469 adds — nor can its mirror image, a row kept here
+            // for an id the host had purged, which makes a session this call
+            // did create read as already there.
+            Err(failure) => {
+                let unanswered = failure.reach != super::host_cli::Reach::Answered;
+                let held = minted.filter(|_| unanswered).and_then(|id| {
+                    super::host_cli::run(host, cli, &["session", "get", &id.to_string()])
+                        .ok()
+                        .filter(|held| {
+                            held.get("id").and_then(serde_json::Value::as_str)
+                                == Some(id.to_string().as_str())
+                        })
+                        .map(|held| (id, held))
+                });
+                match (minted, held) {
+                    (_, Some((id, held))) => {
+                        tracing::warn!(
+                            "'{}': host '{}' holds session {id}, but its answer was lost: {}",
+                            req.name,
+                            host.name,
+                            failure.message
+                        );
+                        created = !known_before;
+                        // Described as the host lists it, however it was
+                        // found: a session that was already there may be
+                        // parked, and one this call made matches what it was
+                        // asked for, `--reports-as` included.
+                        found = Some(FoundSession::from_host(&held));
+                        id
+                    }
+                    // Not listed, or not askable: the host may still be making
+                    // it, and only the id makes a second attempt safe.
+                    (Some(id), None) if unanswered => {
+                        return Err(failure.error.context(format!(
+                            "host '{}' may still create session {id}; retry with `--id {id}` \
+                             rather than without it",
+                            host.name
+                        )))
+                    }
+                    _ => return Err(failure.error),
+                }
+            }
+        };
 
     // The row, as the host now lists it — one mirror pass, the same one the
     // worker runs, so a delegated creation and a peer's creation land the same
@@ -860,7 +1151,17 @@ fn spawn_delegated(
         .iter()
         .map(super::lifecycle_hooks::worktree)
         .collect();
-    let hook_failures = super::fire_post(crate::session::HookEvent::PostCreate, &hook_ctx);
+    // Only for a session this call created — a lost answer recovered above
+    // included. One the host answered as already there may be another
+    // caller's under the same id or key, whose hooks are its own; it may also
+    // be this caller's earlier attempt, whose post-create hooks are then never
+    // fired here. Telling the two apart needs a record of the hooks owed for a
+    // minted id, which is the intent row #1469 adds.
+    let hook_failures = if created {
+        super::fire_post(crate::session::HookEvent::PostCreate, &hook_ctx)
+    } else {
+        Vec::new()
+    };
 
     Ok(SpawnResult {
         session_id,
@@ -878,7 +1179,42 @@ fn spawn_delegated(
         // host's `PATH`, not this machine's — it reports there.
         warnings: Vec::new(),
         sharing: None,
+        created,
+        found,
     })
+}
+
+/// A caller-chosen id must name no row here, live or deleted — a deleted one
+/// would collide with that session's restore.
+///
+/// `delegated_to` is the host a delegated create goes to. A row of that host's
+/// is only this machine's mirror of it, and the host answers a retry under the
+/// id itself; any other holder would be taken over by the mirror pass after
+/// the creation — a local session relabelled as the host's with its pane left
+/// untracked, a tombstone revived as the host's live row.
+fn id_is_free(
+    db: &Database,
+    id: Option<SessionId>,
+    delegated_to: Option<&str>,
+) -> Result<(), crate::session_ops::OpError> {
+    let Some(id) = id else {
+        return Ok(());
+    };
+    let live = db
+        .get_session_by_id(id)
+        .map_err(|e| format!("get_session_by_id: {e}"))?
+        .map(|row| row.backend_type);
+    let deleted = db
+        .get_deleted_session_by_id(id)
+        .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
+        .map(|row| row.backend_type);
+    match live.or(deleted) {
+        None => Ok(()),
+        Some(held) if delegated_to.is_some_and(|host| super::same_machine(&held, host)) => Ok(()),
+        Some(held) => Err(crate::session_ops::OpError::Conflict(format!(
+            "session id {id} is already taken, by a session on {held}"
+        ))),
+    }
 }
 
 /// Validate that the requested parent session, if any, exists and is active.
@@ -2607,5 +2943,180 @@ mod tests {
         let primary = PathBuf::from("/tmp/primary");
         let got = existing_launch_cwd(Some("sid-1"), Some(&primary), 1, None);
         assert_eq!(got, Some(primary));
+    }
+
+    fn probe_host() -> HostDef {
+        HostDef {
+            name: "probe".into(),
+            destination: "probe".into(),
+            ..Default::default()
+        }
+    }
+
+    fn parity_cli() -> super::super::host_cli::CliInfo {
+        super::super::host_cli::CliInfo {
+            create_parity: true,
+            ..super::super::host_cli::fake::cli()
+        }
+    }
+
+    /// Each field a host's CLI has no flag for is refused, by name, before
+    /// anything runs — never dropped on the way (#1471).
+    #[test]
+    fn a_delegated_create_refuses_what_the_host_cli_cannot_take() {
+        let cases: [(&str, SpawnRequest); 4] = [
+            (
+                "conversation id",
+                SpawnRequest {
+                    agent_session_id: Some("c".into()),
+                    ..req("s")
+                },
+            ),
+            (
+                "task id",
+                SpawnRequest {
+                    task_id: Some(3),
+                    ..req("s")
+                },
+            ),
+            (
+                "fork",
+                SpawnRequest {
+                    fork_session_id: Some("c".into()),
+                    ..req("s")
+                },
+            ),
+            (
+                "fork",
+                SpawnRequest {
+                    inherit_worktrees: vec![SharedWorktree {
+                        repo_path: PathBuf::from("/r"),
+                        worktree_path: PathBuf::from("/w"),
+                        branch: "b".into(),
+                        created_by_thurbox: false,
+                    }],
+                    ..req("s")
+                },
+            ),
+        ];
+        for (what, request) in cases {
+            let refused = delegated_create_args(&request, None, &probe_host(), &parity_cli())
+                .expect_err(what);
+            assert_eq!(refused.kind(), "refused", "{what}: {refused}");
+            assert!(refused.contains(what), "{what}: {refused}");
+        }
+    }
+
+    /// An older host CLI cannot take the environment off its command line,
+    /// so a creation that has one is refused rather than leaking it or
+    /// dropping it — as is an existing worktree, which it has no flag for;
+    /// without either, the older CLI is still used.
+    #[test]
+    fn an_older_host_cli_is_refused_an_env_and_never_handed_an_id() {
+        let old = super::super::host_cli::fake::cli();
+        let with_env = SpawnRequest {
+            env: [("K".to_string(), "V".to_string())].into_iter().collect(),
+            ..req("s")
+        };
+        let refused = delegated_create_args(&with_env, None, &probe_host(), &old).expect_err("env");
+        assert!(refused.contains("update that CLI"), "{refused}");
+        let opening = SpawnRequest {
+            existing_worktree: Some(PathBuf::from("/w")),
+            ..req("s")
+        };
+        let refused =
+            delegated_create_args(&opening, None, &probe_host(), &old).expect_err("worktree");
+        assert!(refused.contains("update that CLI"), "{refused}");
+        let (args, stdin) = delegated_create_args(&req("s"), None, &probe_host(), &old).unwrap();
+        assert!(
+            !args.iter().any(|a| a == "--id" || a == "--env-stdin"),
+            "{args:?}"
+        );
+        assert!(stdin.is_none());
+    }
+
+    /// Whether a Windows host's CLI receives the stream ssh delivers is
+    /// unverified, so an environment for one is refused rather than lost.
+    #[test]
+    fn an_env_for_a_windows_host_cli_is_refused() {
+        let windows = HostDef {
+            platform: Some(Platform::Windows),
+            ..probe_host()
+        };
+        let with_env = SpawnRequest {
+            env: [("K".to_string(), "V".to_string())].into_iter().collect(),
+            ..req("s")
+        };
+        let refused = delegated_create_args(&with_env, None, &windows, &parity_cli())
+            .expect_err("windows env");
+        assert!(refused.contains("Windows host"), "{refused}");
+    }
+
+    /// Everything the host CLI has a flag for is forwarded, and the
+    /// environment goes on stdin alone.
+    #[test]
+    fn a_delegated_create_forwards_every_field_it_can() {
+        let id = SessionId::default();
+        let parent = SessionId::default();
+        let request = SpawnRequest {
+            name: "n".into(),
+            repo_path: PathBuf::from("/r"),
+            worktree_branch: Some("b".into()),
+            base_branch: Some("main".into()),
+            existing_worktree: Some(PathBuf::from("/w")),
+            agent: Some("a".into()),
+            command: Some("sh".into()),
+            args: vec!["-c".into(), "x".into()],
+            env: [("K".to_string(), "secret".to_string())]
+                .into_iter()
+                .collect(),
+            resume_session_id: Some("conv".into()),
+            parent_session_id: Some(parent),
+            key: Some("k".into()),
+            reports_as: Some("claude".into()),
+            on_existing: Some("adopt".into()),
+            extra_repos: vec![
+                ExtraRepo {
+                    repo_path: PathBuf::from("/x"),
+                    worktree: true,
+                    base_branch: Some("dev".into()),
+                },
+                ExtraRepo {
+                    repo_path: PathBuf::from("/y"),
+                    worktree: false,
+                    base_branch: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let (args, stdin) =
+            delegated_create_args(&request, Some(id), &probe_host(), &parity_cli()).unwrap();
+        let joined = args.join(" ");
+        for expected in [
+            format!("--id {id}"),
+            "--name n".into(),
+            "--repo-path /r".into(),
+            "--agent a".into(),
+            "--command sh --arg -c --arg x".into(),
+            "--resume conv".into(),
+            "--worktree-branch b".into(),
+            "--base-branch main".into(),
+            "--existing-worktree /w".into(),
+            format!("--parent {parent}"),
+            "--key k".into(),
+            "--reports-as claude".into(),
+            "--on-existing adopt".into(),
+            "--add-repo /x@dev".into(),
+            "--add-dir /y".into(),
+            "--env-stdin".into(),
+        ] {
+            assert!(
+                joined.contains(&expected),
+                "{expected} missing from {joined}"
+            );
+        }
+        assert!(!joined.contains("secret"), "{joined}");
+        let sent: BTreeMap<String, String> = serde_json::from_slice(&stdin.unwrap()).unwrap();
+        assert_eq!(sent.get("K").map(String::as_str), Some("secret"));
     }
 }

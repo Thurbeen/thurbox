@@ -981,6 +981,55 @@ pub(crate) fn build_agent_invocation(
     (command, args)
 }
 
+/// Who carries out a verb on a session (#1471), decided once per verb from
+/// the session's route rather than by each verb on its own.
+///
+/// A host that shares its sessions is driven by its own `thurbox-cli`, whose
+/// database is the record (ADR-24); everything else — a local session, or one
+/// on a host with no usable CLI — is driven from here, over the backend its
+/// route names (ADR-30).
+// Made once per verb call and matched on the spot, never stored or collected,
+// so the size of the `HostCli` arm costs nothing worth a box.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum Executor {
+    Local,
+    HostCli {
+        host: crate::session::HostDef,
+        cli: host_cli::CliInfo,
+    },
+}
+
+impl Executor {
+    /// The executor for a session on `backend_type`, or `None` when its route
+    /// names a host `hosts.toml` no longer describes. What a verb does then is
+    /// its own decision — refusing is usual, but a teardown of a forgotten
+    /// host's row still has things it can do — so it stays visible here
+    /// instead of being folded into either answer.
+    pub fn for_backend(backend_type: &str) -> Option<Self> {
+        Some(match resolve_host(backend_type)? {
+            Some(host) => match host_cli::delegated(&host) {
+                Some(cli) => Executor::HostCli { host, cli },
+                None => Executor::Local,
+            },
+            None => Executor::Local,
+        })
+    }
+
+    /// [`for_backend`](Self::for_backend), refusing a host `hosts.toml` no
+    /// longer describes: the verb has no machine to reach, and doing it here
+    /// would act on the wrong one.
+    pub fn for_session(session: &crate::sync::SharedSession) -> Result<Self, OpError> {
+        Self::for_backend(&session.backend_type).ok_or_else(|| {
+            OpError::Other(format!(
+                "Session '{}' runs on backend '{}', which is not in hosts.toml — \
+                 cannot reach the machine it lives on",
+                session.name, session.backend_type
+            ))
+        })
+    }
+}
+
 /// The machine a session runs on: `Some(None)` for local, `Some(Some(host))` for
 /// a remote row whose host `hosts.toml` describes, and `None` when the row
 /// names a host `hosts.toml` no longer describes — or no route at all.

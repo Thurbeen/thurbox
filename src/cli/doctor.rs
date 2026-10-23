@@ -383,6 +383,7 @@ mod tests {
             soft_delete_choice: true,
             session_revision: true,
             deleted_changes_since: true,
+            create_parity: true,
         }
     }
 

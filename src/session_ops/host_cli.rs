@@ -112,6 +112,12 @@ pub struct CliInfo {
     /// Whether deleted-list deltas include changes to older tombstones and
     /// report `updated_at`. Deletion-time-only peers need full listings.
     pub deleted_changes_since: bool,
+    /// Whether `session create` takes `--id` (a client-minted session id, so a
+    /// retried creation finds the first one), `--env-stdin` (the caller's
+    /// environment as JSON on stdin, so no value is on ssh's command line) and
+    /// `--existing-worktree` — the flags a delegated create needs for parity
+    /// with a local one (#1471).
+    pub create_parity: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -733,6 +739,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .get("deleted_changes_since")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        create_parity: json
+            .get("create_parity")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }))
 }
 
@@ -804,11 +814,24 @@ impl std::fmt::Display for RunFailure {
 /// [`run`], keeping the layer that failed instead of flattening it to a
 /// message.
 ///
-/// Only the delete path needs it, and it needs it badly: falling back to a
-/// local teardown is destructive when the host was in fact fine, and aborting
-/// leaves nothing recorded when the host was in fact gone. Which of those is
-/// safe depends entirely on whether the question arrived — see [`Reach`].
+/// The delete path needs it badly: falling back to a local teardown is
+/// destructive when the host was in fact fine, and aborting leaves nothing
+/// recorded when the host was in fact gone. Which of those is safe depends
+/// entirely on whether the question arrived — see [`Reach`]. A delegated
+/// create asks the same question of an answer it never got.
 pub fn run_classified(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Value, RunFailure> {
+    run_classified_with_stdin(host, cli, args, None)
+}
+
+/// [`run_classified`], handing `stdin` to the host CLI — the channel for
+/// values that must not be on a command line, where `ps` shows them to every
+/// user of both machines.
+pub fn run_classified_with_stdin(
+    host: &HostDef,
+    cli: &CliInfo,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+) -> Result<Value, RunFailure> {
     #[cfg(test)]
     if let Some(answer) = fake::run_override(host, args) {
         return answer;
@@ -818,7 +841,7 @@ pub fn run_classified(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Va
     } else {
         cli_script_posix(&cli.path, args)
     };
-    let stdout = run_script_classified(host, &script, "thurbox-cli", SCRIPT_TIMEOUT)?;
+    let stdout = run_script_classified(host, &script, "thurbox-cli", SCRIPT_TIMEOUT, stdin)?;
     serde_json::from_str(&stdout).map_err(|e| {
         // It ran and said something; that something is not what this build
         // knows how to read. The host may well have done the thing.
@@ -865,7 +888,7 @@ fn run_script(
     action: &str,
     timeout: Duration,
 ) -> Result<String, String> {
-    run_script_classified(host, script, action, timeout).map_err(|e| e.to_string())
+    run_script_classified(host, script, action, timeout, None).map_err(|e| e.to_string())
 }
 
 /// [`run_script`] keeping the layer that failed. See [`Reach`].
@@ -899,6 +922,7 @@ fn run_script_classified(
     script: &str,
     action: &str,
     timeout: Duration,
+    stdin: Option<&[u8]>,
 ) -> Result<String, RunFailure> {
     #[cfg(test)]
     if let Some(answer) = fake::script_override(host, script) {
@@ -917,7 +941,7 @@ fn run_script_classified(
         };
         crate::git::host_shell_c(host, &script)
     };
-    let output = output_within(command, timeout)
+    let output = output_within(command, timeout, stdin)
         .map_err(|e| {
             RunFailure::new(
                 format!("could not start {action} on '{}': {e}", host.name),
@@ -993,6 +1017,7 @@ fn run_script_classified(
 fn output_within(
     mut command: std::process::Command,
     timeout: Duration,
+    stdin: Option<&[u8]>,
 ) -> std::io::Result<Option<std::process::Output>> {
     use std::process::Stdio;
 
@@ -1015,10 +1040,22 @@ fn output_within(
     }
 
     let mut child = command
-        .stdin(Stdio::null())
+        .stdin(match stdin {
+            Some(_) => Stdio::piped(),
+            None => Stdio::null(),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    // Written on a thread of its own and then closed, so a host that never
+    // reads it cannot block the deadline below; small enough for one pipe
+    // buffer in practice, but nothing here relies on that.
+    if let (Some(bytes), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || {
+            let _ = std::io::Write::write_all(&mut pipe, &bytes);
+        });
+    }
     let deadline = Instant::now() + timeout;
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
@@ -1487,6 +1524,7 @@ pub(crate) mod fake {
             soft_delete_choice: true,
             session_revision: false,
             deleted_changes_since: false,
+            create_parity: false,
         }
     }
 }
@@ -1619,6 +1657,7 @@ mod tests {
             soft_delete_choice: false,
             session_revision: false,
             deleted_changes_since: false,
+            create_parity: false,
         }
     }
 

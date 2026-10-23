@@ -807,12 +807,34 @@ has the rationale; the shape:
 - **Delegation.** Create, delete (soft or forced), restart and restore
   on a shareable host run `thurbox-cli session …` *on the host*, which
   does the worktree, the hooks and the launch with the host's own
-  `agents.toml` and `hooks.toml` and mints the id. Every caller goes
+  `agents.toml` and `hooks.toml`. Every caller goes
   through the same four `session_ops` pipelines, so the creation flow,
   the CLI, `spawn` automations and extension self-heal all delegate.
   The caller's own `hooks.toml` fires around the delegated call with
   `THURBOX_HOST` set; the host's fires there. A refusal on the host is
-  the caller's error, verbatim.
+  the caller's error, verbatim. A delegated create carries everything
+  the caller asked for or refuses it by name before anything runs
+  (#1471): `--command`/`--arg`, `--resume`, `--reports-as` and the
+  rest are forwarded — `--on-existing` too, so the host applies it
+  against its own rows, which the caller's mirror may not have caught
+  up with — an opened worktree as `--existing-worktree`, and
+  `--env` as JSON on the host CLI's stdin (`--env-stdin`), so no value
+  is on the caller's ssh command line; what the host CLI has no flag
+  for — a task id, a preset conversation id — is refused, and so is an
+  `--env` for a Windows host, whose CLI is not yet known to receive
+  that stream. The caller mints the session id and passes it as
+  `--id`, so when the link drops after the host created the session,
+  the caller finds it by that id instead of reporting a failure a retry
+  would turn into a second session — and when it cannot tell, its error
+  names the id to retry with. `session create --id <id>` with an id
+  already active answers that session (`"created": false`), with the
+  `--reports-as` it already has; an id a deleted session holds, or one
+  this machine holds for a session on another machine, is a conflict
+  (exit 5). A delegated create leaves the id lookup, the name lock and
+  `--on-existing` to the host, whose rows are the record. These
+  flags need a host CLI reporting `create_parity` in `version --json`:
+  an older one is not handed an id, and is refused a caller's `--id`,
+  an `--env` or a worktree to open.
 - **Provisioning.** On first use, thurbox looks for a `thurbox-cli` of
   the same major — first the one a thurbox running *on the host*
   advertises (every thurbox links its own CLI at

@@ -208,10 +208,10 @@ pub fn restore_session_headless(
     // be delegated to keeps the refusal: every helper below drives the local
     // machine, and restoring there would produce a local impostor of a remote
     // session — `restart` refuses for the same reason.
-    let remote = super::resolve_host(&deleted.backend_type).flatten();
-    let delegated = remote
-        .as_ref()
-        .and_then(|host| super::host_cli::delegated(host).map(|cli| (host.clone(), cli)));
+    let delegated = match super::Executor::for_backend(&deleted.backend_type) {
+        Some(super::Executor::HostCli { host, cli }) => Some((host, cli)),
+        _ => None,
+    };
     if crate::session::Route::is_remote_key(&deleted.backend_type) && delegated.is_none() {
         return Err(format!(
             "'{}' runs on remote backend '{}'; restoring it is local-only for now",

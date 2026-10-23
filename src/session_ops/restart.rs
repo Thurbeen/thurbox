@@ -247,11 +247,10 @@ pub fn start_session_headless(
         .ok_or_else(|| {
             crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
         })?;
-    if super::resolve_host(&session.backend_type)
-        .flatten()
-        .and_then(|host| super::host_cli::delegated(&host))
-        .is_none()
-    {
+    if !matches!(
+        super::Executor::for_backend(&session.backend_type),
+        Some(super::Executor::HostCli { .. })
+    ) {
         super::windows::backend_for(backends, &session.backend_type)
             .map_err(|e| format!("cannot start '{}': {e}", session.name))?;
     }
@@ -510,21 +509,10 @@ fn restart_for(
     // there — restarting it locally would leave the real window running and add
     // a stray local one beside it. Refusing is only right when we cannot tell
     // *which* host, which is what a missing `hosts.toml` entry means.
-    let host = super::resolve_host(&session.backend_type).ok_or_else(|| {
-        format!(
-            "Session '{}' runs on backend '{}', which is not in hosts.toml — \
-             cannot reach the machine it lives on",
-            session.name, session.backend_type
-        )
-    })?;
-
     // A session on a shareable host is restarted by the host's CLI, which
     // kills and relaunches where the agent runs, with the host's own
     // configuration; the local row is then mirrored from the host's.
-    if let Some((host, cli)) = host
-        .as_ref()
-        .and_then(|h| super::host_cli::delegated(h).map(|cli| (h, cli)))
-    {
+    if let super::Executor::HostCli { host, cli } = super::Executor::for_session(&session)? {
         // `--if-missing` is "I am a repairer", and the host reads both halves
         // out of it: put a window back only if one is gone, and stand down for
         // a hold somebody there already has. An unpark is neither — the
@@ -532,8 +520,11 @@ fn restart_for(
         // already, so the flag saves nothing and a hold left behind there
         // would silently no-op a `session start` that has cleared the parked
         // mark here.
-        return restart_delegated(db, &session, host, &cli, why.is_a_repairer());
+        return restart_delegated(db, &session, &host, &cli, why.is_a_repairer());
     }
+    // Known to `hosts.toml` (`for_session` refused otherwise): the host the
+    // plan below launches on, or none for a local session.
+    let host = super::resolve_host(&session.backend_type).flatten();
 
     // Taken before the liveness question below, because that question's answer
     // is honest and wrong: a window killed by a restart that has not yet

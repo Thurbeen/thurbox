@@ -330,7 +330,15 @@ session), never on the loop, ADR-P12).
   since the newest timestamp held (`session list --deleted --since`). This includes
   force-delete promotions of older rows. Older hosts are read whole), and performs create/delete/restart/restore by
   running `thurbox-cli session …` **on the host** (`session_ops::host_cli`,
-  branched inside the four pipelines so every caller delegates). A host with
+  branched inside the four pipelines so every caller delegates; the choice
+  per verb on a live session is `session_ops::Executor`, #1471 — the
+  deleted-row teardown sweeps in `delete` still ask `host_cli::delegated`). A delegated create forwards
+  every `SpawnRequest` field or refuses it by name
+  (`spawn::delegated_create_args`, an exhaustive destructure): `--env` goes
+  as JSON on stdin (`--env-stdin`), an opened worktree as
+  `--existing-worktree`, and the caller-minted `--id` lets a
+  create whose answer a dropped link lost be found rather than repeated —
+  all three only for a host CLI reporting `create_parity`. A host with
   no CLI is **provisioned** one under `~/.local/share/thurbox/bin/` (the
   release archive of this version, checksum-verified; a dev build ships its
   own sibling binary when the platform matches), and `host_cli::provision`

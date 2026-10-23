@@ -1649,7 +1649,7 @@ snapshot when they change (schema v55): only the teardown sweep reads them.
 | `consumer` | Written by | `cursor` / `lease_until` |
 |---|---|---|
 | `telemetry` | the export in `automation tick` (ADR-37) | the last `session_events.seq` exported / the epoch ms the exporting tick's lease ends |
-| `lock:name:<server>:<name>` | `session_ops::lock`, while a session name is decided: extension self-heal, `session restore`, `session create --on-existing fail\|adopt\|replace` | `0` / the epoch ms the lock lapses. Deleted when the operation ends, taken over once it lapses |
+| `lock:name:<server>:<name>` | `session_ops::lock`, while a session name is decided: extension self-heal, `session restore`, `session create --on-existing fail\|adopt\|replace` for a session created here (a delegated create leaves the name to the host) | `0` / the epoch ms the lock lapses. Deleted when the operation ends, taken over once it lapses |
 | `lock:name:key@<host>:<key>` | the same lock, on a session key, for every writer that gives one out | as above |
 | `lock:session:<id>` | a restart, while it replaces the session's window | as above |
 | `lock:run:<automation id>` | a fire of one automation — the tick's or `automation run --wait`'s — held for the automation's timeout plus 5 s at least, so a second fire of it is skipped (tick) or refused with exit 5 (`run --wait`) | as above |
