@@ -184,6 +184,19 @@ fn a_missing_tmux_window_never_borrows_a_live_panes_pid() {
     missing_window_pid::<thurbox::backend::tmux::Tmux>();
 }
 
+/// A client tmux does not take for UTF-8 has every control byte of a reply
+/// printed as `_`, which is what a thurbox started from a systemd unit, cron
+/// or a bare container is. Its pids must still be read.
+#[cfg(unix)]
+#[test]
+fn a_tmux_pane_pid_is_read_without_a_utf8_locale() {
+    // nextest gives each test its own process, so this is the test's own env.
+    for var in ["LC_ALL", "LC_CTYPE", "LANG"] {
+        std::env::remove_var(var);
+    }
+    missing_window_pid::<thurbox::backend::tmux::Tmux>();
+}
+
 #[cfg(unix)]
 #[test]
 fn a_missing_rmux_window_never_borrows_a_live_panes_pid() {

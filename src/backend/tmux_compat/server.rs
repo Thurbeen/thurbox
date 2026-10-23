@@ -141,9 +141,10 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// Whether a server-wide option also needs the session to route its client.
     const SERVER_OPTIONS_NEED_TARGET: bool = false;
 
-    /// The flags that make a `display-message` answer keep its separators
-    /// whatever the locale (see `PANE_STATE_UTF8_FLAG`'s reason in the tmux
-    /// adapter), before the command itself.
+    /// The flags that make a one-shot format answer (`display-message -p`,
+    /// `list-windows -F`) keep its separators whatever the locale (see
+    /// `PANE_STATE_UTF8_FLAG`'s reason in the tmux adapter), before the command
+    /// itself.
     const DISPLAY_FLAGS: &[&str];
 
     /// Refuse a server too old to give a new pane its own console or to read
@@ -3283,12 +3284,14 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         }
         // A stale row's pane id may now belong to somebody else. Read only
         // windows whose own stamps identify the session, excluding its shell.
-        let output = self.run_tmux(&[
+        let mut argv = M::DISPLAY_FLAGS.to_vec();
+        argv.extend([
             "list-windows",
             "-a",
             "-F",
             "#{@thurbox_session}\t#{@thurbox_role}\t#{window_activity}",
-        ])?;
+        ]);
+        let output = self.run_tmux(&argv)?;
         let mut times: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             let mut fields = line.split('\t');
@@ -3613,24 +3616,25 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     }
 
     fn pane_pid(&self, backend_id: &str) -> crate::backend::contract::BackendResult<Option<u32>> {
-        let format =
-            format!("#{{pane_pid}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}");
+        // Spaces, not `PANE_STATE_SEP`: the control client carries no
+        // `DISPLAY_FLAGS`, so a tmux that does not take it for UTF-8 prints
+        // that byte as `_`. The pid and the pane id hold no space, so the
+        // window name, last, keeps any of its own.
+        let format = "#{pane_pid} #{pane_id} #{window_name}";
         let target = self.target(backend_id)?;
         let raw = if self.attached() {
             self.ctrl_command(&format!("display-message -t {target} -p '{format}'"))?
         } else {
             // A pane that is already gone has no pid, which is not an error.
-            self.tmux_output(&["display-message", "-p", "-t", &target, &format])
+            self.tmux_output(&["display-message", "-p", "-t", &target, format])
                 .unwrap_or_default()
         };
-        if !answered_for(
-            backend_id,
-            pane_answer_field(&raw, 1).as_deref(),
-            pane_answer_field(&raw, 2).as_deref(),
-        ) {
+        let mut fields = raw.trim_end_matches(['\r', '\n']).splitn(3, ' ');
+        let (pid, pane, window) = (fields.next(), fields.next(), fields.next());
+        if !answered_for(backend_id, window, pane) {
             return Ok(None);
         }
-        Ok(pane_answer_field(&raw, 0).and_then(|pid| pid.parse().ok()))
+        Ok(pid.and_then(|pid| pid.parse().ok()))
     }
 
     fn pane_pids(&self) -> crate::backend::contract::BackendResult<HashMap<String, u32>> {
