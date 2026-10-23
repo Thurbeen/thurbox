@@ -141,9 +141,10 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     /// Whether a server-wide option also needs the session to route its client.
     const SERVER_OPTIONS_NEED_TARGET: bool = false;
 
-    /// The flags that make a `display-message` answer keep its separators
-    /// whatever the locale (see `PANE_STATE_UTF8_FLAG`'s reason in the tmux
-    /// adapter), before the command itself.
+    /// The flags that make a one-shot format answer (`display-message -p`,
+    /// `list-windows -F`) keep its separators whatever the locale (see
+    /// `PANE_STATE_UTF8_FLAG`'s reason in the tmux adapter), before the command
+    /// itself.
     const DISPLAY_FLAGS: &[&str];
 
     /// Refuse a server too old to give a new pane its own console or to read
@@ -3283,12 +3284,14 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         }
         // A stale row's pane id may now belong to somebody else. Read only
         // windows whose own stamps identify the session, excluding its shell.
-        let output = self.run_tmux(&[
+        let mut argv = M::DISPLAY_FLAGS.to_vec();
+        argv.extend([
             "list-windows",
             "-a",
             "-F",
             "#{@thurbox_session}\t#{@thurbox_role}\t#{window_activity}",
-        ])?;
+        ]);
+        let output = self.run_tmux(&argv)?;
         let mut times: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             let mut fields = line.split('\t');
@@ -3613,24 +3616,20 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     }
 
     fn pane_pid(&self, backend_id: &str) -> crate::backend::contract::BackendResult<Option<u32>> {
-        let format =
-            format!("#{{pane_pid}}{PANE_STATE_SEP}#{{window_name}}{PANE_STATE_SEP}#{{pane_id}}");
+        // Spaces, not `PANE_STATE_SEP`: the control client carries no
+        // `DISPLAY_FLAGS`, so a tmux that does not take it for UTF-8 prints
+        // that byte as `_`. The pid and the pane id hold no space, so the
+        // window name, last, keeps any of its own.
+        let format = "#{pane_pid} #{pane_id} #{window_name}";
         let target = self.target(backend_id)?;
         let raw = if self.attached() {
             self.ctrl_command(&format!("display-message -t {target} -p '{format}'"))?
         } else {
             // A pane that is already gone has no pid, which is not an error.
-            self.tmux_output(&["display-message", "-p", "-t", &target, &format])
+            self.tmux_output(&["display-message", "-p", "-t", &target, format])
                 .unwrap_or_default()
         };
-        if !answered_for(
-            backend_id,
-            pane_answer_field(&raw, 1).as_deref(),
-            pane_answer_field(&raw, 2).as_deref(),
-        ) {
-            return Ok(None);
-        }
-        Ok(pane_answer_field(&raw, 0).and_then(|pid| pid.parse().ok()))
+        Ok(parse_pane_pid_answer(backend_id, &raw))
     }
 
     fn pane_pids(&self) -> crate::backend::contract::BackendResult<HashMap<String, u32>> {
@@ -4213,6 +4212,21 @@ fn answered_for(target: &str, window: Option<&str>, pane: Option<&str>) -> bool 
         Some((_, name)) => window == Some(name),
         None => pane == Some(target),
     }
+}
+
+/// `pane_pid`'s `#{pane_pid} #{pane_id} #{window_name}` answer, or `None`
+/// unless it is `target`'s own.
+///
+/// Read off the last line: RMUX's control mode can put a pane's `%output`
+/// ahead of it in the same reply, and the answer is always one line.
+fn parse_pane_pid_answer(target: &str, raw: &str) -> Option<u32> {
+    let answer = raw.trim_end_matches(['\r', '\n']).lines().last()?;
+    let mut fields = answer.splitn(3, ' ');
+    let (pid, pane, window) = (fields.next(), fields.next(), fields.next());
+    if !answered_for(target, window, pane) {
+        return None;
+    }
+    pid.and_then(|pid| pid.parse().ok())
 }
 
 /// Where `register_pane` learnt a pane lives.
@@ -5118,6 +5132,21 @@ fn typed_absence(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RMUX's control mode can deliver a pane's `%output` inside a command's
+    /// reply (captured from `a_missing_rmux_window_never_borrows_a_live_panes_pid`
+    /// failing intermittently); the answer is still its last line.
+    #[test]
+    fn a_pane_pid_answer_is_read_past_pane_output_in_the_reply() {
+        let raw = "%output %0 \\033[?1h\\033=\\033[?2004h\n1826732 %1 tb-live\n";
+        assert_eq!(parse_pane_pid_answer("%1", raw), Some(1826732));
+        assert_eq!(parse_pane_pid_answer("s:=tb-live", raw), Some(1826732));
+        assert_eq!(parse_pane_pid_answer("s:=tb-gone", raw), None);
+        assert_eq!(
+            parse_pane_pid_answer("s:=tb-two words", "7 %2 tb-two words"),
+            Some(7)
+        );
+    }
 
     /// An adopted pane's history reaches the reader in pieces, so replaying a
     /// long scrollback never holds the parser's lock (and a paint behind it)

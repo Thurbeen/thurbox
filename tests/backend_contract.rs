@@ -184,6 +184,70 @@ fn a_missing_tmux_window_never_borrows_a_live_panes_pid() {
     missing_window_pid::<thurbox::backend::tmux::Tmux>();
 }
 
+/// A client tmux does not take for UTF-8 has every control byte of a reply
+/// printed as `_`, which is what a thurbox started from a systemd unit, cron
+/// or a bare container is. Its pids must still be read.
+#[cfg(unix)]
+#[test]
+fn a_tmux_pane_pid_is_read_without_a_utf8_locale() {
+    // nextest gives each test its own process, so this is the test's own env.
+    for var in ["LC_ALL", "LC_CTYPE", "LANG"] {
+        std::env::remove_var(var);
+    }
+    missing_window_pid::<thurbox::backend::tmux::Tmux>();
+}
+
+/// The same locale, for the window listing `output_times` splits on tabs.
+#[cfg(unix)]
+#[test]
+fn a_tmux_output_time_is_read_without_a_utf8_locale() {
+    use thurbox::backend::tmux::Tmux;
+    use thurbox::backend::tmux_compat::{server::Server, transport::TmuxTransport};
+    use thurbox::backend::{Owner, WindowSpec};
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    for var in ["LC_ALL", "LC_CTYPE", "LANG"] {
+        std::env::remove_var(var);
+    }
+    let socket = format!("thurbox-output-time-{}", std::process::id());
+    let _server = TmuxServer::pin(&socket);
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("tmux")
+                .args(["-L", &self.0, "kill-server"])
+                .output();
+        }
+    }
+    let _cleanup = Cleanup(socket.clone());
+    let backend = Server::<Tmux>::with_transport(
+        TmuxTransport::local("tmux"),
+        &socket,
+        "output-time-probe",
+        "local:tmux",
+    );
+    let owner = "00000000-0000-4000-8000-0000000000cd";
+    backend
+        .create_window(&WindowSpec {
+            owner: Owner::new(owner, "busy"),
+            role: WindowRole::Agent,
+            command: "sleep",
+            args: &["300".into()],
+            cwd: None,
+            env: &Default::default(),
+        })
+        .expect("create window");
+    let times = backend.output_times().expect("output_times");
+    assert!(
+        times.get(owner).is_some_and(|at| *at > 0),
+        "no output time for the stamped window: {times:?}"
+    );
+    backend.shutdown();
+}
+
 #[cfg(unix)]
 #[test]
 fn a_missing_rmux_window_never_borrows_a_live_panes_pid() {
