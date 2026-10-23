@@ -16,15 +16,15 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use thurbox::backend::identity::{window_name_for, WindowIndex};
 use thurbox::backend::{
-    AdoptedSession, DiscoveredSession, Key, Located, Owner, PaneState, Placed, SessionBackend,
-    SpawnedSession, WindowRole, WindowSpec,
+    AdoptedSession, DiscoveredSession, Key, Located, Owner, PaneChunk, PaneState, Placed,
+    SessionBackend, SpawnedSession, WindowRole, WindowSpec,
 };
 use thurbox::session::Route;
 
@@ -317,9 +317,10 @@ fn role_of(name: &str) -> WindowRole {
 /// reaches a pane headlessly is kept on its [`Window::screen`] instead.
 struct Silent;
 
-impl Read for Silent {
-    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-        Ok(0)
+impl Iterator for Silent {
+    type Item = PaneChunk;
+    fn next(&mut self) -> Option<PaneChunk> {
+        None
     }
 }
 

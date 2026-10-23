@@ -47,7 +47,7 @@ pub(in crate::backend) fn classify_refusal(
 }
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -58,54 +58,11 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, warn};
 
 use super::transport::TmuxTransport;
-use crate::backend::contract::{PaneSize, PaneSnapshot, SnapshotArrived, StateArrived};
+use crate::backend::contract::{PaneChunk, PaneSize, PaneSnapshot};
 
 /// Per-pane output channel capacity. Sized large enough to buffer heavy output
 /// bursts; chunks are dropped (not blocked) when full to keep the reader thread alive.
 pub const PANE_CHANNEL_CAPACITY: usize = 4096;
-
-/// What a pane's reader is handed, in the order the control-mode stream
-/// carried it.
-#[derive(Debug, Clone)]
-pub enum PaneChunk {
-    /// Bytes the pane printed.
-    Output(Vec<u8>),
-    /// The pane as tmux holds it at exactly this point of its output: every
-    /// byte handed over before this chunk is in it, and none handed over after.
-    ///
-    /// It can be exact because of where it travels. tmux queues a pane's
-    /// `%output` in the same callback that parses those bytes into its own
-    /// screen, and queues a command's reply behind every block already queued
-    /// (`window.c`, `control.c`), so the reply to a capture sits in the stream
-    /// at the byte its capture describes. The reader thread sees both in that
-    /// order, which is why it — and not the thread that asked — puts the
-    /// snapshot into the pane's channel.
-    Snapshot(Box<PaneSnapshot>),
-    /// A snapshot as [`Self::Snapshot`] is, for a reader whose output was
-    /// dropped for want of room: it replaces the grid the reader has, which
-    /// is missing whatever the dropped bytes drew (see `Resync`).
-    Resync(Box<PaneSnapshot>),
-    /// The pane's window is now this size — see [`Notification::LayoutChange`].
-    ///
-    /// In this channel rather than beside it for the reason a snapshot is: the
-    /// output a program writes after its window was resized is laid out for the
-    /// new size, and whatever was queued before it for the old one.
-    Resized { rows: u16, cols: u16 },
-    /// Whether another client is named as the pane's sizer. A hint with no
-    /// place in the stream, carried here only because this is where the pane's
-    /// reader listens.
-    SizedElsewhere(bool),
-    /// The title and input modes of a pane whose output is held back
-    /// (`ControlMode::hide_pane`), as terminal bytes to parse but not to
-    /// count as output: the arm-time report of what the pane already was.
-    State(Vec<u8>),
-}
-
-impl From<Vec<u8>> for PaneChunk {
-    fn from(bytes: Vec<u8>) -> Self {
-        Self::Output(bytes)
-    }
-}
 
 /// The format [`snapshot_commands`] asks `display-message` for, and
 /// [`parse_snapshot`] reads back.
@@ -511,6 +468,14 @@ impl PaneSender {
     /// snapshot to one in step. `None` for a snapshot that failed, which puts
     /// a reader behind back in step — nothing will catch it up, and dropping
     /// its output for good would be worse than the gap.
+    ///
+    /// Why a snapshot spliced in here is exact: tmux queues a pane's
+    /// `%output` in the same callback that parses those bytes into its own
+    /// screen, and queues a command's reply behind every block already queued
+    /// (`window.c`, `control.c`), so the reply to a capture sits in the stream
+    /// at the byte its capture describes. The reader thread sees both in that
+    /// order, which is why it — and not the thread that asked — puts the
+    /// snapshot into the pane's channel.
     fn send_snapshot(&self, snapshot: Option<&PaneSnapshot>) -> Sent {
         if let Some(resync) = self.resync.as_ref().filter(|r| r.is_behind()) {
             let Ok(mut state) = resync.state.lock() else {
@@ -727,14 +692,11 @@ pub enum Notification {
     Other(String),
 }
 
-/// Per-pane reader that receives output via an mpsc channel.
-///
-/// Implements `Read` so it plugs directly into the existing `Session::reader_loop`.
-/// A [`PaneChunk::Snapshot`] comes out of `read` as a [`SnapshotArrived`] error.
+/// Per-pane reader that receives output via an mpsc channel: the pane's
+/// [`PaneOutput`](crate::backend::contract::PaneOutput), as
+/// `Session::reader_loop` takes it.
 pub struct ControlModeReader {
     receiver: std::sync::mpsc::Receiver<PaneChunk>,
-    buffer: Vec<u8>,
-    pos: usize,
     size: PaneSize,
     /// Where a snapshot that found this reader's channel full is parked.
     resync: Option<Arc<Resync>>,
@@ -744,8 +706,6 @@ impl ControlModeReader {
     pub fn new(receiver: std::sync::mpsc::Receiver<PaneChunk>) -> Self {
         Self {
             receiver,
-            buffer: Vec::new(),
-            pos: 0,
             size: PaneSize::default(),
             resync: None,
         }
@@ -756,7 +716,7 @@ impl ControlModeReader {
     /// lock it was parked under (see [`Self::take_parked`]), so one that finds
     /// nothing parked can block: anything sent from then on lands in the
     /// channel and wakes it.
-    fn next_chunk(&self) -> Result<PaneChunk, std::sync::mpsc::RecvError> {
+    fn recv_chunk(&self) -> Result<PaneChunk, std::sync::mpsc::RecvError> {
         let Some(resync) = &self.resync else {
             return self.receiver.recv();
         };
@@ -773,7 +733,7 @@ impl ControlModeReader {
         }
     }
 
-    /// The step of [`Self::next_chunk`] that runs under the lock a snapshot is
+    /// The step of [`Self::recv_chunk`] that runs under the lock a snapshot is
     /// parked under: the next chunk, the parked snapshot once there is none,
     /// or `None` when neither is there.
     ///
@@ -805,68 +765,24 @@ impl ControlModeReader {
     }
 }
 
-impl Read for ControlModeReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // Drain leftover buffered data first.
-        if self.pos < self.buffer.len() {
-            let remaining = &self.buffer[self.pos..];
-            let n = remaining.len().min(buf.len());
-            buf[..n].copy_from_slice(&remaining[..n]);
-            self.pos += n;
-            if self.pos == self.buffer.len() {
-                self.buffer.clear();
-                self.pos = 0;
-            }
-            return Ok(n);
-        }
+impl Iterator for ControlModeReader {
+    type Item = PaneChunk;
 
-        // Block until the next chunk arrives. A size is handed over as an
-        // interrupted read of its own, as a snapshot is: every byte before it
-        // has been returned and none after it has, so the caller resizes its
-        // grid at exactly the point in the stream tmux resized the pane.
+    /// The next chunk, blocking for it; `None` once the channel is closed. A
+    /// size is reported to [`Self::size`] as its chunk is handed over, so the
+    /// loop resizes its grid at exactly the point in the stream tmux resized
+    /// the pane. Who sizes the pane is only recorded.
+    fn next(&mut self) -> Option<PaneChunk> {
         loop {
-            match self.next_chunk() {
-                Ok(PaneChunk::Snapshot(snapshot)) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        SnapshotArrived {
-                            snapshot,
-                            resync: false,
-                        },
-                    ))
-                }
-                Ok(PaneChunk::Resync(snapshot)) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        SnapshotArrived {
-                            snapshot,
-                            resync: true,
-                        },
-                    ))
-                }
-                Ok(PaneChunk::Resized { rows, cols }) => {
+            match self.recv_chunk().ok()? {
+                PaneChunk::Resized { rows, cols } => {
                     self.size.report(rows, cols);
-                    return Err(std::io::ErrorKind::Interrupted.into());
+                    return Some(PaneChunk::Resized { rows, cols });
                 }
-                Ok(PaneChunk::SizedElsewhere(elsewhere)) => {
+                PaneChunk::SizedElsewhere(elsewhere) => {
                     self.size.set_sized_elsewhere(elsewhere);
                 }
-                Ok(PaneChunk::State(state)) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        StateArrived(state),
-                    ))
-                }
-                Ok(PaneChunk::Output(data)) => {
-                    let n = data.len().min(buf.len());
-                    buf[..n].copy_from_slice(&data[..n]);
-                    if n < data.len() {
-                        self.buffer = data;
-                        self.pos = n;
-                    }
-                    return Ok(n);
-                }
-                Err(_) => return Ok(0), // Channel closed → EOF.
+                chunk => return Some(chunk),
             }
         }
     }

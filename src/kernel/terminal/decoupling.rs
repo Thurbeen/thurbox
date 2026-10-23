@@ -24,7 +24,7 @@
 //! than something a human has to watch a terminal for.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use ratatui::backend::TestBackend;
@@ -46,16 +46,17 @@ const SHELL_PANE: &str = "%shell";
 
 /// Output that never arrives and never ends.
 ///
-/// The reader loop treats EOF as "the pane exited", so a stub that returns
-/// `Ok(0)` at once would retire the pane before the first frame is painted.
+/// The reader loop treats the stream's end as "the pane exited", so a stub
+/// that ends at once would retire the pane before the first frame is painted.
 /// Blocking on a channel whose sender the harness holds ends the loop at drop
 /// instead.
 struct Quiet(std::sync::mpsc::Receiver<()>);
 
-impl Read for Quiet {
-    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+impl Iterator for Quiet {
+    type Item = crate::backend::PaneChunk;
+    fn next(&mut self) -> Option<Self::Item> {
         let _ = self.0.recv();
-        Ok(0)
+        None
     }
 }
 
@@ -87,7 +88,7 @@ struct Recorder {
 
 impl Recorder {
     /// A pane's I/O, with the sender kept alive so its reader blocks.
-    fn io(&self) -> (Box<dyn Read + Send>, Box<dyn Write + Send>) {
+    fn io(&self) -> (crate::backend::PaneOutput, Box<dyn Write + Send>) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.senders.lock().expect("senders").push(tx);
         (Box::new(Quiet(rx)), Box::new(Discard))

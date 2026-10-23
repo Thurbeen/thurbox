@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -12,8 +12,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, error};
 
 use crate::backend::contract::{
-    pack_size, unpack_size, AdoptedSession, PaneSize, PaneSnapshot, SessionBackend,
-    SnapshotArrived, SpawnedSession, StateArrived,
+    pack_size, unpack_size, AdoptedSession, PaneChunk, PaneOutput, PaneSize, PaneSnapshot,
+    SessionBackend, SpawnedSession,
 };
 use crate::backend::osc8;
 use crate::backend::WindowRole;
@@ -313,7 +313,7 @@ fn stamp(
 
 /// Internal bundle of I/O handles before wiring.
 struct SessionIo {
-    output: Box<dyn Read + Send>,
+    output: PaneOutput,
     input: Box<dyn Write + Send>,
     backend_id: String,
     /// Whether these handles came from a fresh spawn or an adopt.
@@ -1291,11 +1291,11 @@ impl Session {
     }
 
     /// Blocking read loop feeding the vt100 parser. Runs on a
-    /// `spawn_blocking` thread and exits only on EOF/error from `reader`.
+    /// `spawn_blocking` thread and exits only when `reader` ends.
     /// Lifecycle contract: every path that retires a `Session` must call
     /// `kill()`/`detach()` so the backend unregisters the pane and this
-    /// thread sees EOF — a silent drop leaks the thread (blocked in a read)
-    /// for the process lifetime.
+    /// thread sees the stream end — a silent drop leaks the thread (blocked
+    /// waiting for the next chunk) for the process lifetime.
     ///
     /// `seed_len` is the number of bytes at the front of `reader` that are
     /// replayed history (an adopt's scrollback seed, chained ahead of the
@@ -1307,37 +1307,37 @@ impl Session {
     /// `WireMode::Adopt` the instant the reader's first bytes arrive.
     ///
     /// A snapshot the pane asked for ([`WiredPane::restore`]) arrives here too,
-    /// between two reads, at exactly the point of the stream it describes — so
-    /// installing it before the next read is what keeps a rebuilt grid from
+    /// between two chunks of output, at exactly the point of the stream it
+    /// describes — so installing it before the next chunk is what keeps a
+    /// rebuilt grid from
     /// losing or repeating a byte. A partial character held in `carry` stays
     /// held: its first bytes came before the snapshot, which cannot show a
     /// character tmux has not finished either, and the rest come after. Not
     /// across a resync: the rest of that character may be in the output it
     /// replaces.
     fn reader_loop(
-        mut reader: Box<dyn Read + Send>,
+        reader: PaneOutput,
         parser: Arc<Mutex<SessionParser>>,
         signals: ReaderSignals,
         residency: Arc<Residency>,
         mut seed_len: usize,
         size: Option<PaneSize>,
     ) {
-        let mut buf = [0u8; 4096];
         // Bytes of a trailing, not-yet-complete UTF-8 character held back from
-        // the previous read. The agent's output is a single byte stream, but
-        // the OS read boundary (and tmux's `%output` framing) can fall in the
-        // middle of a multi-byte character. vt100 is NOT robust to a `process()`
-        // chunk that ends mid-codepoint — it can swallow a following control
-        // byte (e.g. a newline), misplacing later output — so we never hand it a
-        // truncated tail. `carry` is at most 3 bytes (a 4-byte char missing one).
+        // the previous chunk. The agent's output is a single byte stream, but
+        // tmux's `%output` framing (and the OS read boundary under it) can fall
+        // in the middle of a multi-byte character. vt100 is NOT robust to a
+        // `process()` chunk that ends mid-codepoint — it can swallow a following
+        // control byte (e.g. a newline), misplacing later output — so we never
+        // hand it a truncated tail. `carry` is at most 3 bytes (a 4-byte char
+        // missing one).
         let mut carry: Vec<u8> = Vec::new();
-        loop {
-            let read = reader.read(&mut buf);
-            // Taken between reads, never during one: a reported size is handed
-            // over as an interrupted read of its own (`ControlModeReader`), so
-            // every byte before it is already in the grid and none after it is.
-            // A pane with no grid has nothing to resize; the grid it gets back
-            // is built at the pane's size as tmux reports it then.
+        for chunk in reader {
+            // Taken between chunks, never during one: a reported size is a
+            // chunk of its own (`PaneChunk::Resized`), so every byte before it
+            // is already in the grid and none after it is. A pane with no grid
+            // has nothing to resize; the grid it gets back is built at the
+            // pane's size as tmux reports it then.
             if let Some((rows, cols)) = size.as_ref().and_then(PaneSize::take) {
                 let (rows, cols) = vt_floor(rows, cols);
                 if let Ok(mut p) = parser.lock() {
@@ -1346,20 +1346,17 @@ impl Session {
                     }
                 }
             }
-            match read {
-                Ok(0) => {
-                    debug!("Session reader: EOF");
-                    break;
-                }
-                Ok(n) => {
+            match chunk {
+                PaneChunk::Output(bytes) => {
+                    let n = bytes.len();
                     let mut data = std::mem::take(&mut carry);
-                    data.extend_from_slice(&buf[..n]);
+                    data.extend_from_slice(&bytes);
                     let ready = utf8_ready_prefix_len(&data);
                     carry = data.split_off(ready);
                     Self::feed_parser(&parser, &data);
                     // Bytes beyond the seed boundary are live activity; a chunk
                     // that is entirely within the seed is not. Activity records
-                    // the read even when its trailing character is still
+                    // the chunk even when its trailing character is still
                     // buffered. The redraw sequence moves only when the parser
                     // has taken a complete prefix, and after it has done so.
                     if seed_len < n {
@@ -1373,37 +1370,33 @@ impl Session {
                         crate::backend::output_wake::notify(&signals.output_seq);
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                    // A hidden pane's title and modes: parsed, never taken for
-                    // output, since what they say is state the pane already had.
-                    let e = match StateArrived::take(e) {
-                        Ok(state) => {
-                            Self::feed_parser(&parser, &state);
-                            continue;
-                        }
-                        Err(e) => e,
-                    };
-                    if let Some(arrived) = SnapshotArrived::take(e) {
-                        if arrived.resync {
-                            carry.clear();
-                        }
-                        Self::install(&parser, &residency, &arrived.snapshot, arrived.resync);
-                        // A rebuilt grid is new content to paint, like output.
-                        signals.output_seq.fetch_add(1, Ordering::Release);
-                        crate::backend::output_wake::notify(&signals.output_seq);
-                    }
+                // A hidden pane's title and modes: parsed, never taken for
+                // output, since what they say is state the pane already had.
+                PaneChunk::State(state) => Self::feed_parser(&parser, &state),
+                PaneChunk::Snapshot(snapshot) => {
+                    Self::install(&parser, &residency, &snapshot, false);
+                    Self::rebuilt(&signals);
                 }
-                Err(e) => {
-                    debug!("Session reader error: {e}");
-                    break;
+                PaneChunk::Resync(snapshot) => {
+                    carry.clear();
+                    Self::install(&parser, &residency, &snapshot, true);
+                    Self::rebuilt(&signals);
                 }
+                PaneChunk::Resized { .. } | PaneChunk::SizedElsewhere(_) => {}
             }
         }
-        // Stream ended (EOF or error): flush any leftover partial UTF-8 sequence,
-        // since no more bytes are coming to complete it.
+        debug!("Session reader: stream ended");
+        // Flush any leftover partial UTF-8 sequence, since no more bytes are
+        // coming to complete it.
         Self::feed_parser(&parser, &carry);
         signals.output_seq.fetch_add(1, Ordering::Release);
         signals.exited.store(true, Ordering::SeqCst);
+    }
+
+    /// A rebuilt grid is new content to paint, like output.
+    fn rebuilt(signals: &ReaderSignals) {
+        signals.output_seq.fetch_add(1, Ordering::Release);
+        crate::backend::output_wake::notify(&signals.output_seq);
     }
 
     /// Rebuild a dropped grid from `snapshot`, in place of the two cells that
@@ -1848,9 +1841,12 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
     use super::*;
+
+    /// A pane stream that hands over `chunks` and then ends.
+    fn output(chunks: Vec<PaneChunk>) -> PaneOutput {
+        Box::new(chunks.into_iter())
+    }
 
     /// A parser wired to `copy`, fed one OSC 52 write of `text`.
     fn print_copy(copy: &Arc<AppCopy>, text: &str) {
@@ -2183,7 +2179,7 @@ mod tests {
         let seed = b"replayed history\r\n$ ".to_vec();
         let seed_len = seed.len();
         Session::reader_loop(
-            Box::new(Cursor::new(seed)),
+            output(vec![seed.into()]),
             Arc::clone(&parser),
             ReaderSignals {
                 exited: Arc::clone(&exited),
@@ -2221,24 +2217,6 @@ mod tests {
     /// width, and the new one is.
     #[test]
     fn reader_loop_resizes_the_grid_where_the_stream_says() {
-        struct Script(Vec<Result<&'static [u8], (u16, u16)>>, PaneSize);
-        impl Read for Script {
-            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-                if self.0.is_empty() {
-                    return Ok(0);
-                }
-                match self.0.remove(0) {
-                    Ok(bytes) => {
-                        buf[..bytes.len()].copy_from_slice(bytes);
-                        Ok(bytes.len())
-                    }
-                    Err((rows, cols)) => {
-                        self.1.report(rows, cols);
-                        Err(std::io::ErrorKind::Interrupted.into())
-                    }
-                }
-            }
-        }
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             4,
             20,
@@ -2246,14 +2224,19 @@ mod tests {
             TermSignals::default(),
         )));
         let size = PaneSize::default();
-        let script = Script(
-            vec![
-                Ok(b"aaaaaaaaaaaaaaa\r\n".as_slice()),
-                Err((4, 10)),
-                Ok(b"bbbbbbbbbbbbbbb".as_slice()),
-            ],
-            size.clone(),
-        );
+        // Reported as the backend's stream does, as the chunk is handed over.
+        let reports = size.clone();
+        let script = vec![
+            b"aaaaaaaaaaaaaaa\r\n".to_vec().into(),
+            PaneChunk::Resized { rows: 4, cols: 10 },
+            b"bbbbbbbbbbbbbbb".to_vec().into(),
+        ]
+        .into_iter()
+        .inspect(move |chunk| {
+            if let PaneChunk::Resized { rows, cols } = chunk {
+                reports.report(*rows, *cols);
+            }
+        });
         Session::reader_loop(
             Box::new(script),
             Arc::clone(&parser),
@@ -2280,34 +2263,19 @@ mod tests {
     /// plain snapshot still leaves a resident grid alone.
     #[test]
     fn reader_loop_replaces_a_resident_grid_with_a_resync() {
-        struct Script(Vec<Result<&'static [u8], bool>>);
-        impl Read for Script {
-            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-                if self.0.is_empty() {
-                    return Ok(0);
-                }
-                match self.0.remove(0) {
-                    Ok(bytes) => {
-                        buf[..bytes.len()].copy_from_slice(bytes);
-                        Ok(bytes.len())
-                    }
-                    Err(resync) => Err(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        SnapshotArrived {
-                            snapshot: Box::new(PaneSnapshot {
-                                cols: 20,
-                                rows: 4,
-                                cursor: (9, 0),
-                                normal: vec!["\x1b[32mRECOVERED\x1b[0m".into()],
-                                alternate: None,
-                            }),
-                            resync,
-                        },
-                    )),
-                }
-            }
+        let snapshot = || {
+            Box::new(PaneSnapshot {
+                cols: 20,
+                rows: 4,
+                cursor: (9, 0),
+                normal: vec!["\x1b[32mRECOVERED\x1b[0m".into()],
+                alternate: None,
+            })
+        };
+        fn bytes(b: &[u8]) -> PaneChunk {
+            PaneChunk::Output(b.to_vec())
         }
-        let run = |script: Script| {
+        let run = |script: Vec<PaneChunk>| {
             let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
                 4,
                 20,
@@ -2315,7 +2283,7 @@ mod tests {
                 TermSignals::default(),
             )));
             Session::reader_loop(
-                Box::new(script),
+                output(script),
                 Arc::clone(&parser),
                 ReaderSignals {
                     exited: Arc::new(AtomicBool::new(false)),
@@ -2332,30 +2300,27 @@ mod tests {
         };
 
         // `\x1b[` and then, after the gap, `!`: parsed as one sequence.
-        let (contents, _) = run(Script(vec![
-            Ok(b"old\x1b[".as_slice()),
-            Ok(b"!".as_slice()),
-        ]));
+        let (contents, _) = run(vec![bytes(b"old\x1b["), bytes(b"!")]);
         assert_eq!(contents, "old", "the gap corrupts the grid");
 
-        let (contents, colour) = run(Script(vec![
-            Ok(b"old\x1b[".as_slice()),
-            Err(true),
-            Ok(b"!".as_slice()),
-        ]));
+        let (contents, colour) = run(vec![
+            bytes(b"old\x1b["),
+            PaneChunk::Resync(snapshot()),
+            bytes(b"!"),
+        ]);
         assert_eq!(contents, "RECOVERED!");
         assert_eq!(colour, vt100::Color::Idx(2));
 
-        let (contents, _) = run(Script(vec![Ok(b"old".as_slice()), Err(false)]));
+        let (contents, _) = run(vec![bytes(b"old"), PaneChunk::Snapshot(snapshot())]);
         assert_eq!(contents, "old", "a plain snapshot keeps a resident grid");
 
         // A character's first byte held from before the gap must not join
         // bytes that follow the resync, even ones that would complete it.
-        let (contents, _) = run(Script(vec![
-            Ok(b"old\xc3".as_slice()),
-            Err(true),
-            Ok(b"\xa9!".as_slice()),
-        ]));
+        let (contents, _) = run(vec![
+            bytes(b"old\xc3"),
+            PaneChunk::Resync(snapshot()),
+            bytes(b"\xa9!"),
+        ]);
         assert!(contents.starts_with("RECOVERED"), "{contents:?}");
         assert!(contents.ends_with('!'), "{contents:?}");
         assert!(
@@ -2380,7 +2345,7 @@ mod tests {
         let seed = b"replayed history\r\n$ ".to_vec();
         let seed_len = seed.len();
         Session::reader_loop(
-            Box::new(Cursor::new(seed)),
+            output(vec![seed.into()]),
             Arc::clone(&parser),
             ReaderSignals {
                 exited: Arc::new(AtomicBool::new(false)),
@@ -2414,22 +2379,21 @@ mod tests {
             release: std::sync::mpsc::Receiver<()>,
         }
 
-        impl Read for SplitReader {
-            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        impl Iterator for SplitReader {
+            type Item = PaneChunk;
+            fn next(&mut self) -> Option<PaneChunk> {
                 match self.step {
                     0 => {
                         self.step = 1;
-                        buf[0] = 0xc3;
-                        Ok(1)
+                        Some(vec![0xc3].into())
                     }
                     1 => {
                         self.split.send(()).expect("announce split");
                         self.release.recv().expect("release split");
                         self.step = 2;
-                        buf[0] = 0xa9;
-                        Ok(1)
+                        Some(vec![0xa9].into())
                     }
-                    _ => Ok(0),
+                    _ => None,
                 }
             }
         }
@@ -2496,9 +2460,12 @@ mod tests {
 
         // "é" is 0xC3 0xA9: the first read ends on its lead byte, and the
         // stream ends on the lead byte of "日".
-        let reader = Cursor::new(b"f\xc3".to_vec()).chain(Cursor::new(b"\xa9\r\nok\xe6".to_vec()));
+        let reader = output(vec![
+            b"f\xc3".to_vec().into(),
+            b"\xa9\r\nok\xe6".to_vec().into(),
+        ]);
         Session::reader_loop(
-            Box::new(reader),
+            reader,
             Arc::clone(&parser),
             ReaderSignals {
                 exited: Arc::clone(&exited),
@@ -2531,9 +2498,9 @@ mod tests {
 
         let seed = b"replayed history\r\n$ ".to_vec();
         let seed_len = seed.len();
-        let reader = Cursor::new(seed).chain(Cursor::new(b"fresh agent output\r\n".to_vec()));
+        let reader = output(vec![seed.into(), b"fresh agent output\r\n".to_vec().into()]);
         Session::reader_loop(
-            Box::new(reader),
+            reader,
             Arc::clone(&parser),
             ReaderSignals {
                 exited: Arc::clone(&exited),
@@ -2576,7 +2543,7 @@ mod tests {
         let seed = b"...\r\nPermission needed to run `rm -rf build`\r\n".to_vec();
         let seed_len = seed.len();
         Session::reader_loop(
-            Box::new(Cursor::new(seed)),
+            output(vec![seed.into()]),
             parser,
             ReaderSignals {
                 exited,

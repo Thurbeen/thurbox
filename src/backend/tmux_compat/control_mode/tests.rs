@@ -5,6 +5,14 @@ use std::sync::mpsc::sync_channel;
 
 use super::*;
 
+/// The bytes of a reader's next chunk, which must be output.
+fn next_output(reader: &mut ControlModeReader) -> Vec<u8> {
+    match reader.next() {
+        Some(PaneChunk::Output(bytes)) => bytes,
+        other => panic!("expected output, got {other:?}"),
+    }
+}
+
 // --- diff_polled_hook_states tests ---
 
 #[test]
@@ -239,8 +247,7 @@ fn window_close_gives_its_panes_eof() {
 
     ControlMode::close_window_panes(&senders, &windows, "@3");
 
-    let mut buf = [0u8; 16];
-    assert_eq!(reader.read(&mut buf).unwrap(), 0, "reader should see EOF");
+    assert!(reader.next().is_none(), "reader should see the stream end");
     assert!(senders.lock().unwrap().is_empty());
     assert!(windows.lock().unwrap().is_empty());
 }
@@ -265,9 +272,7 @@ fn window_close_leaves_other_windows_alone() {
     ControlMode::close_window_panes(&senders, &windows, "@9");
 
     ControlMode::dispatch_output(&senders, "%7", b"still here".to_vec());
-    let mut buf = [0u8; 16];
-    assert_eq!(reader.read(&mut buf).unwrap(), 10);
-    assert_eq!(&buf[..10], b"still here");
+    assert_eq!(next_output(&mut reader), b"still here");
 }
 
 // --- a close that is only a hint (psmux) ---
@@ -317,8 +322,7 @@ fn a_dropped_readers_sender_is_unregistered() {
     ControlMode::dispatch_output(&senders, "%7", b"hi".to_vec());
     assert_eq!(senders.lock().unwrap()["%7"].len(), 1);
     let mut kept = ControlModeReader::new(kept_rx);
-    let mut buf = [0u8; 4];
-    assert_eq!(kept.read(&mut buf).unwrap(), 2);
+    assert_eq!(next_output(&mut kept), b"hi");
 
     drop(kept);
     ControlMode::dispatch_output(&senders, "%7", b"hi".to_vec());
@@ -443,10 +447,10 @@ fn layout_change_reads_the_window_and_its_size() {
     }
 }
 
-/// A size reaches the readers of the window's panes as an interrupted read of
-/// its own, after the output queued before it — and only those readers.
+/// A size reaches the readers of the window's panes as a chunk of its own,
+/// after the output queued before it — and only those readers.
 #[test]
-fn a_window_resize_interrupts_its_panes_readers_in_order() {
+fn a_window_resize_reaches_its_panes_readers_in_order() {
     let senders: PaneSendersMapShared = Arc::new(Mutex::new(HashMap::new()));
     let windows: PaneWindowsMapShared = Arc::new(Mutex::new(HashMap::new()));
     let (tx, rx) = sync_channel(8);
@@ -474,13 +478,16 @@ fn a_window_resize_interrupts_its_panes_readers_in_order() {
     ControlMode::dispatch_resize(&senders, &windows, &sizes, "@3", 30, 100);
     ControlMode::dispatch_output(&senders, "%7", b"new".to_vec());
 
-    let mut buf = [0u8; 16];
-    assert_eq!(reader.read(&mut buf).unwrap(), 3);
-    assert_eq!(&buf[..3], b"old");
-    let err = reader.read(&mut buf).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
-    assert_eq!(reader.read(&mut buf).unwrap(), 3);
-    assert_eq!(&buf[..3], b"new");
+    assert_eq!(next_output(&mut reader), b"old");
+    assert!(matches!(
+        reader.next(),
+        Some(PaneChunk::Resized {
+            rows: 30,
+            cols: 100
+        })
+    ));
+    assert_eq!(reader.size().last_reported(), Some((30, 100)));
+    assert_eq!(next_output(&mut reader), b"new");
     assert!(
         other_rx.try_recv().is_err(),
         "another window's pane was told"
@@ -518,16 +525,15 @@ fn a_resize_into_a_full_channel_still_reaches_the_reader() {
 }
 
 /// Who sizes a pane is a hint, not a point in the stream: it is noted and the
-/// read carries on to the next output.
+/// reader carries on to the next output.
 #[test]
-fn a_sizer_change_does_not_interrupt_the_read() {
+fn a_sizer_change_is_not_handed_to_the_reader() {
     let (tx, rx) = sync_channel(8);
     let mut reader = ControlModeReader::new(rx);
     let size = reader.size();
     tx.send(PaneChunk::SizedElsewhere(true)).unwrap();
     tx.send(PaneChunk::Output(b"x".to_vec())).unwrap();
-    let mut buf = [0u8; 4];
-    assert_eq!(reader.read(&mut buf).unwrap(), 1);
+    assert_eq!(next_output(&mut reader), b"x");
     assert!(size.sized_elsewhere());
 }
 
@@ -1079,9 +1085,7 @@ fn control_mode_reader_data_delivery() {
     let mut reader = ControlModeReader::new(rx);
 
     tx.send(b"hello".to_vec().into()).unwrap();
-    let mut buf = [0u8; 16];
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"hello");
+    assert_eq!(next_output(&mut reader), b"hello");
 }
 
 #[test]
@@ -1090,27 +1094,7 @@ fn control_mode_reader_eof_on_sender_drop() {
     let mut reader = ControlModeReader::new(rx);
 
     drop(tx);
-    let mut buf = [0u8; 16];
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(n, 0);
-}
-
-#[test]
-fn control_mode_reader_partial_reads() {
-    let (tx, rx) = sync_channel(16);
-    let mut reader = ControlModeReader::new(rx);
-
-    tx.send(b"hello world".to_vec().into()).unwrap();
-
-    let mut buf = [0u8; 5];
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"hello");
-
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b" worl");
-
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"d");
+    assert!(reader.next().is_none());
 }
 
 #[test]
@@ -1121,12 +1105,8 @@ fn control_mode_reader_multiple_sends() {
     tx.send(b"aaa".to_vec().into()).unwrap();
     tx.send(b"bbb".to_vec().into()).unwrap();
 
-    let mut buf = [0u8; 16];
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"aaa");
-
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"bbb");
+    assert_eq!(next_output(&mut reader), b"aaa");
+    assert_eq!(next_output(&mut reader), b"bbb");
 }
 
 #[test]
@@ -1139,18 +1119,6 @@ fn control_mode_writer_is_send() {
 fn control_mode_reader_is_send() {
     fn assert_send<T: Send>() {}
     assert_send::<ControlModeReader>();
-}
-
-#[test]
-fn control_mode_reader_exact_size_buffer() {
-    let (tx, rx) = sync_channel(16);
-    let mut reader = ControlModeReader::new(rx);
-
-    tx.send(b"abc".to_vec().into()).unwrap();
-    let mut buf = [0u8; 3];
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(n, 3);
-    assert_eq!(&buf[..n], b"abc");
 }
 
 #[test]
@@ -1175,11 +1143,11 @@ const _: () = assert!(PANE_CHANNEL_CAPACITY >= 1024);
 /// layer cannot be the source of glitched/stray characters in the rendered pane.
 mod transport_proptests {
     use std::fmt::Write as _;
-    use std::io::Read;
     use std::sync::mpsc::channel;
 
     use proptest::prelude::*;
 
+    use crate::backend::contract::PaneChunk;
     use crate::backend::tmux_compat::control_mode::{
         decode_octal, format_send_keys, parse_notification, ControlModeReader, Notification,
     };
@@ -1225,22 +1193,14 @@ mod transport_proptests {
             .collect()
     }
 
-    /// Read a `ControlModeReader` to EOF using a cycling sequence of buffer
-    /// sizes, so reassembly is exercised across arbitrary read boundaries.
-    fn drain_reader(reader: &mut ControlModeReader, buf_sizes: &[usize]) -> Vec<u8> {
-        let mut out = Vec::new();
-        let mut i = 0;
-        loop {
-            let sz = buf_sizes[i % buf_sizes.len()].max(1);
-            let mut buf = vec![0u8; sz];
-            match reader.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => out.extend_from_slice(&buf[..n]),
-                Err(_) => break,
-            }
-            i += 1;
-        }
-        out
+    /// Every output byte a `ControlModeReader` hands over, to the stream's end.
+    fn drain_reader(reader: ControlModeReader) -> Vec<u8> {
+        reader
+            .flat_map(|chunk| match chunk {
+                PaneChunk::Output(bytes) => bytes,
+                other => panic!("expected output, got {other:?}"),
+            })
+            .collect()
     }
 
     /// Parse our own `send-keys -t %1 -H XX XX …` command back into the bytes it
@@ -1265,13 +1225,11 @@ mod transport_proptests {
             prop_assert_eq!(decode_octal(encoded.as_bytes()), bytes);
         }
 
-        /// `ControlModeReader` reassembles a chunked byte stream identically,
-        /// regardless of how the stream is chunked or what read buffer sizes the
-        /// consumer uses.
+        /// `ControlModeReader` hands a chunked byte stream over identically,
+        /// however the stream is chunked.
         #[test]
         fn control_mode_reader_reassembles_losslessly(
             chunks in prop::collection::vec(prop::collection::vec(any::<u8>(), 1..64), 0..32),
-            buf_sizes in prop::collection::vec(1usize..40, 1..16),
         ) {
             let expected: Vec<u8> = chunks.iter().flatten().copied().collect();
             let (tx, rx) = channel();
@@ -1279,21 +1237,18 @@ mod transport_proptests {
                 tx.send(c.clone().into()).unwrap();
             }
             drop(tx);
-            let mut reader = ControlModeReader::new(rx);
-            let got = drain_reader(&mut reader, &buf_sizes);
+            let got = drain_reader(ControlModeReader::new(rx));
             prop_assert_eq!(got, expected);
         }
 
         /// The full transport — agent bytes → tmux octal `%output` lines →
         /// `parse_notification` → `decode_octal` → mpsc channel →
         /// `ControlModeReader` — is the identity function on the byte stream,
-        /// for arbitrary bytes split across arbitrary `%output` boundaries and
-        /// drained with arbitrary read sizes.
+        /// for arbitrary bytes split across arbitrary `%output` boundaries.
         #[test]
         fn full_transport_is_byte_identity(
             bytes in prop::collection::vec(any::<u8>(), 0..512),
             split_points in prop::collection::vec(any::<usize>(), 0..16),
-            buf_sizes in prop::collection::vec(1usize..40, 1..16),
         ) {
             let chunks = chunk_bytes(&bytes, &split_points);
             let (tx, rx) = channel();
@@ -1310,8 +1265,7 @@ mod transport_proptests {
                 }
             }
             drop(tx);
-            let mut reader = ControlModeReader::new(rx);
-            let got = drain_reader(&mut reader, &buf_sizes);
+            let got = drain_reader(ControlModeReader::new(rx));
             prop_assert_eq!(got, bytes);
         }
 
@@ -1846,9 +1800,7 @@ fn anything_but_a_snapshot_answer_is_not_read_as_one() {
 }
 
 /// A snapshot reaches a pane's reader in the pane's own stream, between the
-/// bytes before it and the bytes after, and comes out of `read` as an
-/// interruption carrying it — so a reader that knows nothing of snapshots just
-/// reads on.
+/// bytes before it and the bytes after, as a chunk of its own.
 #[test]
 fn a_snapshot_comes_out_of_the_reader_between_the_bytes_around_it() {
     let (tx, rx) = sync_channel(16);
@@ -1865,16 +1817,12 @@ fn a_snapshot_comes_out_of_the_reader_between_the_bytes_around_it() {
         .unwrap();
     tx.send(b"after".to_vec().into()).unwrap();
 
-    let mut buf = [0u8; 16];
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"before");
-    let err = reader.read(&mut buf).expect_err("the snapshot interrupts");
-    assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
-    let arrived = SnapshotArrived::take(err).expect("a snapshot");
-    assert_eq!(*arrived.snapshot, snapshot);
-    assert!(!arrived.resync);
-    let n = reader.read(&mut buf).unwrap();
-    assert_eq!(&buf[..n], b"after");
+    assert_eq!(next_output(&mut reader), b"before");
+    match reader.next() {
+        Some(PaneChunk::Snapshot(arrived)) => assert_eq!(*arrived, snapshot),
+        other => panic!("expected the snapshot, got {other:?}"),
+    }
+    assert_eq!(next_output(&mut reader), b"after");
 }
 
 // --- catching up a reader whose channel overflowed (`Resync`) ---
@@ -1916,16 +1864,14 @@ fn caught_up_snapshot() -> PaneSnapshot {
     }
 }
 
-/// Read one item: the bytes of an output chunk, or the snapshot an
-/// interrupted read carries with whether it is a resync.
+/// Read one item: the bytes of an output chunk, or a snapshot with whether
+/// it is a resync.
 fn read_item(reader: &mut ControlModeReader) -> Result<Vec<u8>, (PaneSnapshot, bool)> {
-    let mut buf = [0u8; 64];
-    match reader.read(&mut buf) {
-        Ok(n) => Ok(buf[..n].to_vec()),
-        Err(e) => {
-            let arrived = SnapshotArrived::take(e).expect("a snapshot");
-            Err((*arrived.snapshot, arrived.resync))
-        }
+    match reader.next() {
+        Some(PaneChunk::Output(bytes)) => Ok(bytes),
+        Some(PaneChunk::Snapshot(snapshot)) => Err((*snapshot, false)),
+        Some(PaneChunk::Resync(snapshot)) => Err((*snapshot, true)),
+        other => panic!("expected output or a snapshot, got {other:?}"),
     }
 }
 
@@ -2216,8 +2162,6 @@ fn flood_keys(control: &ControlMode) -> std::thread::JoinHandle<()> {
 #[cfg(unix)]
 #[test]
 fn a_server_that_stops_reading_stalls_neither_output_nor_callers() {
-    use std::io::Read;
-
     let root = tempfile::tempdir().expect("tempdir");
     let (control, mux) = stalled_server(root.path());
     let (tx, rx) = sync_channel(4);
@@ -2246,9 +2190,15 @@ fn a_server_that_stops_reading_stalls_neither_output_nor_callers() {
     std::fs::write(mux.with_extension("go"), b"").expect("go");
     let (out_tx, out) = sync_channel(1);
     std::thread::spawn(move || {
-        let mut reader = ControlModeReader::new(rx);
-        let mut buf = [0; 8];
-        let _ = out_tx.send(reader.read_exact(&mut buf).map(|()| buf));
+        let streamed: Vec<u8> = ControlModeReader::new(rx)
+            .filter_map(|chunk| match chunk {
+                PaneChunk::Output(bytes) => Some(bytes),
+                _ => None,
+            })
+            .flatten()
+            .take(8)
+            .collect();
+        let _ = out_tx.send(streamed);
     });
     let streamed = out.recv_timeout(std::time::Duration::from_secs(3));
 
@@ -2260,8 +2210,8 @@ fn a_server_that_stops_reading_stalls_neither_output_nor_callers() {
         "a snapshot request waited on a stalled write"
     );
     assert_eq!(
-        streamed.ok().and_then(Result::ok).as_ref(),
-        Some(b"streamed"),
+        streamed.ok().as_deref(),
+        Some(b"streamed".as_slice()),
         "the reader stopped reading output while a write was stalled"
     );
 }
