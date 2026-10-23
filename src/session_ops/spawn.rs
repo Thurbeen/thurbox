@@ -169,9 +169,10 @@ pub struct SpawnResult {
     /// `false` when a delegated create's host answered with a session it
     /// already had (`--on-existing adopt` there) instead of making one.
     pub created: bool,
-    /// For such a session, what the host said of it. The mirror carries none
-    /// of it, so this is the only place it is known here; `None` for a session
-    /// this call created.
+    /// For such a session — and for any session recovered after a lost
+    /// answer — what the host said of it. The mirror carries none of it, so
+    /// this is the only place it is known here; `None` for a session this call
+    /// created and heard back about.
     pub found: Option<FoundSession>,
 }
 
@@ -1075,9 +1076,9 @@ fn spawn_delegated(
             // lookup — and creating again is exactly the duplicate the id exists
             // to prevent. The lookup is the host's own `session get`: a row here
             // is no evidence, since the mirror keeps one the host lists nowhere.
-            // Found this way it counts as created by this call — unless it was
-            // already mirrored here before the call, when it is described as the
-            // host describes it. A caller-chosen id the host had but this machine
+            // Found this way it counts as created by this call unless it was
+            // already mirrored here before the call, and either way it is
+            // described as the host describes it. A caller-chosen id the host had but this machine
             // had not yet mirrored, whose `created: false` answer was then lost
             // too, still cannot be told apart without the record of owed
             // creations #1469 adds — nor can its mirror image, a row kept here
@@ -1103,9 +1104,11 @@ fn spawn_delegated(
                             failure.message
                         );
                         created = !known_before;
-                        if known_before {
-                            found = Some(FoundSession::from_host(&held));
-                        }
+                        // Described as the host lists it, however it was
+                        // found: a session that was already there may be
+                        // parked, and one this call made matches what it was
+                        // asked for, `--reports-as` included.
+                        found = Some(FoundSession::from_host(&held));
                         id
                     }
                     // Not listed, or not askable: the host may still be making

@@ -921,7 +921,12 @@ mod delegated_create {
                      \x20 *' session create '*)\n\
                      \x20   if [ -e '{refuse}' ]; then exit 255; fi\n\
                      \x20   if [ -e '{drop}' ]; then sh -c \"$*\" >/dev/null 2>&1; exit 255; fi ;;\n\
+                     \x20 *' session get '*)\n\
+                     \x20   if [ -e '{other}' ]; then\n\
+                     \x20     printf '%s\\n' '{{\"id\":\"00000000-0000-0000-0000-000000000001\"}}'; exit 0\n\
+                     \x20   fi ;;\n\
                      esac",
+                    other = path("get-answers-another").display(),
                     tmpdir = host_server.tmpdir().display(),
                     socket = host_server.socket(),
                     drop = path("drop-answer").display(),
@@ -1576,5 +1581,72 @@ mod delegated_create {
             "{doc}"
         );
         assert!(pair.host_db().get_session_by_id(id).unwrap().is_none());
+    }
+
+    /// A recovered session is described by the host however it was found,
+    /// including under an id this machine had not mirrored: one already parked
+    /// there must not read as freshly running.
+    #[test]
+    fn a_lost_answer_for_an_unmirrored_id_reports_a_parked_session_as_parked() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = SessionId::default();
+        assert_eq!(
+            created_id(&pair.create_on_host(&["--name", "dozing", "--id", &id.to_string()])),
+            id
+        );
+        let mut stop = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        stop.args(["session", "stop", &id.to_string(), "--json"])
+            .env("HOME", pair.path("host-home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+            .env("THURBOX_DATA_DIR", pair.path("host-data"))
+            .env_remove("THURBOX_SESSION");
+        pair.host_server.scope(&mut stop);
+        assert!(stop.output().unwrap().status.success());
+        assert!(pair.caller_db().get_session_by_id(id).unwrap().is_none());
+
+        std::fs::write(pair.path("drop-answer"), "").unwrap();
+        let out = pair.create(&["--name", "dozing", "--id", &id.to_string()]);
+        std::fs::remove_file(pair.path("drop-answer")).unwrap();
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["id"], id.to_string(), "{doc}");
+        assert_eq!(doc["stopped"], true, "{doc}");
+        assert_eq!(doc["state"], "stopped", "{doc}");
+    }
+
+    /// Recovery takes the host's word only for the session it asked about: an
+    /// answer naming another id is no evidence that this one exists.
+    #[test]
+    fn a_lookup_answered_for_another_session_is_not_a_recovery() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = SessionId::default();
+        std::fs::write(pair.path("never-arrives"), "").unwrap();
+        std::fs::write(pair.path("get-answers-another"), "").unwrap();
+        let out = pair.create(&["--name", "elsewhere", "--id", &id.to_string()]);
+        std::fs::remove_file(pair.path("never-arrives")).unwrap();
+        std::fs::remove_file(pair.path("get-answers-another")).unwrap();
+        assert!(
+            !out.status.success(),
+            "recovered on an answer about another session: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        // Not taken for a recovery that then went wrong: the answer is the
+        // unanswered question's, naming the id a retry needs.
+        let doc = answer(&out);
+        assert!(
+            doc["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("retry with `--id {id}`")),
+            "{doc}"
+        );
     }
 }
