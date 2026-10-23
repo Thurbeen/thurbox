@@ -1489,8 +1489,9 @@ mod delegated_create {
         assert!(out.status.success(), "{doc}");
         assert_eq!(doc["id"], id.to_string(), "{doc}");
         assert_eq!(doc["created"], false, "{doc}");
-        // Without the host's answer, the session is described as this machine
-        // already holds it — the retry's declaration was never applied.
+        // The lost answer is replaced by the host's own `session get`, which
+        // reports the declaration the host holds — the retry's was never
+        // applied.
         assert_eq!(doc["reports_as"], "claude", "{doc}");
         assert_eq!(
             pair.caller_db()
@@ -1563,6 +1564,16 @@ mod delegated_create {
             !out.status.success(),
             "reported a session the host never made: {}",
             String::from_utf8_lossy(&out.stdout)
+        );
+        // The one thing a driver needs to retry without making a second
+        // session is the id, so the error names it.
+        let doc = answer(&out);
+        assert!(
+            doc["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("retry with `--id {id}`")),
+            "{doc}"
         );
         assert!(pair.host_db().get_session_by_id(id).unwrap().is_none());
     }

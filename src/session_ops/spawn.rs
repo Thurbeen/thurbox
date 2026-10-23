@@ -1080,7 +1080,9 @@ fn spawn_delegated(
             // host describes it. A caller-chosen id the host had but this machine
             // had not yet mirrored, whose `created: false` answer was then lost
             // too, still cannot be told apart without the record of owed
-            // creations #1469 adds.
+            // creations #1469 adds — nor can its mirror image, a row kept here
+            // for an id the host had purged, which makes a session this call
+            // did create read as already there.
             Err(failure) => {
                 let unanswered = failure.reach != super::host_cli::Reach::Answered;
                 let held = minted.filter(|_| unanswered).and_then(|id| {
