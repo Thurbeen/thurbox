@@ -919,11 +919,13 @@ mod delegated_create {
                      unset THURBOX_SOCKET_FOR THURBOX_SESSION THURBOX_SESSION_ID\n\
                      case \"$*\" in\n\
                      \x20 *' session create '*)\n\
+                     \x20   if [ -e '{refuse}' ]; then exit 255; fi\n\
                      \x20   if [ -e '{drop}' ]; then sh -c \"$*\" >/dev/null 2>&1; exit 255; fi ;;\n\
                      esac",
                     tmpdir = host_server.tmpdir().display(),
                     socket = host_server.socket(),
                     drop = path("drop-answer").display(),
+                    refuse = path("never-arrives").display(),
                 ),
             );
             Self {
@@ -1506,5 +1508,62 @@ mod delegated_create {
             1,
             "post-create fired again for a session that already existed"
         );
+    }
+
+    /// A known-id retry whose answer is lost is described by the host itself,
+    /// not by this machine's mirror, which carries no parked mark: a session
+    /// parked there must not read as running, or a driver skips its
+    /// `session start`.
+    #[test]
+    fn a_lost_answer_to_a_known_id_retry_reports_a_parked_session_as_parked() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = created_id(&pair.create(&["--name", "napping"]));
+        let mut stop = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        stop.args(["session", "stop", &id.to_string(), "--json"])
+            .env("HOME", pair.path("host-home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+            .env("THURBOX_DATA_DIR", pair.path("host-data"))
+            .env_remove("THURBOX_SESSION");
+        pair.host_server.scope(&mut stop);
+        assert!(stop.output().unwrap().status.success());
+
+        std::fs::write(pair.path("drop-answer"), "").unwrap();
+        let out = pair.create(&["--name", "napping", "--id", &id.to_string()]);
+        std::fs::remove_file(pair.path("drop-answer")).unwrap();
+        let doc = answer(&out);
+        assert!(out.status.success(), "{doc}");
+        assert_eq!(doc["created"], false, "{doc}");
+        assert_eq!(doc["stopped"], true, "{doc}");
+        assert_eq!(doc["state"], "stopped", "{doc}");
+    }
+
+    /// A create that never reached the host is not recovered by a row this
+    /// machine still holds for the id: only the host listing the session is
+    /// evidence that it exists.
+    #[test]
+    fn a_create_that_never_arrived_is_not_recovered_from_a_stale_row() {
+        if !super::have_tmux() {
+            eprintln!("skipping: tmux is not installed");
+            return;
+        }
+        let pair = Pair::new();
+        let id = SessionId::default();
+        pair.caller_db()
+            .upsert_session(&super::row(id, "ghost", "ssh:probe:tmux"))
+            .unwrap();
+
+        std::fs::write(pair.path("never-arrives"), "").unwrap();
+        let out = pair.create(&["--name", "ghost", "--id", &id.to_string()]);
+        std::fs::remove_file(pair.path("never-arrives")).unwrap();
+        assert!(
+            !out.status.success(),
+            "reported a session the host never made: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(pair.host_db().get_session_by_id(id).unwrap().is_none());
     }
 }

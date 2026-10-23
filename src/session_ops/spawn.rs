@@ -186,6 +186,27 @@ pub struct FoundSession {
     pub reports_as: Option<String>,
 }
 
+impl FoundSession {
+    /// From the host's own description of the session: its `create` answer
+    /// or its `session get`, which share these fields.
+    fn from_host(answer: &serde_json::Value) -> Self {
+        let text = |key: &str| {
+            answer
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        };
+        Self {
+            stopped: answer
+                .get("stopped")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            state: text("state").unwrap_or_default(),
+            reports_as: text("reports_as"),
+        }
+    }
+}
+
 /// Spawn a new session on its resolved backend and persist it to SQLite.
 /// A stage of the spawn pipeline, for callers that want to render progress.
 ///
@@ -1033,20 +1054,7 @@ fn spawn_delegated(
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true);
                 if !created {
-                    let text = |key: &str| {
-                        answer
-                            .get(key)
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string)
-                    };
-                    found = Some(FoundSession {
-                        stopped: answer
-                            .get("stopped")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
-                        state: text("state").unwrap_or_default(),
-                        reports_as: text("reports_as"),
-                    });
+                    found = Some(FoundSession::from_host(&answer));
                 }
                 answer
                     .get("id")
@@ -1065,38 +1073,51 @@ fn spawn_delegated(
             // The answer was lost, not the question: the host may have created the
             // session before the link went. The id is ours, so whether it did is a
             // lookup — and creating again is exactly the duplicate the id exists
-            // to prevent. Found this way it counts as created by this call —
-            // unless it was already mirrored here before the call. A
-            // caller-chosen id the host had but this machine had not yet
-            // mirrored, whose `created: false` answer was then lost too, still
-            // cannot be told apart without the record of owed creations #1469
-            // adds.
-            Err(failure) => match minted {
-                Some(id)
-                    if failure.reach != super::host_cli::Reach::Answered
-                        && super::mirror::mirror_host(db, host, cli).is_ok()
-                        && db.get_session_by_id(id).ok().flatten().is_some() =>
-                {
-                    tracing::warn!(
-                        "'{}': host '{}' holds session {id}, but its answer was lost: {}",
-                        req.name,
-                        host.name,
-                        failure.message
-                    );
-                    created = !known_before;
-                    id
+            // to prevent. The lookup is the host's own `session get`: a row here
+            // is no evidence, since the mirror keeps one the host lists nowhere.
+            // Found this way it counts as created by this call — unless it was
+            // already mirrored here before the call, when it is described as the
+            // host describes it. A caller-chosen id the host had but this machine
+            // had not yet mirrored, whose `created: false` answer was then lost
+            // too, still cannot be told apart without the record of owed
+            // creations #1469 adds.
+            Err(failure) => {
+                let unanswered = failure.reach != super::host_cli::Reach::Answered;
+                let held = minted.filter(|_| unanswered).and_then(|id| {
+                    super::host_cli::run(host, cli, &["session", "get", &id.to_string()])
+                        .ok()
+                        .filter(|held| {
+                            held.get("id").and_then(serde_json::Value::as_str)
+                                == Some(id.to_string().as_str())
+                        })
+                        .map(|held| (id, held))
+                });
+                match (minted, held) {
+                    (_, Some((id, held))) => {
+                        tracing::warn!(
+                            "'{}': host '{}' holds session {id}, but its answer was lost: {}",
+                            req.name,
+                            host.name,
+                            failure.message
+                        );
+                        created = !known_before;
+                        if known_before {
+                            found = Some(FoundSession::from_host(&held));
+                        }
+                        id
+                    }
+                    // Not listed, or not askable: the host may still be making
+                    // it, and only the id makes a second attempt safe.
+                    (Some(id), None) if unanswered => {
+                        return Err(failure.error.context(format!(
+                            "host '{}' may still create session {id}; retry with `--id {id}` \
+                             rather than without it",
+                            host.name
+                        )))
+                    }
+                    _ => return Err(failure.error),
                 }
-                // Not found, or not askable: the host may still be making it, and
-                // only the id makes a second attempt safe.
-                Some(id) if failure.reach != super::host_cli::Reach::Answered => {
-                    return Err(failure.error.context(format!(
-                        "host '{}' may still create session {id}; retry with `--id {id}` \
-                     rather than without it",
-                        host.name
-                    )))
-                }
-                _ => return Err(failure.error),
-            },
+            }
         };
 
     // The row, as the host now lists it — one mirror pass, the same one the
