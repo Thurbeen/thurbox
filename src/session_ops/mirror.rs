@@ -929,14 +929,11 @@ fn transitive_ids(listing: &Value) -> impl Iterator<Item = SessionId> + '_ {
     })
 }
 
-/// Drop this database's rows on `backend` that the host lists as transitive.
-///
-/// Forgotten rather than deleted: the session lives on at its owner, and a
-/// tombstone here would be pushed back to the host as a delete of it (see
-/// [`push_tombstones`]) the moment the setting was turned back on.
-fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>) -> Vec<SessionId> {
-    let held = db
-        .list_active_sessions()
+/// Every row this database holds, active and deleted, with the backend it is
+/// on: what a forget sweeps, since a deleted row is as much a mirror's as a
+/// live one.
+fn held_rows(db: &Database) -> impl Iterator<Item = (SessionId, String)> {
+    db.list_active_sessions()
         .unwrap_or_default()
         .into_iter()
         .map(|s| (s.id, s.backend_type))
@@ -945,7 +942,16 @@ fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|s| (s.id, s.backend_type)),
-        );
+        )
+}
+
+/// Drop this database's rows on `backend` that the host lists as transitive.
+///
+/// Forgotten rather than deleted: the session lives on at its owner, and a
+/// tombstone here would be pushed back to the host as a delete of it (see
+/// [`push_tombstones`]) the moment the setting was turned back on.
+fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>) -> Vec<SessionId> {
+    let held = held_rows(db);
     let mut forgotten: Vec<SessionId> = held
         .filter(|(id, on)| super::same_machine(on, backend) && foreign.contains(id))
         .filter_map(|(id, _)| match db.forget_session(id) {
@@ -1101,17 +1107,7 @@ pub fn forget_removed_hosts(db: &Database) -> Vec<MirrorReport> {
 }
 
 fn forget_unserved(db: &Database, served: &HashSet<String>) -> Vec<MirrorReport> {
-    let held = db
-        .list_active_sessions()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| (s.id, s.backend_type))
-        .chain(
-            db.list_deleted_sessions()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| (s.id, s.backend_type)),
-        );
+    let held = held_rows(db);
     let mut by_host: std::collections::BTreeMap<String, Vec<SessionId>> = Default::default();
     for (id, on) in held {
         let Ok(route) = crate::session::Route::parse(&on) else {

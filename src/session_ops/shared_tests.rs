@@ -909,3 +909,23 @@ fn local_rows_and_a_configured_hosts_rows_are_kept() {
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
     assert!(rig.db.get_session_by_id(local).unwrap().is_some());
 }
+
+#[test]
+fn distros_that_could_not_be_listed_forget_nothing() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "on-a-distro");
+    row.backend_type = "wsl:Ubuntu".into();
+    rig.db.upsert_session(&row).unwrap();
+    crate::agent::host_config::with_discovered_wsl(Err("wsl.exe timed out".into()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(
+        rig.db.get_session_by_id(id).unwrap().is_some(),
+        "an unlisted distro is unknown, not removed"
+    );
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_session_by_id(id).unwrap().is_none());
+}
