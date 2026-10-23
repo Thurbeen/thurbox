@@ -1470,16 +1470,34 @@ mod delegated_create {
             ),
         )
         .unwrap();
-        let id = created_id(&pair.create(&["--name", "known"]));
+        let id = created_id(&pair.create(&["--name", "known", "--reports-as", "claude"]));
         assert!(pair.caller_db().get_session_by_id(id).unwrap().is_some());
 
         std::fs::write(pair.path("drop-answer"), "").unwrap();
-        let out = pair.create(&["--name", "known", "--id", &id.to_string()]);
+        let out = pair.create(&[
+            "--name",
+            "known",
+            "--id",
+            &id.to_string(),
+            "--reports-as",
+            "codex",
+        ]);
         std::fs::remove_file(pair.path("drop-answer")).unwrap();
         let doc = answer(&out);
         assert!(out.status.success(), "{doc}");
         assert_eq!(doc["id"], id.to_string(), "{doc}");
         assert_eq!(doc["created"], false, "{doc}");
+        // Without the host's answer, the session is described as this machine
+        // already holds it — the retry's declaration was never applied.
+        assert_eq!(doc["reports_as"], "claude", "{doc}");
+        assert_eq!(
+            pair.caller_db()
+                .load_reports_as()
+                .unwrap()
+                .get(&id)
+                .map(String::as_str),
+            Some("claude")
+        );
         assert_eq!(
             std::fs::read_to_string(&log)
                 .unwrap_or_default()

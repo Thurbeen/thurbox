@@ -1441,6 +1441,17 @@ fn run_create(
     // write is reported as exactly that and never rolls a `replace` back. A
     // delegated session's row is the mirror of the host's, which carries no
     // declaration; this machine's own reading needs it too.
+    // Already there, and the host's account of it lost with the link: it is
+    // answered as this machine holds it, exactly as a local `--id` retry is —
+    // nothing of the retry's own was applied to it.
+    if !res.created && res.found.is_none() {
+        if let Some(row) = db
+            .get_session_by_id(res.session_id)
+            .map_err(|e| format!("get_session_by_id: {e}"))?
+        {
+            return Ok(existing_session_output(db, backends, &row));
+        }
+    }
     // A session the host answered as already there keeps the declaration the
     // host holds for it; this machine's mirror copies that one.
     let reports_as = match &res.found {
