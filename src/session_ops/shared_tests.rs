@@ -835,3 +835,77 @@ fn force_deletion_of_an_older_tombstone_reaches_the_next_observer() {
         "a force-delete mark must propagate even below the deletion-time cursor"
     );
 }
+
+/// Mirror one session from the scripted host, then rewrite `hosts.toml` to
+/// `config` and sync again: what is left of the row, and every call the host
+/// was asked to run after the rewrite.
+fn sync_after_hosts_toml(config: &str) -> (Rig, SessionId, Vec<Vec<String>>) {
+    let rig = rig();
+    let id = SessionId::default();
+    rig.host
+        .borrow_mut()
+        .active
+        .push(host_session(id, "mirrored"));
+    mirror::sync(&rig.db, None, false).unwrap();
+    assert!(rig.db.get_session_by_id(id).unwrap().is_some());
+    let before = fake::calls().len();
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(path, config).unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    let calls = fake::calls().split_off(before);
+    (rig, id, calls)
+}
+
+#[test]
+fn a_removed_hosts_mirrored_rows_are_forgotten_without_touching_the_host() {
+    let (rig, id, calls) = sync_after_hosts_toml("");
+    assert!(rig.db.get_session_by_id(id).unwrap().is_none());
+    assert!(
+        rig.db.get_deleted_session_by_id(id).unwrap().is_none(),
+        "forgotten, not tombstoned: a tombstone would be pushed back as a delete"
+    );
+    assert!(calls.is_empty(), "nothing may reach the host: {calls:?}");
+}
+
+#[test]
+fn a_removed_hosts_deleted_rows_are_forgotten_too() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "gone");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.soft_delete_session(id).unwrap();
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(path, "").unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_deleted_session_by_id(id).unwrap().is_none());
+}
+
+#[test]
+fn an_unreadable_hosts_toml_forgets_nothing() {
+    let (rig, id, _) = sync_after_hosts_toml("[[hosts]\nname = ");
+    assert!(
+        rig.db.get_session_by_id(id).unwrap().is_some(),
+        "a file that does not parse says nothing about which hosts were removed"
+    );
+}
+
+#[test]
+fn local_rows_and_a_configured_hosts_rows_are_kept() {
+    let local = SessionId::default();
+    let (rig, id, _) = sync_after_hosts_toml(&format!(
+        "[[hosts]]\nname = \"{HOST}\"\ndestination = \"me@{HOST}\"\nshare_sessions = false\n"
+    ));
+    let mut row = host_session(local, "here");
+    row.backend_type = "local:tmux".into();
+    rig.db.upsert_session(&row).unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_session_by_id(id).unwrap().is_some());
+    assert!(rig.db.get_session_by_id(local).unwrap().is_some());
+}

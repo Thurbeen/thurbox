@@ -3790,7 +3790,7 @@ fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String 
     match &r.error {
         Some(error) => format!("{}: not mirrored — {error}", r.host),
         None => format!(
-            "{}: {} adopted, {} updated, {} deleted, {} restored, {} tombstoned{}{}{}",
+            "{}: {} adopted, {} updated, {} deleted, {} restored, {} tombstoned{}{}{}{}",
             r.host,
             r.adopted.len(),
             r.updated.len(),
@@ -3810,6 +3810,10 @@ fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String 
                 n => format!(
                     ", {n} seen through the host forgotten ([remote] transitive_sessions = false)"
                 ),
+            },
+            match r.unconfigured.len() {
+                0 => String::new(),
+                n => format!(", {n} forgotten (host no longer in hosts.toml)"),
             },
         ),
     }

@@ -200,6 +200,17 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         // the second; `thurbox-cli` runs it too, since the mark is written by
         // whichever binary opens the database first.
         startup_notices.extend(thurbox::session_ops::repair_wsl_loopback_rows(&db));
+        // After the repair, which relabels a loopback's rows local rather than
+        // leaving them on a host the registry drops. The worker mirror visits
+        // configured hosts only, so this is the interface's one chance at them.
+        for removed in thurbox::session_ops::mirror::forget_removed_hosts(&db) {
+            startup_notices.push(format!(
+                "forgot {} session(s) on {}, which hosts.toml no longer names \
+                 (nothing was stopped there)",
+                removed.unconfigured.len(),
+                removed.host
+            ));
+        }
         for notice in &startup_notices {
             tracing::info!("{notice}");
         }

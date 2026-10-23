@@ -45,6 +45,9 @@ pub struct MirrorReport {
     /// [`Transitive::Hide`] is in force. Nothing reached the host: the
     /// session goes on at its owner.
     pub forgotten: Vec<SessionId>,
+    /// Rows dropped from this database because `hosts.toml` no longer names
+    /// the host (see [`forget_removed_hosts`]). Nothing reached the host.
+    pub unconfigured: Vec<SessionId>,
     /// Why the host could not be mirrored, when it could not.
     pub error: Option<String>,
 }
@@ -57,7 +60,8 @@ impl MirrorReport {
             && self.restored.is_empty()
             && self.registered.is_empty()
             && self.tombstoned.is_empty()
-            && self.forgotten.is_empty())
+            && self.forgotten.is_empty()
+            && self.unconfigured.is_empty())
     }
 
     pub fn to_json(&self) -> Value {
@@ -73,6 +77,7 @@ impl MirrorReport {
             "registered": ids(&self.registered),
             "tombstoned": ids(&self.tombstoned),
             "forgotten": ids(&self.forgotten),
+            "unconfigured": ids(&self.unconfigured),
             "error": self.error,
         })
     }
@@ -1072,7 +1077,71 @@ pub fn sync(
         };
         reports.push(report);
     }
+    reports.extend(forget_removed_hosts(db));
     Ok(reports)
+}
+
+/// Drop this database's rows on every remote host the registry no longer
+/// serves, one report per such host.
+///
+/// Forgotten rather than deleted, for `forget_transitive`'s reason: a
+/// tombstone is pushed to the host as a delete once it is configured again,
+/// and the sessions live on there — taking a host out of `hosts.toml` stops
+/// this machine watching it, it does not end its work. So nothing reaches the
+/// host and no worktree is touched; a host that comes back brings its own rows
+/// back with its next pass.
+pub fn forget_removed_hosts(db: &Database) -> Vec<MirrorReport> {
+    match crate::agent::host_config::served_host_names() {
+        Ok(served) => forget_unserved(db, &served),
+        Err(e) => {
+            tracing::warn!("rows of removed hosts kept — the host registry could not be read: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn forget_unserved(db: &Database, served: &HashSet<String>) -> Vec<MirrorReport> {
+    let held = db
+        .list_active_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| (s.id, s.backend_type))
+        .chain(
+            db.list_deleted_sessions()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| (s.id, s.backend_type)),
+        );
+    let mut by_host: std::collections::BTreeMap<String, Vec<SessionId>> = Default::default();
+    for (id, on) in held {
+        let Ok(route) = crate::session::Route::parse(&on) else {
+            continue;
+        };
+        let (Some(via), Some(host)) = (route.via(), route.host()) else {
+            continue;
+        };
+        if served.contains(host) {
+            continue;
+        }
+        match db.forget_session(id) {
+            Ok(()) => by_host
+                .entry(crate::session::Route::remote(via, host, None).format())
+                .or_default()
+                .push(id),
+            Err(e) => tracing::warn!("could not forget {id} of removed host '{host}': {e}"),
+        }
+    }
+    by_host
+        .into_iter()
+        .map(|(host, mut unconfigured)| {
+            unconfigured.sort_by_key(|id| id.to_string());
+            MirrorReport {
+                host,
+                unconfigured,
+                ..MirrorReport::default()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
