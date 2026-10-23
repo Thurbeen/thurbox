@@ -1087,27 +1087,43 @@ pub fn sync(
     Ok(reports)
 }
 
-/// Drop this database's rows on every remote host the registry no longer
+/// Drop the rows a mirror wrote on every remote host the registry no longer
 /// serves, one report per such host.
+///
+/// Only a mirror's rows, since the host holds their record: one that comes
+/// back brings them back with its next pass, so a `hosts.toml` read without a
+/// host (a half-written save, an entry commented out for a while) loses
+/// nothing. A row this database is the only record of — a `share_sessions =
+/// false` host's, or one from before sharing — stays whatever the file says.
 ///
 /// Forgotten rather than deleted, for `forget_transitive`'s reason: a
 /// tombstone is pushed to the host as a delete once it is configured again,
 /// and the sessions live on there — taking a host out of `hosts.toml` stops
 /// this machine watching it, it does not end its work. So nothing reaches the
-/// host and no worktree is touched; a host that comes back brings its own rows
-/// back with its next pass.
+/// host and no worktree is touched.
 pub fn forget_removed_hosts(db: &Database) -> Vec<MirrorReport> {
-    match crate::agent::host_config::served_host_names() {
-        Ok(served) => forget_unserved(db, &served),
+    let served = match crate::agent::host_config::served_host_names() {
+        Ok(served) => served,
         Err(e) => {
             tracing::warn!("rows of removed hosts kept — the host registry could not be read: {e}");
+            return Vec::new();
+        }
+    };
+    match db.mirrored_session_ids() {
+        Ok(mirrored) => forget_unserved(db, &served, &mirrored),
+        Err(e) => {
+            tracing::warn!("rows of removed hosts kept — could not tell which a mirror wrote: {e}");
             Vec::new()
         }
     }
 }
 
-fn forget_unserved(db: &Database, served: &HashSet<String>) -> Vec<MirrorReport> {
-    let held = held_rows(db);
+fn forget_unserved(
+    db: &Database,
+    served: &HashSet<String>,
+    mirrored: &HashSet<SessionId>,
+) -> Vec<MirrorReport> {
+    let held = held_rows(db).filter(|(id, _)| mirrored.contains(id));
     let mut by_host: std::collections::BTreeMap<String, Vec<SessionId>> = Default::default();
     for (id, on) in held {
         let Ok(route) = crate::session::Route::parse(&on) else {

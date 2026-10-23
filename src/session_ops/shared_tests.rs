@@ -876,6 +876,7 @@ fn a_removed_hosts_deleted_rows_are_forgotten_too() {
     let mut row = host_session(id, "gone");
     row.backend_type = BACKEND.into();
     rig.db.upsert_session(&row).unwrap();
+    rig.db.set_host_updated_at(id, 1).unwrap();
     rig.db.soft_delete_session(id).unwrap();
     let path = crate::agent::host_config::hosts_config_path().unwrap();
     std::fs::write(path, "").unwrap();
@@ -917,6 +918,7 @@ fn distros_that_could_not_be_listed_forget_nothing() {
     let mut row = host_session(id, "on-a-distro");
     row.backend_type = "wsl:Ubuntu".into();
     rig.db.upsert_session(&row).unwrap();
+    rig.db.set_host_updated_at(id, 1).unwrap();
     crate::agent::host_config::with_discovered_wsl(Err("wsl.exe timed out".into()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
@@ -941,6 +943,7 @@ fn inside_wsl_without_wsl_exe_sibling_distros_are_not_forgotten() {
     let mut row = host_session(id, "on-a-sibling");
     row.backend_type = "wsl:Debian".into();
     rig.db.upsert_session(&row).unwrap();
+    rig.db.set_host_updated_at(id, 1).unwrap();
     // Interop off (`appendWindowsPath = false`): no `wsl.exe` on PATH, which
     // discovery reads as "no distros" — true off WSL, not inside it.
     crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
@@ -950,4 +953,61 @@ fn inside_wsl_without_wsl_exe_sibling_distros_are_not_forgotten() {
         rig.db.get_session_by_id(id).unwrap().is_some(),
         "a sibling distro that could not be listed is unknown, not removed"
     );
+}
+
+/// A row no mirror wrote — a `share_sessions = false` host's, or one from
+/// before sharing — is this database's only record of a session still running
+/// there, so one read of `hosts.toml` without its host must not erase it.
+#[test]
+fn a_removed_hosts_rows_this_database_owns_are_kept() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "only-recorded-here");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(path, "").unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_session_by_id(id).unwrap().is_some());
+}
+
+/// A loopback entry (a WSL host naming the distro thurbox runs in) is dropped
+/// from the registry, but the rows it wrote are the WSL repair's to relabel
+/// local, so the sweep must not take them first.
+#[cfg(unix)]
+#[test]
+fn a_loopback_entrys_rows_are_left_to_the_wsl_repair() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "on-the-loopback");
+    row.backend_type = "wsl:self".into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.set_host_updated_at(id, 1).unwrap();
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(
+        path,
+        "[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n",
+    )
+    .unwrap();
+    // Interop on: a `wsl.exe` on PATH, so the sweep runs rather than deferring.
+    use std::os::unix::fs::PermissionsExt;
+    let bin = rig._temp.path().join("interop");
+    std::fs::create_dir_all(&bin).unwrap();
+    let wsl = bin.join("wsl.exe");
+    std::fs::write(&wsl, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&wsl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let saved = std::env::var_os("PATH");
+    std::env::set_var("PATH", &bin);
+    crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+        crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+            mirror::sync(&rig.db, None, false).unwrap();
+        });
+    });
+    match saved {
+        Some(p) => std::env::set_var("PATH", p),
+        None => std::env::remove_var("PATH"),
+    }
+    assert!(rig.db.get_session_by_id(id).unwrap().is_some());
 }

@@ -315,12 +315,15 @@ session), never on the loop, ADR-P12).
   (`host_path::multiplexers_found`: never waited for, asked only while the
   flow is open, its own cache re-asked after `MUX_TTL`; `seed_multiplexers`
   in tests).
-- **Removed hosts.** Rows on a host the registry no longer serves are
-  forgotten, never tombstoned — a tombstone would be pushed back as a delete
-  once the host is configured again (`mirror::forget_removed_hosts`, from
-  `mirror::sync` and the TUI boot; `host_config::served_host_names` is `Err`,
-  and nothing is forgotten, when `hosts.toml` does not parse or WSL cannot be
-  listed; a loopback entry's rows are left to the WSL repair).
+- **Removed hosts.** Rows a mirror wrote (`host_updated_at` set,
+  `Database::mirrored_session_ids`) on a host the registry no longer serves
+  are forgotten, never tombstoned — a tombstone would be pushed back as a
+  delete once the host is configured again (`mirror::forget_removed_hosts`,
+  from `mirror::sync` and the TUI boot). Rows only this database records are
+  kept. `host_config::served_host_names` is `Err`, and nothing is forgotten,
+  when `hosts.toml` does not parse, WSL cannot be listed, or thurbox runs
+  inside WSL with no `wsl.exe` on `PATH`; a loopback entry's rows are left to
+  the WSL repair.
 - **Shared sessions (ADR-24).** A shareable host (`share_sessions = true`, the
   default) owns the record of the sessions on it: its **own thurbox database**.
   A remote thurbox *mirrors* that database into local rows on `ssh:<name>`

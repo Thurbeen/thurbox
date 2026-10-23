@@ -786,15 +786,18 @@ has the rationale; the shape:
   and it is still all needed — a row held here that the host deleted long
   ago must read as deleted, not as unknown, or the pass would register it
   back onto the host.
-- **A removed host.** Rows on a host `hosts.toml` no longer names (nor
-  WSL discovery finds) are **forgotten** by every `session sync` pass and
-  at interface startup: dropped from this database, active and deleted
-  alike, with nothing sent to the host and no worktree touched — taking
-  a host out of the config stops this machine watching it, it does not
-  end the work there. Not tombstoned, since a tombstone is pushed to the
-  host as a delete the moment it is configured again; it comes back
-  instead with its rows on the next pass. A `hosts.toml` that does not
-  parse, or WSL distros that cannot be listed, forget nothing.
+- **A removed host.** Rows mirrored from a host `hosts.toml` no longer
+  names (nor WSL discovery finds) are **forgotten** by every `session
+  sync` pass and at interface startup: dropped from this database, active
+  and deleted alike, with nothing sent to the host and no worktree
+  touched — taking a host out of the config stops this machine watching
+  it, it does not end the work there. Not tombstoned, since a tombstone
+  is pushed to the host as a delete the moment it is configured again; it
+  comes back instead with its rows on the next pass. Only a mirror's
+  rows, which the host still records: a row this database is the only
+  record of (a `share_sessions = false` host's, or one from before
+  sharing) is kept. A `hosts.toml` that does not parse, or WSL distros
+  that cannot be listed, forget nothing.
 - **Hosts of hosts.** A host that mirrors hosts of its own lists their
   sessions too, under *its* `ssh:`/`wsl:` names — so A reaching B, with
   B reaching C, sees C's sessions through B. A session keeps its id on
