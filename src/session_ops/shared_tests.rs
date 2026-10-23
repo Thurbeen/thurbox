@@ -929,3 +929,25 @@ fn distros_that_could_not_be_listed_forget_nothing() {
     });
     assert!(rig.db.get_session_by_id(id).unwrap().is_none());
 }
+
+#[test]
+fn inside_wsl_without_wsl_exe_sibling_distros_are_not_forgotten() {
+    if cfg!(windows) || crate::paths::which_on_path("wsl.exe") {
+        eprintln!("skipping: wsl.exe is reachable here");
+        return;
+    }
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "on-a-sibling");
+    row.backend_type = "wsl:Debian".into();
+    rig.db.upsert_session(&row).unwrap();
+    // Interop off (`appendWindowsPath = false`): no `wsl.exe` on PATH, which
+    // discovery reads as "no distros" — true off WSL, not inside it.
+    crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(
+        rig.db.get_session_by_id(id).unwrap().is_some(),
+        "a sibling distro that could not be listed is unknown, not removed"
+    );
+}
