@@ -1726,7 +1726,10 @@ is the first thing every user of your plugin will see.
   error on screen.
 - A plugin that throws while rendering shows a red panel **in its own rect**.
 - A plugin that never returns is **interrupted** — an unterminated loop costs one
-  pane, not the application.
+  pane, not the application. The interruption is a hook installed before each
+  call, and installing it allocates: on a VM too full for it, the call is **not
+  run** and fails with "its instruction budget could not be armed", rather than
+  running without a bound.
 - A plugin that allocates without bound hits a **memory ceiling** and fails. Every
   plugin shares that VM, so once it is full the interface is **rebuilt** on a fresh
   one: panes lose what they held in memory. Full means the live heap is at the
