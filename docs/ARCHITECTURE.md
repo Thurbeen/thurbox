@@ -1655,8 +1655,13 @@ down the payload, registers agents (append-only, comment-preserving),
 writes the home-resolved manifest to the discovery dir, and activates.
 Active extensions are recorded in SQLite `metadata` and **self-healed**
 (missing sessions/automations recreated) at TUI startup and on every
-`automation tick`. The core still knows the *format*, never a specific
-extension, so an extension's own `install.sh` is a thin shim over the CLI.
+`automation tick`. Failed automatic session spawns retain bounded diagnostics
+and an exponential retry deadline in `event_cursors` (schema v60), so a broken
+agent is not relaunched on every tick and its last screen survives the process.
+Success or deactivation clears the streak; explicit activation can retry
+immediately. The exact delay and storage contract live in docs/CONFIG.md.
+The core still knows the *format*, never a specific extension, so an extension's
+own `install.sh` is a thin shim over the CLI.
 The bare-name registry (`OFFICIAL_EXTENSIONS`) is empty today — nothing
 ships under a bare name — and the resolver is unchanged: an extension
 installs from a path, an `http(s)://` base, or a repository.

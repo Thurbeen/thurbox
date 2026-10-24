@@ -86,6 +86,12 @@ payload, `[[symlinks]]`, `[[external_files]]`, `[[agent_patches]]`,
 `[[config_merges]]`) and a **runtime** spec (`[[sessions]]` + `[[automations]]` to
 ensure/self-heal). The `{home}` token expands to the resolved home dir.
 
+Failed automatic spawns retain a bounded error/last screen and exponential retry
+deadline in `event_cursors` (`heal_backoff:<extension>/<session name>`, schema
+v60). Automatic ticks wait one minute initially, doubling to fifteen minutes;
+explicit ensure can retry immediately. Success and deactivation clear the streak.
+See docs/CONFIG.md for the storage contract.
+
 Three of those reach **outside** the extension home, all reversible:
 `[[external_files]]` drops a managed file into an agent's own config dir (guarded
 by `requires_dir`), `[[agent_patches]]` appends args to an existing agent in
@@ -188,7 +194,6 @@ declares it.
 **Installer resolution order, payload flags, versioning/staleness
 (`installed_with`/`is_stale`), and the full self-heal contract are in ADR-21 of
 `docs/ARCHITECTURE.md`.**
-
 
 ### User lifecycle hooks stay user-owned
 

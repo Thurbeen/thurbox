@@ -1677,6 +1677,14 @@ Self-heal while the TUI is closed depends on the automation heartbeat
 (`[features] automations = true`); with automations off, healing happens
 at the next TUI startup only.
 
+A failed automatic session spawn retains its error and last captured screen in
+`event_cursors.last_error` (schema v60), bounded to 8192 characters. Its
+`heal_backoff:<extension>/<session name>` row counts consecutive failures and
+sets the next retry: one minute initially, doubling up to fifteen minutes.
+A successful ensure or deactivation clears the streak. Explicit activation
+can retry immediately; automatic ticks respect the saved deadline across
+process restarts. These writes do not invalidate the session snapshot.
+
 ### Versioning + the update lifecycle
 
 Extensions carry two version markers, and the installer stamps two more
