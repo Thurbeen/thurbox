@@ -42,67 +42,78 @@ local widgets = require("lib.widgets")
 
 -- ── Turning a model item into lines ────────────────────────────────────────
 
---- The status text that follows the name. v1 shows the agent's notification (or
---- the word "Blocked") for a blocked row, and the OSC activity title otherwise;
---- a row with neither carries no text, because the coloured dot already says
---- what state it is in.
+--- What the agent's own terminal title says it is doing, or nil.
 ---
---- Both come off the agent's own terminal — the activity line is its OSC window
---- title, the notification its OSC 9/777 message — so they are published from
---- the live pane rather than the database.
+--- The title the agent sets on its own terminal (OSC 0/2), which thurbox reads
+--- off the pane and publishes as `activity`. It is not tmux's `window_name`,
+--- which thurbox does not query. Drop the `✳`/`*` activity decorations
+--- explicitly: Lua's `%w` is ASCII-only and would strip non-Latin words too.
+local function current_action(session)
+  local activity = session.activity
+  activity = activity and activity:match("^%s*(.-)%s*$")
+  if not activity or activity == "" then
+    return nil
+  end
+  local stripped = activity:match("^✳%s*(.*)$") or activity:match("^%*%s*(.*)$") or activity
+  if stripped == "" then
+    return nil
+  end
+  return stripped
+end
+
+--- The status that follows the title, in two halves: `reason`, which says why
+--- the dot looks the way it does and is kept at every width, and `action`, the
+--- agent's current action, which only a wide panel has room for.
+---
+--- v1 shows the agent's notification (or the word "Blocked") for a blocked row,
+--- and the OSC activity title otherwise; a row with neither carries no text,
+--- because the coloured dot already says what state it is in.
 ---
 --- v2 adds the row nothing has reported for. Its dot says only that no status
 --- arrived, which is honest but not diagnosable, so the text names what thurbox
 --- does know: the agent found in the pane, or why the silence means nothing.
---- Naming the agent never displaces what it said — an activity line is the
---- agent talking, and it wins the rest of the line.
-local function agent_status_text(session)
+--- Naming the agent never displaces what it said.
+local function agent_status(session)
   -- Nothing the agent said can be current on a host we cannot reach, so the
   -- row says why instead of showing a last message as if it were live.
   if session.status == "unreachable" then
     if session.remote_host then
-      return "host " .. session.remote_host .. " unreachable"
+      return "host " .. session.remote_host .. " unreachable", nil
     end
-    return "unreachable"
+    return "unreachable", nil
   end
   if session.status == "blocked" then
-    return session.notification or "Blocked"
+    return session.notification or "Blocked", nil
   end
-  local activity = session.activity
-  if activity then
-    activity = activity:match("^%s*(.-)%s*$")
-    if activity == "" then
-      activity = nil
-    end
-  end
+  local action = current_action(session)
   -- An agent thurbox did not launch: the row is labelled with whatever the
   -- driver asked for (`zsh`), and the agent actually in front of the user is
   -- named here. It says WHICH agent, never what it is doing — the dot already
   -- says that nothing has reported.
   local detected = session.detected_agent
   if detected then
-    if activity then
-      return detected .. " · " .. activity
+    if action then
+      return detected, action
     end
-    return detected .. " · no status reported"
+    return detected .. " · no status reported", nil
   end
-  if activity then
-    return activity
+  if action then
+    return nil, action
   end
   if session.status == "uncovered" then
-    return "no status hooks"
+    return "no status hooks", nil
   end
   if session.status == "unreported" then
-    return "no status reported"
+    return "no status reported", nil
   end
   -- An agent is demonstrably in the pane and could not be named: several
   -- registered profiles share its executable, so `ps` sees the command and not
   -- the profile. The row says what is actually known rather than falling
   -- silent, and it never guesses which profile.
   if session.status == "running" then
-    return "agent running · no status reported"
+    return "agent running · no status reported", nil
   end
-  return nil
+  return nil, nil
 end
 
 --- The multiplexer that is not installed, as short lines, or nil when it is.
@@ -176,21 +187,97 @@ local function name_hits(session, search)
   return fuzzy.match_fields(search.q, fields) and false or nil
 end
 
+--- From this pane width up, a session row has room for the agent's current
+--- action beside its title. Below it the title takes the whole row: an action
+--- cut to a word or two says nothing and costs the title its columns.
+local WIDE = 100
+
+--- Show the agent's terminal title instead of the thurbox name?
+---
+--- Off by default: the name is what you gave the session and is stable, while
+--- the title is whatever the agent last set. A row whose agent set none keeps
+--- its name.
+local function show_window_title()
+  return plugin_settings.enabled("sessions", "show_window_title", false)
+end
+
+--- The text a session row is anchored on, and whether it is the agent's title
+--- rather than the name (a search hit on the name cannot be marked on it).
+local function title_of(session, terminal_title)
+  if terminal_title then
+    local action = current_action(session)
+    if action then
+      return action, true
+    end
+  end
+  return session.name or "?", false
+end
+
+--- A session on another machine while host rows are off: its top-level row
+--- says so where host rows would have. Its children do not repeat it.
+local function remote_mark(item)
+  return item.host == nil and item.session.host ~= nil and item.depth == 0
+end
+
+--- What a folded parent says it holds.
+local function folded_count(item)
+  return item.collapsed and (" +" .. item.descendants) or nil
+end
+
+--- Columns a session row spends before its title: the indent, the fold slot,
+--- the dot and the marks. Kept beside `session_line`, which spends them, so
+--- the aligned action column is measured from the row as it is drawn.
+local function head_width(item, layout)
+  local used = layout.base + 2 * item.depth + 4
+  if item.cross_group then
+    used = used + 2
+  end
+  if remote_mark(item) then
+    used = used + 2
+  end
+  return used
+end
+
+--- Where the action column starts on a wide panel: just past the longest
+--- title on screen, capped so a single long one cannot push every action off
+--- the row. nil on a narrow panel, which has no such column.
+local function action_column(items, layout)
+  if layout.width + 2 < WIDE then
+    return nil
+  end
+  local widest = 0
+  for _, item in ipairs(items) do
+    if item.kind == "session" then
+      local title = title_of(item.session, layout.terminal_title)
+      local suffix = folded_count(item)
+      widest = math.max(
+        widest,
+        head_width(item, layout) + widgets.len(title) + (suffix and widgets.len(suffix) or 0)
+      )
+    end
+  end
+  return math.min(widest, math.floor(layout.width * 0.6)) + 2
+end
+
 --- The spans of one session row.
 ---
---- The row's own `style` — the selection bar, the hover band — is `ui.list`'s,
---- not this pane's: it is the one selection idiom the whole interface uses, and
---- a pane that spelled its own would be the fourth spelling. What is still
---- decided here is every colour a span asks for, and `tone` is where a row says
---- the bar speaks for all of them.
-local function session_line(item, width, elapsed, is_selected, work, search)
+--- The row's own `style` — the selection bar, the hover band, the tint of a
+--- row waiting for you — is `ui.list`'s, not this pane's: see `row_style`.
+--- What is still decided here is every colour a span asks for, and `tone` is
+--- where a row says the bar speaks for all of them.
+---
+--- Nesting is indentation alone: two columns per level, with a fold slot in
+--- front of the dot that a parent fills with its handle and every other row
+--- leaves blank, so a parent's dot and its siblings' line up.
+local function session_line(item, layout, elapsed, is_selected, work, search)
   local session = item.session
   local spec = ui.status(session.status, elapsed, ui.printing(session.id))
   local glyph, glyph_color = spec.glyph, spec.color
+  local width = layout.width
   -- A blocked row's text is an attention message, so it keeps the dot's colour;
-  -- plain activity is muted, leaving the name the row's visual anchor. v1 draws
-  -- the same split.
-  local trailing = agent_status_text(session)
+  -- everything else is muted, leaving the title the row's visual anchor. v1
+  -- draws the same split.
+  local reason, action = agent_status(session)
   local trailing_color = glyph_color
   if session.status ~= "blocked" then
     trailing_color = theme.muted
@@ -202,8 +289,18 @@ local function session_line(item, width, elapsed, is_selected, work, search)
     local note = session.meta and session.meta["ui.note"]
     note = note and note:match("^%s*(.-)%s*$")
     if note and note ~= "" and session.status ~= "unreachable" then
-      trailing = trailing and (note .. " · " .. trailing) or note
+      reason = reason and (note .. " · " .. reason) or note
     end
+  end
+
+  local title, from_terminal = title_of(session, layout.terminal_title)
+  -- The action is shown once: as the title, or in the wide panel's column.
+  if from_terminal or not layout.column then
+    action = nil
+  end
+  local trailing = reason
+  if action then
+    trailing = trailing and (trailing .. " · " .. action) or action
   end
 
   -- Work already accepted but not yet in the snapshot is the more recent truth,
@@ -221,6 +318,11 @@ local function session_line(item, width, elapsed, is_selected, work, search)
   end
 
   local hits = name_hits(session, search)
+  -- Matched or not is still the name's answer; where it matched is not
+  -- something the agent's title can show.
+  if from_terminal and hits then
+    hits = false
+  end
 
   local row = ui.row({
     width = width,
@@ -241,38 +343,61 @@ local function session_line(item, width, elapsed, is_selected, work, search)
     end,
   })
 
-  row:add(" " .. glyph .. " ", { fg = glyph_color })
-
-  -- Nesting prefix: a tree mark for a child inside the group, a lone mark for
-  -- one whose parent renders elsewhere in the list.
-  if item.depth > 0 then
-    row:add(string.rep("  ", item.depth - 1) .. "└ ", { fg = theme.muted })
-  elseif item.cross_group then
+  row:gap(layout.base + 2 * item.depth)
+  if item.descendants > 0 then
+    -- Its own click target, so pressing the handle folds the parent and
+    -- pressing anywhere else on the row selects it.
+    row:button(
+      item.collapsed and "▸ " or "▾ ",
+      { fg = theme.accent },
+      nil,
+      "fold:" .. session.id
+    )
+  else
+    row:gap(2)
+  end
+  row:add(glyph .. " ", { fg = glyph_color })
+  -- A child whose parent renders in another group: indentation cannot show
+  -- that link, so the mark does.
+  if item.cross_group then
     row:add("↳ ", { fg = theme.muted })
   end
-
-  -- An agent running on another machine, then a session that owns a worktree.
-  if session.host then
-    row:add("⇅ ", { fg = theme.accent })
-  end
-  if (session.worktrees or 0) > 0 then
-    row:add("⑂ ", { fg = theme.branch })
+  if remote_mark(item) then
+    row:add("@ ", { fg = theme.accent })
   end
 
-  -- Never truncated: the name is the row's anchor, and overflow clips.
-  --
+  -- A row waiting for you is lit in its status colour; a parent is bold, as
+  -- the head of what is under it.
+  local title_style = { fg = theme.text, bold = item.descendants > 0 or nil }
+  if session.status == "blocked" and not work then
+    title_style = { fg = glyph_color, bold = true }
+  end
+  local suffix = folded_count(item)
+  local suffix_width = suffix and widgets.len(suffix) or 0
+  local title_end = (layout.column and trailing) and (layout.column - 2) or width
+  title = widgets.truncate(title, math.max(1, title_end - row.used - suffix_width))
+
   -- A matched run is the one thing that keeps its colour on a selected row: it
   -- names a foreground, and the bar underneath supplies only what a span left
   -- unsaid. v1 layered the same two the same way round — `highlight_style` was
   -- built ON TOP of the row's base style (`src/ui/highlight.rs`) — and
   -- previewing a result moves this list's cursor onto the row, so the selected
   -- row is exactly the one whose marks would otherwise disappear.
-  row:match(session.name or "?", hits, { fg = theme.text }, {
+  row:match(title, hits, title_style, {
     fg = theme.accent,
     bold = true,
     underline = true,
   })
+  if suffix then
+    row:add(suffix, { fg = theme.muted })
+  end
 
+  if layout.column and trailing then
+    row:gap(layout.column - row.used)
+    return row
+      :add(widgets.truncate_hard(trailing, width - row.used), { fg = trailing_color })
+      :spans_list()
+  end
   return row:trailing(trailing, { fg = trailing_color }):spans_list()
 end
 
@@ -319,6 +444,21 @@ local function pending_line(work, width, elapsed)
   return row:spans_list()
 end
 
+--- The tint behind a row, or nil. A host row is a band in the accent, so the
+--- machines read as the list's sections; a session waiting for you is washed in
+--- its status colour, so it can be found from across the room. `done` needs no
+--- answer and is not lit.
+local function row_style(item)
+  if item.kind == "host" then
+    return { bg = theme.tint(theme.accent, 0.12) or theme.role("modal_bg") }
+  end
+  if item.kind == "session" and item.session.status == "blocked" then
+    local bg = theme.tint(theme.role("status_blocked"), 0.16)
+    return { bg = bg or theme.role("modal_bg") }
+  end
+  return nil
+end
+
 local function host_line(item, width, selected)
   local counts = item.counts
   local total = counts.total == 1 and "1 session" or counts.total .. " sessions"
@@ -327,14 +467,10 @@ local function host_line(item, width, selected)
     details = details .. " · " .. counts.working .. " active"
   end
   local local_host = item.host:sub(1, 1) == "\0"
-  local kind = local_host and "local"
-    or counts.backend and counts.backend:match("^wsl:") and "WSL"
-    or "ssh"
+  local wsl = not local_host and counts.backend and counts.backend:match("^wsl:") ~= nil
   for _, host in ipairs(thurbox.hosts or {}) do
     if host.name == item.host then
-      if host.backend:match("^wsl:") then
-        kind = "WSL"
-      end
+      wsl = host.backend:match("^wsl:") ~= nil
       break
     end
   end
@@ -351,12 +487,12 @@ local function host_line(item, width, selected)
   local row = ui.row({ width = width, tone = selected and function()
     return nil
   end or nil })
-  local glyph = local_host and "⌂" or thurbox.theme.nerd_font and "" or "▣"
-  -- Every row's marker shares column 1. Indenting by level put a repo's marker
-  -- right of its own sessions' dots, so the nesting read backwards; the host
-  -- tells itself apart by the rule instead.
-  row:add((item.collapsed and " ▸ " or " ▾ ") .. reach_glyph .. glyph .. " ", { fg = color })
-  row:add(local_host and kind or kind .. " " .. item.host, { fg = theme.text, bold = true })
+  -- Every host's handle shares column 1, one column left of its repo rows and
+  -- three left of its sessions. The reach colour is the handle's; the mark and
+  -- the name are one accent run, so `@` reads as part of the name.
+  row:add((item.collapsed and " ▸ " or " ▾ ") .. reach_glyph, { fg = color, bold = true })
+  local label = local_host and "⌂ local" or wsl and ("@ WSL " .. item.host) or ("@ " .. item.host)
+  row:add(label, { fg = theme.accent, bold = true })
   if counts.attention > 0 then
     row:add("  !" .. counts.attention, { fg = theme.role("status_blocked"), bold = true })
   end
@@ -377,10 +513,30 @@ local function host_line(item, width, selected)
   return row:spans_list()
 end
 
-local function repo_line(item, width)
-  local row = ui.row({ width = width })
-  row:add(item.collapsed and " ▸ " or " ▾ ", { fg = theme.accent })
-  row:add(item.repo_label, { fg = theme.secondary, bold = true })
+--- A repository row is a separator, not a level: a lighter dotted rule, one
+--- column in from its host's handle, and its sessions are indented from the
+--- host rather than from it. Folded, it says how many sessions it holds.
+local function repo_line(item, width, selected)
+  local row = ui.row({ width = width, tone = selected and function()
+    return nil
+  end or nil })
+  row:gap(item.host and 2 or 1)
+  row:add(item.collapsed and "▸ " or "▾ ", { fg = theme.accent })
+  local count = nil
+  if item.collapsed then
+    count = item.count == 1 and "1 session" or item.count .. " sessions"
+  end
+  local reserve = count and widgets.len(count) + 3 or 2
+  row:add(widgets.truncate(item.repo_label, math.max(1, width - row.used - reserve)), {
+    fg = theme.accent,
+  })
+  local rule = width - row.used - (count and widgets.len(count) + 2 or 1)
+  if rule >= 1 then
+    row:add(" " .. string.rep("╌", rule) .. (count and " " or ""), { fg = theme.muted })
+  end
+  if count then
+    row:add(count, { fg = theme.secondary })
+  end
   return row:spans_list()
 end
 
@@ -595,6 +751,18 @@ local function set_repo_folded(target, folded)
   set_folded("folded_repos", target, folded)
 end
 
+local function parent_is_folded(id)
+  return is_folded("folded_parents", id)
+end
+
+local function set_parent_folded(id, folded)
+  set_folded("folded_parents", id, folded)
+end
+
+local function folded_parents()
+  return folds("folded_parents")
+end
+
 local function model()
   -- An empty list leaves the cursor at row one. When its first session arrives,
   -- that row is now the local host handle; start on the session instead.
@@ -634,15 +802,40 @@ local function model()
         break
       end
     end
+    local parent_of, wanted_session = {}, nil
     for _, session in ipairs(sessions()) do
-      local host = session.host or "\0local"
-      if session.id == wanted and host_is_folded(host) then
+      parent_of[session.id] = session.parent
+      if session.id == wanted then
+        wanted_session = session
+      end
+    end
+    if wanted_session then
+      local host = wanted_session.host or "\0local"
+      if host_is_folded(host) then
         set_host_folded(host, false)
-        break
+      end
+      -- A blocked row is never folded away, so reaching one must not undo a
+      -- fold you chose. The walk is bounded: a parent cycle in the data must
+      -- not hang the render.
+      if wanted_session.status ~= "blocked" then
+        local ancestor, steps = parent_of[wanted], 0
+        while ancestor and steps < 64 do
+          if parent_is_folded(ancestor) then
+            set_parent_folded(ancestor, false)
+          end
+          ancestor, steps = parent_of[ancestor], steps + 1
+        end
       end
     end
   end
-  return session_model.build(sessions(), folded_hosts(), searching, true, folded_repos())
+  return session_model.build(
+    sessions(),
+    folded_hosts(),
+    searching,
+    true,
+    folded_repos(),
+    folded_parents()
+  )
 end
 
 --- Header ownership is a rendering property of the first row in a group, so
@@ -719,9 +912,11 @@ end
 local function fold_menu_entries()
   local expanded, collapsed = false, false
   for _, item in ipairs(session_model.build(sessions(), "", false, true, "")) do
-    if item.kind == "host" or item.kind == "repo" then
+    local parent = item.kind == "session" and item.descendants > 0
+    if item.kind == "host" or item.kind == "repo" or parent then
       local folded = item.kind == "host" and host_is_folded(item.host)
         or item.kind == "repo" and repo_is_folded(item.target)
+        or parent and parent_is_folded(item.target)
       collapsed = collapsed or folded
       expanded = expanded or not folded
     end
@@ -916,6 +1111,13 @@ pane = {
       desc = "Group sessions under foldable host rows",
       default = true,
     },
+    -- Off by default: the name is the one you chose and stays put, while the
+    -- title is whatever the agent last set.
+    {
+      id = "show_window_title",
+      desc = "Show the agent's terminal title instead of the session name",
+      default = false,
+    },
     {
       id = "focus_new_session",
       desc = "Select and open a session when you create or fork it",
@@ -930,6 +1132,12 @@ pane = {
     {
       id = "folded_repos",
       desc = "Folded repos (managed by the session list)",
+      default = "",
+      list = true,
+    },
+    {
+      id = "folded_parents",
+      desc = "Folded parent sessions (managed by the session list)",
       default = "",
       list = true,
     },
@@ -1130,18 +1338,28 @@ pane = {
     local cursor = ui.cursor("sessions", items, CURSOR_OPTS_WITH_REQUEST)
     state["sessions.page_size"] = math.max(1, height - 2)
 
+    -- Sessions sit two columns in from the group rows above them, or at the
+    -- edge of a list with none.
+    local grouped = false
+    for _, item in ipairs(items) do
+      if item.kind == "host" or item.kind == "repo" then
+        grouped = true
+        break
+      end
+    end
+    local layout = {
+      width = inner_width,
+      base = grouped and 3 or 1,
+      terminal_title = show_window_title(),
+    }
+    layout.column = action_column(items, layout)
+
     return ui.panel({
       title = "Sessions",
       focused = ctx.focused,
-      -- One dot per session, in render order and in its own status colour,
-      -- painted onto the top border. The scroll counts are laid over its tail
-      -- by `ui.panel`, from the list's own hidden-row counts — every one of
-      -- them a border cell, so none costs a row.
-      overlay_right = ui.dots(items, ctx.elapsed, function(item)
-        return item.kind == "session" and item.session.status or nil
-      end, function(item)
-        return item.kind == "session" and item.session.id or nil
-      end),
+      -- No status strip on the border: every row carries its own dot, and the
+      -- strip repeated them without saying which was which. The scroll counts
+      -- still ride the border, from the list's own hidden-row counts.
       body = ui.list({
         items = items,
         cursor = cursor,
@@ -1151,6 +1369,7 @@ pane = {
         -- The pane is a column of its own: it holds its rows apart from the
         -- bottom border however few of them there are.
         pad = true,
+        style_of = row_style,
         class_of = function(item)
           if item.kind == "host" then
             return "host-row"
@@ -1165,19 +1384,12 @@ pane = {
             return host_line(item, inner_width, selected)
           end
           if item.kind == "repo" then
-            return repo_line(item, inner_width)
+            return repo_line(item, inner_width, selected)
           end
           if item.kind == "pending" then
             return pending_line(item.command, inner_width, ctx.elapsed)
           end
-          return session_line(
-            item,
-            inner_width,
-            ctx.elapsed,
-            selected,
-            busy[item.session.id],
-            search
-          )
+          return session_line(item, layout, ctx.elapsed, selected, busy[item.session.id], search)
         end,
         -- v1's placeholder, and its second line names the chord that creates a
         -- session — shown only while something actually answers it, so a rebind
@@ -1242,6 +1454,15 @@ pane = {
     if not hit.id then
       return false
     end
+    -- A parent's fold handle folds it, and leaves the cursor where it was:
+    -- what you were reading should not jump because a subtree closed.
+    local parent = hit.id:match("^fold:(.+)$")
+    if parent then
+      if hit.clicks ~= 2 then
+        set_parent_folded(parent, not parent_is_folded(parent))
+      end
+      return true
+    end
     local items = model()
     if hit.id:match("^host:") or hit.id:match("^repo:") then
       if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
@@ -1273,6 +1494,11 @@ pane = {
   -- for either mouse button.
   on_context = function(hit)
     local items = model()
+    -- The fold handle is part of its session's row for a menu.
+    local parent = hit.id and hit.id:match("^fold:(.+)$")
+    if parent then
+      hit = { id = parent, screen_x = hit.screen_x, screen_y = hit.screen_y }
+    end
     if hit.id and (hit.id:match("^host:") or hit.id:match("^repo:")) then
       if ui.cursor("sessions", items, CURSOR_OPTS):select_by_id(hit.id) == nil then
         return false
@@ -1364,9 +1590,21 @@ pane = {
     -- session. Either group level is absent while its axis is off, so a step
     -- out that finds no repo row goes on to the host row.
     local group = selected and (selected.kind == "host" or selected.kind == "repo")
+    -- A parent session is a level of its own for the arrows, between its
+    -- group and its children.
+    local parent = selected and selected.kind == "session" and selected.descendants > 0
     if action == "sessions.parent_host" then
       if group and not selected.collapsed then
         return pane.on_action("sessions.collapse_host")
+      elseif parent and not selected.collapsed then
+        set_parent_folded(selected.target, true)
+      elseif
+        selected
+        and selected.kind == "session"
+        and selected.depth > 0
+        and cursor:select_by_id(selected.visible_parent)
+      then
+        return true
       elseif selected and selected.kind ~= "host" then
         local repo = selected.kind ~= "repo" and selected.repo_target
         if not (repo and cursor:select_by_id(repo)) and selected.host then
@@ -1375,6 +1613,14 @@ pane = {
       end
       return true
     elseif action == "sessions.first_child" then
+      if parent then
+        if selected.collapsed then
+          set_parent_folded(selected.target, false)
+        elseif items[at + 1] and items[at + 1].depth == selected.depth + 1 then
+          cursor:select(at + 1)
+        end
+        return true
+      end
       if not group then
         return true
       end
@@ -1406,7 +1652,7 @@ pane = {
 
     if action == "sessions.collapse_all" or action == "sessions.expand_all" then
       local folding = action == "sessions.collapse_all"
-      local hosts, repos = {}, {}
+      local hosts, repos, parents = {}, {}, {}
       local all = session_model.build(sessions(), "", false, true, "")
       if folding then
         for _, item in ipairs(all) do
@@ -1414,14 +1660,18 @@ pane = {
             hosts[#hosts + 1] = escape_fold_key(item.host)
           elseif item.kind == "repo" then
             repos[#repos + 1] = escape_fold_key(item.target)
+          elseif item.kind == "session" and item.descendants > 0 then
+            parents[#parents + 1] = escape_fold_key(item.target)
           end
         end
         cursor:select(1)
       end
       table.sort(hosts)
       table.sort(repos)
+      table.sort(parents)
       save_folds("folded_hosts", table.concat(hosts, ";"))
       save_folds("folded_repos", table.concat(repos, ";"))
+      save_folds("folded_parents", table.concat(parents, ";"))
       return true
     end
 

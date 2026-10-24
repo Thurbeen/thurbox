@@ -3829,11 +3829,11 @@ fn ssh_host_labels_do_not_depend_on_platform() {
     ) else {
         return;
     };
-    tui.wait_for("ssh build-box");
-    tui.wait_for("ssh win-desk");
-    tui.press(0, tui.find("ssh win-desk"));
+    tui.wait_for("@ build-box");
+    tui.wait_for("@ win-desk");
+    tui.press(0, tui.find("@ win-desk"));
     tui.wait_gone("windows-session");
-    assert!(tui.frame().contains("ssh win-desk"));
+    assert!(tui.frame().contains("@ win-desk"));
     assert!(tui.quit().success());
 }
 
@@ -4211,8 +4211,8 @@ fn activating_a_search_hit_inside_a_folded_host_keeps_that_session_selected() {
         .expect("probe")
         .id
         .to_string();
-    tui.wait_until("the accepted remote session to stay selected", |frame| {
-        if !frame.contains("⇅ probe") {
+    tui.wait_until("the accepted remote session to stay selected", |_| {
+        if tui.session_row("probe").is_none() {
             return false;
         }
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
@@ -5136,7 +5136,7 @@ fn ctrl_d_asks_to_delete_a_session_whose_agent_has_exited() {
     tui.send(b"exit\r");
     tui.wait_until_quiet();
     assert!(
-        tui.frame().contains("no status hooks"),
+        tui.session_row("probe").is_some(),
         "the session must still be listed after its agent exits:\n{}",
         tui.frame()
     );
@@ -5146,7 +5146,10 @@ fn ctrl_d_asks_to_delete_a_session_whose_agent_has_exited() {
     tui.send(b"\x04");
     tui.wait_for("Confirm");
     tui.send(b"y");
-    tui.wait_gone("no status hooks");
+    tui.wait_gone("Confirm");
+    tui.wait_until("the deleted session row to disappear", |_| {
+        tui.session_row("probe").is_none()
+    });
 
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
@@ -5168,7 +5171,7 @@ fn ctrl_d_reaches_a_live_agent_as_its_eof() {
     // reached the pty and was not spent on a delete.
     tui.wait_until_quiet();
     assert!(
-        tui.frame().contains("no status hooks"),
+        tui.session_row("probe").is_some(),
         "Ctrl+D to a live agent must not delete its session:\n{}",
         tui.frame()
     );
@@ -5192,7 +5195,7 @@ fn ctrl_d_over_a_live_shell_reaches_it_though_the_agent_behind_it_died() {
     tui.send(b"exit\r");
     tui.wait_until_quiet();
     assert!(
-        tui.frame().contains("no status hooks"),
+        tui.session_row("probe").is_some(),
         "the agent must be dead and the session still listed:\n{}",
         tui.frame()
     );
@@ -5585,6 +5588,21 @@ fn drag_gesture((x, y): (u16, u16), over: u16) -> Vec<u8> {
 }
 
 impl Tui {
+    /// Match the session list's first framed column, excluding the selected
+    /// session's name repeated in the app header and terminal title.
+    fn session_row(&self, name: &str) -> Option<(u16, u16)> {
+        use unicode_width::UnicodeWidthStr;
+
+        let rows = self.screen.lock().unwrap().screen().size().0;
+        (1..rows).find_map(|y| {
+            let row = self.row(y);
+            let body = row.strip_prefix('│').or_else(|| row.strip_prefix('┃'))?;
+            let sidebar = body.split(['│', '┃']).next()?;
+            let byte = sidebar.find(name)?;
+            Some(((1 + sidebar[..byte].width()) as u16, y))
+        })
+    }
+
     /// Where `needle` is painted, as a 0-based (column, row).
     ///
     /// The column is counted in cells, not bytes: the borders to the left of
@@ -7227,7 +7245,7 @@ fn a_new_press_frees_a_capture_whose_release_never_came() {
     // armed, the moves would echo as `[<32;`, and the quiet wait is what
     // gives them time to land before the assertion looks.
     let mark = tui.raw_len();
-    let at = tui.find("no status hooks");
+    let at = tui.session_row("probe").expect("the session row");
     tui.drag(at, 3);
     tui.wait_until_quiet();
     assert!(
@@ -7985,7 +8003,7 @@ fn connected_host_markers_keep_arrows_without_a_circle() {
     let mut redundant_markers = Vec::new();
     for (label, glyph, child) in [
         ("local", "⌂", "local-marker-probe"),
-        ("ssh devbox", "▣", REMOTE_NAME),
+        ("devbox", "@", REMOTE_NAME),
     ] {
         for arrow in ["▾", "▸"] {
             let frame = tui.frame();
@@ -9026,7 +9044,7 @@ fn two_remote_sessions_one_hidden() -> Option<(Profile, Link, Tui)> {
 /// Show `name`'s agent pane, with the keyboard in it.
 fn show_session(tui: &mut Tui, name: &str) {
     // The row, not the header, which names the selected session too.
-    tui.press(0, tui.find(&format!("⇅ {name}")));
+    tui.press(0, tui.session_row(name).expect("the session row"));
     tui.wait_until("the click to select the session", |frame| {
         frame.contains(&format!("{name} (shell)"))
     });

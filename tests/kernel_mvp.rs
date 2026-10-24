@@ -2702,6 +2702,8 @@ fn a_shell_is_a_second_surface_over_the_same_primitive() {
 
 #[test]
 fn children_nest_under_their_parent_within_a_repo() {
+    use unicode_width::UnicodeWidthStr;
+
     let host = host();
     let mut snap = sample();
     // Make the second session a child of the first.
@@ -2709,8 +2711,20 @@ fn children_nest_under_their_parent_within_a_repo() {
     snap.sessions[1].parent_id = Some(parent);
     publish(&host, &snap);
 
-    let screen = paint(&host, index_of(&host, "sessions"), 50, 14).join("\n");
-    assert!(screen.contains('└'), "a child should be marked:\n{screen}");
+    let lines = paint(&host, index_of(&host, "sessions"), 50, 14);
+    let parent = lines
+        .iter()
+        .position(|line| line.contains("fix-osc52"))
+        .unwrap();
+    let child = lines
+        .iter()
+        .position(|line| line.contains("add-wsl-tests"))
+        .unwrap();
+    assert_eq!(child, parent + 1, "{lines:#?}");
+    let parent_indent = lines[parent][..lines[parent].find("fix-osc52").unwrap()].width();
+    let child_indent = lines[child][..lines[child].find("add-wsl-tests").unwrap()].width();
+    assert_eq!(child_indent, parent_indent + 2, "{lines:#?}");
+    assert!(!lines[child].contains('└'));
 }
 
 #[test]

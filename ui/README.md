@@ -159,7 +159,7 @@ to `widgets` for the piece it does not cover.
 | | what it is |
 |---|---|
 | `ui.panel{title, focused, body, overlay_left, overlay_right, right_column, border, title_align}` | a framed pane in the one focus convention: with focus a **thick** border and a ` ▸ ` badge on the title, without it a thin border in the theme's unfocused role. Pass `focused = ctx.focused` and that is all — see **Focus** below |
-| `ui.list{items, cursor, width, height, row, header, empty, on_overflow, pad, len, fill}` | a scrolling list. Variable row heights (`header` glues a group heading to its first row), the selection bar, hover, and the window arithmetic |
+| `ui.list{items, cursor, width, height, row, header, style_of, empty, on_overflow, pad, len, fill}` | a scrolling list. Variable row heights (`header` glues a group heading to its first row), the selection bar, hover, and the window arithmetic; `style_of(item)` gives a row a band or tint of its own, under the bar and the hover |
 | `ui.cursor(key, items, opts)` | the selection over a list, with `move`/`select`/`select_by_id`/`follow`. It remembers the selected **item**, not its row, so a list reordered between two builds keeps the cursor where it was; the row number answers only once that item has gone. `opts.steer` is the `store` key another pane moves this list with; `opts.request` a one-shot "go to this row" |
 | `ui.row{width, tone}` | a span builder that knows the row's columns: `:add`, `:gap`, `:button`, `:match` (search hits), `:trailing` (a note budgeted against what is left), `:spans_list` |
 | `ui.empty{title, width, hint, hint_action}` | the one empty state — a blank line, the sentence centred, and the chord that fixes it, shown only while something is bound to it |
@@ -477,7 +477,9 @@ These are the ones that cost real time.
   name and `Esc` keeps working too.
 - **`theme.*` returns roles, not colours.** Ask for `theme.accent` or
   `theme.muted` so your pane looks right under all thirty-six palettes. Never
-  hardcode a hex value.
+  hardcode a hex value. For a tinted band, `theme.tint(colour, amount)` mixes a
+  role over the palette's own background, and answers nil where the palette has
+  no `#rrggbb` to mix — have a fallback.
 - **Instructions and memory are bounded.** An accidental infinite loop is killed,
   not hung — if a pane vanishes after an edit, check `plugin check`.
 
