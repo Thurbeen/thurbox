@@ -2759,6 +2759,7 @@ fn the_spawn_pipeline_reports_the_stage_it_reached() {
         &thurbox::backend::wiring::configured().0,
         SpawnRequest {
             name: "probe".into(),
+            telemetry_attrs: Default::default(),
             repo_path: repo.path().to_path_buf(),
             worktree_branch: None,
             base_branch: None,

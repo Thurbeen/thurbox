@@ -384,6 +384,7 @@ mod tests {
             session_revision: true,
             deleted_changes_since: true,
             create_parity: true,
+            telemetry_attrs: true,
         }
     }
 

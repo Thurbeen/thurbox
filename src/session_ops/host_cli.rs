@@ -118,6 +118,8 @@ pub struct CliInfo {
     /// `--existing-worktree` — the flags a delegated create needs for parity
     /// with a local one (#1471).
     pub create_parity: bool,
+    /// Whether session creation and registration preserve telemetry attributes.
+    pub telemetry_attrs: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -737,6 +739,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .unwrap_or(false),
         deleted_changes_since: json
             .get("deleted_changes_since")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        telemetry_attrs: json
+            .get("telemetry_attrs")
             .and_then(Value::as_bool)
             .unwrap_or(false),
         create_parity: json
@@ -1525,6 +1531,7 @@ pub(crate) mod fake {
             session_revision: false,
             deleted_changes_since: false,
             create_parity: false,
+            telemetry_attrs: false,
         }
     }
 }
@@ -1658,6 +1665,7 @@ mod tests {
             session_revision: false,
             deleted_changes_since: false,
             create_parity: false,
+            telemetry_attrs: false,
         }
     }
 

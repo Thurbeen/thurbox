@@ -1041,6 +1041,373 @@ mod delegated_create {
         }
     }
 
+    #[test]
+    fn telemetry_attributes_are_discoverable_and_invalid_keys_do_not_create_sessions() {
+        let help = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(["session", "create", "--help"])
+            .output()
+            .unwrap();
+        assert!(help.status.success());
+        assert!(String::from_utf8_lossy(&help.stdout).contains("--telemetry-attr"));
+        let pair = Pair::new();
+        for value in [
+            "missing-equals",
+            "=empty",
+            " space=value",
+            "line\nbreak=value",
+        ] {
+            let out = pair.create_on_host(&["--name", "invalid", "--telemetry-attr", value]);
+            assert!(!out.status.success());
+            assert!(answer(&out)["error"]
+                .as_str()
+                .unwrap()
+                .contains("--telemetry-attr"));
+            assert!(pair.host_db().list_active_sessions().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn delegated_telemetry_attributes_are_available_from_the_callers_session_context() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        for config in ["config/settings.toml", "host-config/settings.toml"] {
+            std::fs::write(
+                pair.path(config),
+                format!("{SETTINGS}\n[telemetry]\nenabled = true\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(pair.path("config/agents.toml"), HOST_AGENTS).unwrap();
+        let run = |args: &[&str]| {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+            cmd.args(args)
+                .env("HOME", pair.path("home"))
+                .env("THURBOX_CONFIG_DIR", pair.path("config"))
+                .env("THURBOX_DATA_DIR", pair.path("data"))
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        pair.path("bin").display(),
+                        std::env::var("PATH").unwrap()
+                    ),
+                );
+            pair.caller_server.scope(&mut cmd);
+            cmd.output().unwrap()
+        };
+        let id = created_id(&pair.create(&[
+            "--name",
+            "context",
+            "--agent",
+            "shell",
+            "--telemetry-attr",
+            "factory.task.id=topic/task",
+        ]));
+        let plan = run(&[
+            "agent",
+            "launch-args",
+            "shell",
+            "--session",
+            &id.to_string(),
+            "--json",
+        ]);
+        assert!(
+            plan.status.success(),
+            "{}",
+            String::from_utf8_lossy(&plan.stdout)
+        );
+        let attrs = answer(&plan)["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(attrs.contains("factory.task.id=topic%2Ftask"), "{attrs}");
+        let fork = created_id(&run(&[
+            "session",
+            "fork",
+            &id.to_string(),
+            "--name",
+            "context-fork",
+            "--json",
+        ]));
+        let caller_attrs = pair.caller_db().load_telemetry_attrs(fork).unwrap();
+        assert_eq!(
+            caller_attrs.get("factory.task.id").map(String::as_str),
+            Some("topic/task")
+        );
+        let synced = run(&["session", "sync", "--host", "probe", "--adopt", "--json"]);
+        assert!(
+            synced.status.success(),
+            "{}",
+            String::from_utf8_lossy(&synced.stdout)
+        );
+        assert!(answer(&synced)[0]["registered"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(fork.to_string())));
+        assert_eq!(
+            pair.host_db().load_telemetry_attrs(fork).unwrap(),
+            caller_attrs
+        );
+        std::fs::write(pair.path("bin/ssh"), "#!/bin/sh\nexit 255\n").unwrap();
+        for settings in [
+            "[telemetry]\nenabled = false\n",
+            "[telemetry]\nenabled = true\nconfigure_agents = false\n",
+        ] {
+            std::fs::write(
+                pair.path("config/settings.toml"),
+                format!("{SETTINGS}{settings}"),
+            )
+            .unwrap();
+            let plan = run(&[
+                "agent",
+                "launch-args",
+                "shell",
+                "--session",
+                &id.to_string(),
+                "--json",
+            ]);
+            assert!(
+                plan.status.success(),
+                "telemetry is disabled but the launch plan failed: {}",
+                String::from_utf8_lossy(&plan.stdout)
+            );
+            assert!(answer(&plan)["env"]
+                .get("OTEL_RESOURCE_ATTRIBUTES")
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn telemetry_launch_plan_uses_requested_agent_defaults() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        std::fs::write(
+            pair.path("host-config/settings.toml"),
+            format!("{SETTINGS}\n[telemetry]\nenabled = true\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            pair.path("host-config/agents.toml"),
+            r#"
+default = "source"
+[[agents]]
+name = "source"
+command = "sh"
+args = ["-c", "exec sleep 600"]
+[agents.telemetry_env]
+OTEL_RESOURCE_ATTRIBUTES = "flavor=source,source.only=yes"
+[[agents]]
+name = "target"
+command = "sh"
+[agents.telemetry_env]
+OTEL_RESOURCE_ATTRIBUTES = "flavor=target,target.only=yes"
+"#,
+        )
+        .unwrap();
+        let id = created_id(&pair.create_on_host(&[
+            "--name",
+            "selected",
+            "--agent",
+            "source",
+            "--env",
+            "OTEL_RESOURCE_ATTRIBUTES=session=kept",
+            "--telemetry-attr",
+            "factory.task.id=topic/task",
+        ]));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        cmd.args([
+            "agent",
+            "launch-args",
+            "target",
+            "--session",
+            &id.to_string(),
+            "--json",
+        ])
+        .env("HOME", pair.path("host-home"))
+        .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+        .env("THURBOX_DATA_DIR", pair.path("host-data"));
+        pair.host_server.scope(&mut cmd);
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let attrs = answer(&out)["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(attrs.contains("flavor=target"), "{attrs}");
+        assert!(attrs.contains("target.only=yes"), "{attrs}");
+        assert!(!attrs.contains("source.only"), "{attrs}");
+        assert!(attrs.contains("session=kept"), "{attrs}");
+        assert!(attrs.contains("factory.task.id=topic%2Ftask"), "{attrs}");
+    }
+
+    #[test]
+    fn a_failed_telemetry_attribute_write_rolls_back_session_creation() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        drop(pair.host_db());
+        let connection = rusqlite::Connection::open(pair.path("host-data/thurbox.db")).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER refuse_telemetry BEFORE INSERT ON session_meta
+            WHEN NEW.key = 'thurbox.telemetry_attributes'
+            BEGIN SELECT RAISE(ABORT, 'telemetry write refused'); END;",
+            )
+            .unwrap();
+        let out = pair.create_on_host(&[
+            "--name",
+            "rollback",
+            "--telemetry-attr",
+            "factory.task.id=task",
+        ]);
+        assert!(!out.status.success());
+        assert!(answer(&out)["error"]
+            .as_str()
+            .unwrap()
+            .contains("telemetry write refused"));
+        let db = pair.host_db();
+        assert!(
+            db.list_active_sessions().unwrap().is_empty(),
+            "a failed telemetry write left a session behind"
+        );
+        assert!(
+            db.session_events_for_export(0, 100).unwrap().is_empty(),
+            "a failed telemetry write published an unlabelled creation"
+        );
+    }
+
+    #[test]
+    fn telemetry_attributes_reach_local_and_delegated_launches() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        std::fs::write(
+            pair.path("host-config/settings.toml"),
+            format!("{SETTINGS}\n[telemetry]\nenabled = true\n"),
+        )
+        .unwrap();
+        std::env::set_var(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "deployment.environment.name=test,team=global",
+        );
+        for delegated in [false, true] {
+            let seen = pair.path(if delegated {
+                "delegated-attrs"
+            } else {
+                "local-attrs"
+            });
+            let script = format!(
+                "printf '%s' \"$OTEL_RESOURCE_ATTRIBUTES\" > '{}'; exec sleep 600",
+                seen.display()
+            );
+            let args = [
+                "--name",
+                if delegated { "delegated" } else { "local" },
+                "--command",
+                "sh",
+                "--arg",
+                "-c",
+                "--arg",
+                &script,
+                "--env",
+                "OTEL_RESOURCE_ATTRIBUTES=team=worker,factory.task.id=old",
+                "--telemetry-attr",
+                "factory.task.id=overwritten",
+                "--telemetry-attr",
+                "factory.task.id=topic/task,one=two",
+                "--telemetry-attr",
+                "thurbox.agent=spoofed",
+                "--telemetry-attr=--tag=value",
+            ];
+            let out = if delegated {
+                pair.create(&args)
+            } else {
+                pair.create_on_host(&args)
+            };
+            let id = created_id(&out);
+            let attrs = wait_for_file(&seen);
+            assert!(attrs.contains("team=worker"), "{attrs}");
+            assert!(
+                attrs.contains("deployment.environment.name=test"),
+                "{attrs}"
+            );
+            assert!(!attrs.contains("team=global"), "{attrs}");
+            assert!(
+                attrs.contains("factory.task.id=topic%2Ftask%2Cone%3Dtwo"),
+                "{attrs}"
+            );
+            assert!(
+                attrs.contains(&format!("thurbox.session.id={id}")),
+                "{attrs}"
+            );
+            assert!(!attrs.contains("spoofed"), "{attrs}");
+            assert!(attrs.contains("--tag=value"), "{attrs}");
+            let host = pair.host_db();
+            let persisted = host
+                .get_session_meta(id, "thurbox.telemetry_attributes")
+                .unwrap()
+                .unwrap();
+            let saved: std::collections::BTreeMap<String, String> =
+                serde_json::from_str(&persisted).unwrap();
+            assert_eq!(saved["factory.task.id"], "topic/task,one=two");
+            let mut restart = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+            restart
+                .args(["session", "restart", &id.to_string(), "--json"])
+                .env("HOME", pair.path("host-home"))
+                .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+                .env("THURBOX_DATA_DIR", pair.path("host-data"));
+            pair.host_server.scope(&mut restart);
+            std::fs::remove_file(&seen).unwrap();
+            let restarted = restart.output().unwrap();
+            assert!(
+                restarted.status.success(),
+                "{}",
+                String::from_utf8_lossy(&restarted.stdout)
+            );
+            assert_eq!(wait_for_file(&seen), attrs);
+            let mut fork = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+            fork.args([
+                "session",
+                "fork",
+                &id.to_string(),
+                "--name",
+                if delegated {
+                    "delegated-fork"
+                } else {
+                    "local-fork"
+                },
+                "--json",
+            ])
+            .env("HOME", pair.path("host-home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+            .env("THURBOX_DATA_DIR", pair.path("host-data"));
+            pair.host_server.scope(&mut fork);
+            std::fs::remove_file(&seen).unwrap();
+            let forked = fork.output().unwrap();
+            let fork_id = created_id(&forked);
+            let fork_attrs = wait_for_file(&seen);
+            assert!(
+                fork_attrs.contains("factory.task.id=topic%2Ftask%2Cone%3Dtwo"),
+                "{fork_attrs}"
+            );
+            assert!(
+                fork_attrs.contains(&format!("thurbox.session.id={fork_id}")),
+                "{fork_attrs}"
+            );
+            assert!(!fork_attrs.contains(&id.to_string()), "{fork_attrs}");
+        }
+    }
+
     /// `--command`, `--arg`, `--env` and `--reports-as` reach the host's CLI;
     /// the environment's values never reach a command line on the way.
     #[test]

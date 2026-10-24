@@ -222,6 +222,10 @@ pub enum Action {
         /// `THURBOX_*` identity vars always win over these.
         #[arg(long = "env")]
         env: Vec<String>,
+        /// Session telemetry attributes as KEY=VALUE (repeatable). Merged after
+        /// environment attributes; Thurbox's session identity always wins.
+        #[arg(long = "telemetry-attr", allow_hyphen_values = true)]
+        telemetry_attr: Vec<String>,
         /// Resume an existing agent conversation instead of starting a new one.
         ///
         /// The id as the *agent* knows it, or `latest` for an agent that
@@ -814,6 +818,7 @@ pub fn run(
             command,
             arg,
             env,
+            telemetry_attr,
             resume,
             key,
             on_existing,
@@ -838,6 +843,7 @@ pub fn run(
                 command,
                 arg,
                 env,
+                telemetry_attr,
                 resume,
                 key,
                 on_existing,
@@ -1243,6 +1249,7 @@ struct CreateArgs {
     command: Option<String>,
     arg: Vec<String>,
     env: Vec<String>,
+    telemetry_attr: Vec<String>,
     resume: Option<String>,
     key: Option<String>,
     on_existing: OnExisting,
@@ -1271,6 +1278,7 @@ fn run_create(
         command,
         arg,
         env,
+        telemetry_attr,
         resume,
         key,
         on_existing,
@@ -1278,7 +1286,8 @@ fn run_create(
         id,
         env_stdin,
     } = args;
-    // Before anything else: a key that could not be stored is a usage error,
+    let telemetry_attrs = parse_telemetry_attrs(&telemetry_attr)?;
+    // A key that could not be stored is a usage error,
     // and the `--on-existing` lookup below would otherwise run on it.
     if let Some(key) = &key {
         crate::session_ops::names::validate_key(key)?;
@@ -1412,6 +1421,7 @@ fn run_create(
         command,
         args: arg,
         env,
+        telemetry_attrs,
         resume_session_id: resume,
         key,
         session_id,
@@ -2075,7 +2085,14 @@ fn run_register(
         &value,
         &crate::session::Route::local(None).format(),
     )?;
-    register_running_session(db, backends, row)
+    let telemetry_attrs = value
+        .get("telemetry_attrs")
+        .map(|attrs| {
+            serde_json::from_value::<std::collections::BTreeMap<String, String>>(attrs.clone())
+                .map_err(|e| format!("--json-row telemetry_attrs: {e}"))
+        })
+        .transpose()?;
+    register_running_session(db, backends, row, telemetry_attrs)
 }
 
 fn run_stop(
@@ -3208,6 +3225,22 @@ fn env_from_stdin() -> Result<std::collections::BTreeMap<String, String>, Comman
     Ok(env)
 }
 
+fn parse_telemetry_attrs(
+    tokens: &[String],
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut attrs = std::collections::BTreeMap::new();
+    for token in tokens {
+        let (key, value) = token
+            .split_once('=')
+            .ok_or_else(|| format!("--telemetry-attr expects KEY=VALUE, got '{token}'"))?;
+        if key.is_empty() || key.trim() != key || key.chars().any(char::is_control) {
+            return Err("--telemetry-attr requires a non-empty key without surrounding whitespace or control characters".into());
+        }
+        attrs.insert(key.to_string(), value.to_string());
+    }
+    Ok(attrs)
+}
+
 /// Read repeatable `--env KEY=VALUE` tokens into a map.
 ///
 /// Split on the **first** `=` so a value may contain more (`--env
@@ -3826,6 +3859,7 @@ fn register_running_session(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     row: crate::session_ops::mirror::HostRow,
+    telemetry_attrs: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<CommandOutput, CommandError> {
     let mut session = row.session;
     if db
@@ -3872,8 +3906,15 @@ fn register_running_session(
     if key_dropped.is_some() {
         session.key = None;
     }
-    db.upsert_session_as(&session, crate::storage::EventReason::Registered)
-        .map_err(|e| format!("upsert_session: {e}"))?;
+    match telemetry_attrs {
+        Some(attrs) => db.upsert_session_as_with_telemetry_attrs(
+            &session,
+            crate::storage::EventReason::Registered,
+            &attrs,
+        ),
+        None => db.upsert_session_as(&session, crate::storage::EventReason::Registered),
+    }
+    .map_err(|e| format!("upsert_session: {e}"))?;
     drop(key_claim);
     if let Some(state) = row.hook_state.as_deref() {
         let _ = db.set_hook_state(session.id, state);

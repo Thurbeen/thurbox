@@ -145,6 +145,25 @@ impl Database {
         session: &SharedSession,
         created_as: EventReason,
     ) -> rusqlite::Result<()> {
+        self.upsert_session_with_attrs(session, created_as, None)
+    }
+
+    /// Commit a session, its creation event and telemetry labels together.
+    pub fn upsert_session_as_with_telemetry_attrs(
+        &self,
+        session: &SharedSession,
+        created_as: EventReason,
+        attrs: &std::collections::BTreeMap<String, String>,
+    ) -> rusqlite::Result<()> {
+        self.upsert_session_with_attrs(session, created_as, Some(attrs))
+    }
+
+    fn upsert_session_with_attrs(
+        &self,
+        session: &SharedSession,
+        created_as: EventReason,
+        attrs: Option<&std::collections::BTreeMap<String, String>>,
+    ) -> rusqlite::Result<()> {
         let tx = self.write_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
@@ -204,6 +223,10 @@ impl Database {
                 session.key,
             ],
         )?;
+
+        if let Some(attrs) = attrs {
+            self.set_telemetry_attrs(session.id, attrs)?;
+        }
 
         if existed {
             self.log_audit(
@@ -280,10 +303,9 @@ impl Database {
     /// the pair emitted two `gone` events, and the first of them told a watcher
     /// the session was restorable when it never was.
     ///
-    /// The session's metadata goes in the same transaction: an unrestorable row's
-    /// keys are dead weight, and clearing them in a second write left a row
-    /// already hidden when that write failed, with its window still running and
-    /// no teardown owed (issue #1475).
+    /// Session metadata is cleared in the same transaction (issue #1475),
+    /// except telemetry labels: pending events and the final lifetime metric
+    /// still need them. Purging the row removes those too.
     pub fn force_delete_session(&self, id: SessionId) -> rusqlite::Result<()> {
         self.delete_session(id, EventReason::ForceDeleted)
     }
@@ -310,7 +332,7 @@ impl Database {
 
         if reason == EventReason::ForceDeleted {
             self.conn.execute(
-                "DELETE FROM session_meta WHERE session_id = ?1",
+                "DELETE FROM session_meta WHERE session_id = ?1 AND key <> 'thurbox.telemetry_attributes'",
                 params![id_str],
             )?;
         }
@@ -2003,6 +2025,18 @@ impl Database {
             }
         }
         Ok(map)
+    }
+
+    /// Whether the row carries its owner's host clock (schema v45).
+    pub fn is_mirrored_session(&self, id: SessionId) -> rusqlite::Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT host_updated_at IS NOT NULL FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|value| value.unwrap_or(false))
     }
 
     /// The rows, active or deleted, a mirror pass wrote: the ones carrying the
