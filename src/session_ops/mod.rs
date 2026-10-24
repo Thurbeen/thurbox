@@ -51,6 +51,7 @@ pub mod mirror;
 pub mod names;
 pub mod purge;
 pub mod read_fields;
+pub mod reconcile;
 pub mod remote_hooks;
 pub mod rename;
 pub mod reparent;
@@ -1164,6 +1165,16 @@ pub fn server_key(backend_type: &str) -> String {
         Ok(route) => {
             let (hosts, _warnings) = crate::agent::host_config::cached_registry();
             hosts.qualify(&route).format()
+        }
+        Err(_) => backend_type.to_string(),
+    }
+}
+
+pub(crate) fn machine_key(backend_type: &str) -> String {
+    match crate::session::Route::parse(backend_type) {
+        Ok(mut route) => {
+            route.mux = None;
+            route.format()
         }
         Err(_) => backend_type.to_string(),
     }

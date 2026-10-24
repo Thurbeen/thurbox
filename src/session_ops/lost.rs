@@ -27,6 +27,18 @@ pub struct LostSweep {
 }
 
 impl LostSweep {
+    pub fn persistent(db: &Database, backends: &crate::backend::BackendRegistry) -> usize {
+        let Ok(suspects) = db.loss_suspects() else {
+            return 0;
+        };
+        let mut sweep = Self { suspects };
+        let count = sweep.sweep(db, backends);
+        if let Err(e) = db.store_loss_suspects(&sweep.suspects) {
+            tracing::warn!("could not record missing-pane suspects: {e}");
+        }
+        count
+    }
+
     /// One look at the local backends' windows: record every loss it
     /// confirms. Returns how many it recorded.
     pub fn sweep(&mut self, db: &Database, backends: &crate::backend::BackendRegistry) -> usize {

@@ -157,7 +157,7 @@ fn rig() -> Rig {
                     json!({ "deleted": true, "killed_window": true, "removed_worktrees": ["/srv/wt"] }),
                 )
             }
-            ["session", "reap", id] => {
+            ["session", "reap", id, ..] => {
                 let id: SessionId = id.parse().unwrap();
                 let known = host.deleted.iter().any(|(gone, _)| *gone == id);
                 Ok(json!({ "reaped": known, "id": id.to_string() }))
@@ -701,6 +701,10 @@ fn a_soft_deleted_row_on_a_shareable_host_is_reaped_there() {
         .push(host_session(id, "doomed"));
 
     super::delete_session_headless(&rig.db, &rig.backends, id, false).unwrap();
+    rig.db.set_host_lifecycle_generation(id, 7).unwrap();
+    let mut cli = fake::cli();
+    cli.lifecycle_preconditions = true;
+    fake::force_usable(Usable::Yes(cli));
     let reaped = super::reap_soft_deleted(&rig.db, &rig.backends, id).unwrap();
 
     assert!(reaped, "the row was processed");
@@ -708,7 +712,10 @@ fn a_soft_deleted_row_on_a_shareable_host_is_reaped_there() {
         .into_iter()
         .find(|c| c.get(1).map(String::as_str) == Some("reap"))
         .expect("the host was asked to reap it");
-    assert_eq!(reap, vec!["session", "reap", &id.to_string()]);
+    assert_eq!(
+        reap,
+        vec!["session", "reap", &id.to_string(), "--if-generation", "7"]
+    );
 }
 
 #[test]
@@ -726,11 +733,14 @@ fn a_delete_taken_while_the_host_was_unusable_is_pushed_on_the_next_pass() {
         .active
         .push(host_session(id, "deleted-here"));
 
+    rig.db.set_host_lifecycle_generation(id, 7).unwrap();
     fake::force_usable(Usable::No("ssh timed out".into()));
     super::delete_session_headless(&rig.db, &rig.backends, id, false).unwrap();
     assert!(rig.db.get_session_by_id(id).unwrap().is_none());
 
-    fake::force_usable(Usable::Yes(fake::cli()));
+    let mut cli = fake::cli();
+    cli.lifecycle_preconditions = true;
+    fake::force_usable(Usable::Yes(cli));
     let reports = mirror::sync(&rig.db, Some(HOST), false).unwrap();
 
     assert_eq!(reports[0].tombstoned, vec![id]);
@@ -742,9 +752,15 @@ fn a_delete_taken_while_the_host_was_unusable_is_pushed_on_the_next_pass() {
     // And the host is told, so the two sides converge instead of disagreeing
     // for as long as the row exists.
     assert!(
-        fake::calls()
-            .iter()
-            .any(|c| c.as_slice() == ["session", "delete", &id.to_string(), "--soft"]),
+        fake::calls().iter().any(|c| c.as_slice()
+            == [
+                "session",
+                "delete",
+                &id.to_string(),
+                "--if-generation",
+                "7",
+                "--soft"
+            ]),
         "the delete was pushed to the host: {:?}",
         fake::calls()
     );

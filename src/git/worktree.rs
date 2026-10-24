@@ -26,7 +26,7 @@ use crate::session::HostDef;
 /// Local hosts use [`worktree_path`]. Remote hosts place worktrees under the
 /// host's `worktrees_dir` (or `$HOME/.local/share/thurbox/worktrees` resolved
 /// over ssh), preserving the same `<repo-hash>/<sanitized-branch>` layout.
-pub(super) fn worktree_path_for(
+pub(crate) fn worktree_path_for(
     host: Option<&HostDef>,
     repo_path: &Path,
     branch: &str,
@@ -48,9 +48,9 @@ pub(super) fn worktree_path_for(
     }
 }
 
-/// Create a git worktree on a new branch and return the worktree directory path.
+/// Create a git worktree and return its directory, preserving an existing branch.
 ///
-/// Creates `new_branch` starting from `base_branch`.
+/// A new branch starts from `base_branch`; retries attach the branch rollback left.
 /// Path format: `~/.local/share/thurbox/worktrees/<repo-hash>/<sanitized-branch>`
 pub fn create_worktree(repo_path: &Path, new_branch: &str, base_branch: &str) -> Result<PathBuf> {
     create_worktree_on(None, repo_path, new_branch, base_branch)
@@ -67,20 +67,16 @@ pub fn create_worktree_on(
 ) -> Result<PathBuf> {
     let wt_path = worktree_path_for(host, repo_path, new_branch)?;
 
-    let output = git_command(
-        host,
-        repo_path,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            new_branch,
-            &wt_path.display().to_string(),
-            base_branch,
-        ],
-    )
-    .output()
-    .context("failed to run git worktree add")?;
+    let path = wt_path.display().to_string();
+    let existing = branch_exists_on(host, repo_path, new_branch);
+    let args = if existing {
+        vec!["worktree", "add", &path, new_branch]
+    } else {
+        vec!["worktree", "add", "-b", new_branch, &path, base_branch]
+    };
+    let output = git_command(host, repo_path, &args)
+        .output()
+        .context("failed to run git worktree add")?;
 
     if !output.status.success() {
         let stderr = reportable_stderr(&output.stderr);
@@ -92,8 +88,7 @@ pub fn create_worktree_on(
 
 /// Idempotently provision a worktree on `branch`, returning its directory.
 ///
-/// Unlike [`create_worktree`] (which always passes `-b` and fails if the branch
-/// already exists), this is safe to call repeatedly — the case that recurring
+/// Also reuses a checkout already present, so this is safe to call repeatedly — the case that recurring
 /// **spawn automations** hit on every fire:
 ///
 /// - worktree directory already present → reuse it as-is;
@@ -223,8 +218,25 @@ pub fn add_existing_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> 
     let wt_path =
         worktree_path(repo_path, branch).context("failed to resolve worktrees directory")?;
 
+    add_existing_worktree_at(repo_path, branch, &wt_path)
+}
+
+/// Recreate a saved checkout at its recorded location, even after the default
+/// worktree directory changes.
+pub fn add_existing_worktree_at(
+    repo_path: &Path,
+    branch: &str,
+    saved_path: &Path,
+) -> Result<PathBuf> {
+    let wt_path = saved_path.to_path_buf();
     if wt_path.exists() {
-        return Ok(wt_path);
+        if list_worktrees(repo_path)?
+            .iter()
+            .any(|w| w.path == wt_path && w.branch == branch)
+        {
+            return Ok(wt_path);
+        }
+        anyhow::bail!("saved worktree path is occupied: {}", wt_path.display());
     }
 
     let output = git_program()

@@ -2489,6 +2489,7 @@ mod tests {
         let database = Database::open_in_memory().expect("in-memory database opens");
         let id = database
             .create_automation(&NewAutomation {
+                owner_session_id: None,
                 name: "sync".into(),
                 enabled: true,
                 schedule: AutomationSchedule::Once {

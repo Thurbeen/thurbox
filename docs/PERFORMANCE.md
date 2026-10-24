@@ -1425,7 +1425,7 @@ timeout, six times a minute.
   pass is the one that pays for an unreachable host.
 - **An idle host is not re-listed** (2026-10-14). A pass used to pull the
   host's full `session list` and `session list --deleted` every time, and the
-  deleted list only grows: a long-lived host cost ~122 KB a pass, ~0.74 MB a
+  deleted list used to grow without retention: a long-lived host cost ~122 KB a pass, ~0.74 MB a
   minute, with nothing happening. The pass now asks `session revision` first —
   the host's `rows_version` (schema v49), which its own triggers move on every
   write either list could show — and reuses the lists it last pulled while the
@@ -2378,10 +2378,12 @@ the agent's replies, so replacing a pending wait fails the counter assertion.
 re-applying the same server options twice (#1243). The options are now one tmux
 command list (`config_command_list`; a best-effort option is given `-q` so an
 option an older tmux lacks cannot stop the ones after it), and on the common path
-that list rides behind `has-session` in the same process. The window stamps ride
-in `new-window`'s own command list, as its birth options already did. Six
-processes, and `tests/tui_e2e.rs` fails if one create on a running server runs
-more than three of tmux.
+that list rides behind `has-session` and ahead of `new-window` in the same
+process, with the birth options and owner stamps. Lifecycle creation takes a
+fresh before-listing for rollback protection; its delayed after-listing both
+checks the exact created pane and retires duplicate stamps by window id.
+`tests/tui_e2e.rs` fails if one create on a running server runs more than three
+tmux processes. Cold bootstrap and duplicate retirement may need extra calls.
 
 ## ADR-P29: Hidden output and idle samples owe only their readers a frame
 

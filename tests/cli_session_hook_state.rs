@@ -724,6 +724,7 @@ fn silent_codex_submission(variant: bool) {
     assert_eq!(out["state"], "running", "the pane still holds Codex: {out}");
     let listed = run(
         Action::List {
+            include_purged: false,
             parent: None,
             recursive: false,
             tree: false,
@@ -763,6 +764,7 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
     }
     let auto_id = db
         .create_automation(&NewAutomation {
+            owner_session_id: None,
             name: "reuse Codex".into(),
             enabled: true,
             schedule: AutomationSchedule::Cron {
@@ -967,6 +969,7 @@ fn a_parked_session_says_so_on_get_and_on_list() {
     // driver actually polls.
     let listed = run(
         Action::List {
+            include_purged: false,
             parent: None,
             recursive: false,
             tree: false,

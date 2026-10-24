@@ -144,6 +144,17 @@ impl Database {
         Ok(taken == 1)
     }
 
+    pub fn owns_lease(
+        &self,
+        subject: &LockSubject,
+        token: u64,
+        now: u64,
+    ) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM event_cursors WHERE consumer = ?1 AND lease_until = ?2 AND lease_until > ?3)",
+            params![subject.consumer(), token as i64, now as i64], |r| r.get(0))
+    }
+
     /// Give back the lease taken with `expires_at`, and only that one. A lock
     /// row is deleted rather than zeroed, so the table is bounded by the leases
     /// held, not by every name ever locked.

@@ -386,6 +386,8 @@ mod tests {
             create_parity: true,
             agent_args: false,
             telemetry_attrs: true,
+            purged_tombstones: false,
+            lifecycle_preconditions: false,
         }
     }
 

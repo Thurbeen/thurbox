@@ -223,6 +223,7 @@ mod tests {
     fn listed_state(db: &Database, name: &str) -> String {
         let out = crate::cli::sessions::run(
             crate::cli::sessions::Action::List {
+                include_purged: false,
                 parent: None,
                 recursive: false,
                 tree: false,

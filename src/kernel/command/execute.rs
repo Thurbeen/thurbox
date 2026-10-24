@@ -111,10 +111,7 @@ pub(super) fn execute(
     if matches!(command, Command::Reap) {
         let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
         let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
-        crate::session_ops::reap_overdue_soft_deletes(&db, backends);
-        // The same sweep's other half: force deletes whose teardown never
-        // reached the host they were owed on.
-        crate::session_ops::retry_owed_remote_teardowns(&db, backends);
+        crate::session_ops::reconcile::tick(&db, backends);
         return Ok(());
     }
 

@@ -18,10 +18,14 @@ use serde_json::Value;
 use thurbox::session::SessionId;
 use thurbox::sync::SharedSession;
 
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
 /// A throwaway thurbox instance: its own config, data and home, so no test here
 /// reads or writes the operator's.
 struct Env {
     root: tempfile::TempDir,
+    server: Option<tmux_server::TmuxServer>,
 }
 
 impl Env {
@@ -30,7 +34,13 @@ impl Env {
         for sub in ["home", "config", "data", "tmux"] {
             std::fs::create_dir_all(root.path().join(sub)).expect("mkdir");
         }
-        Self { root }
+        Self { root, server: None }
+    }
+
+    #[cfg(unix)]
+    fn with_backend(mut self) -> Self {
+        self.server = Some(tmux_server::TmuxServer::private("stdout-restore"));
+        self
     }
 
     fn answer_empty_mux(&self) {
@@ -143,6 +153,9 @@ public static class EmptyMux {
                 },
             );
         }
+        if let Some(server) = &self.server {
+            server.scope(&mut cmd);
+        }
         cmd.output().expect("run thurbox-cli")
     }
 }
@@ -172,6 +185,45 @@ fn sole_document(out: &Output) -> Value {
          can read it:\n{stdout}"
     );
     first
+}
+
+#[test]
+fn restored_fixture_process() {
+    if std::env::var_os("THURBOX_RESTORE_FIXTURE_CHILD").is_some() {
+        loop {
+            std::thread::park();
+        }
+    }
+}
+
+#[cfg(unix)]
+fn seed_launchable_session(env: &Env, name: &str, agent: &str) -> String {
+    let id = seed_session(env, name, agent);
+    let db = thurbox::storage::Database::open(&env.path("data/thurbox.db")).unwrap();
+    let parsed = id.parse().unwrap();
+    let mut row = db.get_session_by_id(parsed).unwrap().unwrap();
+    row.agent_session_id = Some(format!("conversation-{id}"));
+    db.upsert_session(&row).unwrap();
+    db.set_launch_recipe(
+        parsed,
+        &thurbox::session::LaunchRecipe {
+            command: std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            args: vec![
+                "--exact".into(),
+                "restored_fixture_process".into(),
+                "--nocapture".into(),
+            ],
+            env: std::collections::BTreeMap::from([(
+                "THURBOX_RESTORE_FIXTURE_CHILD".into(),
+                "1".into(),
+            )]),
+        },
+    )
+    .unwrap();
+    id
 }
 
 /// Seed a session row into the instance's own database.
@@ -373,9 +425,13 @@ fn a_declared_agent_is_what_coverage_is_published_against() {
 /// It was the one that did not: a raw UUID, error `Invalid session UUID`. A
 /// driver holding a name had to keep its own name-to-id map for that one verb.
 #[test]
+#[cfg(unix)]
 fn session_restore_takes_a_reference_like_every_other_verb() {
-    let env = Env::new();
-    let id = seed_session(&env, "gone", "claude");
+    if !have_tmux() {
+        return;
+    }
+    let env = Env::new().with_backend();
+    let id = seed_launchable_session(&env, "gone", "claude");
     assert_eq!(
         env.run(&["session", "delete", &id, "--soft", "--json"])
             .status
@@ -607,9 +663,13 @@ fn an_ambiguous_reference_exits_differently_from_a_missing_one() {
 /// down first", and the skill's "a refusal leaves no window, worktree or row
 /// behind" read as a safety claim `replace` did not honour.
 #[test]
+#[cfg(unix)]
 fn replace_puts_the_old_session_back_when_the_replacement_cannot_spawn() {
-    let env = Env::new();
-    let id = seed_session(&env, "worker", "claude");
+    if !have_tmux() {
+        return;
+    }
+    let env = Env::new().with_backend();
+    let id = seed_launchable_session(&env, "worker", "claude");
 
     // A worktree branch off a directory that is not a git repository: the
     // spawn fails after the teardown and before any window exists, which is

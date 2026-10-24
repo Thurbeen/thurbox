@@ -695,6 +695,24 @@ pub trait SessionBackend: Send + Sync {
     /// it until an interface does.
     fn create_window(&self, spec: &WindowSpec<'_>) -> BackendResult<PaneId>;
 
+    /// Create a window and observe its startup after `settle`. Backends may
+    /// combine this observation with their post-create identity maintenance.
+    fn create_window_observed(
+        &self,
+        spec: &WindowSpec<'_>,
+        settle: std::time::Duration,
+    ) -> BackendResult<(PaneId, BackendLiveness)> {
+        let pane = self.create_window(spec)?;
+        std::thread::sleep(settle);
+        let state = self.pane_state(pane.as_str())?;
+        let liveness = match state.dead {
+            Some(true) => BackendLiveness::Exited,
+            Some(false) => BackendLiveness::Live,
+            None => BackendLiveness::Unknown,
+        };
+        Ok((pane, liveness))
+    }
+
     /// Where `owner`'s two windows are, from one listing the backend
     /// answered — [`crate::backend::identity::WindowIndex`]'s rule (ADR-25),
     /// plus whatever the backend alone can do about an ambiguous answer. `Err`

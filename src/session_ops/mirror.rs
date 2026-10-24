@@ -42,6 +42,8 @@ pub struct MirrorReport {
     /// local tombstone stands, and the delete is pushed to the host. The
     /// symmetric counterpart of `unknown_local`/[`register_unknown`].
     pub tombstoned: Vec<SessionId>,
+    /// Local lifecycle selections retained until the queued push is dispatched.
+    pub tombstone_selections: Vec<(SessionId, u64)>,
     /// Transitive rows dropped from this database because
     /// [`Transitive::Hide`] is in force. Nothing reached the host: the
     /// session goes on at its owner.
@@ -87,6 +89,7 @@ impl MirrorReport {
 /// A session as the host lists it, already on the observer's backend name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostRow {
+    pub lifecycle_generation: Option<u64>,
     pub session: SharedSession,
     /// Absent from older peers; do not clear arguments they cannot report.
     pub agent_args: Option<Vec<String>>,
@@ -107,6 +110,8 @@ pub struct HostRow {
 /// A deleted session as the host lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostDeletedRow {
+    pub lifecycle_generation: Option<u64>,
+    pub purged: bool,
     pub id: SessionId,
     pub force_deleted: bool,
 }
@@ -280,6 +285,7 @@ pub fn session_from_json(
         .transpose()?;
     Ok(HostRow {
         agent_args,
+        lifecycle_generation: value.get("lifecycle_generation").and_then(Value::as_u64),
         session: SharedSession {
             id,
             name,
@@ -346,6 +352,10 @@ pub fn parse_deleted(value: &Value) -> Vec<HostDeletedRow> {
             rows.iter()
                 .filter_map(|row| {
                     Some(HostDeletedRow {
+                        lifecycle_generation: row
+                            .get("lifecycle_generation")
+                            .and_then(Value::as_u64),
+                        purged: row.get("purged_at").and_then(Value::as_u64).is_some(),
                         id: row.get("id")?.as_str()?.parse().ok()?,
                         force_deleted: row
                             .get("force_deleted")
@@ -382,12 +392,24 @@ pub fn apply(
     // after that snapshot. `deleted_at` is this machine's clock and cannot be
     // compared to the host's `updated_at` directly — see `plan_row`.
     let local_deleted: Tombstones = db
-        .list_deleted_sessions()
+        .list_session_tombstones(None)
         .unwrap_or_default()
         .into_iter()
         .filter(|s| super::same_machine(&s.backend_type, backend_type))
-        .map(|s| (s.id, (s.deleted_at, s.force_deleted, s.host_updated_at)))
+        .map(|s| {
+            (
+                s.id,
+                (
+                    s.deleted_at,
+                    s.force_deleted,
+                    s.host_updated_at,
+                    s.lifecycle_generation,
+                    s.host_lifecycle_generation,
+                ),
+            )
+        })
         .collect();
+    let generations = db.load_lifecycle_generations().unwrap_or_default();
     let hook_rows = db.load_hook_states().unwrap_or_default();
     let bases = db.load_base_branches().unwrap_or_default();
     // `None` when it cannot be read: then no row is taken for unstamped, so a
@@ -396,6 +418,21 @@ pub fn apply(
 
     for row in active {
         let id = row.session.id;
+        let Ok(Some(_lease)) =
+            super::lock::lock(db, super::lock::Subject::Session(id), "mirror row")
+        else {
+            continue;
+        };
+        if newer_host_observation(db, id, backend_type, row.lifecycle_generation) {
+            continue;
+        }
+        let selected = generations
+            .get(&id)
+            .copied()
+            .or_else(|| local_deleted.get(&id).map(|r| r.3));
+        if db.lifecycle_generation(id).ok().flatten() != selected {
+            continue;
+        }
         let plan = plan_row(&local_active, &local_deleted, row);
         // A row mirrored before the host's clock was kept (schema v45) and
         // unchanged since is never rewritten, so it is stamped here, once:
@@ -407,6 +444,9 @@ pub fn apply(
         if !apply_plan(db, row, plan, &mut report) {
             continue;
         }
+        if let Some(generation) = row.lifecycle_generation {
+            let _ = db.set_host_lifecycle_generation(id, generation);
+        }
         record_host_facts(
             db,
             row,
@@ -416,7 +456,15 @@ pub fn apply(
     }
 
     for gone in deleted {
-        apply_host_delete(db, gone, &local_active, &local_deleted, &mut report);
+        apply_host_delete(
+            db,
+            backend_type,
+            gone,
+            &local_active,
+            &local_deleted,
+            generations.get(&gone.id).copied(),
+            &mut report,
+        );
     }
 
     let host_knows: HashSet<SessionId> = active
@@ -436,7 +484,7 @@ pub fn apply(
 
 /// Local tombstones on one host: when each was taken, whether it was forced,
 /// and the host's own `updated_at` as last known before it.
-type Tombstones = HashMap<SessionId, (u64, bool, Option<u64>)>;
+type Tombstones = HashMap<SessionId, (u64, bool, Option<u64>, u64, Option<u64>)>;
 
 /// What one row the host lists as active asks of this database.
 enum RowPlan {
@@ -445,9 +493,9 @@ enum RowPlan {
     /// Held here, and the host's facts change it.
     Update(Box<SharedSession>),
     /// Tombstoned here, and the host has not written the row since.
-    KeepTombstone,
+    KeepTombstone(u64),
     /// Tombstoned here, but the host wrote the row after its delete.
-    Restore,
+    Restore(u64),
     /// Not held here at all.
     Adopt,
 }
@@ -469,29 +517,24 @@ fn plan_row(
             RowPlan::Update(Box::new(merged))
         };
     }
-    let Some(&(deleted_at, _, host_updated_at)) = local_deleted.get(&id) else {
+    let Some(&(deleted_at, _, host_updated_at, generation, host_generation)) =
+        local_deleted.get(&id)
+    else {
         return RowPlan::Adopt;
     };
-    // A tombstone here is a decision, not a gap. The host listing the row as
-    // active only outranks it when the host itself wrote the row *after* the
-    // last state this database knew from that host — that is a restore taken
-    // there. Comparing two readings of the host's own clock, rather than the
-    // host's `updated_at` against this machine's `deleted_at` (two different,
-    // possibly skewed clocks — see schema v45). When this database never held
-    // a reading from the host for this row (never mirrored before the delete),
-    // there is nothing to compare against, so this machine's own clock is the
-    // best available approximation. Otherwise the delete simply has not
-    // reached the host (its CLI was in backoff, or sharing was off when it was
-    // taken), and restoring would undo it on every pass for as long as both
-    // sides disagree.
-    let host_has_moved = match host_updated_at {
-        Some(known) => row.updated_at.is_some_and(|at| at > known),
-        None => row.updated_at.is_some_and(|at| at > deleted_at),
+    // Lifecycle generations order host transitions without comparing clocks.
+    // Older peers retain the existing same-clock updated_at fallback.
+    let host_has_moved = match (host_generation, row.lifecycle_generation) {
+        (Some(known), Some(current)) => current > known,
+        _ => match host_updated_at {
+            Some(known) => row.updated_at.is_some_and(|at| at > known),
+            None => row.updated_at.is_some_and(|at| at > deleted_at),
+        },
     };
     if host_has_moved {
-        RowPlan::Restore
+        RowPlan::Restore(generation)
     } else {
-        RowPlan::KeepTombstone
+        RowPlan::KeepTombstone(generation)
     }
 }
 
@@ -501,8 +544,9 @@ fn apply_plan(db: &Database, row: &HostRow, plan: RowPlan, report: &mut MirrorRe
     let id = row.session.id;
     let written = match plan {
         RowPlan::Unchanged => return true,
-        RowPlan::KeepTombstone => {
+        RowPlan::KeepTombstone(generation) => {
             report.tombstoned.push(id);
+            report.tombstone_selections.push((id, generation));
             return false;
         }
         RowPlan::Update(merged) => {
@@ -512,11 +556,8 @@ fn apply_plan(db: &Database, row: &HostRow, plan: RowPlan, report: &mut MirrorRe
             }
             &mut report.updated
         }
-        RowPlan::Restore => {
-            if let Err(e) = db
-                .restore_session(id)
-                .and_then(|()| db.upsert_session(&row.session))
-            {
+        RowPlan::Restore(generation) => {
+            if let Err(e) = db.restore_mirrored_session(&row.session, generation) {
                 tracing::warn!("mirror: could not restore {id}: {e}");
                 return false;
             }
@@ -569,16 +610,57 @@ fn record_host_facts(
     }
 }
 
+fn newer_host_observation(
+    db: &Database,
+    id: SessionId,
+    backend: &str,
+    incoming: Option<u64>,
+) -> bool {
+    incoming.is_some_and(|generation| {
+        db.session_backend(id)
+            .ok()
+            .flatten()
+            .is_some_and(|held| super::same_machine(&held, backend))
+            && db
+                .host_lifecycle_generation(id)
+                .ok()
+                .flatten()
+                .is_some_and(|known| known > generation)
+    })
+}
+
 /// A row the host lists as deleted: delete it here when it is still active, or
 /// carry the host's force mark onto a soft tombstone already taken here.
 fn apply_host_delete(
     db: &Database,
+    backend_type: &str,
     gone: &HostDeletedRow,
     local_active: &HashMap<SessionId, SharedSession>,
     local_deleted: &Tombstones,
+    active_generation: Option<u64>,
     report: &mut MirrorReport,
 ) {
     let id = gone.id;
+    let Ok(Some(_lease)) =
+        super::lock::lock(db, super::lock::Subject::Session(id), "mirror deleted row")
+    else {
+        return;
+    };
+    if db
+        .session_backend(id)
+        .ok()
+        .flatten()
+        .is_some_and(|route| !super::same_machine(&route, backend_type))
+    {
+        return;
+    }
+    if newer_host_observation(db, id, backend_type, gone.lifecycle_generation) {
+        return;
+    }
+    let selected = active_generation.or_else(|| local_deleted.get(&id).map(|r| r.3));
+    if db.lifecycle_generation(id).ok().flatten() != selected {
+        return;
+    }
     if local_active.contains_key(&id) {
         let deleted = if gone.force_deleted {
             db.force_delete_session(id)
@@ -590,9 +672,21 @@ fn apply_host_delete(
             return;
         }
         report.deleted.push(id);
-    } else if let Some((_, false, _)) = local_deleted.get(&id) {
+    } else if let Some((_, false, _, _, _)) = local_deleted.get(&id) {
         if gone.force_deleted {
             let _ = db.mark_session_force_deleted(id);
+        }
+    }
+    if let Some(generation) = gone.lifecycle_generation {
+        let _ = db.set_host_lifecycle_generation(id, generation);
+    }
+    if gone.force_deleted {
+        let _ = db.set_teardown_owed(id, false);
+    }
+    if gone.purged {
+        let _ = db.insert_purge_tombstone(id, backend_type);
+        if let Ok(Some(row)) = db.get_deleted_session_by_id(id) {
+            let _ = db.purge_deleted_session(id, row.deleted_at);
         }
     }
 }
@@ -656,7 +750,7 @@ pub fn mirror_host(
         Transitive::Hide
     };
     let report = reconcile_with(db, &backend, &active, &deleted, transitive);
-    push_tombstones(db, host, cli, &report.tombstoned);
+    push_tombstones(db, host, cli, &report.tombstone_selections);
     Ok(report)
 }
 
@@ -810,8 +904,16 @@ fn host_deleted(
     backend: &str,
     active: &Value,
 ) -> Result<Value, crate::session_ops::OpError> {
+    let list = |extra: &[&str]| {
+        let mut args = vec!["session", "list", "--deleted"];
+        if cli.purged_tombstones {
+            args.push("--include-purged");
+        }
+        args.extend_from_slice(extra);
+        host_cli::run(host, cli, &args)
+    };
     if !cli.deleted_changes_since {
-        return host_cli::run(host, cli, &["session", "list", "--deleted"]);
+        return list(&[]);
     }
     // Taken out rather than held: the lock must not span an ssh round trip
     // that another host's pass is waiting on.
@@ -826,16 +928,12 @@ fn host_deleted(
             // cached tombstones before applying the newer deletes.
             history.forget_restored(active);
             let since = history.newest.to_string();
-            history.absorb(host_cli::run(
-                host,
-                cli,
-                &["session", "list", "--deleted", "--since", &since],
-            )?);
+            history.absorb(list(&["--since", &since])?);
             history
         }
         None => {
             let mut history = DeletedHistory::default();
-            history.absorb(host_cli::run(host, cli, &["session", "list", "--deleted"])?);
+            history.absorb(list(&[])?);
             history
         }
     };
@@ -1004,12 +1102,31 @@ fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>)
 /// Forced as it was taken here: a force delete has already torn the worktrees
 /// down on its side, and pushing it softly would leave the host holding a
 /// restorable row for a session whose checkouts are gone.
-fn push_tombstones(db: &Database, host: &HostDef, cli: &CliInfo, ids: &[SessionId]) {
-    for id in ids {
-        let forced =
-            matches!(db.get_deleted_session_by_id(*id), Ok(Some(row)) if row.force_deleted);
+fn push_tombstones(db: &Database, host: &HostDef, cli: &CliInfo, selections: &[(SessionId, u64)]) {
+    for (id, selected_generation) in selections {
+        let Ok(Some(_lease)) =
+            super::lock::lock(db, super::lock::Subject::Session(*id), "mirror delete")
+        else {
+            continue;
+        };
+        let Ok(Some(row)) = db.get_deleted_session_by_id(*id) else {
+            continue;
+        };
+        if row.lifecycle_generation != *selected_generation
+            || !super::same_machine(&row.backend_type, &host.backend_name())
+        {
+            continue;
+        }
+        let Some(generation) = row
+            .host_lifecycle_generation
+            .filter(|_| cli.lifecycle_preconditions)
+        else {
+            continue;
+        };
+        let generation = generation.to_string();
+        let forced = row.force_deleted;
         let id = id.to_string();
-        let mut args = vec!["session", "delete", &id];
+        let mut args = vec!["session", "delete", &id, "--if-generation", &generation];
         if forced {
             args.push("--force");
         } else if cli.soft_delete_choice {
@@ -1245,20 +1362,100 @@ mod tests {
         db.upsert_session(&local_row(id, "soft-probe")).unwrap();
         db.soft_delete_session(id).unwrap();
         let host = HostDef {
-            name: "remote".into(),
+            name: "devbox".into(),
             ..Default::default()
         };
+        db.set_host_lifecycle_generation(id, 7).unwrap();
         for understands_soft in [true, false] {
             let mut cli = host_cli::fake::cli();
             cli.soft_delete_choice = understands_soft;
+            cli.lifecycle_preconditions = true;
             host_cli::fake::install_runner(Box::new(move |_, args| {
                 assert_eq!(args.iter().any(|arg| arg == "--soft"), understands_soft);
                 assert!(!args.iter().any(|arg| arg == "--force"));
                 Ok(json!({"deleted": true}))
             }));
-            push_tombstones(&db, &host, &cli, &[id]);
+            push_tombstones(
+                &db,
+                &host,
+                &cli,
+                &[(id, db.lifecycle_generation(id).unwrap().unwrap())],
+            );
             host_cli::fake::clear();
         }
+    }
+
+    #[test]
+    fn an_old_host_reply_cannot_overwrite_a_newer_lifecycle_observation() {
+        let root = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(root.path());
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+        db.upsert_session(&local_row(id, "fresh")).unwrap();
+        db.set_host_lifecycle_generation(id, 9).unwrap();
+        apply(
+            &db,
+            BACKEND,
+            &[],
+            &[HostDeletedRow {
+                lifecycle_generation: Some(7),
+                purged: false,
+                id,
+                force_deleted: false,
+            }],
+        );
+        assert!(
+            db.get_session_by_id(id).unwrap().is_some(),
+            "an old host deletion overwrote a newer restore"
+        );
+        let mut stale = host_row(id, "obsolete");
+        stale.lifecycle_generation = Some(7);
+        apply(&db, BACKEND, &[stale], &[]);
+        assert_eq!(db.get_session_by_id(id).unwrap().unwrap().name, "fresh");
+    }
+
+    #[test]
+    fn a_queued_mirror_delete_cannot_outlive_a_local_restore() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(root.path());
+        let db = Database::open_in_memory().unwrap();
+        let id = SessionId::default();
+        db.upsert_session(&local_row(id, "queued")).unwrap();
+        db.set_host_lifecycle_generation(id, 7).unwrap();
+        db.soft_delete_session(id).unwrap();
+        let mut incoming = host_row(id, "queued");
+        incoming.updated_at = Some(0);
+        incoming.lifecycle_generation = Some(7);
+        let report = apply(&db, BACKEND, &[incoming], &[]);
+        assert_eq!(report.tombstoned, [id]);
+        db.restore_session(id).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut cli = host_cli::fake::cli();
+        cli.lifecycle_preconditions = true;
+        host_cli::fake::install_runner(Box::new(move |_, _| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({"deleted": true}))
+        }));
+        push_tombstones(
+            &db,
+            &HostDef {
+                name: "devbox".into(),
+                ..Default::default()
+            },
+            &cli,
+            &report.tombstone_selections,
+        );
+        host_cli::fake::clear();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "queued mirror delete reached the host after local restore"
+        );
     }
 
     fn host_row(id: SessionId, name: &str) -> HostRow {
@@ -1446,6 +1643,8 @@ mod tests {
             BACKEND,
             &[],
             &[HostDeletedRow {
+                lifecycle_generation: None,
+                purged: false,
                 id,
                 force_deleted: true,
             }],
@@ -1460,6 +1659,8 @@ mod tests {
             BACKEND,
             &[],
             &[HostDeletedRow {
+                lifecycle_generation: None,
+                purged: false,
                 id,
                 force_deleted: true,
             }],
@@ -1475,6 +1676,8 @@ mod tests {
             BACKEND,
             &[],
             &[HostDeletedRow {
+                lifecycle_generation: None,
+                purged: false,
                 id: SessionId::default(),
                 force_deleted: false,
             }],
@@ -1670,6 +1873,8 @@ mod tests {
             BACKEND,
             &[],
             &[HostDeletedRow {
+                lifecycle_generation: None,
+                purged: false,
                 id,
                 force_deleted: true,
             }],

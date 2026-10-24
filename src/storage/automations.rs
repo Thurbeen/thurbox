@@ -19,6 +19,7 @@ use super::Database;
 /// Fields needed to create an automation. `next_run_at` is computed by the
 /// caller (it depends on the schedule + timezone, which live in `session`).
 pub struct NewAutomation {
+    pub owner_session_id: Option<SessionId>,
     pub name: String,
     pub enabled: bool,
     pub schedule: AutomationSchedule,
@@ -99,9 +100,17 @@ fn env_from_column(raw: Option<String>) -> Vec<(String, String)> {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct SessionAutomationEffects {
+    pub disabled: Vec<i64>,
+    pub removed: Vec<i64>,
+}
+
 impl Database {
     /// Insert a new automation, returning its row id.
     pub fn create_automation(&self, new: &NewAutomation) -> rusqlite::Result<i64> {
+        let tx = self.write_transaction()?;
+        self.validate_automation_owner(new.owner_session_id)?;
         let now = current_time_millis() as i64;
         let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) =
             super::action_to_columns(&new.action);
@@ -111,9 +120,9 @@ impl Database {
                  action_kind, target_session, repo_path, worktree_branch,
                  base_branch, agent, prompt, created_at, updated_at,
                  last_run_at, next_run_at, action_extra_repos, action_command,
-                 key, timeout_secs, cwd, env)
+                 key, timeout_secs, cwd, env, owner_session_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, NULL, ?14, ?15, ?16,
-                     ?17, ?18, ?19, ?20)",
+                     ?17, ?18, ?19, ?20, ?21)",
             params![
                 new.name,
                 new.enabled as i64,
@@ -135,9 +144,12 @@ impl Database {
                 new.run.timeout_secs.map(|v| v as i64),
                 new.run.cwd.as_ref().map(|p| p.to_string_lossy().to_string()),
                 env_to_column(&new.run.env),
+                new.owner_session_id.map(|id| id.to_string()),
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+        tx.commit()?;
+        Ok(id)
     }
 
     /// The automation carrying `key`, if any.
@@ -194,6 +206,18 @@ impl Database {
 
     /// Replace an automation's definition (everything except id/created_at).
     pub fn update_automation(&self, auto: &Automation) -> rusqlite::Result<()> {
+        let tx = self.write_transaction()?;
+        if self
+            .get_automation(auto.id)?
+            .map_or(true, |held| held.owner_session_id != auto.owner_session_id)
+        {
+            self.validate_automation_owner(auto.owner_session_id)?;
+        }
+        if auto.enabled && self.definition_suspended(auto)? {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "automation is suspended by a deleted session".into(),
+            ));
+        }
         let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) =
             super::action_to_columns(&auto.action);
         let now = current_time_millis() as i64;
@@ -204,7 +228,7 @@ impl Database {
                 worktree_branch = ?10, base_branch = ?11, agent = ?12, prompt = ?13,
                 updated_at = ?14, last_run_at = ?15, next_run_at = ?16,
                 action_extra_repos = ?17, action_command = ?18,
-                timeout_secs = ?19, cwd = ?20, env = ?21
+                timeout_secs = ?19, cwd = ?20, env = ?21, owner_session_id = ?22
              WHERE id = ?1",
             params![
                 auto.id,
@@ -231,9 +255,11 @@ impl Database {
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string()),
                 env_to_column(&auto.run.env),
+                auto.owner_session_id.map(|id| id.to_string()),
             ],
         )?;
-        Ok(())
+        self.clear_obsolete_suspensions(auto.id)?;
+        tx.commit()
     }
 
     /// Replace the observed cwd without overwriting a concurrent directory edit,
@@ -270,6 +296,18 @@ impl Database {
         auto: &Automation,
         timing: Option<(bool, Option<u64>)>,
     ) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        if self
+            .get_automation(auto.id)?
+            .map_or(true, |held| held.owner_session_id != auto.owner_session_id)
+        {
+            self.validate_automation_owner(auto.owner_session_id)?;
+        }
+        if auto.enabled && self.definition_suspended(auto)? {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "automation is suspended by a deleted session".into(),
+            ));
+        }
         let (target_session, repo_path, worktree_branch, base_branch, agent, extra, command) =
             super::action_to_columns(&auto.action);
         let now = current_time_millis() as i64;
@@ -284,7 +322,7 @@ impl Database {
              action_kind = ?6, target_session = ?7, repo_path = ?8, worktree_branch = ?9, \
              base_branch = ?10, agent = ?11, prompt = ?12, updated_at = ?13, \
              action_extra_repos = ?14, action_command = ?15, timeout_secs = ?16, cwd = ?17, \
-             env = ?18";
+             env = ?18, owner_session_id = ?19";
         let columns = params![
             auto.id,
             auto.name,
@@ -304,6 +342,7 @@ impl Database {
             timeout,
             cwd,
             env,
+            auto.owner_session_id.map(|id| id.to_string()),
         ];
         let updated = match timing {
             Some((read_enabled, read_next)) => {
@@ -320,8 +359,8 @@ impl Database {
                 ]);
                 self.conn.execute(
                     &format!(
-                        "UPDATE automations SET {definition}, enabled = ?19, next_run_at = ?20 \
-                         WHERE id = ?1 AND enabled = ?21 AND next_run_at IS ?22"
+                        "UPDATE automations SET {definition}, enabled = ?20, next_run_at = ?21 \
+                         WHERE id = ?1 AND enabled = ?22 AND next_run_at IS ?23"
                     ),
                     all.as_slice(),
                 )?
@@ -331,6 +370,10 @@ impl Database {
                 columns,
             )?,
         };
+        if updated > 0 {
+            self.clear_obsolete_suspensions(auto.id)?;
+        }
+        tx.commit()?;
         Ok(updated > 0)
     }
 
@@ -343,7 +386,8 @@ impl Database {
         let updated = self.conn.execute(
             "UPDATE automations SET enabled = 1, next_run_at = ?2, updated_at = ?3 \
              WHERE id = ?1 AND (enabled = 0 OR next_run_at IS NULL) \
-             AND schedule_kind = ?4 AND schedule_spec = ?5 AND timezone IS ?6",
+             AND schedule_kind = ?4 AND schedule_spec = ?5 AND timezone IS ?6
+             AND NOT EXISTS (SELECT 1 FROM automation_suspensions WHERE automation_id = automations.id)",
             params![
                 read.id,
                 next_run_at as i64,
@@ -458,17 +502,90 @@ impl Database {
 
     /// Disable every `send` automation that targets a session — used when a
     /// session is deleted, soft or forced, so nothing fires against a dead pane.
+    /// Suspend sends by target and every kind by explicit owner. The reason set
+    /// keeps an undo of one session from enabling a send whose other session is gone.
     pub fn disable_send_automations_for_session(
         &self,
         session_id: SessionId,
     ) -> rusqlite::Result<usize> {
-        let now = current_time_millis() as i64;
-        let updated = self.conn.execute(
-            "UPDATE automations SET enabled = 0, next_run_at = NULL, updated_at = ?2 \
-             WHERE action_kind = 'send' AND target_session = ?1",
-            params![session_id.to_string(), now],
+        let tx = self.write_transaction()?;
+        let count = self.suspend_session_automations(session_id)?;
+        tx.commit()?;
+        Ok(count)
+    }
+
+    pub(crate) fn suspend_session_automations(
+        &self,
+        session: SessionId,
+    ) -> rusqlite::Result<usize> {
+        let id = session.to_string();
+        self.conn.execute(
+            "INSERT OR IGNORE INTO automation_suspensions (automation_id, session_id)
+             SELECT id, ?1 FROM automations WHERE owner_session_id = ?1
+                OR (action_kind = 'send' AND target_session = ?1)",
+            [&id],
         )?;
-        Ok(updated)
+        self.conn.execute(
+            "UPDATE automations SET enabled_before_delete = COALESCE(enabled_before_delete, enabled),
+             enabled = 0, next_run_at = NULL, updated_at = ?2
+             WHERE id IN (SELECT automation_id FROM automation_suspensions WHERE session_id = ?1)",
+            params![id, current_time_millis() as i64])
+    }
+
+    pub(crate) fn restore_session_automations(&self, session: SessionId) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM automation_suspensions WHERE session_id = ?1",
+            [session.to_string()],
+        )?;
+        let mut stmt = self.conn.prepare(&format!("SELECT {COLS} FROM automations WHERE enabled_before_delete IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM automation_suspensions s WHERE s.automation_id = automations.id)"))?;
+        let rows = stmt
+            .query_map([], map_automation)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for auto in rows {
+            let enabled: bool = self.conn.query_row(
+                "SELECT enabled_before_delete FROM automations WHERE id = ?1",
+                [auto.id],
+                |r| r.get(0),
+            )?;
+            let next = enabled
+                .then(|| {
+                    auto.schedule
+                        .next_after(current_time_millis(), auto.timezone.as_deref())
+                })
+                .flatten();
+            self.conn.execute("UPDATE automations SET enabled = ?2, next_run_at = ?3, enabled_before_delete = NULL,
+                updated_at = ?4 WHERE id = ?1", params![auto.id, enabled, next.map(|v| v as i64), current_time_millis() as i64])?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove_owned_automations(&self, session: SessionId) -> rusqlite::Result<()> {
+        let id = session.to_string();
+        self.conn.execute(
+            "DELETE FROM automation_runs WHERE automation_id IN
+            (SELECT id FROM automations WHERE owner_session_id = ?1)",
+            [&id],
+        )?;
+        self.conn
+            .execute("DELETE FROM automations WHERE owner_session_id = ?1", [id])?;
+        Ok(())
+    }
+
+    fn validate_automation_owner(&self, owner: Option<SessionId>) -> rusqlite::Result<()> {
+        if let Some(owner) = owner {
+            let active: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND deleted_at IS NULL)",
+                [owner.to_string()],
+                |r| r.get(0),
+            )?;
+            if !active {
+                return Err(rusqlite::Error::InvalidParameterName(format!(
+                    "owner session not found or deleted: {owner}"
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Append a run-history entry. `related_session` is the session the run
@@ -530,10 +647,16 @@ impl Database {
         started_at: u64,
         deadline_at: Option<u64>,
     ) -> rusqlite::Result<i64> {
-        self.conn.execute(
+        if self.automation_suspended(automation_id)? {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "automation is suspended by a deleted session".into(),
+            ));
+        }
+        let inserted = self.conn.execute(
             "INSERT INTO automation_runs \
              (automation_id, started_at, status, detail, deadline_at) \
-             VALUES (?1, ?2, ?3, '', ?4)",
+             SELECT ?1, ?2, ?3, '', ?4 FROM automations WHERE id = ?1
+             AND NOT EXISTS (SELECT 1 FROM automation_suspensions WHERE automation_id = ?1)",
             params![
                 automation_id,
                 started_at as i64,
@@ -541,6 +664,11 @@ impl Database {
                 deadline_at.map(|v| v as i64),
             ],
         )?;
+        if inserted == 0 {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "automation disappeared or is suspended by a deleted session".into(),
+            ));
+        }
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -674,7 +802,7 @@ fn map_automation_run(row: &rusqlite::Row) -> rusqlite::Result<AutomationRun> {
 const COLS: &str = "id, name, enabled, schedule_kind, schedule_spec, timezone, \
     action_kind, target_session, repo_path, worktree_branch, base_branch, agent, \
     prompt, created_at, updated_at, last_run_at, next_run_at, action_extra_repos, \
-    action_command, key, timeout_secs, cwd, env";
+    action_command, key, timeout_secs, cwd, env, owner_session_id";
 
 fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
     let id: i64 = row.get(0)?;
@@ -703,6 +831,9 @@ fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
     let action = super::action_from_columns(&action_kind, cols);
 
     Ok(Automation {
+        owner_session_id: row
+            .get::<_, Option<String>>(23)?
+            .and_then(|id| id.parse().ok()),
         id,
         name: row.get(1)?,
         enabled: row.get::<_, i64>(2)? != 0,
@@ -725,6 +856,74 @@ fn map_automation(row: &rusqlite::Row) -> rusqlite::Result<Automation> {
     })
 }
 
+impl Database {
+    pub(crate) fn session_automation_effects(
+        &self,
+        session: SessionId,
+        force: bool,
+    ) -> rusqlite::Result<SessionAutomationEffects> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, enabled, owner_session_id = ?1 FROM automations
+            WHERE owner_session_id = ?1 OR (action_kind = 'send' AND target_session = ?1)",
+        )?;
+        let rows = stmt.query_map([session.to_string()], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, bool>(1)?,
+                r.get::<_, Option<bool>>(2)?.unwrap_or(false),
+            ))
+        })?;
+        let mut effects = SessionAutomationEffects::default();
+        for row in rows {
+            let (id, enabled, owned) = row?;
+            if owned && force {
+                effects.removed.push(id);
+            } else if enabled {
+                effects.disabled.push(id);
+            }
+        }
+        Ok(effects)
+    }
+}
+
+impl Database {
+    pub fn automation_suspended(&self, id: i64) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM automation_suspensions WHERE automation_id = ?1)",
+            [id],
+            |r| r.get(0),
+        )
+    }
+}
+
+impl Database {
+    fn definition_suspended(&self, auto: &Automation) -> rusqlite::Result<bool> {
+        let target = match auto.action {
+            AutomationAction::Send { session_id } => Some(session_id.to_string()),
+            _ => None,
+        };
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM automation_suspensions WHERE automation_id = ?1
+            AND (session_id = ?2 OR session_id = ?3))",
+            params![
+                auto.id,
+                auto.owner_session_id.map(|id| id.to_string()),
+                target
+            ],
+            |r| r.get(0),
+        )
+    }
+
+    fn clear_obsolete_suspensions(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM automation_suspensions WHERE automation_id = ?1
+            AND NOT EXISTS (SELECT 1 FROM automations a WHERE a.id = ?1 AND
+                (a.owner_session_id = session_id OR (a.action_kind = 'send' AND a.target_session = session_id)))", [id])?;
+        self.conn.execute("UPDATE automations SET enabled_before_delete = NULL WHERE id = ?1
+            AND enabled_before_delete IS NOT NULL AND NOT EXISTS (SELECT 1 FROM automation_suspensions WHERE automation_id = ?1)", [id])?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -733,6 +932,7 @@ mod tests {
 
     fn send_automation(name: &str, next: Option<u64>) -> NewAutomation {
         NewAutomation {
+            owner_session_id: None,
             name: name.to_string(),
             enabled: true,
             schedule: AutomationSchedule::Once {
@@ -799,6 +999,7 @@ mod tests {
     fn spawn_action_columns_round_trip() {
         let db = Database::open_in_memory().unwrap();
         let new = NewAutomation {
+            owner_session_id: None,
             name: "triage".into(),
             enabled: true,
             schedule: AutomationSchedule::Cron {
@@ -843,6 +1044,7 @@ mod tests {
     fn exec_action_columns_round_trip() {
         let db = Database::open_in_memory().unwrap();
         let new = NewAutomation {
+            owner_session_id: None,
             name: "sync".into(),
             enabled: true,
             schedule: AutomationSchedule::Cron {
