@@ -815,15 +815,16 @@ local function model()
         set_host_folded(host, false)
       end
       -- A blocked row is never folded away, so reaching one must not undo a
-      -- fold you chose. The walk is bounded: a parent cycle in the data must
-      -- not hang the render.
+      -- fold you chose. Stop at a repeated ancestor so a parent cycle cannot
+      -- hang the render, while every ancestor of a deep valid tree is revealed.
       if wanted_session.status ~= "blocked" then
-        local ancestor, steps = parent_of[wanted], 0
-        while ancestor and steps < 64 do
+        local ancestor, seen = parent_of[wanted], { [wanted] = true }
+        while ancestor and not seen[ancestor] do
+          seen[ancestor] = true
           if parent_is_folded(ancestor) then
             set_parent_folded(ancestor, false)
           end
-          ancestor, steps = parent_of[ancestor], steps + 1
+          ancestor = parent_of[ancestor]
         end
       end
     end
@@ -1454,12 +1455,22 @@ pane = {
     if not hit.id then
       return false
     end
-    -- A parent's fold handle folds it, and leaves the cursor where it was:
-    -- what you were reading should not jump because a subtree closed.
+    -- Keep a selection that remains visible. A folded-away child selects its
+    -- parent, never whichever unrelated row took the child's place.
     local parent = hit.id:match("^fold:(.+)$")
     if parent then
       if hit.clicks ~= 2 then
+        local cursor = ui.cursor("sessions", model(), CURSOR_OPTS)
+        local selected = cursor:id()
+        -- The click ends any earlier follow before the model can reveal it.
+        cursor:select(cursor.index)
         set_parent_folded(parent, not parent_is_folded(parent))
+        for _, item in ipairs(model()) do
+          if item.target == selected then
+            return true
+          end
+        end
+        cursor:select_by_id(parent)
       end
       return true
     end
