@@ -2197,7 +2197,12 @@ cannot stall a paint; the request is repeated only after two seconds without
 an answer. Companion shell creation and re-adoption likewise run on workers.
 Only an answer for the same live attachment and shell slot is installed, and
 the shell id is remembered or forgotten when that answer lands. Repeated
-shell commands share one in-flight request per session.
+shell commands share one in-flight request per live attachment. A replacement
+attachment can start its own request while an obsolete worker finishes; that
+worker cannot clear the replacement's pending request. Obsolete replies are
+dropped without killing their pane: a pane id can be reused after a server
+restart, and the reply carries no atomic creation identity. A canceled creation
+can therefore leave an unused shell window on the backend.
 
 Reading replies by content also exposed a framing hole that the snapshot would
 otherwise have fallen into: a `capture-pane` reply is written raw, so a screen
