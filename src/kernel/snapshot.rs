@@ -358,7 +358,9 @@ pub struct Snapshot {
     /// Epoch milliseconds this snapshot represents. Readable by plugins so
     /// they can render staleness.
     pub taken_at_ms: i64,
-    /// Set when the last refresh failed; the previous rows are retained.
+    /// Set when the last refresh failed, and the previous rows are retained;
+    /// or when only the session meta could not be read, and the new rows carry
+    /// the labels from before.
     pub error: Option<String>,
 }
 

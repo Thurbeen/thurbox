@@ -447,7 +447,7 @@
 ---@field repos string[]
 ---@field activity? string What the agent said about itself.
 ---@field notification? string
----@field meta? table<string, string> The session's `ui.*` meta keys, by full key (`meta["ui.note"]`). Untrusted text anyone with the CLI can write: one line, control and invisible format characters stripped, at most 256 characters, 32 keys. Absent when it has none.
+---@field meta? table<string, string> The session's `ui.*` meta keys, by full key (`meta["ui.note"]`). Untrusted text anyone with the CLI can write: one line, control and invisible characters stripped, at most 256 characters, 32 keys. Absent when it has none.
 ---@field display_order integer
 ---@field git? thurbox.GitStats
 ---@field attach_error? string Why this session's terminal is not live.

@@ -96,9 +96,11 @@ fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool, non_utf8: 
     symlink(primary.path(), &alias).unwrap();
     let capture = home.path().join("launch");
     let agent = home.path().join("record-agent");
+    // The reader can see `acceptEdits` before the later directory arguments.
+    // Publish the capture only once the whole argument list has been written.
     std::fs::write(
         &agent,
-        "#!/bin/sh\n{ pwd -P; printf '%s\\n' \"$@\"; } > \"$CAPTURE\"\nif [ -n \"$PERMISSION_PROBE\" ]; then python3 \"$PERMISSION_PROBE\" \"$@\" > \"$CAPTURE.permissions\" 2>&1; fi\nexec sleep 60\n",
+        "#!/bin/sh\n{ pwd -P; printf '%s\\n' \"$@\"; } > \"$CAPTURE.pending\"\nmv \"$CAPTURE.pending\" \"$CAPTURE\"\nif [ -n \"$PERMISSION_PROBE\" ]; then python3 \"$PERMISSION_PROBE\" \"$@\" > \"$CAPTURE.permissions\" 2>&1; fi\nexec sleep 60\n",
     )
     .unwrap();
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
