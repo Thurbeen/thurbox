@@ -135,9 +135,12 @@ where
 
     /// Retire unneeded keys. Queued work skips the read; an active read may
     /// finish, but its result cannot overwrite a later request for the same key.
+    /// Retiring the deferred key also signals a change: other refused readers
+    /// may need a repaint to request admission again.
     pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) -> bool {
         let before = self.entries.len();
-        if self.waiting.as_ref().is_some_and(|key| !keep(key)) {
+        let retired_waiting = self.waiting.as_ref().is_some_and(|key| !keep(key));
+        if retired_waiting {
             self.waiting = None;
         }
         self.entries.retain(|key, entry| {
@@ -147,7 +150,7 @@ where
             }
             keep
         });
-        self.entries.len() != before
+        retired_waiting || self.entries.len() != before
     }
 
     /// Collect completions and refresh expired answers without blocking.
@@ -437,6 +440,50 @@ mod tests {
         release.send(()).unwrap();
         collect(&mut store, |store| store.generation() == 2);
         assert_eq!(*store.request(1).unwrap(), 1);
+        assert_eq!(*store.request(2).unwrap(), 2);
+    }
+    #[test]
+    fn retiring_a_deferred_key_wakes_other_refused_readers() {
+        let (started, starts) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let released = Mutex::new(released);
+        let mut store = WorkerStore::new(1, 1, Duration::from_secs(60), move |key: &u8| {
+            started.send(*key).unwrap();
+            released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+            *key
+        });
+        store.request(0);
+        assert_eq!(starts.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        store.retain(|_| false);
+        store.request(1);
+        store.retain(|_| false);
+        store.request(2);
+        store.request(3);
+        let mut repaint = store.retain(|key| *key == 2);
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            repaint |= store.poll();
+            if repaint {
+                store.request(2);
+                repaint = false;
+            }
+            if let Ok(key) = starts.try_recv() {
+                assert_eq!(key, 2, "only the surviving reader may start");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "retiring deferred work must wake the surviving pure reader"
+            );
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        collect(&mut store, |store| store.generation() == 1);
         assert_eq!(*store.request(2).unwrap(), 2);
     }
 }
