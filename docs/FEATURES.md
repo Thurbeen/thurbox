@@ -325,8 +325,9 @@ moved fall back to creation order:
   on the arrow toggles it. A folded parent shows `+N` for what it holds, and a
   child waiting for you (`blocked`) stays visible under it. If clicking the
   arrow hides the selected child, the folded parent becomes selected; a selection
-  that stays visible is preserved. Folded parents are saved in
-  `sessions.folded_parents`; focusing a hidden descendant unfolds its ancestors.
+  that stays visible is preserved. When a selected blocked descendant resumes
+  work, its folded ancestors unfold to keep it selected. Folded parents are
+  saved in `sessions.folded_parents`; focusing a hidden descendant unfolds its ancestors.
 - With host rows off, the top row of each tree that runs on another machine
   shows `@` after its dot; its children do not repeat it.
 

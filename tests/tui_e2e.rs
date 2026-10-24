@@ -3856,6 +3856,34 @@ fn select_expanded_host(tui: &mut Tui) {
     tui.wait_for("probe");
 }
 
+fn record_tui_transition(tui: &Tui, before: Vec<u8>, output_var: &str) {
+    if let Ok(path) = std::env::var(output_var) {
+        let after = tui.screen.lock().unwrap().screen().contents_formatted();
+        let event = |time, bytes: Vec<u8>| {
+            serde_json::json!([
+                time,
+                "o",
+                format!("\x1b[2J\x1b[H{}", String::from_utf8(bytes).unwrap())
+            ])
+        };
+        let cast = [
+            serde_json::json!({"version": 2, "width": 120, "height": 40}),
+            event(0.0, before),
+            event(2.0, after),
+            serde_json::json!([4.0, "o", ""]),
+        ];
+        std::fs::write(
+            path,
+            cast.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .expect("write fold demonstration");
+    }
+}
+
 #[test]
 fn folding_a_selected_child_selects_its_parent_in_the_running_tui() {
     let Some((profile, mut tui)) = shell_session_prepared(
@@ -3909,31 +3937,7 @@ fn folding_a_selected_child_selects_its_parent_in_the_running_tui() {
         tui.session_row("worker-b").is_some(),
         "blocked child stays visible"
     );
-    if let Ok(path) = std::env::var("THURBOX_FOLD_CAST") {
-        let after = tui.screen.lock().unwrap().screen().contents_formatted();
-        let event = |time, bytes: Vec<u8>| {
-            serde_json::json!([
-                time,
-                "o",
-                format!("\x1b[2J\x1b[H{}", String::from_utf8(bytes).unwrap())
-            ])
-        };
-        let cast = [
-            serde_json::json!({"version": 2, "width": 120, "height": 40}),
-            event(0.0, before),
-            event(2.0, after),
-            serde_json::json!([4.0, "o", ""]),
-        ];
-        std::fs::write(
-            path,
-            cast.iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("\n")
-                + "\n",
-        )
-        .expect("write fold demonstration");
-    }
+    record_tui_transition(&tui, before, "THURBOX_FOLD_CAST");
     assert_eq!(
         selected_session(&profile),
         Some(session_id(&profile, "probe")),
@@ -3941,6 +3945,81 @@ fn folding_a_selected_child_selects_its_parent_in_the_running_tui() {
     );
     tui.send(b"r");
     tui.wait_for("Restart probe?");
+    tui.send(ESC);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn answering_a_blocked_child_of_a_folded_parent_keeps_its_terminal_selected() {
+    let Some((profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            let parent = session_id(profile, "probe");
+            let repo = profile.path("repo");
+            profile.cli(&[
+                "session",
+                "create",
+                "--name",
+                "worker-b",
+                "--repo-path",
+                repo.to_str().unwrap(),
+                "--agent",
+                "shell",
+                "--parent",
+                &parent,
+            ]);
+            profile.cli(&[
+                "session",
+                "create",
+                "--name",
+                "solo",
+                "--repo-path",
+                repo.to_str().unwrap(),
+                "--agent",
+                "shell",
+            ]);
+            profile.cli(&[
+                "session",
+                "signal",
+                "--session",
+                &session_id(profile, "worker-b"),
+                "--state",
+                "blocked",
+            ]);
+        },
+        |_| {},
+    ) else {
+        return;
+    };
+    tui.wait_until("the blocked child row", |_| {
+        tui.session_row("worker-b").is_some()
+    });
+    let worker = session_id(&profile, "worker-b");
+    tui.press(0, tui.session_row("worker-b").unwrap());
+    wait_selected(&tui, &profile, &worker);
+    let (_, y) = tui.session_row("probe").unwrap();
+    let x = tui.row(y).chars().position(|c| c == '▾').unwrap() as u16;
+    tui.press(0, (x, y));
+    tui.wait_for("probe +1");
+    wait_selected(&tui, &profile, &worker);
+    let before = tui.screen.lock().unwrap().screen().contents_formatted();
+    profile.cli(&[
+        "session",
+        "signal",
+        "--session",
+        &worker,
+        "--state",
+        "working",
+    ]);
+    tui.wait_gone("Blocked");
+    record_tui_transition(&tui, before, "THURBOX_STATUS_CAST");
+    tui.wait_until("the answered child to stay visible and selected", |_| {
+        tui.session_row("worker-b").is_some()
+            && selected_session(&profile).as_deref() == Some(worker.as_str())
+            && !tui.row(y).contains("probe +1")
+    });
+    assert_eq!(selected_session(&profile).as_deref(), Some(worker.as_str()));
+    tui.send(b"r");
+    tui.wait_for("Restart worker-b?");
     tui.send(ESC);
     assert!(tui.quit().success());
 }

@@ -2189,3 +2189,43 @@ fn the_host_band_and_a_waiting_row_are_tinted_readably_in_every_preset() {
     }
     assert!(checked > 20, "only {checked} presets have hex colours");
 }
+
+#[test]
+fn answering_a_folded_blocked_child_keeps_it_selected() {
+    for group_by_host in [true, false] {
+        for group_by_repo in [true, false] {
+            let host = host();
+            let mut world = family();
+            let mut registry = with_settings(
+                &host,
+                &[
+                    ("group_by_host", group_by_host),
+                    ("group_by_repo", group_by_repo),
+                ],
+            );
+            registry
+                .set_setting(PLUGIN, "folded_parents", Some(Value::Text("lead".into())))
+                .unwrap();
+            publish_with(&host, &world, &registry);
+            frame_at(&host, 40, 9);
+            host.on_click(
+                host.index_of(PLUGIN).unwrap(),
+                &Click {
+                    id: Some("worker-b".into()),
+                    ..Click::default()
+                },
+            )
+            .unwrap();
+            frame_at(&host, 40, 9);
+            assert_eq!(host.shared_string("selected").as_deref(), Some("worker-b"));
+            world.sessions[2].status = SessionState::Working;
+            publish_with(&host, &world, &registry);
+            frame_at(&host, 40, 9);
+            let selected = host.shared_string("selected").unwrap();
+            assert_eq!(
+                selected, "worker-b",
+                "answering must keep the active session selected"
+            );
+        }
+    }
+}
