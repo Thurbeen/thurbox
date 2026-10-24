@@ -1055,3 +1055,138 @@ fn the_doctor_reports_a_pane_it_could_not_read_as_unverified() {
         "{check}"
     );
 }
+
+#[test]
+fn command_bus_keeps_a_sessions_later_send_queued_until_the_first_finishes() {
+    held_command_bus_send(false, false);
+}
+
+#[test]
+fn command_bus_does_not_hold_another_session_behind_a_blocked_send() {
+    held_command_bus_send(true, false);
+}
+
+#[test]
+fn command_bus_does_not_strand_a_session_after_a_worker_panics() {
+    held_command_bus_send(false, true);
+}
+
+fn held_command_bus_send(other_session: bool, panic_first: bool) {
+    let home = tempfile::tempdir().expect("isolated home");
+    std::env::set_var("HOME", home.path());
+    for name in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] {
+        let dir = home.path().join(name);
+        std::fs::create_dir(&dir).expect("isolated XDG directory");
+        std::env::set_var(name, dir);
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let first = SessionId::default();
+    let second = if other_session {
+        SessionId::default()
+    } else {
+        first
+    };
+    let pane = reg
+        .probe
+        .open("tb-first", &first.to_string(), WindowRole::Agent);
+    seed_row(&db, first, "first", "local:rmux", &pane, &instance.repo());
+    let second_pane = if other_session {
+        let pane = reg
+            .probe
+            .open("tb-second", &second.to_string(), WindowRole::Agent);
+        seed_row(&db, second, "second", "local:rmux", &pane, &instance.repo());
+        pane
+    } else {
+        pane.clone()
+    };
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    reg.probe.on_next_locate(move || {
+        entered_tx.send(()).expect("announce held backend call");
+        // Disconnection also releases the worker if an assertion unwinds.
+        let _ = release_rx.recv_timeout(Duration::from_secs(20));
+        assert!(!panic_first, "backend call panicked");
+    });
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let first_id = bus.dispatch(KernelCommand::Send {
+        session: first.to_string(),
+        text: "first prompt".into(),
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("first send reached backend");
+    let second_id = bus.dispatch(KernelCommand::Send {
+        session: second.to_string(),
+        text: "second prompt".into(),
+    });
+    let third_id = (!other_session).then(|| {
+        bus.dispatch(KernelCommand::Send {
+            session: first.to_string(),
+            text: "third prompt".into(),
+        })
+    });
+    // A global write must not wait for a blocked session either.
+    kernel(&mut bus, KernelCommand::Order { list: vec![] }).expect("sessionless command");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && !reg.probe.screen(&second_pane).contains("second prompt") {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ran_while_held = reg.probe.screen(&second_pane).contains("second prompt");
+    let inflight = bus.inflight();
+    release_tx.send(()).expect("release first send");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        bus.poll();
+        if bus.inflight().iter().all(|e| e.phase == Phase::Failed) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let remaining = bus.inflight();
+    if panic_first {
+        assert_eq!(remaining.len(), 1, "{remaining:?}");
+        assert_eq!(remaining[0].id, first_id);
+        assert_eq!(remaining[0].phase, Phase::Failed);
+        assert!(remaining[0].error.as_deref().unwrap().contains("panicked"));
+    } else {
+        assert!(remaining.is_empty(), "sends did not finish: {remaining:?}");
+    }
+    assert_eq!(
+        ran_while_held, other_session,
+        "same-session sends must wait; other sessions must run"
+    );
+    assert_eq!(
+        inflight.iter().find(|e| e.id == first_id).unwrap().phase,
+        Phase::Running
+    );
+    if !other_session {
+        for id in [second_id, third_id.expect("third same-session send")] {
+            assert_eq!(
+                inflight.iter().find(|e| e.id == id).unwrap().phase,
+                Phase::Queued
+            );
+        }
+        let screen = reg.probe.screen(&pane);
+        assert!(
+            screen.find("second prompt").unwrap() < screen.find("third prompt").unwrap(),
+            "{screen}"
+        );
+        if !panic_first {
+            assert!(
+                screen.find("first prompt").unwrap() < screen.find("second prompt").unwrap(),
+                "{screen}"
+            );
+        }
+    }
+    kernel(
+        &mut bus,
+        KernelCommand::Send {
+            session: first.to_string(),
+            text: "after drain".into(),
+        },
+    )
+    .expect("send after queue drains");
+    assert_screen_shows(&reg.probe, &pane, "after drain", "queue drained");
+}

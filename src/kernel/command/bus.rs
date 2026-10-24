@@ -1,8 +1,9 @@
-//! The dispatch machinery: accept a command, run it on its own thread, keep
+//! The dispatch machinery: accept a command, run it off the render path, keep
 //! the in-flight record a plugin can draw. Split from the protocol (`mod.rs`)
 //! and the effects (`execute.rs`) so the write side reads as its three
 //! halves.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -83,6 +84,8 @@ struct Done {
 /// How long a failed command stays readable before being swept.
 const FAILURE_LINGER_MS: u64 = 8_000;
 
+type SessionQueues = HashMap<String, VecDeque<(u64, Command)>>;
+
 /// Accepts commands, runs them off the render path, and reports progress.
 pub struct CommandBus {
     inflight: Arc<Mutex<Vec<InFlight>>>,
@@ -91,6 +94,7 @@ pub struct CommandBus {
     progress_tx: Sender<Progress>,
     progress_rx: Receiver<Progress>,
     next_id: AtomicU64,
+    pending: Arc<Mutex<SessionQueues>>,
     /// When each failure was recorded, so it can be swept after lingering.
     failed_at: Vec<(u64, std::time::Instant)>,
     /// The process's one registry, which every command's worker drives the
@@ -109,12 +113,14 @@ impl CommandBus {
             progress_tx,
             progress_rx,
             next_id: AtomicU64::new(1),
+            pending: Arc::new(Mutex::new(HashMap::new())),
             failed_at: Vec::new(),
             backends,
         }
     }
 
-    /// Accept a command. Returns immediately, always.
+    /// Accept a command without waiting for its execution. Commands naming the
+    /// same non-empty session execute in dispatch order; other work is independent.
     pub fn dispatch(&self, command: Command) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if command.is_housekeeping() {
@@ -133,20 +139,50 @@ impl CommandBus {
             inflight.push(entry);
         }
 
+        let session = command.session().to_string();
+        if !session.is_empty() {
+            let mut pending = self.pending.lock().unwrap();
+            match pending.entry(session.clone()) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().push_back((id, command));
+                    return id;
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(VecDeque::new());
+                }
+            }
+        }
+
         let inflight = self.inflight.clone();
         let finished = self.finished_tx.clone();
         let progress = self.progress_tx.clone();
         let backends = Arc::clone(&self.backends);
-        // One thread per command: a slow operation on an unreachable host must
-        // not queue behind, or in front of, anything else.
+        let pending = Arc::clone(&self.pending);
         std::thread::spawn(move || {
-            if let Ok(mut list) = inflight.lock() {
-                if let Some(entry) = list.iter_mut().find(|entry| entry.id == id) {
-                    entry.started();
+            let mut next = Some((id, command));
+            while let Some((id, command)) = next {
+                if let Ok(mut list) = inflight.lock() {
+                    if let Some(entry) = list.iter_mut().find(|entry| entry.id == id) {
+                        entry.started();
+                    }
+                }
+                // A panic must not strand the remaining commands for this session.
+                let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    execute(&command, &backends, id, &progress).err()
+                }))
+                .unwrap_or_else(|_| Some("command worker panicked".into()));
+                let _ = finished.send(Done { id, error });
+                if session.is_empty() {
+                    break;
+                }
+                // Retire an empty queue under the dispatch lock, so a new command
+                // either joins this worker or starts its successor, never both.
+                let mut queues = pending.lock().unwrap();
+                next = queues.get_mut(&session).and_then(VecDeque::pop_front);
+                if next.is_none() {
+                    queues.remove(&session);
                 }
             }
-            let error = execute(&command, &backends, id, &progress).err();
-            let _ = finished.send(Done { id, error });
         });
         id
     }

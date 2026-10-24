@@ -1,4 +1,4 @@
-//! The effects: what each accepted command actually does, on its own thread
+//! The effects: what each accepted command actually does, on a worker thread
 //! with its own database connection.
 
 use std::sync::mpsc::Sender;
@@ -9,7 +9,7 @@ use crate::kernel::snapshot;
 use crate::session::SessionId;
 use crate::storage::Database;
 
-/// Run one command. Called on the command's own thread, never the UI thread.
+/// Run one command on a worker, never the UI thread.
 ///
 /// Only the outcome travels back. A creation and a fork each mint a session id,
 /// and neither reports it: a session that finished spawning is a row in the
