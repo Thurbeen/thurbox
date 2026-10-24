@@ -12,7 +12,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use zbus::zvariant::OwnedValue;
+use zbus::OwnedVariant;
 
 /// One notification the receiver took.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +37,7 @@ impl Receiver {
         summary: String,
         body: String,
         _actions: Vec<String>,
-        _hints: HashMap<String, OwnedValue>,
+        _hints: HashMap<String, OwnedVariant>,
         _expire_timeout: i32,
     ) -> u32 {
         let mut shown = self.shown.lock().unwrap();
@@ -79,7 +79,9 @@ impl Drop for Daemon {
 pub struct NotificationBus {
     socket: PathBuf,
     shown: Arc<Mutex<Vec<Shown>>>,
-    _connection: zbus::blocking::Connection,
+    _connection: zbus::Connection,
+    // Tokio must keep polling the receiver after setup returns to the test.
+    _runtime: tokio::runtime::Runtime,
     // Last: fields drop in order, so the connection closes before the bus.
     _daemon: Daemon,
 }
@@ -106,25 +108,31 @@ impl NotificationBus {
             std::thread::sleep(Duration::from_millis(20));
         }
         let shown = Arc::new(Mutex::new(Vec::new()));
-        let connection = zbus::blocking::connection::Builder::address(
-            format!("unix:path={}", socket.display()).as_str(),
-        )
-        .expect("bus address")
-        .name("org.freedesktop.Notifications")
-        .expect("service name")
-        .serve_at(
-            "/org/freedesktop/Notifications",
-            Receiver {
-                shown: shown.clone(),
-            },
-        )
-        .expect("serve the receiver")
-        .build()
-        .expect("connect the receiver");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("notification receiver runtime");
+        let connection = runtime
+            .block_on(
+                zbus::connection::Builder::address(
+                    format!("unix:path={}", socket.display()).as_str(),
+                )
+                .name("org.freedesktop.Notifications")
+                .serve_at(
+                    "/org/freedesktop/Notifications",
+                    Receiver {
+                        shown: shown.clone(),
+                    },
+                )
+                .build(),
+            )
+            .expect("connect the receiver");
         Self {
             socket,
             shown,
             _connection: connection,
+            _runtime: runtime,
             _daemon: daemon,
         }
     }

@@ -212,10 +212,9 @@ prost = "0.14"
 libc = "0.2"
 
 # The stand-in notification daemon `tests/notify_send_e2e.rs` serves on a
-# private bus, so delivery is asserted without the user's desktop. Already in
-# the tree through notify-rust; `blocking-api` adds code, not crates.
+# private bus, so delivery is asserted without the user's desktop.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-zbus = { version = "6.0.0", default-features = false, features = ["async-io", "blocking-api"] }
+zbus = { version = "6.1.0", default-features = false, features = ["tokio", "service"] }
 
 # crossterm 0.29.0 with a parser fix: a terminal reply
 # behind the `>` marker, such as the secondary device attributes

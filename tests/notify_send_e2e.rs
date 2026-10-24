@@ -194,6 +194,36 @@ fn an_interval_beyond_a_year_is_refused() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn notification_bus_keeps_serving_between_cli_processes() {
+    let instance = Instance::with_backend("dbus", "");
+    let bus = NotificationBus::start(&instance.path("runtime"));
+
+    for title in ["First build", "Second build"] {
+        let value = instance.ok(
+            Some(&bus.address()),
+            &[
+                "notify",
+                "send",
+                "--title",
+                title,
+                "--body",
+                "Inspect the run log",
+            ],
+        );
+        assert_eq!(value["delivered"], true, "{value}");
+    }
+
+    let shown = bus.shown();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert_eq!(shown[0].summary, "First build");
+    assert_eq!(shown[1].summary, "Second build");
+    assert!(shown
+        .iter()
+        .all(|n| n.app_name == "thurbox" && n.body == "Inspect the run log"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn notify_send_delivers_through_the_configured_backend() {
     let instance = Instance::with_backend("dbus", "");
     let bus = NotificationBus::start(&instance.path("runtime"));
