@@ -611,7 +611,9 @@ pub fn agent_launch_plan(
         ..SessionConfig::default()
     };
     match session {
-        Some(s) => config.env.extend(session_process_env(db, s)?),
+        Some(s) => config
+            .env
+            .extend(session_process_env_for_agent(db, s, &def)?),
         // No session to take an identity from, but the instance is still
         // knowable — and a child `thurbox-cli` that resolves a different data
         // dir or socket would report into a database nothing here reads.
@@ -672,8 +674,29 @@ pub fn session_process_env(
     db: &crate::storage::Database,
     session: &crate::sync::SharedSession,
 ) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
+    // A command session has no registry defaults to contribute.
+    let def = crate::agent::agent_config::load_for_launch()
+        .get(&session.agent)
+        .cloned()
+        .unwrap_or_default();
+    session_process_env_for_agent(db, session, &def)
+}
+
+// A requested agent's defaults must not inherit the source agent's defaults
+// as if they were session overrides.
+fn session_process_env_for_agent(
+    db: &crate::storage::Database,
+    session: &crate::sync::SharedSession,
+    def: &crate::session::AgentDef,
+) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
+    let telemetry_settings = crate::agent::settings_config::load_quiet().telemetry;
     let mut config = SessionConfig {
         session_id: Some(session.id),
+        telemetry_attrs: if telemetry_settings.configures_agents() {
+            telemetry::load(db, session)?
+        } else {
+            Default::default()
+        },
         agent_session_id: session.agent_session_id.clone(),
         agent: session.agent.clone(),
         backend: Some(session.backend_type.clone()),
@@ -691,20 +714,13 @@ pub fn session_process_env(
         None,
         session.key.as_deref(),
     );
-    // The pane holds the telemetry env too. Only an exact registry entry
-    // contributes its `telemetry_env`: a command session has none, and the
-    // registry's default agent is not what its pane runs.
-    let def = crate::agent::agent_config::load_for_launch()
-        .get(&session.agent)
-        .cloned()
-        .unwrap_or_default();
     let host = resolve_host(&session.backend_type).flatten();
     telemetry::apply(
         &mut config,
-        &def,
+        def,
         &session.name,
         host.as_ref(),
-        &crate::agent::settings_config::load_quiet().telemetry,
+        &telemetry_settings,
     );
     if session.agent_session_id.is_none() {
         config.env.remove("THURBOX_SESSION_ID");
@@ -794,6 +810,7 @@ pub fn fork_session_headless(
             .load_agent_args(id)
             .map_err(|e| format!("read the agent arguments: {e}"))?,
         env,
+        telemetry_attrs: telemetry::load(db, &source)?,
         // A fork of a remote session belongs on that session's host, or it would
         // silently become a local session pointed at a path that is not here.
         host: resolve_host(&source.backend_type)

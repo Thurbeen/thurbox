@@ -66,6 +66,7 @@ pub(crate) fn summarize(
     events: &[ExportEvent],
     prior: &HashMap<SessionId, (String, i64)>,
     per_session: bool,
+    attributes: &HashMap<String, BTreeMap<String, String>>,
 ) -> Summary {
     let mut since = prior.clone();
     let mut out = Summary::default();
@@ -76,7 +77,13 @@ pub(crate) fn summarize(
             .as_ref()
             .map_or("unknown", |s| s.agent.as_str())
             .to_string();
-        let mut labels = vec![KeyValue::new("agent", agent.clone())];
+        let custom = attributes.get(&e.session_id.to_string());
+        let mut labels = if per_session {
+            custom_labels(custom)
+        } else {
+            Vec::new()
+        };
+        labels.push(KeyValue::new("agent", agent.clone()));
         if per_session {
             labels.push(KeyValue::new(
                 "thurbox.session.id",
@@ -143,7 +150,8 @@ pub(crate) fn summarize(
                 }
             }
         };
-        let mut attributes = vec![
+        let mut attributes = custom_labels(custom);
+        attributes.extend([
             KeyValue::new("thurbox.session.id", e.session_id.to_string()),
             KeyValue::new(
                 "thurbox.session.name",
@@ -154,7 +162,7 @@ pub(crate) fn summarize(
                     .unwrap_or_default(),
             ),
             KeyValue::new("agent", agent),
-        ];
+        ]);
         attributes.extend(detail);
         out.records.push(Record {
             name,
@@ -165,6 +173,29 @@ pub(crate) fn summarize(
     out
 }
 
+// User labels cannot replace the fields that give a Thurbox measurement its meaning.
+fn custom_labels(attributes: Option<&BTreeMap<String, String>>) -> Vec<KeyValue> {
+    attributes
+        .into_iter()
+        .flat_map(|a| a.iter())
+        .filter(|(key, _)| {
+            !key.starts_with("thurbox.")
+                && !matches!(
+                    key.as_str(),
+                    "agent"
+                        | "backend"
+                        | "state"
+                        | "from"
+                        | "to"
+                        | "reason"
+                        | "outcome"
+                        | "exit_code"
+                )
+        })
+        .map(|(key, value)| KeyValue::new(key.clone(), value.clone()))
+        .collect()
+}
+
 /// `thurbox.sessions`: how many sessions are in each state, per agent and
 /// backend.
 ///
@@ -172,7 +203,11 @@ pub(crate) fn summarize(
 /// no session is in it. Each tick's gauge is a fresh reading, and a state left
 /// out would leave the last non-zero reading standing in the backend until it
 /// goes stale — a session that finished would still count as `working`.
-pub(crate) fn gauge(sessions: &[SessionCount], per_session: bool) -> Vec<(i64, Vec<KeyValue>)> {
+pub(crate) fn gauge(
+    sessions: &[SessionCount],
+    per_session: bool,
+    attributes: &HashMap<String, BTreeMap<String, String>>,
+) -> Vec<(i64, Vec<KeyValue>)> {
     let mut groups: BTreeMap<(String, String, Option<String>), BTreeMap<String, i64>> =
         BTreeMap::new();
     for s in sessions {
@@ -196,11 +231,14 @@ pub(crate) fn gauge(sessions: &[SessionCount], per_session: bool) -> Vec<(i64, V
         let mut states: BTreeMap<String, i64> = words.clone().map(|w| (w.to_string(), 0)).collect();
         states.extend(counts);
         for (state, count) in states {
-            let mut labels = vec![
+            let mut labels = id
+                .as_ref()
+                .map_or_else(Vec::new, |id| custom_labels(attributes.get(id)));
+            labels.extend([
                 KeyValue::new("state", state),
                 KeyValue::new("agent", agent.clone()),
                 KeyValue::new("backend", backend.clone()),
-            ];
+            ]);
             if let Some(id) = &id {
                 labels.push(KeyValue::new("thurbox.session.id", id.clone()));
             }
@@ -260,7 +298,7 @@ mod tests {
             state(id, 3, Some("blocked"), "working", 20_000),
             state(id, 4, Some("working"), "done", 21_500),
         ];
-        let summary = summarize(&events, &HashMap::new(), false);
+        let summary = summarize(&events, &HashMap::new(), false, &HashMap::new());
         let durations: Vec<(Measure, Option<String>)> = summary
             .measures
             .iter()
@@ -282,7 +320,7 @@ mod tests {
         let id = SessionId::default();
         let prior = HashMap::from([(id, ("working".to_string(), 4_000))]);
         let events = [state(id, 9, Some("working"), "done", 10_000)];
-        let summary = summarize(&events, &prior, false);
+        let summary = summarize(&events, &prior, false, &HashMap::new());
         assert!(summary
             .measures
             .iter()
@@ -297,7 +335,7 @@ mod tests {
             event(id, 2, "changed", "stopped", 2_000),
             state(id, 3, None, "done", 3_000),
         ];
-        let summary = summarize(&events, &HashMap::new(), false);
+        let summary = summarize(&events, &HashMap::new(), false, &HashMap::new());
         assert!(!summary
             .measures
             .iter()
@@ -308,7 +346,7 @@ mod tests {
     fn going_records_the_lifetime_and_the_reason() {
         let id = SessionId::default();
         let events = [event(id, 1, "gone", "soft_deleted", 61_000)];
-        let summary = summarize(&events, &HashMap::new(), false);
+        let summary = summarize(&events, &HashMap::new(), false, &HashMap::new());
         let (measure, labels) = summary
             .measures
             .iter()
@@ -325,7 +363,7 @@ mod tests {
         let id = SessionId::default();
         let mut exited = event(id, 1, "changed", "exited", 5_000);
         exited.event.exit_code = Some(2);
-        let summary = summarize(&[exited], &HashMap::new(), false);
+        let summary = summarize(&[exited], &HashMap::new(), false, &HashMap::new());
         let exit = summary
             .measures
             .iter()
@@ -339,14 +377,14 @@ mod tests {
     fn the_session_id_labels_metrics_only_per_session() {
         let id = SessionId::default();
         let events = [state(id, 1, None, "working", 1_000)];
-        let pooled = summarize(&events, &HashMap::new(), false);
+        let pooled = summarize(&events, &HashMap::new(), false, &HashMap::new());
         assert_eq!(label(&pooled.measures[0].1, "thurbox.session.id"), None);
         assert_eq!(
             label(&pooled.records[0].attributes, "thurbox.session.id"),
             Some(id.to_string()),
             "records always carry it"
         );
-        let split = summarize(&events, &HashMap::new(), true);
+        let split = summarize(&events, &HashMap::new(), true, &HashMap::new());
         assert_eq!(
             label(&split.measures[0].1, "thurbox.session.id"),
             Some(id.to_string())
@@ -369,7 +407,7 @@ mod tests {
                 backend: "local-tmux".into(),
             },
         ];
-        let points = gauge(&sessions, false);
+        let points = gauge(&sessions, false, &HashMap::new());
         assert_eq!(points.len(), SessionState::ALL.len() + 1);
         let of = |word: &str| {
             points

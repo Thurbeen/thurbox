@@ -434,6 +434,7 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
         &thurbox::backend::wiring::configured().0,
         thurbox::session_ops::spawn::SpawnRequest {
             name: "e2e-probe".into(),
+            telemetry_attrs: Default::default(),
             repo_path: repo.path().to_path_buf(),
             worktree_branch: Some("feat/e2e".into()),
             existing_worktree: None,
@@ -1976,6 +1977,7 @@ fn a_command_session_survives_restart_and_can_be_parked() {
         &thurbox::backend::wiring::configured().0,
         thurbox::session_ops::spawn::SpawnRequest {
             name: "recipe-probe".into(),
+            telemetry_attrs: Default::default(),
             repo_path: repo.path().to_path_buf(),
             worktree_branch: None,
             base_branch: None,
@@ -2131,6 +2133,7 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
         &thurbox::backend::wiring::configured().0,
         thurbox::session_ops::spawn::SpawnRequest {
             name: "env-probe".into(),
+            telemetry_attrs: Default::default(),
             repo_path: repo.path().to_path_buf(),
             worktree_branch: None,
             base_branch: None,

@@ -1022,18 +1022,19 @@ fn push_tombstones(db: &Database, host: &HostDef, cli: &CliInfo, ids: &[SessionI
 }
 
 /// Register the local rows the host does not know (`unknown_local`) in the
-/// host's database, so they become shared. Best-effort per row; returns the
-/// ones the host accepted.
+/// host's database, so they become shared. Returns accepted rows and explicit
+/// failures, including peers that cannot preserve telemetry labels.
 pub fn register_unknown(
     db: &Database,
     host: &HostDef,
     cli: &CliInfo,
     ids: &[SessionId],
-) -> Vec<SessionId> {
+) -> (Vec<SessionId>, Vec<String>) {
     let hooks = db.load_hook_states().unwrap_or_default();
     let bases = db.load_base_branches().unwrap_or_default();
     let updated = db.load_updated_at().unwrap_or_default();
     let mut registered = Vec::new();
+    let mut errors = Vec::new();
     for id in ids {
         let Ok(Some(row)) = db.get_session_by_id(*id) else {
             continue;
@@ -1052,6 +1053,17 @@ pub fn register_unknown(
             );
             continue;
         }
+        let attrs = match db.load_telemetry_attrs(*id) {
+            Ok(attrs) => attrs,
+            Err(e) => {
+                errors.push(format!("{}: read telemetry attributes: {e}", row.name));
+                continue;
+            }
+        };
+        if !attrs.is_empty() && !cli.telemetry_attrs {
+            errors.push(format!("host '{}' has an older thurbox-cli that cannot preserve telemetry attributes when registering '{}'; update that CLI", host.name, row.name));
+            continue;
+        }
         let mut body = session_to_json(
             &row,
             hooks.get(id).and_then(|r| r.state.as_deref()),
@@ -1059,13 +1071,19 @@ pub fn register_unknown(
             updated.get(id).copied(),
         );
         body["agent_args"] = json!(agent_args);
+        if !attrs.is_empty() {
+            body["telemetry_attrs"] = json!(attrs);
+        }
         let body = body.to_string();
         match host_cli::run(host, cli, &["session", "register", "--json-row", &body]) {
             Ok(_) => registered.push(*id),
-            Err(e) => tracing::warn!("could not register '{}' on '{}': {e}", row.name, host.name),
+            Err(e) => errors.push(format!(
+                "could not register '{}' on '{}': {e}",
+                row.name, host.name
+            )),
         }
     }
-    registered
+    (registered, errors)
 }
 
 /// Mirror one host (`only`) or every shareable one, optionally registering
@@ -1105,8 +1123,12 @@ pub fn sync(
             Usable::Yes(cli) => match mirror_host(db, host, &cli) {
                 Ok(mut report) => {
                     if adopt && !report.unknown_local.is_empty() {
-                        report.registered =
-                            register_unknown(db, host, &cli, &report.unknown_local.clone());
+                        let (registered, errors) =
+                            register_unknown(db, host, &cli, &report.unknown_local);
+                        report.registered = registered;
+                        if !errors.is_empty() {
+                            report.error = Some(errors.join("; "));
+                        }
                     }
                     report
                 }

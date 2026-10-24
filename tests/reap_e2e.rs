@@ -174,6 +174,7 @@ fn spawn(
         &thurbox::backend::wiring::configured().0,
         thurbox::session_ops::SpawnRequest {
             name: name.into(),
+            telemetry_attrs: Default::default(),
             repo_path: repo.to_path_buf(),
             // In place: a worktree is irrelevant to which window a reap targets.
             worktree_branch: None,

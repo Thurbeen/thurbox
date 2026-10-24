@@ -12,10 +12,7 @@ const DEFAULT_BASE_BRANCH: &str = "main";
 
 /// Request to create a new headless session.
 ///
-/// `Default` so call sites state only what they mean: six of the twelve fields
-/// are optional refinements most spawns never set, and before this every one
-/// of seven call sites across four modules restated all of them — a new field
-/// churned them all.
+/// `Default` lets callers specify only the refinements they need.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnRequest {
     /// Session name (used for the tmux window `tb-<name>`).
@@ -56,6 +53,8 @@ pub struct SpawnRequest {
     /// Extra environment for the launched process, on top of the `THURBOX_*`
     /// identity vars. Applies to a registry agent as well as a raw command.
     pub env: BTreeMap<String, String>,
+    /// Session telemetry labels, retained across restart and fork.
+    pub telemetry_attrs: BTreeMap<String, String>,
     /// Resume an existing agent conversation instead of starting a new one —
     /// the id as the agent itself knows it.
     ///
@@ -464,6 +463,7 @@ fn spawn(
 
     let mut config = SessionConfig {
         session_id: Some(session_id),
+        telemetry_attrs: req.telemetry_attrs.clone(),
         agent_session_id: Some(agent_session_id.clone()),
         cwd: Some(launch_cwd.clone()),
         agent: agent_name.clone(),
@@ -588,10 +588,11 @@ fn spawn(
     // for the TUI to adopt and the window would be orphaned — untrackable and
     // unkillable from the UI. Best-effort tear it down before surfacing the
     // error so we don't leak a window.
-    if let Err(e) = db.upsert_session_with_agent_args(
+    if let Err(e) = db.upsert_session_with_launch_metadata(
         &shared,
-        &req.agent_args,
         crate::storage::EventReason::Spawned,
+        Some(&req.agent_args),
+        Some(&req.telemetry_attrs),
     ) {
         tracing::error!(
             "spawn race: DB upsert failed after the tmux window for '{}' spawned; \
@@ -833,6 +834,7 @@ fn delegated_create_args(
         args: command_args,
         agent_args,
         env,
+        telemetry_attrs,
         resume_session_id,
         agent_session_id,
         // Both already chose this route, and `--multiplexer` is
@@ -860,6 +862,9 @@ fn delegated_create_args(
             host.name
         )))
     };
+    if !telemetry_attrs.is_empty() && !cli.telemetry_attrs {
+        return Err(format!("host '{}' has an older thurbox-cli that cannot take --telemetry-attr; update that CLI before creating this session", host.name).into());
+    }
     if agent_session_id.is_some() {
         return refuse("a preset agent conversation id");
     }
@@ -953,6 +958,9 @@ fn delegated_create_args(
     }
     if let Some(mode) = on_existing {
         flag("--on-existing", mode);
+    }
+    for (key, value) in telemetry_attrs {
+        flag("--telemetry-attr", &format!("{key}={value}"));
     }
     for extra in extra_repos {
         let path = extra.repo_path.to_string_lossy().into_owned();
@@ -3060,6 +3068,25 @@ mod tests {
             "{args:?}"
         );
         assert!(stdin.is_none());
+    }
+
+    #[test]
+    fn telemetry_attributes_require_an_explicit_host_capability() {
+        let request = SpawnRequest {
+            telemetry_attrs: [("factory.task.id".into(), "topic/task".into())].into(),
+            ..req("s")
+        };
+        let mut cli = parity_cli();
+        let refused = delegated_create_args(&request, None, &probe_host(), &cli).unwrap_err();
+        assert!(
+            refused.contains("--telemetry-attr") && refused.contains("update that CLI"),
+            "{refused}"
+        );
+        cli.telemetry_attrs = true;
+        let (args, _) = delegated_create_args(&request, None, &probe_host(), &cli).unwrap();
+        assert!(args
+            .windows(2)
+            .any(|a| a == ["--telemetry-attr", "factory.task.id=topic/task"]));
     }
 
     /// Whether a Windows host's CLI receives the stream ssh delivers is

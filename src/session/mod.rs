@@ -419,6 +419,8 @@ pub struct SessionConfig {
     /// Environment variables injected into the spawned session process
     /// (thurbox-internal: session id, metrics dir, etc.).
     pub env: HashMap<String, String>,
+    /// Session labels merged after environment resource attributes.
+    pub telemetry_attrs: BTreeMap<String, String>,
 }
 
 #[cfg(test)]
