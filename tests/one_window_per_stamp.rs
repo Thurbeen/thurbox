@@ -337,3 +337,94 @@ fn the_listing_itself_still_refuses_a_pair() {
         "liveness does not make the ambiguity go away either; its own window is {mine}"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn observed_unowned_creation_preserves_unrelated_unowned_windows() {
+    use thurbox::backend::SessionBackend;
+    if !have_tmux() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let server = TmuxServer::pin(SOCKET);
+    let _paths = thurbox::paths::TestPathGuard::new(root.path());
+    let original = spawn("", "independent-first-unowned");
+    let backend = thurbox::backend::tmux::TmuxBackend::new();
+    let created = backend.create_window_observed(
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new("", "independent-second-unowned"),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sleep",
+            args: &["60".to_string()],
+            cwd: None,
+            env: &HashMap::new(),
+        },
+        std::time::Duration::from_millis(50),
+    );
+    assert!(created.is_ok(), "{created:?}");
+    assert!(
+        listing(&server)
+            .lines()
+            .any(|line| line.starts_with(&format!("{original}|"))),
+        "observed creation killed unrelated unowned window"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn remote_startup_observation_rejects_a_foreign_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::backend::SessionBackend;
+    if !have_tmux() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let server = TmuxServer::pin(SOCKET);
+    let _paths = thurbox::paths::TestPathGuard::new(root.path());
+    let real = std::process::Command::new("sh")
+        .args(["-c", "command -v tmux"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap();
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let ssh = bin.join("ssh");
+    std::fs::write(&ssh, format!(
+        "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do case \"$1\" in -o) shift; shift ;; -*) shift ;; *) break ;; esac; done\nshift\ncase \"$*\" in *'pane_dead'*) '{}' -L '{}' set-option -w -t 'independent-review:{{end}}' @thurbox_session '{}' ;; esac\neval \"exec $*\"\n",
+        real.trim(), SOCKET, OTHER)).unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut path = vec![bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    std::env::set_var("PATH", std::env::join_paths(path).unwrap());
+    let transport = thurbox::backend::tmux_compat::transport::TmuxTransport::remote(
+        thurbox::shell::HostLauncher::Ssh {
+            destination: "independent-fixture".into(),
+            ssh_opts: vec![],
+        },
+        "tmux",
+    );
+    let backend = thurbox::backend::tmux::TmuxBackend::with_transport(
+        transport,
+        SOCKET,
+        "independent-review",
+        "ssh:independent-fixture:tmux",
+    );
+    let result = backend.create_window_observed(
+        &thurbox::backend::WindowSpec {
+            owner: thurbox::backend::Owner::new(SESSION, "independent-remote"),
+            role: thurbox::backend::WindowRole::Agent,
+            command: "sleep",
+            args: &["60".to_string()],
+            cwd: None,
+            env: &HashMap::new(),
+        },
+        std::time::Duration::from_millis(50),
+    );
+    backend.shutdown();
+    assert!(
+        result.is_err(),
+        "remote creation accepted a foreign owner's recycled pane: {result:?}"
+    );
+    let out = server.tmux(&["list-windows", "-a", "-F", "#{@thurbox_session}"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains(OTHER));
+}

@@ -640,3 +640,55 @@ fn a_pane_reported_gone_is_never_adopted() {
         "a pane the server reported gone was adopted"
     );
 }
+
+#[test]
+fn default_startup_observation_refuses_changed_owner_or_role() {
+    use thurbox::backend::{Owner, WindowSpec};
+    for role in [WindowRole::Agent, WindowRole::Shell, WindowRole::Program] {
+        for wrong_owner in [true, false] {
+            let backend = RecordingBackend::new(&Route::local(Some(Multiplexer::Rmux)));
+            let changed = backend.clone();
+            backend.on_next_pane_state(move || {
+                let window = changed.windows().into_iter().next().unwrap();
+                let new_role = if wrong_owner {
+                    role
+                } else if role == WindowRole::Agent {
+                    WindowRole::Shell
+                } else {
+                    WindowRole::Agent
+                };
+                changed
+                    .stamp_window(
+                        &window.pane,
+                        if wrong_owner { "foreign" } else { "" },
+                        new_role,
+                    )
+                    .unwrap();
+            });
+            let result = backend.create_window_observed(
+                &WindowSpec {
+                    owner: Owner::new(
+                        if role == WindowRole::Program {
+                            ""
+                        } else {
+                            "created"
+                        },
+                        "probe",
+                    ),
+                    role,
+                    command: "probe",
+                    args: &[],
+                    cwd: None,
+                    env: &Default::default(),
+                },
+                std::time::Duration::ZERO,
+            );
+            assert!(
+                backend.called("stamp_window"),
+                "ownership change did not reach the observation"
+            );
+            assert!(!matches!(result, Ok((_, BackendLiveness::Live | BackendLiveness::Unknown))),
+                "default startup observation accepted changed identity ({role:?}, wrong_owner={wrong_owner}): {result:?}");
+        }
+    }
+}
