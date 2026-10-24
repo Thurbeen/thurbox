@@ -117,6 +117,13 @@ have: its reads are *parameterised* — which directory, which repository — an
 plugin cannot call something that waits, so the flow asks by leaving a key in
 `store` and the loop serves it.)
 
+The command bus serializes commands naming the same non-empty session in
+dispatch order. Each active session has one worker draining its queue; queued
+commands stay `Queued` until execution starts. Other sessions, commands without
+a session and housekeeping run independently, so an unreachable host holds up
+only later commands for that session. Empty queues retire without waiting for
+the render loop to poll completions.
+
 ## A capability that cannot be absent and useful
 
 "Capabilities are absent rather than blocked" is easy while the answer is always

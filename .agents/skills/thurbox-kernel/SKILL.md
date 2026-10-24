@@ -49,6 +49,11 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
    metrics, git stats, repository reads, update checks, and programs a plugin
    asked for.
 
+The command bus runs commands for the same non-empty `Command::session()` in
+dispatch order on one worker per active session. Waiting commands remain
+`Queued`; other sessions, session-less commands and housekeeping run independently.
+Empty session queues retire on the worker, without needing the UI to poll.
+
 ### Module Dependency Rules (enforced by tests/architecture_rules.rs)
 
 ```text
