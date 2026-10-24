@@ -347,3 +347,85 @@ fn nothing_is_sent_while_telemetry_is_off() {
     env.tick();
     assert!(collector.take().is_empty());
 }
+
+#[test]
+fn session_attributes_label_events_and_only_per_session_metrics() {
+    for per_session in [false, true] {
+        let collector = Collector::start();
+        let env = Env::new(&format!(
+            "{}per_session = {per_session}\n",
+            settings(&collector.endpoint())
+        ));
+        let db = env.db();
+        let id = seed(&db, "labelled");
+        db.set_session_meta(id, "thurbox.telemetry_attributes",
+            r#"{"factory.task.id":"topic/task","agent":"spoofed","state":"spoofed","thurbox.session.id":"spoofed"}"#).unwrap();
+        env.tick();
+        collector.take();
+        walk(&db, id, &["working", "done"]);
+        env.tick();
+        let received = collector.take();
+        let records = logs(&received);
+        assert_eq!(records.len(), 2);
+        for record in records {
+            let labels = attrs(&record.attributes);
+            assert_eq!(
+                labels.get("factory.task.id").map(String::as_str),
+                Some("topic/task")
+            );
+            assert_eq!(labels.get("thurbox.session.id"), Some(&id.to_string()));
+            assert_eq!(labels.get("agent").map(String::as_str), Some("claude"));
+        }
+        let (_, measures) = metrics(&received);
+        for name in ["thurbox.sessions", "thurbox.session.transitions"] {
+            for (labels, _) in int_points(find(&measures, name)) {
+                assert_eq!(
+                    labels.get("factory.task.id").map(String::as_str),
+                    per_session.then_some("topic/task")
+                );
+                assert_eq!(labels.get("agent").map(String::as_str), Some("claude"));
+                assert_ne!(labels.get("state").map(String::as_str), Some("spoofed"));
+            }
+        }
+    }
+}
+
+#[test]
+fn force_delete_keeps_task_labels_on_pending_events_and_lifetime_metrics() {
+    let collector = Collector::start();
+    let env = Env::new(&format!(
+        "{}per_session = true\n",
+        settings(&collector.endpoint())
+    ));
+    let db = env.db();
+    let id = seed(&db, "labelled-delete");
+    db.set_session_meta(
+        id,
+        "thurbox.telemetry_attributes",
+        r#"{"factory.task.id":"topic/task"}"#,
+    )
+    .unwrap();
+    env.tick();
+    collector.take();
+    walk(&db, id, &["working", "done"]);
+    db.force_delete_session(id).unwrap();
+    env.tick();
+    let received = collector.take();
+    let records = logs(&received);
+    assert_eq!(records.len(), 3);
+    for record in records {
+        assert_eq!(
+            attrs(&record.attributes)
+                .get("factory.task.id")
+                .map(String::as_str),
+            Some("topic/task")
+        );
+    }
+    let (_, measures) = metrics(&received);
+    for (labels, _) in histogram(find(&measures, "thurbox.session.lifetime")) {
+        assert_eq!(
+            labels.get("factory.task.id").map(String::as_str),
+            Some("topic/task")
+        );
+    }
+}

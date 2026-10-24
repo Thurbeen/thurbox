@@ -179,7 +179,21 @@ fn send_since(
             }
         }
     }
-    let summary = summary::summarize(&events, &prior, settings.per_session);
+    let mut attributes = HashMap::new();
+    for id in events.iter().map(|e| e.event.session_id).chain(
+        sessions
+            .iter()
+            .filter(|s| !shared(&s.backend))
+            .map(|s| s.id),
+    ) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = attributes.entry(id.to_string()) {
+            entry.insert(
+                db.load_telemetry_attrs(id)
+                    .map_err(|e| format!("read telemetry attributes: {e}"))?,
+            );
+        }
+    }
+    let summary = summary::summarize(&events, &prior, settings.per_session, &attributes);
     let counted: Vec<SessionCount> = sessions
         .iter()
         .filter(|s| !shared(&s.backend))
@@ -187,7 +201,7 @@ fn send_since(
         .collect();
     let resource = resource(identity);
     if settings.export_thurbox_metrics {
-        let gauge = summary::gauge(&counted, settings.per_session);
+        let gauge = summary::gauge(&counted, settings.per_session, &attributes);
         send_metrics(settings, resource.clone(), &summary, &gauge)?;
     }
     let mut sent = 0;

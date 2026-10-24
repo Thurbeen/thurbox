@@ -559,6 +559,38 @@ fn a_sync_pass_adopts_what_the_host_holds_and_registers_what_it_does_not() {
 }
 
 #[test]
+fn adoption_preserves_telemetry_attributes_or_reports_an_unsupported_host() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "labelled");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    let attrs = [("factory.task.id".into(), "topic/task".into())].into();
+    rig.db.set_telemetry_attrs(id, &attrs).unwrap();
+    let reports = mirror::sync(&rig.db, Some(HOST), true).unwrap();
+    assert!(reports[0].registered.is_empty());
+    assert!(reports[0]
+        .error
+        .as_ref()
+        .unwrap()
+        .contains("update that CLI"));
+    assert!(!fake::calls()
+        .iter()
+        .any(|c| c.get(1).map(String::as_str) == Some("register")));
+    fake::force_usable(Usable::Yes(host_cli::CliInfo {
+        telemetry_attrs: true,
+        ..fake::cli()
+    }));
+    mirror::sync(&rig.db, Some(HOST), true).unwrap();
+    let call = fake::calls()
+        .into_iter()
+        .find(|c| c.get(1).map(String::as_str) == Some("register"))
+        .unwrap();
+    let body: Value = serde_json::from_str(&call[3]).unwrap();
+    assert_eq!(body["telemetry_attrs"]["factory.task.id"], "topic/task");
+}
+
+#[test]
 fn an_unknown_host_name_is_the_one_hard_failure_of_sync() {
     let rig = rig();
     let err = mirror::sync(&rig.db, Some("nowhere"), false).unwrap_err();
