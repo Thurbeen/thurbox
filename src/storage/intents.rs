@@ -10,6 +10,9 @@ use super::Database;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CreateIntent {
+    /// Cleanup owns only a workspace absent before this attempt. Old journals retain it.
+    #[serde(default)]
+    pub workspace_created: bool,
     pub expected_deleted_at: Option<u64>,
     pub session: SharedSession,
     /// Panes present before creation, so an unstamped namesake is never ours.

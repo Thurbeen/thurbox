@@ -220,7 +220,7 @@ fn rewrite(
     };
     let timing = (!unmoved).then_some((existing.enabled, existing.next_run_at));
     let written = db
-        .update_automation_definition(&auto, timing)
+        .update_automation_definition_with_enabled_choice(&auto, timing, Some(auto.enabled))
         .map_err(|e| format!("update automation: {e}"))?;
     if written {
         Ok(())
@@ -285,7 +285,7 @@ pub fn edit(db: &Database, id: i64, draft: &Draft, now: u64) -> Result<(), Strin
     }
     let timing = (!unmoved).then_some(read_timing);
     let written = db
-        .update_automation_definition(&auto, timing)
+        .update_automation_definition_with_enabled_choice(&auto, timing, draft.enabled)
         .map_err(|e| format!("update automation: {e}"))?;
     if written {
         Ok(())

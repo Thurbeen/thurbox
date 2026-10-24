@@ -296,6 +296,17 @@ impl Database {
         auto: &Automation,
         timing: Option<(bool, Option<u64>)>,
     ) -> rusqlite::Result<bool> {
+        self.update_automation_definition_with_enabled_choice(auto, timing, None)
+    }
+
+    /// Save an explicit enabled-state choice with the definition's compare-and-set.
+    /// A rename or schedule edit leaves the saved state of a suspended row alone.
+    pub fn update_automation_definition_with_enabled_choice(
+        &self,
+        auto: &Automation,
+        timing: Option<(bool, Option<u64>)>,
+        enabled_choice: Option<bool>,
+    ) -> rusqlite::Result<bool> {
         let tx = self.write_transaction()?;
         if self
             .get_automation(auto.id)?
@@ -371,6 +382,13 @@ impl Database {
             )?,
         };
         if updated > 0 {
+            if let Some(enabled) = enabled_choice {
+                self.conn.execute(
+                    "UPDATE automations SET enabled_before_delete = ?2
+                     WHERE id = ?1 AND enabled_before_delete IS NOT NULL",
+                    params![auto.id, enabled],
+                )?;
+            }
             self.clear_obsolete_suspensions(auto.id)?;
         }
         tx.commit()?;
@@ -406,12 +424,14 @@ impl Database {
         let now = current_time_millis() as i64;
         let updated = if enabled {
             self.conn.execute(
-                "UPDATE automations SET enabled = 1, updated_at = ?2 WHERE id = ?1",
+                "UPDATE automations SET enabled = 1, updated_at = ?2 WHERE id = ?1
+                 AND NOT EXISTS (SELECT 1 FROM automation_suspensions WHERE automation_id = automations.id)",
                 params![id, now],
             )?
         } else {
             self.conn.execute(
-                "UPDATE automations SET enabled = 0, next_run_at = NULL, updated_at = ?2 \
+                "UPDATE automations SET enabled = 0, next_run_at = NULL, updated_at = ?2,
+                 enabled_before_delete = CASE WHEN enabled_before_delete IS NOT NULL THEN 0 END \
                  WHERE id = ?1",
                 params![id, now],
             )?

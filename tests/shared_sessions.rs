@@ -1027,6 +1027,54 @@ mod delegated_create {
         doc["id"].as_str().expect("an id").parse().expect("a uuid")
     }
 
+    #[test]
+    fn an_offline_delete_learns_the_upgraded_hosts_generation_before_pushing() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let id = created_id(&pair.create(&["--name", "offline-delete", "--agent", "shell"]));
+        let db = pair.caller_db();
+        db.conn_ref()
+            .execute(
+                "UPDATE sessions SET host_lifecycle_generation = NULL WHERE id = ?1",
+                [id.to_string()],
+            )
+            .unwrap();
+        db.soft_delete_session(id).unwrap();
+        assert!(pair.host_db().get_session_by_id(id).unwrap().is_some());
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        cmd.args(["session", "sync", "--json"])
+            .env("HOME", pair.path("home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("config"))
+            .env("THURBOX_DATA_DIR", pair.path("data"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    pair.path("bin").display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .env_remove("THURBOX_SESSION")
+            .env_remove("THURBOX_SESSION_ID");
+        pair.caller_server.scope(&mut cmd);
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "sync failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            pair.host_db()
+                .get_deleted_session_by_id(id)
+                .unwrap()
+                .is_some(),
+            "sync left the offline deletion stuck on an active host row"
+        );
+        assert!(pair.ssh_log().contains("--if-generation"));
+    }
+
     /// Wait for `path` to hold something, for as long as a pane takes to
     /// start.
     fn wait_for_file(path: &Path) -> String {

@@ -3548,6 +3548,7 @@ fn an_expired_creation_cannot_kill_an_active_rows_recycled_unstamped_pane() {
     let mut stale = live.clone();
     stale.id = SessionId::default();
     db.begin_create_intent(&thurbox::storage::intents::CreateIntent {
+        workspace_created: false,
         expected_deleted_at: None,
         session: stale,
         before: Vec::new(),
@@ -3690,6 +3691,99 @@ fn a_restore_conflict_preserves_an_original_pane_claimed_by_another_active_row()
         backend.windows().iter().any(|w| w.pane == pane),
         "failed restore killed another active row's pane"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn failed_undo_preserves_the_live_agents_existing_workspace() {
+    undo_with_existing_workspace(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn crashed_undo_preserves_the_live_agents_existing_workspace() {
+    undo_with_existing_workspace(true);
+}
+
+#[cfg(unix)]
+fn undo_with_existing_workspace(crash: bool) {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::SharedSession;
+    let (_home, _) = isolated_config();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let id = SessionId::default();
+    let asid = SessionId::default().to_string();
+    let member = tempfile::tempdir().unwrap();
+    let workspace = thurbox::workspace::ensure_workspace(
+        &asid,
+        &[("repo".into(), member.path().to_path_buf())],
+    )
+    .unwrap();
+    let pane = backend.open(
+        "tb-undo-workspace",
+        &id.to_string(),
+        thurbox::backend::WindowRole::Agent,
+    );
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    db.upsert_session(&SharedSession {
+        id,
+        name: "undo-workspace".into(),
+        agent: "shell".into(),
+        backend_id: pane.clone(),
+        backend_type: route.format(),
+        agent_session_id: Some(asid),
+        cwd: Some(workspace.clone()),
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    })
+    .unwrap();
+    db.soft_delete_session(id).unwrap();
+    if crash {
+        let path = thurbox::paths::database_file().unwrap();
+        let held_backend = backend.clone();
+        let held_route = route.clone();
+        backend.on_nth_discover(2, move || {
+            let peer = thurbox::storage::Database::open_existing(&path).unwrap();
+            peer.conn_ref()
+                .execute("UPDATE session_intents SET expires_at = 0", [])
+                .unwrap();
+            peer.conn_ref()
+                .execute(
+                    "UPDATE event_cursors SET lease_until = 0 WHERE consumer LIKE 'lock:%'",
+                    [],
+                )
+                .unwrap();
+            let registry = thurbox::backend::BackendRegistry::new(held_route, held_backend);
+            assert_eq!(
+                thurbox::session_ops::reconcile::creating(&peer, &registry),
+                1
+            );
+        });
+    } else {
+        db.conn_ref()
+            .execute_batch(
+                "CREATE TRIGGER refuse_undo BEFORE UPDATE ON sessions
+            WHEN OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL
+            BEGIN SELECT RAISE(ABORT, 'undo commit refused'); END;",
+            )
+            .unwrap();
+    }
+    let result = thurbox::session_ops::restore_session_headless(&db, &registry, id, false);
+    assert!(result.is_err(), "fault did not refuse the restore commit");
+    assert!(backend.windows().iter().any(|w| w.pane == pane));
+    assert!(
+        workspace.join("repo").exists(),
+        "failed undo removed the live agent's workspace"
+    );
+    assert!(db.get_deleted_session_by_id(id).unwrap().is_some());
 }
 
 #[test]
@@ -4180,4 +4274,159 @@ fn restore_rejects_a_pane_that_changes_owner_during_startup() {
         String::from_utf8_lossy(&out.stdout).contains(foreign),
         "failed restore killed the foreign pane"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_failed_resumed_create_keeps_its_preexisting_workspace() {
+    if !have_tmux() {
+        return;
+    }
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let asid = thurbox::session::SessionId::default().to_string();
+    let workspace =
+        thurbox::workspace::ensure_workspace(&asid, &[("repo".into(), repo.path().to_path_buf())])
+            .unwrap();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let result = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &backends,
+        thurbox::session_ops::SpawnRequest {
+            name: "resumed-failure".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent_session_id: Some(asid),
+            command: Some("exit 1".into()),
+            ..Default::default()
+        },
+    );
+    assert!(result.is_err());
+    assert!(
+        workspace.join("repo").exists(),
+        "failed resumed create removed a preexisting workspace"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn workspace_borrowers_and_cleanup_share_the_sanitized_namespace_lease() {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::SharedSession;
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    let subject = thurbox::storage::event_cursors::LockSubject::Name {
+        scope: format!("workspace:{}", Route::local(None).format()),
+        name: "shared-workspace".into(),
+    };
+    let now = thurbox::sync::current_time_millis();
+    assert!(db.take_lease(&subject, now + 600_000, now).unwrap());
+    let result = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &registry,
+        thurbox::session_ops::SpawnRequest {
+            name: "workspace-borrower".into(),
+            repo_path: repo.path().into(),
+            agent_session_id: Some("shared workspace".into()),
+            command: Some("sleep 60".into()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        matches!(result, Err(thurbox::session_ops::OpError::Conflict(_))),
+        "create ignored the workspace namespace lease: {result:?}"
+    );
+    let id = SessionId::default();
+    let pane = backend.open(
+        "tb-workspace-owner",
+        &id.to_string(),
+        thurbox::backend::WindowRole::Agent,
+    );
+    db.upsert_session(&SharedSession {
+        id,
+        name: "workspace-owner".into(),
+        agent: "shell".into(),
+        backend_id: pane.clone(),
+        backend_type: route.format(),
+        agent_session_id: Some("shared-workspace".into()),
+        cwd: None,
+        worktrees: Vec::new(),
+        additional_dirs: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    })
+    .unwrap();
+    db.soft_delete_session(id).unwrap();
+    assert!(matches!(
+        thurbox::session_ops::restore_session_headless(&db, &registry, id, false),
+        Err(thurbox::session_ops::OpError::Conflict(_))
+    ));
+    let generation = db.lifecycle_generation(id).unwrap().unwrap();
+    let report = thurbox::session_ops::delete::delete_if_generation(
+        &db,
+        &registry,
+        id,
+        true,
+        Some(generation),
+    )
+    .unwrap();
+    assert!(report.teardown_error.is_some());
+    assert!(backend.windows().iter().any(|w| w.pane == pane));
+    db.release_lease(&subject, now + 600_000).unwrap();
+    assert_eq!(
+        thurbox::session_ops::delete::retry_owed_remote_teardowns(&db, &registry),
+        [id.to_string()]
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_resumed_create_cannot_rebuild_an_active_siblings_workspace() {
+    use std::os::unix::fs::MetadataExt;
+    use thurbox::session::{Multiplexer, Route};
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let extra = tempfile::tempdir().unwrap();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let registry = thurbox::backend::BackendRegistry::new(route, backend);
+    let request = |name: &str, asid: &str| thurbox::session_ops::SpawnRequest {
+        name: name.into(),
+        repo_path: repo.path().into(),
+        extra_repos: vec![thurbox::session::ExtraRepo {
+            repo_path: extra.path().into(),
+            worktree: false,
+            base_branch: None,
+        }],
+        agent_session_id: Some(asid.into()),
+        command: Some("sleep 60".into()),
+        ..Default::default()
+    };
+    thurbox::session_ops::spawn_session_headless(
+        &db,
+        &registry,
+        request("workspace-first", "shared workspace"),
+    )
+    .unwrap();
+    let workspace = thurbox::workspace::workspace_path("shared-workspace").unwrap();
+    let original_inode = std::fs::metadata(&workspace).unwrap().ino();
+    let result = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &registry,
+        request("workspace-second", "shared-workspace"),
+    );
+    assert!(
+        matches!(result, Err(thurbox::session_ops::OpError::Conflict(_))),
+        "resumed create rebuilt an active workspace: {result:?}"
+    );
+    assert_eq!(std::fs::metadata(&workspace).unwrap().ino(), original_inode);
 }

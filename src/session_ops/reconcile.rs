@@ -180,8 +180,8 @@ fn rollback(
                 .map_err(|e| e.to_string())?;
         }
     }
-    if let Some(id) = &row.agent_session_id {
-        crate::workspace::remove_workspace(id).map_err(|e| e.to_string())?;
+    if intent.workspace_created {
+        remove_workspace(db, row)?;
     }
     Ok(())
 }
@@ -218,6 +218,14 @@ pub fn creating(db: &Database, backends: &crate::backend::BackendRegistry) -> us
             continue;
         }
         intent = current;
+        let Ok(_workspace) = super::lock::workspace(
+            db,
+            &intent.session.backend_type,
+            intent.session.agent_session_id.as_deref(),
+            "recover workspace",
+        ) else {
+            continue;
+        };
         let Ok(_held) = super::lock::worktrees(
             db,
             &intent.session.backend_type,
@@ -235,6 +243,48 @@ pub fn creating(db: &Database, backends: &crate::backend::BackendRegistry) -> us
         }
     }
     finished
+}
+
+/// The caller holds the workspace lease; check claims again after slow teardown.
+pub(super) fn remove_workspace(
+    db: &Database,
+    session: &crate::sync::SharedSession,
+) -> Result<(), super::OpError> {
+    if crate::session::Route::is_remote_key(&session.backend_type) {
+        return Ok(());
+    }
+    let Some(id) = session.agent_session_id.as_deref() else {
+        return Ok(());
+    };
+    workspace_unclaimed(db, session.id, &session.backend_type, id)?;
+    crate::workspace::remove_workspace(id).map_err(|e| e.to_string().into())
+}
+
+pub(super) fn workspace_unclaimed(
+    db: &Database,
+    session: crate::session::SessionId,
+    backend_type: &str,
+    id: &str,
+) -> Result<(), super::OpError> {
+    let namespace = crate::paths::sanitize_workspace_segment(id);
+    if db
+        .list_active_sessions()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|owner| {
+            owner.id != session
+                && super::same_machine(&owner.backend_type, backend_type)
+                && owner
+                    .agent_session_id
+                    .as_deref()
+                    .is_some_and(|id| crate::paths::sanitize_workspace_segment(id) == namespace)
+        })
+    {
+        return Err(super::OpError::Conflict(
+            "workspace is now used by an active session".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub struct Report {

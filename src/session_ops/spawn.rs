@@ -387,6 +387,12 @@ fn spawn(
                 .flatten()
         })
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let _workspace = super::lock::workspace(
+        db,
+        &backend_type,
+        Some(&agent_session_id),
+        "create workspace",
+    )?;
 
     // The user's say, before the first side effect: nothing below this line has
     // touched a repository, a host or the database. A refusal is the reported
@@ -509,6 +515,10 @@ fn spawn(
         db,
         backends,
         crate::storage::intents::CreateIntent {
+            workspace_created: host.is_none()
+                && crate::workspace::workspace_path(&agent_session_id)
+                    .and_then(|path| path.try_exists())
+                    .is_ok_and(|exists| !exists),
             expected_deleted_at: None,
             session: SharedSession {
                 id: session_id,
@@ -541,6 +551,9 @@ fn spawn(
     // launch directly in the primary cwd, unchanged. Mirrors the TUI's
     // `App::resolve_process_cwd`.
     creating.check()?;
+    if worktrees.len().max(1) + additional_dirs.len() > 1 {
+        super::reconcile::workspace_unclaimed(db, session_id, &backend_type, &agent_session_id)?;
+    }
     let launch_cwd = resolve_launch_cwd(
         &agent_session_id,
         &primary_cwd,

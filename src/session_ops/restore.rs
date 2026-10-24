@@ -340,6 +340,12 @@ pub fn restore_session_headless(
     }
     let mut planned = super::delete::shared_deleted(&deleted);
     planned.backend_id.clear();
+    let _workspace = super::lock::workspace(
+        db,
+        &deleted.backend_type,
+        deleted.agent_session_id.as_deref(),
+        "restore workspace",
+    )?;
     let _resources = super::lock::worktrees(
         db,
         &deleted.backend_type,
@@ -359,6 +365,12 @@ pub fn restore_session_headless(
         db,
         backends,
         crate::storage::intents::CreateIntent {
+            workspace_created: !crate::session::Route::is_remote_key(&deleted.backend_type)
+                && deleted.agent_session_id.as_deref().is_some_and(|id| {
+                    crate::workspace::workspace_path(id)
+                        .and_then(|path| path.try_exists())
+                        .is_ok_and(|exists| !exists)
+                }),
             expected_deleted_at: Some(deleted.deleted_at),
             session: planned,
             before,

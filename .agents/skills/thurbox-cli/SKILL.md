@@ -1008,7 +1008,9 @@ JSON, never inferred from `THURBOX_SESSION`, and existing automations remain
 unowned. Soft delete atomically suspends owned Send/Spawn/Exec automations and
 Sends aimed at the target, recording their prior enabled state. Restore only
 re-enables what deletion disabled, after every owner/target suspension ends;
-ids and run history stay. Reap keeps them; force delete and purge remove owned
+an explicit disable while suspended survives undo, while name/schedule edits
+preserve the saved enabled state.
+Ids and run history stay. Reap keeps them; force delete and purge remove owned
 automations and runs. Delete JSON includes `disabled_automation_ids` and
 `removed_automation_ids`.
 
