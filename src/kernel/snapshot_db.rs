@@ -256,10 +256,18 @@ impl Worker {
             replies.push(Reply::Focus(id));
         }
         match read_rows(database) {
-            Ok(read) => replies.push(Reply::Rows {
-                writes: self.writes,
-                read: Box::new(read),
-            }),
+            Ok(read) => {
+                // The rows landed but the labels did not: forget the gate so
+                // the next poll reads again, as for a failed read, rather than
+                // keeping the error until some unrelated write.
+                if read.meta.is_err() {
+                    self.seen = None;
+                }
+                replies.push(Reply::Rows {
+                    writes: self.writes,
+                    read: Box::new(read),
+                });
+            }
             Err(e) => {
                 self.seen = None;
                 replies.push(Reply::Failed(e));

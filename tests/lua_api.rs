@@ -825,6 +825,11 @@ mod meta {
         publish(&list, &rows);
         let drawn = screen(&list, "sessions", 60, 12);
         assert_eq!(drawn.matches("alpha").count(), 1, "{drawn}");
+        assert_eq!(
+            drawn.matches('▾').count(),
+            2,
+            "the host and `alpha`, and no group for the blank label: {drawn}"
+        );
         assert!(
             drawn.contains("worker") && drawn.contains("other"),
             "{drawn}"
@@ -843,8 +848,11 @@ mod meta {
         // Make the next full read fail at the meta query, and give it a reason
         // to run: a row change moves the snapshot's generation.
         let raw = rusqlite::Connection::open(env.path("data").join("thurbox.db")).expect("open");
-        raw.execute_batch("DROP TABLE session_meta; UPDATE sessions SET name = 'renamed';")
-            .expect("break the meta read");
+        raw.execute_batch(
+            "ALTER TABLE session_meta RENAME TO session_meta_away; \
+             UPDATE sessions SET name = 'renamed';",
+        )
+        .expect("break the meta read");
         let rows = reread(&mut rows_store);
         assert_eq!(
             rows.sessions[0].name, "renamed",
@@ -862,5 +870,18 @@ mod meta {
             "{:?}",
             rows.error
         );
+
+        // Once the meta reads again, the next ordinary poll says so — with no
+        // other write to prompt it. Not `reread`, which forces a full read and
+        // so would pass whether or not a failed meta read is retried.
+        raw.execute_batch("ALTER TABLE session_meta_away RENAME TO session_meta;")
+            .expect("restore the meta read");
+        rows_store.refresh_if_due_at(
+            std::time::Instant::now() + thurbox::kernel::snapshot::REFRESH_INTERVAL,
+        );
+        rows_store.settle();
+        let rows = rows_store.current().clone();
+        assert_eq!(rows.error, None, "a failed meta read is retried");
+        assert_eq!(meta(&rows).as_deref(), Some("release"));
     }
 }

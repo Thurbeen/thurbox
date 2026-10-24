@@ -409,7 +409,7 @@ fn a_loud_failing_notifier_is_not_mistaken_for_a_hung_one() {
 #[test]
 fn a_late_failure_keeps_a_newer_hold() {
     let instance = Instance::with_backend("windows", "");
-    let path = fake_toast(&instance, "sleep 3\nexit 1");
+    let path = fake_toast(&instance, "echo $$ > '{pid}'\nsleep 3\nexit 1");
     let short = ["--key", "k", "--min-interval", "1"];
     // Slow and failing: holds `k` for one second, fails after three.
     let slow = instance
@@ -417,9 +417,19 @@ fn a_late_failure_keeps_a_newer_hold() {
         .env("PATH", path)
         .spawn()
         .expect("start the slow send");
+    // Spawning the CLI does not mean it has read its settings or taken the
+    // lease yet. The notifier starting proves both before we replace them.
+    let started = instance.path("notifier.pid");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !started.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the slow notifier never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     std::thread::sleep(std::time::Duration::from_millis(1_500));
 
-    // The settings are read at start, so the slow send keeps `windows`.
     std::fs::write(
         instance.path("config/settings.toml"),
         "[features]\nautomations = false\nversion_check = false\nauto_update = false\n\
@@ -429,7 +439,8 @@ fn a_late_failure_keeps_a_newer_hold() {
     let bus = NotificationBus::start(&instance.path("runtime"));
     let address = bus.address();
     let held = ["--key", "k", "--min-interval", "60"];
-    assert_eq!(instance.send(Some(&address), &held)["delivered"], true);
+    let delivered = instance.send(Some(&address), &held);
+    assert_eq!(delivered["delivered"], true, "{delivered}");
 
     let slow = slow.wait_with_output().expect("the slow send ends");
     assert!(!slow.status.success(), "{}", describe(&slow));
