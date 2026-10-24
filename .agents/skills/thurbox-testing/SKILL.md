@@ -102,6 +102,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   still holding its shell (and replaced by a working one after it exited
   behind the agent, or its window went while thurbox was closed), and a v2.32.0 layout-preset profile (fixture in
   `tests/fixtures/v2_32_0_split_shell/`) upgrading back to classic. Also
+  delayed remote shell creation and re-adoption keeping F1 responsive, and
   `just smoke`. It replaced the bash tmux
   smoke script, which could not see the byte stream and duplicated this harness.
   Keyboard negotiation covers responsive legacy, kitty and silent terminals;

@@ -863,6 +863,32 @@ impl App {
     /// lands. Cheap to ask every iteration: it is a map lookup for a session that
     /// has no shell recorded, which is nearly all of them.
     pub(crate) fn readopt_shells(&mut self) {
+        for result in self.terminals.drain_shell_results() {
+            use thurbox::kernel::terminal::ShellResult;
+            self.dirty = true;
+            match result {
+                ShellResult::Ready { session, pane } => {
+                    if let Err(error) = self.snapshots.remember_shell(&session, &pane) {
+                        tracing::warn!("could not record shell pane for {session}: {error}");
+                    }
+                }
+                ShellResult::Gone {
+                    session,
+                    open_requested,
+                } => {
+                    let _ = self.snapshots.forget_shell(&session);
+                    if open_requested {
+                        self.apply_shell_command(&session);
+                    }
+                }
+                ShellResult::Failed { session, error } => {
+                    self.report(
+                        format!("could not open a shell for {session}: {error}"),
+                        Level::Error,
+                    );
+                }
+            }
+        }
         let wanted: Vec<(String, String)> = self
             .snapshots
             .current()
@@ -884,24 +910,7 @@ impl App {
         }
         let (cols, rows) = self.screen_size;
         for (session, pane) in wanted {
-            if self.terminals.readopt_shell(&session, &pane, rows, cols) {
-                self.dirty = true;
-            } else {
-                // The window is gone — closed outside thurbox, or its server
-                // restarted. Forget it, or this is retried on every iteration
-                // forever against a pane that will never answer.
-                let _ = self.snapshots.forget_shell(&session);
-            }
-        }
-    }
-
-    /// Persist the pane id of a session's companion shell.
-    pub(crate) fn remember_shell(&mut self, session: &str) {
-        let Some(pane) = self.terminals.shell_pane_id(session) else {
-            return;
-        };
-        if let Err(e) = self.snapshots.remember_shell(session, &pane) {
-            tracing::warn!("could not record the shell pane for {session}: {e}");
+            self.terminals.readopt_shell(&session, &pane, rows, cols);
         }
     }
 }

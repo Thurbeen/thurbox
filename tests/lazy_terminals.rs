@@ -12,7 +12,7 @@
 //! What has to hold for that to be invisible is what these pin, against a real
 //! tmux server on a private socket: the rebuilt terminal is the one that was
 //! never dropped, output that arrives while it is gone is neither lost nor
-//! doubled, the first frame after coming back is the current screen, a search
+//! doubled, the first nonblank frame after coming back is current, a search
 //! still finds history nobody is looking at, a session off screen still
 //! reports its title and its output, non-ASCII text printed while a grid is
 //! live reaches it with every character intact, and — on an ssh host — a
@@ -508,10 +508,16 @@ async fn the_rebuilt_terminal_is_the_one_that_was_never_dropped() {
 
     let first = paint(&terminals, 0);
     assert!(
-        first.iter().any(|line| line.contains("after prompt>")),
-        "the first frame must be the current screen, not a stale one:\n{}",
+        first.iter().all(|line| line.is_empty())
+            || first.iter().any(|line| line.contains("after prompt>")),
+        "the first frame must be blank or current, never stale:\n{}",
         first.join("\n")
     );
+    wait_for("the current screen to be restored", || {
+        paint(&terminals, 0)
+            .iter()
+            .any(|line| line.contains("after prompt>"))
+    });
 
     let mut reference = vt100::Parser::new(ROWS, COLS, 1000);
     reference.process(&through_pty(&before));
@@ -574,6 +580,10 @@ async fn a_search_finds_history_in_a_session_nobody_is_looking_at() {
 
     // And the hit lands where it says: showing the session at the hit's offset
     // puts the line on screen.
+    wait_for("the search hit grid to be restored", || {
+        paint(&terminals, hit.scroll as u16);
+        grid_size(&terminals) == (ROWS, COLS)
+    });
     let shown = paint(&terminals, hit.scroll as u16);
     assert!(
         shown

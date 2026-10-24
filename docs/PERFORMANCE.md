@@ -2191,11 +2191,24 @@ queued (`window.c`, `control.c`), so the reply sits in the stream at exactly
 the byte it describes. The control-mode reader thread, which sees both in that
 order, puts the snapshot into the pane's own output channel, and the pane's
 reader installs it between two reads. Nothing is lost or repeated because
-nothing about the rebuild depends on timing. The paint that asks waits up to
-`RESTORE_WAIT` (100 ms) for it, then paints blank and repaints when it lands,
-so the first frame is never the old screen. Later paints do not wait again:
-a host that stopped answering would otherwise stall every frame the pane is on
-screen, and the request is only repeated after two seconds without an answer.
+nothing about the rebuild depends on timing. The paint requests the restore
+without waiting and paints blank until it lands.
+Installing the snapshot moves the output generation and triggers a repaint, so
+the first nonblank frame is current (#1242). A host that stopped answering
+cannot stall a paint; the request is repeated only after two seconds without
+an answer. Companion shell creation and re-adoption likewise run on workers.
+On a backend with ordered snapshots, a new companion shell also starts dormant.
+Its first paint restores the complete screen, including output written before
+its reader connected; it need not print again after a resize.
+Only an answer for the same live attachment and shell slot is installed, and
+the shell id is remembered or forgotten when that answer lands. Repeated
+shell commands share one in-flight request per live attachment and observed
+shell slot. A replacement attachment or a changed slot can start its own request
+while obsolete work finishes. Only the current job's unique token can publish
+an answer or clear the pending request, even if the saved id changes back.
+Obsolete replies are dropped without killing their pane: a pane id can be
+reused after a server restart, and the reply carries no atomic creation identity.
+A canceled creation can therefore leave an unused shell window on the backend.
 
 Reading replies by content also exposed a framing hole that the snapshot would
 otherwise have fallen into: a `capture-pane` reply is written raw, so a screen

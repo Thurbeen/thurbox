@@ -226,16 +226,16 @@ impl App {
             .current()
             .session(session)
             .and_then(|row| self.terminals.launch_cwd(row));
-        if let Err(e) = self
-            .terminals
-            .open_shell(session, rows, cols, cwd.as_deref())
+        let seen = self
+            .snapshots
+            .current()
+            .session(session)
+            .and_then(|row| row.shell_backend_id.clone());
+        if let Err(e) =
+            self.terminals
+                .open_shell(session, rows, cols, cwd.as_deref(), seen.as_deref())
         {
             self.report(format!("could not open a shell: {e}"), Level::Error);
-        } else {
-            // Its window outlives this process, so the id has to
-            // as well — otherwise the next start forgets the
-            // shell and orphans the window it left running.
-            self.remember_shell(session);
         }
     }
 

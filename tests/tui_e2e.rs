@@ -5307,7 +5307,7 @@ fn shell_session_dropping_hidden_grids() -> Option<(Profile, Tui)> {
 fn raise_a_working_shell(tui: &mut Tui, marker: &str) {
     tui.send(b"\x14");
     wait_for_view(tui, "Shell");
-    tui.wait_until_quiet();
+    tui.wait_for("$ ");
     let (head, tail) = marker.split_at(marker.len() / 2);
     tui.send(format!("echo {head}\"\"{tail}\r").as_bytes());
     tui.wait_for(marker);
@@ -7666,6 +7666,206 @@ fn remote_shell_session_with(
     });
     tui.wait_for("$ ");
     Some((profile, link, tui))
+}
+
+fn plain_remote_shell(profile: &Profile, cmd: &mut Command) {
+    plain_shell(cmd);
+    let result = profile
+        .server
+        .tmux(&["set-option", "-g", "default-shell", "/bin/sh"]);
+    assert!(result.status.success());
+}
+
+fn delay_remote_control_command(profile: &Profile, command: &str) {
+    let script = profile.bin.join("ssh");
+    let original = std::fs::read_to_string(&script).expect("ssh stand-in");
+    let delayed = original.replace(
+        "exec cat > \"$d/up\"",
+        &format!(
+            "while IFS= read -r line; do case \"$line\" in *\"{command}\"*) touch {}; sleep 4 ;; esac; printf '%s\\n' \"$line\"; done > \"$d/up\"",
+            shell_word(&profile.path("shell-request-delayed")),
+        ),
+    );
+    assert_ne!(original, delayed, "install the delayed control link");
+    std::fs::write(script, delayed).expect("delay shell request");
+}
+
+#[test]
+fn a_new_shell_recovers_output_written_before_its_reader_connects() {
+    use std::os::unix::fs::PermissionsExt;
+    let scripts = tempfile::tempdir().expect("shell scripts");
+    let shell = scripts.path().join("quiet-shell");
+    let wrote = scripts.path().join("wrote-prompt");
+    // An interactive Bash prompt can hide lost startup output by redrawing on resize.
+    std::fs::write(&shell, format!(
+        "#!/bin/sh\ntrap '' WINCH\nprintf 'bootstrap-shell-prompt$ '\ntouch {}\nwhile IFS= read -r line; do eval \"$line\"; done\n",
+        shell_word(&wrote),
+    )).expect("single-prompt shell");
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let Some((profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            // Hold the birth reply until the shell has written its only prompt.
+            assert!(profile
+                .server
+                .tmux(&["set-hook", "-g", "after-new-window", "run-shell 'sleep 1'",])
+                .status
+                .success());
+        },
+        |cmd| {
+            cmd.env("SHELL", &shell);
+        },
+    ) else {
+        return;
+    };
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Shell");
+    tui.wait_until("the initial prompt to be written", |_| wrote.exists());
+    let panes = profile
+        .server
+        .tmux(&["list-panes", "-a", "-F", "#{pane_id} #{window_name}"]);
+    let panes = String::from_utf8(panes.stdout).expect("panes");
+    let pane = panes
+        .lines()
+        .find(|line| line.contains("tbs-probe"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("shell pane");
+    let captured = profile.server.tmux(&["capture-pane", "-p", "-t", pane]);
+    assert!(String::from_utf8_lossy(&captured.stdout).contains("bootstrap-shell-prompt"));
+    tui.wait_for("bootstrap-shell-prompt");
+    tui.send(b"echo connected-\"\"shell-ready\r");
+    tui.wait_for("connected-shell-ready");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_slow_companion_shell_open_keeps_the_interface_painting() {
+    let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
+        plain_remote_shell(profile, cmd);
+        delay_remote_control_command(profile, "new-window");
+    }) else {
+        return;
+    };
+    tui.send(b"\x14");
+    tui.wait_until("the shell spawn to reach the delayed link", |_| {
+        profile.path("shell-request-delayed").exists()
+    });
+    tui.send(b"\x14\x14");
+    tui.send(F1);
+    tui.wait_within(
+        Duration::from_secs(2),
+        "help during the shell spawn",
+        |frame| frame.contains("Keybindings"),
+    );
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+    wait_for_view(&tui, "Shell");
+    tui.wait_for("$ ");
+    tui.send(b"printf 'companion-''landed\\n'\r");
+    tui.wait_for("companion-landed");
+    let windows = profile
+        .server
+        .tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
+    assert_eq!(
+        String::from_utf8_lossy(&windows.stdout)
+            .lines()
+            .filter(|line| line.starts_with("tbs-"))
+            .count(),
+        1,
+        "repeated opens create one shell"
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_slow_companion_shell_readoption_keeps_the_interface_painting() {
+    let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
+        plain_remote_shell(profile, cmd);
+    }) else {
+        return;
+    };
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Shell");
+    tui.wait_for("$ ");
+    tui.send(b"echo before-\"\"readoption\r");
+    tui.wait_for("before-readoption");
+    assert!(tui.quit().success());
+    delay_remote_control_command(&profile, "list-panes -a -F '#{pane_id}'");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, plain_shell);
+    tui.wait_until("the shell adoption to reach the delayed link", |_| {
+        profile.path("shell-request-delayed").exists()
+    });
+    tui.send(F1);
+    tui.wait_within(
+        Duration::from_secs(2),
+        "help during shell adoption",
+        |frame| frame.contains("Keybindings"),
+    );
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Shell");
+    tui.wait_for("$ ");
+    tui.send(b"echo after-\"\"readoption\r");
+    tui.wait_for("after-readoption");
+    let windows = profile
+        .server
+        .tmux(&["list-windows", "-a", "-F", "#{window_name}"]);
+    assert_eq!(
+        String::from_utf8_lossy(&windows.stdout)
+            .lines()
+            .filter(|line| line.starts_with("tbs-"))
+            .count(),
+        1
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn opening_a_shell_during_failed_readoption_creates_its_replacement() {
+    let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
+        plain_remote_shell(profile, cmd);
+    }) else {
+        return;
+    };
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Shell");
+    tui.wait_for("$ ");
+    tui.send(b"echo shell-before-\"\"restart\r");
+    tui.wait_for("shell-before-restart");
+    assert!(tui.quit().success());
+    let windows = profile
+        .server
+        .tmux(&["list-windows", "-a", "-F", "#{window_id} #{window_name}"]);
+    for line in String::from_utf8_lossy(&windows.stdout).lines() {
+        if line
+            .split_whitespace()
+            .nth(1)
+            .is_some_and(|name| name.starts_with("tbs-"))
+        {
+            profile
+                .server
+                .tmux(&["kill-window", "-t", line.split_whitespace().next().unwrap()]);
+        }
+    }
+    delay_remote_control_command(&profile, "list-panes -a -F '#{pane_id}'");
+    let mut tui = Tui::spawn_with(&profile, 40, 120, plain_shell);
+    tui.wait_until("the old shell's adoption to reach the delayed link", |_| {
+        profile.path("shell-request-delayed").exists()
+    });
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Shell");
+    tui.send(F1);
+    tui.wait_within(
+        Duration::from_secs(2),
+        "help during the failed adoption",
+        |frame| frame.contains("Keybindings"),
+    );
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+    tui.wait_for("$ ");
+    tui.send(b"echo replacement-\"\"shell-ready\r");
+    tui.wait_for("replacement-shell-ready");
+    assert!(tui.quit().success());
 }
 
 /// Record the focused agent's input after the real PTY, event parser, routing,
