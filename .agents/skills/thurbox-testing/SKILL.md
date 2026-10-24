@@ -279,6 +279,14 @@ instead.
 
 ### Session-backend e2e harnesses
 
+`tests/create_e2e.rs` also kills a creator after its window exists and a force
+deleter during git worktree removal, expires only the killed operation's leases
+in its private database, and verifies the shared sweep removes the resources.
+It pins failed-launch rollback, same-branch retry, stale-upsert protection and
+purge tombstones. `tests/cli_automation_lifecycle.rs` covers owner and target
+suspensions through real CLI calls, preserving ids, history and prior enabled
+state, and missing-pane confirmation across separate heartbeat processes.
+
 `tests/create_e2e.rs` checks multi-repo directory scope through the real spawn
 and restart pipeline using a recording agent. An opt-in test also runs the
 installed Claude CLI against a loopback fake API: no model calls or real

@@ -59,6 +59,7 @@ fn pretty_flag_is_global() {
         subcommand(cli),
         Command::Session {
             action: sessions::Action::List {
+                include_purged: false,
                 parent: None,
                 recursive: false,
                 tree: false,
@@ -384,6 +385,7 @@ fn parse_session_list_accepts_parent_filter() {
     let Command::Session {
         action:
             sessions::Action::List {
+                include_purged: false,
                 parent,
                 recursive: false,
                 tree: false,

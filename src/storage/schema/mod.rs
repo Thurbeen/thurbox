@@ -18,6 +18,7 @@ use migrations::{
     migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v53_session_key,
     migrate_v54_telemetry_export, migrate_v55_event_cursors, migrate_v55_move_cursors_and_claims,
     migrate_v56_automation_runs, migrate_v57_background_work, migrate_v58_agent_args,
+    migrate_v59_session_lifecycle,
     migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
     migrate_v8_vms, migrate_v9_agent_session_id,
 };
@@ -123,7 +124,9 @@ use rusqlite::{Connection, OptionalExtension};
 /// flight (and recently ended), so a turn that ends with some still running
 /// stores `background` rather than `done` (issue #1510).
 /// v58 adds `agent_args`: per-session opaque registry-agent arguments.
-pub const SCHEMA_VERSION: u32 = 58;
+/// v59 adds lifecycle intents, purge tombstones, lifecycle generation fences
+/// and automation ownership.
+pub const SCHEMA_VERSION: u32 = 59;
 
 /// The oldest [`SCHEMA_VERSION`] that can still read and write a database this
 /// binary migrated, recorded as `min_reader_version` in `metadata`.
@@ -653,6 +656,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (56, migrate_v56_automation_runs, Reapply::WhenMissing),
         (57, migrate_v57_background_work, Reapply::WhenMissing),
         (58, migrate_v58_agent_args, Reapply::WhenMissing),
+        (59, migrate_v59_session_lifecycle, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {

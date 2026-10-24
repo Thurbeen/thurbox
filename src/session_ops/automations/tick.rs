@@ -406,6 +406,7 @@ mod tests {
 
     fn exec(db: &Database, name: &str, timeout_secs: u64) -> i64 {
         db.create_automation(&NewAutomation {
+            owner_session_id: None,
             name: name.into(),
             enabled: true,
             schedule: AutomationSchedule::Cron {
@@ -503,6 +504,7 @@ mod tests {
 
     fn send_to_nobody(db: &Database, name: &str) -> i64 {
         db.create_automation(&NewAutomation {
+            owner_session_id: None,
             name: name.into(),
             enabled: true,
             schedule: AutomationSchedule::Cron {

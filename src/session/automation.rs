@@ -43,6 +43,8 @@ pub struct ExtraRepo {
 /// A persisted automation definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Automation {
+    /// Optional lifetime owner, set only by an explicit request.
+    pub owner_session_id: Option<SessionId>,
     pub id: i64,
     pub name: String,
     pub enabled: bool,

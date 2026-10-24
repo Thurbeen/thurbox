@@ -20,9 +20,13 @@ use serde_json::Value;
 use thurbox::session::SessionId;
 use thurbox::sync::SharedSession;
 
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
 /// A throwaway thurbox instance with the heartbeat off: nothing fires here
 /// except what a test runs itself.
 struct Env {
+    server: tmux_server::TmuxServer,
     root: tempfile::TempDir,
 }
 
@@ -37,7 +41,12 @@ impl Env {
             "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
         )
         .expect("settings");
-        Self { root }
+        std::fs::write(root.path().join("config/agents.toml"),
+            "default = \"shell\"\n[[agents]]\nname = \"shell\"\ncommand = \"sleep\"\nargs = [\"60\"]\n").unwrap();
+        Self {
+            server: tmux_server::TmuxServer::private("automation-lifecycle"),
+            root,
+        }
     }
 
     fn path(&self, sub: &str) -> PathBuf {
@@ -49,6 +58,14 @@ impl Env {
         cmd.arg("--json").args(args);
         cmd.env("HOME", self.path("home"));
         cmd.env("USERPROFILE", self.path("home"));
+        for variable in [
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_RUNTIME_DIR",
+        ] {
+            cmd.env(variable, self.path("home").join(variable));
+        }
         cmd.env("THURBOX_CONFIG_DIR", self.path("config"));
         cmd.env("THURBOX_DATA_DIR", self.path("data"));
         cmd.env("TMUX_TMPDIR", self.path("tmux"));
@@ -62,6 +79,7 @@ impl Env {
         ] {
             cmd.env_remove(var);
         }
+        self.server.scope(&mut cmd);
         cmd
     }
 
@@ -126,10 +144,10 @@ impl Env {
         let row = SharedSession {
             id: SessionId::default(),
             name: name.into(),
-            agent: "claude".into(),
+            agent: "shell".into(),
             backend_id: String::new(),
             backend_type: "local-tmux".into(),
-            agent_session_id: None,
+            agent_session_id: Some(SessionId::default().to_string()),
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
@@ -156,6 +174,205 @@ fn strs(args: &[String]) -> Vec<&str> {
 
 fn id_of(doc: &Value) -> String {
     doc["id"].as_i64().expect("an automation id").to_string()
+}
+
+#[test]
+#[cfg(unix)]
+fn owned_automations_keep_their_identity_and_enabled_state_across_undo() {
+    if !Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return;
+    }
+    let env = Env::new();
+    let owner = env.seed_session("owner");
+    let auto = env.exec("owned", "true", &["--owner-session", &owner]);
+    let disabled = env.exec(
+        "disabled",
+        "true",
+        &["--owner-session", &owner, "--disabled"],
+    );
+    let target = env.seed_session("other");
+    let send = id_of(&env.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "owned-send",
+        "--trigger",
+        "hourly",
+        "--prompt",
+        "continue",
+        "--session",
+        &target,
+        "--owner-session",
+        &owner,
+    ]));
+    let spawn = id_of(&env.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "owned-spawn",
+        "--trigger",
+        "hourly",
+        "--prompt",
+        "continue",
+        "--repo",
+        env.path("work").to_str().unwrap(),
+        "--owner-session",
+        &owner,
+    ]));
+    assert_eq!(env.automation(&auto)["owner_session_id"], owner);
+    env.ok(&["automation", "run", &auto, "--wait"]);
+    let history = env.runs(&auto);
+    env.ok(&["session", "delete", &owner, "--soft"]);
+    env.ok(&[
+        "automation",
+        "edit",
+        &auto,
+        "--name",
+        "renamed while suspended",
+    ]);
+    for id in [&auto, &send, &spawn] {
+        assert_eq!(env.automation(id)["enabled"], false);
+    }
+    env.ok(&["session", "restore", &owner]);
+    for id in [&auto, &send, &spawn] {
+        assert_eq!(env.automation(id)["enabled"], true);
+    }
+    assert_eq!(env.automation(&disabled)["enabled"], false);
+    assert_eq!(env.runs(&auto), history);
+    env.ok(&["session", "delete", &owner, "--force"]);
+    for id in [&auto, &send, &spawn, &disabled] {
+        env.exits(1, &["automation", "show", id]);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn restoring_a_target_reenables_only_the_sends_its_delete_disabled() {
+    if !Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return;
+    }
+    let env = Env::new();
+    let target = env.seed_session("target");
+    let mut ids = Vec::new();
+    for disabled in [false, true] {
+        let mut args = vec![
+            "automation",
+            "create",
+            "--name",
+            "send",
+            "--trigger",
+            "hourly",
+            "--prompt",
+            "continue",
+            "--session",
+            &target,
+        ];
+        if disabled {
+            args.push("--disabled");
+        }
+        ids.push(id_of(&env.ok(&args)));
+    }
+    env.ok(&["session", "delete", &target, "--soft"]);
+    env.ok(&["session", "restore", &target]);
+    assert_eq!(env.automation(&ids[0])["enabled"], true);
+    assert_eq!(env.automation(&ids[1])["enabled"], false);
+}
+
+#[test]
+#[cfg(unix)]
+fn an_owner_and_a_target_must_both_be_restored_before_a_send_is_enabled() {
+    if !Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return;
+    }
+    for owner_first in [true, false] {
+        let env = Env::new();
+        let owner = env.seed_session("owner");
+        let target = env.seed_session("target");
+        let auto = id_of(&env.ok(&[
+            "automation",
+            "create",
+            "--name",
+            "send",
+            "--trigger",
+            "hourly",
+            "--prompt",
+            "continue",
+            "--session",
+            &target,
+            "--owner-session",
+            &owner,
+        ]));
+        env.ok(&["session", "delete", &owner, "--soft"]);
+        env.ok(&["session", "delete", &target, "--soft"]);
+        let (first, second) = if owner_first {
+            (&owner, &target)
+        } else {
+            (&target, &owner)
+        };
+        env.ok(&["session", "restore", first]);
+        assert_eq!(env.automation(&auto)["enabled"], false);
+        env.ok(&["session", "restore", second]);
+        assert_eq!(env.automation(&auto)["enabled"], true);
+    }
+}
+
+#[test]
+fn owner_is_explicit_validated_and_can_be_cleared_on_edit() {
+    let env = Env::new();
+    let owner = env.seed_session("owner");
+    let auto = env.exec("unowned", "true", &[]);
+    assert!(env.automation(&auto)["owner_session_id"].is_null());
+    env.ok(&["automation", "edit", &auto, "--owner-session", &owner]);
+    assert_eq!(env.automation(&auto)["owner_session_id"], owner);
+    env.ok(&["automation", "edit", &auto, "--owner-session", "none"]);
+    assert!(env.automation(&auto)["owner_session_id"].is_null());
+    env.ok(&["session", "delete", &owner, "--soft"]);
+    env.exits(1, &["automation", "edit", &auto, "--owner-session", &owner]);
+    env.exits(
+        1,
+        &[
+            "automation",
+            "create",
+            "--name",
+            "invalid",
+            "--trigger",
+            "hourly",
+            "--command",
+            "true",
+            "--owner-session",
+            &owner,
+        ],
+    );
+}
+
+#[test]
+fn purge_accepts_a_deleted_reference_and_refuses_an_active_one() {
+    let env = Env::new();
+    let session = env.seed_session("old");
+    env.exits(1, &["session", "purge", &session]);
+    env.ok(&["session", "delete", &session, "--soft"]);
+    env.db()
+        .conn_ref()
+        .execute(
+            "UPDATE sessions SET deleted_at = 1 WHERE id = ?1",
+            [&session],
+        )
+        .unwrap();
+    let done = env.ok(&["session", "purge", &session]);
+    assert_eq!(done["purged"].as_array().unwrap().len(), 1);
+    env.exits(1, &["session", "restore", &session, "--best-effort"]);
 }
 
 /// A soft delete disables the send automations aimed at the session, as a
@@ -1041,4 +1258,37 @@ fn a_refused_claim_is_logged_and_reported_by_runtime_status() {
     let log = std::fs::read_to_string(env.path("data/automation-tick.log")).expect("a tick log");
     assert!(log.contains("claim refused"), "{log}");
     assert!(env.runs(&id).is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn separate_heartbeat_processes_confirm_a_missing_pane() {
+    if !Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return;
+    }
+    let env = Env::new();
+    let session = env.seed_session("missing");
+    env.db()
+        .conn_ref()
+        .execute(
+            "UPDATE sessions SET backend_id = '%900000' WHERE id = ?1",
+            [&session],
+        )
+        .unwrap();
+    assert_eq!(env.ok(&["automation", "tick"])["lost"], 0);
+    assert!(env
+        .db()
+        .session_lost_at(session.parse().unwrap())
+        .unwrap()
+        .is_none());
+    assert_eq!(env.ok(&["automation", "tick"])["lost"], 1);
+    assert!(env
+        .db()
+        .session_lost_at(session.parse().unwrap())
+        .unwrap()
+        .is_some());
 }

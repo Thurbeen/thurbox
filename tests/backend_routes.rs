@@ -142,9 +142,13 @@ impl Env {
     /// A row as an earlier build (or a peer) wrote it, spelling and all.
     fn row(&self, name: &str, backend_type: &str) -> SessionId {
         let id = SessionId::default();
-        self.db()
-            .upsert_session(&session(id, name, backend_type))
-            .expect("seed a row");
+        static NEXT_PANE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(3);
+        let mut row = session(id, name, backend_type);
+        row.backend_id = format!(
+            "%{}",
+            NEXT_PANE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.db().upsert_session(&row).expect("seed a row");
         id
     }
 
@@ -364,6 +368,7 @@ fn listing(db: &Database, deleted: bool) -> Value {
             recursive: false,
             tree: false,
             deleted,
+            include_purged: false,
             since: None,
             verify: false,
             key: None,

@@ -446,7 +446,93 @@ fn spawn(
     if let Some(reason) = hook_degraded {
         tracing::warn!("remote hook wiring degraded for '{}': {reason}", req.name);
     }
+    let session_lease = super::lock::lock(db, super::lock::Subject::Session(session_id), "create")?
+        .ok_or_else(|| {
+            super::OpError::Conflict("session creation is already in progress".into())
+        })?;
+    let (plans, _) = plan_members(
+        &req,
+        req.worktree_branch.as_deref(),
+        req.existing_worktree.is_some(),
+    );
+    let mut planned_worktrees = Vec::new();
+    for plan in &plans {
+        let (repo, _) = plan.as_ref().map_err(Clone::clone)?;
+        let branch = req.worktree_branch.as_deref().unwrap_or_default();
+        let path = crate::git::worktree_path_for(host.as_ref(), repo, branch)
+            .map_err(|e| e.to_string())?;
+        planned_worktrees.push(SharedWorktree {
+            repo_path: repo.to_path_buf(),
+            worktree_path: path,
+            branch: branch.into(),
+            created_by_thurbox: true,
+        });
+    }
+    let _resource_leases = super::lock::worktrees(
+        db,
+        &backend_type,
+        planned_worktrees
+            .iter()
+            .map(|wt| wt.worktree_path.clone())
+            .chain(req.existing_worktree.iter().cloned())
+            .chain(
+                req.inherit_worktrees
+                    .iter()
+                    .map(|wt| wt.worktree_path.clone()),
+            ),
+        "create worktrees",
+    )?;
+    for wt in &planned_worktrees {
+        if crate::git::list_worktrees_on(host.as_ref(), &wt.repo_path)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|entry| {
+                super::lock::worktree_key(&backend_type, &entry.path)
+                    == super::lock::worktree_key(&backend_type, &wt.worktree_path)
+            })
+        {
+            return Err(super::OpError::Conflict(format!(
+                "worktree already exists: {}; open it explicitly",
+                wt.worktree_path.display()
+            )));
+        }
+    }
+    let intent_backend = backends
+        .get(&choice.route)
+        .ok_or("creation backend is unavailable")?;
+    let before = intent_backend
+        .discover()?
+        .into_iter()
+        .map(|w| w.backend_id)
+        .collect();
+    let mut creating = super::reconcile::Creating::begin(
+        db,
+        backends,
+        crate::storage::intents::CreateIntent {
+            expected_deleted_at: None,
+            session: SharedSession {
+                id: session_id,
+                name: req.name.clone(),
+                agent: agent_name.clone(),
+                backend_id: String::new(),
+                backend_type: backend_type.clone(),
+                agent_session_id: Some(agent_session_id.clone()),
+                cwd: Some(req.repo_path.clone()),
+                additional_dirs: Vec::new(),
+                worktrees: planned_worktrees,
+                shell_backend_id: None,
+                parent_session_id: req.parent_session_id,
+                display_order: None,
+                tombstone: false,
+                tombstone_at: None,
+                key: req.key.clone(),
+            },
+            before,
+            expires_at: session_lease.expires_at(),
+        },
+    )?;
     report(SpawnPhase::Worktrees);
+    creating.check()?;
     let (primary_cwd, worktrees, additional_dirs) = resolve_dirs(&req, host.as_ref())?;
 
     // For a multi-repo session, launch the agent in a per-session symlink
@@ -454,6 +540,7 @@ fn spawn(
     // agent-neutral). `info.cwd` keeps the *primary* repo. Single-repo sessions
     // launch directly in the primary cwd, unchanged. Mirrors the TUI's
     // `App::resolve_process_cwd`.
+    creating.check()?;
     let launch_cwd = resolve_launch_cwd(
         &agent_session_id,
         &primary_cwd,
@@ -529,14 +616,13 @@ fn spawn(
             .map(super::lifecycle_hooks::worktree)
             .collect();
         hook_ctx.additional_dirs = additional_dirs.clone();
-        // Still a refusal, typed like pre_create's, with the directories it
-        // leaves behind named.
-        super::fire_pre(crate::session::HookEvent::PreLaunch, &hook_ctx).map_err(|reason| {
-            crate::session_ops::OpError::Refused(format!(
+        if let Err(reason) = super::fire_pre(crate::session::HookEvent::PreLaunch, &hook_ctx) {
+            creating.preserve_prepared()?;
+            return Err(crate::session_ops::OpError::Refused(format!(
                 "{reason}; launch refused, prepared directories remain at {}",
                 launch_cwd.display()
-            ))
-        })?;
+            )));
+        }
     }
 
     report(SpawnPhase::Launching);
@@ -554,7 +640,8 @@ fn spawn(
             choice.route
         )
     })?;
-    let backend_id = launch_window(
+    creating.check()?;
+    let (backend_id, startup) = launch_window(
         backend.as_ref(),
         &stamp,
         &req.name,
@@ -564,6 +651,16 @@ fn spawn(
         &config.env,
     )?;
 
+    creating.record_pane(&backend_id)?;
+    // A tmux window can survive its failed command. Do not publish that dead pane as a session.
+    if matches!(
+        startup,
+        crate::backend::contract::BackendLiveness::Exited
+            | crate::backend::contract::BackendLiveness::Missing
+    ) {
+        let detail = backend.capture(&backend_id, 20, false).unwrap_or_default();
+        return Err(format!("agent exited before session creation committed: {detail}").into());
+    }
     report(SpawnPhase::Persisting);
     let shared = SharedSession {
         id: session_id,
@@ -584,39 +681,21 @@ fn spawn(
         tombstone_at: None,
         key: req.key.clone(),
     };
-    // The tmux window is already live. If the DB upsert fails now, no row exists
-    // for the TUI to adopt and the window would be orphaned — untrackable and
-    // unkillable from the UI. Best-effort tear it down before surfacing the
-    // error so we don't leak a window.
-    if let Err(e) = db.upsert_session_with_agent_args(
+    if let Err(e) = db.commit_created_session(
         &shared,
-        &req.agent_args,
-        crate::storage::EventReason::Spawned,
+        session_lease.expires_at(),
+        recipe.as_ref(),
+        &req.env,
     ) {
         tracing::error!(
             "spawn race: DB upsert failed after the tmux window for '{}' spawned; \
              tearing down the orphaned window: {e}",
             req.name
         );
-        discard_orphaned_window(backend.as_ref(), &stamp, &req.name, &backend_id);
         return Err(format!("Failed to persist session: {e}").into());
     }
 
-    // A command session's recipe is the only record of how to start it again:
-    // there is no registry entry to re-resolve at restart, so the row carries
-    // it. Registry agents deliberately store no *command* here and stay
-    // resolved by name, so editing `agents.toml` and restarting still takes
-    // effect — but their `--env` is recorded all the same. It is not a
-    // launch recipe, it is what the session's processes live in: a restart has
-    // to replay it, and `session exec` has to reproduce it.
-    let recorded = match &recipe {
-        Some(r) => db.set_launch_recipe(session_id, r),
-        None if !req.env.is_empty() => db.set_launch_env(session_id, &req.env),
-        None => Ok(()),
-    };
-    if let Err(e) = recorded {
-        tracing::warn!("Failed to record the session's launch environment: {e}");
-    }
+    creating.committed();
 
     record_fork_point(db, session_id, &req);
 
@@ -712,52 +791,24 @@ fn launch_window(
     args: &[String],
     cwd: &std::path::Path,
     env: &std::collections::HashMap<String, String>,
-) -> Result<String, crate::session_ops::OpError> {
+) -> Result<(String, crate::backend::contract::BackendLiveness), crate::session_ops::OpError> {
     backend
-        .create_window(&crate::backend::WindowSpec {
-            owner: crate::backend::Owner::new(stamp, name),
-            role: crate::backend::WindowRole::Agent,
-            command,
-            args,
-            cwd: Some(cwd),
-            env,
-        })
-        .map(String::from)
+        .create_window_observed(
+            &crate::backend::WindowSpec {
+                owner: crate::backend::Owner::new(stamp, name),
+                role: crate::backend::WindowRole::Agent,
+                command,
+                args,
+                cwd: Some(cwd),
+                env,
+            },
+            std::time::Duration::from_millis(50),
+        )
+        .map(|(pane, state)| (String::from(pane), state))
         .map_err(|e| {
             crate::session_ops::OpError::from(e)
                 .context(format!("Failed to spawn a window on {}", backend.name()))
         })
-}
-
-/// Tear down the window a spawn opened but could not persist as a row — only
-/// when it is provably that spawn's own.
-fn discard_orphaned_window(
-    backend: &dyn crate::backend::SessionBackend,
-    stamp: &str,
-    name: &str,
-    backend_id: &str,
-) {
-    // Ownership-gated, for the same reason the reap is: this tears down a
-    // window that never became a row, so it must kill only the one it just
-    // spawned — resolved by the stamp it was created with, with the pane it
-    // reported as the only hint. Leaking the window we already leaked is the
-    // cheap failure; killing someone else's is not.
-    let owner = crate::backend::Owner::new(stamp, name).remembering(backend_id, "");
-    match super::windows::kill_owned(backend, owner) {
-        Ok(true) => {}
-        // Nothing this spawn can prove is its own. The window leaks rather
-        // than taking a live session's down with it.
-        Ok(false) => tracing::error!(
-            "orphaned window for '{}' (pane {:?}) is not provably its own; \
-             leaving any same-named window alone",
-            name,
-            backend_id
-        ),
-        Err(kill_err) => tracing::error!(
-            "failed to tear down orphaned window for '{}': {kill_err:#}",
-            name
-        ),
-    }
 }
 
 /// Record the worktree's fork point so the code-review view can scope its diff
@@ -1176,8 +1227,8 @@ fn spawn_delegated(
     // included. One the host answered as already there may be another
     // caller's under the same id or key, whose hooks are its own; it may also
     // be this caller's earlier attempt, whose post-create hooks are then never
-    // fired here. Telling the two apart needs a record of the hooks owed for a
-    // minted id, which is the intent row #1469 adds.
+    // fired here. This local hook delivery remains best-effort; an existing
+    // host row carries no receipt for the caller's own hooks.
     let hook_failures = if created {
         super::fire_post(crate::session::HookEvent::PostCreate, &hook_ctx)
     } else {
@@ -2983,6 +3034,8 @@ mod tests {
         super::super::host_cli::CliInfo {
             create_parity: true,
             agent_args: false,
+            purged_tombstones: false,
+            lifecycle_preconditions: false,
             ..super::super::host_cli::fake::cli()
         }
     }

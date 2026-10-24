@@ -106,7 +106,8 @@ fn seed(db: &Database, name: &str) -> SessionId {
         name: name.into(),
         agent: "claude".into(),
         backend_id: "%1".into(),
-        backend_type: "local-tmux".into(),
+        // These event-only rows live off-host; no local pane can become lost.
+        backend_type: "ssh:metrics-fixture".into(),
         agent_session_id: None,
         cwd: None,
         additional_dirs: Vec::new(),

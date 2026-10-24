@@ -179,6 +179,10 @@ pub fn restore_session_headless(
     id: SessionId,
     best_effort: bool,
 ) -> Result<RestoreReport, crate::session_ops::OpError> {
+    let _session_lease = super::lock::lock(db, super::lock::Subject::Session(id), "restore")?
+        .ok_or_else(|| {
+            super::OpError::Conflict("another lifecycle operation holds this session".into())
+        })?;
     let deleted = db
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get deleted session: {e}"))?
@@ -219,10 +223,7 @@ pub fn restore_session_headless(
         )
         .into());
     }
-    // What relaunches the agent, asked before anything is held, fired or
-    // written: a restore marks the row active before it respawns, and a row
-    // brought back with nothing that can put its window back is a session
-    // that reads as running and never will be.
+    // Refuse an unavailable route before taking locks or running hooks.
     let backend = match delegated.is_some() {
         true => None,
         false => Some(
@@ -337,17 +338,70 @@ pub fn restore_session_headless(
         db.clear_session_key(deleted.id)
             .map_err(|e| format!("drop the key of '{}': {e}", deleted.name))?;
     }
-    db.restore_session(deleted.id)
-        .map_err(|e| format!("restore session: {e}"))?;
-    drop(key_claim);
-
+    let mut planned = super::delete::shared_deleted(&deleted);
+    planned.backend_id.clear();
+    let _resources = super::lock::worktrees(
+        db,
+        &deleted.backend_type,
+        deleted.worktrees.iter().map(|wt| wt.worktree_path.clone()),
+        "restore worktrees",
+    )?;
+    planned
+        .worktrees
+        .retain(|wt| wt.created_by_thurbox && !wt.worktree_path.exists());
+    let before = backend
+        .ok_or("restore backend is unavailable")?
+        .discover()?
+        .into_iter()
+        .map(|w| w.backend_id)
+        .collect();
+    let mut creating = super::reconcile::Creating::begin(
+        db,
+        backends,
+        crate::storage::intents::CreateIntent {
+            expected_deleted_at: Some(deleted.deleted_at),
+            session: planned,
+            before,
+            expires_at: _session_lease.expires_at(),
+        },
+    )?;
     let wanted = deleted.worktrees.len();
+    creating.check()?;
     let recovered = recreate_worktrees(&deleted.worktrees);
+    let mut session = super::delete::shared_deleted(&deleted);
+    if key_dropped.is_some() {
+        session.key = None;
+    }
+    if let Some(backend) = backend {
+        creating.check()?;
+        let pane = respawn(db, backend.as_ref(), &session)?;
+        creating.record_pane(&pane)?;
+        session.backend_id = pane.clone();
+        match db
+            .commit_restored_session(
+                &session,
+                deleted.deleted_at,
+                deleted.lifecycle_generation,
+                _session_lease.expires_at(),
+                |a, b| super::server_key(a) == super::server_key(b),
+            )
+            .map_err(|e| format!("commit restored session: {e}"))?
+        {
+            crate::storage::PaneClaim::Stored => {}
+            outcome => {
+                return Err(match outcome {
+                    crate::storage::PaneClaim::Occupied => {
+                        super::OpError::Conflict("restored pane is already claimed".into())
+                    }
+                    _ => super::OpError::Gone("session changed before restore committed".into()),
+                });
+            }
+        }
+    }
+    creating.committed();
+    drop(key_claim);
+    let respawn_error: Option<super::OpError> = None;
 
-    let respawn_error = backend.and_then(|backend| respawn(db, backend.as_ref(), deleted.id).err());
-
-    // A restore whose agent did not come up is still a restore — the report
-    // says so, and the hooks fire either way.
     hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, deleted.id);
     let hook_failures = super::fire_post(crate::session::HookEvent::PostRestore, &hook_ctx);
 
@@ -406,7 +460,11 @@ pub fn recreate_worktrees(worktrees: &[SharedWorktree]) -> Vec<WorktreeInfo> {
             );
             continue;
         }
-        match crate::git::add_existing_worktree(&worktree.repo_path, &worktree.branch) {
+        match crate::git::add_existing_worktree_at(
+            &worktree.repo_path,
+            &worktree.branch,
+            &worktree.worktree_path,
+        ) {
             Ok(path) => recovered.push(WorktreeInfo {
                 repo_path: worktree.repo_path.clone(),
                 worktree_path: path,
@@ -427,14 +485,8 @@ pub fn recreate_worktrees(worktrees: &[SharedWorktree]) -> Vec<WorktreeInfo> {
 fn respawn(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
-    id: SessionId,
-) -> Result<(), crate::session_ops::OpError> {
-    let session = db
-        .get_session_by_id(id)
-        .map_err(|e| format!("load restored session: {e}"))?
-        .ok_or_else(|| {
-            crate::session_ops::OpError::NotFound(format!("restored session not found: {id}"))
-        })?;
+    session: &crate::sync::SharedSession,
+) -> Result<String, crate::session_ops::OpError> {
     // Local by design: `restore_session_headless` refuses a remote session
     // above, since its worktrees cannot be recreated from here.
     //
@@ -455,21 +507,7 @@ fn respawn(
                     session.name
                 );
             }
-            match db
-                .claim_backend_id(session.id, &pane, |target, other| {
-                    super::server_key(target) == super::server_key(other)
-                })
-                .map_err(|e| format!("record the live pane: {e}"))?
-            {
-                crate::storage::PaneClaim::Stored => {}
-                crate::storage::PaneClaim::RowGone => {
-                    return Err("restored session disappeared before its pane was recorded".into());
-                }
-                crate::storage::PaneClaim::Occupied => {
-                    return Err("the restored pane is already claimed by another session".into());
-                }
-            }
-            return Ok(());
+            return Ok(pane.to_string());
         }
     }
     let hooks_enabled = super::hooks_enabled(db);
@@ -484,7 +522,7 @@ fn respawn(
         .map_err(|e| format!("read the launch env: {e}"))?;
     let plan = super::restart::build_restart_plan(
         db,
-        &session,
+        session,
         None,
         None,
         hooks_enabled,
@@ -501,23 +539,16 @@ fn respawn(
             env: &plan.env,
         })
         .map_err(|e| crate::session_ops::OpError::from(e).context("re-spawn"))?;
-    // The row still carries the pane the delete killed; the fresh one is what
-    // every later read must target.
-    match db
-        .claim_backend_id(session.id, &pane, |target, other| {
-            super::server_key(target) == super::server_key(other)
-        })
-        .map_err(|e| format!("record the new pane: {e}"))?
-    {
-        crate::storage::PaneClaim::Stored => {}
-        crate::storage::PaneClaim::RowGone => {
-            return Err("restored session disappeared before its pane was recorded".into());
-        }
-        crate::storage::PaneClaim::Occupied => {
-            return Err("the new pane is already claimed by another session".into());
-        }
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    if backend.pane_state(&pane)?.dead == Some(true) {
+        let detail = backend.capture(&pane, 20, false).unwrap_or_default();
+        let _ = super::windows::kill_owned(
+            backend,
+            crate::backend::Owner::new(&stamp, &session.name).remembering(&pane, ""),
+        );
+        return Err(format!("restored agent exited before commit: {detail}").into());
     }
-    Ok(())
+    Ok(pane.to_string())
 }
 
 #[cfg(test)]

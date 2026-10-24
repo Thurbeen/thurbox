@@ -57,6 +57,8 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
                 "deleted_changes_since": true,
                 "create_parity": true,
                 "agent_args": true,
+                "purged_tombstones": true,
+                "lifecycle_preconditions": true,
             }),
             format!("thurbox {current}"),
         );

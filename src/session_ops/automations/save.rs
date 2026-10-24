@@ -21,6 +21,8 @@ use crate::storage::Database;
 /// `command` (exec).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Draft {
+    /// An explicit owner reference; "none" clears it on edit.
+    pub owner_session: Option<String>,
     pub name: Option<String>,
     /// `hourly` | `daily` | `weekdays` | `weekly` | `cron:<expr>` | `at:<unix_millis>`.
     pub trigger: Option<String>,
@@ -137,6 +139,7 @@ pub fn create(
     let wanted = from_draft(db, draft, now)?;
     require_next_run(&wanted, now)?;
     let inserted = db.create_automation(&NewAutomation {
+        owner_session_id: wanted.owner_session_id,
         name: wanted.name.clone(),
         enabled: wanted.enabled,
         schedule: wanted.schedule.clone(),
@@ -269,6 +272,7 @@ pub fn edit(db: &Database, id: i64, draft: &Draft, now: u64) -> Result<(), Strin
             _ => return Err("only an exec automation runs a command".into()),
         }
     }
+    apply_owner(db, &mut auto, draft)?;
     apply_common(&mut auto, draft)?;
 
     let unmoved = before == timing_key(&auto) && auto.next_run_at.is_some();
@@ -294,6 +298,9 @@ pub fn edit(db: &Database, id: i64, draft: &Draft, now: u64) -> Result<(), Strin
 /// `None` for an enabled schedule with no future occurrence, which only a
 /// write that needs a new next run refuses ([`require_next_run`]).
 fn from_draft(db: &Database, draft: &Draft, now: u64) -> Result<Automation, String> {
+    if draft.owner_session.as_deref() == Some("none") {
+        return Err("--owner-session none only applies to edit".into());
+    }
     let weekday = weekday(draft)?;
     let schedule = parse_trigger(
         draft
@@ -304,6 +311,7 @@ fn from_draft(db: &Database, draft: &Draft, now: u64) -> Result<Automation, Stri
         weekday,
     )?;
     let mut auto = Automation {
+        owner_session_id: None,
         id: 0,
         name: String::new(),
         enabled: true,
@@ -318,6 +326,7 @@ fn from_draft(db: &Database, draft: &Draft, now: u64) -> Result<Automation, Stri
         key: None,
         run: Default::default(),
     };
+    apply_owner(db, &mut auto, draft)?;
     apply_common(&mut auto, draft)?;
     auto.next_run_at = auto
         .enabled
@@ -550,6 +559,49 @@ pub fn trigger(db: &Database, id: i64) -> Result<(), String> {
 pub fn remove(db: &Database, id: i64) -> Result<bool, String> {
     db.delete_automation(id)
         .map_err(|e| format!("delete automation: {e}"))
+}
+
+fn apply_owner(db: &Database, auto: &mut Automation, draft: &Draft) -> Result<(), String> {
+    let Some(owner) = &draft.owner_session else {
+        return Ok(());
+    };
+    if owner == "none" {
+        auto.owner_session_id = None;
+        return Ok(());
+    }
+    let rows = db
+        .list_active_sessions()
+        .map_err(|e| format!("resolve owner: {e}"))?;
+    let matches: Vec<_> = if let Ok(id) = owner.parse::<SessionId>() {
+        rows.iter().filter(|row| row.id == id).collect()
+    } else if let Some(key) = owner.strip_prefix("key:") {
+        let (host, key) = key
+            .split_once('/')
+            .map_or((None, key), |(host, key)| (Some(host), key));
+        rows.iter()
+            .filter(|row| {
+                row.key.as_deref() == Some(key)
+                    && crate::session::Route::parse(&row.backend_type)
+                        .ok()
+                        .is_some_and(|route| route.host() == host)
+            })
+            .collect()
+    } else {
+        let named: Vec<_> = rows.iter().filter(|row| row.name == *owner).collect();
+        if named.is_empty() && !owner.is_empty() {
+            rows.iter()
+                .filter(|row| row.id.to_string().starts_with(owner))
+                .collect()
+        } else {
+            named
+        }
+    };
+    auto.owner_session_id = match matches.as_slice() {
+        [row] => Some(row.id),
+        [] => return Err(format!("owner session not found or deleted: {owner}")),
+        _ => return Err(format!("owner session is ambiguous: {owner}; use its UUID")),
+    };
+    Ok(())
 }
 
 #[cfg(test)]
@@ -786,6 +838,7 @@ mod tests {
 
     fn stored_multi_repo(db: &Database) -> i64 {
         db.create_automation(&NewAutomation {
+            owner_session_id: None,
             name: "multi".into(),
             enabled: true,
             schedule: AutomationSchedule::Cron {
@@ -1017,6 +1070,7 @@ mod tests {
 
         let once = db
             .create_automation(&NewAutomation {
+                owner_session_id: None,
                 name: "once".into(),
                 enabled: true,
                 schedule: AutomationSchedule::Once { at: NOW },
@@ -1043,6 +1097,7 @@ mod tests {
         let cron = stored_multi_repo(&db);
         let once = db
             .create_automation(&NewAutomation {
+                owner_session_id: None,
                 name: "once".into(),
                 enabled: true,
                 schedule: AutomationSchedule::Once { at: NOW },
@@ -1154,6 +1209,7 @@ mod tests {
         let db = Database::open_in_memory().expect("db");
         let id = db
             .create_automation(&NewAutomation {
+                owner_session_id: None,
                 name: "once".into(),
                 enabled: false,
                 schedule: AutomationSchedule::Once { at: 5 },

@@ -79,6 +79,9 @@ pub enum Action {
         /// Agent name (spawn action; default registry agent).
         #[arg(long)]
         agent: Option<String>,
+        /// Session whose lifetime owns this automation; never inferred from the caller.
+        #[arg(long)]
+        owner_session: Option<String>,
         /// Exec action: shell command to run headlessly on fire (no session,
         /// no agent). Mutually exclusive with --session/--repo.
         #[arg(long)]
@@ -136,6 +139,9 @@ pub enum Action {
         timezone: Option<String>,
         #[arg(long)]
         prompt: Option<String>,
+        /// Set the lifetime owner, or "none" to clear it.
+        #[arg(long)]
+        owner_session: Option<String>,
         /// Exec action: the new command. Keeps the id and run history.
         #[arg(long)]
         command: Option<String>,
@@ -212,6 +218,7 @@ pub fn run(
             weekday,
             timezone,
             prompt,
+            owner_session,
             session,
             repo,
             worktree,
@@ -226,6 +233,7 @@ pub fn run(
             env,
         } => {
             let draft = Draft {
+                owner_session,
                 name: Some(name),
                 trigger: Some(trigger),
                 time,
@@ -261,6 +269,7 @@ pub fn run(
             weekday,
             timezone,
             prompt,
+            owner_session,
             command,
             timeout,
             cwd,
@@ -271,6 +280,7 @@ pub fn run(
         } => {
             let id = resolve(db, &reference)?.id;
             let draft = Draft {
+                owner_session,
                 name,
                 trigger,
                 time,
@@ -732,13 +742,14 @@ fn housekeeping(db: &Database, backends: &crate::backend::BackendRegistry) -> Va
     };
     // A soft delete asked for headlessly — from a peer, or from this CLI —
     // has no interface here to reap it once the undo window has closed.
-    let reaped = crate::session_ops::reap_overdue_soft_deletes(db, backends);
+    let lifecycle = crate::session_ops::reconcile::tick(db, backends);
+    let reaped = lifecycle.reaped;
     // And a force delete whose teardown never reached its host: this is the
     // pass that finishes it, so an agent orphaned by a machine that was down
     // for a minute is collected rather than left running there for good.
     // After the mirror above, which is what may just have taken the delete to
     // a host that came back on its own.
-    let teardowns = crate::session_ops::retry_owed_remote_teardowns(db, backends);
+    let teardowns = lifecycle.teardowns;
     // Last: a collector that is down costs a request timeout, and nothing
     // above may wait on it.
     let telemetry = export_telemetry(db);
@@ -753,6 +764,7 @@ fn housekeeping(db: &Database, backends: &crate::backend::BackendRegistry) -> Va
         "synced": synced,
         "reaped": reaped,
         "teardowns": teardowns,
+        "lost": lifecycle.lost,
         "telemetry": telemetry,
         "hooks": hooks,
     })
@@ -823,6 +835,7 @@ fn automation_to_json(a: &Automation) -> Value {
     json!({
         "id": a.id,
         "key": a.key,
+        "owner_session_id": a.owner_session_id.map(|id| id.to_string()),
         "name": a.name,
         "enabled": a.enabled,
         "schedule": { "kind": a.schedule.kind(), "spec": a.schedule.spec() },
@@ -920,6 +933,7 @@ mod tests {
         opt_out_builtins(&db);
         let id = db
             .create_automation(&NewAutomation {
+                owner_session_id: None,
                 name: "probe".into(),
                 enabled: true,
                 schedule: parse_trigger("hourly", None, None).unwrap(),
@@ -957,6 +971,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = db
             .create_automation(&NewAutomation {
+                owner_session_id: None,
                 name: "nightly".into(),
                 enabled: true,
                 schedule: parse_trigger("hourly", None, None).unwrap(),
@@ -1073,6 +1088,7 @@ mod tests {
         opt_out_builtins(&db);
         let id = db
             .create_automation(&NewAutomation {
+                owner_session_id: None,
                 name: "refused".into(),
                 enabled: true,
                 schedule: parse_trigger("hourly", None, None).unwrap(),
