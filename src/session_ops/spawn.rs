@@ -690,6 +690,7 @@ fn spawn(
         session_lease.expires_at(),
         recipe.as_ref(),
         &req.env,
+        &req.agent_args,
     ) {
         tracing::error!(
             "spawn race: DB upsert failed after the tmux window for '{}' spawned; \

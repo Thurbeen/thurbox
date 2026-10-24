@@ -151,8 +151,21 @@ fn a_stale_upsert_cannot_resurrect_a_deleted_session() {
     )
     .unwrap();
     let stale = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+    let original_args = vec!["--original".to_string()];
+    db.set_agent_args(stale.id, &original_args).unwrap();
     thurbox::session_ops::delete_session_headless(&db, &backends, stale.id, false).unwrap();
     db.upsert_session(&stale).unwrap();
+    db.upsert_session_with_agent_args(
+        &stale,
+        &["--stale".into()],
+        thurbox::storage::EventReason::Registered,
+    )
+    .unwrap();
+    assert_eq!(
+        db.load_agent_args(stale.id).unwrap(),
+        original_args,
+        "stale arguments changed a deleted session"
+    );
     assert!(
         db.get_session_by_id(stale.id).unwrap().is_none(),
         "stale write undid a delete"
@@ -278,6 +291,8 @@ fn purge_removes_created_worktrees_and_keeps_an_unrestorable_tombstone() {
     )
     .unwrap();
     let stale = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+    db.set_agent_args(stale.id, &["--must-be-forgotten".into()])
+        .unwrap();
     thurbox::session_ops::delete_session_headless(&db, &backends, stale.id, false).unwrap();
     db.conn_ref()
         .execute(
@@ -300,6 +315,10 @@ fn purge_removes_created_worktrees_and_keeps_an_unrestorable_tombstone() {
         "purge left its checkout behind"
     );
     assert!(db.get_deleted_session_by_id(stale.id).unwrap().is_none());
+    assert!(
+        db.load_agent_args(stale.id).unwrap().is_empty(),
+        "purge retained session arguments"
+    );
     assert!(
         thurbox::session_ops::restore_session_headless(&db, &backends, stale.id, true).is_err()
     );
@@ -4084,4 +4103,81 @@ fn checkout_cleanup_and_borrowers_share_one_machine_path_lease() {
         "cleanup did not resume after the checkout lease was released"
     );
     assert!(!checkout.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn restore_rejects_a_pane_that_changes_owner_during_startup() {
+    use std::os::unix::fs::PermissionsExt;
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let created = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &backends,
+        thurbox::session_ops::SpawnRequest {
+            name: "restore-recycled".into(),
+            repo_path: repo.path().into(),
+            command: Some("sleep 60".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    thurbox::session_ops::delete_session_headless(&db, &backends, created.session_id, false)
+        .unwrap();
+    thurbox::session_ops::reap_soft_deleted(&db, &backends, created.session_id).unwrap();
+    let real = Command::new("sh")
+        .args(["-c", "command -v tmux"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap();
+    let foreign = "00000000-0000-0000-0000-000000000159";
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let shim = bin.join("tmux");
+    let changed = home.path().join("owner-changed");
+    // Only the recreated agent can change owner; the initial missing-window
+    // probes must leave the bootstrap window alone.
+    std::fs::write(&shim, format!(
+        "#!/bin/sh\ncase \"$*\" in *'pane_dead'*) '{}' -L '{}' set-option -w -t 'thurbox:tb-restore-recycled' @thurbox_session '{}' 2>/dev/null && touch '{}' ;; esac\nexec '{}' \"$@\"\n",
+        real.trim(), SOCKET, foreign, changed.display(), real.trim())).unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut path = vec![bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    std::env::set_var("PATH", std::env::join_paths(path).unwrap());
+    let restored =
+        thurbox::session_ops::restore_session_headless(&db, &backends, created.session_id, false);
+    assert!(
+        changed.exists(),
+        "the startup probe did not change ownership"
+    );
+    assert!(
+        restored.is_err(),
+        "restore committed a foreign owner's recycled pane: {restored:?}"
+    );
+    assert!(db.get_session_by_id(created.session_id).unwrap().is_none());
+    assert!(db
+        .get_deleted_session_by_id(created.session_id)
+        .unwrap()
+        .is_some());
+    let out = Command::new(real.trim())
+        .args([
+            "-L",
+            SOCKET,
+            "list-windows",
+            "-a",
+            "-F",
+            "#{@thurbox_session}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(foreign),
+        "failed restore killed the foreign pane"
+    );
 }

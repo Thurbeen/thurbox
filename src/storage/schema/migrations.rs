@@ -1336,5 +1336,7 @@ pub(super) fn migrate_v59_session_lifecycle(conn: &Connection) -> rusqlite::Resu
          CREATE TRIGGER IF NOT EXISTS retain_purge_marker BEFORE DELETE ON sessions
          WHEN OLD.purged_at IS NOT NULL OR OLD.purge_owed = 1
          BEGIN SELECT RAISE(ABORT, 'purge markers are retained until audit retention'); END;"
-    )
+    )?;
+    // Upgraded databases installed these triggers before the lifecycle columns existed.
+    migrate_v49_snapshot_versions(conn)
 }
