@@ -2005,6 +2005,23 @@ impl Database {
         Ok(map)
     }
 
+    /// The rows, active or deleted, a mirror pass wrote: the ones carrying the
+    /// host's own clock (schema v45). The host holds each one's record, so they
+    /// are the rows this database can drop without losing a session.
+    pub fn mirrored_session_ids(&self) -> rusqlite::Result<HashSet<SessionId>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT id FROM sessions WHERE host_updated_at IS NOT NULL")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = HashSet::new();
+        for row in rows {
+            if let Ok(id) = row?.parse::<SessionId>() {
+                ids.insert(id);
+            }
+        }
+        Ok(ids)
+    }
+
     pub fn load_base_branches(&self) -> rusqlite::Result<HashMap<SessionId, String>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT id, base_branch FROM sessions \

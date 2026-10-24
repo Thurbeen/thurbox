@@ -835,3 +835,203 @@ fn force_deletion_of_an_older_tombstone_reaches_the_next_observer() {
         "a force-delete mark must propagate even below the deletion-time cursor"
     );
 }
+
+/// Mirror one session from the scripted host, then rewrite `hosts.toml` to
+/// `config` and sync again: what is left of the row, and every call the host
+/// was asked to run after the rewrite.
+fn sync_after_hosts_toml(config: &str) -> (Rig, SessionId, Vec<Vec<String>>) {
+    let rig = rig();
+    let id = SessionId::default();
+    rig.host
+        .borrow_mut()
+        .active
+        .push(host_session(id, "mirrored"));
+    mirror::sync(&rig.db, None, false).unwrap();
+    assert!(rig.db.get_session_by_id(id).unwrap().is_some());
+    let before = fake::calls().len();
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(path, config).unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    let calls = fake::calls().split_off(before);
+    (rig, id, calls)
+}
+
+#[test]
+fn a_removed_hosts_mirrored_rows_are_forgotten_without_touching_the_host() {
+    let (rig, id, calls) = sync_after_hosts_toml("");
+    assert!(rig.db.get_session_by_id(id).unwrap().is_none());
+    assert!(
+        rig.db.get_deleted_session_by_id(id).unwrap().is_none(),
+        "forgotten, not tombstoned: a tombstone would be pushed back as a delete"
+    );
+    assert!(calls.is_empty(), "nothing may reach the host: {calls:?}");
+}
+
+#[test]
+fn a_removed_hosts_deleted_rows_are_forgotten_too() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "gone");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.set_host_updated_at(id, 1).unwrap();
+    rig.db.soft_delete_session(id).unwrap();
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(path, "").unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_deleted_session_by_id(id).unwrap().is_none());
+}
+
+#[test]
+fn an_unreadable_hosts_toml_forgets_nothing() {
+    let (rig, id, _) = sync_after_hosts_toml("[[hosts]\nname = ");
+    assert!(
+        rig.db.get_session_by_id(id).unwrap().is_some(),
+        "a file that does not parse says nothing about which hosts were removed"
+    );
+}
+
+#[test]
+fn local_rows_and_a_configured_hosts_rows_are_kept() {
+    let local = SessionId::default();
+    let (rig, id, _) = sync_after_hosts_toml(&format!(
+        "[[hosts]]\nname = \"{HOST}\"\ndestination = \"me@{HOST}\"\nshare_sessions = false\n"
+    ));
+    let mut row = host_session(local, "here");
+    row.backend_type = "local:tmux".into();
+    rig.db.upsert_session(&row).unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_session_by_id(id).unwrap().is_some());
+    assert!(rig.db.get_session_by_id(local).unwrap().is_some());
+}
+
+#[test]
+fn distros_that_could_not_be_listed_forget_nothing() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "on-a-distro");
+    row.backend_type = "wsl:Ubuntu".into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.set_host_updated_at(id, 1).unwrap();
+    crate::agent::host_config::with_discovered_wsl(Err("wsl.exe timed out".into()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(
+        rig.db.get_session_by_id(id).unwrap().is_some(),
+        "an unlisted distro is unknown, not removed"
+    );
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_session_by_id(id).unwrap().is_none());
+}
+
+#[test]
+fn inside_wsl_without_wsl_exe_sibling_distros_are_not_forgotten() {
+    if cfg!(windows) || crate::paths::which_on_path("wsl.exe") {
+        eprintln!("skipping: wsl.exe is reachable here");
+        return;
+    }
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "on-a-sibling");
+    row.backend_type = "wsl:Debian".into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.set_host_updated_at(id, 1).unwrap();
+    // Interop off (`appendWindowsPath = false`): no `wsl.exe` on PATH, which
+    // discovery reads as "no distros" — true off WSL, not inside it.
+    crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(
+        rig.db.get_session_by_id(id).unwrap().is_some(),
+        "a sibling distro that could not be listed is unknown, not removed"
+    );
+}
+
+/// A row no mirror wrote — a `share_sessions = false` host's, or one from
+/// before sharing — is this database's only record of a session still running
+/// there, so one read of `hosts.toml` without its host must not erase it.
+#[test]
+fn a_removed_hosts_rows_this_database_owns_are_kept() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "only-recorded-here");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(path, "").unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_session_by_id(id).unwrap().is_some());
+}
+
+/// A loopback entry (a WSL host naming the distro thurbox runs in) is dropped
+/// from the registry, but the rows it wrote are the WSL repair's to relabel
+/// local, so the sweep must not take them first.
+#[cfg(unix)]
+#[test]
+fn a_loopback_entrys_rows_are_left_to_the_wsl_repair() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "on-the-loopback");
+    row.backend_type = "wsl:self".into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.set_host_updated_at(id, 1).unwrap();
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(
+        path,
+        "[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n",
+    )
+    .unwrap();
+    // Interop on: a `wsl.exe` on PATH, so the sweep runs rather than deferring.
+    use std::os::unix::fs::PermissionsExt;
+    let bin = rig._temp.path().join("interop");
+    std::fs::create_dir_all(&bin).unwrap();
+    let wsl = bin.join("wsl.exe");
+    std::fs::write(&wsl, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&wsl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::paths::with_path(&bin, || {
+        crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+            crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+                mirror::sync(&rig.db, None, false).unwrap();
+            });
+        });
+    });
+    assert!(rig.db.get_session_by_id(id).unwrap().is_some());
+}
+
+/// A row mirrored before the host's clock was recorded (schema v45) and
+/// unchanged since: every pass finds it already up to date, so the pass that
+/// first confirms it must stamp it, or a removed host leaves it for good.
+#[test]
+fn a_mirror_from_before_the_hosts_clock_is_forgotten_with_its_host() {
+    let rig = rig();
+    let id = SessionId::default();
+    rig.host
+        .borrow_mut()
+        .active
+        .push(host_session(id, "old-mirror"));
+    // The row exactly as a mirror holds it, minus the clock an older thurbox
+    // never wrote.
+    let elsewhere = Database::open_in_memory().unwrap();
+    mirror::sync(&elsewhere, None, false).unwrap();
+    let held = elsewhere.get_session_by_id(id).unwrap().unwrap();
+    rig.db.upsert_session(&held).unwrap();
+    mirror::forget_lists();
+    mirror::sync(&rig.db, None, false).unwrap();
+
+    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    std::fs::write(path, "").unwrap();
+    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        mirror::sync(&rig.db, None, false).unwrap();
+    });
+    assert!(rig.db.get_session_by_id(id).unwrap().is_none());
+}

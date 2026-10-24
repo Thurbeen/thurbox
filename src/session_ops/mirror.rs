@@ -4,7 +4,8 @@
 //! record; this module reconciles the local rows on that host's backend to it
 //! — adopting what is new, updating what changed, deleting and restoring what
 //! the host says was deleted and restored — and writes nothing when nothing
-//! moved, so an idle mirror does not bump `data_version` for every peer. The
+//! moved (past stamping, once, a row mirrored before the host's clock was
+//! kept), so an idle mirror does not bump `data_version` for every peer. The
 //! observer keeps what is its own: display order, the companion shell, and a
 //! pane id the host does not report.
 //!
@@ -45,6 +46,9 @@ pub struct MirrorReport {
     /// [`Transitive::Hide`] is in force. Nothing reached the host: the
     /// session goes on at its owner.
     pub forgotten: Vec<SessionId>,
+    /// Rows dropped from this database because `hosts.toml` no longer names
+    /// the host (see [`forget_removed_hosts`]). Nothing reached the host.
+    pub unconfigured: Vec<SessionId>,
     /// Why the host could not be mirrored, when it could not.
     pub error: Option<String>,
 }
@@ -57,7 +61,8 @@ impl MirrorReport {
             && self.restored.is_empty()
             && self.registered.is_empty()
             && self.tombstoned.is_empty()
-            && self.forgotten.is_empty())
+            && self.forgotten.is_empty()
+            && self.unconfigured.is_empty())
     }
 
     pub fn to_json(&self) -> Value {
@@ -73,6 +78,7 @@ impl MirrorReport {
             "registered": ids(&self.registered),
             "tombstoned": ids(&self.tombstoned),
             "forgotten": ids(&self.forgotten),
+            "unconfigured": ids(&self.unconfigured),
             "error": self.error,
         })
     }
@@ -374,10 +380,20 @@ pub fn apply(
         .collect();
     let hook_rows = db.load_hook_states().unwrap_or_default();
     let bases = db.load_base_branches().unwrap_or_default();
+    // `None` when it cannot be read: then no row is taken for unstamped, so a
+    // failed read never turns into a write per row per pass.
+    let clocked = db.mirrored_session_ids().ok();
 
     for row in active {
         let id = row.session.id;
         let plan = plan_row(&local_active, &local_deleted, row);
+        // A row mirrored before the host's clock was kept (schema v45) and
+        // unchanged since is never rewritten, so it is stamped here, once:
+        // the clock is what marks a row as the host's to forget with it.
+        if matches!(plan, RowPlan::Unchanged) && clocked.as_ref().is_some_and(|c| !c.contains(&id))
+        {
+            record_host_clock(db, id, row.updated_at);
+        }
         if !apply_plan(db, row, plan, &mut report) {
             continue;
         }
@@ -924,14 +940,11 @@ fn transitive_ids(listing: &Value) -> impl Iterator<Item = SessionId> + '_ {
     })
 }
 
-/// Drop this database's rows on `backend` that the host lists as transitive.
-///
-/// Forgotten rather than deleted: the session lives on at its owner, and a
-/// tombstone here would be pushed back to the host as a delete of it (see
-/// [`push_tombstones`]) the moment the setting was turned back on.
-fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>) -> Vec<SessionId> {
-    let held = db
-        .list_active_sessions()
+/// Every row this database holds, active and deleted, with the backend it is
+/// on: what a forget sweeps, since a deleted row is as much a mirror's as a
+/// live one.
+fn held_rows(db: &Database) -> impl Iterator<Item = (SessionId, String)> {
+    db.list_active_sessions()
         .unwrap_or_default()
         .into_iter()
         .map(|s| (s.id, s.backend_type))
@@ -940,7 +953,16 @@ fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|s| (s.id, s.backend_type)),
-        );
+        )
+}
+
+/// Drop this database's rows on `backend` that the host lists as transitive.
+///
+/// Forgotten rather than deleted: the session lives on at its owner, and a
+/// tombstone here would be pushed back to the host as a delete of it (see
+/// [`push_tombstones`]) the moment the setting was turned back on.
+fn forget_transitive(db: &Database, backend: &str, foreign: &HashSet<SessionId>) -> Vec<SessionId> {
+    let held = held_rows(db);
     let mut forgotten: Vec<SessionId> = held
         .filter(|(id, on)| super::same_machine(on, backend) && foreign.contains(id))
         .filter_map(|(id, _)| match db.forget_session(id) {
@@ -1072,7 +1094,77 @@ pub fn sync(
         };
         reports.push(report);
     }
+    reports.extend(forget_removed_hosts(db));
     Ok(reports)
+}
+
+/// Drop the rows a mirror wrote on every remote host the registry no longer
+/// serves, one report per such host.
+///
+/// Only a mirror's rows, since the host holds their record: one that comes
+/// back brings them back with its next pass, so a `hosts.toml` read without a
+/// host (a half-written save, an entry commented out for a while) loses
+/// nothing. A row this database is the only record of — a `share_sessions =
+/// false` host's, or one from before sharing — stays whatever the file says.
+///
+/// Forgotten rather than deleted, for `forget_transitive`'s reason: a
+/// tombstone is pushed to the host as a delete once it is configured again,
+/// and the sessions live on there — taking a host out of `hosts.toml` stops
+/// this machine watching it, it does not end its work. So nothing reaches the
+/// host and no worktree is touched.
+pub fn forget_removed_hosts(db: &Database) -> Vec<MirrorReport> {
+    let served = match crate::agent::host_config::served_host_names() {
+        Ok(served) => served,
+        Err(e) => {
+            tracing::warn!("rows of removed hosts kept — the host registry could not be read: {e}");
+            return Vec::new();
+        }
+    };
+    match db.mirrored_session_ids() {
+        Ok(mirrored) => forget_unserved(db, &served, &mirrored),
+        Err(e) => {
+            tracing::warn!("rows of removed hosts kept — could not tell which a mirror wrote: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn forget_unserved(
+    db: &Database,
+    served: &HashSet<String>,
+    mirrored: &HashSet<SessionId>,
+) -> Vec<MirrorReport> {
+    let held = held_rows(db).filter(|(id, _)| mirrored.contains(id));
+    let mut by_host: std::collections::BTreeMap<String, Vec<SessionId>> = Default::default();
+    for (id, on) in held {
+        let Ok(route) = crate::session::Route::parse(&on) else {
+            continue;
+        };
+        let (Some(via), Some(host)) = (route.via(), route.host()) else {
+            continue;
+        };
+        if served.contains(host) {
+            continue;
+        }
+        match db.forget_session(id) {
+            Ok(()) => by_host
+                .entry(crate::session::Route::remote(via, host, None).format())
+                .or_default()
+                .push(id),
+            Err(e) => tracing::warn!("could not forget {id} of removed host '{host}': {e}"),
+        }
+    }
+    by_host
+        .into_iter()
+        .map(|(host, mut unconfigured)| {
+            unconfigured.sort_by_key(|id| id.to_string());
+            MirrorReport {
+                host,
+                unconfigured,
+                ..MirrorReport::default()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

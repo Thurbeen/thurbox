@@ -441,6 +441,40 @@ fn wsl_repair_plan_for(candidates: Vec<String>, serving: &HostRegistry) -> WslRe
     WslRepairPlan { to_local, withheld }
 }
 
+/// The host names a session row may carry and still be served, or why that
+/// cannot be said.
+///
+/// `Err` for the questions [`wsl_repair_plan`] cannot ask either — `hosts.toml`
+/// did not parse, the WSL distros could not be enumerated — because the one
+/// caller, `session_ops::mirror::forget_removed_hosts`, drops every row whose
+/// host is missing here, and a host merely unread is not a host removed.
+///
+/// Inside a WSL distro with no `wsl.exe` on `PATH` (interop off) is `Err` too:
+/// `discover_wsl_hosts` answers "no distros" there, which is true off WSL
+/// but not inside it, where the siblings are still installed.
+///
+/// A loopback entry's spellings count as served: the rows it wrote are the WSL
+/// repair's to relabel local, not that sweep's to drop.
+pub fn served_host_names() -> Result<HashSet<String>, String> {
+    if crate::session::current_wsl_distro().is_some() && !wsl_exe_available() {
+        return Err("running inside WSL with no wsl.exe on PATH, so the other \
+                    distros cannot be listed"
+            .into());
+    }
+    let (mut reg, _) = load_or_seed_result()?;
+    let loopback = settle_wsl_self_hosts(&mut reg).1;
+    augment_with(&mut reg, discover_wsl_hosts()?);
+    let loopback = loopback
+        .iter()
+        .filter_map(|name| Some(crate::session::Route::parse(name).ok()?.host()?.to_string()));
+    Ok(reg
+        .hosts
+        .into_iter()
+        .map(|h| h.name)
+        .chain(loopback)
+        .collect())
+}
+
 /// Append auto-discovered WSL distros to `reg`.
 ///
 /// Best-effort, as every caller but the repair wants: a distro that could not
