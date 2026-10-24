@@ -51,6 +51,8 @@ pub struct SpawnRequest {
     pub command: Option<String>,
     /// Arguments for [`command`](Self::command), one token per element.
     pub args: Vec<String>,
+    /// Opaque per-session arguments appended to every registry-agent launch.
+    pub agent_args: Vec<String>,
     /// Extra environment for the launched process, on top of the `THURBOX_*`
     /// identity vars. Applies to a registry agent as well as a raw command.
     pub env: BTreeMap<String, String>,
@@ -499,7 +501,7 @@ fn spawn(
     report(SpawnPhase::Backend);
     let member_dirs = launch_member_dirs(&primary_cwd, &worktrees, &additional_dirs, host.as_ref());
     let (command, mut args) = super::build_agent_invocation(&agent_def, &config, &member_dirs);
-    if agent_def.name == "codex"
+    if agent_def.is_family("codex")
         && agent_def.fork_args == ["fork", "{id}"]
         && req.fork_session_id.as_deref() == Some("")
     {
@@ -509,6 +511,7 @@ fn spawn(
             .collect();
     }
     args.extend(telemetry_args);
+    args.extend(req.agent_args.iter().cloned());
 
     // Asked before the launch rather than after it: this is the one moment
     // thurbox knows both which binary it is about to ask for and that the user
@@ -585,7 +588,11 @@ fn spawn(
     // for the TUI to adopt and the window would be orphaned — untrackable and
     // unkillable from the UI. Best-effort tear it down before surfacing the
     // error so we don't leak a window.
-    if let Err(e) = db.upsert_session(&shared) {
+    if let Err(e) = db.upsert_session_with_agent_args(
+        &shared,
+        &req.agent_args,
+        crate::storage::EventReason::Spawned,
+    ) {
         tracing::error!(
             "spawn race: DB upsert failed after the tmux window for '{}' spawned; \
              tearing down the orphaned window: {e}",
@@ -654,6 +661,13 @@ pub fn validate_request(
     req: &SpawnRequest,
 ) -> Result<(), crate::session_ops::OpError> {
     crate::paths::validate_safe_name(&req.name)?;
+    if !req.agent_args.is_empty()
+        && (req.command.is_some() || !req.agent.as_deref().is_some_and(|a| !a.is_empty()))
+    {
+        return Err(
+            "--agent-arg requires an explicit --agent and cannot be used with --command".into(),
+        );
+    }
     if let Some(key) = &req.key {
         super::names::validate_key(key)?;
     }
@@ -817,6 +831,7 @@ fn delegated_create_args(
         agent,
         command,
         args: command_args,
+        agent_args,
         env,
         resume_session_id,
         agent_session_id,
@@ -857,6 +872,9 @@ fn delegated_create_args(
     // trusted, so a caller that ever reaches here with one is told.
     if fork_session_id.is_some() || !inherit_worktrees.is_empty() {
         return refuse("a fork");
+    }
+    if !agent_args.is_empty() && !cli.agent_args {
+        return Err(format!("host '{}' has an older thurbox-cli that cannot take --agent-arg; update that CLI before creating this session", host.name).into());
     }
     if existing_worktree.is_some() && !cli.create_parity {
         return Err(format!(
@@ -906,6 +924,9 @@ fn delegated_create_args(
     }
     for arg in command_args {
         flag("--arg", arg);
+    }
+    for arg in agent_args {
+        flag("--agent-arg", arg);
     }
     if let Some(resume) = resume_session_id {
         flag("--resume", resume);
@@ -1745,7 +1766,12 @@ pub(crate) fn adapt_def_for_launch(
     // A stripped config path outranks a provisioning note: it means the
     // agent's own hooks file never reached the host at all.
     let degraded = if stripped.is_empty() {
-        super::remote_hooks::provision_agent_hooks_on_host(h, signal, &def.name, hooks_enabled)
+        super::remote_hooks::provision_agent_hooks_on_host(
+            h,
+            signal,
+            def.hook_schema.as_deref().unwrap_or(&def.name),
+            hooks_enabled,
+        )
     } else {
         Some(format!(
             "hooks config stripped for host '{}' (no status): {}",
@@ -2956,6 +2982,7 @@ mod tests {
     fn parity_cli() -> super::super::host_cli::CliInfo {
         super::super::host_cli::CliInfo {
             create_parity: true,
+            agent_args: false,
             ..super::super::host_cli::fake::cli()
         }
     }

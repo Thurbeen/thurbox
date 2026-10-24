@@ -2766,6 +2766,7 @@ fn the_spawn_pipeline_reports_the_stage_it_reached() {
             agent: None,
             command: None,
             args: Vec::new(),
+            agent_args: Vec::new(),
             env: Default::default(),
             resume_session_id: None,
             agent_session_id: None,

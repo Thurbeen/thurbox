@@ -1259,3 +1259,13 @@ pub(super) fn migrate_v57_background_work(conn: &Connection) -> rusqlite::Result
     }
     add_column_if_absent(conn, "sessions", "background_work", "TEXT")
 }
+
+/// See [`super::SCHEMA_VERSION`] v58: older sessions have no extra arguments.
+pub(super) fn migrate_v58_agent_args(conn: &Connection) -> rusqlite::Result<()> {
+    if !table_exists(conn, "sessions")? {
+        return Ok(());
+    }
+    add_column_if_absent(conn, "sessions", "agent_args", "TEXT")?;
+    // v49 ran before this new column existed on an upgraded database.
+    migrate_v49_snapshot_versions(conn)
+}

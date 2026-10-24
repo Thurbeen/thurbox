@@ -95,6 +95,15 @@ use crate::session::SessionConfig;
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
+/// Whether a registered agent belongs to a hook family. A built-in's own
+/// name remains recognizable even after its entry is removed from the registry.
+pub fn agent_family_is(agent: &str, family: &str) -> bool {
+    agent == family
+        || crate::agent::agent_config::load_for_launch()
+            .get(agent)
+            .is_some_and(|def| def.is_family(family))
+}
+
 /// Deliver input to a session's agent through the backend its route names, and
 /// retire a Codex report made before that submission. A hook arriving while the
 /// backend delivers the prompt keeps its newer report.
@@ -106,7 +115,7 @@ pub fn send_text_with_status(
     submit: bool,
 ) -> Result<(), OpError> {
     let (backend, pane) = windows::require_agent_pane(backends, session)?;
-    let prior = if submit && session.agent == "codex" {
+    let prior = if submit && agent_family_is(&session.agent, "codex") {
         match db.load_hook_state(session.id) {
             Ok(row) => row,
             Err(e) => {
@@ -221,7 +230,7 @@ fn press_enter(
     pane: &str,
     session: &SharedSession,
 ) -> Result<(), OpError> {
-    let prior = if session.agent == "codex" {
+    let prior = if agent_family_is(&session.agent, "codex") {
         db.load_hook_state(session.id).unwrap_or_else(|e| {
             tracing::warn!(session_id = %session.id, "could not read Codex status before Enter: {e}");
             None
@@ -632,6 +641,12 @@ pub fn agent_launch_plan(
         });
     let (command, mut args) = build_agent_invocation(&def, &config, &member_dirs);
     args.extend(telemetry_args);
+    if let Some(session) = session {
+        args.extend(
+            db.load_agent_args(session.id)
+                .map_err(|e| format!("read the agent arguments: {e}"))?,
+        );
+    }
     Ok(LaunchPlan {
         agent: def.name,
         command,
@@ -753,10 +768,9 @@ pub fn fork_session_headless(
         .load_launch_env(id)
         .map_err(|e| format!("read the launch env: {e}"))?;
 
-    let codex_builtin = source.agent == "codex"
-        && recipe.is_none()
-        && resolve_agent_def(Some("codex"), crate::session::Platform::local())
-            .is_ok_and(|d| d.resume_args == ["resume", "{id}"]);
+    let codex_builtin = recipe.is_none()
+        && resolve_agent_def(Some(&source.agent), crate::session::Platform::local())
+            .is_ok_and(|d| d.is_family("codex") && d.resume_args == ["resume", "{id}"]);
     let fork_session_id = if codex_builtin {
         Some(
             db.get_session_meta(source.id, "thurbox.codex_conversation_id")
@@ -776,6 +790,9 @@ pub fn fork_session_headless(
         agent: recipe.is_none().then(|| source.agent.clone()),
         command: recipe.as_ref().map(|r| r.command.clone()),
         args: recipe.as_ref().map(|r| r.args.clone()).unwrap_or_default(),
+        agent_args: db
+            .load_agent_args(id)
+            .map_err(|e| format!("read the agent arguments: {e}"))?,
         env,
         // A fork of a remote session belongs on that session's host, or it would
         // silently become a local session pointed at a path that is not here.
@@ -899,7 +916,7 @@ fn shell_for(
     let stock = crate::session::Platform::ALL.map(crate::shell::shell_agent_def);
     if stock
         .iter()
-        .any(|s| def.name == s.name && def.command == s.command && def.args == s.args)
+        .any(|s| def.is_family(&s.name) && def.command == s.command && def.args == s.args)
     {
         let own = crate::shell::shell_agent_def(platform);
         def.command = own.command;

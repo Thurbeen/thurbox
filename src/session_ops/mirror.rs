@@ -88,6 +88,8 @@ impl MirrorReport {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostRow {
     pub session: SharedSession,
+    /// Absent from older peers; do not clear arguments they cannot report.
+    pub agent_args: Option<Vec<String>>,
     pub hook_state: Option<String>,
     pub base_branch: Option<String>,
     /// When the host last wrote this row (millis since epoch), when it says.
@@ -269,7 +271,15 @@ pub fn session_from_json(
                 .collect()
         })
         .unwrap_or_default();
+    let agent_args = value
+        .get("agent_args")
+        .filter(|v| !v.is_null())
+        .map(|v| {
+            serde_json::from_value::<Vec<String>>(v.clone()).map_err(|e| format!("agent_args: {e}"))
+        })
+        .transpose()?;
     Ok(HostRow {
+        agent_args,
         session: SharedSession {
             id,
             name,
@@ -542,6 +552,11 @@ fn record_host_facts(
     held_base: Option<&str>,
 ) {
     let id = row.session.id;
+    if let Some(args) = &row.agent_args {
+        if let Err(e) = db.set_agent_args(id, args) {
+            tracing::warn!("mirror: could not record agent arguments of {id}: {e}");
+        }
+    }
     if let Some(state) = row.hook_state.as_deref().filter(|s| held_state != Some(*s)) {
         if let Err(e) = db.set_hook_state(id, state) {
             tracing::warn!("mirror: could not record status of {id}: {e}");
@@ -1023,13 +1038,28 @@ pub fn register_unknown(
         let Ok(Some(row)) = db.get_session_by_id(*id) else {
             continue;
         };
-        let body = session_to_json(
+        let agent_args = match db.load_agent_args(*id) {
+            Ok(args) => args,
+            Err(e) => {
+                tracing::warn!("could not read agent arguments of {id}: {e}");
+                continue;
+            }
+        };
+        if !agent_args.is_empty() && !cli.agent_args {
+            tracing::warn!(
+                "host '{}' has an older CLI that cannot register per-session agent arguments",
+                host.name
+            );
+            continue;
+        }
+        let mut body = session_to_json(
             &row,
             hooks.get(id).and_then(|r| r.state.as_deref()),
             bases.get(id).map(String::as_str),
             updated.get(id).copied(),
-        )
-        .to_string();
+        );
+        body["agent_args"] = json!(agent_args);
+        let body = body.to_string();
         match host_cli::run(host, cli, &["session", "register", "--json-row", &body]) {
             Ok(_) => registered.push(*id),
             Err(e) => tracing::warn!("could not register '{}' on '{}': {e}", row.name, host.name),

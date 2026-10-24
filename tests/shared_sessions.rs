@@ -1130,6 +1130,75 @@ mod delegated_create {
         assert_eq!(row.agent_session_id.as_deref(), Some("conv-7"));
     }
 
+    #[test]
+    fn delegated_registry_args_reach_the_hosts_process() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let capture = pair.path("work/agent-args");
+        std::fs::write(pair.path("host-config/agents.toml"),
+            "[[agents]]\nname='record'\ncommand='sh'\nargs=['-c', 'printf \"%s\\n\" \"$@\" > \"$CAPTURE\"; exec sleep 600', 'record']\n").unwrap();
+        let out = pair.create(&[
+            "--name",
+            "args",
+            "--agent",
+            "record",
+            "--agent-arg=--model",
+            "--agent-arg",
+            "literal ; $value",
+            "--env",
+            &format!("CAPTURE={}", capture.display()),
+        ]);
+        let id = created_id(&out);
+        let expected = vec!["--model".to_string(), "literal ; $value".to_string()];
+        assert_eq!(pair.host_db().load_agent_args(id).unwrap(), expected);
+        assert_eq!(pair.caller_db().load_agent_args(id).unwrap(), expected);
+        assert_eq!(wait_for_file(&capture), "--model\nliteral ; $value\n");
+    }
+
+    #[test]
+    fn delegated_agent_args_refuse_a_peer_without_the_capability() {
+        use std::os::unix::fs::PermissionsExt;
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        std::fs::create_dir(pair.path("host-bin")).unwrap();
+        let wrapper = pair.path("host-bin/thurbox-cli");
+        std::fs::write(
+            &wrapper,
+            format!(
+                r#"#!/bin/sh
+if [ "$1" = version ]; then
+  '{}' "$@" | sed 's/"agent_args":[[:space:]]*true/"agent_args":false/g'
+else
+  exec '{}' "$@"
+fi
+"#,
+                env!("CARGO_BIN_EXE_thurbox-cli"),
+                env!("CARGO_BIN_EXE_thurbox-cli")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = pair.create(&[
+            "--name",
+            "unsupported",
+            "--agent",
+            "resumer",
+            "--agent-arg=--opaque",
+        ]);
+        assert!(!out.status.success());
+        let doc = answer(&out);
+        assert!(
+            doc.to_string().contains("--agent-arg") && doc.to_string().contains("older"),
+            "{doc}"
+        );
+        assert!(pair.host_db().list_active_sessions().unwrap().is_empty());
+        assert!(!pair.ssh_log().contains(" session create "));
+    }
+
     /// The link drops after the host created the session: the caller finds it
     /// by the id it minted, rather than reporting a failure that a retry would
     /// turn into a second session.

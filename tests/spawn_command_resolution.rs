@@ -304,8 +304,8 @@ fn a_spawned_pane_resolves_the_cli_its_hooks_call() {
     // cannot read as a pane whose `PATH` came up empty.
     let found = found.expect("the agent ran and reported what its PATH found");
     assert_eq!(
-        found.trim(),
-        env!("CARGO_BIN_EXE_thurbox-cli"),
+        std::fs::canonicalize(found.trim()).expect("resolved CLI"),
+        std::fs::canonicalize(env!("CARGO_BIN_EXE_thurbox-cli")).expect("built CLI"),
         "the pane's PATH did not find the thurbox-cli its status hooks call, so \
          every signal resolved nothing and `|| true` swallowed it"
     );
@@ -562,8 +562,8 @@ fn a_command_session_with_no_args_keeps_the_shell_that_splits_it() {
          never got as far as writing this",
     );
     assert_eq!(
-        found.trim(),
-        env!("CARGO_BIN_EXE_thurbox-cli"),
+        std::fs::canonicalize(found.trim()).expect("resolved CLI"),
+        std::fs::canonicalize(env!("CARGO_BIN_EXE_thurbox-cli")).expect("built CLI"),
         "the shell split the command but the pane lost the PATH prefix"
     );
 }

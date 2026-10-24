@@ -441,6 +441,7 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
             agent: Some("shell".into()),
             command: None,
             args: Vec::new(),
+            agent_args: Vec::new(),
             env: Default::default(),
             resume_session_id: None,
             agent_session_id: None,
@@ -1316,7 +1317,7 @@ sleep 300
         config.join("agents.toml"),
         format!(
             "default = 'codex'\n[[agents]]\nname = 'codex'\ncommand = '{}'\nargs = ['--no-daemon']\n\
-             resume_args = ['resume', '{{id}}']\nfork_args = ['fork', '{{id}}']\n",
+             resume_args = ['resume', '{{id}}']\nfork_args = ['fork', '{{id}}']\n\n[[agents]]\nname='codex-variant'\nextends='codex'\n",
             fake.display()
         ),
     )
@@ -1328,7 +1329,14 @@ sleep 300
         let mut req = thurbox::session_ops::spawn::SpawnRequest {
             name: name.into(),
             repo_path: repo.path().to_path_buf(),
-            agent: Some("codex".into()),
+            agent: Some(
+                if name == "second" {
+                    "codex-variant"
+                } else {
+                    "codex"
+                }
+                .into(),
+            ),
             ..Default::default()
         };
         req.env
@@ -1975,6 +1983,7 @@ fn a_command_session_survives_restart_and_can_be_parked() {
             agent: None,
             command: Some("sh".into()),
             args: vec!["-c".into(), "while :; do sleep 1; done".into()],
+            agent_args: Vec::new(),
             env: [("THURBOX_E2E_MARKER".to_string(), "kept".to_string())]
                 .into_iter()
                 .collect(),
@@ -2129,6 +2138,7 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
             agent: Some("shell".into()),
             command: None,
             args: Vec::new(),
+            agent_args: Vec::new(),
             env: [("FM_PROBE".to_string(), "1".to_string())]
                 .into_iter()
                 .collect(),

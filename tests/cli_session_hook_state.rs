@@ -627,6 +627,15 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
 
 #[test]
 fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
+    silent_codex_submission(false);
+}
+
+#[test]
+fn submitted_codex_variant_does_not_keep_old_idle_status() {
+    silent_codex_submission(true);
+}
+
+fn silent_codex_submission(variant: bool) {
     if !have_tmux() || !have_ps() {
         eprintln!("skipping: needs tmux and a ps that knows tpgid");
         return;
@@ -634,6 +643,15 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
     let _server = TmuxServer::pin(SOCKET);
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());
+    let agent = if variant { "codex-variant" } else { "codex" };
+    if variant {
+        let agents = thurbox::agent::agent_config::agents_config_path().unwrap();
+        std::fs::write(
+            agents,
+            format!("{AGENTS_TOML}\n[[agents]]\nname='codex-variant'\nextends='codex'\n"),
+        )
+        .unwrap();
+    }
     let bin = dir.path().join("bin");
     std::fs::create_dir_all(&bin).expect("mkdir");
     let fake = bin.join("codex");
@@ -644,7 +662,7 @@ fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).expect("chmod");
     }
     tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
-    let row = session_row("silent-codex", "codex", "local-tmux");
+    let row = session_row("silent-codex", agent, "local-tmux");
     tmux(&[
         "new-window",
         "-t",

@@ -61,6 +61,15 @@ fn git(dir: &Path, args: &[&str]) {
 
 #[test]
 fn the_shell_agent_on_a_windows_host_is_powershell() {
+    shell_on_windows_host(false);
+}
+
+#[test]
+fn an_inherited_stock_shell_keeps_the_hosts_platform() {
+    shell_on_windows_host(true);
+}
+
+fn shell_on_windows_host(variant: bool) {
     let root = tempfile::tempdir().expect("tempdir");
     thurbox::paths::set_test_dir(root.path());
     let config = thurbox::paths::config_file()
@@ -70,6 +79,17 @@ fn the_shell_agent_on_a_windows_host_is_powershell() {
         .to_path_buf();
     std::fs::create_dir_all(&config).expect("mkdir config");
     std::fs::write(config.join("hosts.toml"), HOSTS_TOML).expect("hosts.toml");
+    let agent = if variant { "shell-variant" } else { "shell" };
+    if variant {
+        std::fs::write(
+            config.join("agents.toml"),
+            format!(
+                "{}\n[[agents]]\nname='shell-variant'\nextends='shell'\n",
+                thurbox::agent::agent_config::builtin_agents_toml()
+            ),
+        )
+        .unwrap();
+    }
 
     // An `ssh` that never connects: nothing about the host is learnt from it.
     let bin = root.path().join("bin");
@@ -118,7 +138,7 @@ fn the_shell_agent_on_a_windows_host_is_powershell() {
             "--repo-path",
             &repo.path().display().to_string(),
             "--agent",
-            "shell",
+            agent,
             "--host",
             "winhost",
         ],
@@ -137,7 +157,7 @@ fn the_shell_agent_on_a_windows_host_is_powershell() {
 
     // What `agent launch-args shell --session` tells a driver to run must be
     // what the spawn ran.
-    let plan = thurbox::session_ops::agent_launch_plan(&db, &registry(&far), "shell", Some(&row))
+    let plan = thurbox::session_ops::agent_launch_plan(&db, &registry(&far), agent, Some(&row))
         .expect("the plan for the session");
     assert_eq!(
         (plan.command.as_str(), plan.args.as_slice()),

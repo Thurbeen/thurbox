@@ -56,6 +56,7 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
                 "deleted_since": true,
                 "deleted_changes_since": true,
                 "create_parity": true,
+                "agent_args": true,
             }),
             format!("thurbox {current}"),
         );
