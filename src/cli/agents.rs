@@ -27,9 +27,12 @@ pub enum Action {
     /// Pass the args through and the agent's status hooks fire, so the session
     /// reports `state` and appears in `watch` — which is the whole reason to
     /// ask. Without `--session` the environment names this thurbox instance
-    /// (config dir, data dir, multiplexer socket) and nothing more; with it,
+    /// (config dir, data dir, multiplexer socket) plus current agent env defaults; with it,
     /// the agent's conversation id is pinned to that session's and the
     /// `THURBOX_*` identity its `session signal` needs is included.
+    ///
+    /// For a shared-host mirror, request the plan on the owning instance:
+    /// this caller does not hold its saved environment.
     ///
     /// This is a fresh launch, never a resume: continuing an existing
     /// conversation is `session start` / `session restart`.
