@@ -2404,19 +2404,20 @@ listing would retire every window on the server.
 
 ## ADR-26: One reaper, and a row is written by the column that changed
 
-**Choice**: write a durable intent before resources, and publish a session
-only after its pane is confirmed. `session_intents` (schema v59) holds the
-UUID, planned worktrees, prior pane ids, the new pane id and the operation's
-lease expiry. Only newly created worktrees belong to rollback; opened and
-inherited checkouts do not. A failed create rolls back immediately, while a
-killed creator leaves its plan for recovery after the lease expires. A retry
-can attach the branch left by rollback without resetting it. Restore keeps
-its deleted row until it can commit the confirmed pane; its pending resource
-plan is recovered the same way. An explicit `session.pre_launch` refusal
-acknowledges preparation and closes the intent while retaining its directories
-for inspection, preserving the hook's preparation contract.
-Startup observations confirm the exact pane's owner and role; a backend without
-per-window stamps must instead confirm its unique live namesake. Ownerless
+**Choice**: write a durable intent before resources, and publish a session only after its
+pane is confirmed. `session_intents` (schema v59) holds the UUID, planned worktrees, prior
+pane ids, the new pane id and the operation's lease expiry and workspace provenance. Only
+newly created worktrees and workspaces belong to rollback; opened and inherited resources
+do not. Older journals without workspace provenance conservatively retain it. Workspace
+builds and cleanup share a machine/normalized-namespace lease and refuse an active sibling
+claim; remote rows cannot authorize local workspace removal. A failed create rolls back
+immediately, while a killed creator leaves its plan for recovery after the lease expires.
+A retry can attach the branch left by rollback without resetting it. Restore keeps its
+deleted row until it can commit the confirmed pane; its pending resource plan is recovered
+the same way. An explicit `session.pre_launch` refusal acknowledges preparation and closes
+the intent while retaining its directories for inspection, preserving the hook's
+preparation contract. Startup observations confirm the exact pane's owner and role; a
+backend without per-window stamps must instead confirm its unique live namesake. Ownerless
 windows never take part in session duplicate retirement.
 
 `session_ops::reconcile::tick` is the shared entry point for the interface's

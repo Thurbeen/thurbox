@@ -125,6 +125,35 @@ pub fn lock_for<'a>(
     }))
 }
 
+/// Conversation aliases can name one workspace across distinct session rows.
+pub(crate) fn workspace<'a>(
+    db: &'a Database,
+    backend_type: &str,
+    id: Option<&str>,
+    op: &str,
+) -> Result<Option<Lock<'a>>, crate::session_ops::OpError> {
+    let Some(name) = id
+        .map(crate::paths::sanitize_workspace_segment)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(None);
+    };
+    lock(
+        db,
+        Subject::Name {
+            scope: format!("workspace:{}", super::machine_key(backend_type)),
+            name,
+        },
+        op,
+    )?
+    .map(Some)
+    .ok_or_else(|| {
+        crate::session_ops::OpError::Conflict(
+            "another lifecycle operation holds this workspace".into(),
+        )
+    })
+}
+
 /// Local aliases name one checkout. A remote path belongs to its host's
 /// filesystem and must never be resolved against the observer's directories.
 pub(crate) fn worktree_key(backend_type: &str, path: &std::path::Path) -> std::path::PathBuf {

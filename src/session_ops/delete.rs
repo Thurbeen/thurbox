@@ -396,15 +396,28 @@ fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {
 ///
 /// **Backend-aware.** The windows are killed through the backend the row's
 /// route names, and each worktree is removed on the machine it lives on: local
-/// `git` here, or over the host's launcher for an `ssh:`/`wsl:` row. The
-/// symlink workspace is always local (a spawn-time process-cwd detail under the
-/// local data dir), so it is torn down regardless of backend.
+/// `git` here, or over the host's launcher for an `ssh:`/`wsl:` row. Local
+/// workspace cleanup respects namespace claims; a remote row never authorizes
+/// removal of the observer's workspace with the same conversation id.
 pub fn teardown_runtime_resources(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
+    let _workspace = match super::lock::workspace(
+        db,
+        &session.backend_type,
+        session.agent_session_id.as_deref(),
+        "remove workspace",
+    ) {
+        Ok(held) => held,
+        Err(error) => {
+            report.teardown_error = Some(error.to_string());
+            set_remote_report_aliases(session, report);
+            return;
+        }
+    };
     let _resources = match super::lock::worktrees(
         db,
         &session.backend_type,
@@ -458,8 +471,15 @@ fn unclaimed_resources(db: &Database, session: &crate::sync::SharedSession) -> R
                                 )
                         })
                     }))
-            || (session.agent_session_id.is_some()
-                && session.agent_session_id == row.agent_session_id)
+            || (super::same_machine(&row.backend_type, &session.backend_type)
+                && session
+                    .agent_session_id
+                    .as_deref()
+                    .zip(row.agent_session_id.as_deref())
+                    .is_some_and(|(a, b)| {
+                        crate::paths::sanitize_workspace_segment(a)
+                            == crate::paths::sanitize_workspace_segment(b)
+                    }))
     }) {
         return Err("resources are still claimed by another active session".into());
     }
@@ -536,13 +556,8 @@ fn teardown_runtime_resources_inner(
         }
     }
 
-    // Tear down the multi-repo symlink workspace (if any). Only the symlinks
-    // are removed — the underlying repos are untouched. Always local: the
-    // workspace lives under the local data dir even for a remote session.
-    if let Some(asid) = &session.agent_session_id {
-        if let Err(e) = crate::workspace::remove_workspace(asid) {
-            report.teardown_error = Some(format!("workspace removal failed: {e}"));
-        }
+    if let Err(e) = super::reconcile::remove_workspace(db, session) {
+        report.teardown_error = Some(format!("workspace removal failed: {e}"));
     }
 }
 
@@ -651,23 +666,15 @@ pub fn retry_owed_remote_teardowns(
         }
         let backend = super::windows::backend_for(backends, &row.backend_type);
         match finish_remote_teardown(db, host, backend, &row) {
-            Ok(()) => {
-                if let Some(asid) = &row.agent_session_id {
-                    if crate::workspace::remove_workspace(asid).is_err() {
-                        reap_failed(db, row.id, crate::sync::current_time_millis());
-                        continue;
-                    }
+            Ok(()) => match db.complete_session_teardown(row.id) {
+                Ok(()) => {
+                    finished.push(row.id.to_string());
+                    reap_succeeded(db, row.id);
                 }
-                match db.complete_session_teardown(row.id) {
-                    Ok(()) => {
-                        finished.push(row.id.to_string());
-                        reap_succeeded(db, row.id);
-                    }
-                    Err(e) => {
-                        tracing::warn!("could not clear the owed teardown of '{}': {e}", row.name)
-                    }
+                Err(e) => {
+                    tracing::warn!("could not clear the owed teardown of '{}': {e}", row.name)
                 }
-            }
+            },
             Err(Owed::Unreached(e)) => {
                 reap_failed(db, row.id, crate::sync::current_time_millis());
                 tracing::debug!(
@@ -1119,6 +1126,12 @@ pub(super) fn reap_selected_soft_delete(
     if row.force_deleted || !still_selected()? {
         return Ok(false);
     }
+    let _workspace = super::lock::workspace(
+        db,
+        &row.backend_type,
+        row.agent_session_id.as_deref(),
+        "reap workspace",
+    )?;
 
     // A local row whose route no backend here serves has no window here to
     // release: the one its name resolves to on some other server is somebody
@@ -1172,15 +1185,10 @@ pub(super) fn reap_selected_soft_delete(
         return Ok(false);
     }
 
-    // Derived per-session artifacts, both rebuilt on restore. Released even
-    // when the host could not be reached: they are this machine's, and nothing
-    // about a host that did not answer makes them worth keeping.
+    super::reconcile::remove_workspace(db, &shared_deleted(row))?;
     if let Some(asid) = &row.agent_session_id {
         if let Some(dir) = crate::paths::metrics_directory() {
             let _ = std::fs::remove_file(dir.join(format!("{asid}.json")));
-        }
-        if let Err(e) = crate::workspace::remove_workspace(asid) {
-            tracing::warn!("remove_workspace({asid}) during reap: {e}");
         }
     }
     remote.map(|()| true)

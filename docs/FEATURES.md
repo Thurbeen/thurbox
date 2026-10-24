@@ -1709,6 +1709,8 @@ Soft deletion disables owned automations and Sends targeting the session in
 the same transaction as deletion. Undo preserves their ids, history and prior
 enabled state. A Send owned by one deleted session and targeting another
 stays disabled until both return. Previously disabled automations stay off.
+An explicit disable while suspended also survives undo; a name or schedule
+edit preserves the saved enabled state.
 The window reap leaves automations intact; force delete and purge remove
 owned automations and their history. Delete JSON lists the affected ids.
 

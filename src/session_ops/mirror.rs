@@ -545,6 +545,9 @@ fn apply_plan(db: &Database, row: &HostRow, plan: RowPlan, report: &mut MirrorRe
     let written = match plan {
         RowPlan::Unchanged => return true,
         RowPlan::KeepTombstone(generation) => {
+            if let Some(observed) = row.lifecycle_generation {
+                let _ = db.set_host_lifecycle_generation(id, observed);
+            }
             report.tombstoned.push(id);
             report.tombstone_selections.push((id, generation));
             return false;

@@ -23,6 +23,9 @@ use thurbox::sync::SharedSession;
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
 
+#[path = "support/recording_backend.rs"]
+mod recording_backend;
+
 /// A throwaway thurbox instance with the heartbeat off: nothing fires here
 /// except what a test runs itself.
 struct Env {
@@ -251,6 +254,43 @@ fn owned_automations_keep_their_identity_and_enabled_state_across_undo() {
 
 #[test]
 #[cfg(unix)]
+fn explicit_disables_while_suspended_survive_undo() {
+    if !Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return;
+    }
+    let env = Env::new();
+    let owner = env.seed_session("owner");
+    let cli = env.exec("cli", "true", &["--owner-session", &owner]);
+    let interface = env.exec("interface", "true", &["--owner-session", &owner]);
+    let renamed = env.exec("renamed", "true", &["--owner-session", &owner]);
+    env.ok(&["session", "delete", &owner, "--soft"]);
+    env.ok(&["automation", "edit", &cli, "--disabled"]);
+    thurbox::session_ops::automations::set_enabled(
+        &env.db(),
+        interface.parse().unwrap(),
+        false,
+        thurbox::sync::current_time_millis(),
+    )
+    .unwrap();
+    env.ok(&["automation", "edit", &renamed, "--name", "kept"]);
+    env.ok(&["session", "restore", &owner]);
+    for id in [&cli, &interface] {
+        let restored = env.automation(id);
+        assert_eq!(
+            restored["enabled"], false,
+            "explicit disable was undone: {restored}"
+        );
+        assert!(restored["next_run_at"].is_null());
+    }
+    assert_eq!(env.automation(&renamed)["enabled"], true);
+}
+
+#[test]
+#[cfg(unix)]
 fn restoring_a_target_reenables_only_the_sends_its_delete_disabled() {
     if !Command::new("tmux")
         .arg("-V")
@@ -370,7 +410,28 @@ fn purge_accepts_a_deleted_reference_and_refuses_an_active_one() {
             [&session],
         )
         .unwrap();
-    let done = env.ok(&["session", "purge", &session]);
+    // Windows CI has no multiplexer installed; successful purge still needs a
+    // backend that can confirm absence, rather than treating a probe error as absence.
+    let _paths = thurbox::paths::TestPathGuard::new(env.root.path());
+    let route = thurbox::session::Route::local(Some(thurbox::session::Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let backends =
+        thurbox::cli::Backends::ready(thurbox::backend::BackendRegistry::new(route, backend));
+    let done = thurbox::cli::sessions::run(
+        thurbox::cli::sessions::Action::Purge {
+            if_generation: None,
+            session: Some(session.clone()),
+            force: false,
+            older_than: None,
+            older_than_days: None,
+            all: false,
+            dry_run: false,
+        },
+        &env.db(),
+        &backends,
+    )
+    .unwrap()
+    .json;
     assert_eq!(done["purged"].as_array().unwrap().len(), 1);
     env.exits(1, &["session", "restore", &session, "--best-effort"]);
 }
