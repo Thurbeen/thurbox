@@ -68,6 +68,7 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
 
     let out = run(
         Action::List {
+            include_purged: false,
             parent: None,
             recursive: false,
             tree: false,
@@ -92,6 +93,7 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
     // would have to guess: the pane, the extra dirs, the base branch.
     let active = run(
         Action::List {
+            include_purged: false,
             parent: None,
             recursive: false,
             tree: false,
@@ -300,6 +302,8 @@ fn the_mirror_reconciles_a_real_database_both_ways() {
         BACKEND,
         &[],
         &[HostDeletedRow {
+            lifecycle_generation: None,
+            purged: false,
             id: theirs,
             force_deleted: true,
         }],
@@ -421,6 +425,7 @@ fn listing(db: &Database, deleted: bool) -> Value {
             recursive: false,
             tree: false,
             deleted,
+            include_purged: false,
             since: None,
             verify: false,
             key: None,
@@ -874,7 +879,7 @@ mod delegated_create {
     const HOST_AGENTS: &str = "default = \"shell\"\n\n\
          [[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = [\"-c\", \"exec sleep 600\"]\n\n\
          [[agents]]\nname = \"resumer\"\ncommand = \"sh\"\nargs = []\n\
-         resume_args = [\"-c\", \"exec sleep 600 {id}\"]\nresume_latest = false\n";
+         resume_args = [\"-c\", \"true {id}; exec sleep 600\"]\nresume_latest = false\n";
 
     /// The caller, wired to reach the host through the stand-in `ssh`.
     struct Pair {
@@ -1020,6 +1025,54 @@ mod delegated_create {
         let doc = answer(out);
         assert!(out.status.success(), "create failed: {doc}");
         doc["id"].as_str().expect("an id").parse().expect("a uuid")
+    }
+
+    #[test]
+    fn an_offline_delete_learns_the_upgraded_hosts_generation_before_pushing() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let id = created_id(&pair.create(&["--name", "offline-delete", "--agent", "shell"]));
+        let db = pair.caller_db();
+        db.conn_ref()
+            .execute(
+                "UPDATE sessions SET host_lifecycle_generation = NULL WHERE id = ?1",
+                [id.to_string()],
+            )
+            .unwrap();
+        db.soft_delete_session(id).unwrap();
+        assert!(pair.host_db().get_session_by_id(id).unwrap().is_some());
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        cmd.args(["session", "sync", "--json"])
+            .env("HOME", pair.path("home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("config"))
+            .env("THURBOX_DATA_DIR", pair.path("data"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    pair.path("bin").display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .env_remove("THURBOX_SESSION")
+            .env_remove("THURBOX_SESSION_ID");
+        pair.caller_server.scope(&mut cmd);
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "sync failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            pair.host_db()
+                .get_deleted_session_by_id(id)
+                .unwrap()
+                .is_some(),
+            "sync left the offline deletion stuck on an active host row"
+        );
+        assert!(pair.ssh_log().contains("--if-generation"));
     }
 
     /// Wait for `path` to hold something, for as long as a pane takes to
@@ -1718,4 +1771,49 @@ fi
             "{doc}"
         );
     }
+}
+
+#[test]
+fn a_purge_tombstone_learned_before_the_live_row_blocks_stale_adoption() {
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = thurbox::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+    let id = SessionId::default();
+    let purged = mirror::parse_deleted(
+        &json!([{"id": id.to_string(), "force_deleted": true, "purged_at": 1}]),
+    );
+    mirror::apply(&db, BACKEND, &[], &purged);
+    assert!(db.list_deleted_sessions().unwrap().is_empty());
+    assert_eq!(db.list_session_tombstones(None).unwrap().len(), 1);
+    db.upsert_session(&row(id, "stale", BACKEND)).unwrap();
+    assert!(db.get_session_by_id(id).unwrap().is_none());
+    db.restore_session(id).unwrap();
+    assert!(db.get_session_by_id(id).unwrap().is_none());
+}
+
+#[test]
+fn a_remote_purge_cannot_touch_a_different_routes_deleted_row_with_the_same_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = thurbox::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+    let local = row(SessionId::default(), "local", "local-tmux");
+    db.upsert_session(&local).unwrap();
+    db.force_delete_session(local.id).unwrap();
+    db.set_session_meta(local.id, "keep", "value").unwrap();
+    let gone = mirror::parse_deleted(
+        &json!([{"id": local.id.to_string(), "force_deleted": true, "purged_at": 1}]),
+    );
+    mirror::apply(&db, BACKEND, &[], &gone);
+    let kept = db
+        .get_deleted_session_by_id(local.id)
+        .unwrap()
+        .expect("foreign purge erased local deletion");
+    assert!(
+        kept.teardown_owed,
+        "foreign purge cleared local cleanup debt"
+    );
+    assert_eq!(
+        db.get_session_meta(local.id, "keep").unwrap().as_deref(),
+        Some("value")
+    );
 }

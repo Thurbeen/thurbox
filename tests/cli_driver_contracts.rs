@@ -659,6 +659,7 @@ esac
     row.backend_type = "ssh:probe".into();
     db.upsert_session(&row).unwrap();
     db.soft_delete_session(id).unwrap();
+    db.set_host_lifecycle_generation(id, 7).unwrap();
     let mut command = env.command(&["session", "reap", &id.to_string(), "--json"]);
     command.env(
         "PATH",
@@ -852,26 +853,33 @@ esac
 
 #[cfg(unix)]
 #[test]
-fn a_typed_missing_host_row_permits_the_owned_window_fallback() {
+fn a_typed_missing_host_row_keeps_fenced_cleanup_from_falling_back() {
     let (out, fallback) = remote_reap_reply(r#"{"error":"absent", "error_kind":"not_found"}"#, 1);
-    assert!(out.status.success(), "{}", stdout_of(&out));
-    assert!(fallback, "a typed absence still permits backend teardown");
+    assert!(!out.status.success(), "{}", stdout_of(&out));
+    assert!(
+        !fallback,
+        "a typed absence cannot bypass a lifecycle precondition"
+    );
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "not_found");
 }
 
 /// A host on an older build sends no `error_kind`. Its own absence sentence is
-/// still absence; any other wording stays opaque (see above).
+/// still recognized as absence, but a fenced reap never falls back to a kill.
 #[cfg(unix)]
 #[test]
-fn a_legacy_peers_own_absence_sentence_still_permits_the_owned_window_fallback() {
+fn a_legacy_absence_reply_cannot_bypass_fenced_cleanup() {
     let (out, fallback) = remote_reap_reply(
         r#"{"error":"Deleted session not found: 00000000-0000-0000-0000-000000000001"}"#,
         1,
     );
-    assert!(out.status.success(), "{}", stdout_of(&out));
+    assert!(!out.status.success(), "{}", stdout_of(&out));
     assert!(
-        fallback,
-        "an older host's absence answer must still permit teardown"
+        !fallback,
+        "an absence answer cannot bypass the lifecycle precondition"
     );
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "not_found");
 }
 
 /// The host may hold the row live (restored there) while this machine still

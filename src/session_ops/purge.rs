@@ -1,16 +1,7 @@
-//! Purging deleted sessions: dropping the row for good, so the restore list,
-//! the reaper's sweep and every mirroring peer stop carrying it.
+//! Irreversible cleanup with a retained tombstone for mirroring peers.
 //!
-//! A deleted row is not always inert. A soft-deleted one may still own its
-//! agent's windows until the reaper takes them, and one whose teardown never
-//! reached its host is the owed-teardown sweep's worklist. A purge leaves both
-//! kinds alone rather than forgetting what they still hold: it releases a
-//! soft row's windows the way the reaper would, and keeps any row whose
-//! windows it could not look at, or whose teardown is owed.
-//!
-//! Worktrees stay on disk. They are what made a soft delete undoable, may hold
-//! uncommitted work, and removing a directory is not what dropping a row asks
-//! for — the report names them instead.
+//! A failed cleanup keeps its durable worklist; only confirmed teardown can
+//! commit `purged_at`. Opened user worktrees are never removed.
 
 use std::path::PathBuf;
 
@@ -28,15 +19,14 @@ pub enum Age {
     OlderThanDays(u64),
 }
 
-/// A row a purge dropped — or, on a dry run, would drop.
+/// A completed purge, or its dry-run plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Purged {
     pub id: SessionId,
     pub name: String,
     pub backend_type: String,
     pub deleted_at: u64,
-    /// Worktrees thurbox checked out for it that a soft delete left in place.
-    /// On the host the row lived on, for a remote one.
+    /// Legacy report field, empty after cleanup. Opened user worktrees are retained.
     pub left_on_disk: Vec<PathBuf>,
 }
 
@@ -64,6 +54,44 @@ pub fn purge_deleted(
     age: Age,
     dry_run: bool,
 ) -> Result<PurgeReport, crate::session_ops::OpError> {
+    purge_selected(db, backends, age, dry_run, None)
+}
+
+pub fn purge_selected(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    age: Age,
+    dry_run: bool,
+    selected_id: Option<SessionId>,
+) -> Result<PurgeReport, crate::session_ops::OpError> {
+    purge_if_generation(db, backends, age, dry_run, selected_id, None)
+}
+
+pub fn purge_if_generation(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    age: Age,
+    dry_run: bool,
+    selected_id: Option<SessionId>,
+    expected: Option<u64>,
+) -> Result<PurgeReport, super::OpError> {
+    purge_selected_limited(db, backends, age, dry_run, selected_id, None, expected)
+}
+
+fn purge_selected_limited(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    age: Age,
+    dry_run: bool,
+    selected_id: Option<SessionId>,
+    limit: Option<usize>,
+    expected: Option<u64>,
+) -> Result<PurgeReport, crate::session_ops::OpError> {
+    if let Some(expected) = expected {
+        let id = selected_id.ok_or("conditional purge requires one session")?;
+        db.require_lifecycle_generation(id, Some(expected))
+            .map_err(|_| super::OpError::Conflict("session lifecycle changed".into()))?;
+    }
     let now = crate::sync::current_time_millis();
     let selected = |row: &DeletedSessionInfo| match age {
         Age::All => true,
@@ -79,7 +107,27 @@ pub fn purge_deleted(
         Option<crate::backend::identity::WindowIndex>,
     > = std::collections::HashMap::new();
     let mut report = PurgeReport::default();
-    for row in rows.into_iter().filter(selected) {
+    let mut attempts = 0;
+    let mut silent = std::collections::HashSet::new();
+    for row in rows
+        .into_iter()
+        .filter(|row| selected_id.map_or(true, |id| id == row.id))
+        .filter(selected)
+    {
+        let _lease = if !dry_run {
+            match super::lock::lock(db, super::lock::Subject::Session(row.id), "purge")? {
+                Some(lease) => Some(lease),
+                None => continue,
+            }
+        } else {
+            None
+        };
+        if db
+            .require_lifecycle_generation(row.id, expected.or(Some(row.lifecycle_generation)))
+            .is_err()
+        {
+            continue;
+        }
         let kept = |reason: &str| Kept {
             id: row.id,
             name: row.name.clone(),
@@ -97,6 +145,110 @@ pub fn purge_deleted(
             report.kept.push(kept("it is inside its undo window"));
             continue;
         }
+        if let Some(super::Executor::HostCli { host, cli }) =
+            super::Executor::for_backend(&row.backend_type)
+        {
+            if silent.contains(&host.name) {
+                continue;
+            }
+            if !cli.purged_tombstones {
+                report
+                    .kept
+                    .push(kept("update the host's CLI before purging its sessions"));
+                continue;
+            }
+            let Some(generation) = row
+                .host_lifecycle_generation
+                .filter(|_| cli.lifecycle_preconditions)
+            else {
+                report.kept.push(kept(
+                    "host lifecycle precondition is unknown; sync the host first",
+                ));
+                continue;
+            };
+            if let Some(limit) = limit {
+                if attempts >= limit {
+                    break;
+                }
+                if !super::delete::claim_reap(db, row.id, now) {
+                    continue;
+                }
+                attempts += 1;
+            }
+            let generation = generation.to_string();
+            let id = row.id.to_string();
+            let days = match age {
+                Age::All => None,
+                Age::OlderThanDays(days) => Some(days.to_string()),
+            };
+            let mut args = vec!["session", "purge", &id, "--if-generation", &generation];
+            if let Some(days) = days.as_deref() {
+                args.extend(["--older-than-days", days]);
+            }
+            if dry_run {
+                args.push("--dry-run");
+            }
+            match super::host_cli::run(&host, &cli, &args) {
+                Ok(answer)
+                    if answer
+                        .get("purged")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|rows| {
+                            rows.iter().any(|r| {
+                                r.get("id").and_then(serde_json::Value::as_str) == Some(id.as_str())
+                            })
+                        }) =>
+                {
+                    if !dry_run
+                        && db
+                            .require_lifecycle_generation(row.id, Some(row.lifecycle_generation))
+                            .is_err()
+                    {
+                        report
+                            .kept
+                            .push(kept("its local deletion changed meanwhile"));
+                        continue;
+                    }
+                    if !dry_run
+                        && !db
+                            .purge_deleted_session(row.id, row.deleted_at)
+                            .map_err(|e| e.to_string())?
+                    {
+                        report
+                            .kept
+                            .push(kept("its local deletion changed meanwhile"));
+                        continue;
+                    }
+                    report.purged.push(Purged {
+                        id: row.id,
+                        name: row.name,
+                        backend_type: row.backend_type,
+                        deleted_at: row.deleted_at,
+                        left_on_disk: Vec::new(),
+                    });
+                }
+                Ok(_) => report
+                    .kept
+                    .push(kept("the host retained it; its cleanup may still be owed")),
+                Err(e) => {
+                    if !dry_run {
+                        super::delete::reap_failed(db, row.id, now);
+                    }
+                    silent.insert(host.name.clone());
+                    report.kept.push(kept(&format!("host purge failed: {e}")));
+                }
+            }
+            continue;
+        }
+        if super::resolve_host(&row.backend_type)
+            .flatten()
+            .is_some_and(|host| host.shareable())
+        {
+            report.kept.push(kept(
+                "shared host CLI is unavailable; direct cleanup is unsafe",
+            ));
+            continue;
+        }
         let index = windows
             .entry(row.backend_type.clone())
             .or_insert_with(|| super::delete::listed_windows_on(db, backends, &row.backend_type));
@@ -110,6 +262,15 @@ pub fn purge_deleted(
             report.kept.push(kept("its window ownership is ambiguous"));
             continue;
         }
+        if let Some(limit) = limit {
+            if attempts >= limit {
+                break;
+            }
+            if !super::delete::claim_reap(db, row.id, now) {
+                continue;
+            }
+            attempts += 1;
+        }
         let owns = !super::delete::owned_windows_in(
             index,
             &row,
@@ -121,7 +282,7 @@ pub fn purge_deleted(
                 .get_deleted_session_by_id(row.id)
                 .map_err(|e| format!("get deleted session: {e}"))?;
             if !current.is_some_and(|current| {
-                current.deleted_at == row.deleted_at
+                current.lifecycle_generation == row.lifecycle_generation
                     && current.force_deleted == row.force_deleted
                     && !current.teardown_owed
             }) {
@@ -133,39 +294,55 @@ pub fn purge_deleted(
             report.kept.push(kept("its windows are still present"));
             continue;
         }
-        if owns && !dry_run {
+        if !dry_run {
+            if !row.force_deleted {
+                match super::delete::reap_selected_soft_delete(db, backends, &row) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        report.kept.push(kept("its deletion changed meanwhile"));
+                        continue;
+                    }
+                    Err(error) => {
+                        report
+                            .kept
+                            .push(kept(&format!("its windows could not be reaped: {error}")));
+                        continue;
+                    }
+                }
+            }
+            if !db
+                .begin_session_purge_generation(
+                    row.id,
+                    row.deleted_at,
+                    Some(row.lifecycle_generation),
+                )
+                .map_err(|e| e.to_string())?
+            {
+                report.kept.push(kept("its deletion changed meanwhile"));
+                continue;
+            }
+            let mut teardown = super::ForceDeleteReport::default();
+            super::delete::teardown_runtime_resources(
+                db,
+                backends,
+                &super::delete::shared_deleted(&row),
+                &mut teardown,
+            );
+            if teardown.teardown_error.is_some() || !teardown.worktree_errors.is_empty() {
+                report
+                    .kept
+                    .push(kept("its teardown is still owed; cleanup will retry"));
+                continue;
+            }
             if let Err(reason) = confirm_teardown(db, backends, &row) {
                 report.kept.push(kept(&reason));
                 continue;
             }
-        }
-        if !dry_run {
-            match db.purge_deleted_session(row.id, row.deleted_at) {
-                Ok(true) => {}
-                Ok(false) => {
-                    report.kept.push(kept(
-                        "it was restored, or began owing a teardown, meanwhile",
-                    ));
-                    continue;
-                }
-                Err(e) => {
-                    report
-                        .kept
-                        .push(kept(&format!("the database refused: {e}")));
-                    continue;
-                }
-            }
+            db.complete_session_teardown(row.id)
+                .map_err(|e| e.to_string())?;
         }
         report.purged.push(Purged {
-            left_on_disk: if row.force_deleted {
-                Vec::new()
-            } else {
-                row.worktrees
-                    .iter()
-                    .filter(|w| w.created_by_thurbox)
-                    .map(|w| w.worktree_path.clone())
-                    .collect()
-            },
+            left_on_disk: Vec::new(),
             id: row.id,
             name: row.name,
             backend_type: row.backend_type,
@@ -180,8 +357,7 @@ fn confirm_teardown(
     backends: &crate::backend::BackendRegistry,
     row: &DeletedSessionInfo,
 ) -> Result<(), String> {
-    super::delete::reap_selected_soft_delete(db, backends, row)
-        .map_err(|e| format!("its windows did not come down: {e}"))?;
+    let _ = db;
     // Reaping is best effort. Permanent deletion needs a fresh
     // listing proving that no owned window remains.
     let confirmed = super::delete::listed_windows_on(db, backends, &row.backend_type)
@@ -222,7 +398,15 @@ pub fn purge_expired(db: &Database, backends: &crate::backend::BackendRegistry) 
     if !db.any_deleted_before(cutoff).unwrap_or(false) {
         return PurgeReport::default();
     }
-    match purge_deleted(db, backends, Age::OlderThanDays(days), false) {
+    match purge_selected_limited(
+        db,
+        backends,
+        Age::OlderThanDays(days),
+        false,
+        None,
+        Some(128),
+        None,
+    ) {
         Ok(report) => {
             if !report.purged.is_empty() {
                 tracing::info!(
@@ -242,7 +426,7 @@ pub fn purge_expired(db: &Database, backends: &crate::backend::BackendRegistry) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::{SharedSession, SharedWorktree};
+    use crate::sync::SharedSession;
 
     fn deleted(db: &Database, name: &str, backend_type: &str, days_ago: u64) -> SessionId {
         let row = SharedSession {
@@ -254,12 +438,7 @@ mod tests {
             agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktrees: vec![SharedWorktree {
-                repo_path: "/srv/repo".into(),
-                worktree_path: format!("/srv/repo/.worktrees/{name}").into(),
-                branch: name.into(),
-                created_by_thurbox: true,
-            }],
+            worktrees: Vec::new(),
             shell_backend_id: None,
             parent_session_id: None,
             display_order: None,
@@ -311,10 +490,7 @@ mod tests {
 
         let done = purge_deleted(&db, &backends, Age::OlderThanDays(30), false).unwrap();
         assert_eq!(names(&done), (vec!["old"], vec!["owed", "unlisted"]));
-        assert_eq!(
-            done.purged[0].left_on_disk,
-            vec![PathBuf::from("/srv/repo/.worktrees/old")]
-        );
+        assert!(done.purged[0].left_on_disk.is_empty());
         assert!(db.get_deleted_session_by_id(old).unwrap().is_none());
         for kept in [recent, owed, unlisted] {
             assert!(db.get_deleted_session_by_id(kept).unwrap().is_some());
@@ -348,6 +524,107 @@ mod tests {
         assert!(db.get_session_by_id(id).unwrap().is_some());
         db.soft_delete_session(id).unwrap();
         assert!(!db.purge_deleted_session(id, deleted_at).unwrap());
+        assert!(db.get_deleted_session_by_id(id).unwrap().is_some());
+    }
+}
+
+#[cfg(test)]
+mod delegated_purge_tests {
+    use super::*;
+    use crate::session_ops::host_cli::{fake, Usable};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    #[test]
+    fn a_delegated_purge_never_force_deletes_a_host_row_restored_after_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let hosts = crate::agent::host_config::hosts_config_path().unwrap();
+        std::fs::create_dir_all(hosts.parent().unwrap()).unwrap();
+        std::fs::write(
+            hosts,
+            "[[hosts]]\nname = \"peer\"\ndestination = \"unused\"\nshare_sessions = true\n",
+        )
+        .unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let id = crate::session::SessionId::default();
+        db.conn_ref().execute("INSERT INTO sessions(id, name, backend_type, created_at, updated_at, deleted_at) VALUES (?1, 'old', 'ssh:peer', 1, 1, 1)", [id.to_string()]).unwrap();
+        let active = Arc::new(AtomicBool::new(true));
+        let observed = active.clone();
+        let mut cli = fake::cli();
+        cli.purged_tombstones = true;
+        cli.lifecycle_preconditions = true;
+        db.set_host_lifecycle_generation(id, 7).unwrap();
+        fake::force_usable(Usable::Yes(cli));
+        fake::install_runner(Box::new(move |_, args| {
+            assert!(args.windows(2).any(|pair| pair == ["--if-generation", "7"]));
+            if args.iter().any(|arg| arg == "--force") {
+                observed.store(false, Ordering::SeqCst);
+                Ok(serde_json::json!({"purged": [{"id": id.to_string()}]}))
+            } else {
+                Err(fake::answered(
+                    "active session requires an explicit force delete",
+                ))
+            }
+        }));
+        let result =
+            purge_deleted(&db, &crate::backend::registry::inert(), Age::All, false).unwrap();
+        fake::clear();
+        assert!(
+            active.load(Ordering::SeqCst),
+            "delegated purge destroyed a restored host session"
+        );
+        assert!(result.purged.is_empty());
+    }
+    #[test]
+    fn a_retention_purge_checks_the_hosts_own_deletion_age() {
+        let temp = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let hosts = crate::agent::host_config::hosts_config_path().unwrap();
+        std::fs::create_dir_all(hosts.parent().unwrap()).unwrap();
+        std::fs::write(
+            hosts,
+            "[[hosts]]\nname = 'peer'\ndestination = 'unused'\nshare_sessions = true\n",
+        )
+        .unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let id = crate::session::SessionId::default();
+        db.conn_ref().execute("INSERT INTO sessions(id, name, backend_type, created_at, updated_at, deleted_at) VALUES (?1, 'old-here', 'ssh:peer', 1, 1, 1)", [id.to_string()]).unwrap();
+        db.set_host_lifecycle_generation(id, 7).unwrap();
+        let purged_on_host = Arc::new(AtomicBool::new(false));
+        let observed = purged_on_host.clone();
+        let mut cli = fake::cli();
+        cli.purged_tombstones = true;
+        cli.lifecycle_preconditions = true;
+        fake::force_usable(Usable::Yes(cli));
+        fake::install_runner(Box::new(move |_, args| {
+            if args
+                .windows(2)
+                .any(|pair| pair == ["--older-than-days", "30"])
+            {
+                Ok(
+                    serde_json::json!({"purged": [], "kept": [{"id": id.to_string(), "reason": "recent deletion on host"}]}),
+                )
+            } else {
+                observed.store(true, Ordering::SeqCst);
+                Ok(serde_json::json!({"purged": [{"id": id.to_string()}]}))
+            }
+        }));
+        let report = purge_deleted(
+            &db,
+            &crate::backend::registry::inert(),
+            Age::OlderThanDays(30),
+            false,
+        )
+        .unwrap();
+        fake::clear();
+        assert!(
+            !purged_on_host.load(Ordering::SeqCst),
+            "retention purged a recent host deletion using the observers older timestamp"
+        );
+        assert!(report.purged.is_empty());
         assert!(db.get_deleted_session_by_id(id).unwrap().is_some());
     }
 }

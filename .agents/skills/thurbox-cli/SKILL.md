@@ -417,12 +417,14 @@ reports `idle`, matching what `session get` says for that row in that second.
 `to_state` still carries the event's own word verbatim, so the transition
 itself is never lost.
 
-**`lost` is the one event `watch` writes itself.** A multiplexer crash takes
+**`lost` is an observed event, recorded by watch and the lifecycle reconciler.** A multiplexer crash takes
 every pane on its server, and nothing inside it survives to log that. So every
 3 s `watch` lists each local backend's windows (`session_ops::lost`) and records
 `changed`/`lost` for an active, unparked, local session whose window is gone —
 on the second look in a row with the same pane, so a `restart` caught between
-kill and respawn is not a loss. `Database::record_session_lost` checks under
+kill and respawn is not a loss. The heartbeat keeps the first observation in
+`session_loss_suspects` (schema v59), so its separate tick processes can confirm
+loss without a watcher running. `Database::record_session_lost` checks under
 the write lock that the row still points at that pane, that no restart holds
 it, and that its `lost_at` mark (schema v50) is unset, then sets it — so
 concurrent and back-to-back watchers report a loss once. The same write empties
@@ -673,27 +675,30 @@ lossless and are never touched by a soft delete. `--force`
 (`session_ops::delete_session_headless`) also kills the tmux window, removes
 the worktrees **thurbox created** + the symlink workspace, and clears its `session meta` key/value space
 (the row is unrestorable, so the meta would otherwise outlive it) — for headless
-cleanup with no TUI running. Teardown is best-effort
-(failures land in the JSON report), but a *remote* teardown that never reached
-its host is also written onto the row (`remote_teardown_owed`, schema v46's
-`teardown_owed`, shown by `session list --deleted`) and finished by
-`session_ops::retry_owed_remote_teardowns` on the next tick or `Command::Reap`
-once that host answers — the same two drivers as the reap, and the reason
-force-deleting against a machine that is down is allowed to keep working.
-`session purge --older-than-days <N> | --all [--dry-run]`
-(`session_ops::purge`) is the one way a deleted row leaves the table for good:
-it reaps a soft row's windows first and confirms they are gone, keeps a row inside its undo window, one
-whose teardown is owed, whose force-delete windows remain, whose ownership is
-ambiguous, or whose server could not be listed (each with its
-reason), leaves worktrees on disk and lists them, and re-checks "same deletion,
-owes nothing" in the transaction that drops the row. The reaper also retains
-the selected deletion and rechecks it after discovery before teardown, so a
-restore or fresh delete racing that listing keeps its undo window. `deleted_retention_days` (settings.toml, `0` = off) runs the same purge
-from the end of `reap_overdue_soft_deletes`, behind one `EXISTS` probe. The
-row is marked deleted before teardown, in one write — a force delete stamps
-`deleted_at` and `force_deleted` together rather than soft-deleting first, so a
-watcher of `session_events` never sees an intermediate state that reads as
-restorable. A worktree the session merely
+cleanup with no TUI running. Teardown is best-effort, with `teardown_error` and
+`teardown_owed` reported for local and remote failures. Debt is written with
+the force-delete mark, before cleanup; the shared `session_ops::reconcile::tick`
+retries it with the reap's durable backoff. Legacy `remote_teardown_*` fields
+continue to describe remote failures only.
+
+`session purge <ref>` removes thurbox-created worktrees, metadata and windows;
+an active reference requires `--force`. Bulk form:
+`session purge --all-deleted --older-than 7d [--dry-run]`; `--all` and
+`--older-than-days N` remain supported. An open undo window, ambiguous window
+ownership or an owed teardown retains the row. Failed cleanup stays on the
+reconciler's worklist. A successful purge leaves a minimal `purged_at`
+tombstone, hidden from the restore list and ordinary deleted listings. Peers
+advertising `purged_tombstones` request `session list --deleted --include-purged`;
+a shared host performs its own purge. `deleted_retention_days` (off at `0`)
+uses the same purge, and audit retention eventually removes the tombstones.
+Upsert cannot revive deleted or purged rows; restoration is explicit.
+Shared-host cleanup also requires `lifecycle_preconditions`: automated delete
+pushes, reap, teardown retry and purge carry the host's observed
+`lifecycle_generation`. Unknown or changed generations retain the work until
+sync supplies current facts; an obsolete request cannot delete a restored row.
+These preconditions are internal protocol flags, not needed for user commands.
+
+A worktree the session merely
 **opened** (`created_by_thurbox = 0`, schema v42) is
 left on disk and listed in the report's `kept_worktrees`: `git worktree remove
 --force` would take the uncommitted work in it too, which is thurbox's to discard
@@ -832,7 +837,8 @@ the pre-create hooks run, so the placeholder row says so.
 
 `session.pre_launch` additionally runs on local create/fork after the final
 cwd/worktrees exist and before opening the pane, with an `agents = [...]`
-filter and the same bounded, fail-closed runner. It is excluded from remote,
+filter and the same bounded, fail-closed runner. A refusal closes the creation
+intent and retains preparation for inspection. It is excluded from remote,
 restart, start and restore paths.
 
 `session.state_changed` is the heartbeat consumer in
@@ -994,6 +1000,19 @@ running session), **Spawn** (start a fresh session and prompt it), or **Exec**
 agent/session). `Exec` is the deterministic-scheduled-job action (the
 task-integration sync extensions use it). Task.action shares the enum but tasks
 never carry an `Exec` (it's automation-only).
+
+**Optional session owner (issue #1516).** `automation create --owner-session <ref>`
+requires an existing active session. `edit --owner-session <ref>` changes it;
+`edit --owner-session none` clears it. `owner_session_id` is nullable in list/show
+JSON, never inferred from `THURBOX_SESSION`, and existing automations remain
+unowned. Soft delete atomically suspends owned Send/Spawn/Exec automations and
+Sends aimed at the target, recording their prior enabled state. Restore only
+re-enables what deletion disabled, after every owner/target suspension ends;
+an explicit disable while suspended survives undo, while name/schedule edits
+preserve the saved enabled state.
+Ids and run history stay. Reap keeps them; force delete and purge remove owned
+automations and runs. Delete JSON includes `disabled_automation_ids` and
+`removed_automation_ids`.
 
 **One owner per verb (issue #1468).** Every automation verb lives in
 `session_ops::automations`, and `cli::automations` and the kernel's

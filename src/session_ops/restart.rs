@@ -122,6 +122,14 @@ pub(crate) fn build_restart_plan(
     // workspace, gathering every member dir; a single-repo session keeps the
     // primary repo. Only resolve when there is a primary cwd to anchor on.
     if let Some(primary) = session.cwd.clone() {
+        if session.worktrees.len().max(1) + session.additional_dirs.len() > 1 {
+            super::reconcile::workspace_unclaimed(
+                db,
+                session.id,
+                &session.backend_type,
+                &agent_session_id,
+            )?;
+        }
         config.cwd = Some(super::spawn::resolve_launch_cwd(
             &agent_session_id,
             &primary,
@@ -577,6 +585,12 @@ fn restart_for(
     }
 
     let hooks_enabled = super::hooks_enabled(db);
+    let _workspace = super::lock::workspace(
+        db,
+        &session.backend_type,
+        session.agent_session_id.as_deref(),
+        "restart workspace",
+    )?;
     // Strict, both of them: a `--command` session's recipe read as absent makes
     // `build_restart_plan` treat it as a registry agent, find no `agents.toml`
     // entry for a command like `bash`, and launch the *default* coding agent in

@@ -385,6 +385,8 @@ mod tests {
             deleted_changes_since: true,
             create_parity: true,
             agent_args: false,
+            purged_tombstones: false,
+            lifecycle_preconditions: false,
         }
     }
 

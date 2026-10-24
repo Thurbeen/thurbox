@@ -1581,6 +1581,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn psmux_startup_observation_requires_one_live_namesake() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "namesake_lives");
+        let env = HashMap::new();
+        let result = backend.create_window_observed(&check_spec(&env), std::time::Duration::ZERO);
+        assert!(
+            result.is_err(),
+            "startup accepted ambiguous unstamped identity: {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn psmux_startup_observation_confirms_the_created_pane_by_name() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let backend = cold_start_backend(&root, "ok");
+        let env = HashMap::new();
+        let (pane, state) = backend
+            .create_window_observed(&check_spec(&env), std::time::Duration::ZERO)
+            .expect("observed created pane");
+        assert_eq!(pane.as_str(), "%1");
+        assert_eq!(state, crate::backend::contract::BackendLiveness::Live);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn psmux_stops_after_three_failed_cold_bootstraps() {
         let root = tempfile::tempdir().expect("tempdir");
         let backend = cold_start_backend(&root, "always_refused");

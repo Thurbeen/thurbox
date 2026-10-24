@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::Duration;
-use thurbox::{session::SessionId, storage::Database, sync::SharedSession};
+use thurbox::{session::SessionId, storage::Database};
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
 
@@ -82,25 +82,25 @@ impl Env {
         serde_json::from_slice(&out.stdout).unwrap()
     }
     fn seed(&self) -> SessionId {
-        let row = SharedSession {
-            id: SessionId::default(),
-            name: "worker".into(),
-            agent: "claude".into(),
-            backend_type: "local-tmux".into(),
-            backend_id: "%999".into(),
-            cwd: Some(self.path("work")),
-            agent_session_id: Some("conversation".into()),
-            additional_dirs: vec![],
-            worktrees: vec![],
-            shell_backend_id: None,
-            parent_session_id: None,
-            display_order: None,
-            tombstone: false,
-            tombstone_at: None,
-            key: None,
-        };
-        self.db().upsert_session(&row).unwrap();
-        row.id
+        let created = self.ok(&[
+            "session",
+            "create",
+            "--name",
+            "worker",
+            "--command",
+            "sleep",
+            "--arg",
+            "600",
+            "--repo-path",
+            self.path("work").to_str().unwrap(),
+        ]);
+        let id = created["id"].as_str().unwrap().parse().unwrap();
+        let db = self.db();
+        let mut row = db.get_session_by_id(id).unwrap().unwrap();
+        row.agent = "claude".into();
+        row.agent_session_id = Some("conversation".into());
+        db.upsert_session(&row).unwrap();
+        id
     }
     fn hooks(&self, text: &str) {
         std::fs::write(self.path("config/hooks.toml"), text).unwrap();
@@ -291,6 +291,72 @@ fn pre_launch_runs_in_final_directory_and_can_refuse_the_launch() {
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(answer["error_kind"], "refused", "{answer}");
     assert!(env.db().list_active_sessions().unwrap().is_empty());
+}
+
+#[test]
+fn a_pre_launch_refusal_keeps_prepared_checkouts_for_inspection() {
+    let env = Env::new();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    ] {
+        let mut git = Command::new("git");
+        git.current_dir(env.path("work")).args(args);
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+        ] {
+            git.env_remove(var);
+        }
+        assert!(git.output().unwrap().status.success());
+    }
+    env.hooks(&format!("[[hooks]]\nevent = 'session.pre_launch'\ncommand = 'printf %s \"$PWD\" > {}; touch prepared; exit 1'\n", env.path("prepared-path").display()));
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "refused",
+        "--agent",
+        "shell",
+        "--repo-path",
+        env.path("work").to_str().unwrap(),
+        "--worktree-branch",
+        "fix/prepared",
+        "--base-branch",
+        "main",
+    ]);
+    assert!(!out.status.success());
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer["error_kind"], "refused");
+    assert!(env.db().list_active_sessions().unwrap().is_empty());
+    let prepared = PathBuf::from(std::fs::read_to_string(env.path("prepared-path")).unwrap());
+    assert!(
+        prepared.join("prepared").is_file(),
+        "pre-launch refusal discarded the prepared checkout"
+    );
+    assert_eq!(
+        env.db()
+            .conn_ref()
+            .query_row("SELECT COUNT(*) FROM session_intents", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -496,7 +562,9 @@ fn wait_observes_stop_and_loss_edges() {
             if stopped {
                 env.db().set_session_stopped(id, true).unwrap();
             } else {
-                env.db().record_session_lost(id, "%999").unwrap();
+                let db = env.db();
+                let pane = db.get_session_by_id(id).unwrap().unwrap().backend_id;
+                db.record_session_lost(id, &pane).unwrap();
             }
             env
         });
@@ -1119,7 +1187,8 @@ fn a_wait_on_an_already_lost_session_exits_six() {
     let id = env.seed();
     let db = env.db();
     db.set_hook_state(id, "done").unwrap();
-    assert!(db.record_session_lost(id, "%999").unwrap());
+    let pane = db.get_session_by_id(id).unwrap().unwrap().backend_id;
+    assert!(db.record_session_lost(id, &pane).unwrap());
     for state in ["done", "blocked"] {
         let out = env.run(&[
             "session",
@@ -1233,4 +1302,39 @@ fn a_state_hook_reports_a_done_edge_seen_before_the_tick_as_done() {
     let event: Value = serde_json::from_str(text.trim()).unwrap();
     assert_eq!(event["to_state"], "done", "{event}");
     assert_eq!(event["state"], "done", "{event}");
+}
+
+#[test]
+fn a_conditional_force_retry_does_not_emit_a_second_gone_event() {
+    let env = Env::new();
+    let id = env.seed();
+    let id_text = id.to_string();
+    env.ok(&["session", "delete", &id_text, "--force"]);
+    let db = env.db();
+    let generation = db
+        .get_deleted_session_by_id(id)
+        .unwrap()
+        .unwrap()
+        .lifecycle_generation
+        .to_string();
+    env.ok(&[
+        "session",
+        "delete",
+        &id_text,
+        "--force",
+        "--if-generation",
+        &generation,
+    ]);
+    let gone: i64 = db
+        .conn_ref()
+        .query_row(
+            "SELECT COUNT(*) FROM session_events WHERE session_id = ?1 AND event = 'gone'",
+            [&id_text],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        gone, 1,
+        "a force cleanup retry emitted another Gone transition"
+    );
 }

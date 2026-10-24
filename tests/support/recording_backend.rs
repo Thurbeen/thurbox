@@ -83,6 +83,7 @@ pub struct RecordingBackend {
     state: Mutex<State>,
     on_discover: Mutex<Option<DiscoveryHook>>,
     on_locate: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    on_pane_state: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl RecordingBackend {
@@ -93,6 +94,7 @@ impl RecordingBackend {
             state: Mutex::new(State::default()),
             on_discover: Mutex::new(None),
             on_locate: Mutex::new(None),
+            on_pane_state: Mutex::new(None),
         })
     }
 
@@ -160,6 +162,10 @@ impl RecordingBackend {
 
     pub fn on_next_locate(&self, callback: impl FnOnce() + Send + 'static) {
         *self.on_locate.lock().unwrap() = Some(Box::new(callback));
+    }
+
+    pub fn on_next_pane_state(&self, callback: impl FnOnce() + Send + 'static) {
+        *self.on_pane_state.lock().unwrap() = Some(Box::new(callback));
     }
 
     /// The window's program exits; `remain-on-exit` keeps the window.
@@ -616,6 +622,10 @@ impl SessionBackend for RecordingBackend {
     }
 
     fn pane_state(&self, pane: &str) -> thurbox::backend::contract::BackendResult<PaneState> {
+        let callback = self.on_pane_state.lock().unwrap().take();
+        if let Some(callback) = callback {
+            callback();
+        }
         let state = self.lock(format!("pane_state {pane}"))?;
         let window = state.find(pane)?;
         Ok(PaneState {

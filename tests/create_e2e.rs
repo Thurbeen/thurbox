@@ -28,6 +28,399 @@ mod recording_backend;
 /// A throwaway tmux socket, so this never touches the real one.
 const SOCKET: &str = "thurbox-create-e2e";
 
+#[test]
+#[cfg(unix)]
+fn failed_launch_rolls_back_its_worktree_and_allows_the_same_branch_retry() {
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, config) = isolated_config();
+    let repo = repo();
+    std::fs::write(config.join("agents.toml"),
+        "default = \"shell\"\n[[agents]]\nname = \"shell\"\ncommand = \"thurbox-no-such-program\"\nargs = []\n").unwrap();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let request = || thurbox::session_ops::SpawnRequest {
+        name: "rollback".into(),
+        repo_path: repo.path().into(),
+        worktree_branch: Some("fix/rollback".into()),
+        base_branch: Some("main".into()),
+        ..Default::default()
+    };
+    assert!(thurbox::session_ops::spawn_session_headless(&db, &backends, request()).is_err());
+    assert_eq!(
+        registered_worktrees(repo.path()),
+        1,
+        "failed create leaked its checkout"
+    );
+    assert!(db.list_active_sessions().unwrap().is_empty());
+    std::fs::write(
+        config.join("agents.toml"),
+        "default = \"shell\"\n[[agents]]\nname = \"shell\"\ncommand = \"sleep\"\nargs = [\"60\"]\n",
+    )
+    .unwrap();
+    let retry = thurbox::session_ops::spawn_session_headless(&db, &backends, request()).unwrap();
+    thurbox::session_ops::delete_session_headless(&db, &backends, retry.session_id, true).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn creation_refuses_a_recycled_pane_with_a_foreign_owner_stamp() {
+    use std::os::unix::fs::PermissionsExt;
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let real = Command::new("sh")
+        .args(["-c", "command -v tmux"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap();
+    let foreign = "00000000-0000-0000-0000-000000000149";
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    // Replace ownership exactly at the post-create probe, modeling a pane id
+    // reissued by a restarted server without a scheduler-dependent race.
+    let shim = bin.join("tmux");
+    std::fs::write(&shim, format!(
+        "#!/bin/sh\ncase \"$*\" in *'window_id'*'pane_dead'*) '{}' -L '{}' set-option -w -t 'thurbox:{{end}}' @thurbox_session '{}' ;; esac\nexec '{}' \"$@\"\n",
+        real.trim(), SOCKET, foreign, real.trim()
+    )).unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut path = vec![bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    std::env::set_var("PATH", std::env::join_paths(path).unwrap());
+    let backends = thurbox::backend::wiring::configured().0;
+    let result = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &backends,
+        thurbox::session_ops::SpawnRequest {
+            name: "recycled-create".into(),
+            repo_path: repo.path().into(),
+            command: Some("sleep 60".into()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        result.is_err(),
+        "creation committed a foreign owner's recycled pane"
+    );
+    assert!(db.list_active_sessions().unwrap().is_empty());
+    let panes = Command::new(real.trim())
+        .args([
+            "-L",
+            SOCKET,
+            "list-windows",
+            "-t",
+            "thurbox",
+            "-F",
+            "#{@thurbox_session}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&panes.stdout).contains(foreign),
+        "rollback killed the foreign pane"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_stale_upsert_cannot_resurrect_a_deleted_session() {
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let spawned = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &backends,
+        thurbox::session_ops::SpawnRequest {
+            name: "stale".into(),
+            repo_path: repo.path().into(),
+            command: Some("sleep 60".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let stale = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+    let original_args = vec!["--original".to_string()];
+    db.set_agent_args(stale.id, &original_args).unwrap();
+    thurbox::session_ops::delete_session_headless(&db, &backends, stale.id, false).unwrap();
+    db.upsert_session(&stale).unwrap();
+    db.upsert_session_with_agent_args(
+        &stale,
+        &["--stale".into()],
+        thurbox::storage::EventReason::Registered,
+    )
+    .unwrap();
+    assert_eq!(
+        db.load_agent_args(stale.id).unwrap(),
+        original_args,
+        "stale arguments changed a deleted session"
+    );
+    assert!(
+        db.get_session_by_id(stale.id).unwrap().is_none(),
+        "stale write undid a delete"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_killed_spawn_is_rolled_back_by_the_next_sweep() {
+    use thurbox::session_ops::spawn::{spawn_session_headless_with_progress, SpawnPhase};
+    if let Ok(root) = std::env::var("THURBOX_CRASH_CREATE_ROOT") {
+        thurbox::paths::set_test_dir(&root);
+        let db = on_disk_db();
+        let backends = thurbox::backend::wiring::configured().0;
+        let request = thurbox::session_ops::SpawnRequest {
+            name: "interrupted".into(),
+            repo_path: std::env::var_os("THURBOX_CRASH_CREATE_REPO")
+                .unwrap()
+                .into(),
+            command: Some("sleep 60".into()),
+            worktree_branch: Some("fix/interrupted".into()),
+            base_branch: Some("main".into()),
+            ..Default::default()
+        };
+        spawn_session_headless_with_progress(
+            &db,
+            &backends,
+            request,
+            Some(&|phase| {
+                if phase == SpawnPhase::Persisting {
+                    std::fs::write(Path::new(&root).join("ready"), "ready").unwrap();
+                    loop {
+                        std::thread::park();
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        panic!("child never reached its crash boundary");
+    }
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_killed_spawn_is_rolled_back_by_the_next_sweep",
+            "--nocapture",
+        ])
+        .env("THURBOX_CRASH_CREATE_ROOT", home.path())
+        .env("THURBOX_CRASH_CREATE_REPO", repo.path())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !home.path().join("ready").exists() {
+        if std::time::Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("spawn did not reach the persisted-window boundary");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(registered_worktrees(repo.path()), 2);
+    // Expire only this killed creator's lease; no delay or weakened timeout.
+    db.conn_ref()
+        .execute("UPDATE session_intents SET expires_at = 0", [])
+        .ok();
+    db.conn_ref()
+        .execute(
+            "UPDATE event_cursors SET lease_until = 0 WHERE consumer LIKE 'lock:%'",
+            [],
+        )
+        .unwrap();
+    let backends = thurbox::backend::wiring::configured().0;
+    thurbox::session_ops::reap_overdue_soft_deletes(&db, &backends);
+    assert_eq!(
+        registered_worktrees(repo.path()),
+        1,
+        "crashed spawn leaked a worktree"
+    );
+    assert!(
+        backends
+            .get(&thurbox::session::Route::local(Some(
+                thurbox::session::Multiplexer::Tmux
+            )))
+            .unwrap()
+            .discover()
+            .unwrap()
+            .iter()
+            .all(|w| !w.name.contains("interrupted")),
+        "crashed spawn leaked a window"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn purge_removes_created_worktrees_and_keeps_an_unrestorable_tombstone() {
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let spawned = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &backends,
+        thurbox::session_ops::SpawnRequest {
+            name: "purge".into(),
+            repo_path: repo.path().into(),
+            command: Some("sleep 60".into()),
+            worktree_branch: Some("fix/purge".into()),
+            base_branch: Some("main".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let stale = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+    db.set_agent_args(stale.id, &["--must-be-forgotten".into()])
+        .unwrap();
+    thurbox::session_ops::delete_session_headless(&db, &backends, stale.id, false).unwrap();
+    db.conn_ref()
+        .execute(
+            "UPDATE sessions SET deleted_at = 1 WHERE id = ?1",
+            [stale.id.to_string()],
+        )
+        .unwrap();
+    let dry =
+        thurbox::session_ops::purge_deleted(&db, &backends, thurbox::session_ops::Age::All, true)
+            .unwrap();
+    assert_eq!(dry.purged.len(), 1);
+    assert_eq!(registered_worktrees(repo.path()), 2);
+    let done =
+        thurbox::session_ops::purge_deleted(&db, &backends, thurbox::session_ops::Age::All, false)
+            .unwrap();
+    assert_eq!(done.purged.len(), 1, "{done:?}");
+    assert_eq!(
+        registered_worktrees(repo.path()),
+        1,
+        "purge left its checkout behind"
+    );
+    assert!(db.get_deleted_session_by_id(stale.id).unwrap().is_none());
+    assert!(
+        db.load_agent_args(stale.id).unwrap().is_empty(),
+        "purge retained session arguments"
+    );
+    assert!(
+        thurbox::session_ops::restore_session_headless(&db, &backends, stale.id, true).is_err()
+    );
+    db.upsert_session(&stale).unwrap();
+    assert!(
+        db.get_session_by_id(stale.id).unwrap().is_none(),
+        "purged session returned from stale mirror"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_killed_force_delete_keeps_its_cleanup_debt_until_the_sweep_finishes() {
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let created = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &backends,
+        thurbox::session_ops::SpawnRequest {
+            name: "delete-crash".into(),
+            repo_path: repo.path().into(),
+            command: Some("sleep 60".into()),
+            worktree_branch: Some("fix/delete-crash".into()),
+            base_branch: Some("main".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let git_wrapper = bin.join("git");
+    std::fs::write(&git_wrapper, "#!/bin/sh\nif [ \"$1\" = worktree ] && [ \"$2\" = remove ]; then : > \"$THURBOX_DELETE_READY\"; sleep 60; fi\nexec \"$THURBOX_REAL_GIT\" \"$@\"\n").unwrap();
+    std::fs::set_permissions(&git_wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let marker = home.path().join("delete-ready");
+    let child = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args([
+            "--json",
+            "session",
+            "delete",
+            &created.session_id.to_string(),
+            "--force",
+        ])
+        .env("HOME", home.path())
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env(
+            "THURBOX_REAL_GIT",
+            thurbox::paths::resolve_on_path("git").unwrap(),
+        )
+        .env("THURBOX_DELETE_READY", &marker)
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    struct DeleteProcess(std::process::Child);
+    impl Drop for DeleteProcess {
+        fn drop(&mut self) {
+            // The unreaped leader reserves this process group until cleanup.
+            unsafe {
+                libc::kill(-(self.0.id() as i32), libc::SIGKILL);
+            }
+            let _ = self.0.wait();
+        }
+    }
+    let child = DeleteProcess(child);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "delete did not reach the worktree removal boundary"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    drop(child);
+    db.conn_ref()
+        .execute(
+            "UPDATE event_cursors SET lease_until = 0 WHERE consumer LIKE 'lock:%'",
+            [],
+        )
+        .unwrap();
+    thurbox::session_ops::retry_owed_remote_teardowns(&db, &backends);
+    assert_eq!(
+        registered_worktrees(repo.path()),
+        1,
+        "crashed delete lost its cleanup debt"
+    );
+    assert!(
+        !db.get_deleted_session_by_id(created.session_id)
+            .unwrap()
+            .unwrap()
+            .teardown_owed
+    );
+}
+
 fn have_tmux() -> bool {
     Command::new("tmux")
         .arg("-V")
@@ -302,13 +695,23 @@ fn repo() -> tempfile::TempDir {
 /// unused helper as dead code and fails the build.
 #[cfg(unix)]
 fn registered_worktrees(repo: &Path) -> usize {
-    let out = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(["worktree", "list", "--porcelain"])
-        .current_dir(repo)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .output()
-        .expect("git");
+        .current_dir(repo);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_NAMESPACE",
+    ] {
+        command.env_remove(var);
+    }
+    let out = command.output().expect("git");
     String::from_utf8_lossy(&out.stdout)
         .matches("worktree ")
         .count()
@@ -590,6 +993,29 @@ fn two_sessions_sharing_a_name_get_distinct_pane_ids() {
         first.backend_id, second.backend_id,
         "each session must be addressable by its own pane"
     );
+    let backends = thurbox::backend::wiring::configured().0;
+    let deleted =
+        thurbox::session_ops::delete_session_headless(&db, &backends, first.session_id, true)
+            .unwrap();
+    assert!(
+        !deleted.teardown_owed,
+        "a stamped namesake prevented force cleanup: {deleted:?}"
+    );
+    let backend = backends
+        .get(&thurbox::session::Route::local(Some(
+            thurbox::session::Multiplexer::Tmux,
+        )))
+        .unwrap();
+    let windows = backend.discover().unwrap();
+    assert!(!windows
+        .iter()
+        .any(|window| window.backend_id == first.backend_id));
+    assert!(
+        windows
+            .iter()
+            .any(|window| window.backend_id == second.backend_id),
+        "force cleanup killed the other namesake"
+    );
 }
 
 /// Regression: a resume brings in an *existing* conversation id from outside
@@ -629,7 +1055,7 @@ fn resuming_an_id_pinned_agent_persists_the_resumed_id() {
          name = \"resumable\"\n\
          command = \"sh\"\n\
          args = []\n\
-         resume_args = [\"-c\", \"true {id}\"]\n\
+         resume_args = [\"-c\", \"true {id}; exec sleep 600\"]\n\
          resume_latest = false\n",
     )
     .expect("write agents.toml");
@@ -684,6 +1110,18 @@ fn resuming_an_id_pinned_agent_persists_the_resumed_id() {
 #[cfg(unix)]
 fn isolated_config() -> (tempfile::TempDir, std::path::PathBuf) {
     let home = tempfile::tempdir().expect("tempdir");
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("USERPROFILE", home.path());
+    for variable in [
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+    ] {
+        let directory = home.path().join(variable);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::env::set_var(variable, directory);
+    }
     // Both forms: the thread-local override for this thread, and the
     // process-wide env overrides for any thread the pipeline spawns — the
     // command bus runs each command on its own, and a worker resolving the
@@ -833,6 +1271,7 @@ fn delete_probe_with_format(
     }
     let automation = db
         .create_automation(&thurbox::storage::automations::NewAutomation {
+            owner_session_id: None,
             name: "send-probe".into(),
             enabled: true,
             schedule: thurbox::session::AutomationSchedule::Once { at: u64::MAX },
@@ -3075,4 +3514,919 @@ fn a_heal_finds_the_session_it_spawned_already_deleted_by_a_deactivate() {
         !tick.contains("self-heal failed"),
         "the heal failed on the session the deactivate had already deleted: {tick}"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn an_expired_creation_cannot_kill_an_active_rows_recycled_unstamped_pane() {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::SharedSession;
+    let (_home, _) = isolated_config();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let pane = backend.open("tb-recycled", "", thurbox::backend::WindowRole::Agent);
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    let live = SharedSession {
+        id: SessionId::default(),
+        name: "recycled".into(),
+        agent: "shell".into(),
+        backend_id: pane.clone(),
+        backend_type: route.format(),
+        agent_session_id: None,
+        cwd: None,
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    };
+    db.upsert_session(&live).unwrap();
+    let mut stale = live.clone();
+    stale.id = SessionId::default();
+    db.begin_create_intent(&thurbox::storage::intents::CreateIntent {
+        workspace_created: false,
+        expected_deleted_at: None,
+        session: stale,
+        before: Vec::new(),
+        expires_at: 0,
+    })
+    .unwrap();
+    thurbox::session_ops::reconcile::creating(&db, &registry);
+    assert!(
+        backend.windows().iter().any(|w| w.pane == pane),
+        "recovery killed another active session's recycled pane"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_legacy_writer_cannot_restore_an_irreversible_purge_in_progress() {
+    let (_home, _) = isolated_config();
+    let db = on_disk_db();
+    let id = thurbox::session::SessionId::default();
+    db.conn_ref().execute("INSERT INTO sessions(id, name, created_at, updated_at, deleted_at) VALUES (?1, 'purging', 1, 1, 1)", [id.to_string()]).unwrap();
+    assert!(db.begin_session_purge(id, 1).unwrap());
+    assert!(db
+        .conn_ref()
+        .execute(
+            "UPDATE sessions SET deleted_at = NULL WHERE id = ?1",
+            [id.to_string()],
+        )
+        .is_err());
+    assert!(
+        db.get_session_by_id(id).unwrap().is_none(),
+        "legacy write revived a row while purge removes its worktrees"
+    );
+    db.complete_session_teardown(id).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn a_creator_cannot_commit_after_its_intent_was_recovered() {
+    use thurbox::session_ops::spawn::{spawn_session_headless_with_progress, SpawnPhase};
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let path = thurbox::paths::database_file().unwrap();
+    let backends = thurbox::backend::wiring::configured().0;
+    let result = spawn_session_headless_with_progress(
+        &db,
+        &backends,
+        thurbox::session_ops::SpawnRequest {
+            name: "expired-creator".into(),
+            repo_path: repo.path().into(),
+            command: Some("sleep 60".into()),
+            worktree_branch: Some("fix/expired-creator".into()),
+            base_branch: Some("main".into()),
+            ..Default::default()
+        },
+        Some(&|phase| {
+            if phase == SpawnPhase::Persisting {
+                let peer = thurbox::storage::Database::open_existing(&path).unwrap();
+                peer.conn_ref()
+                    .execute("UPDATE session_intents SET expires_at = 0", [])
+                    .unwrap();
+                peer.conn_ref()
+                    .execute(
+                        "UPDATE event_cursors SET lease_until = 0 WHERE consumer LIKE 'lock:%'",
+                        [],
+                    )
+                    .unwrap();
+                assert_eq!(
+                    thurbox::session_ops::reconcile::creating(&peer, &backends),
+                    1
+                );
+            }
+        }),
+    );
+    assert!(
+        result.is_err(),
+        "creator committed resources that recovery had already removed"
+    );
+    assert!(db.list_active_sessions().unwrap().is_empty());
+    assert_eq!(registered_worktrees(repo.path()), 1);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_restore_conflict_preserves_an_original_pane_claimed_by_another_active_row() {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::SharedSession;
+    let (_home, _) = isolated_config();
+    let db = on_disk_db();
+    let path = thurbox::paths::database_file().unwrap();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let id = SessionId::default();
+    let pane = backend.open(
+        "tb-restoring",
+        &id.to_string(),
+        thurbox::backend::WindowRole::Agent,
+    );
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    let original = SharedSession {
+        id,
+        name: "restoring".into(),
+        agent: "shell".into(),
+        backend_id: pane.clone(),
+        backend_type: route.format(),
+        agent_session_id: Some(SessionId::default().to_string()),
+        cwd: None,
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    };
+    db.upsert_session(&original).unwrap();
+    db.soft_delete_session(id).unwrap();
+    let mut other = original.clone();
+    other.id = SessionId::default();
+    other.name = "other".into();
+    other.backend_id.clear();
+    db.upsert_session(&other).unwrap();
+    let claimed = pane.clone();
+    backend.on_nth_discover(2, move || {
+        let peer = thurbox::storage::Database::open_existing(&path).unwrap();
+        assert_eq!(
+            peer.claim_backend_id(other.id, &claimed, |a, b| a == b)
+                .unwrap(),
+            thurbox::storage::PaneClaim::Stored
+        );
+    });
+    let result = thurbox::session_ops::restore_session_headless(&db, &registry, id, false);
+    assert!(result.is_err());
+    assert!(
+        backend.windows().iter().any(|w| w.pane == pane),
+        "failed restore killed another active row's pane"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn failed_undo_preserves_the_live_agents_existing_workspace() {
+    undo_with_existing_workspace(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn crashed_undo_preserves_the_live_agents_existing_workspace() {
+    undo_with_existing_workspace(true);
+}
+
+#[cfg(unix)]
+fn undo_with_existing_workspace(crash: bool) {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::SharedSession;
+    let (_home, _) = isolated_config();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let id = SessionId::default();
+    let asid = SessionId::default().to_string();
+    let member = tempfile::tempdir().unwrap();
+    let workspace = thurbox::workspace::ensure_workspace(
+        &asid,
+        &[("repo".into(), member.path().to_path_buf())],
+    )
+    .unwrap();
+    let pane = backend.open(
+        "tb-undo-workspace",
+        &id.to_string(),
+        thurbox::backend::WindowRole::Agent,
+    );
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    db.upsert_session(&SharedSession {
+        id,
+        name: "undo-workspace".into(),
+        agent: "shell".into(),
+        backend_id: pane.clone(),
+        backend_type: route.format(),
+        agent_session_id: Some(asid),
+        cwd: Some(workspace.clone()),
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    })
+    .unwrap();
+    db.soft_delete_session(id).unwrap();
+    if crash {
+        let path = thurbox::paths::database_file().unwrap();
+        let held_backend = backend.clone();
+        let held_route = route.clone();
+        backend.on_nth_discover(2, move || {
+            let peer = thurbox::storage::Database::open_existing(&path).unwrap();
+            peer.conn_ref()
+                .execute("UPDATE session_intents SET expires_at = 0", [])
+                .unwrap();
+            peer.conn_ref()
+                .execute(
+                    "UPDATE event_cursors SET lease_until = 0 WHERE consumer LIKE 'lock:%'",
+                    [],
+                )
+                .unwrap();
+            let registry = thurbox::backend::BackendRegistry::new(held_route, held_backend);
+            assert_eq!(
+                thurbox::session_ops::reconcile::creating(&peer, &registry),
+                1
+            );
+        });
+    } else {
+        db.conn_ref()
+            .execute_batch(
+                "CREATE TRIGGER refuse_undo BEFORE UPDATE ON sessions
+            WHEN OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL
+            BEGIN SELECT RAISE(ABORT, 'undo commit refused'); END;",
+            )
+            .unwrap();
+    }
+    let result = thurbox::session_ops::restore_session_headless(&db, &registry, id, false);
+    assert!(result.is_err(), "fault did not refuse the restore commit");
+    assert!(backend.windows().iter().any(|w| w.pane == pane));
+    assert!(
+        workspace.join("repo").exists(),
+        "failed undo removed the live agent's workspace"
+    );
+    assert!(db.get_deleted_session_by_id(id).unwrap().is_some());
+}
+
+#[test]
+#[cfg(unix)]
+fn delayed_cleanup_cannot_cross_restore_or_uuid_reuse() {
+    let (_home, _) = isolated_config();
+    let db = on_disk_db();
+    let id = thurbox::session::SessionId::default();
+    let insert = || {
+        db.conn_ref().execute("INSERT INTO sessions(id, name, backend_type, created_at, updated_at) VALUES (?1, 'revision', 'local-tmux', 1, 1)", [id.to_string()]).unwrap()
+    };
+    insert();
+    db.soft_delete_session(id).unwrap();
+    let deleted = db.lifecycle_generation(id).unwrap().unwrap();
+    db.restore_session(id).unwrap();
+    let restored = db.lifecycle_generation(id).unwrap().unwrap();
+    assert!(restored > deleted);
+    let cli = |verb: &str, generation: u64| {
+        Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args([
+                "session",
+                verb,
+                &id.to_string(),
+                "--if-generation",
+                &generation.to_string(),
+                "--json",
+            ])
+            .output()
+            .unwrap()
+    };
+    for verb in ["delete", "purge", "reap"] {
+        let out = cli(verb, deleted);
+        assert!(
+            !out.status.success(),
+            "{verb} accepted an obsolete lifecycle: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(db.get_session_by_id(id).unwrap().is_some());
+        assert_eq!(db.lifecycle_generation(id).unwrap(), Some(restored));
+    }
+    db.forget_session(id).unwrap();
+    insert();
+    assert!(db.lifecycle_generation(id).unwrap().unwrap() > restored);
+    assert!(!cli("delete", restored).status.success());
+    assert!(db.get_session_by_id(id).unwrap().is_some());
+}
+
+#[test]
+#[cfg(unix)]
+fn owed_cleanup_cannot_kill_an_active_unstamped_replacement() {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::SharedSession;
+    let (_home, _) = isolated_config();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Psmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let pane = backend.open("tb-recycled", "", thurbox::backend::WindowRole::Agent);
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    let live = SharedSession {
+        id: SessionId::default(),
+        name: "recycled".into(),
+        agent: "shell".into(),
+        backend_id: pane.clone(),
+        backend_type: route.format(),
+        agent_session_id: None,
+        cwd: None,
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    };
+    let mut gone = live.clone();
+    gone.id = SessionId::default();
+    gone.backend_id = "%expired".into();
+    db.upsert_session(&gone).unwrap();
+    db.force_delete_session(gone.id).unwrap();
+    db.upsert_session(&live).unwrap();
+    thurbox::session_ops::retry_owed_remote_teardowns(&db, &registry);
+    assert!(
+        backend.windows().iter().any(|w| w.pane == pane),
+        "owed cleanup killed the active replacement"
+    );
+    assert!(db.get_session_by_id(live.id).unwrap().is_some());
+}
+
+#[test]
+#[cfg(unix)]
+fn an_unusable_shared_host_cli_never_authorizes_direct_cleanup() {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::session::{Route, SessionId};
+    let (home, config) = isolated_config();
+    std::fs::write(
+        config.join("hosts.toml"),
+        "[[hosts]]\nname = 'unusable'\ndestination = 'unused'\nshare_sessions = true\n",
+    )
+    .unwrap();
+    let bin = home.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let ssh = bin.join("ssh");
+    std::fs::write(&ssh, "#!/bin/sh\nexit 255\n").unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    let route = Route::parse("ssh:unusable:tmux").unwrap();
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    let db = on_disk_db();
+    for mode in ["reap", "purge", "owed"] {
+        let id = SessionId::default();
+        let pane = backend.open(
+            &format!("tb-{mode}"),
+            &id.to_string(),
+            thurbox::backend::WindowRole::Agent,
+        );
+        db.conn_ref().execute("INSERT INTO sessions(id, name, backend_type, backend_id, created_at, updated_at, deleted_at) VALUES (?1, ?2, ?3, ?4, 1, 1, 1)", rusqlite::params![id.to_string(), mode, route.format(), pane]).unwrap();
+        match mode {
+            "reap" => {
+                let _ = thurbox::session_ops::reap_soft_deleted(&db, &registry, id);
+            }
+            "purge" => {
+                let _ = thurbox::session_ops::purge::purge_selected(
+                    &db,
+                    &registry,
+                    thurbox::session_ops::Age::All,
+                    false,
+                    Some(id),
+                );
+            }
+            _ => {
+                db.mark_session_force_deleted(id).unwrap();
+                db.set_teardown_owed(id, true).unwrap();
+                thurbox::session_ops::retry_owed_remote_teardowns(&db, &registry);
+            }
+        }
+        assert!(
+            backend.windows().iter().any(|w| w.pane == pane),
+            "{mode} bypassed the shared host's unavailable CLI"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn ambiguous_force_teardown_remains_owed_until_ownership_can_be_confirmed() {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::SharedSession;
+    let (_home, _) = isolated_config();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Psmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    backend.open("tb-recycled", "", thurbox::backend::WindowRole::Agent);
+    backend.open("tb-recycled", "", thurbox::backend::WindowRole::Agent);
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    let live = SharedSession {
+        id: SessionId::default(),
+        name: "recycled".into(),
+        agent: "shell".into(),
+        backend_id: "%expired".into(),
+        backend_type: route.format(),
+        agent_session_id: None,
+        cwd: None,
+        additional_dirs: Vec::new(),
+        worktrees: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    };
+    db.upsert_session(&live).unwrap();
+    let report =
+        thurbox::session_ops::delete_session_headless(&db, &registry, live.id, true).unwrap();
+    assert!(
+        report.teardown_owed,
+        "ambiguous window ownership was reported as completed teardown"
+    );
+    assert!(
+        db.get_deleted_session_by_id(live.id)
+            .unwrap()
+            .unwrap()
+            .teardown_owed
+    );
+    assert_eq!(backend.windows().len(), 2);
+}
+
+#[test]
+#[cfg(unix)]
+fn legacy_deletes_cannot_drop_purge_markers_before_audit_retention() {
+    let (_home, _) = isolated_config();
+    let db = on_disk_db();
+    let id = thurbox::session::SessionId::default();
+    db.conn_ref().execute("INSERT INTO sessions(id, name, created_at, updated_at, deleted_at) VALUES (?1, 'purged', 1, 1, 1)", [id.to_string()]).unwrap();
+    assert!(db.begin_session_purge(id, 1).unwrap());
+    db.complete_session_teardown(id).unwrap();
+    assert!(db
+        .conn_ref()
+        .execute(
+            "DELETE FROM sessions WHERE id = ?1 AND deleted_at IS NOT NULL",
+            [id.to_string()]
+        )
+        .is_err());
+    assert!(
+        db.list_session_tombstones(None)
+            .unwrap()
+            .iter()
+            .any(|row| row.id == id),
+        "legacy purge deleted the marker that prevents resurrection"
+    );
+    db.conn_ref()
+        .execute(
+            "UPDATE sessions SET purged_at = 1 WHERE id = ?1",
+            [id.to_string()],
+        )
+        .unwrap();
+    db.prune_audit_log().unwrap();
+    assert!(
+        db.list_session_tombstones(None).unwrap().is_empty(),
+        "expired markers must still be pruned"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn force_cleanup_keeps_a_checkout_claimed_during_window_teardown() {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::{SharedSession, SharedWorktree};
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let checkout = repo.path().join("claimed-checkout");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "claimed",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(checkout.join("sentinel"), "keep").unwrap();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    let id = SessionId::default();
+    let pane = backend.open(
+        "tb-old-checkout",
+        &id.to_string(),
+        thurbox::backend::WindowRole::Agent,
+    );
+    let old = SharedSession {
+        id,
+        name: "old-checkout".into(),
+        agent: "shell".into(),
+        backend_id: pane,
+        backend_type: route.format(),
+        agent_session_id: None,
+        cwd: Some(repo.path().into()),
+        additional_dirs: Vec::new(),
+        worktrees: vec![SharedWorktree {
+            repo_path: repo.path().into(),
+            worktree_path: checkout.clone(),
+            branch: "claimed".into(),
+            created_by_thurbox: true,
+        }],
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    };
+    db.upsert_session(&old).unwrap();
+    let mut claimant = old.clone();
+    claimant.id = SessionId::default();
+    claimant.name = "new-checkout".into();
+    claimant.backend_id = "%different".into();
+    claimant.worktrees[0].created_by_thurbox = false;
+    let alias_parent = repo.path().join("alias-parent");
+    std::fs::create_dir(&alias_parent).unwrap();
+    claimant.worktrees[0].worktree_path = alias_parent.join("..").join("claimed-checkout");
+    let db_path = thurbox::paths::database_file().unwrap();
+    let after_kill = backend.clone();
+    backend.on_next_locate(move || {
+        after_kill.on_next_locate(move || {
+            thurbox::storage::Database::open(&db_path)
+                .unwrap()
+                .upsert_session(&claimant)
+                .unwrap();
+        })
+    });
+    let report =
+        thurbox::session_ops::delete_session_headless(&db, &registry, old.id, true).unwrap();
+    assert!(
+        report.teardown_owed,
+        "a new checkout claim was ignored during cleanup"
+    );
+    assert!(
+        checkout.join("sentinel").exists(),
+        "cleanup removed another session's live checkout"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn checkout_cleanup_and_borrowers_share_one_machine_path_lease() {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::{SharedSession, SharedWorktree};
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let checkout = repo.path().join("leased-checkout");
+    git(
+        repo.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "leased",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    let worktree = SharedWorktree {
+        repo_path: repo.path().into(),
+        worktree_path: checkout.clone(),
+        branch: "leased".into(),
+        created_by_thurbox: true,
+    };
+    let subject = thurbox::storage::event_cursors::LockSubject::Name {
+        scope: format!("worktree:{}", Route::local(None).format()),
+        name: checkout.display().to_string(),
+    };
+    let now = thurbox::sync::current_time_millis();
+    assert!(db.take_lease(&subject, now + 600_000, now).unwrap());
+    let alias_parent = repo.path().join("alias-parent");
+    std::fs::create_dir(&alias_parent).unwrap();
+    let symlink = repo.path().join("checkout-link");
+    std::os::unix::fs::symlink(&checkout, &symlink).unwrap();
+    for (inherited, alias) in [
+        (false, alias_parent.join("..").join("leased-checkout")),
+        (true, symlink),
+    ] {
+        let mut borrowed = worktree.clone();
+        borrowed.worktree_path = alias.clone();
+        let result = thurbox::session_ops::spawn_session_headless(
+            &db,
+            &registry,
+            thurbox::session_ops::SpawnRequest {
+                name: format!("borrower-{inherited}"),
+                repo_path: repo.path().into(),
+                command: Some("sleep 60".into()),
+                existing_worktree: (!inherited).then(|| alias.clone()),
+                inherit_worktrees: if inherited {
+                    vec![borrowed]
+                } else {
+                    Vec::new()
+                },
+                ..Default::default()
+            },
+        );
+        assert!(
+            matches!(result, Err(thurbox::session_ops::OpError::Conflict(_))),
+            "borrower ignored the checkout lifecycle lease: {result:?}"
+        );
+    }
+    let id = SessionId::default();
+    let pane = backend.open(
+        "tb-lease-owner",
+        &id.to_string(),
+        thurbox::backend::WindowRole::Agent,
+    );
+    let old = SharedSession {
+        id,
+        name: "lease-owner".into(),
+        agent: "shell".into(),
+        backend_id: pane.clone(),
+        backend_type: route.format(),
+        agent_session_id: None,
+        cwd: Some(repo.path().into()),
+        additional_dirs: Vec::new(),
+        worktrees: vec![worktree],
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    };
+    db.upsert_session(&old).unwrap();
+    let report = thurbox::session_ops::delete_session_headless(&db, &registry, id, true).unwrap();
+    assert!(
+        report.teardown_owed,
+        "cleanup ignored the checkout lifecycle lease"
+    );
+    assert!(checkout.is_dir());
+    assert!(backend.windows().iter().any(|window| window.pane == pane));
+    db.release_lease(&subject, now + 600_000).unwrap();
+    let finished = thurbox::session_ops::retry_owed_remote_teardowns(&db, &registry);
+    assert!(
+        finished.contains(&id.to_string()),
+        "cleanup did not resume after the checkout lease was released"
+    );
+    assert!(!checkout.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn restore_rejects_a_pane_that_changes_owner_during_startup() {
+    use std::os::unix::fs::PermissionsExt;
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let created = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &backends,
+        thurbox::session_ops::SpawnRequest {
+            name: "restore-recycled".into(),
+            repo_path: repo.path().into(),
+            command: Some("sleep 60".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    thurbox::session_ops::delete_session_headless(&db, &backends, created.session_id, false)
+        .unwrap();
+    thurbox::session_ops::reap_soft_deleted(&db, &backends, created.session_id).unwrap();
+    let real = Command::new("sh")
+        .args(["-c", "command -v tmux"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap();
+    let foreign = "00000000-0000-0000-0000-000000000159";
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let shim = bin.join("tmux");
+    let changed = home.path().join("owner-changed");
+    // Only the recreated agent can change owner; the initial missing-window
+    // probes must leave the bootstrap window alone.
+    std::fs::write(&shim, format!(
+        "#!/bin/sh\ncase \"$*\" in *'pane_dead'*) '{}' -L '{}' set-option -w -t 'thurbox:tb-restore-recycled' @thurbox_session '{}' 2>/dev/null && touch '{}' ;; esac\nexec '{}' \"$@\"\n",
+        real.trim(), SOCKET, foreign, changed.display(), real.trim())).unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut path = vec![bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    std::env::set_var("PATH", std::env::join_paths(path).unwrap());
+    let restored =
+        thurbox::session_ops::restore_session_headless(&db, &backends, created.session_id, false);
+    assert!(
+        changed.exists(),
+        "the startup probe did not change ownership"
+    );
+    assert!(
+        restored.is_err(),
+        "restore committed a foreign owner's recycled pane: {restored:?}"
+    );
+    assert!(db.get_session_by_id(created.session_id).unwrap().is_none());
+    assert!(db
+        .get_deleted_session_by_id(created.session_id)
+        .unwrap()
+        .is_some());
+    let out = Command::new(real.trim())
+        .args([
+            "-L",
+            SOCKET,
+            "list-windows",
+            "-a",
+            "-F",
+            "#{@thurbox_session}",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(foreign),
+        "failed restore killed the foreign pane"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_failed_resumed_create_keeps_its_preexisting_workspace() {
+    if !have_tmux() {
+        return;
+    }
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let asid = thurbox::session::SessionId::default().to_string();
+    let workspace =
+        thurbox::workspace::ensure_workspace(&asid, &[("repo".into(), repo.path().to_path_buf())])
+            .unwrap();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let result = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &backends,
+        thurbox::session_ops::SpawnRequest {
+            name: "resumed-failure".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent_session_id: Some(asid),
+            command: Some("exit 1".into()),
+            ..Default::default()
+        },
+    );
+    assert!(result.is_err());
+    assert!(
+        workspace.join("repo").exists(),
+        "failed resumed create removed a preexisting workspace"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn workspace_borrowers_and_cleanup_share_the_sanitized_namespace_lease() {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::SharedSession;
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+    let subject = thurbox::storage::event_cursors::LockSubject::Name {
+        scope: format!("workspace:{}", Route::local(None).format()),
+        name: "shared-workspace".into(),
+    };
+    let now = thurbox::sync::current_time_millis();
+    assert!(db.take_lease(&subject, now + 600_000, now).unwrap());
+    let result = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &registry,
+        thurbox::session_ops::SpawnRequest {
+            name: "workspace-borrower".into(),
+            repo_path: repo.path().into(),
+            agent_session_id: Some("shared workspace".into()),
+            command: Some("sleep 60".into()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        matches!(result, Err(thurbox::session_ops::OpError::Conflict(_))),
+        "create ignored the workspace namespace lease: {result:?}"
+    );
+    let id = SessionId::default();
+    let pane = backend.open(
+        "tb-workspace-owner",
+        &id.to_string(),
+        thurbox::backend::WindowRole::Agent,
+    );
+    db.upsert_session(&SharedSession {
+        id,
+        name: "workspace-owner".into(),
+        agent: "shell".into(),
+        backend_id: pane.clone(),
+        backend_type: route.format(),
+        agent_session_id: Some("shared-workspace".into()),
+        cwd: None,
+        worktrees: Vec::new(),
+        additional_dirs: Vec::new(),
+        shell_backend_id: None,
+        parent_session_id: None,
+        display_order: None,
+        tombstone: false,
+        tombstone_at: None,
+        key: None,
+    })
+    .unwrap();
+    db.soft_delete_session(id).unwrap();
+    assert!(matches!(
+        thurbox::session_ops::restore_session_headless(&db, &registry, id, false),
+        Err(thurbox::session_ops::OpError::Conflict(_))
+    ));
+    let generation = db.lifecycle_generation(id).unwrap().unwrap();
+    let report = thurbox::session_ops::delete::delete_if_generation(
+        &db,
+        &registry,
+        id,
+        true,
+        Some(generation),
+    )
+    .unwrap();
+    assert!(report.teardown_error.is_some());
+    assert!(backend.windows().iter().any(|w| w.pane == pane));
+    db.release_lease(&subject, now + 600_000).unwrap();
+    assert_eq!(
+        thurbox::session_ops::delete::retry_owed_remote_teardowns(&db, &registry),
+        [id.to_string()]
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_resumed_create_cannot_rebuild_an_active_siblings_workspace() {
+    use std::os::unix::fs::MetadataExt;
+    use thurbox::session::{Multiplexer, Route};
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let extra = tempfile::tempdir().unwrap();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let registry = thurbox::backend::BackendRegistry::new(route, backend);
+    let request = |name: &str, asid: &str| thurbox::session_ops::SpawnRequest {
+        name: name.into(),
+        repo_path: repo.path().into(),
+        extra_repos: vec![thurbox::session::ExtraRepo {
+            repo_path: extra.path().into(),
+            worktree: false,
+            base_branch: None,
+        }],
+        agent_session_id: Some(asid.into()),
+        command: Some("sleep 60".into()),
+        ..Default::default()
+    };
+    thurbox::session_ops::spawn_session_headless(
+        &db,
+        &registry,
+        request("workspace-first", "shared workspace"),
+    )
+    .unwrap();
+    let workspace = thurbox::workspace::workspace_path("shared-workspace").unwrap();
+    let original_inode = std::fs::metadata(&workspace).unwrap().ino();
+    let result = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &registry,
+        request("workspace-second", "shared-workspace"),
+    );
+    assert!(
+        matches!(result, Err(thurbox::session_ops::OpError::Conflict(_))),
+        "resumed create rebuilt an active workspace: {result:?}"
+    );
+    assert_eq!(std::fs::metadata(&workspace).unwrap().ino(), original_inode);
 }

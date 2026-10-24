@@ -1005,7 +1005,15 @@ pub(super) fn migrate_v54_telemetry_export(conn: &Connection) -> rusqlite::Resul
 
 /// Tables no snapshot trigger covers: written by every lease, cursor advance,
 /// export and audit entry, and read by nothing the interface rebuilds from.
-pub(super) const UNTRACKED_TABLES: &[&str] = &["telemetry_export", "event_cursors", "audit_log"];
+pub(super) const UNTRACKED_TABLES: &[&str] = &[
+    "session_lifecycle_clock",
+    "session_intents",
+    "session_loss_suspects",
+    "automation_suspensions",
+    "telemetry_export",
+    "event_cursors",
+    "audit_log",
+];
 
 /// The SQL condition under which a write to the `metadata` row `row` (`OLD` or
 /// `NEW`) rebuilds the snapshot: not the perf snapshot the interface itself
@@ -1182,7 +1190,11 @@ pub(super) fn migrate_v49_snapshot_versions(conn: &Connection) -> rusqlite::Resu
                 table != "sessions"
                     || !matches!(
                         column.as_str(),
-                        "hook_state_at" | "seen_at" | "background_work"
+                        "hook_state_at"
+                            | "seen_at"
+                            | "background_work"
+                            | "lifecycle_generation"
+                            | "host_lifecycle_generation"
                     )
             })
             .map(|column| {
@@ -1267,5 +1279,64 @@ pub(super) fn migrate_v58_agent_args(conn: &Connection) -> rusqlite::Result<()> 
     }
     add_column_if_absent(conn, "sessions", "agent_args", "TEXT")?;
     // v49 ran before this new column existed on an upgraded database.
+    migrate_v49_snapshot_versions(conn)
+}
+
+/// Additive lifecycle bookkeeping; none of it makes an old row an owned automation.
+pub(super) fn migrate_v59_session_lifecycle(conn: &Connection) -> rusqlite::Result<()> {
+    if !table_exists(conn, "sessions")? || !table_exists(conn, "automations")? {
+        return Ok(());
+    }
+    add_column_if_absent(conn, "sessions", "purged_at", "INTEGER")?;
+    add_column_if_absent(
+        conn,
+        "sessions",
+        "lifecycle_generation",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_absent(conn, "sessions", "host_lifecycle_generation", "INTEGER")?;
+    add_column_if_absent(conn, "sessions", "purge_owed", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_absent(conn, "automations", "owner_session_id", "TEXT")?;
+    add_column_if_absent(conn, "automations", "enabled_before_delete", "INTEGER")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS session_lifecycle_clock (id INTEGER PRIMARY KEY CHECK(id = 1), generation INTEGER NOT NULL);
+         INSERT OR IGNORE INTO session_lifecycle_clock VALUES (1, 0);
+         CREATE TRIGGER IF NOT EXISTS session_lifecycle_insert AFTER INSERT ON sessions
+         BEGIN
+           UPDATE session_lifecycle_clock SET generation = generation + 1 WHERE id = 1;
+           UPDATE sessions SET lifecycle_generation = (SELECT generation FROM session_lifecycle_clock WHERE id = 1) WHERE id = NEW.id;
+         END;
+         CREATE TRIGGER IF NOT EXISTS session_lifecycle_generation AFTER UPDATE OF deleted_at, force_deleted, purged_at, purge_owed, backend_type ON sessions
+         WHEN OLD.deleted_at IS NOT NEW.deleted_at OR OLD.force_deleted IS NOT NEW.force_deleted
+           OR OLD.purged_at IS NOT NEW.purged_at OR OLD.purge_owed IS NOT NEW.purge_owed OR OLD.backend_type IS NOT NEW.backend_type
+         BEGIN
+           UPDATE session_lifecycle_clock SET generation = generation + 1 WHERE id = 1;
+           UPDATE sessions SET lifecycle_generation = (SELECT generation FROM session_lifecycle_clock WHERE id = 1) WHERE id = NEW.id;
+         END;
+         CREATE INDEX IF NOT EXISTS idx_automation_owner ON automations(owner_session_id);
+         CREATE INDEX IF NOT EXISTS idx_purged_sessions ON sessions(purged_at) WHERE purged_at IS NOT NULL;
+         CREATE TABLE IF NOT EXISTS automation_suspensions (
+             automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+             session_id TEXT NOT NULL,
+             PRIMARY KEY (automation_id, session_id)
+         );
+         CREATE TABLE IF NOT EXISTS session_intents (
+             id TEXT PRIMARY KEY,
+             payload TEXT NOT NULL,
+             expires_at INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_intent_expiry ON session_intents(expires_at);
+         CREATE TABLE IF NOT EXISTS session_loss_suspects (
+             id TEXT PRIMARY KEY,
+             pane TEXT NOT NULL
+         );
+         CREATE TRIGGER IF NOT EXISTS preserve_purged_session BEFORE UPDATE ON sessions
+         WHEN (OLD.purged_at IS NOT NULL OR OLD.purge_owed = 1) AND NEW.deleted_at IS NULL
+         BEGIN SELECT RAISE(ABORT, 'an irreversible purge cannot be restored'); END;
+         CREATE TRIGGER IF NOT EXISTS retain_purge_marker BEFORE DELETE ON sessions
+         WHEN OLD.purged_at IS NOT NULL OR OLD.purge_owed = 1
+         BEGIN SELECT RAISE(ABORT, 'purge markers are retained until audit retention'); END;"
+    )?;
+    // Upgraded databases installed these triggers before the lifecycle columns existed.
     migrate_v49_snapshot_versions(conn)
 }

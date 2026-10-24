@@ -60,6 +60,10 @@ pub enum PaneClaim {
 /// Information about a soft-deleted session, including its worktrees.
 #[derive(Debug, Clone)]
 pub struct DeletedSessionInfo {
+    pub lifecycle_generation: u64,
+    pub host_lifecycle_generation: Option<u64>,
+    /// Purge tombstone; hidden from the restore list.
+    pub purged_at: Option<u64>,
     pub id: SessionId,
     pub name: String,
     pub agent: String,
@@ -92,18 +96,15 @@ pub struct DeletedSessionInfo {
     /// above is stamped on this machine's clock and cannot be compared to a
     /// host's `updated_at` directly.
     pub host_updated_at: Option<u64>,
-    /// Whether this row was hard-deleted (tmux window + worktrees torn down). A
+    /// Whether irreversible teardown was requested (possibly still owed). A
     /// force-deleted session is shown in the restore list and normally cannot be
     /// restored — its worktrees, and any uncommitted work in them, are gone. See
     /// schema v37. The exception is a session whose worktrees were all *opened*
     /// rather than created (`created_by_thurbox`, schema v42): the teardown
     /// skipped every one, so nothing was lost and the restore is not refused.
     pub force_deleted: bool,
-    /// Whether this row's teardown never reached the host it was owed on
-    /// (schema v46), so the sweep must come back for it. Only a remote session
-    /// can owe one: the kill and the worktree removals happen on the host, and
-    /// a host that was down at delete time is the whole reason the attempt
-    /// failed. Cleared the moment the host answers.
+    /// Cleanup remains owed after an interrupted or failed force delete, locally
+    /// or remotely. Cleared only when window and worktree cleanup succeeds.
     pub teardown_owed: bool,
     /// The key the row still carries. A deleted row does **not** reserve it:
     /// a restore gives it back only when no live session on the host took it
@@ -119,8 +120,7 @@ impl Database {
     /// never lists the hook columns (`hook_state`/`hook_state_at`/`seen_at`), so
     /// the TUI's full-row write-back can't clobber a state a headless hook just
     /// set (see [`set_hook_state`](Self::set_hook_state)). `created_at` is set
-    /// only on insert; a conflict revives a soft-deleted row (`deleted_at =
-    /// NULL`). The pre-write existence check decides only the audit label and
+    /// only on insert. A conflict never restores a deleted row. The pre-write existence check decides only the audit label and
     /// can't make the write race — the UPSERT handles both cases regardless.
     ///
     /// The whole write — row, audits, worktree replacement, the watch event —
@@ -167,13 +167,38 @@ impl Database {
         agent_args: Option<&[String]>,
     ) -> rusqlite::Result<()> {
         let tx = self.write_transaction()?;
+        let pending: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_intents WHERE id = ?1)",
+            [session.id.to_string()],
+            |r| r.get(0),
+        )?;
+        if pending {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "session has a pending lifecycle intent".into(),
+            ));
+        }
+        self.upsert_session_in_transaction(session, created_as)?;
+        if let Some(args) = agent_args {
+            let active: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND deleted_at IS NULL)",
+                [session.id.to_string()],
+                |row| row.get(0),
+            )?;
+            if active {
+                self.set_agent_args(session.id, args)?;
+            }
+        }
+        tx.commit()
+    }
+
+    pub(crate) fn upsert_session_in_transaction(
+        &self,
+        session: &SharedSession,
+        created_as: EventReason,
+    ) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
 
-        // The row as it stands, if at all: whether it existed decides the audit
-        // label, and *how* it existed decides the watch event — the UPSERT below
-        // clears `deleted_at`, so a conflict on a soft-deleted row is a session
-        // coming back rather than one being updated.
         let before = self
             .conn
             .query_row(
@@ -188,6 +213,12 @@ impl Database {
                 },
             )
             .optional()?;
+        if before
+            .as_ref()
+            .is_some_and(|(deleted_at, _, _)| deleted_at.is_some())
+        {
+            return Ok(());
+        }
         let existed = before.is_some();
 
         self.conn.execute(
@@ -198,6 +229,7 @@ impl Database {
              ON CONFLICT(id) DO UPDATE SET \
                  name = excluded.name, agent = excluded.agent, \
                  backend_id = excluded.backend_id, \
+                 host_lifecycle_generation = CASE WHEN sessions.backend_type IS NOT excluded.backend_type THEN NULL ELSE sessions.host_lifecycle_generation END, \
                  backend_type = excluded.backend_type, \
                  agent_session_id = excluded.agent_session_id, \
                  cwd = excluded.cwd, additional_dirs = excluded.additional_dirs, \
@@ -205,7 +237,7 @@ impl Database {
                  parent_session_id = excluded.parent_session_id, \
                  display_order = excluded.display_order, \
                  key = excluded.key, \
-                 updated_at = excluded.updated_at, deleted_at = NULL",
+                 updated_at = excluded.updated_at",
             params![
                 id_str,
                 session.name,
@@ -259,15 +291,7 @@ impl Database {
                 None,
                 None,
             )?,
-            // A conflict on a soft-deleted row revives it: the session is back
-            // in every listing, so a watcher that saw it go must see it return.
-            Some((Some(_), _, _)) => self.record_session_event(
-                session.id,
-                SessionEventKind::Created,
-                EventReason::Restored,
-                None,
-                None,
-            )?,
+            Some((Some(_), _, _)) => {}
             // Only the facts a watcher reports are an event; a write that
             // changes nothing it can see is not one.
             Some((None, name, backend_id)) => {
@@ -283,21 +307,18 @@ impl Database {
             }
         }
 
-        if let Some(args) = agent_args {
-            self.set_agent_args(session.id, args)?;
-        }
-
-        tx.commit()
+        Ok(())
     }
 
     /// Soft-delete a session: the row is hidden, everything it owns stands, and
     /// a restore brings it back.
     pub fn soft_delete_session(&self, id: SessionId) -> rusqlite::Result<()> {
-        self.delete_session(id, EventReason::SoftDeleted)
+        self.delete_session(id, EventReason::SoftDeleted, None)
+            .map(|_| ())
     }
 
     /// Delete a session **and** mark it force-deleted in one transaction: its
-    /// tmux window and worktrees were torn down, so it can't be restored
+    /// tmux window and worktrees must be torn down, so it can't be restored
     /// (schema v37).
     ///
     /// One call rather than a soft delete followed by
@@ -310,17 +331,55 @@ impl Database {
     /// already hidden when that write failed, with its window still running and
     /// no teardown owed (issue #1475).
     pub fn force_delete_session(&self, id: SessionId) -> rusqlite::Result<()> {
-        self.delete_session(id, EventReason::ForceDeleted)
+        self.delete_session(id, EventReason::ForceDeleted, None)
+            .map(|_| ())
     }
 
-    fn delete_session(&self, id: SessionId, reason: EventReason) -> rusqlite::Result<()> {
+    pub fn delete_session_with_automations(
+        &self,
+        id: SessionId,
+        force: bool,
+    ) -> rusqlite::Result<super::automations::SessionAutomationEffects> {
+        self.delete_session_if_generation(id, force, None)
+    }
+
+    pub fn delete_session_if_generation(
+        &self,
+        id: SessionId,
+        force: bool,
+        expected: Option<u64>,
+    ) -> rusqlite::Result<super::automations::SessionAutomationEffects> {
+        self.delete_session(
+            id,
+            if force {
+                EventReason::ForceDeleted
+            } else {
+                EventReason::SoftDeleted
+            },
+            expected,
+        )
+    }
+
+    fn delete_session(
+        &self,
+        id: SessionId,
+        reason: EventReason,
+        expected: Option<u64>,
+    ) -> rusqlite::Result<super::automations::SessionAutomationEffects> {
         let tx = self.write_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
+        self.require_lifecycle_generation(id, expected)?;
+        let effects = self.session_automation_effects(id, reason == EventReason::ForceDeleted)?;
+        let was_live: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND deleted_at IS NULL)",
+            [&id_str],
+            |row| row.get(0),
+        )?;
 
         let deleted = self.conn.execute(
-            "UPDATE sessions SET deleted_at = ?1, updated_at = ?1, force_deleted = ?3 \
-             WHERE id = ?2 AND deleted_at IS NULL",
+            "UPDATE sessions SET deleted_at = COALESCE(deleted_at, ?1), updated_at = ?1, force_deleted = ?3, teardown_owed = ?3 \
+             WHERE id = ?2 AND purged_at IS NULL AND (deleted_at IS NULL OR ?3 = 1)",
             params![now, id_str, i64::from(reason == EventReason::ForceDeleted)],
         )?;
 
@@ -333,20 +392,22 @@ impl Database {
             None,
         )?;
 
+        self.suspend_session_automations(id)?;
         if reason == EventReason::ForceDeleted {
+            self.remove_owned_automations(id)?;
             self.conn.execute(
                 "DELETE FROM session_meta WHERE session_id = ?1",
                 params![id_str],
             )?;
         }
 
-        // A second delete of an already-deleted row changes nothing, so it is
-        // not a second `gone`.
-        if deleted > 0 {
+        // A cleanup retry can refresh debt without another lifecycle transition.
+        if deleted > 0 && was_live {
             self.record_session_event(id, SessionEventKind::Gone, reason, None, None)?;
         }
 
-        tx.commit()
+        tx.commit()?;
+        Ok(effects)
     }
 
     /// Remove a row outright — the one place a session row leaves the table.
@@ -398,23 +459,27 @@ impl Database {
         tx.commit()
     }
 
-    /// Drop a deleted row for good — `thurbox-cli session purge` and the
-    /// `deleted_retention_days` sweep. Its worktree records and metadata go with
-    /// it; the audit and event logs keep their history, and nothing on disk is
-    /// touched.
-    ///
-    /// Only while the selected deletion still matches and owes no teardown,
-    /// checked inside the transaction that removes it: an interface restoring it, or a sweep
-    /// marking it owed, between the caller's read and this write wins. Returns
-    /// whether the row went.
+    /// Commit confirmed cleanup as a minimal purge tombstone. Worktree records,
+    /// metadata and owned automations go; stale upserts cannot restore the row.
+    /// The selected deletion must still match and owe no teardown.
     pub fn purge_deleted_session(&self, id: SessionId, deleted_at: u64) -> rusqlite::Result<bool> {
         let tx = self.write_transaction()?;
+        let purged = self.purge_deleted_session_in_transaction(id, deleted_at)?;
+        tx.commit()?;
+        Ok(purged)
+    }
+
+    fn purge_deleted_session_in_transaction(
+        &self,
+        id: SessionId,
+        deleted_at: u64,
+    ) -> rusqlite::Result<bool> {
         let id_str = id.to_string();
         let purgeable = self
             .conn
             .query_row(
                 "SELECT 1 FROM sessions \
-                 WHERE id = ?1 AND deleted_at = ?2 AND teardown_owed = 0",
+                 WHERE id = ?1 AND deleted_at = ?2 AND teardown_owed = 0 AND purged_at IS NULL",
                 params![id_str, deleted_at as i64],
                 |_| Ok(()),
             )
@@ -429,8 +494,12 @@ impl Database {
                 params![id_str],
             )?;
         }
-        self.conn
-            .execute("DELETE FROM sessions WHERE id = ?1", params![id_str])?;
+        self.remove_owned_automations(id)?;
+        self.conn.execute("UPDATE sessions SET purged_at = ?2, purge_owed = 0, force_deleted = 1,
+            updated_at = ?2, cwd = NULL, additional_dirs = '', backend_id = '', shell_backend_id = NULL,
+            agent_session_id = NULL, key = NULL, parent_session_id = NULL,
+            launch_command = NULL, launch_args = NULL, launch_env = NULL, agent_args = NULL
+            WHERE id = ?1", params![id_str, current_time_millis() as i64])?;
         self.log_audit(
             EntityType::Session,
             &id_str,
@@ -439,7 +508,6 @@ impl Database {
             None,
             Some("purged"),
         )?;
-        tx.commit()?;
         Ok(true)
     }
 
@@ -449,20 +517,14 @@ impl Database {
     pub fn any_deleted_before(&self, cutoff_ms: u64) -> rusqlite::Result<bool> {
         self.conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM sessions \
-             WHERE deleted_at IS NOT NULL AND deleted_at < ?1)",
+             WHERE deleted_at IS NOT NULL AND purged_at IS NULL AND deleted_at < ?1)",
             params![cutoff_ms as i64],
             |row| row.get(0),
         )
     }
 
-    /// Record whether a deleted row still owes a teardown on the host it lived
-    /// on (schema v46).
-    ///
-    /// Set when a force delete could not reach that host, cleared when a later
-    /// attempt does. No session event: this is bookkeeping about a delete that
-    /// already happened and was already announced, not a change of what the
-    /// session *is* — a watcher told the session went away twice would have to
-    /// decide which telling was the real one.
+    /// Record outstanding cleanup without publishing a second `gone` event.
+    /// Debt starts in the force-delete transaction, before side effects.
     pub fn set_teardown_owed(&self, id: SessionId, owed: bool) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE sessions SET teardown_owed = ?2 WHERE id = ?1",
@@ -471,7 +533,7 @@ impl Database {
         Ok(())
     }
 
-    /// The force-deleted rows whose teardown never reached their host, oldest
+    /// The force-deleted rows whose teardown is unfinished, oldest
     /// delete first — the sweep's worklist.
     ///
     /// Force-deleted only, and that is the safety property rather than an
@@ -517,6 +579,11 @@ impl Database {
     /// Restore a soft-deleted session.
     pub fn restore_session(&self, id: SessionId) -> rusqlite::Result<()> {
         let tx = self.write_transaction()?;
+        self.restore_session_in_transaction(id)?;
+        tx.commit()
+    }
+
+    fn restore_session_in_transaction(&self, id: SessionId) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
@@ -526,7 +593,7 @@ impl Database {
         // for the sweep to collect, and its windows are not the sweep's to kill.
         let restored = self.conn.execute(
             "UPDATE sessions SET deleted_at = NULL, force_deleted = 0, teardown_owed = 0, \
-             updated_at = ?1 WHERE id = ?2 AND deleted_at IS NOT NULL",
+             updated_at = ?1 WHERE id = ?2 AND deleted_at IS NOT NULL AND purged_at IS NULL AND purge_owed = 0",
             params![now, id_str],
         )?;
         // And the reap backoff, for the same reason: it belongs to the delete
@@ -546,6 +613,7 @@ impl Database {
         )?;
 
         if restored > 0 {
+            self.restore_session_automations(id)?;
             self.record_session_event(
                 id,
                 SessionEventKind::Created,
@@ -555,7 +623,7 @@ impl Database {
             )?;
         }
 
-        tx.commit()
+        Ok(())
     }
 
     /// List all active (non-deleted) sessions.
@@ -1278,7 +1346,7 @@ impl Database {
 
     /// List all soft-deleted sessions, most recently deleted first.
     pub fn list_deleted_sessions(&self) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
-        self.query_deleted_sessions("s.deleted_at IS NOT NULL", [])
+        self.query_deleted_sessions("s.deleted_at IS NOT NULL AND s.purged_at IS NULL", [])
     }
 
     /// Deleted sessions deleted or changed at or after `since_ms`, newest
@@ -1289,7 +1357,7 @@ impl Database {
         since_ms: u64,
     ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
         self.query_deleted_sessions(
-            "s.deleted_at IS NOT NULL AND (s.deleted_at >= ?1 OR s.updated_at >= ?1)",
+            "s.deleted_at IS NOT NULL AND s.purged_at IS NULL AND (s.deleted_at >= ?1 OR s.updated_at >= ?1)",
             params![since_ms as i64],
         )
     }
@@ -1306,7 +1374,10 @@ impl Database {
         &self,
         name: &str,
     ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
-        self.query_deleted_sessions("s.deleted_at IS NOT NULL AND s.name = ?1", params![name])
+        self.query_deleted_sessions(
+            "s.deleted_at IS NOT NULL AND s.purged_at IS NULL AND s.name = ?1",
+            params![name],
+        )
     }
 
     /// Get a single soft-deleted session by its ID.
@@ -1315,7 +1386,7 @@ impl Database {
         id: SessionId,
     ) -> rusqlite::Result<Option<DeletedSessionInfo>> {
         let sessions = self.query_deleted_sessions(
-            "s.deleted_at IS NOT NULL AND s.id = ?1",
+            "s.deleted_at IS NOT NULL AND s.purged_at IS NULL AND s.id = ?1",
             params![id.to_string()],
         )?;
         Ok(sessions.into_iter().next())
@@ -1333,7 +1404,7 @@ impl Database {
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
              s.force_deleted, s.backend_id, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox, \
-             s.host_updated_at, s.teardown_owed, s.key, s.updated_at \
+             s.host_updated_at, s.teardown_owed, s.key, s.updated_at, s.purged_at, s.lifecycle_generation, s.host_lifecycle_generation \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
              WHERE {condition} \
@@ -1364,6 +1435,9 @@ impl Database {
 
             Ok((
                 DeletedSessionInfo {
+                    lifecycle_generation: row.get::<_, i64>(20)? as u64,
+                    host_lifecycle_generation: row.get::<_, Option<i64>>(21)?.map(|v| v as u64),
+                    purged_at: row.get::<_, Option<i64>>(19)?.map(|v| v as u64),
                     id: id_str.parse().unwrap_or_default(),
                     name: row.get(1)?,
                     agent: row.get(2)?,
@@ -2201,6 +2275,117 @@ fn row_to_shared_session(
     ))
 }
 
+impl Database {
+    pub fn list_session_tombstones(
+        &self,
+        since: Option<u64>,
+    ) -> rusqlite::Result<Vec<DeletedSessionInfo>> {
+        match since {
+            Some(since) => self.query_deleted_sessions(
+                "s.deleted_at IS NOT NULL AND (s.deleted_at >= ?1 OR s.updated_at >= ?1)",
+                [since as i64],
+            ),
+            None => self.query_deleted_sessions("s.deleted_at IS NOT NULL", []),
+        }
+    }
+
+    pub fn begin_session_purge(&self, id: SessionId, deleted_at: u64) -> rusqlite::Result<bool> {
+        self.begin_session_purge_generation(id, deleted_at, None)
+    }
+
+    pub fn begin_session_purge_generation(
+        &self,
+        id: SessionId,
+        deleted_at: u64,
+        expected: Option<u64>,
+    ) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        if self.require_lifecycle_generation(id, expected).is_err() {
+            return Ok(false);
+        }
+        let updated = self.conn.execute(
+            "UPDATE sessions SET force_deleted = 1, teardown_owed = 1, purge_owed = 1
+            WHERE id = ?1 AND deleted_at = ?2 AND purged_at IS NULL AND teardown_owed = 0",
+            params![id.to_string(), deleted_at as i64],
+        )?;
+        if updated > 0 {
+            self.remove_owned_automations(id)?;
+        }
+        tx.commit()?;
+        Ok(updated > 0)
+    }
+
+    pub fn complete_session_teardown(&self, id: SessionId) -> rusqlite::Result<()> {
+        let tx = self.write_transaction()?;
+        self.set_teardown_owed(id, false)?;
+        let purge: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT deleted_at FROM sessions WHERE id = ?1 AND purge_owed = 1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(at) = purge {
+            self.purge_deleted_session_in_transaction(id, at as u64)?;
+        }
+        tx.commit()
+    }
+
+    pub fn commit_restored_session(
+        &self,
+        session: &SharedSession,
+        deleted_at: u64,
+        generation: u64,
+        lease_token: u64,
+        same_server: impl Fn(&str, &str) -> bool,
+    ) -> rusqlite::Result<PaneClaim> {
+        let tx = self.write_transaction()?;
+        self.check_create_fence(session.id, lease_token)?;
+        self.require_lifecycle_generation(session.id, Some(generation))?;
+        let current = self.get_deleted_session_by_id(session.id)?;
+        if !current.is_some_and(|row| row.deleted_at == deleted_at) {
+            return Ok(PaneClaim::RowGone);
+        }
+        if self.list_active_sessions()?.iter().any(|row| {
+            row.id != session.id
+                && !session.backend_id.is_empty()
+                && row.backend_id == session.backend_id
+                && same_server(&row.backend_type, &session.backend_type)
+        }) {
+            return Ok(PaneClaim::Occupied);
+        }
+        self.conn.execute(
+            "UPDATE sessions SET backend_id = ?2 WHERE id = ?1",
+            params![session.id.to_string(), session.backend_id],
+        )?;
+        self.restore_session_in_transaction(session.id)?;
+        self.clear_create_intent(session.id)?;
+        tx.commit()?;
+        Ok(PaneClaim::Stored)
+    }
+}
+
+impl Database {
+    pub fn restore_mirrored_session(
+        &self,
+        session: &SharedSession,
+        generation: u64,
+    ) -> rusqlite::Result<()> {
+        let tx = self.write_transaction()?;
+        self.require_lifecycle_generation(session.id, Some(generation))?;
+        if self.get_deleted_session_by_id(session.id)?.is_none() {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        self.restore_session_in_transaction(session.id)?;
+        if self.get_session_by_id(session.id)?.is_none() {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        self.upsert_session_in_transaction(session, EventReason::Restored)?;
+        tx.commit()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2513,9 +2698,6 @@ mod tests {
 
     #[test]
     fn respawn_reuses_id_revives_one_active_row() {
-        // Models `respawn_stale_session`: re-upserting the SAME id after a
-        // soft-delete must revive the single row in place (clear deleted_at), not
-        // leave a tombstone behind — so a session's identity is stable for life.
         let db = Database::open_in_memory().unwrap();
         let mut session = make_session("worker");
         let sid = session.id;
@@ -2525,6 +2707,9 @@ mod tests {
 
         // Respawn: same id, fresh backend_id (as the new tmux pane would have).
         session.backend_id = "thurbox:@9".to_string();
+        db.upsert_session(&session).unwrap();
+        assert!(db.list_active_sessions().unwrap().is_empty());
+        db.restore_session(sid).unwrap();
         db.upsert_session(&session).unwrap();
 
         let active = db.list_active_sessions().unwrap();
@@ -3006,11 +3191,7 @@ mod tests {
         assert!(db.load_hook_state(sid).unwrap().is_none());
     }
 
-    /// Why the ordering commands stopped writing whole rows: `upsert_session`
-    /// revives on conflict — deliberately, for the mirror, which applies a
-    /// host's whole row including its restores — so a renumbering that wrote
-    /// each row back undid a delete that landed between the listing and the
-    /// loop that followed it.
+    /// Targeted ordering writes and stale full-row writes both preserve deletion.
     #[test]
     fn a_renumbering_leaves_a_row_deleted_underneath_it_deleted() {
         let db = Database::open_in_memory().unwrap();
@@ -3026,9 +3207,8 @@ mod tests {
         second.display_order = Some(1);
         db.upsert_session(&second).unwrap();
         assert!(
-            db.get_session_by_id(second.id).unwrap().is_some(),
-            "upsert_session revives on conflict, which is why a renumbering \
-             must not be one"
+            db.get_session_by_id(second.id).unwrap().is_none(),
+            "a stale full-row write must preserve deletion"
         );
 
         db.soft_delete_session(second.id).unwrap();

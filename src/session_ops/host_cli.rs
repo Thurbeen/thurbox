@@ -120,6 +120,8 @@ pub struct CliInfo {
     pub create_parity: bool,
     /// Whether the peer persists and replays `session create --agent-arg`.
     pub agent_args: bool,
+    pub purged_tombstones: bool,
+    pub lifecycle_preconditions: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -743,6 +745,14 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .unwrap_or(false),
         agent_args: json
             .get("agent_args")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        lifecycle_preconditions: json
+            .get("lifecycle_preconditions")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        purged_tombstones: json
+            .get("purged_tombstones")
             .and_then(Value::as_bool)
             .unwrap_or(false),
         create_parity: json
@@ -1532,6 +1542,8 @@ pub(crate) mod fake {
             deleted_changes_since: false,
             create_parity: false,
             agent_args: false,
+            purged_tombstones: false,
+            lifecycle_preconditions: false,
         }
     }
 }
@@ -1666,6 +1678,8 @@ mod tests {
             deleted_changes_since: false,
             create_parity: false,
             agent_args: false,
+            purged_tombstones: false,
+            lifecycle_preconditions: false,
         }
     }
 
