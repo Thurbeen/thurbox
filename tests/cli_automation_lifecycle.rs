@@ -413,10 +413,13 @@ fn purge_accepts_a_deleted_reference_and_refuses_an_active_one() {
     // Windows CI has no multiplexer installed; successful purge still needs a
     // backend that can confirm absence, rather than treating a probe error as absence.
     let _paths = thurbox::paths::TestPathGuard::new(env.root.path());
-    let route = thurbox::session::Route::local(Some(thurbox::session::Multiplexer::Tmux));
+    let route =
+        thurbox::session::Route::local(Some(thurbox::session::Multiplexer::platform_default()));
     let backend = recording_backend::RecordingBackend::new(&route);
-    let backends =
-        thurbox::cli::Backends::ready(thurbox::backend::BackendRegistry::new(route, backend));
+    let backends = thurbox::cli::Backends::ready(thurbox::backend::BackendRegistry::new(
+        route,
+        backend.clone(),
+    ));
     let done = thurbox::cli::sessions::run(
         thurbox::cli::sessions::Action::Purge {
             if_generation: None,
@@ -432,7 +435,8 @@ fn purge_accepts_a_deleted_reference_and_refuses_an_active_one() {
     )
     .unwrap()
     .json;
-    assert_eq!(done["purged"].as_array().unwrap().len(), 1);
+    assert_eq!(done["purged"].as_array().unwrap().len(), 1, "{done}");
+    assert!(backend.calls().iter().any(|call| call == "discover"));
     env.exits(1, &["session", "restore", &session, "--best-effort"]);
 }
 
