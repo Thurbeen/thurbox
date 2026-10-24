@@ -529,23 +529,29 @@ fn respawn(
         recipe.as_ref(),
         &env,
     )?;
-    let pane = backend
-        .create_window(&crate::backend::WindowSpec {
-            owner: crate::backend::Owner::new(&stamp, &plan.window_name),
-            role: crate::backend::WindowRole::Agent,
-            command: &plan.command,
-            args: &plan.args,
-            cwd: plan.cwd.as_deref(),
-            env: &plan.env,
-        })
+    let (pane, startup) = backend
+        .create_window_observed(
+            &crate::backend::WindowSpec {
+                owner: crate::backend::Owner::new(&stamp, &plan.window_name),
+                role: crate::backend::WindowRole::Agent,
+                command: &plan.command,
+                args: &plan.args,
+                cwd: plan.cwd.as_deref(),
+                env: &plan.env,
+            },
+            std::time::Duration::from_millis(50),
+        )
         .map_err(|e| crate::session_ops::OpError::from(e).context("re-spawn"))?;
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    if backend.pane_state(&pane)?.dead == Some(true) {
-        let detail = backend.capture(&pane, 20, false).unwrap_or_default();
-        let _ = super::windows::kill_owned(
-            backend,
-            crate::backend::Owner::new(&stamp, &session.name).remembering(&pane, ""),
-        );
+    if matches!(
+        startup,
+        crate::backend::contract::BackendLiveness::Exited
+            | crate::backend::contract::BackendLiveness::Missing
+    ) {
+        let detail = if startup == crate::backend::contract::BackendLiveness::Exited {
+            backend.capture(&pane, 20, false).unwrap_or_default()
+        } else {
+            String::new()
+        };
         return Err(format!("restored agent exited before commit: {detail}").into());
     }
     Ok(pane.to_string())

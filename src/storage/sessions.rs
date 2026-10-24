@@ -182,7 +182,14 @@ impl Database {
         }
         self.upsert_session_in_transaction(session, created_as)?;
         if let Some(args) = agent_args {
-            self.set_agent_args(session.id, args)?;
+            let active: bool = self.conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND deleted_at IS NULL)",
+                [session.id.to_string()],
+                |row| row.get(0),
+            )?;
+            if active {
+                self.set_agent_args(session.id, args)?;
+            }
         }
         tx.commit()
     }
@@ -497,7 +504,7 @@ impl Database {
         self.conn.execute("UPDATE sessions SET purged_at = ?2, purge_owed = 0, force_deleted = 1,
             updated_at = ?2, cwd = NULL, additional_dirs = '', backend_id = '', shell_backend_id = NULL,
             agent_session_id = NULL, key = NULL, parent_session_id = NULL,
-            launch_command = NULL, launch_args = NULL, launch_env = NULL
+            launch_command = NULL, launch_args = NULL, launch_env = NULL, agent_args = NULL
             WHERE id = ?1", params![id_str, current_time_millis() as i64])?;
         self.log_audit(
             EntityType::Session,
