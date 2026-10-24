@@ -82,8 +82,9 @@ open. The perf HUD is the deliberate exception: its
 counters move every iteration, so it says so.
 
 Everything that touches the world runs on a worker and publishes back (rule 5):
-`kernel::terminal` (attach — the sharpest teeth, since a down host runs out its ssh
-timeout and adopting a pane needs the runtime *entered* on the worker),
+`kernel::terminal` (attach, shell open and re-adoption — the sharpest teeth,
+since a down host runs out its ssh timeout and adopting a pane needs the runtime
+*entered* on the worker),
 `kernel::command`, `kernel::diff`, `kernel::metrics` (three cadences, one published
 result — the clearest one to copy), `kernel::repos` (the only *parameterised* reads,
 asked for by leaving a key in `store`), `kernel::runs`, `kernel::updates`.
@@ -186,7 +187,8 @@ question is whether it was worth asking yet.
 off screen, or from attach when it was never shown, a pane's parser is two
 cells that still read every byte (title, bell, notification, input modes,
 `last_output_at`); `WiredPane::evict` does the swap. A paint of such a pane
-calls `restore`, which asks tmux for a snapshot over control mode; the control
+calls `restore` without waiting, painting blank until it lands. This asks tmux
+for a snapshot over control mode; the control
 reader puts the answer into the pane's own output channel (`PaneChunk::Snapshot`)
 so the reader thread installs it at exactly the byte it describes. Never
 rebuild a grid from a capture taken any other way: the output in flight is then
