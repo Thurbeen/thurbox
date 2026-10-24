@@ -82,6 +82,7 @@ impl Write for Discard {
 struct Recorder {
     resizes: Mutex<Vec<(String, u16, u16)>>,
     senders: Mutex<Vec<std::sync::mpsc::Sender<()>>>,
+    supports_snapshots: bool,
     /// Snapshot requests taken, none of them ever answered.
     snapshots: std::sync::atomic::AtomicUsize,
 }
@@ -282,7 +283,7 @@ impl crate::backend::SessionBackend for Recorder {
         "/bin/sh".to_string()
     }
     fn supports_snapshots(&self) -> bool {
-        true
+        self.supports_snapshots
     }
     fn request_snapshot(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
         self.snapshots
@@ -929,7 +930,10 @@ async fn a_replacement_shell_takes_its_own_first_frame_size() {
 async fn a_grid_that_never_arrives_does_not_stall_any_frame() {
     let dir = tempfile::tempdir().expect("tempdir");
     let _paths = crate::paths::TestPathGuard::new(dir.path());
-    let recorder = Arc::new(Recorder::default());
+    let recorder = Arc::new(Recorder {
+        supports_snapshots: true,
+        ..Default::default()
+    });
     let backend: Arc<dyn crate::backend::SessionBackend> = recorder.clone();
     let session = crate::backend::Session::adopt_dormant(
         "probe".to_string(),

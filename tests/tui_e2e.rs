@@ -7597,6 +7597,53 @@ fn delay_remote_control_command(profile: &Profile, command: &str) {
 }
 
 #[test]
+fn a_new_shell_recovers_output_written_before_its_reader_connects() {
+    use std::os::unix::fs::PermissionsExt;
+    let scripts = tempfile::tempdir().expect("shell scripts");
+    let shell = scripts.path().join("quiet-shell");
+    let wrote = scripts.path().join("wrote-prompt");
+    // An interactive Bash prompt can hide lost startup output by redrawing on resize.
+    std::fs::write(&shell, format!(
+        "#!/bin/sh\ntrap '' WINCH\nprintf 'bootstrap-shell-prompt$ '\ntouch {}\nwhile IFS= read -r line; do eval \"$line\"; done\n",
+        shell_word(&wrote),
+    )).expect("single-prompt shell");
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    let Some((profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            // Hold the birth reply until the shell has written its only prompt.
+            assert!(profile
+                .server
+                .tmux(&["set-hook", "-g", "after-new-window", "run-shell 'sleep 1'",])
+                .status
+                .success());
+        },
+        |cmd| {
+            cmd.env("SHELL", &shell);
+        },
+    ) else {
+        return;
+    };
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Shell");
+    tui.wait_until("the initial prompt to be written", |_| wrote.exists());
+    let panes = profile
+        .server
+        .tmux(&["list-panes", "-a", "-F", "#{pane_id} #{window_name}"]);
+    let panes = String::from_utf8(panes.stdout).expect("panes");
+    let pane = panes
+        .lines()
+        .find(|line| line.contains("tbs-probe"))
+        .and_then(|line| line.split_whitespace().next())
+        .expect("shell pane");
+    let captured = profile.server.tmux(&["capture-pane", "-p", "-t", pane]);
+    assert!(String::from_utf8_lossy(&captured.stdout).contains("bootstrap-shell-prompt"));
+    tui.wait_for("bootstrap-shell-prompt");
+    tui.send(b"echo connected-\"\"shell-ready\r");
+    tui.wait_for("connected-shell-ready");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn a_slow_companion_shell_open_keeps_the_interface_painting() {
     let Some((profile, _link, mut tui)) = remote_shell_session_with(|profile, cmd| {
         plain_remote_shell(profile, cmd);

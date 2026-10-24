@@ -1727,8 +1727,11 @@ impl Session {
                 rows,
                 cols,
             )?;
-            let (wired, _) =
-                Self::wire_up(rows, cols, SessionIo::spawned(spawned), &backend, "Shell");
+            let mut io = SessionIo::spawned(spawned);
+            // The shell can print before the backend connects its output reader.
+            // Its first view needs the complete screen, including that prefix.
+            io.resident = !backend.supports_snapshots();
+            let (wired, _) = Self::wire_up(rows, cols, io, &backend, "Shell");
             stamp(&backend, &wired.backend_id, id, WindowRole::Shell);
             Ok(ShellPane { wired })
         })
