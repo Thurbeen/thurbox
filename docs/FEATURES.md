@@ -103,12 +103,22 @@ the user to remember which field to type into.
 
 ### Live status & "needs attention"
 
-Each row is a single line: `<status-dot> <name> [<agent-status>]`
-(worktree sessions get a `⑂` mark before the name). The agent's live
-activity title (the OSC `0`/`1`/`2` window title it sets, e.g. Gemini's
-`◇ Ready`) is appended after the name when present, muted and truncated
-with `…` to fit the panel. The repo/branch and agent live in the info
-panel, not the list row.
+Each row is a single line: `<status-dot> <name> [<status>]`, indented to show
+where it sits (see *Session list hierarchy* below). The agent's current action —
+the OSC `0`/`1`/`2` title the agent sets on its own terminal, with a leading
+`✳` or `*` activity prefix dropped — is shown
+only when the panel is at least 100 columns wide, in a column aligned just past
+the longest title. Below that the title takes the whole row and is cut with `…`.
+What explains the dot — a blocked agent's question, why a host is unreachable,
+a failed command, a driver's `ui.note` — is kept at every width. A session
+waiting for you (`blocked`) has its whole row tinted in the status colour and
+its title bold in it; `done` needs no answer and is not lit. The repo/branch and
+agent live in the info panel, not the list row.
+
+The `show_window_title` setting (settings → Sessions, off by default) shows the
+agent's terminal title in place of the session name, on every row whose agent
+set one. It is the title thurbox already reads off the pane, not a separate
+query of tmux's `window_name`.
 
 The colored **status dot** is driven by **agent hooks**, not output
 heuristics. Each agent CLI's lifecycle hooks call `thurbox-cli session
@@ -292,24 +302,61 @@ moved fall back to creation order:
   temporarily reveals them; Esc restores the fold, while accepting a hit
   unfolds its host so the selected session stays visible.
   Folded host names are saved in the `sessions.folded_hosts` plugin setting, so
-  they survive a restart. The host uses Nerd Font `` when the active theme
-  enables Nerd Font glyphs, and `▣` otherwise. Text labels name the transport:
-  `local`, `ssh` or `WSL`. SSH hosts use the same label and glyph on Windows
-  and POSIX; platform is omitted to keep narrow sidebars compact. Connected
-  hosts show only the host glyph (`⌂` for local hosts) beside the disclosure
-  arrow. Other reachability states keep their status glyph and theme colour.
-  A local-only list also has a foldable host row.
+  they survive a restart. A host row is a band: tinted with the theme's
+  `accent` over its background, its arrow, mark and name in `accent`, bold.
+  This machine is `⌂ local`; any other host is `@ <name>` (`@ WSL <name>` for a
+  WSL distro), on Windows and POSIX alike. Other reachability states put their
+  status glyph, in its theme colour, beside the arrow. A local-only list also
+  has a foldable host row.
+  When the terminal's default background cannot be mixed into a tint, host and
+  blocked-session bands use the theme's `modal_bg` role instead.
 - With `group_by_repo` on, each repo set has a selectable row within its host.
   Its fold state is independent of the host fold and of the same repo on another
   host. `h` and `l` act on a selected repo row; Enter, a click (a double-click
   toggles once) and a right-click toggle it. Search
   temporarily reveals folded sessions, and accepting a result unfolds its repo.
-  Folded repo identities are saved in `sessions.folded_repos`.
+  Folded repo identities are saved in `sessions.folded_repos`. A repo row is a
+  separator rather than a level: its name in `accent` followed by a dotted
+  `╌╌╌` rule, one column in from its host's arrow, and a long multi-repo name
+  is cut with `…`. Folded, it shows its session count at the end.
+- A **parent session** (one with children in its group) carries its own fold
+  arrow in front of its dot and a bold title. Left folds it (or, on a child,
+  selects its parent), Right unfolds it or steps to its first child, and a click
+  on the arrow toggles it. A folded parent shows `+N` for what it holds, and a
+  child waiting for you (`blocked`) stays visible under it. If clicking the
+  arrow hides the selected child, the folded parent becomes selected; a selection
+  that stays visible is preserved. When a selected blocked descendant resumes
+  work, its folded ancestors unfold to keep it selected. Folded parents are
+  saved in `sessions.folded_parents`; focusing a hidden descendant unfolds its ancestors.
+- With host rows off, the top row of each tree that runs on another machine
+  shows `@` after its dot; its children do not repeat it.
 
-**Why groups are not indented.** Host rows, repo rows and sessions put their
-marker (fold arrow or status dot) in the same column. When rows were indented
-by level, the repo row sat further right than its own sessions, so the nesting
-read backwards. A host row is set apart by a rule that runs up to its
+### Session list hierarchy
+
+Hosts are bands, repositories are separators, and sessions are indented under
+them — the structure is read from the indentation alone, so a row carries no
+`└` connector and no `⇅`/`⑂` marks, and the border carries no status-dot strip:
+every row has its own dot.
+
+```text
+ ▾ @ buildbox  !1 ────── 3 sessions   host: column 1, a tinted band
+  ▾ thurbox ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌   repo: column 2, a dotted separator
+   ▾ ● lead                            parent: fold arrow in column 3
+       ○ worker-a                      child: 2 more columns per level
+       ◆ worker-b                      blocked: the whole row tinted
+     ○ solo                            dot lines up with the parent's dot
+```
+
+Every session row has a two-column fold slot in front of its dot, filled by a
+parent's arrow and blank otherwise, so siblings' dots line up whichever of them
+is a parent. Sessions are indented from the host row, not the repo row: the repo
+row is a separator, and giving it a level of its own would spend two more
+columns of a narrow sidebar on every row. With no group rows at all the
+sessions start at the panel's edge.
+
+**Why the host row sits left of its repo rows.** The arrow column is what reads
+as the nesting: a host handle in column 1, its repo rows in column 2, and its
+sessions from column 3. A host row is set apart by a rule that runs up to its
 right-aligned counts. To keep the rule, the row first drops the active count
 and shows only the session total. When even that leaves no room for a rule,
 the total trails the label as on any other row: cut short with `…` when it
@@ -753,9 +800,9 @@ ADR-13. So off-local
 sessions get identical persistence, multi-instance sharing, and
 restore-on-startup as local ones; the worktree and agent process live
 on the remote host / inside the distro (a WSL distro's worktrees stay
-in its own Linux filesystem, not on `/mnt/c`). In the session list an
-off-local session is marked with a `☁` glyph (and the info panel shows
-its `Host:`), mirroring the worktree `⑂` mark.
+in its own Linux filesystem, not on `/mnt/c`). The session list says
+where a session runs with its host row, or, with host rows off, with an `@`
+after the dot of the top row of its tree; the info panel shows its `Host:`.
 
 **Why a config file rather than ad-hoc destinations?** Named hosts
 give the picker stable, readable entries and let `backend_type`

@@ -26,7 +26,7 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
    `hover_style`. A `frame` takes `title_align`, `border_type`
    (`rounded`/`square`) and an `overlay` — runs painted onto its own border
    cells (`top_left`/`top_right`/`bottom_left`/`bottom_right`/`right_column`)
-   after the block, which is where the session list's dot strip and `▲ N`/`▼ N`
+   after the block, which is where the session list's `▲ N`/`▼ N`
    counts and the terminal pane's scrollbar live, at the cost of no content
    cell. And a **run** takes `id`/`role`, so a chip inside a line is a click
    target over its own columns without becoming a node; adjacent runs sharing an

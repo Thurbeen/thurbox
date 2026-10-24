@@ -73,6 +73,7 @@ theme.secondary string
 theme.spinner_frame function
 theme.spinner table
 theme.status function
+theme.tint function
 theme.text string
 theme.warn string
 tree.has_class function

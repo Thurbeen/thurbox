@@ -570,6 +570,9 @@ fn choose_menu_entry(host: &LuaHost, label: &str) -> String {
 #[test]
 fn right_click_folds_and_unfolds_every_host_and_repo() {
     let mut snapshot = two_sessions();
+    let mut child = row("delta", "thurbox");
+    child.parent_id = Some(snapshot.sessions[0].id.clone());
+    snapshot.sessions.push(child);
     let mut remote = row("gamma", "infra");
     remote.backend = "ssh:buildbox".into();
     remote.remote_host = Some("buildbox".into());
@@ -593,7 +596,11 @@ fn right_click_folds_and_unfolds_every_host_and_repo() {
             _ => None,
         })
         .collect();
-    assert_eq!(settings.len(), 2, "host and repo folds must both be saved");
+    assert_eq!(
+        settings.len(),
+        3,
+        "host, repo and parent folds must be saved"
+    );
     let saved = |key: &str| {
         settings
             .iter()
@@ -613,11 +620,12 @@ fn right_click_folds_and_unfolds_every_host_and_repo() {
     for repo in ["thurbox", "website", "infra"] {
         assert!(repos.contains(repo), "{repo} missing from {repos}");
     }
+    assert_eq!(saved("sessions.folded_parents"), alpha);
     let folded = format!(
         "{:?}",
         host.render(sessions, ctx()).expect("folded render").node
     );
-    for name in ["alpha", "beta", "gamma"] {
+    for name in ["alpha", "beta", "gamma", "delta"] {
         assert!(!folded.contains(name), "{name} stayed visible: {folded}");
     }
 
@@ -638,7 +646,7 @@ fn right_click_folds_and_unfolds_every_host_and_repo() {
             _ => None,
         })
         .collect();
-    assert_eq!(cleared.len(), 2);
+    assert_eq!(cleared.len(), 3);
     assert!(cleared.iter().all(|(_, value)| matches!(
         value,
         Some(thurbox::kernel::registry::Value::Text(text)) if text.is_empty()
@@ -647,7 +655,7 @@ fn right_click_folds_and_unfolds_every_host_and_repo() {
         "{:?}",
         host.render(sessions, ctx()).expect("expanded render").node
     );
-    for name in ["alpha", "beta", "gamma"] {
+    for name in ["alpha", "beta", "gamma", "delta"] {
         assert!(expanded.contains(name), "{name} stayed hidden: {expanded}");
     }
 }
