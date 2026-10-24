@@ -509,7 +509,7 @@ pub struct Terminals {
     /// Panes adopted by window-name resolution, waiting for the loop to persist
     /// their id onto the row ([`Self::drain_adopted_panes`]).
     adopted: Vec<(String, String)>,
-    shelling: HashMap<String, bool>,
+    shelling: HashMap<String, shells::Shelling>,
     shelled: (Sender<shells::Shelled>, Receiver<shells::Shelled>),
     shell_results: Vec<ShellResult>,
     /// Backends whose window list is being read on a worker.

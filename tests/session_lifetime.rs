@@ -629,3 +629,77 @@ fn a_stopped_session_is_never_relaunched_as_a_missing_agent() {
         "a stopped session was queued for relaunch: {parked_missing:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn canceling_a_shell_open_never_kills_by_a_stale_pane_id() {
+    if std::process::Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let server = TmuxServer::pin("thurbox-shell-cancel");
+    assert!(server
+        .tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            "thurbox-dev",
+            "-n",
+            "tb-demo",
+            "sh"
+        ])
+        .status
+        .success());
+    assert!(server
+        .tmux(&["set-option", "-g", "default-shell", "/bin/sh"])
+        .status
+        .success());
+    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
+        thurbox::backend::wiring::configured().0,
+    ));
+    let rows = snapshot(vec![row("aaa", "demo", "local-tmux", None)]);
+    for _ in 0..100 {
+        terminals.sync(&rows, 24, 80);
+        if terminals.is_attached("aaa") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(terminals.is_attached("aaa"));
+    terminals.open_shell("aaa", 24, 80, None, None).unwrap();
+    // Leave the reply uncollected until the real backend has created its window.
+    let mut shell = None;
+    for _ in 0..100 {
+        let panes = server.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{window_name}"]);
+        let panes = String::from_utf8(panes.stdout).unwrap();
+        shell = panes
+            .lines()
+            .find(|line| line.contains("tbs-demo"))
+            .and_then(|line| line.split_whitespace().next())
+            .map(str::to_owned);
+        if shell.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let shell = shell.expect("the queued open created a shell");
+    let empty = snapshot(Vec::new());
+    for _ in 0..40 {
+        terminals.sync(&empty, 24, 80);
+        assert!(
+            terminals.drain_shell_results().is_empty(),
+            "canceled replies must not be persisted"
+        );
+        let panes = server.tmux(&["list-panes", "-a", "-F", "#{pane_id}"]);
+        assert!(
+            String::from_utf8(panes.stdout)
+                .unwrap()
+                .lines()
+                .any(|id| id == shell),
+            "canceled replies cannot prove a raw pane id still belongs to them"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
