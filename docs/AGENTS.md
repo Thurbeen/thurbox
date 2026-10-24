@@ -62,6 +62,41 @@ only the spec's `OTEL_EXPORTER_OTLP_*` variables, which every session gets, and
 `antigravity`, `pi` and `aider` have no native OTel. See
 [CONFIG.md](CONFIG.md#telemetry--opentelemetry-for-sessions).
 
+### Several Claude accounts
+
+Create and authenticate each account's configuration directory with Claude's own
+CLI, then add one agent per directory to `agents.toml`:
+
+```toml
+[[agents]]
+name = "claude-work"
+command = "claude"
+hook_schema = "claude"
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+additional_dir_args = ["--add-dir", "{dir}"]
+env = { CLAUDE_CONFIG_DIR = "{home}/.claude-work" }
+```
+
+Choose that agent in the TUI or pass `--agent claude-work` to `session create`.
+The config directory is saved with the session, so restart and fork use the same
+account even after the agent definition changes. `hook_schema = "claude"` wires
+Claude's status hooks for this custom name; status and messaging follow the
+session's configuration directory and identity.
+
+The `ui-skill` extension installs into `~/.claude/skills` only. Link its skill into
+each additional directory:
+
+```bash
+mkdir -p ~/.claude-work/skills
+ln -s ~/.claude/skills/thurbox-ui ~/.claude-work/skills/thurbox-ui
+```
+
+Repeat the entry and link for another account directory. On a shared host, define
+the agent and skill link on that host. Tokens remain in the agent's own account
+configuration, outside `agents.toml`.
+
 ### Multi-repo directory scope
 
 The built-in Claude definition sets

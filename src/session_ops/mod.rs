@@ -549,10 +549,9 @@ pub struct LaunchPlan {
     /// it to the multiplexer.
     pub command: String,
     pub args: Vec<String>,
-    /// The environment to launch under. Without a session this is only the
-    /// pointers to *this* thurbox instance (config dir, data dir, multiplexer
-    /// socket); with one it also carries that session's identity, which is what
-    /// makes the agent's `session signal` land on the right row.
+    /// The environment to launch under: current agent defaults without a
+    /// session, or its saved environment with one. Instance pointers and
+    /// telemetry are included; session identity appears only with a session.
     pub env: BTreeMap<String, String>,
     /// Why hooks-driven status will be degraded or absent on this host, when it
     /// will be. `None` means nothing is known to be wrong.
@@ -618,6 +617,20 @@ pub fn agent_launch_plan(
         _ => None,
     };
     let (def, degraded) = spawn::adapt_def_for_launch(def, host.as_ref(), signal.as_deref(), hooks);
+    if session.is_none() {
+        let env = spawn::agent_environment(&def, host.as_ref())?;
+        for (key, value) in env {
+            config.env.entry(key).or_insert(value);
+        }
+        for key in [
+            "THURBOX_SESSION",
+            "THURBOX_SESSION_ID",
+            "THURBOX_SESSION_KEY",
+            "THURBOX_TASK",
+        ] {
+            config.env.remove(key);
+        }
+    }
     let telemetry_args = telemetry::apply(
         &mut config,
         &def,
@@ -643,7 +656,7 @@ pub fn agent_launch_plan(
 }
 
 /// The environment a process run **in a session's context** must carry: the
-/// session's own recorded `--env`, then the identity variables its pane has.
+/// session's saved launch environment, then the identity its pane has.
 ///
 /// The order is the spawn's, and for the same reason: thurbox's identity wins,
 /// so a session cannot rename its own `THURBOX_SESSION` and report another
@@ -651,12 +664,22 @@ pub fn agent_launch_plan(
 /// what `session exec` hands a child and what the pane holds cannot drift —
 /// the surprise this exists to remove is precisely that the two disagreed.
 ///
+/// A shared-host mirror has no saved snapshot here; requests must run on the
+/// owning instance, rather than guessing an empty environment.
+///
 /// A session with no `agent_session_id` gets no `THURBOX_SESSION_ID`: an empty
 /// one would read as a conversation id rather than as the absence of one.
 pub fn session_process_env(
     db: &crate::storage::Database,
     session: &crate::sync::SharedSession,
 ) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
+    if db
+        .mirrored_session_ids()
+        .map_err(|e| format!("read mirrored sessions: {e}"))?
+        .contains(&session.id)
+    {
+        return Err(OpError::Refused("the saved environment of a mirrored session is held by its owning host; run this command on that instance".into()));
+    }
     let mut config = SessionConfig {
         session_id: Some(session.id),
         agent_session_id: session.agent_session_id.clone(),
@@ -718,6 +741,44 @@ pub fn fork_session_headless(
         .get_session_by_id(id)
         .map_err(|e| format!("get session: {e}"))?
         .ok_or_else(|| crate::session_ops::OpError::NotFound(format!("session not found: {id}")))?;
+
+    // The source's published meta — a note, a group label — describes the
+    // work, which the fork carries on. Every other key is one session's own state (a lease, a
+    // conversation id) and stays with it (issue #1523).
+    let ui_meta: Vec<(String, String)> = db
+        .list_session_meta(source.id)
+        .map_err(|e| format!("read session meta: {e}"))?
+        .into_iter()
+        .filter(|(key, _)| key.starts_with(crate::session::PUBLISHED_META_PREFIX))
+        .collect();
+    let forked = match Executor::for_session(&source)? {
+        Executor::HostCli { host, cli } => spawn::fork_delegated(db, &source, name, &host, &cli)?,
+        Executor::Local => fork_on_backend(db, backends, &source, name)?,
+    };
+    for (key, value) in ui_meta {
+        // The fork exists by now, so a failed copy is reported rather than
+        // turned into a failed fork.
+        if let Err(e) = db.set_session_meta(forked.session_id, &key, &value) {
+            tracing::warn!("fork {}: copy meta {key}: {e}", forked.session_id);
+        }
+    }
+    Ok(forked)
+}
+
+fn fork_on_backend(
+    db: &crate::storage::Database,
+    backends: &crate::backend::BackendRegistry,
+    source: &crate::sync::SharedSession,
+    name: &str,
+) -> Result<spawn::SpawnResult, crate::session_ops::OpError> {
+    let id = source.id;
+    if db
+        .mirrored_session_ids()
+        .map_err(|e| format!("read mirrored sessions: {e}"))?
+        .contains(&source.id)
+    {
+        return Err("cannot fork a mirrored session without its owning host CLI: the saved environment is held there".into());
+    }
 
     // The parent's *working directory* — its worktree for a worktree session —
     // not the repository root. A cwd-scoped agent (`opencode --continue`)
@@ -802,24 +863,7 @@ pub fn fork_session_headless(
         key: None,
         ..Default::default()
     };
-    // The source's published meta — a note, a group label — describes the
-    // work, which the fork carries on. Every other key is one session's own state (a lease, a
-    // conversation id) and stays with it (issue #1523).
-    let ui_meta: Vec<(String, String)> = db
-        .list_session_meta(source.id)
-        .map_err(|e| format!("read session meta: {e}"))?
-        .into_iter()
-        .filter(|(key, _)| key.starts_with(crate::session::PUBLISHED_META_PREFIX))
-        .collect();
-    let forked = spawn::spawn_session_headless(db, backends, request)?;
-    for (key, value) in ui_meta {
-        // The fork exists by now, so a failed copy is reported rather than
-        // turned into a failed fork.
-        if let Err(e) = db.set_session_meta(forked.session_id, &key, &value) {
-            tracing::warn!("fork {}: copy meta {key}: {e}", forked.session_id);
-        }
-    }
-    Ok(forked)
+    spawn::spawn_fork(db, backends, request)
 }
 
 /// The [`LaunchRecipe`](crate::session::LaunchRecipe) a spawn request carries,
@@ -934,8 +978,7 @@ fn unknown_agent(registry: &crate::session::AgentRegistry, name: &str) -> String
 /// path can't rely on the shell to expand `~`, since args are POSIX-quoted.
 pub(crate) const HOME_PLACEHOLDER: &str = "{home}";
 
-/// Rewrite every `{home}` token in `def`'s arg groups (`args`, `resume_args`,
-/// `fork_args`, `new_session_args`, `additional_dir_args`) to `home`, in place.
+/// Rewrite `{home}` in argument groups to `home`.
 ///
 /// `home` is the target's home dir: the *local* home for a local launch/restart
 /// (via [`crate::paths::home_dir`]), or the *remote* home for an SSH/WSL host
@@ -1147,11 +1190,12 @@ pub(crate) fn inject_thurbox_env(
             .insert("THURBOX_SESSION_KEY".into(), key.to_string()),
         None => config.env.remove("THURBOX_SESSION_KEY"),
     };
-    if let Some(task_id) = task_id {
-        config
+    match task_id {
+        Some(task_id) => config
             .env
-            .insert("THURBOX_TASK".into(), task_id.to_string());
-    }
+            .insert("THURBOX_TASK".into(), task_id.to_string()),
+        None => config.env.remove("THURBOX_TASK"),
+    };
     if config
         .backend
         .as_deref()
