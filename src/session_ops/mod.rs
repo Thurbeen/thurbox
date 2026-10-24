@@ -803,8 +803,8 @@ pub fn fork_session_headless(
         ..Default::default()
     };
     // The source's published meta — a note, a group label — describes the
-    // work, which the fork carries on. Every other key is one session's own state (a lease, a
-    // conversation id) and stays with it (issue #1523).
+    // work, which the fork carries on. Every other key is one session's own
+    // state (a lease, a conversation id) and stays with it (issue #1523).
     let ui_meta: Vec<(String, String)> = db
         .list_session_meta(source.id)
         .map_err(|e| format!("read session meta: {e}"))?

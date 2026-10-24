@@ -3191,10 +3191,11 @@ declare. `thurbox.api` publishes `lua_api::API`, an integer that moves only
 when a field is removed or changes meaning; a plugin's `requires_api` above it
 is a load error naming the file. The first field added under it is
 `session.meta`: a session's `ui.*` meta keys, cleaned on the snapshot worker
-(control and invisible format characters stripped, 256 characters, 32 keys,
+(control and invisible characters stripped, 256 characters, 32 keys,
 active sessions only, bounded in the query), with `thurbox.*` keys refused by
 `session meta set` and `unset`. A meta read that fails keeps each row's labels
-as last read and records the error; the rows still move.
+as last read and records the error; the rows still move, and the next poll
+reads again rather than waiting for an unrelated write.
 
 **Why:** the same shape was written by hand in four places, nothing compared
 them, and a table published without its fields passed CI (#1133). Plugins saw
@@ -3211,5 +3212,6 @@ thurbox's own (#1523).
 event payloads or command verbs, which `thurbox.d.lua` still keeps by hand. A
 load stays all-or-nothing, so a plugin needing a newer API fails the reload as
 any broken pane does, and the inventory names it. A meta value is stripped of
-the characters that would act on the terminal or reorder the row, not of
-everything unusual; it is untrusted text, which a pane renders as text.
+the characters that would act on the terminal, reorder the row or hide text,
+though not of everything unusual, and a key carrying one is not published; it
+is untrusted text, which a pane renders as text.
