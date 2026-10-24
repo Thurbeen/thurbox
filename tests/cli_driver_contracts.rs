@@ -1373,6 +1373,83 @@ fn agent_arguments_require_an_explicit_registry_agent() {
 }
 
 #[test]
+fn extension_uninstall_cleans_both_arrays_after_a_variant_edit() {
+    let env = Env::new();
+    env.db()
+        .set_builtin_extension_optout("hooks", true)
+        .unwrap();
+    let config = env.path("config/agents.toml");
+    std::fs::write(
+        &config,
+        "[[agents]]\nname='base'\ncommand='sh'\nargs=['base-arg']\n\
+        [[agents]]\nname='variant'\nextends='base'\nhook_schema='claude'\nappend_args=['tail']\n",
+    )
+    .unwrap();
+    let source = env.path("extension");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("extension.toml"), "name='edited-variant-patch'\n[[agent_patches]]\nname='claude'\nappend_args=['--patch','payload']\n").unwrap();
+    let home = env.path("extension-home");
+    let install = || {
+        let out = env.run(&[
+            "extension",
+            "install",
+            source.to_str().unwrap(),
+            "--home",
+            home.to_str().unwrap(),
+            "--json",
+        ]);
+        assert!(out.status.success(), "{}", stdout_of(&out));
+    };
+    let args = || {
+        let out = env.run(&["agent", "launch-args", "variant", "--json"]);
+        assert!(out.status.success(), "{}", stdout_of(&out));
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["args"].clone()
+    };
+    install();
+    assert_eq!(
+        args(),
+        serde_json::json!(["base-arg", "--patch", "payload", "tail"])
+    );
+    let mut doc: toml_edit::DocumentMut =
+        std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    doc["agents"]
+        .as_array_of_tables_mut()
+        .unwrap()
+        .get_mut(1)
+        .unwrap()["args"] = toml_edit::value(toml_edit::Array::from_iter(["replacement"]));
+    std::fs::write(&config, doc.to_string()).unwrap();
+    install();
+    install();
+    let reinstalled = args();
+    let mut doc: toml_edit::DocumentMut =
+        std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    // An older install could have persisted the same patch in both arrays.
+    doc["agents"]
+        .as_array_of_tables_mut()
+        .unwrap()
+        .get_mut(1)
+        .unwrap()["append_args"] =
+        toml_edit::value(toml_edit::Array::from_iter(["--patch", "payload", "tail"]));
+    std::fs::write(&config, doc.to_string()).unwrap();
+    let out = env.run(&[
+        "extension",
+        "uninstall",
+        "edited-variant-patch",
+        "--purge",
+        "--json",
+    ]);
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    assert!(!home.exists());
+    assert_eq!(
+        (reinstalled, args()),
+        (
+            serde_json::json!(["--patch", "payload", "replacement", "tail"]),
+            serde_json::json!(["replacement", "tail"]),
+        )
+    );
+}
+
+#[test]
 fn extension_patches_cover_replacing_and_appending_variants_and_uninstall_cleanly() {
     let env = Env::new();
     env.db()

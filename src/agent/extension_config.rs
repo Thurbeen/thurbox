@@ -689,44 +689,59 @@ fn patch_one_agent(
     let variant = table.get("extends").is_some();
     // An omitted args inherits the patched parent. Materializing it here would
     // replace that parent with just the patch, losing every inherited flag.
-    if variant && inherited && table.get("args").is_none() {
-        return None;
-    }
-    let key = if variant && table.get("args").is_none() {
-        "append_args"
+    let target = if variant && inherited && table.get("args").is_none() {
+        None
+    } else if variant && table.get("args").is_none() {
+        Some("append_args")
     } else {
-        "args"
+        Some("args")
+    };
+    let mut changed = false;
+    let mut present = false;
+    // An edit can change which array is used for new patches without moving
+    // a previously installed patch out of the other one.
+    for key in ["args", "append_args"] {
+        let Some(args) = table.get(key).and_then(|item| item.as_array()) else {
+            continue;
+        };
+        let current: Vec<String> = args
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        if !contains_subsequence(&current, &patch.append_args) {
+            continue;
+        }
+        if add && target == Some(key) {
+            present = true;
+            continue;
+        }
+        let mut remaining = Array::new();
+        for arg in remove_subsequence(&current, &patch.append_args) {
+            remaining.push(arg.as_str());
+        }
+        table[key] = toml_edit::value(remaining);
+        changed = true;
+    }
+    if !add || present {
+        return changed.then_some(agent_name);
+    }
+    let Some(key) = target else {
+        return changed.then_some(agent_name);
     };
     if table.get(key).is_none() {
         table[key] = toml_edit::value(Array::new());
     }
     let args = table.get_mut(key).and_then(|i| i.as_array_mut())?;
-    let current: Vec<String> = args
-        .iter()
-        .filter_map(|v| v.as_str().map(str::to_string))
-        .collect();
-    let present = contains_subsequence(&current, &patch.append_args);
-    if add && !present {
-        if variant {
-            for (index, arg) in patch.append_args.iter().enumerate() {
-                args.insert(index, arg.as_str());
-            }
-        } else {
-            for arg in &patch.append_args {
-                args.push(arg.as_str());
-            }
+    if variant {
+        for (index, arg) in patch.append_args.iter().enumerate() {
+            args.insert(index, arg.as_str());
         }
-        return Some(agent_name);
-    }
-    if !add && present {
-        let mut arr = Array::new();
-        for a in remove_subsequence(&current, &patch.append_args) {
-            arr.push(a.as_str());
+    } else {
+        for arg in &patch.append_args {
+            args.push(arg.as_str());
         }
-        table[key] = toml_edit::value(arr);
-        return Some(agent_name);
     }
-    None
+    Some(agent_name)
 }
 
 /// Whether `hay` contains `needle` as a contiguous subsequence.
