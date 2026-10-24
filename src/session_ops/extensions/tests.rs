@@ -1391,18 +1391,39 @@ fn install_rejects_path_traversal_in_manifest() {
     let _guard = crate::paths::TestPathGuard::new(temp.path());
     let db = Database::open_in_memory().unwrap();
 
-    let src = tempfile::TempDir::new().unwrap();
+    // `../../pwned` climbs two levels from both the source and the home, so
+    // each sits two levels inside `temp`: the decoy, and whatever a regressed
+    // install would write, stay inside a directory this test removes (#1565).
+    let src = temp.path().join("ext").join("src");
+    let home = temp.path().join("home").join("h");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    let owned = temp.path().canonicalize().unwrap();
+    for base in [&src, &home] {
+        let escape = base.join("../..").canonicalize().unwrap();
+        assert!(
+            escape.starts_with(&owned),
+            "{} escapes the test's temp dir",
+            escape.display()
+        );
+    }
+
     std::fs::write(
-        src.path().join("extension.toml"),
+        src.join("extension.toml"),
         format!(
             "name = \"evil\"\nhome = '{}'\n[[files]]\npath = \"../../pwned\"\n",
-            temp.path().join("h").display()
+            home.display()
         ),
     )
     .unwrap();
-    std::fs::write(src.path().join("../../pwned"), "x").ok();
+    std::fs::write(src.join("../../pwned"), "x").unwrap();
 
-    let target = src.path().to_string_lossy().to_string();
+    assert!(
+        std::env::var_os("THURBOX_TEST_TRAVERSAL_PANIC").is_none(),
+        "injected traversal fixture panic"
+    );
+
+    let target = src.to_string_lossy().to_string();
     let err = install_extension(
         &db,
         &crate::backend::registry::inert(),
@@ -1412,6 +1433,47 @@ fn install_rejects_path_traversal_in_manifest() {
     )
     .unwrap_err();
     assert!(err.contains("must not contain '..'"), "got: {err}");
+}
+
+#[test]
+fn traversal_fixture_cleans_up_after_success_and_panic() {
+    for panic in [false, true] {
+        let outer = tempfile::tempdir().unwrap();
+        let temporary = outer.path().join("temporary");
+        std::fs::create_dir(&temporary).unwrap();
+        let sentinel = outer.path().join("pwned");
+        std::fs::write(&sentinel, "unrelated file").unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "session_ops::extensions::tests::install_rejects_path_traversal_in_manifest",
+                "--nocapture",
+            ])
+            .env("TMPDIR", &temporary)
+            .env("TMP", &temporary)
+            .env("TEMP", &temporary)
+            .env_remove("THURBOX_TEST_TRAVERSAL_PANIC");
+        if panic {
+            child.env("THURBOX_TEST_TRAVERSAL_PANIC", "1");
+        }
+        let output = child.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("running 1 test"), "{stdout}{stderr}");
+        assert_eq!(output.status.success(), !panic, "{stdout}{stderr}");
+        if panic {
+            assert!(
+                stderr.contains("injected traversal fixture panic"),
+                "{stderr}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "unrelated file"
+        );
+        assert_eq!(std::fs::read_dir(&temporary).unwrap().count(), 0);
+    }
 }
 
 #[test]
