@@ -177,7 +177,7 @@ pub(crate) fn summarize(
 fn custom_labels(attributes: Option<&BTreeMap<String, String>>) -> Vec<KeyValue> {
     attributes
         .into_iter()
-        .flat_map(|a| a.iter())
+        .flat_map(BTreeMap::iter)
         .filter(|(key, _)| {
             !key.starts_with("thurbox.")
                 && !matches!(

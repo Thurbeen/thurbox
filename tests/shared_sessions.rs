@@ -1180,6 +1180,238 @@ mod delegated_create {
     }
 
     #[test]
+    fn telemetry_attributes_follow_intermediate_mirror_hosts() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let owner = pair.path("owner");
+        for dir in ["host-home", "host-config", "host-data", "host-bin"] {
+            std::fs::create_dir_all(owner.join(dir)).unwrap();
+        }
+        std::fs::create_dir_all(pair.path("host-bin")).unwrap();
+        let settings = format!(
+            "{SETTINGS}\n[telemetry]\nenabled = true\n[remote]\ntransitive_sessions = true\n"
+        );
+        for config in [
+            pair.path("config"),
+            pair.path("host-config"),
+            owner.join("host-config"),
+        ] {
+            std::fs::write(config.join("settings.toml"), &settings).unwrap();
+            std::fs::write(config.join("agents.toml"), HOST_AGENTS).unwrap();
+        }
+        std::fs::write(
+            pair.path("host-config/hosts.toml"),
+            "[[hosts]]\nname = 'owner'\ndestination = 'owner'\nshare_sessions = true\n",
+        )
+        .unwrap();
+        let owner_server = TmuxServer::private("tbx-attrs-owner");
+        super::write_ssh_with(&pair.path("host-bin"), &owner, &format!(
+            "export TMUX_TMPDIR='{}' THURBOX_SOCKET='{}'\nunset THURBOX_SOCKET_FOR THURBOX_SESSION THURBOX_SESSION_ID",
+            owner_server.tmpdir().display(), owner_server.socket()));
+        let run = |place: &str, args: &[&str]| {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+            let (home, config, data, bin) = match place {
+                "owner" => (
+                    owner.join("host-home"),
+                    owner.join("host-config"),
+                    owner.join("host-data"),
+                    owner.join("host-bin"),
+                ),
+                "host" => (
+                    pair.path("host-home"),
+                    pair.path("host-config"),
+                    pair.path("host-data"),
+                    pair.path("host-bin"),
+                ),
+                _ => (
+                    pair.path("home"),
+                    pair.path("config"),
+                    pair.path("data"),
+                    pair.path("bin"),
+                ),
+            };
+            cmd.args(args)
+                .env("HOME", &home)
+                .env("USERPROFILE", &home)
+                .env("THURBOX_CONFIG_DIR", config)
+                .env("THURBOX_DATA_DIR", data)
+                .env(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                )
+                .env_remove("THURBOX_SESSION")
+                .env_remove("THURBOX_SESSION_ID");
+            match place {
+                "owner" => owner_server.scope(&mut cmd),
+                "host" => pair.host_server.scope(&mut cmd),
+                _ => pair.caller_server.scope(&mut cmd),
+            };
+            cmd.output().unwrap()
+        };
+        let created = run(
+            "owner",
+            &[
+                "session",
+                "create",
+                "--name",
+                "owned",
+                "--repo-path",
+                pair.path("work").to_str().unwrap(),
+                "--agent",
+                "shell",
+                "--telemetry-attr",
+                "factory.task.id=topic/owner",
+                "--json",
+            ],
+        );
+        let id = created_id(&created);
+        for (place, host) in [("host", "owner"), ("caller", "probe")] {
+            let out = run(place, &["session", "sync", "--host", host, "--json"]);
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert!(answer(&out)[0]["error"].is_null(), "{}", answer(&out));
+        }
+        assert!(pair.caller_db().get_session_by_id(id).unwrap().is_some());
+        assert!(pair
+            .host_db()
+            .get_session_meta(id, "thurbox.telemetry_attributes")
+            .unwrap()
+            .is_none());
+        let plan = run(
+            "caller",
+            &[
+                "agent",
+                "launch-args",
+                "shell",
+                "--session",
+                &id.to_string(),
+                "--json",
+            ],
+        );
+        assert!(
+            plan.status.success(),
+            "{}",
+            String::from_utf8_lossy(&plan.stdout)
+        );
+        let attrs = answer(&plan)["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(attrs.contains("factory.task.id=topic%2Fowner"), "{attrs}");
+        pair.caller_db()
+            .set_telemetry_attrs(
+                id,
+                &[("factory.task.id".into(), "stale-observer".into())].into(),
+            )
+            .unwrap();
+        let fresh = run(
+            "caller",
+            &[
+                "agent",
+                "launch-args",
+                "shell",
+                "--session",
+                &id.to_string(),
+                "--json",
+            ],
+        );
+        assert!(fresh.status.success(), "{}", answer(&fresh));
+        let fresh_attrs = answer(&fresh)["env"]["OTEL_RESOURCE_ATTRIBUTES"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            fresh_attrs.contains("factory.task.id=topic%2Fowner"),
+            "{fresh_attrs}"
+        );
+
+        let fork = created_id(&run(
+            "caller",
+            &[
+                "session",
+                "fork",
+                &id.to_string(),
+                "--name",
+                "relay-fork",
+                "--json",
+            ],
+        ));
+        assert_eq!(
+            pair.caller_db()
+                .load_telemetry_attrs(fork)
+                .unwrap()
+                .get("factory.task.id")
+                .map(String::as_str),
+            Some("topic/owner")
+        );
+
+        let key = "thurbox.telemetry_attributes";
+        let fetched = run(
+            "caller",
+            &["session", "meta", "get", &id.to_string(), key, "--json"],
+        );
+        assert!(fetched.status.success());
+        let labels: Value =
+            serde_json::from_str(answer(&fetched)["value"].as_str().unwrap()).unwrap();
+        assert_eq!(labels["factory.task.id"], "topic/owner");
+        let exhausted = run(
+            "host",
+            &[
+                "session",
+                "meta",
+                "get",
+                &id.to_string(),
+                key,
+                "--telemetry-hops",
+                "0",
+                "--json",
+            ],
+        );
+        assert!(!exhausted.status.success());
+        assert!(answer(&exhausted)["error"]
+            .as_str()
+            .unwrap()
+            .contains("hop limit"));
+        let local = run(
+            "owner",
+            &[
+                "session",
+                "meta",
+                "get",
+                &id.to_string(),
+                key,
+                "--telemetry-hops",
+                "0",
+                "--json",
+            ],
+        );
+        assert!(local.status.success(), "{}", answer(&local));
+        let excessive = run(
+            "owner",
+            &[
+                "session",
+                "meta",
+                "get",
+                &id.to_string(),
+                key,
+                "--telemetry-hops",
+                "17",
+                "--json",
+            ],
+        );
+        assert!(!excessive.status.success());
+        assert!(answer(&excessive)["error"]
+            .as_str()
+            .unwrap()
+            .contains("telemetry-hops"));
+    }
+
+    #[test]
     fn telemetry_launch_plan_uses_requested_agent_defaults() {
         if !super::have_tmux() {
             return;

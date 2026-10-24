@@ -591,6 +591,23 @@ fn adoption_preserves_telemetry_attributes_or_reports_an_unsupported_host() {
 }
 
 #[test]
+fn telemetry_owner_reads_refuse_peers_without_forwarding_support() {
+    let rig = rig();
+    std::fs::write(
+        crate::agent::settings_config::settings_config_path().unwrap(),
+        "[telemetry]\nenabled = true\n",
+    )
+    .unwrap();
+    let mut row = host_session(SessionId::default(), "old-owner");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.set_host_updated_at(row.id, 1).unwrap();
+    let error = super::session_process_env(&rig.db, &row).unwrap_err();
+    assert!(error.contains("update that CLI"), "{error}");
+    assert!(fake::calls().is_empty());
+}
+
+#[test]
 fn an_unknown_host_name_is_the_one_hard_failure_of_sync() {
     let rig = rig();
     let err = mirror::sync(&rig.db, Some("nowhere"), false).unwrap_err();

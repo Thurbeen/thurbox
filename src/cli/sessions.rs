@@ -766,6 +766,8 @@ pub enum MetaAction {
         /// Session name, UUID, or unique id prefix.
         session: String,
         key: String,
+        #[arg(long, hide = true, value_parser = clap::value_parser!(u8).range(..=i64::from(crate::session_ops::telemetry::MAX_TELEMETRY_HOPS)))]
+        telemetry_hops: Option<u8>,
     },
     /// List every key set on a session.
     List {
@@ -3136,9 +3138,9 @@ fn refuse_reserved_meta(key: &str) -> Result<(), CommandError> {
     Ok(())
 }
 
-/// `session meta` — the driver's key/value space. Thurbox reads none of it
-/// back except the `ui.*` keys it publishes to plugins (ADR-40), and refuses
-/// changes to its own `thurbox.*` keys.
+/// `session meta` — the driver's key/value space. `ui.*` keys are published
+/// to plugins (ADR-40). Reserved telemetry reads follow the owner; other reads
+/// remain local, and changes to `thurbox.*` keys are refused.
 fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, CommandError> {
     match action {
         MetaAction::Set {
@@ -3166,11 +3168,30 @@ fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, CommandE
                 format!("{key} set on '{}'", target.name),
             ))
         }
-        MetaAction::Get { session, key } => {
+        MetaAction::Get {
+            session,
+            key,
+            telemetry_hops,
+        } => {
             let target = resolve(db, &session)?;
-            let value = db
-                .get_session_meta(target.id, &key)
-                .map_err(|e| format!("get_session_meta: {e}"))?;
+            let value = if key == crate::session_ops::telemetry::ATTRIBUTES_KEY {
+                let attrs = crate::session_ops::telemetry::load_with_hops(
+                    db,
+                    &target,
+                    telemetry_hops.unwrap_or(crate::session_ops::telemetry::MAX_TELEMETRY_HOPS),
+                )?;
+                if attrs.is_empty() {
+                    None
+                } else {
+                    Some(
+                        serde_json::to_string(&attrs)
+                            .map_err(|e| format!("encode telemetry attributes: {e}"))?,
+                    )
+                }
+            } else {
+                db.get_session_meta(target.id, &key)
+                    .map_err(|e| format!("get_session_meta: {e}"))?
+            };
             Ok(CommandOutput::new(
                 json!({ "id": target.id.to_string(), "key": key, "value": value }),
                 // Bare value on stdout: this is the one command whose output is
@@ -4307,6 +4328,7 @@ mod tests {
                 action: MetaAction::Get {
                     session: session.id.to_string(),
                     key: "fm.task_id".into(),
+                    telemetry_hops: None,
                 },
             },
             &db,

@@ -14,6 +14,9 @@ use crate::session::settings::TelemetrySettings;
 use crate::session::{AgentDef, HostDef, SessionConfig};
 
 const RESOURCE_ATTRIBUTES: &str = "OTEL_RESOURCE_ATTRIBUTES";
+pub(crate) const ATTRIBUTES_KEY: &str = "thurbox.telemetry_attributes";
+/// Bound stale mirror cycles without imposing a traversal on local answers.
+pub(crate) const MAX_TELEMETRY_HOPS: u8 = 16;
 
 /// Read labels from the owner, retaining locally managed remote rows' labels.
 /// Mirrors carry no session metadata; an unavailable owner is not an empty map.
@@ -21,19 +24,28 @@ pub(crate) fn load(
     db: &crate::storage::Database,
     session: &crate::sync::SharedSession,
 ) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
-    const KEY: &str = "thurbox.telemetry_attributes";
-    let local = db
-        .get_session_meta(session.id, KEY)
-        .map_err(|e| format!("read telemetry attributes: {e}"))?;
-    if let Some(raw) = local {
-        return serde_json::from_str(&raw)
-            .map_err(|e| format!("decode telemetry attributes: {e}").into());
-    }
-    if !db
-        .is_mirrored_session(session.id)
-        .map_err(|e| format!("read session ownership: {e}"))?
+    load_with_hops(db, session, MAX_TELEMETRY_HOPS)
+}
+
+/// Follow intermediate mirrors, carrying a decreasing budget on every RPC.
+pub(crate) fn load_with_hops(
+    db: &crate::storage::Database,
+    session: &crate::sync::SharedSession,
+    remaining_hops: u8,
+) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
+    let remaining_hops = remaining_hops.min(MAX_TELEMETRY_HOPS);
+    let remote = crate::session::Route::is_remote_key(&session.backend_type);
+    if !remote
+        || !db
+            .is_mirrored_session(session.id)
+            .map_err(|e| format!("read session ownership: {e}"))?
     {
-        return Ok(BTreeMap::new());
+        return db
+            .load_telemetry_attrs(session.id)
+            .map_err(|e| format!("read telemetry attributes: {e}").into());
+    }
+    if remaining_hops == 0 {
+        return Err("telemetry attribute owner forwarding exceeded its hop limit".into());
     }
     let super::Executor::HostCli { host, cli } = super::Executor::for_session(session)? else {
         return Err(format!(
@@ -42,10 +54,22 @@ pub(crate) fn load(
         )
         .into());
     };
+    if !cli.telemetry_attrs {
+        return Err(format!("host '{}' has an older thurbox-cli that cannot follow telemetry attribute owners; update that CLI", host.name).into());
+    }
+    let next_hops = (remaining_hops - 1).to_string();
     let answer = super::host_cli::run(
         &host,
         &cli,
-        &["session", "meta", "get", &session.id.to_string(), KEY],
+        &[
+            "session",
+            "meta",
+            "get",
+            &session.id.to_string(),
+            ATTRIBUTES_KEY,
+            "--telemetry-hops",
+            &next_hops,
+        ],
     )?;
     match answer.get("value") {
         Some(serde_json::Value::Null) => Ok(BTreeMap::new()),

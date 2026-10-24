@@ -3058,7 +3058,10 @@ forwards them only to a host advertising `telemetry_attrs`; older hosts refuse
 them explicitly. Creation and registration commit the labels alongside the
 session row and its event. Caller-side context reads retrieve a mirrored
 session's labels from its owner through `Executor`, since mirrors carry no
-metadata. A caller-managed remote fork retains its local labels and hands them
+metadata. Reserved telemetry metadata reads follow intermediate mirrors,
+requiring the capability at every peer and decrementing a 16-hop budget to
+bound stale cycles. Other metadata reads remain local. A caller-managed remote
+fork retains its local labels and hands them
 to the host on `sync --adopt`, gated by the same capability.
 
 **Why**: tokens, cost, models and tool calls are known only to the agent, and the

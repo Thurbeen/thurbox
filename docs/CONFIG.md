@@ -1140,7 +1140,10 @@ without the `telemetry_attrs` capability explicitly refuses them. `sync --adopt`
 also preserves these labels when a caller-managed remote session becomes
 host-owned, and reports incompatible hosts instead of dropping the labels.
 When agent telemetry is configured, caller-side launch plans read a mirrored
-session's labels from its host; an unavailable owner is an error. Telemetry
+session's labels from its owner, following intermediate mirror hosts.
+All participating peers must support `telemetry_attrs`. Unavailable owners,
+unsupported peers and exhausted forwarding limits produce explicit errors.
+Forwarding is bounded to 16 hops to stop stale mirror cycles. Telemetry
 labels remain until row purge, so force-delete does not strip them from pending events or lifetime metrics.
 
 These attributes also label `thurbox.session.*` event logs and, with

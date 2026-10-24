@@ -120,7 +120,7 @@ pub struct CliInfo {
     pub create_parity: bool,
     /// Whether the peer persists and replays `session create --agent-arg`.
     pub agent_args: bool,
-    /// Whether session creation and registration preserve telemetry attributes.
+    /// Whether creation, registration and owner reads preserve telemetry attributes.
     pub telemetry_attrs: bool,
 }
 
