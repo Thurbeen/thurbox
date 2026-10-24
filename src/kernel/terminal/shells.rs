@@ -302,8 +302,8 @@ mod tests {
     }
 
     #[test]
-    fn a_new_attachment_can_request_a_shell_while_the_old_open_is_pending() {
-        for readopting in [false, true] {
+    fn a_changed_attachment_or_shell_slot_can_start_its_own_request() {
+        for (readopting, reattached) in [(false, true), (true, true), (true, false)] {
             let mut terminals =
                 Terminals::with_registry(Arc::new(crate::backend::registry::inert()));
             let backend = Arc::clone(terminals.backends.default_backend());
@@ -316,16 +316,24 @@ mod tests {
                 },
             );
             let (release, held) = std::sync::mpsc::channel::<()>();
-            terminals.start_shell("probe", None, false, move || {
-                let _ = held.recv();
-                anyhow::bail!("old request released")
-            });
-            terminals.live.get_mut("probe").unwrap().session =
-                crate::backend::Session::stub("probe", &backend);
+            terminals.start_shell(
+                "probe",
+                readopting.then(|| "%2".into()),
+                readopting,
+                move || {
+                    let _ = held.recv();
+                    anyhow::bail!("old request released")
+                },
+            );
+            if reattached {
+                terminals.live.get_mut("probe").unwrap().session =
+                    crate::backend::Session::stub("probe", &backend);
+            }
             let mut row = super::super::tests::row("probe", backend.name(), None);
             if readopting {
-                row.shell_backend_id = Some("%2".into());
-                terminals.readopt_shell("probe", "%2", 24, 80);
+                let pane = if reattached { "%2" } else { "%3" };
+                row.shell_backend_id = Some(pane.into());
+                terminals.readopt_shell("probe", pane, 24, 80);
             } else {
                 terminals.open_shell("probe", 24, 80, None, None).unwrap();
             }
@@ -345,7 +353,7 @@ mod tests {
             assert!(
                 matches!(result.as_slice(), [ShellResult::Gone { .. }]) && readopting
                     || matches!(result.as_slice(), [ShellResult::Failed { .. }]) && !readopting,
-                "the replacement's request was swallowed by the old open (readopting={readopting})"
+                "the replacement's request was swallowed by the old open (readopting={readopting}, reattached={reattached})"
             );
             drop(release);
         }
