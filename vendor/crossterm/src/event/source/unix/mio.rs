@@ -73,6 +73,18 @@ impl EventSource for UnixInternalEventSource {
         let timeout = PollTimeout::new(timeout);
 
         loop {
+            // thurbox patch: returning a parsed event can leave unread bytes
+            // behind an edge-triggered readiness notification. Recreate the
+            // registration so those bytes are reported on the next poll.
+            // The caller's descriptor may be blocking; do not drain it or
+            // change flags shared with its other users.
+            let tty_raw_fd = self.tty_fd.raw_fd();
+            let mut tty_ev = SourceFd(&tty_raw_fd);
+            self.poll.registry().deregister(&mut tty_ev)?;
+            self.poll
+                .registry()
+                .register(&mut tty_ev, TTY_TOKEN, Interest::READABLE)?;
+
             if let Err(e) = self.poll.poll(&mut self.events, timeout.leftover()) {
                 // Mio will throw an interrupted error in case of cursor position retrieval. We need to retry until it succeeds.
                 // Previous versions of Mio (< 0.7) would automatically retry the poll call if it was interrupted (if EINTR was returned).
@@ -95,28 +107,35 @@ impl EventSource for UnixInternalEventSource {
                         loop {
                             match self.tty_fd.read(&mut self.tty_buffer) {
                                 Ok(read_count) => {
-                                    if read_count > 0 {
-                                        self.parser.advance(
-                                            &self.tty_buffer[..read_count],
-                                            read_count == TTY_BUFFER_SIZE,
-                                        );
+                                    // thurbox patch: EOF is not more input.
+                                    if read_count == 0 {
+                                        return Err(io::Error::new(
+                                            io::ErrorKind::UnexpectedEof,
+                                            "terminal input closed",
+                                        ));
                                     }
+                                    self.parser.advance(
+                                        &self.tty_buffer[..read_count],
+                                        read_count == TTY_BUFFER_SIZE,
+                                    );
                                 }
                                 Err(e) => {
-                                    // No more data to read at the moment. We will receive another event
                                     if e.kind() == io::ErrorKind::WouldBlock {
                                         break;
-                                    }
-                                    // once more data is available to read.
-                                    else if e.kind() == io::ErrorKind::Interrupted {
+                                    } else if e.kind() == io::ErrorKind::Interrupted {
                                         continue;
                                     }
+                                    // thurbox patch: do not spin on input errors.
+                                    return Err(e);
                                 }
                             };
 
                             if let Some(event) = self.parser.next() {
                                 return Ok(Some(event));
                             }
+                            // thurbox patch: a partial escape sequence may be
+                            // all that is available on a blocking descriptor.
+                            break;
                         }
                     }
                     SIGNAL_TOKEN => {
@@ -228,15 +247,69 @@ impl Iterator for Parser {
     }
 }
 
-// thurbox patch: each chunk below is one `advance` call, so these pin what the
-// parser keeps between reads, which a pty test can only hope to provoke. No
-// chunk ends on a lone ESC: with nothing after it, that is the Escape key. CI's
-// Nextest job runs them with
+// thurbox patch: selector/descriptor regressions and parser chunks that pin
+// state kept between reads. No parser chunk ends on a lone ESC: with nothing
+// after it, that is the Escape key. CI's Nextest job runs these with
 // `cargo test --locked --manifest-path vendor/crossterm/Cargo.toml --lib thurbox_patch`.
 #[cfg(test)]
 mod thurbox_patch_tests {
-    use super::Parser;
+    use super::{Parser, UnixInternalEventSource};
+    use crate::event::source::EventSource;
     use crate::event::{Event, InternalEvent, KeyCode, KeyEvent};
+    use crate::terminal::sys::file_descriptor::FileDesc;
+    use std::{io::Write, os::fd::AsRawFd, os::unix::net::UnixStream, time::Duration};
+
+    // thurbox patch: exercise the real selector with a borrowed blocking
+    // non-TTY descriptor as well as the public-API PTY test in tui_e2e.
+    #[test]
+    fn a_prewritten_burst_needs_no_second_readiness_edge() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        let burst = vec![b'x'; 2050];
+        assert_eq!(writer.write(&burst).unwrap(), burst.len());
+        #[cfg(feature = "libc")]
+        let fd = FileDesc::new(reader.as_raw_fd(), false);
+        #[cfg(not(feature = "libc"))]
+        let fd =
+            FileDesc::Borrowed(unsafe { rustix::fd::BorrowedFd::borrow_raw(reader.as_raw_fd()) });
+        let mut source = UnixInternalEventSource::from_file_descriptor(fd).unwrap();
+        for index in 0..burst.len() {
+            assert!(
+                matches!(
+                    source.try_read(Some(Duration::from_millis(100))).unwrap(),
+                    Some(InternalEvent::Event(Event::Key(KeyEvent {
+                        code: KeyCode::Char('x'),
+                        ..
+                    })))
+                ),
+                "byte {index} was stranded"
+            );
+        }
+        assert!(source.try_read(Some(Duration::ZERO)).unwrap().is_none());
+
+        writer.write_all(b"\x1b[").unwrap();
+        assert!(source
+            .try_read(Some(Duration::from_millis(10)))
+            .unwrap()
+            .is_none());
+        writer.write_all(b"A").unwrap();
+        assert!(matches!(
+            source.try_read(Some(Duration::from_millis(100))).unwrap(),
+            Some(InternalEvent::Event(Event::Key(KeyEvent {
+                code: KeyCode::Up,
+                ..
+            })))
+        ));
+        drop(writer);
+        assert_eq!(
+            source
+                .try_read(Some(Duration::from_millis(100)))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+        drop(source);
+        assert!(reader.peer_addr().is_ok(), "borrowed input was closed");
+    }
 
     fn typed(chunks: &[&[u8]]) -> String {
         let mut parser = Parser::default();
