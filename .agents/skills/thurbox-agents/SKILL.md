@@ -118,7 +118,7 @@ A session stores its **agent name** plus opaque per-session `agent_args` from
 `session create --agent NAME --agent-arg ARG`. These are appended literally on
 create/resume/restart/restore/fork, after registry, directory and telemetry
 arguments; `get`/`show` and `list` JSON expose them. They require an explicit
-registry agent and are capability-gated on delegated creation. No model,
+registry agent and are capability-gated on delegated creation. The launch environment is frozen at creation. No model,
 permission, prompt or tool field is added.
 
 In `agents.toml`, `extends = "base"` inherits every field except `name`, with
@@ -149,6 +149,17 @@ per-arg-patch families (claude, aider) need it; the config-dir agents
 (codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own
 config dir, so a rebrand sharing that dir already reports. thurbox bakes in no
 agent knowledge — the *user* asserts the family.
+
+**Per-agent environment (`env`).** String-valued defaults on `AgentDef`, with
+`{home}` resolved on the launch host. Creation freezes them together with
+session `--env` (which wins) into the saved launch environment; restart, resume
+and fork replay that snapshot, including absent keys. Defaults outrank
+`telemetry_env`; thurbox identity/instance variables still win. A delegated
+creation reads the host's registry; a direct remote launch reads the caller's
+and expands the remote home. `session show --json` on the owning instance shows
+saved `env` (a caller's mirror reports `null`); `agent launch-args` without a
+session shows current defaults.
+See `docs/AGENTS.md` → Several Claude accounts for hooks and UI-skill setup.
 
 **Agent-native telemetry (`telemetry_env` / `telemetry_args`).** Applied only
 while `settings.toml` `[telemetry]` is on (`session_ops::telemetry::apply`, at

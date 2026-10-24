@@ -146,6 +146,7 @@ resume_latest = false       # true = id-less "resume last session in cwd"
 # hook_schema = "claude"    # optional: name the hook FAMILY this CLI speaks so
                             #   the built-in hooks extension wires its status
                             #   hooks under this custom agent's name too
+env = { CLAUDE_CONFIG_DIR = "{home}/.claude-work" } # frozen at creation
 telemetry_env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1" }  # only while [telemetry] is on
 # telemetry_args = []       # appended only while [telemetry] is on
 ```
@@ -191,6 +192,33 @@ They receive no placeholder or shell expansion. `session get --json` (alias
 `--agent` and conflicts with `--command`. A delegated creation requires the
 host CLI to advertise `agent_args` support; an older peer is refused before
 creation. Environment transport retains its separate stdin-only rules.
+
+`env` supplies string-valued defaults for every new session using this agent,
+including sessions created from the TUI. `{home}` resolves to the launch host's
+home directory (local, SSH or WSL); `~` and shell variables are not expanded.
+Session `--env` overrides agent `env`, which overrides `telemetry_env`.
+Thurbox's own identity and instance variables take precedence over these layers.
+The merged agent and session values are persisted together: restart, resume and
+fork keep that snapshot, so changing `agents.toml` cannot move an existing
+session to another account. Existing sessions created before this feature keep
+their saved environment; create a new session to select an agent's new defaults.
+
+With shared-host delegation, the host's own registry supplies its agent defaults;
+with direct remote launches, the caller's registry supplies them and `{home}`
+resolves remotely. Environment values sent to a host CLI still travel on stdin,
+and existing unsupported-host refusals apply. `session show --json` reports the
+saved `env` on the instance that owns the session. A caller's mirror reports
+`env: null`, since it does not hold that snapshot; ask the owning instance for
+its map. Shared-host forks also run
+on that instance; a mirror cannot supply a saved environment when its owning
+CLI is unavailable, so that fork is refused. `agent launch-args` reports the
+current defaults without `--session`, or the saved environment with it.
+For a shared-host mirror, session-context `agent launch-args` and `session exec`
+must run on the owning instance; the caller refuses to guess an account from
+an unavailable snapshot.
+These values are visible in JSON and stored in the database: select account
+configuration directories here, rather than storing tokens. See
+[Several Claude accounts](AGENTS.md#several-claude-accounts).
 
 `telemetry_env` and `telemetry_args` apply only while `settings.toml`'s
 [`[telemetry]`](#telemetry--opentelemetry-for-sessions) is on, with
