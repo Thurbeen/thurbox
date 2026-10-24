@@ -50,8 +50,8 @@ pub struct SpawnRequest {
     pub args: Vec<String>,
     /// Opaque per-session arguments appended to every registry-agent launch.
     pub agent_args: Vec<String>,
-    /// Extra environment for the launched process, on top of the `THURBOX_*`
-    /// identity vars. Applies to a registry agent as well as a raw command.
+    /// Session environment overrides agent defaults. Thurbox identity wins
+    /// over both. Applies to a registry agent as well as a raw command.
     pub env: BTreeMap<String, String>,
     /// Session telemetry labels, retained across restart and fork.
     pub telemetry_attrs: BTreeMap<String, String>,
@@ -175,6 +175,11 @@ pub struct SpawnResult {
     /// this is the only place it is known here; `None` for a session this call
     /// created and heard back about.
     pub found: Option<FoundSession>,
+    /// A delegated fork's own report; local callers derive it from the registry.
+    pub continues_conversation: Option<bool>,
+    /// The owner-selected id driving the fork argument templates, when known.
+    /// An empty value selects the agent's fork picker.
+    pub fork_session_id: Option<String>,
 }
 
 /// A session a delegated create's host answered as already there, as the host
@@ -270,7 +275,7 @@ pub fn spawn_session_headless_with_progress(
     req: SpawnRequest,
     progress: Option<ProgressFn<'_>>,
 ) -> Result<SpawnResult, crate::session_ops::OpError> {
-    spawn(db, backends, req, progress, None)
+    spawn(db, backends, req, progress, None, false)
 }
 
 /// [`spawn_session_headless`] for a caller that has already claimed the
@@ -282,7 +287,17 @@ pub(crate) fn spawn_session_holding_key(
     req: SpawnRequest,
     held: &super::lock::Lock<'_>,
 ) -> Result<SpawnResult, crate::session_ops::OpError> {
-    spawn(db, backends, req, None, Some(held))
+    spawn(db, backends, req, None, Some(held), false)
+}
+
+/// A fork inherits the complete saved environment, including absent keys.
+/// Registry edits must not add defaults to that snapshot.
+pub(super) fn spawn_fork(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    req: SpawnRequest,
+) -> Result<SpawnResult, crate::session_ops::OpError> {
+    spawn(db, backends, req, None, None, true)
 }
 
 fn spawn(
@@ -291,6 +306,7 @@ fn spawn(
     req: SpawnRequest,
     progress: Option<ProgressFn<'_>>,
     key_held: Option<&super::lock::Lock<'_>>,
+    inherited_env: bool,
 ) -> Result<SpawnResult, crate::session_ops::OpError> {
     let report = |phase: SpawnPhase| {
         if let Some(progress) = progress {
@@ -320,7 +336,9 @@ fn spawn(
             // A fork of a session with no pinned conversation still shares its
             // parent's checkout, which is just as much a fork.
             super::host_cli::Usable::Yes(cli)
-                if req.fork_session_id.is_none() && req.inherit_worktrees.is_empty() =>
+                if !inherited_env
+                    && req.fork_session_id.is_none()
+                    && req.inherit_worktrees.is_empty() =>
             {
                 id_is_free(db, req.session_id, Some(&backend_type))?;
                 return spawn_delegated(db, req, h, &cli, &choice, &report);
@@ -445,6 +463,12 @@ fn spawn(
     if let Some(reason) = hook_degraded {
         tracing::warn!("remote hook wiring degraded for '{}': {reason}", req.name);
     }
+    let mut launch_env = if inherited_env {
+        BTreeMap::new()
+    } else {
+        agent_environment(&agent_def, host.as_ref())?
+    };
+    launch_env.extend(req.env.clone());
     report(SpawnPhase::Worktrees);
     let (primary_cwd, worktrees, additional_dirs) = resolve_dirs(&req, host.as_ref())?;
 
@@ -482,7 +506,7 @@ fn spawn(
     // would report another session's state.
     config
         .env
-        .extend(req.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        .extend(launch_env.iter().map(|(k, v)| (k.clone(), v.clone())));
     config.env.remove(super::CODEX_PICKER_ENV);
     super::inject_thurbox_env(
         &mut config,
@@ -607,16 +631,24 @@ fn spawn(
     // there is no registry entry to re-resolve at restart, so the row carries
     // it. Registry agents deliberately store no *command* here and stay
     // resolved by name, so editing `agents.toml` and restarting still takes
-    // effect — but their `--env` is recorded all the same. It is not a
-    // launch recipe, it is what the session's processes live in: a restart has
+    // effect — but their environment defaults and `--env` are frozen here.
+    // It is what the session's processes live in: a restart has
     // to replay it, and `session exec` has to reproduce it.
     let recorded = match &recipe {
         Some(r) => db.set_launch_recipe(session_id, r),
-        None if !req.env.is_empty() => db.set_launch_env(session_id, &req.env),
+        None if !launch_env.is_empty() => db.set_launch_env(session_id, &launch_env),
         None => Ok(()),
     };
     if let Err(e) = recorded {
-        tracing::warn!("Failed to record the session's launch environment: {e}");
+        discard_orphaned_window(backend.as_ref(), &stamp, &req.name, &backend_id);
+        let rollback = db.force_delete_session(session_id).err();
+        return Err(format!(
+            "Failed to record the session's launch environment: {e}{}",
+            rollback.map_or_else(String::new, |error| format!(
+                "; failed to remove the created row: {error}"
+            ))
+        )
+        .into());
     }
 
     record_fork_point(db, session_id, &req);
@@ -653,6 +685,8 @@ fn spawn(
         sharing,
         created: true,
         found: None,
+        continues_conversation: None,
+        fork_session_id: req.fork_session_id,
     })
 }
 
@@ -1210,6 +1244,101 @@ fn spawn_delegated(
         sharing: None,
         created,
         found,
+        continues_conversation: None,
+        fork_session_id: None,
+    })
+}
+
+/// The host owns a shared parent's saved environment and agent definition.
+/// Fork there, so a mirror's absent launch environment cannot select an account.
+pub(super) fn fork_delegated(
+    db: &Database,
+    source: &SharedSession,
+    name: &str,
+    host: &HostDef,
+    cli: &super::host_cli::CliInfo,
+) -> Result<SpawnResult, crate::session_ops::OpError> {
+    let name = if name.is_empty() {
+        format!("{}-fork", source.name)
+    } else {
+        name.to_string()
+    };
+    crate::paths::validate_safe_name(&name)?;
+    let mut ctx = super::lifecycle_hooks::context_for(source);
+    ctx.name = name.clone();
+    ctx.session_id = None;
+    ctx.agent_session_id = None;
+    ctx.backend_id = None;
+    ctx.host = Some(host.name.clone());
+    ctx.parent_session_id = Some(source.id);
+    ctx.fork_session_id = None;
+    ctx.key = None;
+    super::fire_pre(crate::session::HookEvent::PreCreate, &ctx)?;
+    let id = source.id.to_string();
+    let answer = super::host_cli::run(host, cli, &["session", "fork", &id, "--name", &name])?;
+    let session_id = answer
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|id| id.parse::<SessionId>().ok())
+        .ok_or("host fork returned no valid session id")?;
+    let continues_conversation = answer
+        .get("continues_conversation")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or("host fork did not report conversation continuity")?;
+    let fork_session_id = answer
+        .get("fork_session_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    id_is_free(db, Some(session_id), Some(&host.backend_name()))?;
+    super::mirror::mirror_host(db, host, cli)?;
+    let row = db
+        .get_session_by_id(session_id)
+        .map_err(|e| format!("get forked session: {e}"))?
+        .ok_or_else(|| {
+            format!(
+                "host '{}' forked session {session_id} but does not list it",
+                host.name
+            )
+        })?;
+    if !super::same_machine(&row.backend_type, &host.backend_name()) {
+        return Err(crate::session_ops::OpError::Conflict(format!(
+            "fork result {session_id} belongs to {}, expected host '{}'",
+            row.backend_type, host.name
+        )));
+    }
+    let mut ctx = super::lifecycle_hooks::context_for(&row);
+    ctx.fork_session_id = fork_session_id.clone();
+    ctx.host = Some(host.name.clone());
+    let mut hook_failures = super::fire_post(crate::session::HookEvent::PostCreate, &ctx);
+    let strings = |key: &str| {
+        answer
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    hook_failures.extend(strings("hook_failures"));
+    Ok(SpawnResult {
+        session_id,
+        key: row.key,
+        name: row.name,
+        agent: row.agent,
+        agent_session_id: row.agent_session_id.unwrap_or_default(),
+        backend_id: row.backend_id,
+        backend_type: row.backend_type,
+        cwd: row.cwd.ok_or("host fork returned no working directory")?,
+        worktrees: row.worktrees,
+        parent_session_id: row.parent_session_id,
+        hook_failures,
+        warnings: strings("warnings"),
+        sharing: None,
+        created: true,
+        found: None,
+        continues_conversation: Some(continues_conversation),
+        fork_session_id,
     })
 }
 
@@ -1790,10 +1919,37 @@ pub(crate) fn adapt_def_for_launch(
     (def, degraded)
 }
 
+/// Refuse an account path whose host home could not be resolved, rather than
+/// freezing a literal placeholder into the session's account selection.
+pub(super) fn agent_environment(
+    def: &crate::session::AgentDef,
+    host: Option<&HostDef>,
+) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
+    let mut env = def.env.clone();
+    if env
+        .values()
+        .any(|value| value.contains(super::HOME_PLACEHOLDER))
+    {
+        let home = match host {
+            Some(host) => resolve_launch_home(host),
+            None => crate::paths::home_dir().map(|home| home.to_string_lossy().into_owned()),
+        }
+        .ok_or_else(|| {
+            format!(
+                "could not resolve {{home}} in agent '{}' environment",
+                def.name
+            )
+        })?;
+        for value in env.values_mut() {
+            *value = value.replace(super::HOME_PLACEHOLDER, &home);
+        }
+    }
+    Ok(env)
+}
+
 /// The home dir to expand `{home}` against for a launch on `host`: the remote
 /// `$HOME` for a POSIX SSH/WSL host, or `%USERPROFILE%` for a Windows one.
-/// `None` when it can't be resolved (host down, no client) — the caller then
-/// leaves the token unexpanded and warns.
+/// `None` when it can't be resolved (host down, no client).
 ///
 /// The platform choice lives in [`crate::git::remote_home`], not here: a second
 /// copy of it is a second thing to keep in step, and this one used to be the

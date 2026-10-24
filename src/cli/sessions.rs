@@ -575,6 +575,8 @@ pub enum Action {
     /// from inside another session would otherwise lend the child that
     /// session's identity. Everything else is inherited as usual. The
     /// environment actually used is in the result's `env`.
+    /// Shared-host mirrors have no saved environment here; run this on the
+    /// owning instance instead.
     Exec {
         /// Session name, UUID, or unique id prefix.
         session: String,
@@ -1231,6 +1233,17 @@ fn run_get(
             .get(&session.id)
             .copied(),
     );
+    row["env"] = if db
+        .mirrored_session_ids()
+        .map_err(|e| format!("read mirrored sessions: {e}"))?
+        .contains(&session.id)
+    {
+        Value::Null
+    } else {
+        json!(db
+            .load_launch_env(session.id)
+            .map_err(|e| format!("read the launch environment: {e}"))?)
+    };
     crate::session_ops::read_fields::ReadFields::default().annotate(
         db,
         Some(backends.local()),
@@ -2177,10 +2190,11 @@ fn run_fork(
     // answer, not thurbox's: an agent with no `fork_args` gets a fresh
     // one, and saying so beats letting the caller assume continuity.
     let registry = crate::agent::agent_config::load_or_seed();
-    let continues = registry
-        .get(&res.agent)
-        .map(|def| !def.fork_args.is_empty())
-        .unwrap_or(false);
+    let continues = res.continues_conversation.unwrap_or_else(|| {
+        registry
+            .get(&res.agent)
+            .is_some_and(|def| !def.fork_args.is_empty())
+    });
     let human = format!(
         "Forked '{}' → '{}' ({})\n{}",
         source.name,
@@ -2202,6 +2216,9 @@ fn run_fork(
             "worktrees": res.worktrees.iter().map(worktree_json).collect::<Vec<_>>(),
             "cwd": res.cwd.display().to_string(),
             "continues_conversation": continues,
+            "fork_session_id": res.fork_session_id,
+            "hook_failures": res.hook_failures,
+            "warnings": res.warnings,
         }),
         human,
     ))

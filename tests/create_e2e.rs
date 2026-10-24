@@ -3081,3 +3081,240 @@ fn a_heal_finds_the_session_it_spawned_already_deleted_by_a_deactivate() {
         "the heal failed on the session the deactivate had already deleted: {tick}"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn agent_environment_is_frozen_at_creation_and_replayed_on_restart_and_fork() {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+    use thurbox::session_ops::{
+        agent_launch_plan, fork_session_headless, restart_session_headless,
+    };
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, config) = isolated_config();
+    std::env::set_var("HOME", home.path());
+    let repo = repo();
+    let capture = home.path().join("account-capture");
+    let agent = home.path().join("account-agent");
+    std::fs::write(&agent, "#!/bin/sh\n{ printf '%s\\n' \"$ACCOUNT\" \"$CLAUDE_CONFIG_DIR\" \"$CHOICE\"; printf '%s\\n' \"$@\"; } > \"$CAPTURE\"\nexec sleep 60\n").unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let write_agent = |account: &str| {
+        std::fs::write(
+            config.join("agents.toml"),
+            format!(
+                r#"
+default = "claude"
+[[agents]]
+name = "claude"
+command = {:?}
+args = ["acceptEdits"]
+resume_args = ["--resume", "{{id}}"]
+fork_args = ["--resume", "{{id}}", "--fork-session"]
+new_session_args = ["--session-id", "{{id}}"]
+telemetry_env = {{ ACCOUNT = "telemetry", CHOICE = "telemetry" }}
+env = {{ THURBOX_TASK = "fake", ACCOUNT = {:?}, CLAUDE_CONFIG_DIR = "{{home}}/account", CHOICE = "agent", CAPTURE = {:?} }}
+"#,
+                agent.display().to_string(),
+                account,
+                capture.display().to_string()
+            ),
+        )
+        .unwrap();
+    };
+    write_agent("original");
+    std::fs::write(config.join("settings.toml"), "[features]\nautomations = false\nversion_check = false\nauto_update = false\n[telemetry]\nenabled = true\n").unwrap();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let spawned = spawn_session_headless(
+        &db,
+        &backends,
+        SpawnRequest {
+            name: "account".into(),
+            repo_path: repo.path().into(),
+            agent: Some("claude".into()),
+            env: [
+                ("CHOICE".into(), "session".into()),
+                ("CAPTURE".into(), capture.display().to_string()),
+            ]
+            .into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let expected_dir = home.path().join("account");
+    let check = || {
+        let text = read_launch_capture(&capture);
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines[0], "original", "agent env must reach the process");
+        assert_eq!(lines[1], expected_dir.to_str().unwrap());
+        assert_eq!(lines[2], "session");
+        text
+    };
+    check();
+    assert_eq!(
+        db.load_launch_env(spawned.session_id).unwrap()["ACCOUNT"],
+        "original"
+    );
+    let shown = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args([
+            "session",
+            "show",
+            &spawned.session_id.to_string(),
+            "--no-verify",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["env"]["ACCOUNT"], "original");
+    let transcript = expected_dir
+        .join("projects")
+        .join(repo.path().to_string_lossy().replace('/', "-"))
+        .join(format!("{}.jsonl", spawned.agent_session_id));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(transcript, "{}\n").unwrap();
+    write_agent("edited");
+    let edited = std::fs::read_to_string(config.join("agents.toml")).unwrap();
+    std::fs::write(
+        config.join("agents.toml"),
+        edited.replace("env = {", "env = { ADDED = \"new\", "),
+    )
+    .unwrap();
+    std::fs::remove_file(&capture).unwrap();
+    restart_session_headless(&db, &backends, spawned.session_id).unwrap();
+    let restarted = check();
+    assert!(restarted.contains("--resume\n"), "{restarted}");
+    let row = db.get_session_by_id(spawned.session_id).unwrap().unwrap();
+    assert!(!agent_launch_plan(&db, &backends, "claude", Some(&row))
+        .unwrap()
+        .env
+        .contains_key("THURBOX_TASK"));
+    assert_eq!(
+        agent_launch_plan(&db, &backends, "claude", Some(&row))
+            .unwrap()
+            .env["ACCOUNT"],
+        "original"
+    );
+    assert_eq!(
+        agent_launch_plan(&db, &backends, "claude", None)
+            .unwrap()
+            .env["ACCOUNT"],
+        "edited"
+    );
+    std::fs::remove_file(&capture).unwrap();
+    let forked = fork_session_headless(&db, &backends, spawned.session_id, "account-fork").unwrap();
+    assert!(check().contains("--fork-session"));
+    assert!(!db
+        .load_launch_env(forked.session_id)
+        .unwrap()
+        .contains_key("ADDED"));
+    assert_eq!(
+        db.load_launch_env(forked.session_id).unwrap()["ACCOUNT"],
+        "original"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn agent_environment_is_accepted_by_validation_and_launch_args() {
+    let (home, config) = isolated_config();
+    std::fs::write(
+        config.join("agents.toml"),
+        r#"
+default = "account"
+[[agents]]
+name = "account"
+command = "sh"
+env = { CONFIG_ROOT = "{home}/account", THURBOX_SESSION = "fake", THURBOX_SESSION_KEY = "fake", THURBOX_SESSION_ID = "fake", THURBOX_TASK = "fake" }
+"#,
+    )
+    .unwrap();
+    for args in [
+        vec!["config", "validate", "--json"],
+        vec!["agent", "launch-args", "account", "--json"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(&args)
+            .env("HOME", home.path())
+            .env("THURBOX_CONFIG_DIR", &config)
+            .env("THURBOX_DATA_DIR", home.path().join("data"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if args[0] == "agent" {
+            let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+            for key in [
+                "THURBOX_SESSION",
+                "THURBOX_SESSION_KEY",
+                "THURBOX_SESSION_ID",
+                "THURBOX_TASK",
+            ] {
+                assert!(doc["env"][key].is_null(), "unexpected identity: {key}");
+            }
+            assert_eq!(
+                doc["env"]["CONFIG_ROOT"],
+                home.path().join("account").display().to_string()
+            );
+        }
+    }
+    let literal_home = home.path().join("{home}");
+    std::fs::create_dir(&literal_home).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["agent", "launch-args", "account", "--json"])
+        .env("HOME", &literal_home)
+        .env("THURBOX_CONFIG_DIR", &config)
+        .env("THURBOX_DATA_DIR", home.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        doc["env"]["CONFIG_ROOT"],
+        literal_home.join("account").display().to_string()
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn agent_environment_must_be_saved_before_creation_reports_success() {
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, config) = isolated_config();
+    std::env::set_var("HOME", home.path());
+    std::fs::write(config.join("agents.toml"), "default = 'account'\n[[agents]]\nname = 'account'\ncommand = 'sh'\nargs = ['-c', 'exec sleep 60']\nenv = { ACCOUNT = 'original' }\n").unwrap();
+    let db = on_disk_db();
+    db.conn_ref().execute_batch("CREATE TRIGGER reject_env BEFORE UPDATE OF launch_env ON sessions BEGIN SELECT RAISE(ABORT, 'test launch env failure'); END;").unwrap();
+    let backends = thurbox::backend::wiring::configured().0;
+    let result = spawn_session_headless(
+        &db,
+        &backends,
+        SpawnRequest {
+            name: "unsaved".into(),
+            repo_path: home.path().into(),
+            ..Default::default()
+        },
+    );
+    let err = result.expect_err("creation must not succeed without saving its account");
+    assert!(err.to_string().contains("launch environment"), "{err}");
+    assert!(db.list_active_sessions().unwrap().is_empty());
+}

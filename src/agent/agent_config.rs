@@ -35,6 +35,10 @@ const BUILTIN_AGENTS_HEAD: &str = r#"# Thurbox coding-agent definitions.
 # {dir} substituted. `args` is always passed — put extra flags (e.g. a model)
 # there. Add your own [[agents]] entries to support any CLI.
 #
+# env = { KEY = "value" } freezes defaults at session creation, with {home}
+# resolved on the launch host. Session --env overrides a key; restart/fork keep
+# the saved values even after this file changes.
+#
 # telemetry_env / telemetry_args apply only while settings.toml's [telemetry]
 # is on, with {otlp_endpoint} and {otlp_protocol} substituted. They carry an
 # agent's own OTel switches; the spec's OTEL_EXPORTER_OTLP_* variables are set

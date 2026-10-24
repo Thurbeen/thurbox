@@ -75,6 +75,10 @@ pub struct AgentDef {
     /// (`apply_agent_patches`) and `extensions/hooks/`.
     #[serde(default)]
     pub hook_schema: Option<String>,
+    /// Defaults frozen into a session's launch environment at creation.
+    /// `{home}` resolves on the launch host; session `--env` overrides a key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     /// Environment set only while `[telemetry]` is on, for an agent whose OTel
     /// switch is not the spec's own (`CLAUDE_CODE_ENABLE_TELEMETRY`).
     /// `{otlp_endpoint}` and `{otlp_protocol}` are substituted. A variable the
@@ -248,6 +252,7 @@ mod tests {
             new_session_args: vec!["--session-id".into(), "{id}".into()],
             resume_latest: false,
             hook_schema: None,
+            env: Default::default(),
             telemetry_env: Default::default(),
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
@@ -288,6 +293,7 @@ mod tests {
             new_session_args: vec![],
             resume_latest: false,
             hook_schema: None,
+            env: Default::default(),
             telemetry_env: Default::default(),
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
@@ -308,6 +314,7 @@ mod tests {
             new_session_args: vec![],
             resume_latest: true,
             hook_schema: None,
+            env: Default::default(),
             telemetry_env: Default::default(),
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
@@ -336,6 +343,7 @@ mod tests {
             new_session_args: vec![],
             resume_latest: true,
             hook_schema: None,
+            env: Default::default(),
             telemetry_env: Default::default(),
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
@@ -364,6 +372,7 @@ mod tests {
                     new_session_args: vec![],
                     resume_latest: false,
                     hook_schema: None,
+                    env: Default::default(),
                     telemetry_env: Default::default(),
                     telemetry_args: Vec::new(),
                     additional_dir_args: Vec::new(),
