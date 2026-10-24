@@ -1022,8 +1022,9 @@ mod tests {
     /// every process a pane starts).
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn process_in(session: &str, pane: &str) -> std::process::Child {
-        // `spawn` returns once the exec happened, so the environment is final.
-        std::process::Command::new(std::env::current_exe().unwrap())
+        use std::io::BufRead;
+
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "cli::delivery::tests::idle_as_a_claude_stand_in",
@@ -1032,14 +1033,39 @@ mod tests {
             .env("THURBOX_SESSION", session)
             .env("TMUX_PANE", pane)
             .env(STAND_IN_ENV, "1")
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .unwrap()
+            .unwrap();
+        // A successful spawn can precede /proc exposing the new environment.
+        // Readiness must come from the running stand-in.
+        let stdout = child.stdout.take().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let ready = std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+                .any(|line| line.ends_with(STAND_IN_READY));
+            let _ = ready_tx.send(ready);
+        });
+        let ready = ready_rx.recv_timeout(Duration::from_secs(10));
+        if !matches!(ready, Ok(true)) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        reader.join().unwrap();
+        assert!(
+            matches!(ready, Ok(true)),
+            "stand-in did not become ready: {ready:?}"
+        );
+        child
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     const STAND_IN_ENV: &str = "THURBOX_DELIVERY_TEST_STAND_IN";
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    const STAND_IN_READY: &str = "thurbox-delivery-stand-in-ready";
 
     /// Not a test: the body of [`process_as`]'s child. Idles only when that
     /// child is what runs it.
@@ -1048,6 +1074,11 @@ mod tests {
     #[ignore = "helper process for the ownership tests"]
     fn idle_as_a_claude_stand_in() {
         if std::env::var_os(STAND_IN_ENV).is_some() {
+            use std::io::Write;
+
+            let mut stdout = std::io::stdout();
+            writeln!(stdout, "{STAND_IN_READY}").unwrap();
+            stdout.flush().unwrap();
             std::thread::sleep(Duration::from_secs(30));
         }
     }
