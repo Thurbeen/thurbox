@@ -3108,19 +3108,29 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         spec: &WindowSpec<'_>,
         settle: std::time::Duration,
     ) -> crate::backend::contract::BackendResult<(PaneId, BackendLiveness)> {
-        if self.transport.is_remote() || !M::WINDOW_OPTIONS {
-            let pane = self.create_window(spec)?;
-            std::thread::sleep(settle);
-            let state = match self.pane_state(pane.as_str())?.dead {
-                Some(true) => BackendLiveness::Exited,
-                Some(false) => BackendLiveness::Live,
-                None => BackendLiveness::Unknown,
+        let remote = self.transport.is_remote();
+        let pane = if remote || !M::WINDOW_OPTIONS {
+            self.create_window(spec)?
+        } else {
+            PaneId::new(self.create_local_window(spec, false)?)?
+        };
+        std::thread::sleep(settle);
+        let window_name = window_name_for(spec.role, spec.owner.name);
+        if !M::WINDOW_OPTIONS {
+            let panes = self.spawned_panes(&window_name)?;
+            if panes.iter().any(|(id, dead)| id != pane.as_str() && !dead) {
+                return Err(crate::backend::contract::BackendError::Refused(
+                    "created window identity is ambiguous".into(),
+                ));
+            }
+            let state = match panes.iter().find(|(id, _)| id == pane.as_str()) {
+                Some((_, false)) => BackendLiveness::Live,
+                Some((_, true)) => BackendLiveness::Exited,
+                None => BackendLiveness::Missing,
             };
             return Ok((pane, state));
         }
-        let pane = PaneId::new(self.create_local_window(spec, false)?)?;
-        std::thread::sleep(settle);
-        let format = format!("{RETIRE_FORMAT}|#{{pane_id}}|#{{pane_dead}}");
+        let format = format!("{RETIRE_FORMAT}|#{{pane_id}}|#{{pane_dead}}|#{{window_name}}");
         let output = self
             .mux_command(&["list-windows", "-t", &self.session, "-F", &format])?
             .output()
@@ -3135,6 +3145,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             if fields.get(3) == Some(&pane.as_str()) {
                 if fields.get(1) != Some(&spec.owner.session_id)
                     || fields.get(2) != Some(&spec.role.as_str())
+                    || (spec.owner.session_id.is_empty()
+                        && fields.get(5) != Some(&window_name.as_str()))
                 {
                     return Err(crate::backend::contract::BackendError::Refused(
                         "created pane is now owned by another session or role".into(),
@@ -3147,7 +3159,11 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 };
             }
         }
-        let retired = self.retire_windows_in(&listing, spec.owner.session_id, spec.role);
+        let retired = if remote {
+            Vec::new()
+        } else {
+            self.retire_windows_in(&listing, spec.owner.session_id, spec.role)
+        };
         if retired.iter().any(|window| {
             listing.lines().any(|line| {
                 let fields: Vec<_> = line.split('|').collect();
@@ -4942,6 +4958,9 @@ impl<M: TmuxCompatible> Server<M> {
     }
 
     fn retire_windows_in(&self, listing: &str, session_id: &str, role: WindowRole) -> Vec<String> {
+        if session_id.is_empty() {
+            return Vec::new();
+        }
         let windows = stamped_windows_in(listing, session_id, role);
         let Some((keep, retire)) = windows.split_last() else {
             return Vec::new();

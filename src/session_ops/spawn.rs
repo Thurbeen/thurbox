@@ -682,7 +682,11 @@ fn spawn(
         crate::backend::contract::BackendLiveness::Exited
             | crate::backend::contract::BackendLiveness::Missing
     ) {
-        let detail = backend.capture(&backend_id, 20, false).unwrap_or_default();
+        let detail = if startup == crate::backend::contract::BackendLiveness::Exited {
+            backend.capture(&backend_id, 20, false).unwrap_or_default()
+        } else {
+            String::new()
+        };
         return Err(format!("agent exited before session creation committed: {detail}").into());
     }
     report(SpawnPhase::Persisting);

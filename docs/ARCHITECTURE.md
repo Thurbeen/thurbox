@@ -2415,6 +2415,9 @@ its deleted row until it can commit the confirmed pane; its pending resource
 plan is recovered the same way. An explicit `session.pre_launch` refusal
 acknowledges preparation and closes the intent while retaining its directories
 for inspection, preserving the hook's preparation contract.
+Startup observations confirm the exact pane's owner and role; a backend without
+per-window stamps must instead confirm its unique live namesake. Ownerless
+windows never take part in session duplicate retirement.
 
 `session_ops::reconcile::tick` is the shared entry point for the interface's
 worker (`Command::Reap`) and the headless heartbeat. It retries force-delete

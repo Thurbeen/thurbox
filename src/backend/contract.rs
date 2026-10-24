@@ -705,6 +705,30 @@ pub trait SessionBackend: Send + Sync {
         let pane = self.create_window(spec)?;
         std::thread::sleep(settle);
         let state = self.pane_state(pane.as_str())?;
+        let located = match spec.role {
+            WindowRole::Agent => self.locate(spec.owner)?.agent,
+            WindowRole::Shell => self.locate(spec.owner)?.shell,
+            WindowRole::Program => {
+                if self.discover()?.iter().any(|window| {
+                    window.backend_id == pane.as_str()
+                        && window.session == spec.owner.session_id
+                        && window.role == spec.role
+                }) {
+                    Located::At(pane.as_str().to_string())
+                } else {
+                    Located::Unknown
+                }
+            }
+        };
+        match located {
+            Located::At(ref found) if found == pane.as_str() => {}
+            Located::Absent => return Ok((pane, BackendLiveness::Missing)),
+            _ => {
+                return Err(BackendError::Refused(
+                    "created window ownership could not be confirmed".into(),
+                ))
+            }
+        }
         let liveness = match state.dead {
             Some(true) => BackendLiveness::Exited,
             Some(false) => BackendLiveness::Live,
