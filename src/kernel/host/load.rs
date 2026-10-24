@@ -32,6 +32,10 @@ const HOOK_INTERVAL: u32 = 100_000;
 /// rather than pattern-matching on VM prose.
 pub(super) const BUDGET_EXCEEDED: &str = "thurbox: instruction budget exceeded";
 
+/// Marker in the error [`Budget::arm`] returns when the hook cannot be
+/// installed, for [`clean_error`] in the same way.
+pub(super) const BUDGET_UNARMED: &str = "thurbox: instruction budget could not be armed";
+
 /// Arms the instruction-count hook for the duration of one plugin call.
 ///
 /// This is the Lua 5.4 half of the instruction bound. Luau donates
@@ -41,19 +45,21 @@ pub(super) const BUDGET_EXCEEDED: &str = "thurbox: instruction budget exceeded";
 /// `while true do end` from taking the render loop with it.
 ///
 /// Disarmed on drop, so the budget is per call rather than per VM.
+///
+/// Installing the hook allocates, so on a full VM it can fail. [`Budget::arm`]
+/// then returns the error and the caller does not make the call: an unbounded
+/// call that never returns would freeze the render loop, while a refused one
+/// is an ordinary plugin failure the memory recovery can act on.
 pub(super) struct Budget<'a> {
     lua: &'a Lua,
 }
 
 impl<'a> Budget<'a> {
-    pub(super) fn arm(lua: &'a Lua) -> Self {
+    pub(super) fn arm(lua: &'a Lua) -> mlua::Result<Self> {
         let batches = Rc::new(RefCell::new(0u32));
         let budget = instruction_budget();
         let limit = (budget / HOOK_INTERVAL).max(1);
-        // A hook that cannot be installed must not silently disable the guard,
-        // but it also must not stop the frame: an unbudgeted call is still
-        // better than a black screen, and the failure is visible in the log.
-        if let Err(e) = lua.set_hook(
+        lua.set_hook(
             mlua::HookTriggers::default().every_nth_instruction(HOOK_INTERVAL),
             move |_, _| {
                 let mut spent = batches.borrow_mut();
@@ -63,10 +69,9 @@ impl<'a> Budget<'a> {
                 }
                 Ok(VmState::Continue)
             },
-        ) {
-            tracing::warn!("could not arm the plugin instruction budget: {e}");
-        }
-        Self { lua }
+        )
+        .map_err(|e| mlua::Error::runtime(format!("{BUDGET_UNARMED}: {e}")))?;
+        Ok(Self { lua })
     }
 }
 

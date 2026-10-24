@@ -88,6 +88,83 @@ fn an_event_handler_that_never_returns_is_interrupted_and_reported() {
     );
 }
 
+/// Fills the VM to the byte on `interface.reloaded`, so the next subscriber's
+/// instruction hook cannot be installed. The last of it goes in as two-byte
+/// strings made by C functions, which leave no garbage: once one fails, no
+/// emergency collection can give the hook its room back.
+const FILLER: &str = r#"local held = {}
+for i = 1, 4096 do held[i] = false end
+return {
+  name = "filler", slot = "a",
+  events = { "interface.reloaded" },
+  on_event = function()
+    local n, size = 0, 1024 * 1024
+    while size >= 64 do
+      local made, chunk = pcall(string.rep, "x", size)
+      if made then n = n + 1; held[n] = chunk else size = size // 2 end
+    end
+    for a = 0, 255 do
+      for b = 0, 255 do
+        local made, crumb = pcall(string.char, a, b)
+        if not made then return end
+        n = n + 1
+        held[n] = crumb
+      end
+    end
+  end,
+  render = function() return { text = "" } end,
+}"#;
+
+/// Never returns from `interface.reloaded`.
+const SPINNER: &str = r#"return {
+  name = "spinner", slot = "b",
+  events = { "interface.reloaded" },
+  on_event = function() while true do end end,
+  render = function() return { text = "" } end,
+}"#;
+
+/// Dispatch `interface.reloaded` on a VM of `limit` bytes holding [`FILLER`]
+/// then [`SPINNER`], on a thread of its own: a call that runs without its
+/// instruction budget never comes back, and this one must not take the test
+/// with it.
+fn reload_beside_a_filler(limit: usize) -> Option<Vec<host::PluginError>> {
+    host::set_memory_limit(limit);
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let dir = plugin_dir(FILLER);
+        std::fs::write(dir.path().join("plugins").join("20_spinner.lua"), SPINNER).expect("write");
+        let host = LuaHost::new(dir.path());
+        assert!(host.error.is_none(), "{:?}", host.error);
+        let event =
+            thurbox::kernel::events::Event::new("interface.reloaded").with("reason", Some("f10"));
+        let _ = sent.send(host.dispatch_event(&event));
+    });
+    let failures = received.recv_timeout(std::time::Duration::from_secs(10));
+    host::set_memory_limit(0);
+    failures.ok()
+}
+
+#[test]
+fn a_call_whose_instruction_budget_cannot_be_armed_is_not_run() {
+    let _limits = limits();
+    host::set_instruction_budget(200_000);
+    let failures = reload_beside_a_filler(16 * 1024 * 1024);
+    host::set_instruction_budget(0);
+
+    // `an_event_handler_that_never_returns_is_interrupted_and_reported` is the
+    // same spinner with room for its hook.
+    let failures =
+        failures.expect("the spinner ran without an instruction budget and never returned");
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(failures[0].plugin, "spinner");
+    assert_eq!(failures[0].phase, host::Phase::Event);
+    assert!(
+        failures[0].message.contains("could not be armed"),
+        "{}",
+        failures[0].message
+    );
+}
+
 /// A probe holding `chunks` of [`CHUNK`] bytes from load. `grow` holds one
 /// more; every render leaves garbage behind.
 fn resident_probe(chunks: usize) -> String {

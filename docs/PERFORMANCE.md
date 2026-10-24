@@ -934,7 +934,9 @@ is a map lookup — so the store refuses a duplicate while the answer is fresh *
 while a run for that key is in flight, caps output with truncation flagged, times
 out, and runs four at a time with the rest queued. The Lua VM has an instruction
 budget and a memory ceiling (`tests/kernel_limits.rs`), so a plugin cannot spin the
-frame either. A VM near that ceiling is rebuilt rather than called again
+frame either. Installing the budget's hook allocates, so a call whose hook cannot go
+in on a full VM is refused rather than run unbounded (`Budget::arm`). A VM near
+that ceiling is rebuilt rather than called again
 (`LuaHost::memory_pressure`): at the ceiling every allocation runs a full
 emergency collection before it fails, so each plugin call cost a collection of the
 whole heap on every frame, and nothing ever freed it — a frozen interface.

@@ -8246,6 +8246,84 @@ fn an_interface_that_refills_a_fresh_vm_is_retired_when_no_fallback_can_load() {
     assert!(tui.quit().success());
 }
 
+/// A pane that fills the VM to the byte when the interface is reloaded. The
+/// last of it goes in as two-byte strings made by C functions, which leave no
+/// garbage: once one fails, no emergency collection can make room for the
+/// next subscriber's instruction hook.
+const FILLER_PANE: &str = r#"local held = {}
+for i = 1, 4096 do held[i] = false end
+return {
+  name = "filler",
+  slot = "sessions",
+  events = { "interface.reloaded" },
+  on_event = function()
+    local n, size = 0, 1024 * 1024
+    while size >= 64 do
+      local made, chunk = pcall(string.rep, "x", size)
+      if made then n = n + 1; held[n] = chunk else size = size // 2 end
+    end
+    for a = 0, 255 do
+      for b = 0, 255 do
+        local made, crumb = pcall(string.char, a, b)
+        if not made then return end
+        n = n + 1
+        held[n] = crumb
+      end
+    end
+  end,
+  render = function()
+    return { type = "text", text = "filler-idle" }
+  end,
+}"#;
+
+/// A pane whose `interface.reloaded` handler never returns.
+const SPINNER_PANE: &str = r#"return {
+  name = "spinner",
+  slot = "sessions",
+  events = { "interface.reloaded" },
+  on_event = function() while true do end end,
+  render = function()
+    return { type = "text", text = "spinner-idle" }
+  end,
+}"#;
+
+#[test]
+fn a_call_whose_instruction_budget_cannot_be_armed_does_not_freeze_the_interface() {
+    // The instruction budget is a hook installed before every plugin call, and
+    // installing it allocates. On a full VM that allocation fails; a call run
+    // anyway has no bound, and a handler that never returns takes the render
+    // loop with it. A private profile, and the harness kills the binary when a
+    // wait gives up.
+    let interface = interface_plus("91_filler.lua", FILLER_PANE);
+    std::fs::write(
+        interface.path().join("plugins").join("92_spinner.lua"),
+        SPINNER_PANE,
+    )
+    .expect("add the spinner");
+    let profile = Profile::new();
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("spinner-idle");
+
+    tui.send(F10);
+    // The full VM is rebuilt, filled again by the same event, and then put on
+    // the bundled interface: the recovery the memory limit already had.
+    tui.wait_for("using the bundled interface");
+    let log = tui.log_tail();
+    assert!(
+        log.contains("could not be armed"),
+        "the spinner's failure must say why it did not run\n{log}"
+    );
+    tui.send(CTRL_P);
+    tui.wait_within(
+        RESPONSIVE,
+        "the palette on the bundled interface",
+        |frame| frame.contains("type to filter commands"),
+    );
+    assert!(tui.quit().success());
+}
+
 /// A pane that loads small and holds ~230 MiB from its first render on, so
 /// the build is small and the heap is not. Each VM draws its own token.
 const LAZY_RESIDENT_PANE: &str = r#"local held = {}

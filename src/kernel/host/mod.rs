@@ -1309,7 +1309,9 @@ impl LuaHost {
         let start = self.call_started();
         self.enter(plugin);
         let guard = Budget::arm(&self.lua);
-        let handled: Result<bool, mlua::Error> = if args.is_empty() {
+        let handled: Result<bool, mlua::Error> = if let Err(e) = &guard {
+            Err(e.clone())
+        } else if args.is_empty() {
             handler.call(action.to_string())
         } else {
             let data = self.lua.create_table().map_err(|e| fail(clean_error(&e)))?;
@@ -1454,9 +1456,8 @@ impl LuaHost {
 
         let start = self.call_started();
         self.enter(plugin);
-        let guard = Budget::arm(&self.lua);
-        let outcome: Result<Value, mlua::Error> = handler.call((name.to_string(), payload.clone()));
-        drop(guard);
+        let outcome: Result<Value, mlua::Error> = Budget::arm(&self.lua)
+            .and_then(|_budget| handler.call((name.to_string(), payload.clone())));
         self.hook_finished(plugin, start, Hook::Event, outcome.is_err());
         outcome.map(|_| ()).map_err(|e| fail(clean_error(&e)))
     }
@@ -1549,9 +1550,8 @@ impl LuaHost {
 
         let start = self.call_started();
         self.enter(plugin);
-        let guard = Budget::arm(&self.lua);
-        let result: Result<Value, mlua::Error> = handler.call((tree, table));
-        drop(guard);
+        let result: Result<Value, mlua::Error> =
+            Budget::arm(&self.lua).and_then(|_budget| handler.call((tree, table)));
         self.hook_finished(plugin, start, Hook::Decorate, result.is_err());
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
@@ -1580,9 +1580,8 @@ impl LuaHost {
                 continue;
             };
             self.enter(plugin);
-            let guard = load::Budget::arm(&self.lua);
-            let result: mlua::Result<Table> = project.call(());
-            drop(guard);
+            let result: mlua::Result<Table> =
+                load::Budget::arm(&self.lua).and_then(|_budget| project.call(()));
             self.enter_nothing();
             let Ok(table) = result else { continue };
             let mut fields = serde_json::Map::new();
@@ -2273,9 +2272,8 @@ impl LuaHost {
             .map_err(|e| fail(e.to_string()))?;
 
         self.enter(plugin);
-        let guard = Budget::arm(&self.lua);
-        let result: Result<Value, mlua::Error> = render.call(table);
-        drop(guard);
+        let result: Result<Value, mlua::Error> =
+            Budget::arm(&self.lua).and_then(|_budget| render.call(table));
 
         let value = result.map_err(|e| fail(clean_error(&e)))?;
         let float = read_float(&value).map_err(fail)?;
@@ -2349,9 +2347,8 @@ impl LuaHost {
         let args = arguments(&self.lua).map_err(|e| fail(clean_error(&e)))?;
         let start = self.call_started();
         self.enter(plugin);
-        let guard = Budget::arm(&self.lua);
-        let handled: Result<bool, mlua::Error> = handler.call(args);
-        drop(guard);
+        let handled: Result<bool, mlua::Error> =
+            Budget::arm(&self.lua).and_then(|_budget| handler.call(args));
         self.hook_finished(plugin, start, Hook::Key, handled.is_err());
         handled.map_err(|e| fail(clean_error(&e)))
     }
@@ -2439,9 +2436,8 @@ impl LuaHost {
 
         let start = self.call_started();
         self.enter(plugin);
-        let guard = Budget::arm(&self.lua);
-        let handled: Result<bool, mlua::Error> = handler.call(table);
-        drop(guard);
+        let handled: Result<bool, mlua::Error> =
+            Budget::arm(&self.lua).and_then(|_budget| handler.call(table));
         self.hook_finished(plugin, start, Hook::Click, handled.is_err());
 
         handled.map_err(|e| fail(clean_error(&e)))
@@ -2479,9 +2475,8 @@ impl LuaHost {
 
         let start = self.call_started();
         self.enter(plugin);
-        let guard = Budget::arm(&self.lua);
-        let handled: Result<bool, mlua::Error> = handler.call(table);
-        drop(guard);
+        let handled: Result<bool, mlua::Error> =
+            Budget::arm(&self.lua).and_then(|_budget| handler.call(table));
         self.hook_finished(plugin, start, Hook::Scroll, handled.is_err());
 
         handled.map_err(|e| fail(clean_error(&e)))
@@ -2554,9 +2549,8 @@ impl LuaHost {
                 ctx.set("strips", self.strips_table()?)
                     .map_err(|e| e.to_string())?;
 
-                let guard = Budget::arm(&self.lua);
-                let result: Result<Value, mlua::Error> = arrange.call(ctx);
-                drop(guard);
+                let result: Result<Value, mlua::Error> =
+                    Budget::arm(&self.lua).and_then(|_budget| arrange.call(ctx));
 
                 let value = result.map_err(|e| format!("layout.lua: {}", clean_error(&e)))?;
                 super::layout::region_from_lua(&value, "layout")

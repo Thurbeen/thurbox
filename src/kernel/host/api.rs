@@ -6,7 +6,7 @@ use std::rc::Rc;
 use mlua::{Lua, Table, Value};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::load::BUDGET_EXCEEDED;
+use super::load::{BUDGET_EXCEEDED, BUDGET_UNARMED};
 use super::{
     instruction_budget, memory_limit, Persisted, Private, Queue, Roots, Shared, StateVersion,
 };
@@ -1277,6 +1277,13 @@ fn canonical(a: &Persisted, b: &Persisted) -> std::cmp::Ordering {
 /// Trim mlua's wrapper noise so the pane shows the plugin's own message.
 pub(super) fn clean_error(error: &mlua::Error) -> String {
     let text = error.to_string();
+    // Before the memory check: arming fails on a full VM, and its cause reads
+    // "not enough memory" too, but the call never started.
+    if let Some(at) = text.find(BUDGET_UNARMED) {
+        let cause = text[at + BUDGET_UNARMED.len()..].trim_start_matches(':');
+        let cause = cause.lines().next().unwrap_or_default().trim();
+        return format!("not run: its instruction budget could not be armed ({cause})");
+    }
     if text.contains(BUDGET_EXCEEDED) {
         return format!(
             "exceeded its instruction budget (~{} instructions) — \
