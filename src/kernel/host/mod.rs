@@ -152,6 +152,7 @@ pub type RunAnswers = std::collections::HashMap<String, Vec<(String, super::runs
 /// Each session's working directory, so a file read can be rooted at one.
 /// Refreshed with the snapshot; a session not in here cannot be browsed.
 type Roots = Rc<RefCell<BTreeMap<String, PathBuf>>>;
+type FileWants = Rc<RefCell<BTreeMap<String, std::collections::HashSet<super::files::ReadKey>>>>;
 
 /// Which phase a plugin failed in — required so every failure is attributable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -853,6 +854,9 @@ pub struct LuaHost {
     current_path: Rc<RefCell<String>>,
     /// Session working directories, the roots a file read is confined to.
     roots: Roots,
+    file_reads: Rc<RefCell<super::files::ReadStore>>,
+    file_wants: FileWants,
+    file_rendered: RefCell<BTreeSet<String>>,
     /// The snapshot version [`Roots`] was last rebuilt from, so publish skips
     /// re-cloning every session's cwd on frames where the snapshot stood still.
     roots_snapshot: std::cell::Cell<Option<u64>>,
@@ -1042,6 +1046,9 @@ impl LuaHost {
             disabled: Rc::new(RefCell::new(disabled)),
             run_answers: Rc::new(RefCell::new(std::collections::HashMap::new())),
             roots: Roots::default(),
+            file_reads: Rc::new(RefCell::new(super::files::store())),
+            file_wants: FileWants::default(),
+            file_rendered: RefCell::default(),
             roots_snapshot: std::cell::Cell::new(None),
             plugins: Vec::new(),
             index: PluginIndex::default(),
@@ -1074,6 +1081,7 @@ impl LuaHost {
                 // hand the next publish a value belonging to a Lua that no
                 // longer exists.
                 self.forget_groups();
+                self.file_wants.borrow_mut().clear();
                 self.lua = lua;
                 self.index = PluginIndex::build(&plugins);
                 self.plugins = plugins;
@@ -1104,6 +1112,8 @@ impl LuaHost {
             state: self.state.clone(),
             queue: self.queue.clone(),
             roots: self.roots.clone(),
+            file_reads: self.file_reads.clone(),
+            file_wants: self.file_wants.clone(),
             runs: self.runs.clone(),
             version: self.state_version.clone(),
             writes: self.store_writes.clone(),
@@ -1858,6 +1868,30 @@ impl LuaHost {
         *self.trusted.borrow_mut() = paths;
     }
 
+    /// Collect file-text answers; callers invalidate pure trees when this changes.
+    pub fn poll_files(&self) -> bool {
+        let roots = self.roots.borrow();
+        let mut wants = self.file_wants.borrow_mut();
+        wants.retain(|owner, keys| {
+            if !self.may_path(owner, Capability::Files) {
+                return false;
+            }
+            keys.retain(|(root, _)| roots.values().any(|current| current == root));
+            !keys.is_empty()
+        });
+        let mut reads = self.file_reads.borrow_mut();
+        let retired = reads.retain(|key| wants.values().any(|keys| keys.contains(key)));
+        reads.poll() || retired
+    }
+
+    /// Retire dependencies of panes no longer painted, preserving pure-cache hits.
+    pub fn end_files_frame(&self) {
+        let rendered = self.file_rendered.take();
+        self.file_wants
+            .borrow_mut()
+            .retain(|owner, _| rendered.contains(owner));
+    }
+
     /// Take asks only; callers serving execution must use
     /// [`Self::drain_run_requests`] to preserve forget ordering.
     pub fn drain_runs(&self) -> Vec<(String, super::runs::Ask)> {
@@ -2170,6 +2204,10 @@ impl LuaHost {
             message: "plugin index out of range".to_string(),
         })?;
 
+        if plugin.capabilities.contains(&Capability::Files) {
+            self.file_rendered.borrow_mut().insert(plugin.path.clone());
+        }
+
         // A pure pane asked at the same epoch, in the same rect, with the same
         // focus, would return what it returned last time — so return that,
         // skipping both the Lua call and the conversion. Measured, this is the
@@ -2271,6 +2309,9 @@ impl LuaHost {
             .set("slot", plugin.slot.clone())
             .map_err(|e| fail(e.to_string()))?;
 
+        if plugin.capabilities.contains(&Capability::Files) {
+            self.file_wants.borrow_mut().remove(&plugin.path);
+        }
         self.enter(plugin);
         let result: Result<Value, mlua::Error> =
             Budget::arm(&self.lua).and_then(|_budget| render.call(table));

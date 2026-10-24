@@ -38,13 +38,17 @@ fn configure(home: &std::path::Path) -> std::sync::MutexGuard<'static, ()> {
 /// Publish an empty snapshot the way the running interface does every frame,
 /// which is what puts the published `thurbox` table in place.
 fn publish(host: &LuaHost) {
+    publish_snapshot(host, &Default::default());
+}
+
+fn publish_snapshot(host: &LuaHost, snapshot: &thurbox::kernel::snapshot::Snapshot) {
     let themes = thurbox::kernel::theme::Themes::load(None);
     let registry = thurbox::kernel::registry::Registry::default();
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&thurbox::kernel::host::Published {
         epoch: thurbox::kernel::host::Epoch::always_fresh(),
-        snapshot: &Default::default(),
+        snapshot,
         attach_errors: &Default::default(),
         inflight: &[],
         themes: &themes,
@@ -1941,4 +1945,277 @@ fn the_confirmation_names_the_pane_a_request_was_made_for() {
         text.contains("asked by plugins/90_lure.lua via plugins/91_asker.lua"),
         "{text}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_blocked_file_read_does_not_stop_other_plugins_painting() {
+    use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    let source = r#"return { name = "reader", slot = "sessions", capabilities = { "files" },
+      render = function()
+        local text = files.read("s1", "blocked")
+        if text then command("focus", { text = text }) end
+        return { type = "text", text = text or "pending" }
+      end }"#;
+    let heartbeat = r#"return { name = "heartbeat", slot = "sessions", render = function()
+      command("focus", { text = "painted" })
+      return { type = "text", text = "painted" }
+    end }"#;
+    let (home, ui) = interface(&[("91_reader.lua", source), ("92_heartbeat.lua", heartbeat)]);
+    let fifo = home.path().join("blocked");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    let snapshot = file_snapshot(home.path());
+    publish_snapshot(&host, &snapshot);
+    // A delayed writer bounds the old synchronous call as well as releasing
+    // the worker, so either implementation tears the FIFO down cleanly.
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(3));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(fifo)
+            .unwrap()
+            .write_all(b"released")
+            .unwrap();
+    });
+    let start = Instant::now();
+    render(&host, "reader");
+    render(&host, "heartbeat");
+    let elapsed = start.elapsed();
+    writer.join().unwrap();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "file read held the Lua render loop for {elapsed:?}"
+    );
+    assert_eq!(files_seen(&host), "painted");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !host.poll_files() {
+        assert!(
+            Instant::now() < deadline,
+            "file worker did not publish its answer"
+        );
+        std::thread::yield_now();
+    }
+    render(&host, "reader");
+    assert_eq!(files_seen(&host), "released");
+}
+
+fn file_snapshot(root: &std::path::Path) -> thurbox::kernel::snapshot::Snapshot {
+    let mut snapshot = thurbox::kernel::snapshot::Snapshot::default();
+    snapshot
+        .sessions
+        .push(thurbox::kernel::snapshot::SessionRow {
+            id: "s1".into(),
+            cwd: Some(root.to_path_buf()),
+            name: "reader".into(),
+            agent: "sh".into(),
+            status: thurbox::session::SessionState::Running,
+            repo: None,
+            repos: Vec::new(),
+            member_dirs: Vec::new(),
+            branch: None,
+            base_branch: None,
+            backend: "local-tmux".into(),
+            backend_id: None,
+            remote_host: None,
+            agent_session_id: None,
+            parent_id: None,
+            display_order: None,
+            worktree_count: 0,
+            git: None,
+            shell_backend_id: None,
+            stopped: false,
+            hook_state: None,
+            key: None,
+            reports_as: None,
+            detected_agent: None,
+            meta: Default::default(),
+        });
+    snapshot
+}
+
+#[test]
+fn file_read_answers_refresh_report_errors_and_follow_the_session_root() {
+    use std::time::{Duration, Instant};
+
+    let source = r#"return { name = "reader", slot = "sessions", capabilities = { "files" },
+      render = function()
+        local ok, text = pcall(files.read, "s1", store.path or "notes")
+        command("focus", { text = not ok and "error:" .. tostring(text) or text or "pending" })
+        return { type = "text", text = "" }
+      end }"#;
+    let (home, ui) = interface(&[("91_reader.lua", source)]);
+    let other = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("notes"), "first").unwrap();
+    std::fs::write(other.path().join("notes"), "second").unwrap();
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    publish_snapshot(&host, &file_snapshot(home.path()));
+    render(&host, "reader");
+    assert_eq!(files_seen(&host), "pending");
+    let await_text = |expected: &str| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            host.poll_files();
+            render(&host, "reader");
+            let text = files_seen(&host);
+            if text.contains(expected) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "expected {expected}, got {text}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    await_text("first");
+    std::fs::write(home.path().join("notes"), "updated").unwrap();
+    await_text("updated");
+    publish_snapshot(&host, &file_snapshot(other.path()));
+    render(&host, "reader");
+    assert_eq!(
+        files_seen(&host),
+        "pending",
+        "the old root's text must not leak"
+    );
+    await_text("second");
+    for path in ["../secret", "/secret", "missing"] {
+        host.set_shared_string("path", path);
+        await_text("error:");
+    }
+}
+
+#[test]
+fn revoking_files_stops_refreshing_the_plugins_old_reads() {
+    use std::time::{Duration, Instant};
+    let source = r#"return { name = "reader", slot = "sessions", capabilities = { "files" },
+      render = function()
+        files.read("s1", "notes")
+        return { type = "text", text = "" }
+      end }"#;
+    let (home, ui) = interface(&[("91_reader.lua", source)]);
+    std::fs::write(home.path().join("notes"), "first").unwrap();
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    publish_snapshot(&host, &file_snapshot(home.path()));
+    render(&host, "reader");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !host.poll_files() {
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    host.set_trusted(Vec::new());
+    host.poll_files();
+    std::fs::write(home.path().join("notes"), "changed after revocation").unwrap();
+    let deadline = Instant::now() + Duration::from_millis(1200);
+    while Instant::now() < deadline {
+        assert!(
+            !host.poll_files(),
+            "a revoked reader kept refreshing its old file"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn file_read_demand_metadata_has_a_per_plugin_bound() {
+    let source = r#"return { name = "reader", slot = "sessions", capabilities = { "files" },
+      render = function()
+        for i = 1, 17 do
+          local ok, err = pcall(files.read, "s1", "file" .. tostring(i))
+          if not ok then command("focus", { text = tostring(err) }) end
+        end
+        return { type = "text", text = "" }
+      end }"#;
+    let (home, ui) = interface(&[("91_reader.lua", source)]);
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    publish_snapshot(&host, &file_snapshot(home.path()));
+    render(&host, "reader");
+    assert!(files_seen(&host).contains("16 distinct paths"));
+}
+
+#[test]
+fn a_pure_file_reader_keeps_demand_on_cache_hits_and_retires_it_when_hidden() {
+    use std::time::{Duration, Instant};
+    let source = r#"return { name = "reader", slot = "sessions", pure = true,
+      capabilities = { "files" }, render = function()
+        return { type = "text", text = files.read("s1", "notes") or "pending" }
+      end }"#;
+    let (home, ui) = interface(&[("91_reader.lua", source)]);
+    let path = home.path().join("notes");
+    std::fs::write(&path, "first").unwrap();
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    let snapshot = file_snapshot(home.path());
+    publish_snapshot(&host, &snapshot);
+    let draw = || {
+        host.render(
+            host.index_of("reader").unwrap(),
+            RenderContext {
+                width: 40,
+                height: 10,
+                focused: true,
+                elapsed: 0.0,
+                frame: 0,
+            },
+        )
+        .unwrap()
+        .node
+    };
+    let text = |node: &thurbox::kernel::node::Node| match node {
+        thurbox::kernel::node::Node::Text { lines, .. } => lines
+            .iter()
+            .flatten()
+            .map(|run| run.text.as_str())
+            .collect::<String>(),
+        other => panic!("expected text, got {other:?}"),
+    };
+    let await_change = || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !host.poll_files() {
+            assert!(
+                Instant::now() < deadline,
+                "file worker did not report a change"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    assert_eq!(text(&draw()), "pending");
+    host.end_files_frame();
+    await_change();
+    publish_snapshot(&host, &snapshot);
+    let first = draw();
+    assert_eq!(text(&first), "first");
+    host.end_files_frame();
+    let cached = draw();
+    assert!(
+        std::rc::Rc::ptr_eq(&first, &cached),
+        "the reader must hit its pure-tree cache"
+    );
+    host.end_files_frame();
+    std::fs::write(&path, "second").unwrap();
+    await_change();
+    publish_snapshot(&host, &snapshot);
+    let second = draw();
+    assert_eq!(
+        text(&second),
+        "second",
+        "the pure reader must publish changed text"
+    );
+    host.end_files_frame();
+    // No reader is placed in the following frame.
+    host.end_files_frame();
+    host.poll_files();
+    std::fs::write(&path, "third").unwrap();
+    let deadline = Instant::now() + Duration::from_millis(1200);
+    while Instant::now() < deadline {
+        assert!(!host.poll_files(), "a hidden pure reader must not refresh");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }

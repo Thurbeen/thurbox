@@ -23,6 +23,23 @@ pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// frame.
 pub const MAX_ENTRIES: usize = 2_000;
 
+/// Session directory plus relative path: a changed root never reuses old text.
+pub type ReadKey = (PathBuf, String);
+/// Maximum distinct file-text dependencies a plugin may retain.
+pub const MAX_READ_KEYS: usize = 16;
+/// The plugin file-text store.
+pub type ReadStore = super::worker_store::WorkerStore<ReadKey, Result<String, String>>;
+
+/// Reads are refreshed on workers, including while a pure pane holds its tree.
+pub fn store() -> ReadStore {
+    ReadStore::new(
+        2,
+        MAX_READ_KEYS,
+        std::time::Duration::from_secs(1),
+        |(root, path)| read(root, path),
+    )
+}
+
 /// One entry in a directory listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {

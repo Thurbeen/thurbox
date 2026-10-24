@@ -588,6 +588,7 @@ globals:
   files.list:
     args:
       - type: "..."
+  # Returns nil while the worker is pending; API 2 makes text reads asynchronous.
   files.read:
     args:
       - type: "..."

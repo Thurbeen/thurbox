@@ -46,6 +46,8 @@ pub(super) struct EnvParts {
     pub state: Private,
     pub queue: Queue,
     pub roots: Roots,
+    pub file_reads: Rc<RefCell<crate::kernel::files::ReadStore>>,
+    pub file_wants: super::FileWants,
     pub runs: Rc<RefCell<Vec<(String, crate::kernel::runs::Request)>>>,
     pub version: StateVersion,
     pub writes: super::WriteCount,
@@ -124,7 +126,13 @@ pub(super) fn plugin_env(lua: &Lua, parts: &EnvParts, path: &str, ns: &str) -> m
         thurbox,
         run: run_for(lua, parts.runs.clone(), path.to_string())?,
         run_forget: forget_for(lua, parts.runs.clone(), path.to_string())?,
-        files: files_for(lua, parts.roots.clone())?,
+        files: files_for(
+            lua,
+            parts.roots.clone(),
+            parts.file_reads.clone(),
+            parts.file_wants.clone(),
+            path.to_string(),
+        )?,
         table,
     })
 }
@@ -764,7 +772,13 @@ fn forget_for(
 /// rooted at that session's working directory and refusing anything outside
 /// it — never a filesystem. And it gets even that only when granted `files`
 /// (`LuaHost::enter`), because a worktree's `.env` is inside that root.
-fn files_for(lua: &Lua, roots: Roots) -> mlua::Result<Table> {
+fn files_for(
+    lua: &Lua,
+    roots: Roots,
+    reads: Rc<RefCell<crate::kernel::files::ReadStore>>,
+    wants: super::FileWants,
+    owner: String,
+) -> mlua::Result<Table> {
     let files = lua.create_table()?;
 
     let list_roots = roots.clone();
@@ -794,7 +808,25 @@ fn files_for(lua: &Lua, roots: Roots) -> mlua::Result<Table> {
             let root = read_roots.borrow().get(&session).cloned().ok_or_else(|| {
                 mlua::Error::runtime(format!("no directory for session {session}"))
             })?;
-            crate::kernel::files::read(&root, &path).map_err(mlua::Error::runtime)
+            let key = (root, path);
+            {
+                let mut wants = wants.borrow_mut();
+                let keys = wants.entry(owner.clone()).or_default();
+                if keys.len() >= crate::kernel::files::MAX_READ_KEYS && !keys.contains(&key) {
+                    return Err(mlua::Error::runtime(
+                        "files.read accepts at most 16 distinct paths per plugin render",
+                    ));
+                }
+                keys.insert(key.clone());
+            }
+            match reads.borrow_mut().request(key) {
+                None => Ok(None),
+                Some(answer) => answer
+                    .as_ref()
+                    .clone()
+                    .map(Some)
+                    .map_err(mlua::Error::runtime),
+            }
         })?,
     )?;
 

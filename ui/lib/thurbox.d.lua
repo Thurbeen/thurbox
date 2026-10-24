@@ -887,9 +887,14 @@ files = {}
 ---@return thurbox.FileEntry[]
 function files.list(session, path) end
 
+--- Request file text on a worker. Poll from render: nil means pending.
+--- Retained answers refresh after one second; the previous text stays visible
+--- during refresh. Read failures raise on a later call. At most 16 keys and
+--- two active reads; excess requests stay pending until capacity is available.
+--- A plugin may retain at most 16 distinct paths per render.
 ---@param session string
----@param path string
----@return string
+---@param path string Relative to the session's root.
+---@return string? text
 function files.read(session, path) end
 
 ---@class (exact) thurbox.TruncateOpts

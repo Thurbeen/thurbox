@@ -84,6 +84,7 @@ impl App {
         let draw_start = timing.then(Instant::now);
         let placed_before = self.last_placed.clone();
         let painted = terminal.draw(|frame| self.draw(frame))?;
+        self.host.end_files_frame();
         if let Some(start) = draw_start {
             let took = start.elapsed();
             self.timings.frame.record(took);
