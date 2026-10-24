@@ -177,6 +177,37 @@ function theme.spinner_frame(elapsed)
   return theme.spinner[frame]
 end
 
+local function rgb(colour)
+  if type(colour) ~= "string" then
+    return nil
+  end
+  local r, g, b = colour:match("^#(%x%x)(%x%x)(%x%x)$")
+  if not r then
+    return nil
+  end
+  return { tonumber(r, 16), tonumber(g, 16), tonumber(b, 16) }
+end
+
+--- `colour` laid over the theme's own background at `amount` (0..1): a band
+--- that reads as that colour's tint in a dark preset and a light one alike,
+--- derived from roles rather than spelt. nil when either side is not `#rrggbb`
+--- — a named or indexed colour, or the `default` preset's terminal background
+--- — because there is nothing to mix, and a guessed colour would look chosen.
+---@param colour thurbox.Color?
+---@param amount number
+---@return thurbox.Color?
+function theme.tint(colour, amount)
+  local over, under = rgb(colour), rgb(roles().app_bg)
+  if not over or not under then
+    return nil
+  end
+  local mixed = {}
+  for i = 1, 3 do
+    mixed[i] = math.floor(under[i] + (over[i] - under[i]) * amount + 0.5)
+  end
+  return string.format("#%02x%02x%02x", mixed[1], mixed[2], mixed[3])
+end
+
 ---@param text string
 ---@return thurbox.Span
 function theme.dim(text)

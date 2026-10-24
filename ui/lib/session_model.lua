@@ -397,10 +397,22 @@ local function commands_digest()
   return table.concat(parts, "\2")
 end
 
+--- A saved fold list — `;`-separated, each name `%XX`-escaped — as a set.
+local function decode_set(saved)
+  local set = {}
+  for escaped in saved:gmatch("[^;]+") do
+    set[escaped:gsub("%%(%x%x)", function(hex)
+      return string.char(tonumber(hex, 16))
+    end)] =
+      true
+  end
+  return set
+end
+
 local model_cache = {}
 
 --- The rows to draw, in order, before any of them is turned into text.
-function session_model.build(rows, folded, reveal, host_rows, folded_repos)
+function session_model.build(rows, folded, reveal, host_rows, folded_repos, folded_parents)
   -- Memoized: this walks and sorts every row and runs again per render AND per
   -- click/action, so the same inputs must not pay twice. Consumers treat the
   -- returned items as read-only, which is what makes sharing the table safe.
@@ -414,6 +426,7 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos)
   host_rows = host_rows == true
   folded = folded or ""
   folded_repos = folded_repos or ""
+  folded_parents = folded_parents or ""
   if
     model_cache.items ~= nil
     and rawequal(rows, model_cache.rows)
@@ -423,15 +436,17 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos)
     and host_rows == model_cache.host_rows
     and folded == model_cache.folded
     and folded_repos == model_cache.folded_repos
+    and folded_parents == model_cache.folded_parents
     and reveal == model_cache.reveal
   then
     return model_cache.items
   end
 
   local items = {}
+  local folded_parent = decode_set(folded_parents)
   -- Dropped before anything is grouped or ordered, so every consumer of the
-  -- model agrees: the cursor lands on the next row, the border dots lose one,
-  -- and a group whose last session went takes its header with it.
+  -- model agrees: the cursor lands on the next row, and a group whose last
+  -- session went takes its header with it.
   local all_rows = rows
   rows = live_sessions(rows)
 
@@ -548,22 +563,35 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos)
       end
     end
 
+    -- A folded parent hides its subtree, but never a descendant that waits for
+    -- the user: folding is for quiet work, and a question folded out of sight
+    -- is a question nobody answers. Walked through regardless, because such a
+    -- descendant can sit under a quiet child.
     local nested, seen = {}, {}
-    local function emit(index, depth)
+    local function emit(index, depth, hidden, ancestor)
       local session = rows[index]
       if seen[session.id] then
-        return
+        return 0
       end
       seen[session.id] = true
-      nested[#nested + 1] = { index = index, depth = depth }
+      local shown = not hidden or session.status == "blocked"
+      local entry = { index = index, depth = depth, hidden = not shown, visible_parent = ancestor }
+      nested[#nested + 1] = entry
+      local folded_here = folded_parent[session.id] == true and not reveal
+      local descendants = 0
       for _, other in ipairs(children[session.id] or {}) do
-        emit(other, depth + 1)
+        descendants = descendants
+          + 1
+          + emit(other, depth + 1, hidden or folded_here, shown and session.id or ancestor)
       end
+      entry.descendants = descendants
+      entry.collapsed = folded_here and descendants > 0
+      return descendants
     end
     for _, index in ipairs(group.members) do
       local session = rows[index]
       if not session.parent or not in_group[session.parent] then
-        emit(index, 0)
+        emit(index, 0, false)
       end
     end
 
@@ -575,6 +603,12 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos)
         kind = "session",
         session = session,
         depth = entry.depth,
+        -- Every session nested under this one in its group, shown or folded.
+        -- Non-zero is what makes a row a parent with a fold handle of its own.
+        descendants = entry.descendants,
+        collapsed = entry.collapsed,
+        hidden = entry.hidden,
+        visible_parent = entry.visible_parent,
         cross_group = entry.depth == 0
           and parent ~= nil
           and parent ~= session.id
@@ -586,6 +620,7 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos)
         host = group.host,
         repo_label = group.label,
         repo_target = "repo:" .. group_slot(group.host, group.repo_key),
+        group_size = #group.members,
         target = session.id,
       }
       first = false
@@ -616,13 +651,7 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos)
   end
 
   if by_host and host_rows then
-    local collapsed = {}
-    for escaped in folded:gmatch("[^;]+") do
-      local name = escaped:gsub("%%(%x%x)", function(hex)
-        return string.char(tonumber(hex, 16))
-      end)
-      collapsed[name] = true
-    end
+    local collapsed = decode_set(folded)
     local counts = {}
     for _, item in ipairs(items) do
       if item.host then
@@ -686,14 +715,18 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos)
     items = with_hosts
   end
 
-  if host_rows and grouping then
-    local collapsed = {}
-    for escaped in folded_repos:gmatch("[^;]+") do
-      collapsed[escaped:gsub("%%(%x%x)", function(hex)
-        return string.char(tonumber(hex, 16))
-      end)] =
-        true
+  -- Folded descendants still contribute to host counts. Only their visibility
+  -- changes, after the summaries have seen the full membership.
+  local shown = {}
+  for _, item in ipairs(items) do
+    if not item.hidden then
+      shown[#shown + 1] = item
     end
+  end
+  items = shown
+
+  if host_rows and grouping then
+    local collapsed = decode_set(folded_repos)
     local with_repos, seen = {}, {}
     for _, item in ipairs(items) do
       local target = item.repo_target
@@ -705,6 +738,8 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos)
             target = target,
             host = item.host,
             repo_label = item.repo_label,
+            -- Sessions only: a placeholder is not one yet.
+            count = item.group_size or 0,
             collapsed = collapsed[target] == true,
           }
         end
@@ -725,6 +760,7 @@ function session_model.build(rows, folded, reveal, host_rows, folded_repos)
   model_cache.host_rows = host_rows
   model_cache.folded = folded
   model_cache.folded_repos = folded_repos
+  model_cache.folded_parents = folded_parents
   model_cache.reveal = reveal
   model_cache.items = items
   return items

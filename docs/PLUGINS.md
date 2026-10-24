@@ -544,7 +544,7 @@ frame = {
 them — `top_left` and `top_right` along the top border, `bottom_left` and
 `bottom_right` along the bottom, `right_column` down the right one. A status
 strip, a `▲ N` scroll count or a scrollbar there costs no content cell, which is
-the reason it exists: the session list's dot strip and the terminal pane's
+the reason it exists: the session list's scroll counts and the terminal pane's
 scrollbar are both border cells, and every row of the pane stays a row. Each slot
 clips between the corners, which are never painted over.
 
