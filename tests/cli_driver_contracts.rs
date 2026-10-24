@@ -1119,3 +1119,414 @@ fn each_verb_keeps_its_answer_for_a_host_hosts_toml_no_longer_names() {
         "deleted here"
     );
 }
+
+#[test]
+fn builtin_named_variants_keep_their_templates_telemetry_optout() {
+    let env = Env::new();
+    std::fs::write(
+        env.path("config/settings.toml"),
+        "[telemetry]\nenabled=true\n",
+    )
+    .unwrap();
+    for name in ["claude", "codex"] {
+        std::fs::write(
+            env.path("config/agents.toml"),
+            format!(
+                "[[agents]]\nname='template'\ncommand='{name}'\ntelemetry_env={{}}\ntelemetry_args=[]\n\
+                 [[agents]]\nname='{name}'\nextends='template'\n"
+            ),
+        )
+        .unwrap();
+        let out = env.run(&["agent", "launch-args", name, "--json"]);
+        assert!(out.status.success(), "{}", stdout_of(&out));
+        let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(answer["args"], serde_json::json!([]), "{answer}");
+        assert!(
+            answer["env"].get("CLAUDE_CODE_ENABLE_TELEMETRY").is_none(),
+            "{answer}"
+        );
+    }
+}
+
+#[test]
+fn agent_variants_resolve_through_the_real_cli_and_validate_bad_chains() {
+    let env = Env::new();
+    let file = env.path("config/agents.toml");
+    std::fs::write(
+        &file,
+        r#"
+default = "variant"
+[[agents]]
+name = "variant"
+extends = "base"
+append_args = ["--model", "example"]
+[[agents]]
+name = "base"
+command = "sh"
+args = ["--base"]
+resume_args = ["--resume", "{id}"]
+hook_schema = "claude"
+"#,
+    )
+    .unwrap();
+    let out = env.run(&["agent", "launch-args", "variant", "--json"]);
+    assert!(
+        out.status.success(),
+        "{} {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        answer["args"],
+        serde_json::json!(["--base", "--model", "example"])
+    );
+    let valid = env.run(&["config", "validate", "--json"]);
+    assert!(valid.status.success(), "{}", stdout_of(&valid));
+    for invalid in [
+        "[[agents]]\nname='a'\nextends='missing'\n",
+        "[[agents]]\nname='a'\nextends='b'\n[[agents]]\nname='b'\nextends='a'\n",
+    ] {
+        std::fs::write(&file, invalid).unwrap();
+        let out = env.run(&["config", "validate", "--json"]);
+        assert!(!out.status.success(), "{}", stdout_of(&out));
+        assert!(stdout_of(&out).contains("extends"), "{}", stdout_of(&out));
+    }
+    for field in [
+        "default = 1",
+        "config_version = -1",
+        "config_version = 'bad'",
+    ] {
+        std::fs::write(
+            &file,
+            format!("{field}\n[[agents]]\nname='ok'\ncommand='sh'\n"),
+        )
+        .unwrap();
+        let out = env.run(&["config", "validate", "--json"]);
+        assert!(!out.status.success(), "{}", stdout_of(&out));
+    }
+    let mut deep = "[[agents]]\nname='base'\ncommand='sh'\n".to_string();
+    for i in 0..33 {
+        let base = if i == 0 {
+            "base".into()
+        } else {
+            format!("v{}", i - 1)
+        };
+        deep.push_str(&format!("[[agents]]\nname='v{i}'\nextends='{base}'\n"));
+    }
+    std::fs::write(&file, deep).unwrap();
+    let out = env.run(&["config", "validate", "--json"]);
+    assert!(!out.status.success());
+    assert!(
+        stdout_of(&out).contains("extends depth"),
+        "{}",
+        stdout_of(&out)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn registry_agent_arguments_survive_creation_restart_resume_and_fork() {
+    use std::os::unix::fs::PermissionsExt;
+    if thurbox::paths::resolve_on_path("tmux").is_none() {
+        return;
+    }
+    let env = Env::new();
+    let recorder = env.path("work/recorder");
+    std::fs::write(
+        &recorder,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\nexec sleep 600\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(env.path("config/agents.toml"), format!(
+        "[[agents]]\nname='record'\ncommand='{}'\nargs=['base']\nresume_args=['resume','{{id}}']\nfork_args=['fork','{{id}}']\nnew_session_args=['new','{{id}}']\nresume_latest=true\n", recorder.display()
+    )).unwrap();
+    let capture = env.path("work/capture");
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "original",
+        "--repo-path",
+        env.path("work").to_str().unwrap(),
+        "--agent",
+        "record",
+        "--agent-arg=--opaque",
+        "--agent-arg",
+        "space ; $literal {home}",
+        "--env",
+        &format!("CAPTURE={}", capture.display()),
+        "--resume",
+        "conversation",
+        "--json",
+    ]);
+    assert!(
+        out.status.success(),
+        "{} {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    let answer: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let id = answer["id"].as_str().unwrap();
+    let check = |selection: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let text = std::fs::read_to_string(&capture).unwrap_or_default();
+            if text.starts_with(selection) {
+                assert!(
+                    text.ends_with("base\n--opaque\nspace ; $literal {home}\n"),
+                    "{text}"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "missing {selection}: {text}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    check("resume\nconversation\n");
+    let out = env.run(&["session", "get", id, "--json"]);
+    let row: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        row["agent_args"],
+        serde_json::json!(["--opaque", "space ; $literal {home}"])
+    );
+    std::fs::remove_file(&capture).unwrap();
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "fresh",
+        "--repo-path",
+        env.path("work").to_str().unwrap(),
+        "--agent",
+        "record",
+        "--agent-arg=--opaque",
+        "--agent-arg",
+        "space ; $literal {home}",
+        "--env",
+        &format!("CAPTURE={}", capture.display()),
+        "--json",
+    ]);
+    assert!(
+        out.status.success(),
+        "{} {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    check("new\n");
+    std::fs::remove_file(&capture).unwrap();
+    let out = env.run(&["session", "restart", id, "--json"]);
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    check("resume\n");
+    let out = env.run(&["session", "stop", id, "--json"]);
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    std::fs::remove_file(&capture).unwrap();
+    let out = env.run(&["session", "start", id, "--json"]);
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    check("resume\n");
+    let out = env.run(&["session", "delete", id, "--json"]);
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    let out = env.run(&["session", "reap", id, "--json"]);
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    std::fs::remove_file(&capture).unwrap();
+    let out = env.run(&["session", "restore", id, "--json"]);
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    check("resume\n");
+    std::fs::remove_file(&capture).unwrap();
+    let out = env.run(&["session", "fork", id, "--name", "forked", "--json"]);
+    assert!(
+        out.status.success(),
+        "{} {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    check("fork\n");
+}
+
+#[test]
+fn agent_arguments_require_an_explicit_registry_agent() {
+    let env = Env::new();
+    for extra in [vec![], vec!["--command", "sh"]] {
+        let work = env.path("work");
+        let mut args = vec![
+            "session",
+            "create",
+            "--name",
+            "invalid",
+            "--repo-path",
+            work.to_str().unwrap(),
+            "--agent-arg=--opaque",
+        ];
+        args.extend(extra);
+        let out = env.run(&args);
+        assert_eq!(out.status.code(), Some(2));
+        let error = format!("{} {}", stdout_of(&out), stderr_of(&out));
+        assert!(
+            error.contains("--agent") && !error.contains("unexpected argument"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn extension_uninstall_cleans_both_arrays_after_a_variant_edit() {
+    let env = Env::new();
+    env.db()
+        .set_builtin_extension_optout("hooks", true)
+        .unwrap();
+    let config = env.path("config/agents.toml");
+    std::fs::write(
+        &config,
+        "[[agents]]\nname='base'\ncommand='sh'\nargs=['base-arg']\n\
+        [[agents]]\nname='variant'\nextends='base'\nhook_schema='claude'\nappend_args=['tail']\n",
+    )
+    .unwrap();
+    let source = env.path("extension");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("extension.toml"), "name='edited-variant-patch'\n[[agent_patches]]\nname='claude'\nappend_args=['--patch','payload']\n").unwrap();
+    let home = env.path("extension-home");
+    let install = || {
+        let out = env.run(&[
+            "extension",
+            "install",
+            source.to_str().unwrap(),
+            "--home",
+            home.to_str().unwrap(),
+            "--json",
+        ]);
+        assert!(out.status.success(), "{}", stdout_of(&out));
+    };
+    let args = || {
+        let out = env.run(&["agent", "launch-args", "variant", "--json"]);
+        assert!(out.status.success(), "{}", stdout_of(&out));
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["args"].clone()
+    };
+    install();
+    assert_eq!(
+        args(),
+        serde_json::json!(["base-arg", "--patch", "payload", "tail"])
+    );
+    let mut doc: toml_edit::DocumentMut =
+        std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    doc["agents"]
+        .as_array_of_tables_mut()
+        .unwrap()
+        .get_mut(1)
+        .unwrap()["args"] = toml_edit::value(toml_edit::Array::from_iter(["replacement"]));
+    std::fs::write(&config, doc.to_string()).unwrap();
+    install();
+    install();
+    let reinstalled = args();
+    let mut doc: toml_edit::DocumentMut =
+        std::fs::read_to_string(&config).unwrap().parse().unwrap();
+    // An older install could have persisted the same patch in both arrays.
+    doc["agents"]
+        .as_array_of_tables_mut()
+        .unwrap()
+        .get_mut(1)
+        .unwrap()["append_args"] =
+        toml_edit::value(toml_edit::Array::from_iter(["--patch", "payload", "tail"]));
+    std::fs::write(&config, doc.to_string()).unwrap();
+    let out = env.run(&[
+        "extension",
+        "uninstall",
+        "edited-variant-patch",
+        "--purge",
+        "--json",
+    ]);
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    assert!(!home.exists());
+    assert_eq!(
+        (reinstalled, args()),
+        (
+            serde_json::json!(["--patch", "payload", "replacement", "tail"]),
+            serde_json::json!(["replacement", "tail"]),
+        )
+    );
+}
+
+#[test]
+fn extension_patches_cover_replacing_and_appending_variants_and_uninstall_cleanly() {
+    let env = Env::new();
+    env.db()
+        .set_builtin_extension_optout("hooks", true)
+        .unwrap();
+    std::fs::write(
+        env.path("config/agents.toml"),
+        r#"
+[[agents]]
+name = "base"
+command = "sh"
+args = ["base-arg"]
+hook_schema = "claude"
+[[agents]]
+name = "append"
+extends = "base"
+append_args = ["variant-arg"]
+[[agents]]
+name = "replace"
+extends = "append"
+args = ["replacement"]
+append_args = ["tail"]
+[[agents]]
+name = "empty"
+extends = "base"
+args = []
+"#,
+    )
+    .unwrap();
+    let source = env.path("extension");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("extension.toml"), "name='variant-patch'\n[[agent_patches]]\nname='base'\nappend_args=['--patch', 'payload']\n").unwrap();
+    let install = || {
+        let out = env.run(&[
+            "extension",
+            "install",
+            source.to_str().unwrap(),
+            "--home",
+            env.path("extension-home").to_str().unwrap(),
+            "--json",
+        ]);
+        assert!(
+            out.status.success(),
+            "{} {}",
+            stdout_of(&out),
+            stderr_of(&out)
+        );
+    };
+    install();
+    install();
+    let args = |agent: &str| {
+        let out = env.run(&["agent", "launch-args", agent, "--json"]);
+        assert!(out.status.success(), "{}", stdout_of(&out));
+        let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(doc["hook_coverage"], "full");
+        doc["args"].clone()
+    };
+    assert_eq!(
+        args("append"),
+        serde_json::json!(["base-arg", "--patch", "payload", "variant-arg"])
+    );
+    assert_eq!(
+        args("replace"),
+        serde_json::json!(["--patch", "payload", "replacement", "tail"])
+    );
+    assert_eq!(args("empty"), serde_json::json!(["--patch", "payload"]));
+    let out = env.run(&["extension", "uninstall", "variant-patch", "--json"]);
+    assert!(
+        out.status.success(),
+        "{} {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    assert_eq!(
+        args("append"),
+        serde_json::json!(["base-arg", "variant-arg"])
+    );
+    assert_eq!(args("replace"), serde_json::json!(["replacement", "tail"]));
+    assert_eq!(args("empty"), serde_json::json!([]));
+}

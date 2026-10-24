@@ -577,8 +577,9 @@ pub fn remove_agents_from_toml(names: &[String]) -> Result<Vec<String>, String> 
 /// Append each patch's `append_args` to the matching agents' `args` in
 /// `agents.toml`, idempotently and preserving comments/formatting (toml_edit).
 /// A patch matches the agent literally named `patch.name` **and** every custom
-/// agent that declared `hook_schema = "<patch.name>"` — so a rebranded-claude
-/// agent picks up the same `--settings` wiring as the built-in `claude`. Unlike
+/// agent that declared `hook_schema = "<patch.name>"`, plus their `extends`
+/// descendants. A replacement `args` keeps the patch before its own flags;
+/// an omitted `args` inherits the parent's patch. Unlike
 /// [`ensure_agents_registered`] (which only adds *new* agents), this extends
 /// agents the extension does not own. Agents not present are skipped. Returns
 /// the names actually patched (one entry per matched agent).
@@ -587,7 +588,7 @@ pub fn apply_agent_patches(patches: &[AgentPatch]) -> Result<Vec<String>, String
 }
 
 /// Reverse of [`apply_agent_patches`]: remove each patch's `append_args`
-/// subsequence from the named agent's `args`. Returns the names actually changed.
+/// subsequence from every targeted agent and variant. Returns names changed.
 pub fn remove_agent_patches(patches: &[AgentPatch]) -> Result<Vec<String>, String> {
     edit_agent_patches(patches, false)
 }
@@ -615,13 +616,12 @@ fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, 
         return Ok(Vec::new());
     };
 
+    let ancestry: Vec<_> = agents.iter().cloned().collect();
     let mut changed = Vec::new();
     for patch in patches.iter().filter(|p| !p.append_args.is_empty()) {
-        // A patch targets its named built-in agent AND every custom agent that
-        // declared `hook_schema = "<patch.name>"` — so a rebranded-claude agent
-        // gets the same `--settings` wiring. No `break`: fan out to all matches.
         for table in agents.iter_mut() {
-            if let Some(name) = patch_one_agent(table, patch, add) {
+            let inherited = inherits_patch(table, &ancestry, patch);
+            if let Some(name) = patch_one_agent(table, patch, add, inherited) {
                 changed.push(name);
             }
         }
@@ -634,11 +634,48 @@ fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, 
     Ok(changed)
 }
 
+fn matches_patch(table: &toml_edit::Table, patch: &AgentPatch) -> bool {
+    ["name", "hook_schema"]
+        .iter()
+        .any(|key| table.get(key).and_then(|v| v.as_str()) == Some(patch.name.as_str()))
+}
+
+fn inherits_patch(
+    table: &toml_edit::Table,
+    entries: &[toml_edit::Table],
+    patch: &AgentPatch,
+) -> bool {
+    let mut current = table;
+    let mut seen = Vec::new();
+    while let Some(base) = current.get("extends").and_then(|v| v.as_str()) {
+        if seen.contains(&base) {
+            return false;
+        }
+        seen.push(base);
+        let Some(parent) = entries
+            .iter()
+            .find(|entry| entry.get("name").and_then(|v| v.as_str()) == Some(base))
+        else {
+            return false;
+        };
+        if matches_patch(parent, patch) {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
 /// Add or remove one patch's `append_args` on one `[[agents]]` table.
 ///
 /// `Some(name)` when the table was actually changed — a patch already applied (or
 /// already absent) is a no-op, which is what makes install/uninstall idempotent.
-fn patch_one_agent(table: &mut toml_edit::Table, patch: &AgentPatch, add: bool) -> Option<String> {
+fn patch_one_agent(
+    table: &mut toml_edit::Table,
+    patch: &AgentPatch,
+    add: bool,
+    inherited: bool,
+) -> Option<String> {
     use toml_edit::Array;
 
     // Snapshot the identity fields into owned strings first: the args mutation
@@ -647,39 +684,64 @@ fn patch_one_agent(table: &mut toml_edit::Table, patch: &AgentPatch, add: bool) 
         .get("name")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let hook_schema = table
-        .get("hook_schema")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let targeted = agent_name.as_deref() == Some(patch.name.as_str())
-        || hook_schema.as_deref() == Some(patch.name.as_str());
-    // A hook_schema match with no `name` can't be patched — skip it.
+    let targeted = inherited || matches_patch(table, patch);
     let agent_name = agent_name.filter(|_| targeted)?;
-
-    if table.get("args").is_none() {
-        table["args"] = toml_edit::value(Array::new());
-    }
-    let args = table.get_mut("args").and_then(|i| i.as_array_mut())?;
-    let current: Vec<String> = args
-        .iter()
-        .filter_map(|v| v.as_str().map(str::to_string))
-        .collect();
-    let present = contains_subsequence(&current, &patch.append_args);
-    if add && !present {
-        for a in &patch.append_args {
-            args.push(a.as_str());
+    let variant = table.get("extends").is_some();
+    // An omitted args inherits the patched parent. Materializing it here would
+    // replace that parent with just the patch, losing every inherited flag.
+    let target = if variant && inherited && table.get("args").is_none() {
+        None
+    } else if variant && table.get("args").is_none() {
+        Some("append_args")
+    } else {
+        Some("args")
+    };
+    let mut changed = false;
+    let mut present = false;
+    // An edit can change which array is used for new patches without moving
+    // a previously installed patch out of the other one.
+    for key in ["args", "append_args"] {
+        let Some(args) = table.get(key).and_then(|item| item.as_array()) else {
+            continue;
+        };
+        let current: Vec<String> = args
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        if !contains_subsequence(&current, &patch.append_args) {
+            continue;
         }
-        return Some(agent_name);
-    }
-    if !add && present {
-        let mut arr = Array::new();
-        for a in remove_subsequence(&current, &patch.append_args) {
-            arr.push(a.as_str());
+        if add && target == Some(key) {
+            present = true;
+            continue;
         }
-        table["args"] = toml_edit::value(arr);
-        return Some(agent_name);
+        let mut remaining = Array::new();
+        for arg in remove_subsequence(&current, &patch.append_args) {
+            remaining.push(arg.as_str());
+        }
+        table[key] = toml_edit::value(remaining);
+        changed = true;
     }
-    None
+    if !add || present {
+        return changed.then_some(agent_name);
+    }
+    let Some(key) = target else {
+        return changed.then_some(agent_name);
+    };
+    if table.get(key).is_none() {
+        table[key] = toml_edit::value(Array::new());
+    }
+    let args = table.get_mut(key).and_then(|i| i.as_array_mut())?;
+    if variant {
+        for (index, arg) in patch.append_args.iter().enumerate() {
+            args.insert(index, arg.as_str());
+        }
+    } else {
+        for arg in &patch.append_args {
+            args.push(arg.as_str());
+        }
+    }
+    Some(agent_name)
 }
 
 /// Whether `hay` contains `needle` as a contiguous subsequence.

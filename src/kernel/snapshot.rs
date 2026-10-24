@@ -1440,7 +1440,12 @@ impl SnapshotStore {
     /// it against storage after delivery so a concurrent hook can win.
     pub fn codex_submission_report(&self, session: &str) -> Option<HookRow> {
         let row = self.current.session(session)?;
-        if row.agent != "codex" || row.stopped {
+        let codex = row.agent == "codex"
+            || self
+                .registry
+                .get(&row.agent)
+                .is_some_and(|def| def.is_family("codex"));
+        if !codex || row.stopped {
             return None;
         }
         Some(HookRow {
@@ -2770,6 +2775,15 @@ mod tests {
 
     #[test]
     fn codex_input_retires_only_the_report_it_observed() {
+        codex_input_retires_report("codex");
+    }
+
+    #[test]
+    fn inherited_codex_input_retires_only_the_report_it_observed() {
+        codex_input_retires_report("codex-variant");
+    }
+
+    fn codex_input_retires_report(agent: &str) {
         // A file, so the test reaches it through a connection of its own: the
         // store's lives on its worker thread.
         let temp = tempfile::NamedTempFile::new().expect("temp file");
@@ -2778,7 +2792,7 @@ mod tests {
         let row = crate::sync::SharedSession {
             id: SessionId::default(),
             name: "codex-pane".into(),
-            agent: "codex".into(),
+            agent: agent.into(),
             backend_id: "%7".into(),
             backend_type: "local-tmux".into(),
             agent_session_id: None,
@@ -2795,6 +2809,12 @@ mod tests {
         database.upsert_session(&row).expect("persist");
         database.set_hook_state(row.id, "idle").expect("idle");
         let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let (registry, warnings) = crate::agent::agent_config::parse_for_reload(
+            "[[agents]]\nname='codex'\ncommand='codex'\n[[agents]]\nname='codex-variant'\nextends='codex'\n",
+        )
+        .expect("registry");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        store.registry = std::sync::Arc::new(registry);
         let id = row.id.to_string();
         assert_eq!(status_of(&store, &id), SessionState::Idle);
 

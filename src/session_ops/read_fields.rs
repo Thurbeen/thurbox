@@ -39,6 +39,10 @@ impl ReadFields {
             });
             times.get(&row.id.to_string()).copied()
         });
+        value["agent_args"] = db
+            .load_agent_args(row.id)
+            .map(|args| json!(args))
+            .unwrap_or(Value::Null);
         value["last_output_at"] = json!(output);
         value["transcript_path"] = json!(self
             .transcripts

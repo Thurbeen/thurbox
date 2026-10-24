@@ -17,9 +17,9 @@ use migrations::{
     migrate_v49_snapshot_versions, migrate_v4_project_mcp_servers, migrate_v50_lost_at,
     migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v53_session_key,
     migrate_v54_telemetry_export, migrate_v55_event_cursors, migrate_v55_move_cursors_and_claims,
-    migrate_v56_automation_runs, migrate_v57_background_work, migrate_v5_session_commands,
-    migrate_v6_worktrees_pk, migrate_v7_shell_backend_id, migrate_v8_vms,
-    migrate_v9_agent_session_id,
+    migrate_v56_automation_runs, migrate_v57_background_work, migrate_v58_agent_args,
+    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
+    migrate_v8_vms, migrate_v9_agent_session_id,
 };
 
 use rusqlite::{Connection, OptionalExtension};
@@ -122,7 +122,8 @@ use rusqlite::{Connection, OptionalExtension};
 /// v57 adds `background_work` to `sessions`: the sub-work a session has in
 /// flight (and recently ended), so a turn that ends with some still running
 /// stores `background` rather than `done` (issue #1510).
-pub const SCHEMA_VERSION: u32 = 57;
+/// v58 adds `agent_args`: per-session opaque registry-agent arguments.
+pub const SCHEMA_VERSION: u32 = 58;
 
 /// The oldest [`SCHEMA_VERSION`] that can still read and write a database this
 /// binary migrated, recorded as `min_reader_version` in `metadata`.
@@ -140,8 +141,8 @@ pub const SCHEMA_VERSION: u32 = 57;
 /// reads or writes, and v55 only adds `event_cursors`, which no older thurbox
 /// reads either; `telemetry_export` stays for them. v56 only adds nullable
 /// columns and an index on a column no older thurbox writes, and v57 one
-/// nullable column; an older thurbox reads a stored `background` as a word it
-/// does not know, which it already shows as `idle`.
+/// nullable column, as does v58; an older thurbox reads a stored `background`
+/// as a word it does not know, which it already shows as `idle`.
 pub const MIN_READER_VERSION: u32 = 53;
 
 /// A single migration step: applied when the stored version is below `target`,
@@ -341,6 +342,7 @@ fn create_and_migrate(conn: &Connection) -> rusqlite::Result<()> {
             launch_command    TEXT,
             launch_args       TEXT,
             launch_env        TEXT,
+            agent_args        TEXT,
             stopped_at        INTEGER,
             reports_as        TEXT,
             host_updated_at   INTEGER,
@@ -650,6 +652,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (55, migrate_v55_move_cursors_and_claims, Reapply::Never),
         (56, migrate_v56_automation_runs, Reapply::WhenMissing),
         (57, migrate_v57_background_work, Reapply::WhenMissing),
+        (58, migrate_v58_agent_args, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {
@@ -789,6 +792,31 @@ mod tests {
     use rusqlite::OptionalExtension;
 
     #[test]
+    fn v58_adds_agent_args_to_an_existing_database_and_repairs_a_missing_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch("DROP TRIGGER IF EXISTS snapshot_sessions_UPDATE; ALTER TABLE sessions DROP COLUMN agent_args; UPDATE metadata SET value = '57' WHERE key = 'schema_version';").unwrap();
+        migrate(&conn).unwrap();
+        assert!(column_exists(&conn, "sessions", "agent_args").unwrap());
+        conn.execute_batch("DROP TRIGGER IF EXISTS snapshot_sessions_UPDATE; ALTER TABLE sessions DROP COLUMN agent_args;").unwrap();
+        migrate(&conn).unwrap();
+        assert!(column_exists(&conn, "sessions", "agent_args").unwrap());
+        conn.execute_batch("INSERT INTO sessions(id, name, agent, created_at, updated_at) VALUES ('args', 'args', 'shell', 0, 0);").unwrap();
+        let revision = || {
+            conn.query_row(
+                "SELECT rows_version FROM snapshot_versions WHERE singleton=1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        let before = revision();
+        conn.execute_batch("UPDATE sessions SET agent_args = '[\"--opaque\"]' WHERE id='args';")
+            .unwrap();
+        assert!(revision() > before);
+    }
+
+    #[test]
     fn snapshot_triggers_follow_new_columns() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
@@ -884,7 +912,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
         conn.execute_batch(
-            "DROP INDEX idx_automations_key;
+            "DROP TRIGGER snapshot_automations_UPDATE;
+             DROP TRIGGER snapshot_automation_runs_UPDATE;
+             DROP INDEX idx_automations_key;
              ALTER TABLE automations DROP COLUMN key;
              ALTER TABLE automations DROP COLUMN timeout_secs;
              ALTER TABLE automations DROP COLUMN cwd;

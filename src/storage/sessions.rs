@@ -145,6 +145,27 @@ impl Database {
         session: &SharedSession,
         created_as: EventReason,
     ) -> rusqlite::Result<()> {
+        self.upsert_session_record(session, created_as, None)
+    }
+
+    /// Persist a session and its arguments atomically, so a successful creation
+    /// cannot become a different command at its next restart. Ordinary sync
+    /// upserts leave these instance-owned arguments alone, including old peers.
+    pub fn upsert_session_with_agent_args(
+        &self,
+        session: &SharedSession,
+        agent_args: &[String],
+        created_as: EventReason,
+    ) -> rusqlite::Result<()> {
+        self.upsert_session_record(session, created_as, Some(agent_args))
+    }
+
+    fn upsert_session_record(
+        &self,
+        session: &SharedSession,
+        created_as: EventReason,
+        agent_args: Option<&[String]>,
+    ) -> rusqlite::Result<()> {
         let tx = self.write_transaction()?;
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
@@ -260,6 +281,10 @@ impl Database {
                     )?;
                 }
             }
+        }
+
+        if let Some(args) = agent_args {
+            self.set_agent_args(session.id, args)?;
         }
 
         tx.commit()
@@ -607,6 +632,43 @@ impl Database {
             params![recipe.command, args, env, id.to_string()],
         )?;
         Ok(())
+    }
+
+    /// Write only on change; a mirror of an idle host must not dirty snapshots.
+    pub fn set_agent_args(&self, id: SessionId, args: &[String]) -> rusqlite::Result<()> {
+        let json = serde_json::to_string(args)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute(
+            "UPDATE sessions SET agent_args = ?1 WHERE id = ?2 AND COALESCE(agent_args, '[]') != ?1",
+            params![json, id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// The opaque per-session arguments; NULL from an older session is empty.
+    /// Corrupt stored JSON is an error, never a launch with silently lost flags.
+    pub fn load_agent_args(&self, id: SessionId) -> rusqlite::Result<Vec<String>> {
+        let stored: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT agent_args FROM sessions WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        stored
+            .flatten()
+            .map(|json| {
+                serde_json::from_str(&json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
     }
 
     /// Persist the extra environment a session was created with (`--env`),
@@ -2161,6 +2223,43 @@ mod tests {
             tombstone_at: None,
             key: None,
         }
+    }
+
+    #[test]
+    fn agent_args_survive_peer_upserts_and_noop_mirrors() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("args");
+        let args = vec!["--opaque".into(), "literal {home}".into(), "".into()];
+        db.upsert_session_with_agent_args(&session, &args, EventReason::Spawned)
+            .unwrap();
+        db.upsert_session(&session).unwrap();
+        assert_eq!(db.load_agent_args(session.id).unwrap(), args);
+        let before = db.snapshot_versions().unwrap();
+        db.set_agent_args(session.id, &args).unwrap();
+        assert_eq!(db.snapshot_versions().unwrap(), before);
+        db.set_agent_args(session.id, &["--changed".into()])
+            .unwrap();
+        assert!(db.snapshot_versions().unwrap().0 > before.0);
+        db.conn
+            .execute(
+                "UPDATE sessions SET agent_args = 'broken' WHERE id = ?1",
+                [session.id.to_string()],
+            )
+            .unwrap();
+        assert!(db.load_agent_args(session.id).is_err());
+    }
+
+    #[test]
+    fn a_failed_agent_args_write_rolls_back_the_session_and_its_created_event() {
+        let db = Database::open_in_memory().unwrap();
+        db.conn.execute_batch("CREATE TRIGGER reject_args BEFORE UPDATE OF agent_args ON sessions BEGIN SELECT RAISE(FAIL, 'reject args'); END;").unwrap();
+        let session = make_session("refused-args");
+        let before = db.snapshot_versions().unwrap();
+        assert!(db
+            .upsert_session_with_agent_args(&session, &["--opaque".into()], EventReason::Spawned)
+            .is_err());
+        assert!(db.get_session_by_id(session.id).unwrap().is_none());
+        assert_eq!(db.snapshot_versions().unwrap(), before);
     }
 
     #[test]

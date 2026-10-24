@@ -140,9 +140,11 @@ fn validate_keybindings() -> (Value, bool) {
 /// Validate every config file. Returns the full report plus the list of files
 /// that failed (empty = all valid).
 fn validate() -> (Value, Vec<String>) {
-    let (agents, agents_ok) = validate_toml::<crate::session::AgentRegistry>(
+    let (agents, agents_ok) = validate_file(
         crate::agent::agent_config::agents_config_path(),
-        "agents.toml",
+        |contents| {
+            crate::agent::agent_config::parse_for_reload(contents).map(|(_, warnings)| warnings)
+        },
     );
     // Through the loader's own parse, so an entry the load refuses — a host
     // name holding `:` — fails validation rather than vanishing silently.

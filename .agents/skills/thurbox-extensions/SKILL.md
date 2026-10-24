@@ -89,8 +89,10 @@ ensure/self-heal). The `{home}` token expands to the resolved home dir.
 Three of those reach **outside** the extension home, all reversible:
 `[[external_files]]` drops a managed file into an agent's own config dir (guarded
 by `requires_dir`), `[[agent_patches]]` appends args to an existing agent in
-agents.toml, and `[[config_merges]]` deep-merges a shipped document into an
-agent's *shared* config file (`agent::json_merge`, or `agent::toml_merge` when
+agents.toml (including its `extends` variants: an explicit args replacement
+keeps the patch before its own flags; inherited args carry it once), and
+`[[config_merges]]` deep-merges a shipped document into an agent's *shared*
+config file (`agent::json_merge`, or `agent::toml_merge` when
 the entry sets `format = "toml"` for a TOML config such as kimi's
 `~/.kimi-code/config.toml` — `toml_edit`, so the user's comments and key order
 survive). Both formats identify our entries by an **ownership stamp**: TOML as a

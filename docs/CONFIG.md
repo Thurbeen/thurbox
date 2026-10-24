@@ -150,6 +150,48 @@ telemetry_env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1" }  # only while [telemetry]
 # telemetry_args = []       # appended only while [telemetry] is on
 ```
 
+A variant can inherit a named entry, including another variant. Definitions may
+appear in either order:
+
+```toml
+[[agents]]
+name = "claude-opus"
+extends = "claude"
+append_args = ["--model", "opus"]
+```
+
+`extends` resolves when the registry loads. Every field except the variant's
+own `name` is inherited; a field present on the variant replaces it, including
+`args = []`, empty maps and `resume_latest = false`. `append_args` follows the
+resolved `args`. The base's hook family is inherited unless overridden. A stock `shell` variant
+also retains the host's native shell selection until its command/args are edited.
+`config validate` rejects unknown bases, cycles and chains over 32 definitions.
+A bad entry and its dependents are skipped during a normal load; valid entries
+remain available. Existing entries without `extends` keep their behavior.
+Compatibility upgrades for old seeded definitions run on standalone bases,
+before inheritance, so a variant retains the base's explicit opt-outs.
+
+Direct terminal input in the TUI recognizes an agent's family through the
+caller's registry. For a remote Codex variant, define the alias on the caller
+as well as the host so Enter retires the previous turn's status. A definition
+that exists only on the host can be created there, but the caller cannot infer
+its family from the session name.
+
+Extension argument patches targeting the base also cover its variants. An
+appending variant inherits the patched base once; a variant replacing `args`
+keeps the patch before its replacement arguments. Uninstall removes the patch
+from those replacements too. Editing TOML is the interface for adding variants.
+
+For a single session, use repeatable `session create --agent NAME --agent-arg
+ARG` (for example `--agent-arg=--model --agent-arg opus`). These opaque values
+are stored in the session's `agent_args` column and appended after registry,
+directory and telemetry arguments on create, resume, restart, restore and fork.
+They receive no placeholder or shell expansion. `session get --json` (alias
+`show`) and `list --json` report `agent_args`. The flag requires an explicit
+`--agent` and conflicts with `--command`. A delegated creation requires the
+host CLI to advertise `agent_args` support; an older peer is refused before
+creation. Environment transport retains its separate stdin-only rules.
+
 `telemetry_env` and `telemetry_args` apply only while `settings.toml`'s
 [`[telemetry]`](#telemetry--opentelemetry-for-sessions) is on, with
 `{otlp_endpoint}` and `{otlp_protocol}` substituted. The built-ins `claude`,
@@ -284,7 +326,7 @@ actually useful today and why.
 The seeded file also ships two commented, copy-pasteable templates
 below the built-ins — **Add your own agent** (every field annotated)
 and **Pin a model** (a `claude-opus` variant baking `--model opus`
-into `args`). Both stay commented, so a fresh install still resolves
+through `extends` and `append_args`). Both stay commented, so a fresh install still resolves
 to exactly the ten built-ins (nine coding agents plus `shell`).
 
 For **each built-in's** exact config and runtime behavior (resume/fork

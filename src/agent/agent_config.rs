@@ -218,12 +218,8 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 #
 # [[agents]]
 # name = "claude-opus"
-# command = "claude"
-# args = ["--model", "opus"]    # always-on flag
-# resume_args = ["--resume", "{id}"]
-# fork_args = ["--resume", "{id}", "--fork-session"]
-# new_session_args = ["--session-id", "{id}"]
-# additional_dir_args = ["--add-dir", "{dir}"]
+# extends = "claude"
+# append_args = ["--model", "opus"]    # added after the base's args
 #
 # Set `default = "claude-opus"` at the top of this file to make it the default.
 "#;
@@ -352,7 +348,7 @@ const KNOWN_TOP_LEVEL_KEYS: [&str; 3] = ["config_version", "default", "agents"];
 /// yields no usable agents at all.
 ///
 /// This is deliberately more forgiving than `thurbox-cli config validate`,
-/// which still strict-parses the whole document — `validate` is the diagnostic
+/// which rejects every reported problem — `validate` is the diagnostic
 /// that tells you to fix the file, while the TUI degrades gracefully so a
 /// single typo never strands you on the built-ins.
 fn parse_agents_toml(contents: &str) -> (AgentRegistry, Vec<String>) {
@@ -384,10 +380,19 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
         }
     }
 
+    if table.get("default").is_some_and(|v| !v.is_str()) {
+        warnings.push("agents.toml: default must be a string".into());
+    }
+    if table
+        .get("config_version")
+        .is_some_and(|v| v.as_integer().and_then(|n| u32::try_from(n).ok()).is_none())
+    {
+        warnings.push("agents.toml: config_version must be an unsigned 32-bit integer".into());
+    }
     let config_version = table
         .get("config_version")
         .and_then(toml::Value::as_integer)
-        .map(|v| v as u32);
+        .and_then(|v| u32::try_from(v).ok());
     let default = table
         .get("default")
         .and_then(toml::Value::as_str)
@@ -399,30 +404,16 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
     match table.get("agents") {
         Some(toml::Value::Array(entries)) => {
             for (index, entry) in entries.iter().enumerate() {
-                if let Some(mut agent) = deserialize_agent(entry, index, &mut warnings) {
-                    // Existing registries predate explicit symlink-target scope.
-                    // An explicit empty group opts out; custom CLIs opt in as data.
-                    if entry.get("additional_dir_args").is_none()
-                        && agent.name == "claude"
-                        && agent.command == "claude"
-                    {
-                        agent.additional_dir_args = vec!["--add-dir".into(), "{dir}".into()];
+                match resolve_agent_entry(entries, index, &builtins, &mut warnings) {
+                    Ok(agent) => agents.push(agent),
+                    Err(e) => {
+                        let label = entry
+                            .get("name")
+                            .and_then(toml::Value::as_str)
+                            .map(|name| format!("\"{name}\""))
+                            .unwrap_or_else(|| format!("#{index}"));
+                        warnings.push(format!("agents.toml: skipped agent {label}: {e}"));
                     }
-                    // Upgrade the former seeded Codex address without changing
-                    // other definitions or user-supplied launch arguments.
-                    if agent.name == "codex"
-                        && agent.command == "codex"
-                        && agent.resume_args == ["resume", "--last"]
-                        && agent.fork_args == ["fork", "--last"]
-                        && agent.resume_latest
-                    {
-                        agent.resume_args = vec!["resume".into(), "{id}".into()];
-                        agent.fork_args = vec!["fork".into(), "{id}".into()];
-                        agent.resume_latest = false;
-                    }
-                    upgrade_seeded_omp_args(&mut agent);
-                    upgrade_seeded_telemetry(&mut agent, entry, &builtins);
-                    agents.push(agent);
                 }
             }
         }
@@ -445,6 +436,100 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
     ))
 }
 
+/// Bound both work and stack usage on user-supplied inheritance chains.
+const MAX_EXTENDS_DEPTH: usize = 32;
+
+fn resolve_agent_entry(
+    entries: &[toml::Value],
+    index: usize,
+    builtins: &AgentRegistry,
+    warnings: &mut Vec<String>,
+) -> Result<AgentDef, String> {
+    let mut chain = Vec::new();
+    let mut current = index;
+    loop {
+        if chain.contains(&current) {
+            return Err("extends cycle".into());
+        }
+        if chain.len() == MAX_EXTENDS_DEPTH {
+            return Err(format!("extends depth exceeds {MAX_EXTENDS_DEPTH}"));
+        }
+        chain.push(current);
+        let Some(base) = entries[current].get("extends") else {
+            break;
+        };
+        let base = base.as_str().ok_or("extends must be an agent name")?;
+        current = entries
+            .iter()
+            .position(|e| e.get("name").and_then(toml::Value::as_str) == Some(base))
+            .ok_or_else(|| format!("extends unknown base '{base}'"))?;
+    }
+
+    let mut resolved: Option<AgentDef> = None;
+    for member in chain.into_iter().rev() {
+        let entry = &entries[member];
+        if entry.get("name").is_none() {
+            return Err("missing field `name`".into());
+        }
+        let mut own = entry.as_table().ok_or("expected an agent table")?.clone();
+        own.remove("extends");
+        let append: Vec<String> = own
+            .remove("append_args")
+            .map(|v| v.try_into().map_err(|e| format!("append_args: {e}")))
+            .transpose()?
+            .unwrap_or_default();
+        let mut merged = match resolved {
+            Some(mut base) => {
+                // A built-in's implicit family must survive its variant's name.
+                base.hook_schema = Some(base.hook_schema.unwrap_or_else(|| base.name.clone()));
+                toml::Value::try_from(base)
+                    .map_err(|e| e.to_string())?
+                    .as_table()
+                    .ok_or("expected an agent table")?
+                    .clone()
+            }
+            None => toml::Table::new(),
+        };
+        merged.extend(own);
+        let mut ignored = Vec::new();
+        let mut agent = deserialize_agent(&toml::Value::Table(merged), member, &mut ignored)?;
+        if member == index {
+            warnings.extend(ignored);
+        }
+        if entry.get("extends").is_none() {
+            upgrade_seeded_agent(&mut agent, entry, builtins);
+        }
+        agent.args.extend(append);
+        resolved = Some(agent);
+    }
+    resolved.ok_or("empty extends chain".into())
+}
+
+fn upgrade_seeded_agent(agent: &mut AgentDef, entry: &toml::Value, builtins: &AgentRegistry) {
+    // Existing registries predate explicit symlink-target scope.
+    // An explicit empty group opts out; custom CLIs opt in as data.
+    if entry.get("additional_dir_args").is_none()
+        && agent.name == "claude"
+        && agent.command == "claude"
+    {
+        agent.additional_dir_args = vec!["--add-dir".into(), "{dir}".into()];
+    }
+    // Upgrade the former seeded Codex address without changing
+    // other definitions or user-supplied launch arguments.
+    if agent.name == "codex"
+        && agent.command == "codex"
+        && agent.resume_args == ["resume", "--last"]
+        && agent.fork_args == ["fork", "--last"]
+        && agent.resume_latest
+    {
+        agent.resume_args = vec!["resume".into(), "{id}".into()];
+        agent.fork_args = vec!["fork".into(), "{id}".into()];
+        agent.resume_latest = false;
+    }
+    upgrade_seeded_omp_args(agent);
+    upgrade_seeded_telemetry(agent, entry, builtins);
+}
+
 /// Give an entry seeded before telemetry existed its built-in's
 /// `telemetry_env` / `telemetry_args`. Either key present, even empty, is the
 /// user's own answer, and only an entry whose `name` and `command` both match
@@ -462,14 +547,13 @@ fn upgrade_seeded_telemetry(agent: &mut AgentDef, entry: &toml::Value, builtins:
     }
 }
 
-/// Deserialize one `[[agents]]` entry, returning `None` (and pushing a warning
-/// that names the entry) when it is malformed so the caller can skip it. Unknown
-/// fields within a valid entry are reported but kept.
+/// Deserialize one resolved entry. Unknown fields are reported but kept;
+/// malformed entries are diagnosed by the resilient loader with their name.
 fn deserialize_agent(
     entry: &toml::Value,
     index: usize,
     warnings: &mut Vec<String>,
-) -> Option<AgentDef> {
+) -> Result<AgentDef, String> {
     // Label by name when present (the useful identifier), else by position.
     let label = entry
         .get("name")
@@ -488,15 +572,9 @@ fn deserialize_agent(
                     "agents.toml: agent {label}: unknown field `{field}` (ignored)"
                 ));
             }
-            Some(agent)
+            Ok(agent)
         }
-        Err(e) => {
-            warnings.push(format!(
-                "agents.toml: skipped agent {label}: {}",
-                compact_toml_error(&e.to_string())
-            ));
-            None
-        }
+        Err(e) => Err(compact_toml_error(&e.to_string())),
     }
 }
 
@@ -574,6 +652,71 @@ pub(crate) fn compact_toml_error(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inheritance_preserves_explicit_empty_false_and_field_overrides() {
+        let (reg, warnings) = parse_agents_toml(
+            r#"
+[[agents]]
+name = "variant"
+extends = "base"
+command = "other"
+args = []
+append_args = ["tail"]
+resume_args = []
+new_session_args = []
+additional_dir_args = []
+resume_latest = false
+hook_schema = "other-family"
+telemetry_env = {}
+telemetry_args = []
+[[agents]]
+name = "base"
+command = "base"
+args = ["base"]
+resume_args = ["resume"]
+fork_args = ["fork", "{id}"]
+new_session_args = ["new", "{id}"]
+additional_dir_args = ["dir", "{dir}"]
+resume_latest = true
+hook_schema = "claude"
+telemetry_env = { ENABLE = "1" }
+telemetry_args = ["telemetry"]
+"#,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let variant = reg.get("variant").unwrap();
+        assert_eq!(variant.command, "other");
+        assert_eq!(variant.args, ["tail"]);
+        assert_eq!(variant.fork_args, ["fork", "{id}"]);
+        assert!(variant.resume_args.is_empty());
+        assert!(variant.new_session_args.is_empty());
+        assert!(variant.additional_dir_args.is_empty());
+        assert!(!variant.resume_latest);
+        assert_eq!(variant.hook_schema.as_deref(), Some("other-family"));
+        assert!(variant.telemetry_env.is_empty());
+        assert!(variant.telemetry_args.is_empty());
+    }
+
+    #[test]
+    fn builtin_named_variants_inherit_explicit_template_values() {
+        for name in ["claude", "codex"] {
+            let (registry, warnings) = parse_for_reload(&format!(
+                "[[agents]]\nname='template'\ncommand='{name}'\nadditional_dir_args=[]\n\
+                 telemetry_env={{}}\ntelemetry_args=[]\nresume_args=['resume','--last']\n\
+                 fork_args=['fork','--last']\nresume_latest=true\n\
+                 [[agents]]\nname='{name}'\nextends='template'\n"
+            ))
+            .unwrap();
+            assert!(warnings.is_empty(), "{warnings:?}");
+            let agent = registry.get(name).unwrap();
+            assert!(agent.additional_dir_args.is_empty(), "{agent:?}");
+            assert!(agent.telemetry_env.is_empty(), "{agent:?}");
+            assert!(agent.telemetry_args.is_empty(), "{agent:?}");
+            assert_eq!(agent.resume_args, ["resume", "--last"]);
+            assert!(agent.resume_latest);
+        }
+    }
 
     const OMP_NEW_SESSION_ARGS: [&str; 2] =
         ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"];

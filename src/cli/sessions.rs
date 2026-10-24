@@ -167,6 +167,15 @@ pub enum Action {
         /// default agent from `agents.toml`.
         #[arg(long)]
         agent: Option<String>,
+        /// Opaque argument for this registry agent (repeatable). Persisted and
+        /// replayed on restart, resume and fork, after the registry's arguments.
+        #[arg(
+            long = "agent-arg",
+            requires = "agent",
+            conflicts_with = "command",
+            allow_hyphen_values = true
+        )]
+        agent_arg: Vec<String>,
         /// If set, create a git worktree on this branch off --base-branch.
         #[arg(long)]
         worktree_branch: Option<String>,
@@ -803,6 +812,7 @@ pub fn run(
             name,
             repo_path,
             agent,
+            agent_arg,
             worktree_branch,
             base_branch,
             existing_worktree,
@@ -827,6 +837,7 @@ pub fn run(
                 name,
                 repo_path,
                 agent,
+                agent_arg,
                 worktree_branch,
                 base_branch,
                 existing_worktree,
@@ -1232,6 +1243,7 @@ struct CreateArgs {
     name: String,
     repo_path: PathBuf,
     agent: Option<String>,
+    agent_arg: Vec<String>,
     worktree_branch: Option<String>,
     base_branch: Option<String>,
     existing_worktree: Option<PathBuf>,
@@ -1260,6 +1272,7 @@ fn run_create(
         name,
         repo_path,
         agent,
+        agent_arg,
         worktree_branch,
         base_branch,
         existing_worktree,
@@ -1411,6 +1424,7 @@ fn run_create(
         extra_repos,
         command,
         args: arg,
+        agent_args: agent_arg,
         env,
         resume_session_id: resume,
         key,
@@ -1988,7 +2002,9 @@ fn run_key(
         return Ok(remote);
     }
     let (backend, pane) = crate::session_ops::windows::require_agent_pane(backends, &session)?;
-    let prior = if session.agent == "codex" && resolved.name() == "enter" {
+    let prior = if crate::session_ops::agent_family_is(&session.agent, "codex")
+        && resolved.name() == "enter"
+    {
         match db.load_hook_state(session.id) {
             Ok(row) => row,
             Err(e) => {
@@ -2413,7 +2429,9 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
         })
         .or(latest)
         .ok_or("Codex hook could not find its Thurbox session; run `thurbox-cli session doctor` and repair the hook installation")?;
-    if target.agent != "codex" || target.agent_session_id.as_deref() != Some(agent_id.as_str()) {
+    if !crate::session_ops::agent_family_is(&target.agent, "codex")
+        || target.agent_session_id.as_deref() != Some(agent_id.as_str())
+    {
         return Err("Codex hook identity does not match the Thurbox session".into());
     }
     if !codex_hook_owned_by_pane(&target) {
@@ -3872,8 +3890,15 @@ fn register_running_session(
     if key_dropped.is_some() {
         session.key = None;
     }
-    db.upsert_session_as(&session, crate::storage::EventReason::Registered)
-        .map_err(|e| format!("upsert_session: {e}"))?;
+    match &row.agent_args {
+        Some(args) => db.upsert_session_with_agent_args(
+            &session,
+            args,
+            crate::storage::EventReason::Registered,
+        ),
+        None => db.upsert_session_as(&session, crate::storage::EventReason::Registered),
+    }
+    .map_err(|e| format!("upsert_session: {e}"))?;
     drop(key_claim);
     if let Some(state) = row.hook_state.as_deref() {
         let _ = db.set_hook_state(session.id, state);

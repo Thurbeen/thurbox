@@ -89,6 +89,11 @@ pub struct AgentDef {
 }
 
 impl AgentDef {
+    /// The registered name or an asserted/inherited hook family.
+    pub fn is_family(&self, family: &str) -> bool {
+        self.name == family || self.hook_schema.as_deref() == Some(family)
+    }
+
     /// Build the CLI argument list for one launch.
     ///
     /// Session-selection precedence mirrors the historical Claude behaviour:

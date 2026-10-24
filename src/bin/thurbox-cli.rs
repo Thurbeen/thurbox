@@ -209,16 +209,21 @@ fn exit_from_clap(e: &clap::Error) -> ! {
         std::process::exit(0)
     }
 
-    // clap renders the problem, the usage line and its own hint as one block.
-    // The first line is the problem; the rest is the suggestion, which is what
-    // an agent needs to fix the call.
+    // Required argument names follow the opening line. Keep the problem's
+    // whole paragraph, without folding usage and hints into the error itself.
     let rendered = e.render().to_string();
     let message = rendered
         .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("invalid arguments")
-        .trim_start_matches("error: ")
-        .to_string();
+        .skip_while(|line| line.trim().is_empty())
+        .take_while(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let message = if message.is_empty() {
+        "invalid arguments".to_string()
+    } else {
+        message.trim_start_matches("error: ").to_string()
+    };
 
     println!(
         "{}",

@@ -182,6 +182,7 @@ fn spawn(
             agent: Some("shell".into()),
             command: None,
             args: Vec::new(),
+            agent_args: Vec::new(),
             env: Default::default(),
             resume_session_id: None,
             agent_session_id: None,

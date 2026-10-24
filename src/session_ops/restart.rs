@@ -104,7 +104,7 @@ pub(crate) fn build_restart_plan(
         host,
         &crate::agent::settings_config::load_quiet().telemetry,
     );
-    let codex_builtin = def.name == "codex" && def.resume_args == ["resume", "{id}"];
+    let codex_builtin = def.is_family("codex") && def.resume_args == ["resume", "{id}"];
     let codex_id = if codex_builtin {
         db.get_session_meta(session.id, "thurbox.codex_conversation_id")
             .map_err(|e| format!("read Codex conversation id: {e}"))?
@@ -152,6 +152,10 @@ pub(crate) fn build_restart_plan(
             .insert(super::CODEX_PICKER_ENV.into(), "1".into());
     }
     args.extend(telemetry_args);
+    args.extend(
+        db.load_agent_args(session.id)
+            .map_err(|e| format!("read the agent arguments: {e}"))?,
+    );
 
     Ok(RestartPlan {
         window_name: session.name.clone(),
