@@ -1719,6 +1719,64 @@ fn folding_a_parent_hides_its_children_but_not_one_waiting_for_you() {
 }
 
 #[test]
+fn clicking_a_parent_fold_keeps_a_visible_selection_or_selects_the_parent() {
+    for group_by_host in [true, false] {
+        for group_by_repo in [true, false] {
+            for selected in ["lead", "worker-a", "grandchild", "worker-b", "solo"] {
+                let host = host();
+                let mut world = family();
+                world
+                    .sessions
+                    .insert(2, child("grandchild", "grandchild", "worker-a"));
+                let registry = with_settings(
+                    &host,
+                    &[
+                        ("group_by_host", group_by_host),
+                        ("group_by_repo", group_by_repo),
+                    ],
+                );
+                publish_with(&host, &world, &registry);
+                frame_at(&host, 40, 9);
+                let index = host.index_of(PLUGIN).unwrap();
+                host.on_click(
+                    index,
+                    &Click {
+                        id: Some(selected.into()),
+                        ..Click::default()
+                    },
+                )
+                .unwrap();
+                assert_every_reading_names(&host, selected, selected);
+
+                let expected = if matches!(selected, "worker-a" | "grandchild") {
+                    "lead"
+                } else {
+                    selected
+                };
+                for folded in [true, false] {
+                    host.on_click(
+                        index,
+                        &Click {
+                            id: Some("fold:lead".into()),
+                            ..Click::default()
+                        },
+                    )
+                    .unwrap();
+                    publish_with(&host, &world, &registry);
+                    assert_every_reading_names(&host, expected, expected);
+                    let frame = frame_at(&host, 40, 9);
+                    assert_eq!(
+                        frame.iter().any(|line| line.contains("worker-a")),
+                        !folded,
+                        "the requested fold must remain applied: {frame:#?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn folding_a_parent_preserves_its_hosts_totals_and_active_count() {
     let host = host();
     let mut world = family();
@@ -1781,6 +1839,61 @@ fn a_focus_request_unfolds_the_parent_of_the_session_it_names() {
     let frame = frame_at(&host, 40, 9);
     assert!(frame[3].contains("▾ ○ lead"), "{frame:#?}");
     assert!(frame[4].contains("worker-a"), "{frame:#?}");
+}
+
+#[test]
+fn a_focus_request_reveals_a_descendant_beyond_sixty_four_parents() {
+    let host = host();
+    let mut world = Snapshot::default();
+    world.sessions.push(row("n0", "root"));
+    for depth in 1..=70 {
+        world.sessions.push(child(
+            &format!("n{depth}"),
+            &format!("descendant-{depth}"),
+            &format!("n{}", depth - 1),
+        ));
+    }
+    let mut registry = registry_for(&host);
+    registry
+        .set_setting(PLUGIN, "folded_parents", Some(Value::Text("n0".into())))
+        .unwrap();
+    publish_with(&host, &world, &registry);
+    frame_at(&host, 40, 12);
+    assert_eq!(host.shared_string("selected").as_deref(), Some("n0"));
+    host.set_shared_string("focus_session", "n70");
+    frame_at(&host, 40, 12);
+    assert_eq!(host.shared_string("selected").as_deref(), Some("n70"));
+    assert!(host.drain_commands().iter().any(|command| matches!(
+        command, Command::Setting { key, value: Some(Value::Text(value)) }
+            if key == "sessions.folded_parents" && value.is_empty()
+    )));
+}
+
+#[test]
+fn focus_requests_stop_at_repeated_ancestors() {
+    for self_parent in [false, true] {
+        let host = host();
+        let mut world = Snapshot {
+            sessions: vec![
+                row("safe", "safe"),
+                child("a", "cycle-a", if self_parent { "a" } else { "b" }),
+            ],
+            ..Snapshot::default()
+        };
+        if !self_parent {
+            world.sessions.push(child("b", "cycle-b", "a"));
+        }
+        let mut registry = registry_for(&host);
+        registry
+            .set_setting(PLUGIN, "folded_parents", Some(Value::Text("a;b".into())))
+            .unwrap();
+        publish_with(&host, &world, &registry);
+        frame_at(&host, 40, 12);
+        host.set_shared_string("focus_session", "a");
+        let frame = frame_at(&host, 40, 12);
+        assert!(frame.iter().any(|line| line.contains("safe")), "{frame:#?}");
+        assert_eq!(host.shared_string("selected").as_deref(), Some("safe"));
+    }
 }
 
 #[test]

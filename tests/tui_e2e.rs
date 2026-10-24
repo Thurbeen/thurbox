@@ -3857,6 +3857,131 @@ fn select_expanded_host(tui: &mut Tui) {
 }
 
 #[test]
+fn folding_a_selected_child_selects_its_parent_in_the_running_tui() {
+    let Some((profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            let parent = session_id(profile, "probe");
+            let repo = profile.path("repo");
+            for name in ["worker-a", "worker-b"] {
+                profile.cli(&[
+                    "session",
+                    "create",
+                    "--name",
+                    name,
+                    "--repo-path",
+                    repo.to_str().expect("utf-8 path"),
+                    "--agent",
+                    "shell",
+                    "--parent",
+                    &parent,
+                ]);
+            }
+            profile.cli(&[
+                "session",
+                "signal",
+                "--session",
+                &session_id(profile, "worker-b"),
+                "--state",
+                "blocked",
+            ]);
+        },
+        |_| {},
+    ) else {
+        return;
+    };
+    tui.wait_until("both children in the sessions list", |_| {
+        tui.session_row("worker-a").is_some() && tui.session_row("worker-b").is_some()
+    });
+    tui.press(0, tui.session_row("worker-a").expect("child row"));
+    wait_selected(&tui, &profile, &session_id(&profile, "worker-a"));
+    let before = tui.screen.lock().unwrap().screen().contents_formatted();
+    let (_, y) = tui.session_row("probe").expect("parent row");
+    let row = tui.row(y);
+    let x = row
+        .chars()
+        .position(|c| c == '▾')
+        .expect("parent fold handle") as u16;
+    tui.press(0, (x, y));
+    tui.wait_until("the quiet child to fold away", |_| {
+        tui.session_row("worker-a").is_none()
+    });
+    assert!(
+        tui.session_row("worker-b").is_some(),
+        "blocked child stays visible"
+    );
+    if let Ok(path) = std::env::var("THURBOX_FOLD_CAST") {
+        let after = tui.screen.lock().unwrap().screen().contents_formatted();
+        let event = |time, bytes: Vec<u8>| {
+            serde_json::json!([
+                time,
+                "o",
+                format!("\x1b[2J\x1b[H{}", String::from_utf8(bytes).unwrap())
+            ])
+        };
+        let cast = [
+            serde_json::json!({"version": 2, "width": 120, "height": 40}),
+            event(0.0, before),
+            event(2.0, after),
+            serde_json::json!([4.0, "o", ""]),
+        ];
+        std::fs::write(
+            path,
+            cast.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .expect("write fold demonstration");
+    }
+    assert_eq!(
+        selected_session(&profile),
+        Some(session_id(&profile, "probe")),
+        "folding must select the parent rather than the row replacing its child"
+    );
+    tui.send(b"r");
+    tui.wait_for("Restart probe?");
+    tui.send(ESC);
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn an_external_focus_reveals_a_descendant_beyond_sixty_four_parents() {
+    let Some((profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db")).unwrap();
+            let root = db.get_session_by_name("probe").unwrap().unwrap();
+            let mut parent = root.id;
+            for depth in 1..=70 {
+                let mut child = root.clone();
+                child.id = thurbox::session::SessionId::default();
+                child.name = format!("descendant-{depth}");
+                child.parent_session_id = Some(parent);
+                child.backend_id.clear();
+                child.shell_backend_id = None;
+                db.upsert_session(&child).unwrap();
+                db.set_session_stopped(child.id, true).unwrap();
+                parent = child.id;
+            }
+        },
+        |_| {},
+    ) else {
+        return;
+    };
+    tui.press(0, tui.session_row("probe").expect("root row"));
+    tui.send(b"\x1b[D");
+    tui.wait_for("probe +70");
+    let deepest = session_id(&profile, "descendant-70");
+    profile.cli(&["session", "focus", &deepest]);
+    wait_selected(&tui, &profile, &deepest);
+    assert_eq!(
+        selected_session(&profile).as_deref(),
+        Some(deepest.as_str())
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn session_host_left_arrow_collapses_expanded_host() {
     let Some((_profile, mut tui)) = hosted_session_list() else {
         return;

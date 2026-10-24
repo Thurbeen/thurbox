@@ -323,8 +323,10 @@ moved fall back to creation order:
   arrow in front of its dot and a bold title. Left folds it (or, on a child,
   selects its parent), Right unfolds it or steps to its first child, and a click
   on the arrow toggles it. A folded parent shows `+N` for what it holds, and a
-  child waiting for you (`blocked`) stays visible under it. Folded parents are
-  saved in `sessions.folded_parents`; focusing a session inside one unfolds it.
+  child waiting for you (`blocked`) stays visible under it. If clicking the
+  arrow hides the selected child, the folded parent becomes selected; a selection
+  that stays visible is preserved. Folded parents are saved in
+  `sessions.folded_parents`; focusing a hidden descendant unfolds its ancestors.
 - With host rows off, the top row of each tree that runs on another machine
   shows `@` after its dot; its children do not repeat it.
 
