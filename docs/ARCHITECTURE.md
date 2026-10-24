@@ -1693,7 +1693,10 @@ a file into an agent's own config dir (absolute / `~` / `{home}` path,
 guarded by `requires_dir` so it's skipped when that agent isn't installed);
 `[[agent_patches]]` appends args to an **existing** agent in
 agents.toml (`apply_agent_patches` via `toml_edit`, reversible — uninstall
-removes exactly the injected subsequence); and `[[config_merges]]`
+removes exactly the injected subsequence). A base-targeted argument patch also
+covers variants whose `extends` chain reaches it: inherited arguments carry the
+base patch once, while an explicit `args` replacement keeps the patch before
+its own flags; and `[[config_merges]]`
 **reversibly deep-merges** a shipped document into an agent's own *shared*
 config file (`{path, source, requires_dir}`) — for agents whose hooks live in
 a file that would be clobbered by `[[external_files]]` (antigravity's

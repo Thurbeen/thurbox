@@ -20,8 +20,9 @@ plus `shell` on first run.
 
 `shell` is the one seeded entry that is not a coding agent: the platform's own
 interactive shell (`bash -i`, or `powershell -NoLogo` on native Windows, where
-the multiplexer is psmux). The platform is the session's host: while the entry is
-still a stock pair, `session_ops::resolve_agent_def` swaps in the host's own
+the multiplexer is psmux). The platform is the session's host: while the entry (or its inherited variant)
+is still a stock command/args pair, `session_ops::resolve_agent_def` swaps in
+the host's own
 (`shell::shell_agent_def`); an edited `shell` is launched as written. It exists so a session can be *anything*, and it is
 the ready-made form of `session create --command`. Because it declares no
 `resume_args`/`fork_args`, it also documents the rule by example: those groups
@@ -113,13 +114,29 @@ keeping the same workspace dir).
   `AgentDef` at each launch site — `session_ops` for a spawn or restart,
   `kernel::terminal` when a pane adopts one.
 
-A session stores only its **agent name**; there are no
-per-session model/permission/prompt/tool knobs.
+A session stores its **agent name** plus opaque per-session `agent_args` from
+`session create --agent NAME --agent-arg ARG`. These are appended literally on
+create/resume/restart/restore/fork, after registry, directory and telemetry
+arguments; `get`/`show` and `list` JSON expose them. They require an explicit
+registry agent and are capability-gated on delegated creation. No model,
+permission, prompt or tool field is added.
+
+In `agents.toml`, `extends = "base"` inherits every field except `name`, with
+explicit values (including empty arrays/maps and `false`) replacing the base's.
+`append_args` appends after the resolved `args`; chains resolve in either file
+order, with cycles, unknown bases and more than 32 definitions diagnosed by
+`config validate`. The resolved hook family is inherited, including Codex's
+conversation binding. Extension patches cover variants too: inherited args carry
+the base's patch once, and a full args replacement keeps the patch before its
+own args. Seed compatibility upgrades apply to standalone bases before merging.
+Direct remote TUI input needs the alias in the caller's registry to recognize
+its family; host-only aliases can be created but their family is not mirrored.
+See `docs/CONFIG.md` for the complete contract.
 
 **Custom-agent status hooks (`hook_schema`).** thurbox stays agent-neutral, so
-the built-in **hooks** extension wires status hooks only for the built-ins it
-knows by name — a **custom** agent (e.g. a rebranded-claude `fleet`) gets no
-`--settings` patch and so never reports working/blocked/done. An optional
+the built-in **hooks** extension wires built-ins and their inherited variants.
+An unrelated **custom** definition (e.g. a rebranded-claude `fleet`) gets no
+`--settings` patch without an asserted family. An optional
 `AgentDef.hook_schema: Option<String>` closes this: it names the hook **family**
 the CLI speaks, and `agent::extension_config::apply_agent_patches` (+ its
 uninstall reverse) fans each `[[agent_patches]]` out to the built-in named

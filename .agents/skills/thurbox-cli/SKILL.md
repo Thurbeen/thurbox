@@ -214,6 +214,14 @@ a spawn that must make a multiplexer window before it has a row.
 
 ### Any command can be a session
 
+Repeatable `session create --agent NAME --agent-arg ARG` adds opaque arguments
+for this session, persisted and replayed on resume/restart/restore/fork. Pass a
+switch with `--agent-arg=--flag`; values stay literal, including `{home}`.
+It requires an explicit `--agent`, conflicts with `--command`, and refuses a
+shared host whose CLI does not advertise the `agent_args` capability. `session
+get`/`show` and `list` JSON report the arguments. `agents.toml` variants use
+`extends` and `append_args`; see `docs/CONFIG.md`.
+
 `--agent` names an `agents.toml` entry (an unknown name is refused, never
 replaced by the default); `--command` **is** the definition:
 

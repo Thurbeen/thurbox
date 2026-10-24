@@ -657,6 +657,15 @@ each group **only when its driving value is present**, substituting
 new-session id; static `args` follow. A group with no value is
 simply omitted — no unresolved-placeholder heuristics.
 
+Registry variants use `extends` to inherit a definition, with explicit fields
+replacing inherited values and `append_args` adding flags. Per-session
+`--agent-arg` values remain separate from the resolved definition: restarting
+picks up registry edits while replaying those literal arguments, and forking
+copies them without converting the session into a raw command. Hook coverage
+and Codex conversation binding follow the inherited family. The format,
+validation, extension-patch order and delegated capability are documented in
+[CONFIG.md](CONFIG.md#agentstoml).
+
 Only `claude` and `pi` accept the thurbox-generated id at creation
 (`--session-id {id}`), so they resume/fork by that exact id. Codex
 reports its own ID through `SessionStart`; thurbox saves it for exact
