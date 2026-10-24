@@ -231,10 +231,8 @@ impl Terminals {
         // no host, so there is nothing to resolve one from. Recorded as an open
         // question rather than guessed at.
         let backend = Arc::clone(self.backends.default_backend());
-        // Inline rather than on a worker, following `ensure_shell_pane`, which
-        // spawns from the command drain the same way. Rule 5's concern is a *down
-        // remote host* running out its ssh timeout; readying and spawning on the
-        // local multiplexer is a round trip on a socket that is already there.
+        // This local-only spawn still runs inline; companion shells can target
+        // remote hosts and use their own worker path.
         if let Err(e) = backend.ensure_ready() {
             return Err(format!("could not reach the local multiplexer: {e:#}"));
         }

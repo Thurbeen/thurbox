@@ -876,13 +876,57 @@ async fn only_the_surface_that_takes_the_keys_paints_a_cursor() {
     assert_eq!(paint(None), (" ".into(), " ".into()));
 }
 
-/// A snapshot that never arrives costs the paint that asked for it a short
-/// wait, and no later paint anything: the pane shows blank until the grid
-/// lands and is asked again only once the request has had time to fail.
-/// Waiting on every paint was a stall on every frame for as long as the host
-/// did not answer.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
+async fn a_replacement_shell_takes_its_own_first_frame_size() {
+    let mut harness = Harness::new(HEIGHT, WIDTH);
+    let arrangement = shell_under_the_session_list();
+    let before = harness.frame(&arrangement, WIDTH, HEIGHT);
+    let rect = before.rect("shell");
+    drop(harness.backend.senders.lock().unwrap().remove(1));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !harness.terminals.live[&harness.id]
+            .session
+            .shell_pane
+            .as_ref()
+            .unwrap()
+            .has_exited()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the old shell to exit");
+    let mut row = super::tests::row(&harness.id, "local-tmux", Some(AGENT_PANE));
+    row.shell_backend_id = Some(SHELL_PANE.to_string());
+    let snapshot = crate::kernel::snapshot::Snapshot {
+        sessions: vec![row],
+        ..Default::default()
+    };
+    harness
+        .terminals
+        .open_shell(&harness.id, HEIGHT, WIDTH, None, Some(SHELL_PANE))
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            harness.terminals.collect_shells(&snapshot);
+            if !harness.terminals.drain_shell_results().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the replacement shell to land");
+    harness.print(true, "REPLACEMENT");
+    let after = harness.frame(&arrangement, WIDTH, HEIGHT);
+    assert_eq!(harness.grid(true), (rect.height, rect.width));
+    assert_eq!(after.first_row("shell"), "REPLACEMENT");
+}
+
+/// A missing snapshot never stalls a paint. The blank grid requests it once
+/// until the outstanding request expires.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_grid_that_never_arrives_does_not_stall_any_frame() {
     let dir = tempfile::tempdir().expect("tempdir");
     let _paths = crate::paths::TestPathGuard::new(dir.path());
     let recorder = Arc::new(Recorder::default());
@@ -922,17 +966,11 @@ async fn a_grid_that_never_arrives_does_not_stall_every_frame() {
             .expect("draw");
         started.elapsed()
     };
-    let first = paint();
-    let later: Vec<_> = (0..5).map(|_| paint()).collect();
-
-    assert!(
-        first >= std::time::Duration::from_millis(50),
-        "the paint that asked waits a moment for the answer: {first:?}"
-    );
-    for elapsed in &later {
+    for frame in 0..6 {
+        let elapsed = paint();
         assert!(
-            *elapsed < std::time::Duration::from_millis(50),
-            "a later paint waited {elapsed:?} for a grid already asked for"
+            elapsed < std::time::Duration::from_millis(50),
+            "paint {frame} waited {elapsed:?} for an unanswered snapshot"
         );
     }
     assert_eq!(

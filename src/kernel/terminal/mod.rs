@@ -10,9 +10,9 @@
 //! so every crossing into the side-effect layer is visible at its call site —
 //! the rule `session_ops` and `cli` already follow.
 //!
-//! Three subsystems, one per file: the attach state machine here (plus the
-//! shared [`Terminals`] state), plugin program panes in `programs`, and
-//! link detection / selection reads / OSC 8 re-printing in [`links`].
+//! The attach state machine and shared [`Terminals`] state live here;
+//! companion shells in `shells`, plugin programs in `programs`, and link
+//! detection / selection reads / OSC 8 re-printing in [`links`].
 //!
 //! Two things are deliberately *not* here: spawning sessions and sending them
 //! anything beyond keystrokes. Those are commands, and the command bus is a
@@ -35,6 +35,9 @@ use crate::session::WORKING_QUIET_MS;
 
 pub mod links;
 mod programs;
+mod shells;
+
+pub use shells::ShellResult;
 
 pub use links::{drawn_link_paints, paint_hyperlinks, HyperlinkPaint};
 pub use programs::{plan_keys, validate_program_name, KeysPlan, ProgramKey, ProgramTransition};
@@ -134,14 +137,6 @@ const MIRROR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 /// the *pass* off is what bounds that; the verdict is a separate question
 /// with its own retry.
 const MIRROR_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// How long a paint waits for the grid of a pane that had none
-/// ([`Terminals::render_session`]).
-///
-/// A local rebuild is a round trip on an open connection plus parsing the
-/// history — milliseconds — so this is only reached over a slow link, where a
-/// blank pane that fills a moment later beats a frozen interface.
-const RESTORE_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The suffix that addresses a session's companion shell as its own surface.
 const SHELL_SUFFIX: &str = "#shell";
@@ -514,6 +509,9 @@ pub struct Terminals {
     /// Panes adopted by window-name resolution, waiting for the loop to persist
     /// their id onto the row ([`Self::drain_adopted_panes`]).
     adopted: Vec<(String, String)>,
+    shelling: HashMap<String, bool>,
+    shelled: (Sender<shells::Shelled>, Receiver<shells::Shelled>),
+    shell_results: Vec<ShellResult>,
     /// Backends whose window list is being read on a worker.
     discovering: std::collections::HashSet<String>,
     discovered_rx: (Sender<Discovered>, Receiver<Discovered>),
@@ -598,6 +596,9 @@ impl Terminals {
             attaching: HashMap::new(),
             attached: std::sync::mpsc::channel(),
             adopted: Vec::new(),
+            shelling: HashMap::new(),
+            shelled: std::sync::mpsc::channel(),
+            shell_results: Vec::new(),
             discovering: std::collections::HashSet::new(),
             discovered_rx: std::sync::mpsc::channel(),
             mirroring: std::collections::HashSet::new(),
@@ -698,6 +699,7 @@ impl Terminals {
             .map(|row| row.id.as_str())
             .collect();
         self.live.retain(|id, _| present.contains(id.as_str()));
+        self.collect_shells(snapshot);
         self.live_since
             .retain(|id, _| present.contains(id.as_str()));
         let failures = self.failed.len();
@@ -1555,43 +1557,6 @@ impl Terminals {
         Some((row.id.clone(), host.clone()))
     }
 
-    /// Open a shell beside the agent, in `cwd` — see [`Terminals::launch_cwd`].
-    ///
-    /// Idempotent: `ensure_shell_pane` returns early when one exists, so a
-    /// plugin can command this every time you press the key.
-    ///
-    /// It changes nothing about the agent. Opening a shell used to resize the
-    /// agent's pane — the new pane was born at the agent's rect and the two
-    /// shared one size memo — which is why a shell appearing anywhere on screen
-    /// reflowed the agent (#1220).
-    pub fn open_shell(
-        &mut self,
-        session: &str,
-        rows: u16,
-        cols: u16,
-        cwd: Option<&std::path::Path>,
-    ) -> Result<(), String> {
-        let live = self
-            .live
-            .get_mut(session)
-            .ok_or("this session has no live pane to attach a shell to")?;
-        // Born at whatever the caller had — the whole terminal — and sized for
-        // real by the first frame that paints it, because its size memo starts
-        // empty and any rect differs from it. This used to be born at the
-        // AGENT's rect, on the reasoning that the render-time resize could not
-        // correct a memo the agent had already set. That memo is now the
-        // shell's own, so the reasoning is gone with it — and taking a birth
-        // size off the other pane was the same coupling in miniature.
-        //
-        // `Session::adopt` builds a fresh `SessionInfo`, so its own `cwd` is
-        // always `None` here — v2 attaches rather than restoring the persisted
-        // row. Without passing one the shell inherits the multiplexer's
-        // directory, which is wherever thurbox was started.
-        live.session
-            .ensure_shell_pane(rows, cols, cwd)
-            .map_err(|e| e.to_string())
-    }
-
     /// The pane id of a session's companion shell, once it has one.
     ///
     /// Read by the loop so the id can be **persisted**: a shell lives in its own
@@ -1608,27 +1573,6 @@ impl Terminals {
             .shell_pane
             .as_ref()
             .map(|pane| pane.backend_id.clone())
-    }
-
-    /// Re-attach a session to a shell window it already had.
-    ///
-    /// Mirrors v1's `readopt_shell_pane`, including its guard: a pane id that no
-    /// longer names a live pane is ignored rather than adopted, so a shell whose
-    /// window was closed outside thurbox does not come back as a dead surface.
-    pub fn readopt_shell(&mut self, session: &str, pane: &str, rows: u16, cols: u16) -> bool {
-        let Some(live) = self.live.get_mut(session) else {
-            return false;
-        };
-        if live.session.shell_pane.is_some() {
-            return true;
-        }
-        match live.session.adopt_shell_pane(pane, rows, cols) {
-            Ok(()) => true,
-            Err(e) => {
-                tracing::debug!("could not re-adopt shell pane {pane}: {e:#}");
-                false
-            }
-        }
     }
 
     /// Whether a session has a shell pane open.
@@ -2383,19 +2327,11 @@ impl Terminals {
         }
         pane.retake_size();
 
-        // A pane with no grid asks for it — after the resize, so the snapshot
-        // is taken at the size it is about to be shown at. The paint that asks
-        // waits a moment for it, so the first frame is the current screen and
-        // never an old one (#1242). What does not arrive in time is painted
-        // blank and repainted when it lands, which moves the output
-        // generation; later paints do not wait again, or a host that stopped
-        // answering would stall every frame the pane is on screen.
+        // Restore is asynchronous. Until its ordered snapshot lands, paint
+        // blank rather than either the dormant grid or a stale first frame
+        // (#1242). The reader moves the output generation when it installs it.
         if !pane.is_resident() {
-            if pane.live.session.restore_pane(pane.shell) {
-                if let Some(wired) = pane.wired() {
-                    wired.wait_resident(RESTORE_WAIT);
-                }
-            }
+            pane.live.session.restore_pane(pane.shell);
             if !pane.is_resident() {
                 frame.render_widget(ratatui::widgets::Clear, area);
                 return true;
@@ -2804,7 +2740,7 @@ mod tests {
         );
     }
 
-    fn row(id: &str, backend: &str, backend_id: Option<&str>) -> SessionRow {
+    pub(super) fn row(id: &str, backend: &str, backend_id: Option<&str>) -> SessionRow {
         SessionRow {
             id: id.to_string(),
             name: "demo".to_string(),

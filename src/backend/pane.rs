@@ -452,7 +452,7 @@ struct Residency {
     /// dropped: nothing reads a pane off screen off its grid, and a drop that
     /// moved it would cost a frame for a pane nobody is looking at.
     changes: AtomicU64,
-    /// Wakes a paint waiting on a snapshot ([`WiredPane::wait_resident`]).
+    /// Wakes a caller waiting on a snapshot ([`WiredPane::wait_resident`]).
     landed: (Mutex<()>, std::sync::Condvar),
 }
 
@@ -1689,41 +1689,55 @@ impl Session {
         cols: u16,
         cwd: Option<&std::path::Path>,
     ) -> Result<()> {
+        if let Some(open) = self.shell_open_task(rows, cols, cwd) {
+            let shell = open()?;
+            self.install_shell(shell);
+        }
+        Ok(())
+    }
+
+    /// Decide whether to open a shell, without contacting the backend.
+    /// Run the returned task on a worker with the tokio runtime entered.
+    pub fn shell_open_task(
+        &self,
+        rows: u16,
+        cols: u16,
+        cwd: Option<&std::path::Path>,
+    ) -> Option<impl FnOnce() -> Result<ShellPane> + Send + 'static> {
         if let Some(shell) = &self.shell_pane {
             if !shell.has_exited() || self.has_exited() {
-                return Ok(());
+                return None;
             }
         }
-
-        let shell_cmd = self.backend.default_shell();
+        let backend = Arc::clone(&self.backend);
         let window_name = crate::backend::identity::shell_window_name(&self.info.name);
-
+        let id = self.info.id;
         let env = self.env.clone();
-        let cwd = cwd.or(self.info.cwd.as_deref());
+        let cwd = cwd
+            .or(self.info.cwd.as_deref())
+            .map(std::path::Path::to_path_buf);
+        Some(move || {
+            let shell_cmd = backend.default_shell();
+            let spawned = backend.spawn(
+                &window_name,
+                &shell_cmd,
+                &[],
+                cwd.as_deref(),
+                &env,
+                rows,
+                cols,
+            )?;
+            let (wired, _) =
+                Self::wire_up(rows, cols, SessionIo::spawned(spawned), &backend, "Shell");
+            stamp(&backend, &wired.backend_id, id, WindowRole::Shell);
+            Ok(ShellPane { wired })
+        })
+    }
 
-        let spawned = self
-            .backend
-            .spawn(&window_name, &shell_cmd, &[], cwd, &env, rows, cols)?;
-
-        let (wired, _signals) = Self::wire_up(
-            rows,
-            cols,
-            SessionIo::spawned(spawned),
-            &self.backend,
-            "Shell",
-        );
-
-        stamp(
-            &self.backend,
-            &wired.backend_id,
-            self.info.id,
-            WindowRole::Shell,
-        );
-        self.info.shell_backend_id = Some(wired.backend_id.clone());
-        self.shell_pane = Some(ShellPane { wired });
-
-        debug!(session_id = %self.info.id, "Spawned shell pane");
-        Ok(())
+    /// Install a worker's answer after its owner has checked it is still wanted.
+    pub fn install_shell(&mut self, shell: ShellPane) {
+        self.info.shell_backend_id = Some(shell.backend_id.clone());
+        self.shell_pane = Some(shell);
     }
 
     /// Re-adopt an existing shell pane from a backend_id (for restore on restart).
@@ -1736,26 +1750,37 @@ impl Session {
     /// the pane, because `display-message -t` answers a missing pane with the
     /// current one. A backend with no listing adopts as before.
     pub fn adopt_shell_pane(&mut self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
-        if let Ok(listed) = self.backend.pane_ids() {
-            if !listed.contains(backend_id) {
-                anyhow::bail!("shell pane {backend_id} is gone");
-            }
-        }
-        let adopted = self.backend.adopt(backend_id, rows, cols, None)?;
-
-        let (wired, _signals) = Self::wire_up(
-            rows,
-            cols,
-            SessionIo::adopted(adopted, backend_id),
-            &self.backend,
-            "Shell",
-        );
-
-        self.info.shell_backend_id = Some(wired.backend_id.clone());
-        self.shell_pane = Some(ShellPane { wired });
-
-        debug!(session_id = %self.info.id, backend_id = %backend_id, "Adopted shell pane");
+        let shell = self.shell_adopt_task(backend_id, rows, cols)()?;
+        self.install_shell(shell);
         Ok(())
+    }
+
+    /// Prepare re-adoption without contacting the backend. The task checks
+    /// liveness and wires the shell on a worker with the runtime entered.
+    pub fn shell_adopt_task(
+        &self,
+        backend_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> impl FnOnce() -> Result<ShellPane> + Send + 'static {
+        let backend = Arc::clone(&self.backend);
+        let backend_id = backend_id.to_string();
+        move || {
+            if let Ok(listed) = backend.pane_ids() {
+                if !listed.contains(&backend_id) {
+                    anyhow::bail!("shell pane {backend_id} is gone");
+                }
+            }
+            let adopted = backend.adopt(&backend_id, rows, cols, None)?;
+            let (wired, _) = Self::wire_up(
+                rows,
+                cols,
+                SessionIo::adopted(adopted, &backend_id),
+                &backend,
+                "Shell",
+            );
+            Ok(ShellPane { wired })
+        }
     }
 
     /// Kill the shell pane if it exists.
