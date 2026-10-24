@@ -763,7 +763,19 @@ local function folded_parents()
   return folds("folded_parents")
 end
 
-local function model()
+local function model_items(searching)
+  return session_model.build(
+    sessions(),
+    folded_hosts(),
+    searching,
+    true,
+    folded_repos(),
+    folded_parents()
+  )
+end
+
+---@param reveal_selected? boolean
+local function model(reveal_selected)
   -- An empty list leaves the cursor at row one. When its first session arrives,
   -- that row is now the local host handle; start on the session instead.
   local has_sessions = #sessions() > 0
@@ -788,10 +800,22 @@ local function model()
   local accepted = store["search.accepted_session"]
   store["search.accepted_session"] = nil
   local wanted = accepted or store.focus_session
+  local selected = store.selected
   if not wanted and not search_open and not search_closed then
     wanted = state["sessions.follow"]
-    if not wanted and store.selected ~= state["sessions.published"] then
-      wanted = store.selected
+    if not wanted and selected ~= state["sessions.published"] then
+      wanted = selected
+    end
+    -- A snapshot can hide the active row when its blocked state ends. Keep
+    -- visible selections on the cached path instead of rebuilding an unfolded model.
+    if not wanted and reveal_selected ~= false and selected then
+      local items = model_items(searching)
+      for _, item in ipairs(items) do
+        if item.target == selected then
+          return items
+        end
+      end
+      wanted = selected
     end
   end
   if type(wanted) == "string" then
@@ -829,14 +853,7 @@ local function model()
       end
     end
   end
-  return session_model.build(
-    sessions(),
-    folded_hosts(),
-    searching,
-    true,
-    folded_repos(),
-    folded_parents()
-  )
+  return model_items(searching)
 end
 
 --- Header ownership is a rendering property of the first row in a group, so
@@ -1465,7 +1482,7 @@ pane = {
         -- The click ends any earlier follow before the model can reveal it.
         cursor:select(cursor.index)
         set_parent_folded(parent, not parent_is_folded(parent))
-        for _, item in ipairs(model()) do
+        for _, item in ipairs(model(false)) do
           if item.target == selected then
             return true
           end
