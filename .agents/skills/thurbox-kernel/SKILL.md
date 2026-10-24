@@ -49,6 +49,20 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
    metrics, git stats, repository reads, update checks, and programs a plugin
    asked for.
 
+`files.read` uses `kernel::worker_store::WorkerStore<K, V>`: two reusable
+workers, 16 deduplicated keys/answers, one-second TTL refreshes, and a generation
+that changes only with the answer. The host collects without waiting; the
+coordinator marks changed results as data changes so pure panes repaint. Lua
+gets `nil` while pending, cached text while refreshing, and a raised error after
+a failed read. Session-root resolution and reading both happen on the worker;
+the `files` capability still gates access. Per-plugin read dependencies are
+bounded to 16 and survive pure-tree hits; the unconditional frame-end hook
+retires hidden panes, while polling retires revoked owners and obsolete roots.
+Retired request identities discard late results. One deferred admission is
+retried before refreshes; demand above the shared cache limit has no fairness
+guarantee. `files.list` remains synchronous. Other worker stores keep their
+existing scheduling contracts.
+
 The command bus runs commands for the same non-empty `Command::session()` in
 dispatch order on one worker per active session. Waiting commands remain
 `Queued`; other sessions, session-less commands and housekeeping run independently.

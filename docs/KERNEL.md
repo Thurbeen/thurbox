@@ -117,6 +117,14 @@ have: its reads are *parameterised* — which directory, which repository — an
 plugin cannot call something that waits, so the flow asks by leaving a key in
 `store` and the loop serves it.)
 
+`kernel::worker_store::WorkerStore<K, V>` provides a reusable bounded pool,
+deduplication, aged answers and a change generation. Its first user is
+`files.read`: resolving a session-rooted path and reading its text both run on a
+worker. A Lua call returns `nil` until ready and uses the cached answer during
+refresh; changed completions invalidate pure panes. See `docs/PLUGINS.md` for
+its bounds and error contract. The existing specialized stores keep their
+scheduling and lifecycle contracts; they are not migrated here.
+
 The command bus serializes commands naming the same non-empty session in
 dispatch order. Each active session has one worker draining its queue; queued
 commands stay `Queued` until execution starts. Other sessions, commands without

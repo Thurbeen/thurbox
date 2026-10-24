@@ -1541,15 +1541,42 @@ other.
 is granted, as `run` is. A session's directory holds its `.env` files and keys, and
 a pane that can read them and `send` could hand them to an agent.
 
-```lua
-capabilities = { "sessions", "files" },
+`files.read(session, path)` is asynchronous in plugin API 2. It returns `nil`
+until the worker finishes; request it from `render` to pick up the answer. A
+completed failure raises on a later call (use `pcall` to display it). Paths remain
+relative to the session directory; absolute paths, parent traversal and symlinks
+escaping that directory are refused on the worker.
 
-on_action = function(action)
-  if action == "notes.send" and thurbox.granted.sessions and files then
-    command("send", { session = id, text = files.read(id, "NOTES.md") })
+```lua
+capabilities = { "files" },
+requires_api = 2,
+
+render = function()
+  if not files then
+    return { type = "text", text = "File access requires trust" }
   end
+  local ok, text = pcall(files.read, id, "NOTES.md")
+  return { type = "text", text = not ok and tostring(text) or text or "Loading…" }
 end,
 ```
+
+The host shares one `WorkerStore` across granted plugins: two reusable workers,
+16 retained keys (session directory plus relative path), and a one-second TTL.
+Each plugin may retain at most 16 distinct paths per render; exceeding this
+limit raises an error. The store keeps one deferred admission key, retried
+before refreshes. New completions wake pure panes; demand beyond the shared
+cache limit can churn entries and has no fairness guarantee.
+Repeated requests deduplicate while queued or active. Retained answers refresh
+in the background, keeping the previous answer while refreshing; an unchanged
+answer renews its age without invalidating pure panes. Changed answers repaint
+pure panes too. Completed least-recently-requested entries may be evicted; when
+all entries are pending, a new key returns `nil` and must be retried. A blocked
+read occupies a worker until it returns. Reloading plugins keeps this bounded
+pool. Dependencies retire when a pane stops reading a path, is hidden,
+is reloaded, loses its grant, or loses its session root. Queued retired reads are
+skipped; active ones may finish but their answers are discarded. Dropping the
+host never waits for a blocked read. `files.list` retains its
+synchronous listing contract.
 
 **The panes thurbox ships hold `sessions` without asking** while they are exactly
 what it ships: the confirmation (a force delete, a restart) and the creation flow
