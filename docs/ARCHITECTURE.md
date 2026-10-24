@@ -1967,8 +1967,8 @@ own repository, installed by clone.
 thurbox database, whoever created it. A thurbox reaching the host from
 elsewhere *mirrors* that database (`session list --json` + `--deleted`) into
 local rows on `ssh:<name>` / `wsl:<name>` — same id, the host's facts and hook
-status — and performs every write there by running the host's own
-`thurbox-cli`: `session create|delete|restart|restore`, inside the four
+status — and performs lifecycle operations there through the host's own
+`thurbox-cli`: `session create|delete|restart|restore|fork`, inside the shared
 `session_ops` pipelines, so every caller delegates without knowing it
 (`session_ops::host_cli`, `session_ops::mirror`). Which side carries out a
 verb on a live session is decided in one place,
@@ -1978,8 +1978,10 @@ a host `hosts.toml` no longer names. The teardown sweeps over deleted rows
 (`delete::finish_remote_teardown`, `delete::reap_remote`) still ask
 `host_cli::delegated` themselves: they act on a host they already hold, and
 fall back to its windows when the host has no row. Create, which has no session yet, asks
-`host_cli::usable` itself, for the reason a session made from here reports;
-a fork stays on this side either way. A delegated create forwards every
+`host_cli::usable` itself, for the reason a session made from here reports.
+A shared-host fork also runs on its owner, whose saved launch environment and
+agent definition determine the account and conversation. A mirror without a
+usable owning CLI cannot supply that snapshot and refuses the fork. A delegated create forwards every
 `SpawnRequest` field or refuses it by name (`spawn::delegated_create_args`,
 whose destructure has no `..`, so a new field does not compile until it is
 placed); its id is minted by the caller, so an answer lost to a dropped link
@@ -2093,12 +2095,12 @@ for a shared Windows host. Relaunch after a reboot is the host's
 writes nothing when nothing changed. Status keeps its sub-second channel on
 hosts whose backend has a status channel because `session signal` also records
 the state in the row's backend (`SessionBackend::record_hook_state` — on tmux,
-the pane option a peer's subscription reads; ADR-32). A fork — which resumes
-the parent's conversation in the parent's checkout, two facts the host's
-`create` does not take — stays on the legacy path and is registered on the
-host by `session sync --adopt`, as is
-any session created before this change. `session register` is the one place
-a row is made for a window that already runs, and it refuses to launch.
+the pane option a peer's subscription reads; ADR-32). A shared-host fork uses
+`session fork` on the owner, keeping the parent's saved account environment,
+conversation selection and checkout together. Older or directly created
+sessions can still be registered on the host by `session sync --adopt`.
+`session register` makes a row for a window that already runs and refuses to
+launch.
 
 Reconciliation has a direction, and delegation has a fallback. Three rules
 follow from the host owning the record, none of which the first cut had:
