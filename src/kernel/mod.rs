@@ -39,6 +39,7 @@ pub mod terminal;
 pub mod theme;
 pub mod updates;
 pub mod watch;
+pub mod worker_store;
 
 /// Hand `registry` everything the interface declares: every loaded plugin's
 /// keys, settings, pills and chord-less commands, plus the kernel's own chords

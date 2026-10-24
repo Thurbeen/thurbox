@@ -548,6 +548,9 @@ impl App {
     /// The worker-backed stores: diffs, repository reads, the deletion reaper,
     /// update checks and metrics.
     pub(crate) fn serve_worker_stores(&mut self) {
+        if self.host.poll_files() {
+            self.note_data_change();
+        }
         // The selected session's diff, computed on a worker. Requesting is
         // idempotent, so calling it every frame costs nothing after the
         // first.

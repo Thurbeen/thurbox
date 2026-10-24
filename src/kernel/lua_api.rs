@@ -19,10 +19,11 @@
 
 /// The plugin API contract number, published as `thurbox.api`.
 ///
-/// Bumped only when a published field is removed or changes meaning (ADR-40).
+/// Bumped when the plugin contract changes incompatibly (ADR-40).
+/// API 2 makes `files.read` asynchronous: `nil` means pending.
 /// Additions never bump it: a plugin reads a newer field defensively, as it
 /// reads any optional one.
-pub const API: u32 = 1;
+pub const API: u32 = 2;
 
 /// The prefix of the session meta keys published as `session.meta`.
 ///
