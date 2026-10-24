@@ -632,9 +632,10 @@ fn a_stopped_session_is_never_relaunched_as_a_missing_agent() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn canceling_a_shell_open_never_kills_by_a_stale_pane_id() {
-    if std::process::Command::new("tmux")
+    if tokio::process::Command::new("tmux")
         .arg("-V")
         .output()
+        .await
         .is_err()
     {
         return;

@@ -1,6 +1,8 @@
 //! Companion shell round trips, prepared on the loop and installed on return.
 
-use super::*;
+use std::sync::Arc;
+
+use super::{shell_surface, Painted, Snapshot, Terminals};
 
 /// A shell worker's accepted answer for the coordinator to persist or report.
 pub enum ShellResult {
@@ -191,7 +193,8 @@ impl Terminals {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::Live;
+    use super::{Arc, Painted, ShellResult, Shelled, Shelling, Snapshot, Terminals};
 
     #[test]
     fn a_late_failed_readoption_cannot_forget_a_newer_shell() {
