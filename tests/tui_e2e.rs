@@ -6602,6 +6602,99 @@ fn bury_a_marker(tui: &mut Tui, marker: &str) {
     tui.wait_gone(marker);
 }
 
+// Darwin's PTY input queue is smaller than the source's read buffer, so it
+// cannot prequeue this burst. The vendored UnixStream regression is portable.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_prewritten_mouse_burst_is_read_without_another_wakeup() {
+    const PROBE: &str = "TBX_E2E_INPUT_READINESS_PROBE";
+    if std::env::var_os(PROBE).is_some() {
+        use crossterm::event::{poll, read, Event, MouseEventKind};
+
+        // The source must leave a borrowed, blocking stdin untouched.
+        let flags = unsafe { libc::fcntl(0, libc::F_GETFL) };
+        assert_eq!(flags & libc::O_NONBLOCK, 0);
+        for index in 0..90 {
+            assert!(
+                poll(Duration::from_secs(1)).expect("poll input"),
+                "mouse report {index} of 90 was stranded without a second write"
+            );
+            assert!(matches!(
+                read().expect("read input"),
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::ScrollUp
+            ));
+        }
+        assert!(!poll(Duration::from_millis(20)).expect("idle poll"));
+        assert_eq!(unsafe { libc::fcntl(0, libc::F_GETFL) }, flags);
+        return;
+    }
+
+    let profile = Profile::new();
+    let (master, slave) = openpty(40, 120);
+    // Prequeue the burst before the event source exists, so a later PTY
+    // delivery cannot supply a second readiness edge and hide the bug.
+    let mut termios = std::mem::MaybeUninit::uninit();
+    unsafe {
+        assert_eq!(libc::tcgetattr(slave.as_raw_fd(), termios.as_mut_ptr()), 0);
+        let mut termios = termios.assume_init();
+        libc::cfmakeraw(&mut termios);
+        assert_eq!(
+            libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &termios),
+            0
+        );
+    }
+    let burst = b"\x1b[<64;50;20M".repeat(90);
+    assert!(burst.len() > 1024);
+    let mut writer = std::fs::File::from(master);
+    assert_eq!(writer.write(&burst).expect("prewrite burst"), burst.len());
+    let queued_deadline = Instant::now() + WAIT;
+    loop {
+        let mut queued = 0_i32;
+        // A successful master write can precede delivery to the slave queue.
+        assert_eq!(
+            unsafe { libc::ioctl(slave.as_raw_fd(), libc::FIONREAD, &mut queued) },
+            0
+        );
+        if queued as usize == burst.len() {
+            break;
+        }
+        assert!(
+            Instant::now() < queued_deadline,
+            "prewritten burst has only {queued} bytes queued"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    let mut cmd = Command::new(std::env::current_exe().expect("test binary"));
+    profile.apply(&mut cmd);
+    cmd.args([
+        "a_prewritten_mouse_burst_is_read_without_another_wakeup",
+        "--exact",
+        "--nocapture",
+    ])
+    .env(PROBE, "1")
+    .stdin(Stdio::from(slave))
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("input probe");
+    let deadline = Instant::now() + WAIT;
+    while child.try_wait().expect("probe status").is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("input probe blocked on a drained blocking descriptor");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().expect("probe output");
+    assert!(
+        output.status.success(),
+        "input probe failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn the_wheel_scrolls_the_agents_output_back() {
     // The wheel over a terminal pane has to move that terminal's scrollback.
@@ -6619,6 +6712,7 @@ fn the_wheel_scrolls_the_agents_output_back() {
     let at = tui.find("tb-fill-100");
     tui.wheel(at, true, 90);
     tui.wait_for("tb-scroll-marker");
+    tui.wait_for("[90↑]");
 
     // And back down again: the wheel is not a one-way trip, and the pane
     // returns to the live bottom of the stream.

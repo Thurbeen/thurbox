@@ -217,14 +217,16 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 zbus = { version = "5.16.0", default-features = false, features = ["async-io", "blocking-api"] }
 
-# crossterm 0.29.0 (the latest release) with one parser fix: a terminal reply
+# crossterm 0.29.0 with a parser fix: a terminal reply
 # behind the `>` marker, such as the secondary device attributes
 # `ESC [ > 0 ; 10 ; 1 c`, is consumed instead of reaching the focused agent as
 # the keys `0;10;1c`. `vendor/crossterm` is the published crate's Cargo.toml,
 # LICENSE and src/, unchanged but for the parts marked "thurbox patch": the fix
-# in src/event/sys/unix/parse.rs and its tests in src/event/source/unix/mio.rs.
-# Its Cargo.lock pins those tests' dependencies for CI's Nextest job. Drop all
-# of it once a crossterm release parses those replies; the tui_e2e
-# device-attributes tests fail if the fix goes missing.
+# in src/event/sys/unix/parse.rs and the Mio readiness fix/tests in
+# src/event/source/unix/mio.rs. The latter rearms readiness between reads so
+# input beyond one buffer is delivered without changing blocking descriptor
+# flags. Its Cargo.lock pins the vendored tests' dependencies for CI's Nextest
+# job. Drop these patches once a release fixes both behaviors; tui_e2e covers
+# device-attributes replies and a prewritten mouse burst across the buffer edge.
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }
