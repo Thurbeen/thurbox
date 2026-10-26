@@ -479,7 +479,7 @@ fn spawn(
         .ok_or_else(|| {
             super::OpError::Conflict("session creation is already in progress".into())
         })?;
-    let (plans, _) = plan_members(
+    let (plans, attached_dirs) = plan_members(
         &req,
         req.worktree_branch.as_deref(),
         req.existing_worktree.is_some(),
@@ -508,7 +508,12 @@ fn spawn(
                 req.inherit_worktrees
                     .iter()
                     .map(|wt| wt.worktree_path.clone()),
-            ),
+            )
+            .chain(
+                (req.worktree_branch.is_none() && req.existing_worktree.is_none())
+                    .then(|| req.repo_path.clone()),
+            )
+            .chain(attached_dirs),
         "create worktrees",
     )?;
     for wt in &planned_worktrees {

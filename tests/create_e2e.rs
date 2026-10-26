@@ -634,6 +634,24 @@ fn scoped_launch_case(worktree: bool, multi: bool, real_claude: bool, non_utf8: 
     thurbox::session_ops::restart_session_headless(&db, &backends, spawned.session_id).unwrap();
     check(&read_launch_capture(&capture));
     check_permissions();
+    if multi && !real_claude {
+        thurbox::session_ops::delete_session_headless(&db, &backends, spawned.session_id, false)
+            .unwrap();
+        let pane = db
+            .get_deleted_session_by_id(spawned.session_id)
+            .unwrap()
+            .unwrap()
+            .backend_id;
+        assert!(Command::new("tmux")
+            .args(["-L", SOCKET, "kill-window", "-t", &pane])
+            .status()
+            .unwrap()
+            .success());
+        std::fs::remove_file(&capture).unwrap();
+        thurbox::session_ops::restore_session_headless(&db, &backends, spawned.session_id, false)
+            .unwrap();
+        check(&read_launch_capture(&capture));
+    }
 }
 
 #[cfg(unix)]
@@ -4105,6 +4123,7 @@ fn checkout_cleanup_and_borrowers_share_one_machine_path_lease() {
     use thurbox::session::{Multiplexer, Route, SessionId};
     use thurbox::sync::{SharedSession, SharedWorktree};
     let (_home, _) = isolated_config();
+    let primary = repo();
     let repo = repo();
     let checkout = repo.path().join("leased-checkout");
     git(
@@ -4164,6 +4183,44 @@ fn checkout_cleanup_and_borrowers_share_one_machine_path_lease() {
             "borrower ignored the checkout lifecycle lease: {result:?}"
         );
     }
+    for attached in [false, true] {
+        for nested in [false, true] {
+            let claim = if nested {
+                let child = checkout.join("nested");
+                std::fs::create_dir_all(&child).unwrap();
+                child
+            } else {
+                checkout.clone()
+            };
+            let result = thurbox::session_ops::spawn_session_headless(
+                &db,
+                &registry,
+                thurbox::session_ops::SpawnRequest {
+                    name: format!("directory-borrower-{attached}-{nested}"),
+                    repo_path: if attached {
+                        primary.path().into()
+                    } else {
+                        claim.clone()
+                    },
+                    command: Some("sleep 60".into()),
+                    extra_repos: if attached {
+                        vec![thurbox::session::ExtraRepo {
+                            repo_path: claim,
+                            worktree: false,
+                            base_branch: None,
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    ..Default::default()
+                },
+            );
+            assert!(
+                matches!(result, Err(thurbox::session_ops::OpError::Conflict(_))),
+                "directory borrower ignored cleanup lease: {result:?}"
+            );
+        }
+    }
     let id = SessionId::default();
     let pane = backend.open(
         "tb-lease-owner",
@@ -4196,6 +4253,19 @@ fn checkout_cleanup_and_borrowers_share_one_machine_path_lease() {
     assert!(checkout.is_dir());
     assert!(backend.windows().iter().any(|window| window.pane == pane));
     db.release_lease(&subject, now + 600_000).unwrap();
+    let child_subject = thurbox::storage::event_cursors::LockSubject::Name {
+        scope: format!("worktree:{}", Route::local(None).format()),
+        name: checkout.join("nested").display().to_string(),
+    };
+    assert!(db.take_lease(&child_subject, now + 600_000, now).unwrap());
+    thurbox::session_ops::retry_owed_remote_teardowns(&db, &registry);
+    assert!(
+        checkout.is_dir(),
+        "cleanup ignored a nested borrower's lease"
+    );
+    assert!(backend.windows().iter().any(|window| window.pane == pane));
+    db.release_lease(&child_subject, now + 600_000).unwrap();
+    db.clear_session_reap_backoff(id).unwrap();
     let finished = thurbox::session_ops::retry_owed_remote_teardowns(&db, &registry);
     assert!(
         finished.contains(&id.to_string()),
@@ -4434,6 +4504,118 @@ fn a_resumed_create_cannot_rebuild_an_active_siblings_workspace() {
         "resumed create rebuilt an active workspace: {result:?}"
     );
     assert_eq!(std::fs::metadata(&workspace).unwrap().ino(), original_inode);
+}
+
+#[test]
+#[cfg(unix)]
+fn purge_keeps_a_checkout_used_as_cwd_or_attached_directory() {
+    use thurbox::session::{Multiplexer, Route, SessionId};
+    use thurbox::sync::{SharedSession, SharedWorktree};
+    for attached in [false, true] {
+        for nested in [false, true] {
+            let (_home, _) = isolated_config();
+            let repo = repo();
+            let checkout = repo.path().join("claimed-checkout");
+            git(
+                repo.path(),
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    "claimed",
+                    checkout.to_str().unwrap(),
+                ],
+            );
+            std::fs::write(checkout.join("sentinel"), "keep").unwrap();
+            let db = on_disk_db();
+            let route = Route::local(Some(Multiplexer::Tmux));
+            let backend = recording_backend::RecordingBackend::new(&route);
+            let registry = thurbox::backend::BackendRegistry::new(route.clone(), backend.clone());
+            let id = SessionId::default();
+            let pane = backend.open(
+                "tb-old-checkout",
+                &id.to_string(),
+                thurbox::backend::WindowRole::Agent,
+            );
+            let old = SharedSession {
+                id,
+                name: "old-checkout".into(),
+                agent: "shell".into(),
+                backend_id: pane,
+                backend_type: route.format(),
+                agent_session_id: None,
+                cwd: Some(repo.path().into()),
+                additional_dirs: Vec::new(),
+                worktrees: vec![SharedWorktree {
+                    repo_path: repo.path().into(),
+                    worktree_path: checkout.clone(),
+                    branch: "claimed".into(),
+                    created_by_thurbox: true,
+                }],
+                shell_backend_id: None,
+                parent_session_id: None,
+                display_order: None,
+                tombstone: false,
+                tombstone_at: None,
+                key: None,
+            };
+            db.upsert_session(&old).unwrap();
+            let mut claimant = old.clone();
+            claimant.id = SessionId::default();
+            claimant.name = "new-checkout".into();
+            claimant.backend_id = "%different".into();
+            claimant.worktrees.clear();
+            let claim = if nested {
+                let child = checkout.join("nested");
+                std::fs::create_dir(&child).unwrap();
+                child
+            } else {
+                checkout.clone()
+            };
+            if attached {
+                claimant.additional_dirs = vec![claim];
+            } else {
+                claimant.cwd = Some(claim);
+            }
+            db.upsert_session(&claimant).unwrap();
+            thurbox::session_ops::delete_session_headless(&db, &registry, old.id, false).unwrap();
+            db.conn_ref()
+                .execute(
+                    "UPDATE sessions SET deleted_at = 1 WHERE id = ?1",
+                    [old.id.to_string()],
+                )
+                .unwrap();
+            let report = thurbox::session_ops::purge::purge_selected(
+                &db,
+                &registry,
+                thurbox::session_ops::purge::Age::All,
+                false,
+                Some(old.id),
+            )
+            .unwrap();
+            assert!(
+                report.purged.is_empty(),
+                "purge ignored a live directory claim"
+            );
+            assert!(
+                checkout.join("sentinel").exists(),
+                "cleanup removed another session's live checkout"
+            );
+            db.soft_delete_session(claimant.id).unwrap();
+            db.clear_session_reap_backoff(old.id).unwrap();
+            let finished = thurbox::session_ops::retry_owed_remote_teardowns(&db, &registry);
+            assert!(
+                finished.contains(&old.id.to_string()),
+                "unclaimed checkout stayed blocked"
+            );
+            assert!(db
+                .list_session_tombstones(None)
+                .unwrap()
+                .iter()
+                .any(|row| row.id == old.id && row.purged_at.is_some()));
+            assert!(!checkout.exists());
+        }
+    }
 }
 
 #[test]

@@ -2419,9 +2419,11 @@ claim; remote rows cannot authorize local workspace removal. A failed create rol
 immediately, while a killed creator leaves its plan for recovery after the lease expires.
 A retry can attach the branch left by rollback without resetting it. Restore keeps its
 deleted row until it can commit the confirmed pane; its pending resource plan is recovered
-the same way. An explicit `session.pre_launch` refusal acknowledges preparation and closes
-the intent while retaining its directories for inspection, preserving the hook's
-preparation contract. Startup observations confirm the exact pane's owner and role; a
+the same way. Its launch projection preserves saved attached directories, including when
+the original pane has already been reaped. An explicit `session.pre_launch` refusal
+acknowledges preparation and closes the intent while retaining its directories for
+inspection, preserving the hook's preparation contract. Startup observations confirm the
+exact pane's owner and role; a
 backend without per-window stamps must instead confirm its unique live namesake. Ownerless
 windows never take part in session duplicate retirement.
 
@@ -2433,11 +2435,13 @@ step keeps its first observation in `session_loss_suspects`, because each
 heartbeat is a new process. Force delete records `teardown_owed` in the same
 transaction as deletion, including locally; a failed window or worktree
 removal keeps that debt. Creation, opening or inheriting a checkout, restore,
-recovery and cleanup share machine/path leases. Local paths resolve aliases to
-one checkout identity; remote paths are resolved only on their owning host.
-Cleanup rechecks active checkout
-claims after the slow window teardown before removing a directory. Namesakes with
-distinct ownership stamps remain independently removable. Ownership checks and
+recovery and cleanup share machine/path leases. Working directories and attached
+directories participate too; a lease on a directory conflicts with leases on its
+ancestors and descendants, with the overlap check and claim in one transaction.
+Local paths resolve aliases to one checkout identity; remote paths are resolved
+only on their owning host. Cleanup rechecks active checkout, cwd and attachment
+claims, including descendants, after slow window teardown before removing a directory.
+Namesakes with distinct ownership stamps remain independently removable. Ownership checks and
 the reap's durable backoff remain shared by these paths. A force cleanup retry
 refreshes debt without emitting another `Gone` transition.
 

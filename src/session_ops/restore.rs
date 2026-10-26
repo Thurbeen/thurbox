@@ -38,13 +38,6 @@ pub struct RestoreReport {
     pub key_dropped: Option<String>,
 }
 
-/// Restore a deleted session: the row, then its worktrees, then its agent.
-///
-/// Ordered deliberately. The row comes first because it is the only step that
-/// cannot partially succeed; the worktrees next because the agent's cwd is one
-/// of them; the agent last, and its failure does not fail the restore — a
-/// session whose window did not come up is still restored, and `restart` will
-/// try again.
 /// Whether a force-delete of these worktrees could have destroyed work.
 ///
 /// The refusal below exists because `git worktree remove --force` takes the
@@ -173,6 +166,8 @@ fn declaring_extension(db: &Database, name: &str) -> Option<String> {
     })
 }
 
+/// Restore saved launch directories and confirm the agent's pane before
+/// committing the row as active. A failed launch leaves the row deleted.
 pub fn restore_session_headless(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -349,7 +344,12 @@ pub fn restore_session_headless(
     let _resources = super::lock::worktrees(
         db,
         &deleted.backend_type,
-        deleted.worktrees.iter().map(|wt| wt.worktree_path.clone()),
+        deleted
+            .worktrees
+            .iter()
+            .map(|wt| wt.worktree_path.clone())
+            .chain(deleted.cwd.iter().cloned())
+            .chain(deleted.additional_dirs.iter().cloned()),
         "restore worktrees",
     )?;
     planned

@@ -69,6 +69,7 @@ pub struct DeletedSessionInfo {
     pub agent: String,
     pub agent_session_id: Option<String>,
     pub cwd: Option<PathBuf>,
+    pub additional_dirs: Vec<PathBuf>,
     pub parent_session_id: Option<SessionId>,
     /// Persisted backend (`local-tmux` or `ssh:<host>`). Preserved on restore so
     /// a remote session re-spawns against its own host, not the local default.
@@ -1410,7 +1411,7 @@ impl Database {
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
              s.force_deleted, s.backend_id, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox, \
-             s.host_updated_at, s.teardown_owed, s.key, s.updated_at, s.purged_at, s.lifecycle_generation, s.host_lifecycle_generation \
+             s.host_updated_at, s.teardown_owed, s.key, s.updated_at, s.purged_at, s.lifecycle_generation, s.host_lifecycle_generation, s.additional_dirs \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
              WHERE {condition} \
@@ -1449,6 +1450,7 @@ impl Database {
                     agent: row.get(2)?,
                     agent_session_id: row.get(3)?,
                     cwd: cwd.map(PathBuf::from),
+                    additional_dirs: additional_dirs_from_db(&row.get::<_, String>(22)?),
                     parent_session_id: parent_str.and_then(|s| s.parse().ok()),
                     backend_type,
                     backend_id,

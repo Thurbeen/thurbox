@@ -287,9 +287,11 @@ purge tombstones. `tests/cli_automation_lifecycle.rs` covers owner and target
 suspensions through real CLI calls, preserving ids, history and prior enabled
 state, and missing-pane confirmation across separate heartbeat processes.
 
-`tests/create_e2e.rs` checks multi-repo directory scope through the real spawn
-and restart pipeline using a recording agent. An opt-in test also runs the
-installed Claude CLI against a loopback fake API: no model calls or real
+`tests/create_e2e.rs` checks multi-repo directory scope through the real spawn,
+restart and restore pipelines using a recording agent. Checkout cleanup also
+checks active cwd and attachment claims (including nested directories), with
+creation/cleanup directory lease contention covered in the same suite. An opt-in
+test also runs the installed Claude CLI against a loopback fake API: no model calls or real
 credentials. It verifies member edits through workspace and canonical paths,
 resume, and denial of a nested symlink to a non-member directory:
 

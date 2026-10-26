@@ -198,7 +198,7 @@ pub(crate) fn worktree_key(backend_type: &str, path: &std::path::Path) -> std::p
     }
 }
 
-/// Serialize every user of a checkout, including borrowed and inherited paths.
+/// Serialize checkout cleanup with every directory borrower, including children.
 pub(crate) fn worktrees<'a>(
     db: &'a Database,
     backend_type: &str,
@@ -209,24 +209,36 @@ pub(crate) fn worktrees<'a>(
         .into_iter()
         .map(|path| worktree_key(backend_type, &path))
         .collect();
-    paths
-        .into_iter()
-        .map(|path| {
-            lock(
-                db,
-                Subject::Name {
-                    scope: format!("worktree:{}", super::machine_key(backend_type)),
-                    name: path.display().to_string(),
-                },
-                op,
-            )?
-            .ok_or_else(|| {
-                crate::session_ops::OpError::Conflict(
-                    "another lifecycle operation holds this worktree".into(),
-                )
-            })
-        })
-        .collect()
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    let mut held = Vec::new();
+    let scope = format!("worktree:{}", super::machine_key(backend_type));
+    let now = current_time_millis();
+    let expires_at = now.saturating_add(ttl_ms());
+    for path in paths {
+        // One operation may borrow both a directory and its child.
+        if roots.iter().any(|root| path.starts_with(root)) {
+            continue;
+        }
+        if !db
+            .take_directory_lease(&scope, &path, expires_at, now)
+            .map_err(|e| format!("lock directory for {op}: {e}"))?
+        {
+            return Err(crate::session_ops::OpError::Conflict(
+                "another lifecycle operation holds this worktree".into(),
+            ));
+        }
+        held.push(Lock {
+            db,
+            subject: Subject::Name {
+                scope: scope.clone(),
+                name: path.display().to_string(),
+            },
+            op: op.into(),
+            expires_at,
+        });
+        roots.push(path);
+    }
+    Ok(held)
 }
 
 #[cfg(test)]

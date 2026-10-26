@@ -463,13 +463,17 @@ fn unclaimed_resources(db: &Database, session: &crate::sync::SharedSession) -> R
                     .iter()
                     .filter(|wt| wt.created_by_thurbox)
                     .any(|wt| {
-                        row.worktrees.iter().any(|other| {
-                            super::lock::worktree_key(&session.backend_type, &wt.worktree_path)
-                                == super::lock::worktree_key(
-                                    &row.backend_type,
-                                    &other.worktree_path,
-                                )
-                        })
+                        let cleanup =
+                            super::lock::worktree_key(&session.backend_type, &wt.worktree_path);
+                        row.worktrees
+                            .iter()
+                            .map(|other| &other.worktree_path)
+                            .chain(row.cwd.iter())
+                            .chain(row.additional_dirs.iter())
+                            .any(|path| {
+                                super::lock::worktree_key(&row.backend_type, path)
+                                    .starts_with(&cleanup)
+                            })
                     }))
             || (super::same_machine(&row.backend_type, &session.backend_type)
                 && session
@@ -1552,7 +1556,7 @@ pub(crate) fn shared_deleted(row: &DeletedSessionInfo) -> crate::sync::SharedSes
         backend_type: row.backend_type.clone(),
         agent_session_id: row.agent_session_id.clone(),
         cwd: row.cwd.clone(),
-        additional_dirs: Vec::new(),
+        additional_dirs: row.additional_dirs.clone(),
         worktrees: row.worktrees.clone(),
         shell_backend_id: row.shell_backend_id.clone(),
         parent_session_id: row.parent_session_id,
