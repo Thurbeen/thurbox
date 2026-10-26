@@ -36,7 +36,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::paint::{render, PlaceholderSurfaces, ProgramPaint, SurfaceProvider};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
