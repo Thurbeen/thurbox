@@ -12,11 +12,7 @@
     ],
     "updated": "2026-10-07",
     "install": "curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh",
-    "notes": "Requires Thurbox, tmux (psmux on Windows), git and an agent CLI. On Windows, install from PowerShell with irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex. Start Mission Control and run /fleet-onboarding to install the Kanban dashboard. Alt+K opens the board; the legacy queue pane is optional.",
-    "media": {
-      "url": "https://raw.githubusercontent.com/Thurbeen/fleet/main/media/fleet-board.gif",
-      "alt": "Fleet Kanban board with six task columns, topic filters and optional fuel gauges."
-    }
+    "notes": "Requires Thurbox, tmux (psmux on Windows), git and an agent CLI. On Windows, install from PowerShell with irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex. Start Mission Control and run /fleet-onboarding to install the Kanban dashboard. Alt+K opens the board; the legacy queue pane is optional."
   },
   {
     "name": "thurbox-info-panel",

@@ -29,10 +29,9 @@ slash matches by basename at any depth.
   are the exception: they are this repository's code and stay under review.
 - `media/**` — demo GIFs/MP4s and tutorial stills, produced by
   `scripts/demo/record*.sh`.
-- `website/assets/tutorial/**`, `website/assets/ui-review/**`, `*-poster.webp`
-  — only the unreviewable part of `website/assets`: the tutorial stills that
-  `scripts/demo/record-tutorial.sh` copies from `media/tutorial/`, the
-  `ui-review` skill's captures, and the committed poster frames, which are
+- `website/assets/tutorial/**`, `*-poster.webp` — only the unreviewable part of
+  `website/assets`: the tutorial stills that `scripts/demo/record-tutorial.sh`
+  copies from `media/tutorial/`, and the committed poster frames, which are
   rasters carrying no reviewable diff (only the doom and hero ones have a
   producer in the tree, `record-doom.sh` and `record-hero.sh`; the rest were
   committed by hand). Everything else there — `favicon.svg`,

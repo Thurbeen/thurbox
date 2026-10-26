@@ -36,7 +36,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::paint::{render, PlaceholderSurfaces, ProgramPaint, SurfaceProvider};
 use thurbox::kernel::registry::Registry;
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
@@ -1051,104 +1051,4 @@ fn the_agent_pane_paints_a_live_screen_inside_its_border() {
             "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
         ],
     );
-}
-
-// The media recorder paints the real bundled pane and serializes its styled
-// cells. It is ignored by the test gate; scripts/demo/record-session-groups.sh
-// supplies its output path and rasterizes the cast.
-#[test]
-#[ignore]
-fn record_session_groups_demo() {
-    let output = std::env::var("THURBOX_DEMO_CAST").expect("cast output path");
-    let host = host();
-    publish(
-        &host,
-        &snapshot(vec![
-            row("fix-osc52", "thurbox", "working"),
-            row("update-site", "website", "idle"),
-            remote_row("review-auth", "thurbox", "blocked", "buildbox"),
-            remote_row("perf-cache", "thurbox", "working", "buildbox"),
-            remote_row("ship-docs", "website", "idle", "buildbox"),
-            remote_row("ci-linux", "thurbox", "working", "ci-runner"),
-            remote_row("ci-windows", "infra", "idle", "ci-runner"),
-        ]),
-    );
-
-    let mut cast = String::from("{\"version\":2,\"width\":62,\"height\":18}\n");
-    let mut frame = |time: f64| {
-        let buffer = paint(&host, "sessions", 62, 18, true);
-        let mut screen = String::from("\x1b[?25l\x1b[H\x1b[2J");
-        for y in 0..18 {
-            for x in 0..62 {
-                let cell = &buffer[(x, y)];
-                screen.push_str("\x1b[0m");
-                screen.push_str(&demo_color(cell.fg, false));
-                screen.push_str(&demo_color(cell.bg, true));
-                if cell.modifier.contains(Modifier::BOLD) {
-                    screen.push_str("\x1b[1m");
-                }
-                screen.push_str(cell.symbol());
-            }
-            if y < 17 {
-                screen.push_str("\x1b[0m\r\n");
-            }
-        }
-        cast.push_str(&serde_json::to_string(&(time, "o", screen)).expect("cast event"));
-        cast.push('\n');
-    };
-    frame(0.0);
-    let click = |id: &str| {
-        assert!(host
-            .on_click(
-                index_of(&host, "sessions"),
-                &Click {
-                    id: Some(id.into()),
-                    clicks: 1,
-                    ..Click::default()
-                },
-            )
-            .expect("fold click"));
-    };
-    click("host:buildbox");
-    frame(1.8);
-    click("host:buildbox");
-    frame(3.6);
-    click("repo:buildbox\x01thurbox");
-    frame(5.4);
-    click("repo:buildbox\x01thurbox");
-    frame(7.2);
-    click("host:\0local");
-    frame(9.0);
-    click("host:\0local");
-    frame(10.8);
-    cast.push_str("[12.6,\"o\",\"\"]\n");
-    std::fs::write(output, cast).expect("write cast");
-}
-
-fn demo_color(color: Color, background: bool) -> String {
-    let base = if background { 40 } else { 30 };
-    match color {
-        Color::Reset => format!("\x1b[{}m", if background { 49 } else { 39 }),
-        Color::Black => format!("\x1b[{base}m"),
-        Color::Red => format!("\x1b[{}m", base + 1),
-        Color::Green => format!("\x1b[{}m", base + 2),
-        Color::Yellow => format!("\x1b[{}m", base + 3),
-        Color::Blue => format!("\x1b[{}m", base + 4),
-        Color::Magenta => format!("\x1b[{}m", base + 5),
-        Color::Cyan => format!("\x1b[{}m", base + 6),
-        Color::Gray => format!("\x1b[{}m", base + 7),
-        Color::DarkGray => format!("\x1b[{}m", base + 60),
-        Color::LightRed => format!("\x1b[{}m", base + 61),
-        Color::LightGreen => format!("\x1b[{}m", base + 62),
-        Color::LightYellow => format!("\x1b[{}m", base + 63),
-        Color::LightBlue => format!("\x1b[{}m", base + 64),
-        Color::LightMagenta => format!("\x1b[{}m", base + 65),
-        Color::LightCyan => format!("\x1b[{}m", base + 66),
-        Color::White => format!("\x1b[{}m", base + 67),
-        Color::Indexed(index) => format!("\x1b[{};5;{index}m", if background { 48 } else { 38 }),
-        Color::Rgb(red, green, blue) => format!(
-            "\x1b[{};2;{red};{green};{blue}m",
-            if background { 48 } else { 38 }
-        ),
-    }
 }

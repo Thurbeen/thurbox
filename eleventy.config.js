@@ -172,7 +172,7 @@ export default function (eleventyConfig) {
   // Only the page-specific sheets are copied: the four core files are shipped
   // as the generated core.css bundle instead, so copying them too would be dead
   // weight in the deployed output.
-  for (const sheet of ['landing', 'docs', 'tutorial', 'ui-review', 'plugins']) {
+  for (const sheet of ['landing', 'docs', 'tutorial', 'plugins']) {
     eleventyConfig.addPassthroughCopy(`website/css/${sheet}.css`);
   }
   eleventyConfig.addPassthroughCopy('website/js');

@@ -79,69 +79,16 @@ continue the review with whatever PNGs exist — do not silently claim full cove
 4. **Cross-screen synthesis**: note inconsistencies between panels, navigation
    friction across the whole flow, and a short ordered list of top recommendations.
 
-## Phase 3 — Report (native website docs page, default)
+## Phase 3 — Report
 
-By default this skill produces a **native page in the project website** under
-`website/docs/ui-review.html`, written as an **Eleventy content page** (front
-matter + bare body) that inherits the shared nav, the full `_includes/sidebar.njk`
-menu, and the CSS chrome from the `docs.njk` layout — so it never drifts from the
-other docs pages. The screenshots are copied into `website/assets/ui-review/`, and
-the review-specific widget styles live in `website/css/ui-review.css` (pulled in
-via the page's `extraCss`). The page is already wired into the shared sidebar's
-**"Developer"** section and a hub card on `website/docs/index.html`. This is what
-publishes to GitHub Pages.
-
-1. Write your Phase-2 findings to a JSON file (e.g. `target/ui-review/findings.json`)
-   matching the schema documented at the top of `scripts/build_report.py`:
-
-   ```json
-   {
-     "title": "thurbox TUI — UI/UX Review",
-     "version": "<thurbox --version>", "theme": "Doom",
-     "generated_at": "<date -u '+%Y-%m-%d %H:%M UTC'>",
-     "recommendations": ["...top cross-screen recs..."],
-     "screens": [
-       {"file": "01-session-list.png", "label": "...", "keys": "launch",
-        "findings": [{"severity": "warning", "lens": "visual",
-                      "title": "...", "desc": "...", "fix": "..."}]}
-     ]
-   }
-   ```
-
-   `severity ∈ {blocker, warning, nit}`, `lens ∈ {visual, usability, consistency,
-   accessibility}`. Severities/lenses map to the site's CSS color vars automatically.
-
-2. Build the page:
-
-   ```bash
-   python3 "$SKILL_DIR/scripts/build_report.py" \
-     --findings target/ui-review/findings.json \
-     --shots <screenshots-dir> \
-     --repo "$(git rev-parse --show-toplevel)"
-   ```
-
-   It copies the PNGs into `website/assets/ui-review/`, writes the Eleventy content
-   page `website/docs/ui-review.html`, and prints the page path. The sidebar entry
-   (`_includes/sidebar.njk` "Developer" section) and the `index.html` hub card are
-   already in place — the generator never edits other pages, so no per-page wiring
-   is needed.
-
-3. Preview locally by building the site (`npm ci && npx @11ty/eleventy --serve`,
-   then open the printed URL — a front-matter page won't render if opened directly),
-   then **publish**: commit the new/updated `website/**` files on a branch, push, and
-   open a PR. The `.github/workflows/pages.yml` workflow deploys `website/` to GitHub
-   Pages on merge to `main`. Run the branch through the `publish` skill, which
-   opens the PR itself, or `gh pr create` by hand.
-
-### Standalone self-contained variant (optional)
-
-If the user explicitly wants a single portable file (e.g. to email) instead of a site
-page, fall back to `templates/report.html.tmpl`: base64-encode each PNG
+Write a self-contained report to the ignored `target/ui-review/report.html` using
+`templates/report.html.tmpl`: base64-encode each PNG
 (`base64 -w0 <png>`) into `<img src="data:image/png;base64,…">`, fill `{{TITLE}}`,
 `{{VERSION}}`, `{{THEME}}`, `{{GENERATED_AT}}`, `{{SUMMARY}}`, `{{CARDS}}` (severity
-badge classes `.badge.blocker/.warning/.nit`, lens tags `.lens.<lens>`), and write to
-`target/ui-review/report.html`. This file embeds everything and is not part of the
-site.
+badge classes `.badge.blocker/.warning/.nit`, lens tags `.lens.<lens>`), and keep
+all generated review material under `target/ui-review/`. These reports are working
+artifacts for the current review, not project documentation, and must not be
+committed.
 
 Keep the findings honest and actionable. The goal is a report a maintainer can skim
 in two minutes and act on.
