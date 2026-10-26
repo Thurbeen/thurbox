@@ -592,7 +592,7 @@ fn spawn(
         &shared,
         crate::storage::EventReason::Spawned,
         Some(&req.agent_args),
-        Some(&req.telemetry_attrs),
+        (!req.telemetry_attrs.is_empty()).then_some(&req.telemetry_attrs),
     ) {
         tracing::error!(
             "spawn race: DB upsert failed after the tmux window for '{}' spawned; \

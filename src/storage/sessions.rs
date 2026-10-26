@@ -160,16 +160,6 @@ impl Database {
         self.upsert_session_with_launch_metadata(session, created_as, Some(agent_args), None)
     }
 
-    /// Commit a session, its creation event and telemetry labels together.
-    pub fn upsert_session_as_with_telemetry_attrs(
-        &self,
-        session: &SharedSession,
-        created_as: EventReason,
-        attrs: &std::collections::BTreeMap<String, String>,
-    ) -> rusqlite::Result<()> {
-        self.upsert_session_with_launch_metadata(session, created_as, None, Some(attrs))
-    }
-
     /// Preserve both launch settings in the session's transaction. Absent
     /// settings leave instance-owned values intact during peer upserts.
     pub fn upsert_session_with_launch_metadata(

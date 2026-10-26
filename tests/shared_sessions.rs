@@ -1102,6 +1102,7 @@ mod delegated_create {
             "context",
             "--agent",
             "shell",
+            "--agent-arg=-i",
             "--telemetry-attr",
             "factory.task.id=topic/task",
         ]));
@@ -1150,6 +1151,7 @@ mod delegated_create {
             pair.host_db().load_telemetry_attrs(fork).unwrap(),
             caller_attrs
         );
+        assert_eq!(pair.host_db().load_agent_args(fork).unwrap(), ["-i"]);
         std::fs::write(pair.path("bin/ssh"), "#!/bin/sh\nexit 255\n").unwrap();
         for settings in [
             "[telemetry]\nenabled = false\n",
@@ -1743,6 +1745,8 @@ OTEL_RESOURCE_ATTRIBUTES = "flavor=target,target.only=yes"
             "args",
             "--agent",
             "record",
+            "--telemetry-attr",
+            "factory.task.id=combined/task",
             "--agent-arg=--model",
             "--agent-arg",
             "literal ; $value",
@@ -1753,6 +1757,10 @@ OTEL_RESOURCE_ATTRIBUTES = "flavor=target,target.only=yes"
         let expected = vec!["--model".to_string(), "literal ; $value".to_string()];
         assert_eq!(pair.host_db().load_agent_args(id).unwrap(), expected);
         assert_eq!(pair.caller_db().load_agent_args(id).unwrap(), expected);
+        assert_eq!(
+            pair.host_db().load_telemetry_attrs(id).unwrap()["factory.task.id"],
+            "combined/task"
+        );
         assert_eq!(wait_for_file(&capture), "--model\nliteral ; $value\n");
     }
 
