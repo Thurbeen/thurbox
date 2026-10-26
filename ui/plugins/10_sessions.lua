@@ -571,9 +571,11 @@ end
 --- which is reported rather than assumed clean. Everything else is a
 --- known-clean session, and nil says so.
 ---
---- The worktree *directory* is deliberately not a reason to ask: force-delete
---- removes the checkout and leaves the branch, so a clean one comes back from
---- it. It is listed as context for a question already owed, never as the cause.
+--- The worktree *directory* is deliberately not a reason to ask: a clean one
+--- holds nothing its base does not. Force-delete also deletes a branch thurbox
+--- created, which is why unpushed commits are a reason of their own above. The
+--- directory is listed as context for a question already owed, never as the
+--- cause.
 local function at_risk(session)
   local git = session.git
   if not git then

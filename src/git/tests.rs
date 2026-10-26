@@ -2520,3 +2520,97 @@ fn a_windows_payload_is_base64_lines_that_join_back_to_the_bytes() {
     assert_eq!(decoded, bytes);
     assert!(base64_lines(&[]).is_empty());
 }
+
+/// A one-commit repository on `main` for the branch-ownership tests below.
+fn committed_repo(dir: &Path) -> PathBuf {
+    let repo = dir.join("repo");
+    seed_repo(&repo, "file.txt", "hi");
+    repo
+}
+
+fn local_branch_exists(repo: &Path, branch: &str) -> bool {
+    branch_exists(repo, &format!("refs/heads/{branch}"))
+}
+
+#[test]
+fn a_branch_thurbox_created_goes_with_its_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = committed_repo(tmp.path());
+    let _guard = TestPathGuard::new(tmp.path().join("data"));
+
+    let wt = create_worktree(&repo, "feat/x", "main").expect("create");
+    assert!(branch_created_by_thurbox_on(None, &repo, "feat/x"));
+    remove_worktree(&repo, &wt).expect("remove worktree");
+
+    assert!(delete_created_branch_on(None, &repo, "feat/x").expect("delete"));
+    assert!(!local_branch_exists(&repo, "feat/x"));
+    // Gone already: the second teardown of the same branch is a no-op, not an
+    // error.
+    assert!(!delete_created_branch_on(None, &repo, "feat/x").expect("idempotent"));
+}
+
+#[test]
+fn a_branch_with_unmerged_commits_is_still_deleted() {
+    // `-D`, not `-d`: a squash-merged branch never becomes an ancestor of its
+    // base, so `-d` would refuse every branch that actually landed.
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = committed_repo(tmp.path());
+    let _guard = TestPathGuard::new(tmp.path().join("data"));
+
+    let wt = create_worktree(&repo, "feat/ahead", "main").expect("create");
+    std::fs::write(wt.join("new.txt"), "ahead").unwrap();
+    for args in [vec!["add", "-A"], vec!["commit", "-m", "ahead"]] {
+        run_git(git_command(None, &wt, &args), "git").expect("commit");
+    }
+    remove_worktree(&repo, &wt).expect("remove worktree");
+
+    assert!(delete_created_branch_on(None, &repo, "feat/ahead").expect("delete"));
+    assert!(!local_branch_exists(&repo, "feat/ahead"));
+}
+
+#[test]
+fn a_branch_thurbox_only_attached_to_is_kept() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = committed_repo(tmp.path());
+    let _guard = TestPathGuard::new(tmp.path().join("data"));
+    run_git(
+        git_command(None, &repo, &["branch", "users-own"]),
+        "git branch",
+    )
+    .expect("branch");
+
+    // The same entry point a `--worktree-branch` spawn takes: the branch exists,
+    // so the worktree is attached to it rather than created with `-b`.
+    let wt = create_worktree(&repo, "users-own", "main").expect("attach");
+    assert!(!branch_created_by_thurbox_on(None, &repo, "users-own"));
+    remove_worktree(&repo, &wt).expect("remove worktree");
+
+    assert!(!delete_created_branch_on(None, &repo, "users-own").expect("kept"));
+    assert!(local_branch_exists(&repo, "users-own"));
+}
+
+#[test]
+fn a_branch_whose_worktree_directory_vanished_is_pruned_then_deleted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = committed_repo(tmp.path());
+    let _guard = TestPathGuard::new(tmp.path().join("data"));
+
+    let wt = create_worktree(&repo, "feat/gone", "main").expect("create");
+    // Still registered, so git would refuse `branch -D` without the prune.
+    std::fs::remove_dir_all(&wt).unwrap();
+
+    assert!(delete_created_branch_on(None, &repo, "feat/gone").expect("delete"));
+    assert!(!local_branch_exists(&repo, "feat/gone"));
+}
+
+#[test]
+fn a_created_branch_still_checked_out_is_an_error_not_a_deletion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = committed_repo(tmp.path());
+    let _guard = TestPathGuard::new(tmp.path().join("data"));
+
+    create_worktree(&repo, "feat/live", "main").expect("create");
+
+    assert!(delete_created_branch_on(None, &repo, "feat/live").is_err());
+    assert!(local_branch_exists(&repo, "feat/live"));
+}

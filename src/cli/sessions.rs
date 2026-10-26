@@ -2798,6 +2798,8 @@ fn delete_session_if_generation(
             "removed_worktrees": report.removed_worktrees,
             "kept_worktrees": report.kept_worktrees,
             "worktree_errors": report.worktree_errors,
+            "deleted_branches": report.deleted_branches,
+            "branch_errors": report.branch_errors,
             "disabled_automations": report.disabled_automations,
             "disabled_automation_ids": report.disabled_automation_ids,
             "removed_automation_ids": report.removed_automation_ids,
@@ -2864,6 +2866,12 @@ fn force_delete_detail(
     }
     if !report.worktree_errors.is_empty() {
         detail.push(("worktree errors", report.worktree_errors.join("; ")));
+    }
+    if !report.deleted_branches.is_empty() {
+        detail.push(("deleted branches", report.deleted_branches.join("; ")));
+    }
+    if !report.branch_errors.is_empty() {
+        detail.push(("branch errors", report.branch_errors.join("; ")));
     }
     if let Some(err) = &report.remote_teardown_error {
         detail.push(("remote teardown error", err.clone()));
