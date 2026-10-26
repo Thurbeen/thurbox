@@ -1657,6 +1657,66 @@ OTEL_RESOURCE_ATTRIBUTES = "flavor=target,target.only=yes"
     /// the environment's values never reach a command line on the way.
 
     #[test]
+    fn a_caller_owned_remote_fork_keeps_its_environment_after_sharing_is_enabled() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let hosts = pair.path("config/hosts.toml");
+        let shared_hosts = std::fs::read_to_string(&hosts).unwrap();
+        std::fs::write(&hosts, shared_hosts.replace("true", "false")).unwrap();
+        let capture = pair.path("direct-account");
+        let script = format!(
+            "printf '%s' \"$ACCOUNT\" > '{}'; exec sleep 600",
+            capture.display()
+        );
+        std::fs::write(pair.path("config/agents.toml"), format!(
+            "default = 'account'\n[[agents]]\nname = 'account'\ncommand = 'sh'\nargs = ['-c', {script:?}]\nenv = {{ ACCOUNT = 'caller' }}\n"
+        )).unwrap();
+        let source = created_id(&pair.create(&["--name", "direct", "--agent", "account"]));
+        assert_eq!(wait_for_file(&capture), "caller");
+        assert!(pair.host_db().get_session_by_id(source).unwrap().is_none());
+        std::fs::write(&hosts, shared_hosts).unwrap();
+        std::fs::remove_file(&capture).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        command
+            .args([
+                "session",
+                "fork",
+                &source.to_string(),
+                "--name",
+                "direct-fork",
+                "--json",
+            ])
+            .env("HOME", pair.path("home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("config"))
+            .env("THURBOX_DATA_DIR", pair.path("data"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    pair.path("bin").display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .env_remove("THURBOX_SESSION")
+            .env_remove("THURBOX_SESSION_ID");
+        pair.caller_server.scope(&mut command);
+        let fork = created_id(&command.output().unwrap());
+        assert_eq!(wait_for_file(&capture), "caller");
+        let db = pair.caller_db();
+        assert_eq!(db.load_launch_env(fork).unwrap()["ACCOUNT"], "caller");
+        assert_eq!(
+            db.get_session_by_id(fork)
+                .unwrap()
+                .unwrap()
+                .parent_session_id,
+            Some(source)
+        );
+        assert!(pair.host_db().get_session_by_id(fork).unwrap().is_none());
+    }
+
+    #[test]
     fn a_delegated_agent_uses_the_hosts_environment_and_session_overrides() {
         if !super::have_tmux() {
             return;

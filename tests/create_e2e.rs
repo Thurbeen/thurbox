@@ -3318,3 +3318,162 @@ fn agent_environment_must_be_saved_before_creation_reports_success() {
     assert!(err.to_string().contains("launch environment"), "{err}");
     assert!(db.list_active_sessions().unwrap().is_empty());
 }
+
+#[test]
+#[cfg(unix)]
+fn a_failed_environment_save_removes_prepared_worktrees_and_workspace() {
+    failed_launch_save_cleans_resources(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_failed_recipe_save_removes_prepared_worktrees_and_workspace() {
+    failed_launch_save_cleans_resources(true);
+}
+
+#[cfg(unix)]
+fn failed_launch_save_cleans_resources(command: bool) {
+    use thurbox::session::ExtraRepo;
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, config) = isolated_config();
+    let primary = repo();
+    let extra = repo();
+    let borrowed = repo();
+    let borrowed_path = home.path().join("borrowed");
+    git(
+        borrowed.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "borrowed",
+            borrowed_path.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(config.join("agents.toml"), "default = 'account'\n[[agents]]\nname = 'account'\ncommand = 'sh'\nargs = ['-c', 'exec sleep 60']\nenv = { ACCOUNT = 'original' }\n").unwrap();
+    let db = on_disk_db();
+    db.conn_ref().execute_batch("CREATE TRIGGER reject_env BEFORE UPDATE OF launch_env ON sessions BEGIN SELECT RAISE(ABORT, 'test launch env failure'); END;").unwrap();
+    let backends = thurbox::backend::wiring::configured().0;
+    let conversation = uuid::Uuid::new_v4().to_string();
+    let result = spawn_session_headless(
+        &db,
+        &backends,
+        SpawnRequest {
+            name: "unsaved-resources".into(),
+            repo_path: primary.path().into(),
+            worktree_branch: Some("fix/unsaved".into()),
+            base_branch: Some("main".into()),
+            agent_session_id: Some(conversation.clone()),
+            command: command.then(|| "sh".into()),
+            args: if command {
+                vec!["-c".into(), "exec sleep 60".into()]
+            } else {
+                Vec::new()
+            },
+            extra_repos: vec![ExtraRepo {
+                repo_path: extra.path().into(),
+                worktree: true,
+                base_branch: Some("main".into()),
+            }],
+            inherit_worktrees: vec![thurbox::sync::SharedWorktree {
+                repo_path: borrowed.path().into(),
+                worktree_path: borrowed_path.clone(),
+                branch: "borrowed".into(),
+                created_by_thurbox: true,
+            }],
+            ..Default::default()
+        },
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("launch environment"));
+    assert!(db.list_active_sessions().unwrap().is_empty());
+    assert_eq!(
+        registered_worktrees(primary.path()),
+        1,
+        "primary checkout leaked"
+    );
+    assert_eq!(
+        registered_worktrees(extra.path()),
+        1,
+        "extra checkout leaked"
+    );
+    assert!(
+        borrowed_path.is_dir(),
+        "rollback removed an inherited checkout"
+    );
+    let workspace = thurbox::paths::workspaces_directory()
+        .unwrap()
+        .join(conversation);
+    assert!(
+        !workspace.exists(),
+        "workspace leaked at {}",
+        workspace.display()
+    );
+    let windows = backends
+        .get(&thurbox::session::Route::local(Some(
+            thurbox::session::Multiplexer::Tmux,
+        )))
+        .unwrap()
+        .discover()
+        .unwrap();
+    assert!(
+        !windows.iter().any(|w| w.name.contains("unsaved-resources")),
+        "agent window leaked"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_failed_remote_environment_save_records_the_owed_teardown() {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::session::{Multiplexer, Route, Via};
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+    let (home, config) = isolated_config();
+    std::fs::write(config.join("agents.toml"), "default = 'account'\n[[agents]]\nname = 'account'\ncommand = 'sh'\nenv = { ACCOUNT = 'original' }\n").unwrap();
+    std::fs::write(
+        config.join("hosts.toml"),
+        "[[hosts]]\nname = 'rollback'\ndestination = 'rollback'\nshare_sessions = false\n",
+    )
+    .unwrap();
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(bin.join("ssh"), "#!/bin/sh\nexit 255\n").unwrap();
+    std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut path = vec![bin];
+    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    std::env::set_var("PATH", std::env::join_paths(path).unwrap());
+    let route = Route::remote(Via::Ssh, "rollback", Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    backend.refuse_kill();
+    let (mut backends, _, _) = thurbox::backend::wiring::configured();
+    backends.register(route, backend.clone());
+    let db = on_disk_db();
+    db.conn_ref().execute_batch("CREATE TRIGGER reject_env BEFORE UPDATE OF launch_env ON sessions BEGIN SELECT RAISE(ABORT, 'test launch env failure'); END;").unwrap();
+    let id = thurbox::session::SessionId::default();
+    let result = spawn_session_headless(
+        &db,
+        &backends,
+        SpawnRequest {
+            session_id: Some(id),
+            name: "unsaved-remote".into(),
+            host: Some("rollback".into()),
+            repo_path: home.path().into(),
+            ..Default::default()
+        },
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("launch environment"));
+    assert!(db.list_active_sessions().unwrap().is_empty());
+    let owed = db.list_owed_teardowns().unwrap();
+    assert_eq!(owed.len(), 1, "failed remote kill was abandoned");
+    assert_eq!(owed[0].id, id);
+    assert!(!backend.windows_of(&id.to_string()).is_empty());
+}

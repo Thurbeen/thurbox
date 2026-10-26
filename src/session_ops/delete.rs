@@ -224,9 +224,35 @@ fn finish_locally(
     report: ForceDeleteReport,
     hook_ctx: &crate::session::HookContext,
 ) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
-    finish_locally_with(db, session, force, report, hook_ctx, |session, report| {
-        teardown_runtime_resources(backends, session, report);
-    })
+    finish_locally_with(
+        db,
+        session,
+        force,
+        report,
+        Some(hook_ctx),
+        |session, report| {
+            teardown_runtime_resources(backends, session, report);
+        },
+    )
+}
+
+/// Roll back a newly persisted spawn without delete hooks or host delegation:
+/// the failed creation owns its row and has not completed its lifecycle.
+pub(super) fn rollback_spawn(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: &crate::sync::SharedSession,
+) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
+    finish_locally_with(
+        db,
+        session,
+        true,
+        ForceDeleteReport::default(),
+        None,
+        |session, report| {
+            teardown_runtime_resources(backends, session, report);
+        },
+    )
 }
 
 /// [`finish_locally`] with the teardown injected, so a test can look at the row
@@ -236,7 +262,7 @@ fn finish_locally_with(
     session: &crate::sync::SharedSession,
     force: bool,
     mut report: ForceDeleteReport,
-    hook_ctx: &crate::session::HookContext,
+    hook_ctx: Option<&crate::session::HookContext>,
     teardown: impl FnOnce(&crate::sync::SharedSession, &mut ForceDeleteReport),
 ) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
     // Marked **before** anything is torn down. The teardown kills windows and
@@ -270,7 +296,9 @@ fn finish_locally_with(
         .disable_send_automations_for_session(session.id)
         .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
 
-    report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, hook_ctx);
+    if let Some(hook_ctx) = hook_ctx {
+        report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, hook_ctx);
+    }
 
     Ok(report)
 }
@@ -2177,7 +2205,7 @@ mod tests {
             &session,
             true,
             ForceDeleteReport::default(),
-            &ctx,
+            Some(&ctx),
             |_, _| {
                 seen_force_deleted = db
                     .get_deleted_session_by_id(id)

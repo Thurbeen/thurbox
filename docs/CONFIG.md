@@ -211,7 +211,9 @@ saved `env` on the instance that owns the session. A caller's mirror reports
 `env: null`, since it does not hold that snapshot; ask the owning instance for
 its map. Shared-host forks also run
 on that instance; a mirror cannot supply a saved environment when its owning
-CLI is unavailable, so that fork is refused. `agent launch-args` reports the
+CLI is unavailable, so that fork is refused. Caller-owned direct-remote sessions
+fork through their backend even if the host later gains a usable CLI.
+`agent launch-args` reports the
 current defaults without `--session`, or the saved environment with it.
 For a shared-host mirror, session-context `agent launch-args` and `session exec`
 must run on the owning instance; the caller refuses to guess an account from

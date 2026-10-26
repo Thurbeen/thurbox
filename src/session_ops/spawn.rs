@@ -640,15 +640,21 @@ fn spawn(
         None => Ok(()),
     };
     if let Err(e) = recorded {
-        discard_orphaned_window(backend.as_ref(), &stamp, &req.name, &backend_id);
-        let rollback = db.force_delete_session(session_id).err();
-        return Err(format!(
-            "Failed to record the session's launch environment: {e}{}",
-            rollback.map_or_else(String::new, |error| format!(
-                "; failed to remove the created row: {error}"
-            ))
-        )
-        .into());
+        let rollback = match super::delete::rollback_spawn(db, backends, &shared) {
+            Ok(report) => {
+                let mut errors = report.worktree_errors;
+                errors.extend(report.remote_teardown_error);
+                if errors.is_empty() {
+                    String::new()
+                } else {
+                    format!("; cleanup: {}", errors.join("; "))
+                }
+            }
+            Err(error) => format!("; failed to roll back the created session: {error}"),
+        };
+        return Err(
+            format!("Failed to record the session's launch environment: {e}{rollback}").into(),
+        );
     }
 
     record_fork_point(db, session_id, &req);
@@ -1466,7 +1472,9 @@ fn resolve_dirs(
             .iter()
             .any(|existing| existing.worktree_path == inherited.worktree_path)
         {
-            worktrees.push(inherited.clone());
+            let mut borrowed = inherited.clone();
+            borrowed.created_by_thurbox = false;
+            worktrees.push(borrowed);
         }
     }
 

@@ -383,7 +383,8 @@ session), never on the loop, ADR-P12).
   host's (`session restart --if-missing`). Shared-host forks run on that host
   too, preserving its frozen environment and conversation selection. A mirrored
   parent without its owning CLI is refused; a locally owned direct-remote row
-  can still fork through its backend with its saved environment. Environment
+  forks through its backend with its saved environment, even if sharing is later
+  enabled or the host gains a usable CLI. Environment
   snapshots are not mirrored: `session show` reports `env: null` on the caller,
   and session-context launch plans and exec must run on the owning instance.
   Docs: `docs/FEATURES.md` → Shared sessions.

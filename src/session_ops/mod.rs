@@ -782,9 +782,17 @@ pub fn fork_session_headless(
         .into_iter()
         .filter(|(key, _)| key.starts_with(crate::session::PUBLISHED_META_PREFIX))
         .collect();
-    let forked = match Executor::for_session(&source)? {
-        Executor::HostCli { host, cli } => spawn::fork_delegated(db, &source, name, &host, &cli)?,
-        Executor::Local => fork_on_backend(db, backends, &source, name)?,
+    let mirrored = db
+        .mirrored_session_ids()
+        .map_err(|e| format!("read mirrored sessions: {e}"))?
+        .contains(&source.id);
+    // A direct remote launch is still owned here, even if its host has since
+    // gained a usable CLI. Only a mirror's source row belongs to that host.
+    let forked = match (mirrored, Executor::for_session(&source)?) {
+        (true, Executor::HostCli { host, cli }) => {
+            spawn::fork_delegated(db, &source, name, &host, &cli)?
+        }
+        _ => fork_on_backend(db, backends, &source, name)?,
     };
     for (key, value) in ui_meta {
         // The fork exists by now, so a failed copy is reported rather than
