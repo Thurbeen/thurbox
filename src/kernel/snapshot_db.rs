@@ -388,6 +388,7 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
             // Raw characters, above the published cap: cleaning drops control
             // characters first, and they must not cost a visible one.
             crate::kernel::lua_api::META_VALUE_CHARS * 4,
+            &crate::kernel::lua_api::invisible_meta_key_chars(),
         )
         // Carried rather than raised, and never defaulted to empty: the
         // store keeps the labels it has and says why, so a failing meta query

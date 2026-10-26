@@ -3195,7 +3195,9 @@ when a field is removed or changes meaning; a plugin's `requires_api` above it
 is a load error naming the file. The first field added under it is
 `session.meta`: a session's `ui.*` meta keys, cleaned on the snapshot worker
 (control and invisible characters stripped, 256 characters, 32 keys,
-active sessions only, bounded in the query), with `thurbox.*` keys refused by
+active sessions only, bounded in the query). Keys containing control or
+invisible characters are excluded before the per-session quota, so they cannot
+crowd out visible labels. `thurbox.*` keys are refused by
 `session meta set` and `unset`. A meta read that fails keeps each row's labels
 as last read and records the error; the rows still move, and the next poll
 reads again rather than waiting for an unrelated write.

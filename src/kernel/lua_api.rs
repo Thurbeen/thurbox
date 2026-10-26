@@ -63,33 +63,41 @@ pub fn clean_meta_value(value: &str) -> String {
 /// format controls), and the Hangul fillers, letters that draw as blank space.
 /// Left in, a note could reorder the row it is drawn on or carry text nobody
 /// sees.
-fn is_invisible_format(c: char) -> bool {
-    matches!(
-        c,
-        '\u{00ad}'
-            | '\u{061c}'
-            | '\u{180e}'
-            | '\u{200b}'..='\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{feff}'
-            | '\u{fff9}'..='\u{fffb}'
-            | '\u{e0001}'
-            | '\u{e0020}'..='\u{e007f}'
-            | '\u{115f}'
-            | '\u{1160}'
-            | '\u{3164}'
-            | '\u{ffa0}'
-            | '\u{1bca0}'..='\u{1bca3}'
-            | '\u{1d173}'..='\u{1d17a}'
-    )
+const INVISIBLE_META_RANGES: &[(char, char)] = &[
+    ('\u{00ad}', '\u{00ad}'),
+    ('\u{061c}', '\u{061c}'),
+    ('\u{180e}', '\u{180e}'),
+    ('\u{200b}', '\u{200f}'),
+    ('\u{202a}', '\u{202e}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{2069}'),
+    ('\u{feff}', '\u{feff}'),
+    ('\u{fff9}', '\u{fffb}'),
+    ('\u{e0001}', '\u{e0001}'),
+    ('\u{e0020}', '\u{e007f}'),
+    ('\u{115f}', '\u{1160}'),
+    ('\u{3164}', '\u{3164}'),
+    ('\u{ffa0}', '\u{ffa0}'),
+    ('\u{1bca0}', '\u{1bca3}'),
+    ('\u{1d173}', '\u{1d17a}'),
+];
+
+/// Extra characters the bounded metadata query must exclude before counting
+/// keys. Shares the publication filter's ranges so rejected keys cost no slot.
+pub fn invisible_meta_key_chars() -> String {
+    INVISIBLE_META_RANGES
+        .iter()
+        .flat_map(|&(start, end)| (start as u32..=end as u32).filter_map(char::from_u32))
+        .collect()
 }
 
 /// A character a published meta key or value may not carry: one that acts on
 /// the terminal, or one that is not drawn yet changes or hides text.
 fn is_hidden(c: char) -> bool {
-    c.is_control() || is_invisible_format(c)
+    c.is_control()
+        || INVISIBLE_META_RANGES
+            .iter()
+            .any(|&(start, end)| (start..=end).contains(&c))
 }
 
 /// Whether a stored meta key is one a plugin may see. A pane may draw the key

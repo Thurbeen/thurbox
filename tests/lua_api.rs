@@ -837,6 +837,73 @@ mod meta {
     }
 
     #[test]
+    fn hidden_keys_do_not_consume_the_published_metadata_allowance() {
+        let env = Env::new();
+        let worker = env.seed("worker", "/src/alpha");
+        let mut rows_store = store(&env);
+        // NUL cannot travel through argv, but another database writer can store it.
+        for index in 0..32 {
+            env.db()
+                .set_session_meta(worker, &format!("ui.a{index:02}\0"), "hidden")
+                .expect("store NUL key");
+        }
+        // Each family alone can fill the allowance before either visible label.
+        for hidden in ['\u{00ad}', '\u{200b}', '\u{3164}', '\u{e0020}'] {
+            for index in 0..32 {
+                let key = format!("ui.a{index:02}{hidden}");
+                ok(&env.cli(&["session", "meta", "set", "worker", &key, "hidden"]));
+            }
+        }
+        ok(&env.cli(&["session", "meta", "set", "worker", "ui.group", "release"]));
+        ok(&env.cli(&[
+            "session",
+            "meta",
+            "set",
+            "worker",
+            "ui.note",
+            "visible note",
+        ]));
+        let rows = reread(&mut rows_store);
+        let meta = &rows.sessions[0].meta;
+        assert_eq!(
+            meta.get("ui.note").map(String::as_str),
+            Some("visible note")
+        );
+        assert_eq!(meta.get("ui.group").map(String::as_str), Some("release"));
+        assert_eq!(meta.len(), 2, "hidden keys must never reach a plugin");
+        let list = bundled();
+        publish(&list, &rows);
+        let drawn = screen(&list, "sessions", 60, 12);
+        assert!(drawn.contains("visible note"), "{drawn}");
+        assert!(drawn.contains("release"), "{drawn}");
+
+        env.seed("other", "/src/alpha");
+        ok(&env.cli(&["session", "meta", "set", "other", "ui.note", "other note"]));
+        for index in 0..40 {
+            let key = format!("ui.z{index:02}");
+            ok(&env.cli(&["session", "meta", "set", "worker", &key, "visible"]));
+        }
+        let rows = reread(&mut rows_store);
+        let worker = rows
+            .sessions
+            .iter()
+            .find(|row| row.name == "worker")
+            .unwrap();
+        assert_eq!(worker.meta.len(), 32, "the visible-key quota still applies");
+        assert!(worker.meta.contains_key("ui.z29"));
+        assert!(!worker.meta.contains_key("ui.z30"));
+        let other = rows
+            .sessions
+            .iter()
+            .find(|row| row.name == "other")
+            .unwrap();
+        assert_eq!(
+            other.meta.get("ui.note").map(String::as_str),
+            Some("other note")
+        );
+    }
+
+    #[test]
     fn a_failed_meta_read_keeps_the_labels_and_the_rows_moving() {
         let env = Env::new();
         env.seed("worker", "/src/alpha");
