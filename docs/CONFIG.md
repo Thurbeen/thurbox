@@ -215,9 +215,10 @@ CLI is unavailable, so that fork is refused. Caller-owned direct-remote sessions
 fork through their backend even if the host later gains a usable CLI.
 `agent launch-args` reports the
 current defaults without `--session`, or the saved environment with it.
-For a shared-host mirror, session-context `agent launch-args` and `session exec`
-must run on the owning instance; the caller refuses to guess an account from
-an unavailable snapshot.
+For a shared-host mirror, `agent launch-args` can read telemetry attributes
+through the owner, but does not hold its saved account environment. Request the
+plan on the owning instance for that complete environment. `session exec` on
+the caller refuses an unavailable saved environment.
 These values are visible in JSON and stored in the database: select account
 configuration directories here, rather than storing tokens. See
 [Several Claude accounts](AGENTS.md#several-claude-accounts).

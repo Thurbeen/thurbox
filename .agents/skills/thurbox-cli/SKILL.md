@@ -329,8 +329,9 @@ through and the hooks are there.
 `--session <ref>` resolves it for one session: the conversation id is pinned to
 that row's, the host adapts the args (a remote session's hook configs are
 shipped there), and the env carries the `THURBOX_SESSION` the agent's
-`session signal` will report under. Shared-host mirrors must request that
-plan on the owning instance. Without a session, the env includes current agent
+`session signal` will report under. Shared-host mirrors can read telemetry
+labels through their owner; request the plan there for its complete saved
+account environment. Without a session, the env includes current agent
 defaults and this instance's locations (config dir, data dir, socket), with no
 session identity. Always a **fresh** launch — continuing a
 conversation is `session start`/`restart`.

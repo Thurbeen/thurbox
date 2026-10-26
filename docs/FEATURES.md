@@ -2409,7 +2409,9 @@ saved on the owning instance. Restart and fork replay that snapshot, so later
 registry edits cannot move an existing session to another account. `session
 exec` reproduces it alongside the session's directory and identity. A shared-host
 mirror holds no environment snapshot: its `session show` reports `env: null`,
-and session-context launch plans and exec requests must run on the owner.
+and exec requests must run on the owner. Caller-side launch plans can read
+telemetry labels from the owner; request a plan there for the complete saved
+account environment.
 See [CONFIG.md](CONFIG.md#agentstoml) for precedence and host-home expansion.
 
 A ready-made form ships as the `shell` built-in, whose `command` is the

@@ -32,7 +32,8 @@ pub enum Action {
     /// `THURBOX_*` identity its `session signal` needs is included.
     ///
     /// For a shared-host mirror, request the plan on the owning instance:
-    /// this caller does not hold its saved environment.
+    /// this caller can read its telemetry attributes but does not hold its
+    /// saved account environment.
     ///
     /// This is a fresh launch, never a resume: continuing an existing
     /// conversation is `session start` / `session restart`.

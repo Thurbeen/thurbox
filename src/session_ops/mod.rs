@@ -561,6 +561,8 @@ pub struct LaunchPlan {
     /// The environment to launch under: current agent defaults without a
     /// session, or its saved environment with one. Instance pointers and
     /// telemetry are included; session identity appears only with a session.
+    /// Mirrors omit the owner's saved account environment; obtain the plan
+    /// on that instance for the complete snapshot.
     pub env: BTreeMap<String, String>,
     /// Why hooks-driven status will be degraded or absent on this host, when it
     /// will be. `None` means nothing is known to be wrong.
@@ -695,7 +697,15 @@ pub fn session_process_env(
         .get(&session.agent)
         .cloned()
         .unwrap_or_default();
-    session_process_env_for_agent(db, session, &def)
+    let env = session_process_env_for_agent(db, session, &def)?;
+    if db
+        .mirrored_session_ids()
+        .map_err(|e| format!("read mirrored sessions: {e}"))?
+        .contains(&session.id)
+    {
+        return Err(OpError::Refused("the saved environment of a mirrored session is held by its owning host; run this command on that instance".into()));
+    }
+    Ok(env)
 }
 
 // A requested agent's defaults must not inherit the source agent's defaults
@@ -705,13 +715,6 @@ fn session_process_env_for_agent(
     session: &crate::sync::SharedSession,
     def: &crate::session::AgentDef,
 ) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
-    if db
-        .mirrored_session_ids()
-        .map_err(|e| format!("read mirrored sessions: {e}"))?
-        .contains(&session.id)
-    {
-        return Err(OpError::Refused("the saved environment of a mirrored session is held by its owning host; run this command on that instance".into()));
-    }
     let telemetry_settings = crate::agent::settings_config::load_quiet().telemetry;
     let mut config = SessionConfig {
         session_id: Some(session.id),

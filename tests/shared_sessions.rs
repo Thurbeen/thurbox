@@ -1143,7 +1143,17 @@ mod delegated_create {
             "context-fork",
             "--json",
         ]));
-        let caller_attrs = pair.caller_db().load_telemetry_attrs(fork).unwrap();
+        let fork_meta = run(&[
+            "session",
+            "meta",
+            "get",
+            &fork.to_string(),
+            "thurbox.telemetry_attributes",
+            "--json",
+        ]);
+        assert!(fork_meta.status.success(), "{}", answer(&fork_meta));
+        let caller_attrs: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(answer(&fork_meta)["value"].as_str().unwrap()).unwrap();
         assert_eq!(
             caller_attrs.get("factory.task.id").map(String::as_str),
             Some("topic/task")
@@ -1154,10 +1164,13 @@ mod delegated_create {
             "{}",
             String::from_utf8_lossy(&synced.stdout)
         );
-        assert!(answer(&synced)[0]["registered"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!(fork.to_string())));
+        assert!(
+            answer(&synced)[0]["registered"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "the fork is already owned by the host"
+        );
         assert_eq!(
             pair.host_db().load_telemetry_attrs(fork).unwrap(),
             caller_attrs
@@ -1354,14 +1367,21 @@ mod delegated_create {
                 "--json",
             ],
         ));
-        assert_eq!(
-            pair.caller_db()
-                .load_telemetry_attrs(fork)
-                .unwrap()
-                .get("factory.task.id")
-                .map(String::as_str),
-            Some("topic/owner")
+        let fork_meta = run(
+            "caller",
+            &[
+                "session",
+                "meta",
+                "get",
+                &fork.to_string(),
+                "thurbox.telemetry_attributes",
+                "--json",
+            ],
         );
+        assert!(fork_meta.status.success(), "{}", answer(&fork_meta));
+        let fork_attrs: Value =
+            serde_json::from_str(answer(&fork_meta)["value"].as_str().unwrap()).unwrap();
+        assert_eq!(fork_attrs["factory.task.id"], "topic/owner");
 
         let key = "thurbox.telemetry_attributes";
         let fetched = run(
@@ -1866,10 +1886,8 @@ env = {{ ACCOUNT = "host-account", CHOICE = "agent", CONFIG_ROOT = "{{home}}/acc
             &id.to_string(),
             "--json",
         ]);
-        if plan.status.success()
-            || !String::from_utf8_lossy(&plan.stdout).contains("saved environment")
-        {
-            problems.push("mirror launch plan claimed an unknown account environment");
+        if !plan.status.success() || !answer(&plan)["env"]["ACCOUNT"].is_null() {
+            problems.push("mirror launch plan failed or claimed an unknown account environment");
         }
         let exec = caller(&[
             "session",

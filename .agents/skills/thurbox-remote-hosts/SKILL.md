@@ -386,7 +386,9 @@ session), never on the loop, ADR-P12).
   forks through its backend with its saved environment, even if sharing is later
   enabled or the host gains a usable CLI. Environment
   snapshots are not mirrored: `session show` reports `env: null` on the caller,
-  and session-context launch plans and exec must run on the owning instance.
+  and exec must run on the owning instance. Mirror launch plans can read the
+  owner's telemetry attributes; request them on the owner for its complete
+  saved account environment.
   Docs: `docs/FEATURES.md` → Shared sessions.
 - **Agent config on the host**: agent args referencing thurbox-managed config
   by *local* path (the hooks extension's `--settings <config>/hooks/
