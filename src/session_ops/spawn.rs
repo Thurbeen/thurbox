@@ -731,7 +731,7 @@ fn spawn(
         &shared,
         session_lease.expires_at(),
         recipe.as_ref(),
-        &req.env,
+        &launch_env,
         &req.agent_args,
         (!req.telemetry_attrs.is_empty()).then_some(&req.telemetry_attrs),
     ) {

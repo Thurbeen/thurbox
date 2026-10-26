@@ -175,11 +175,16 @@ impl Database {
         }
         self.upsert_session_in_transaction(session, super::EventReason::Spawned, attrs)?;
         self.set_agent_args(session.id, agent_args)?;
-        if let Some(recipe) = recipe {
-            self.set_launch_recipe(session.id, recipe)?;
-        } else if !env.is_empty() {
-            self.set_launch_env(session.id, env)?;
-        }
+        let recorded = match recipe {
+            Some(recipe) => self.set_launch_recipe(session.id, recipe),
+            None if !env.is_empty() => self.set_launch_env(session.id, env),
+            None => Ok(()),
+        };
+        recorded.map_err(|error| {
+            rusqlite::Error::InvalidParameterName(format!(
+                "record the session's launch environment: {error}"
+            ))
+        })?;
         self.clear_create_intent(session.id)?;
         tx.commit()
     }

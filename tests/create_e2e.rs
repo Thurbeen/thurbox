@@ -5148,10 +5148,20 @@ fn a_failed_remote_environment_save_records_the_owed_teardown() {
         .to_string()
         .contains("launch environment"));
     assert!(db.list_active_sessions().unwrap().is_empty());
-    let owed = db.list_owed_teardowns().unwrap();
-    assert_eq!(owed.len(), 1, "failed remote kill was abandoned");
-    assert_eq!(owed[0].id, id);
+    // Creation publishes no row before its environment commits; its journal
+    // retains cleanup debt when the backend refuses teardown.
+    let mut owed = db
+        .create_intent(id)
+        .unwrap()
+        .expect("failed remote kill was abandoned");
+    assert_eq!(owed.session.id, id);
     assert!(!backend.windows_of(&id.to_string()).is_empty());
+    backend.allow_kill();
+    owed.expires_at = 0;
+    db.update_create_intent(&owed).unwrap();
+    assert_eq!(thurbox::session_ops::reconcile::creating(&db, &backends), 1);
+    assert!(db.create_intent(id).unwrap().is_none());
+    assert!(backend.windows_of(&id.to_string()).is_empty());
 }
 
 #[test]

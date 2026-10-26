@@ -147,6 +147,10 @@ impl RecordingBackend {
         self.state.lock().unwrap().refuse_kill = true;
     }
 
+    pub fn allow_kill(&self) {
+        self.state.lock().unwrap().refuse_kill = false;
+    }
+
     pub fn fail_discover_on(&self, call: usize) {
         self.state.lock().unwrap().fail_discover_on = Some(call);
     }
