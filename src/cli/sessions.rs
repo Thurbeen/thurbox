@@ -749,7 +749,7 @@ pub enum MetaAction {
         session: String,
         /// Key, conventionally namespaced (`fm.task_id`, `gc.bead`). `ui.*`
         /// keys are published to interface plugins as `session.meta` (one
-        /// line, control and invisible format characters stripped, at most
+        /// line, control and invisible characters stripped, at most
         /// 256 characters); `thurbox.*` keys are thurbox's own and refused.
         key: String,
         /// Value; read from stdin when omitted.

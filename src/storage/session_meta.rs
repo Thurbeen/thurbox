@@ -20,14 +20,15 @@ use crate::sync::current_time_millis;
 
 use super::Database;
 
-/// A GLOB matching any key that holds a control character (C0, DEL or C1),
-/// which no reader publishes: excluded before the per-session count, so such a
-/// key never takes the place of one that is.
-fn control_in_key() -> String {
+/// Exclude controls and caller-supplied characters before counting keys, so
+/// a rejected key cannot take a visible label's slot. NUL is checked with
+/// `instr` separately because SQLite GLOB stops at NUL.
+fn excluded_in_key(extra: &str) -> String {
     let class: String = (1u32..0x20)
         .chain([0x7f])
         .chain(0x80..0xa0)
         .filter_map(char::from_u32)
+        .chain(extra.chars())
         .collect();
     format!("*[{class}]*")
 }
@@ -101,7 +102,7 @@ impl Database {
     /// The meta a reader may publish, for every **active** session, in one
     /// query and bounded as it is read (issue #1523): keys longer than
     /// `prefix`, starting with it, at most `key_chars` characters long and
-    /// free of control characters, the first `keys` of them per session in
+    /// free of controls and `excluded_key_chars`, the first `keys` per session in
     /// key order, each value cut to `value_chars` as stored. The caller cleans
     /// a value before its own cap, so it passes a raw bound above that cap.
     ///
@@ -115,6 +116,7 @@ impl Database {
         key_chars: usize,
         keys: usize,
         value_chars: usize,
+        excluded_key_chars: &str,
     ) -> rusqlite::Result<HashMap<SessionId, BTreeMap<String, String>>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT session_id, key, substr(value, 1, ?4) FROM ( \
@@ -125,6 +127,7 @@ impl Database {
                    AND substr(m.key, 1, length(?1)) = ?1 \
                    AND length(m.key) > length(?1) \
                    AND length(m.key) <= ?2 \
+                   AND instr(m.key, char(0)) = 0 \
                    AND m.key NOT GLOB ?5) \
              WHERE position <= ?3",
         )?;
@@ -134,7 +137,7 @@ impl Database {
                 key_chars as i64,
                 keys as i64,
                 value_chars as i64,
-                control_in_key()
+                excluded_in_key(excluded_key_chars)
             ],
             |row| {
                 Ok((
@@ -215,7 +218,7 @@ mod tests {
         db.set_session_meta(gone, "ui.note", "x").unwrap();
         db.soft_delete_session(gone).unwrap();
 
-        let read = db.load_active_session_meta("ui.", 8, 3, 4).unwrap();
+        let read = db.load_active_session_meta("ui.", 8, 3, 4, "").unwrap();
         assert_eq!(
             read.keys().collect::<Vec<_>>(),
             [&live],

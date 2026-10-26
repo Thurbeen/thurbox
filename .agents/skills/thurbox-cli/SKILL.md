@@ -350,8 +350,8 @@ thurbox-extensions skill.
 `set`/`get`/`list`/`unset`, namespaced by convention (`fm.*`, `gc.*`), never
 interpreted by thurbox — with two exceptions. `ui.*` keys are published to
 interface plugins as `session.meta` (issue #1523: one line, control and
-invisible format characters stripped, 256 characters, 32 keys, active sessions
-only; the bundled list draws `ui.note` and groups by
+invisible characters stripped, a key carrying one skipped, 256 characters, 32
+keys, active sessions only; the bundled list draws `ui.note` and groups by
 `ui.group`), and `fork` copies them. `thurbox.*` keys are thurbox's own (an
 agent's messaging socket, a Codex conversation id), and `set` and `unset`
 refuse them with exit 2. Without it a driver's identity ends up encoded in the

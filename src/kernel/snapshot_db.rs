@@ -256,10 +256,18 @@ impl Worker {
             replies.push(Reply::Focus(id));
         }
         match read_rows(database) {
-            Ok(read) => replies.push(Reply::Rows {
-                writes: self.writes,
-                read: Box::new(read),
-            }),
+            Ok(read) => {
+                // The rows landed but the labels did not: forget the gate so
+                // the next poll reads again, as for a failed read, rather than
+                // keeping the error until some unrelated write.
+                if read.meta.is_err() {
+                    self.seen = None;
+                }
+                replies.push(Reply::Rows {
+                    writes: self.writes,
+                    read: Box::new(read),
+                });
+            }
             Err(e) => {
                 self.seen = None;
                 replies.push(Reply::Failed(e));
@@ -380,6 +388,7 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
             // Raw characters, above the published cap: cleaning drops control
             // characters first, and they must not cost a visible one.
             crate::kernel::lua_api::META_VALUE_CHARS * 4,
+            &crate::kernel::lua_api::invisible_meta_key_chars(),
         )
         // Carried rather than raised, and never defaulted to empty: the
         // store keeps the labels it has and says why, so a failing meta query

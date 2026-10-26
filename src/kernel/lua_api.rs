@@ -44,38 +44,70 @@ pub const META_KEY_CHARS: usize = 64;
 pub const META_KEYS: usize = 32;
 
 /// The published form of one meta value: control characters (newlines
-/// included) and invisible format characters removed, and the length capped.
+/// included) and invisible characters removed, and the length capped.
 /// Anyone with the CLI writes these, agents included, so they reach a pane as
 /// untrusted plain text.
 pub fn clean_meta_value(value: &str) -> String {
     value
         .chars()
-        .filter(|c| !c.is_control() && !is_invisible_format(*c))
+        .filter(|c| !is_hidden(*c))
         .take(META_VALUE_CHARS)
         .collect()
 }
 
-/// The format characters that change how the text around them is drawn
-/// without being drawn themselves: zero-width spaces and joiners, bidi marks,
-/// embeddings, overrides and isolates, and the byte-order mark. Left in, a
-/// note could reorder the row it is drawn on.
-fn is_invisible_format(c: char) -> bool {
-    matches!(
-        c,
-        '\u{200b}'..='\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{feff}'
-    )
+/// The characters that are not drawn yet still act: the format characters
+/// that change how the text around them is drawn (the soft hyphen, the Arabic
+/// letter mark, the Mongolian vowel separator, zero-width spaces and joiners,
+/// bidi marks, embeddings, overrides and isolates, the byte-order mark,
+/// interlinear annotation, the tag characters, the shorthand and musical
+/// format controls), and the Hangul fillers, letters that draw as blank space.
+/// Left in, a note could reorder the row it is drawn on or carry text nobody
+/// sees.
+const INVISIBLE_META_RANGES: &[(char, char)] = &[
+    ('\u{00ad}', '\u{00ad}'),
+    ('\u{061c}', '\u{061c}'),
+    ('\u{180e}', '\u{180e}'),
+    ('\u{200b}', '\u{200f}'),
+    ('\u{202a}', '\u{202e}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{2069}'),
+    ('\u{feff}', '\u{feff}'),
+    ('\u{fff9}', '\u{fffb}'),
+    ('\u{e0001}', '\u{e0001}'),
+    ('\u{e0020}', '\u{e007f}'),
+    ('\u{115f}', '\u{1160}'),
+    ('\u{3164}', '\u{3164}'),
+    ('\u{ffa0}', '\u{ffa0}'),
+    ('\u{1bca0}', '\u{1bca3}'),
+    ('\u{1d173}', '\u{1d17a}'),
+];
+
+/// Extra characters the bounded metadata query must exclude before counting
+/// keys. Shares the publication filter's ranges so rejected keys cost no slot.
+pub fn invisible_meta_key_chars() -> String {
+    INVISIBLE_META_RANGES
+        .iter()
+        .flat_map(|&(start, end)| (start as u32..=end as u32).filter_map(char::from_u32))
+        .collect()
 }
 
-/// Whether a stored meta key is one a plugin may see.
+/// A character a published meta key or value may not carry: one that acts on
+/// the terminal, or one that is not drawn yet changes or hides text.
+fn is_hidden(c: char) -> bool {
+    c.is_control()
+        || INVISIBLE_META_RANGES
+            .iter()
+            .any(|&(start, end)| (start..=end).contains(&c))
+}
+
+/// Whether a stored meta key is one a plugin may see. A pane may draw the key
+/// too, so one carrying a hidden character is skipped, not cleaned: cleaning
+/// could fold it onto another key.
 pub fn is_published_meta_key(key: &str) -> bool {
     key.len() > META_PREFIX.len()
         && key.starts_with(META_PREFIX)
         && key.chars().count() <= META_KEY_CHARS
-        && !key.chars().any(char::is_control)
+        && !key.chars().any(is_hidden)
 }
 
 /// One published table's shape, rendered as a `---@class`.
@@ -251,7 +283,7 @@ pub static SESSION: Class = Class {
             .doc("What the agent said about itself."),
         leaf("notification", "string").opt(),
         leaf("meta", "table<string, string>").opt().doc(
-            "The session's `ui.*` meta keys, by full key (`meta[\"ui.note\"]`). Untrusted text anyone with the CLI can write: one line, control and invisible format characters stripped, at most 256 characters, 32 keys. Absent when it has none.",
+            "The session's `ui.*` meta keys, by full key (`meta[\"ui.note\"]`). Untrusted text anyone with the CLI can write: one line, control and invisible characters stripped, at most 256 characters, 32 keys. Absent when it has none.",
         ),
         leaf("display_order", "integer"),
         field("git", Ty::Record(&GIT_STATS)).opt(),
@@ -1192,6 +1224,14 @@ mod tests {
             clean_meta_value("ab\u{202e}c\u{200b}d\u{200d}e\u{2066}f\u{feff}g"),
             "abcdefg"
         );
+        // An Arabic letter mark, a soft hyphen, the Mongolian vowel separator,
+        // interlinear annotation and tag characters — hidden text — and a
+        // Hangul filler and a shorthand format control, which draw as nothing.
+        assert_eq!(
+            clean_meta_value("a\u{061c}b\u{00ad}c\u{180e}d\u{fff9}e\u{e0001}f\u{e0041}g"),
+            "abcdefg"
+        );
+        assert_eq!(clean_meta_value("a\u{3164}b\u{1bca0}c"), "abc");
         let long = "é".repeat(META_VALUE_CHARS + 10);
         assert_eq!(clean_meta_value(&long).chars().count(), META_VALUE_CHARS);
     }
@@ -1203,6 +1243,10 @@ mod tests {
         assert!(!is_published_meta_key("fm.lease"));
         assert!(!is_published_meta_key("thurbox.codex_conversation_id"));
         assert!(!is_published_meta_key("ui.\nnote"));
+        assert!(
+            !is_published_meta_key("ui.\u{202e}eton"),
+            "a key is drawn too"
+        );
         assert!(!is_published_meta_key(&format!(
             "ui.{}",
             "k".repeat(META_KEY_CHARS)

@@ -825,9 +825,81 @@ mod meta {
         publish(&list, &rows);
         let drawn = screen(&list, "sessions", 60, 12);
         assert_eq!(drawn.matches("alpha").count(), 1, "{drawn}");
+        assert_eq!(
+            drawn.matches('▾').count(),
+            2,
+            "the host and `alpha`, and no group for the blank label: {drawn}"
+        );
         assert!(
             drawn.contains("worker") && drawn.contains("other"),
             "{drawn}"
+        );
+    }
+
+    #[test]
+    fn hidden_keys_do_not_consume_the_published_metadata_allowance() {
+        let env = Env::new();
+        let worker = env.seed("worker", "/src/alpha");
+        let mut rows_store = store(&env);
+        // NUL cannot travel through argv, but another database writer can store it.
+        for index in 0..32 {
+            env.db()
+                .set_session_meta(worker, &format!("ui.a{index:02}\0"), "hidden")
+                .expect("store NUL key");
+        }
+        // Each family alone can fill the allowance before either visible label.
+        for hidden in ['\u{00ad}', '\u{200b}', '\u{3164}', '\u{e0020}'] {
+            for index in 0..32 {
+                let key = format!("ui.a{index:02}{hidden}");
+                ok(&env.cli(&["session", "meta", "set", "worker", &key, "hidden"]));
+            }
+        }
+        ok(&env.cli(&["session", "meta", "set", "worker", "ui.group", "release"]));
+        ok(&env.cli(&[
+            "session",
+            "meta",
+            "set",
+            "worker",
+            "ui.note",
+            "visible note",
+        ]));
+        let rows = reread(&mut rows_store);
+        let meta = &rows.sessions[0].meta;
+        assert_eq!(
+            meta.get("ui.note").map(String::as_str),
+            Some("visible note")
+        );
+        assert_eq!(meta.get("ui.group").map(String::as_str), Some("release"));
+        assert_eq!(meta.len(), 2, "hidden keys must never reach a plugin");
+        let list = bundled();
+        publish(&list, &rows);
+        let drawn = screen(&list, "sessions", 60, 12);
+        assert!(drawn.contains("visible note"), "{drawn}");
+        assert!(drawn.contains("release"), "{drawn}");
+
+        env.seed("other", "/src/alpha");
+        ok(&env.cli(&["session", "meta", "set", "other", "ui.note", "other note"]));
+        for index in 0..40 {
+            let key = format!("ui.z{index:02}");
+            ok(&env.cli(&["session", "meta", "set", "worker", &key, "visible"]));
+        }
+        let rows = reread(&mut rows_store);
+        let worker = rows
+            .sessions
+            .iter()
+            .find(|row| row.name == "worker")
+            .unwrap();
+        assert_eq!(worker.meta.len(), 32, "the visible-key quota still applies");
+        assert!(worker.meta.contains_key("ui.z29"));
+        assert!(!worker.meta.contains_key("ui.z30"));
+        let other = rows
+            .sessions
+            .iter()
+            .find(|row| row.name == "other")
+            .unwrap();
+        assert_eq!(
+            other.meta.get("ui.note").map(String::as_str),
+            Some("other note")
         );
     }
 
@@ -843,8 +915,11 @@ mod meta {
         // Make the next full read fail at the meta query, and give it a reason
         // to run: a row change moves the snapshot's generation.
         let raw = rusqlite::Connection::open(env.path("data").join("thurbox.db")).expect("open");
-        raw.execute_batch("DROP TABLE session_meta; UPDATE sessions SET name = 'renamed';")
-            .expect("break the meta read");
+        raw.execute_batch(
+            "ALTER TABLE session_meta RENAME TO session_meta_away; \
+             UPDATE sessions SET name = 'renamed';",
+        )
+        .expect("break the meta read");
         let rows = reread(&mut rows_store);
         assert_eq!(
             rows.sessions[0].name, "renamed",
@@ -862,5 +937,18 @@ mod meta {
             "{:?}",
             rows.error
         );
+
+        // Once the meta reads again, the next ordinary poll says so — with no
+        // other write to prompt it. Not `reread`, which forces a full read and
+        // so would pass whether or not a failed meta read is retried.
+        raw.execute_batch("ALTER TABLE session_meta_away RENAME TO session_meta;")
+            .expect("restore the meta read");
+        rows_store.refresh_if_due_at(
+            std::time::Instant::now() + thurbox::kernel::snapshot::REFRESH_INTERVAL,
+        );
+        rows_store.settle();
+        let rows = rows_store.current().clone();
+        assert_eq!(rows.error, None, "a failed meta read is retried");
+        assert_eq!(meta(&rows).as_deref(), Some("release"));
     }
 }
