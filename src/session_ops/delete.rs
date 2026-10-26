@@ -242,10 +242,27 @@ pub(super) fn rollback_spawn(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     session: &crate::sync::SharedSession,
+    inherited: &[crate::sync::SharedWorktree],
 ) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
+    let mut rollback = session.clone();
+    if !inherited.is_empty() {
+        // Successful forks retain recoverability. Only this failed creation's
+        // cleanup inventory treats inherited checkouts as borrowed, including
+        // the inventory a later remote-teardown retry will read.
+        for worktree in &mut rollback.worktrees {
+            if inherited
+                .iter()
+                .any(|parent| parent.worktree_path == worktree.worktree_path)
+            {
+                worktree.created_by_thurbox = false;
+            }
+        }
+        db.upsert_session(&rollback)
+            .map_err(|e| format!("record rollback worktrees: {e}"))?;
+    }
     finish_locally_with(
         db,
-        session,
+        &rollback,
         true,
         ForceDeleteReport::default(),
         None,

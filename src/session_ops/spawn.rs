@@ -640,18 +640,19 @@ fn spawn(
         None => Ok(()),
     };
     if let Err(e) = recorded {
-        let rollback = match super::delete::rollback_spawn(db, backends, &shared) {
-            Ok(report) => {
-                let mut errors = report.worktree_errors;
-                errors.extend(report.remote_teardown_error);
-                if errors.is_empty() {
-                    String::new()
-                } else {
-                    format!("; cleanup: {}", errors.join("; "))
+        let rollback =
+            match super::delete::rollback_spawn(db, backends, &shared, &req.inherit_worktrees) {
+                Ok(report) => {
+                    let mut errors = report.worktree_errors;
+                    errors.extend(report.remote_teardown_error);
+                    if errors.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; cleanup: {}", errors.join("; "))
+                    }
                 }
-            }
-            Err(error) => format!("; failed to roll back the created session: {error}"),
-        };
+                Err(error) => format!("; failed to roll back the created session: {error}"),
+            };
         return Err(
             format!("Failed to record the session's launch environment: {e}{rollback}").into(),
         );
@@ -1472,9 +1473,7 @@ fn resolve_dirs(
             .iter()
             .any(|existing| existing.worktree_path == inherited.worktree_path)
         {
-            let mut borrowed = inherited.clone();
-            borrowed.created_by_thurbox = false;
-            worktrees.push(borrowed);
+            worktrees.push(inherited.clone());
         }
     }
 

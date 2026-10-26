@@ -3477,3 +3477,43 @@ fn a_failed_remote_environment_save_records_the_owed_teardown() {
     assert_eq!(owed[0].id, id);
     assert!(!backend.windows_of(&id.to_string()).is_empty());
 }
+
+#[test]
+#[cfg(unix)]
+fn a_saved_fork_recovers_its_checkout_after_parent_teardown() {
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+    use thurbox::session_ops::{
+        delete_session_headless, fork_session_headless, restore_session_headless,
+    };
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (_home, _config) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let parent = spawn_session_headless(
+        &db,
+        &backends,
+        SpawnRequest {
+            name: "checkout-parent".into(),
+            repo_path: repo.path().into(),
+            worktree_branch: Some("fix/recover-fork".into()),
+            base_branch: Some("main".into()),
+            command: Some("sh".into()),
+            args: vec!["-c".into(), "exec sleep 60".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let fork = fork_session_headless(&db, &backends, parent.session_id, "saved-fork").unwrap();
+    delete_session_headless(&db, &backends, fork.session_id, false).unwrap();
+    delete_session_headless(&db, &backends, parent.session_id, true).unwrap();
+    assert!(!parent.cwd.exists());
+    let restored = restore_session_headless(&db, &backends, fork.session_id, false)
+        .expect("a saved fork must recover the branch its parent removed");
+    assert_eq!(restored.worktrees_recovered, 1);
+    assert!(restored.respawn_error.is_none(), "{restored:?}");
+    assert!(parent.cwd.is_dir());
+}
