@@ -61,6 +61,58 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os(var).map(PathBuf::from)
 }
 
+/// Write a config file beside its destination, then replace the destination.
+///
+/// Keeping the staged file in the same directory makes the final rename a
+/// same-filesystem operation: readers see either the previous complete file or
+/// the new complete file. A failed staged write leaves the destination alone.
+/// This does not promise durability across storage or operating-system failure;
+/// neither the file nor its parent directory is synced explicitly.
+pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let staged = path.with_extension(format!(
+        "saving-{}-{}",
+        std::process::id(),
+        SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(&staged, contents)
+        .and_then(|()| replace_file(&staged, path))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&staged);
+            e
+        })
+}
+
+#[cfg(not(windows))]
+fn replace_file(staged: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(staged, path)
+}
+
+#[cfg(windows)]
+fn replace_file(staged: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let staged: Vec<u16> = staged.as_os_str().encode_wide().chain(Some(0)).collect();
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: both arguments are valid, NUL-terminated UTF-16 paths and remain
+    // alive for the duration of the call.
+    let moved = unsafe {
+        MoveFileExW(
+            staged.as_ptr(),
+            path.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// Whether `exe` resolves on `PATH`. A minimal lookup that avoids pulling in a
 /// `which` crate for a one-off probe (used to detect optional helper binaries
 /// like `wsl.exe` / `powershell.exe`); cheap PATH scan, no process spawn.

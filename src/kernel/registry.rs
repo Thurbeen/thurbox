@@ -1121,7 +1121,8 @@ impl Registry {
 
         let text = serde_json::to_string_pretty(&serde_json::Value::Object(json))
             .map_err(|e| e.to_string())?;
-        std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))
+        crate::paths::write_atomically(&path, &text)
+            .map_err(|e| format!("write {}: {e}", path.display()))
     }
 }
 

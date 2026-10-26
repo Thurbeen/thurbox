@@ -12,6 +12,9 @@
 
 use std::collections::HashSet;
 
+#[cfg(unix)]
+use std::process::Command;
+
 use thurbox::kernel::bundled;
 use thurbox::kernel::host::LuaHost;
 use thurbox::kernel::inventory::{self, State, Trust};
@@ -208,6 +211,72 @@ fn the_decision_is_per_file_and_survives_a_restart() {
         .expect("idempotent");
 
     std::env::remove_var("THURBOX_CONFIG_DIR");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_ui_json_save_leaves_every_existing_decision_intact() {
+    const CHILD: &str = "THURBOX_ATOMIC_UI_JSON_CHILD";
+    const ROOT: &str = "THURBOX_ATOMIC_UI_JSON_ROOT";
+
+    if std::env::var_os(CHILD).is_some() {
+        let root = std::path::PathBuf::from(std::env::var_os(ROOT).expect("test root"));
+        let _guard = thurbox::paths::TestPathGuard::new(&root);
+        let path = root.join("ui.json");
+        let limit = std::fs::metadata(&path).expect("seed metadata").len();
+        let limits = libc::rlimit {
+            rlim_cur: limit as libc::rlim_t,
+            rlim_max: limit as libc::rlim_t,
+        };
+        // SAFETY: this is an isolated child process dedicated to this probe.
+        unsafe {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &limits), 0);
+        }
+
+        let mut registry = Registry::load();
+        let result = registry.set_disabled(&format!("/{}/plugin.lua", "x".repeat(4096)), true);
+        assert!(result.is_err(), "the bounded write must fail");
+        return;
+    }
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("ui.json");
+    let original = r#"{
+  "bindings": {"sessions.next": "ctrl+n"},
+  "settings": {"sessions.group_by_repo": false},
+  "pills": {"sessions.create": 7},
+  "trusted": {"/ui/plugins/mine.lua": "sha256:kept"},
+  "disabled": ["/ui/plugins/off.lua"]
+}
+"#;
+    std::fs::write(&path, original).expect("seed ui.json");
+
+    let output = Command::new(std::env::current_exe().expect("test binary"))
+        .args([
+            "--exact",
+            "a_failed_ui_json_save_leaves_every_existing_decision_intact",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env(ROOT, root.path())
+        .output()
+        .expect("run child probe");
+    assert!(
+        output.status.success(),
+        "child failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read ui.json after failed save"),
+        original,
+        "bindings, settings, pills, trust and disabled choices must survive a failed save"
+    );
+    let names: Vec<_> = std::fs::read_dir(root.path())
+        .expect("read config dir")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("ui.json")]);
 }
 
 #[test]
