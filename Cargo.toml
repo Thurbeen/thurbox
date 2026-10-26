@@ -22,7 +22,7 @@ crossterm = "0.29"
 tui-term = "0.3"
 
 # Terminal emulation
-vt100 = "0.16"
+vt100 = "0.18"
 
 # The `/pattern/` term of the content search (kernel::search). Already in the
 # tree through tracing-subscriber's env-filter.
