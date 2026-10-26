@@ -198,7 +198,9 @@ won't pay off.
   double-write, but in vt100 0.16 `set_scrollback`/`scrollback` are **O(1)**
   (a clamped field assignment). With ADR-P1 throttling it now runs ~4×/s when
   idle. Caching it would add interior-mutability/borrow complexity for no
-  measurable gain. Left as-is (it rides along with `parser_locks_render`).
+  measurable gain. With vt100 0.18, `set_scrollback` also visits the visible
+  history rows to grow them to the current width; the O(1) observation above
+  applies to the earlier version. This still rides along with `parser_locks_render`.
 - **Automations-pane entries** (`src/app/view.rs`): rebuilt each render
   (`automation_entries_built`). The only repeated parse is `humanize_cron`, and
   the countdown portion *must* stay live, so a cache would only memoize the

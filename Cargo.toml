@@ -22,7 +22,7 @@ crossterm = "0.29"
 tui-term = "0.3"
 
 # Terminal emulation
-vt100 = "0.16"
+vt100 = "0.18"
 
 # The `/pattern/` term of the content search (kernel::search). Already in the
 # tree through tracing-subscriber's env-filter.
@@ -229,3 +229,7 @@ zbus = { version = "6.1.0", default-features = false, features = ["tokio", "serv
 # device-attributes replies and a prewritten mouse burst across the buffer edge.
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }
+
+# tui-term 0.3.4 still requires vt100 0.16. Drop this patch when a release
+# supports vt100 0.18; the dependency and parser size arguments are patched.
+tui-term = { path = "vendor/tui-term" }

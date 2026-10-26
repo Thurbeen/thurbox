@@ -254,7 +254,7 @@ fn through_pty(bytes: &[u8]) -> Vec<u8> {
 /// One row of a screen, cell by cell: what is in it and how it is drawn. A cell
 /// never written and a written space read the same, as they do on screen.
 fn row_cells(screen: &vt100::Screen, row: u16) -> Vec<String> {
-    (0..screen.size().1)
+    (0..screen.size().1.get())
         .map(|col| {
             let Some(cell) = screen.cell(row, col) else {
                 return String::new();
@@ -279,7 +279,7 @@ fn row_cells(screen: &vt100::Screen, row: u16) -> Vec<String> {
 
 /// Every row the parser holds, oldest history first, each with its wrap flag.
 fn all_rows(parser: &mut vt100::Parser<impl vt100::Callbacks>) -> Vec<(Vec<String>, bool)> {
-    let rows = parser.screen().size().0;
+    let rows = parser.screen().size().0.get();
     parser.screen_mut().set_scrollback(usize::MAX);
     let depth = parser.screen().scrollback();
     let mut out = Vec::new();
@@ -341,11 +341,12 @@ async fn a_session_nobody_has_looked_at_holds_no_screen() {
 }
 
 fn grid_size(terminals: &Terminals) -> (u16, u16) {
-    agent_parser(terminals)
+    let size = agent_parser(terminals)
         .lock()
         .expect("parser")
         .screen()
-        .size()
+        .size();
+    (size.0.get(), size.1.get())
 }
 
 /// The numbers of every complete `line-N` the parser holds, oldest first. The
@@ -519,7 +520,8 @@ async fn the_rebuilt_terminal_is_the_one_that_was_never_dropped() {
             .any(|line| line.contains("after prompt>"))
     });
 
-    let mut reference = vt100::Parser::new(ROWS, COLS, 1000);
+    let mut reference =
+        vt100::Parser::new(ROWS.try_into().unwrap(), COLS.try_into().unwrap(), 1000);
     reference.process(&through_pty(&before));
     reference.process(&through_pty(&after));
 

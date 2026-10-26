@@ -729,7 +729,7 @@ fn caching(
 /// A screen with the shape an agent's output has: mostly text, a few URLs, some
 /// styling. Filled to the full grid, because both costs below are per cell.
 fn agent_screen(rows: u16, cols: u16) -> vt100::Parser {
-    let mut parser = vt100::Parser::new(rows, cols, 0);
+    let mut parser = vt100::Parser::new(rows.try_into().unwrap(), cols.try_into().unwrap(), 0);
     for nth in 0..rows {
         let line = if nth % 12 == 0 {
             format!("\x1b[33m  see https://github.com/Thurbeen/thurbox/pull/{nth} for the rest\x1b[0m\r\n")

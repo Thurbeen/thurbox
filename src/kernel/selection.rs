@@ -201,6 +201,7 @@ pub fn extract_text_from_rows(
     top: u16,
 ) -> String {
     let (grid_rows, grid_cols) = screen.size();
+    let (grid_rows, grid_cols) = (grid_rows.get(), grid_cols.get());
     let (ox, oy) = pane_origin;
 
     // Logical lines, each possibly assembled from several wrapped grid rows.
@@ -495,7 +496,11 @@ mod tests {
 
     /// Feed `input` to a fresh parser sized `rows`x`cols` with scrollback.
     fn screen_with(rows: u16, cols: u16, scrollback: usize, input: &str) -> vt100::Parser {
-        let mut p = vt100::Parser::new(rows, cols, scrollback);
+        let mut p = vt100::Parser::new(
+            rows.try_into().unwrap(),
+            cols.try_into().unwrap(),
+            scrollback,
+        );
         p.process(input.as_bytes());
         p
     }

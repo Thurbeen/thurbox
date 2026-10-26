@@ -115,8 +115,12 @@ fn fill(parser: &mut SessionParser, lines: usize, seed: usize) {
 fn sources(sessions: usize, scrollback: usize) -> Vec<Source> {
     (0..sessions)
         .map(|n| {
-            let mut parser =
-                vt100::Parser::new_with_callbacks(ROWS, COLS, scrollback, TermSignals::default());
+            let mut parser = vt100::Parser::new_with_callbacks(
+                ROWS.try_into().unwrap(),
+                COLS.try_into().unwrap(),
+                scrollback,
+                TermSignals::default(),
+            );
             fill(&mut parser, scrollback + usize::from(ROWS), n);
             Source {
                 session: format!("session-{n}"),

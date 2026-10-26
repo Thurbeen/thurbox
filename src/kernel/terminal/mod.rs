@@ -1455,6 +1455,7 @@ impl Terminals {
         let parser = parser.lock().ok()?;
         let screen = parser.screen();
         let (rows, cols) = screen.size();
+        let (rows, cols) = (rows.get(), cols.get());
         let mut out = String::new();
         for row in 0..rows {
             let line = screen.contents_between(row, 0, row, cols);
@@ -2286,8 +2287,10 @@ impl Terminals {
             top,
         };
         frame.render_widget(screen_widget(&view, cursor), area);
-        if parser.screen().size() != wanted && slot.pane.sized_elsewhere() {
-            paint_sized_elsewhere(frame, area, parser.screen().size());
+        let (rows, cols) = parser.screen().size();
+        let size = (rows.get(), cols.get());
+        if size != wanted && slot.pane.sized_elsewhere() {
+            paint_sized_elsewhere(frame, area, size);
         }
         super::paint::ProgramPaint::Painted
     }
@@ -2354,8 +2357,10 @@ impl Terminals {
             top,
         };
         frame.render_widget(screen_widget(&view, cursor), area);
-        if parser.screen().size() != wanted && pane.sized_elsewhere() {
-            paint_sized_elsewhere(frame, area, parser.screen().size());
+        let (rows, cols) = parser.screen().size();
+        let size = (rows.get(), cols.get());
+        if size != wanted && pane.sized_elsewhere() {
+            paint_sized_elsewhere(frame, area, size);
         }
         true
     }
@@ -2391,7 +2396,7 @@ fn paint_sized_elsewhere(frame: &mut Frame, area: Rect, (rows, cols): (u16, u16)
 /// The grid row to paint at the top of `area`: the bottom rows of a grid
 /// taller than the rect, see [`Painted::top`].
 fn grid_top(screen: &vt100::Screen, area: Rect) -> u16 {
-    screen.size().0.saturating_sub(area.height)
+    screen.size().0.get().saturating_sub(area.height)
 }
 
 /// A terminal grid as a widget, painting its cursor or not.
@@ -2619,7 +2624,7 @@ mod tests {
     #[test]
     fn a_grid_taller_than_its_rect_shows_its_bottom() {
         use ratatui::widgets::Widget;
-        let mut parser = vt100::Parser::new(6, 4, 0);
+        let mut parser = vt100::Parser::new(6.try_into().unwrap(), 4.try_into().unwrap(), 0);
         parser.process(b"r0\r\nr1\r\nr2\r\nr3\r\nr4\r\nr5");
         let area = Rect::new(0, 0, 4, 4);
         let top = grid_top(parser.screen(), area);
@@ -2681,7 +2686,7 @@ mod tests {
     #[test]
     fn only_a_terminal_that_holds_focus_paints_its_cursor() {
         use ratatui::widgets::Widget;
-        let mut parser = vt100::Parser::new(2, 8, 0);
+        let mut parser = vt100::Parser::new(2.try_into().unwrap(), 8.try_into().unwrap(), 0);
         parser.process(b"$ ");
         for (cursor, painted) in [(true, "\u{2588}"), (false, " ")] {
             let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 8, 2));

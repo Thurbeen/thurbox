@@ -392,7 +392,11 @@ impl Tui {
         let raw = Arc::new(Mutex::new(Vec::new()));
         let replies = Arc::new(Mutex::new(Vec::new()));
         let reply_error = Arc::new(Mutex::new(None));
-        let screen = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
+        let screen = Arc::new(Mutex::new(vt100::Parser::new(
+            rows.try_into().unwrap(),
+            cols.try_into().unwrap(),
+            0,
+        )));
         let mut reader = std::fs::File::from(master.try_clone().expect("dup master"));
         let terminal = Arc::new(Mutex::new(TestTerminal {
             kitty: matches!(mode, TerminalMode::Kitty),
@@ -478,7 +482,7 @@ impl Tui {
     fn row(&self, y: u16) -> String {
         let screen = self.screen.lock().unwrap();
         let screen = screen.screen();
-        (0..screen.size().1)
+        (0..screen.size().1.get())
             .map(|x| {
                 screen
                     .cell(y, x)
@@ -534,7 +538,7 @@ impl Tui {
             .lock()
             .unwrap()
             .screen_mut()
-            .set_size(rows, cols);
+            .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
     }
 
     /// Poll the frame until `needle` shows up.
@@ -2527,6 +2531,7 @@ fn hiding_the_session_column_reflows_without_ghosts_or_a_screen_clear() {
     // the centre pane's own border — a box-drawing glyph — and nothing in it
     // is the list's. Row 0 and the last two rows are the chrome bands.
     let (rows, _) = tui.screen.lock().unwrap().screen().size();
+    let rows = rows.get();
     for y in 1..rows - 2 {
         let row = tui.row(y);
         let first = row.chars().next().unwrap_or(' ');
@@ -3877,15 +3882,11 @@ fn select_expanded_host(tui: &mut Tui) {
     tui.wait_for("probe");
 }
 
-fn record_tui_transition(tui: &Tui, before: Vec<u8>, output_var: &str) {
+fn record_tui_transition(tui: &Tui, before: String, output_var: &str) {
     if let Ok(path) = std::env::var(output_var) {
         let after = tui.screen.lock().unwrap().screen().contents_formatted();
-        let event = |time, bytes: Vec<u8>| {
-            serde_json::json!([
-                time,
-                "o",
-                format!("\x1b[2J\x1b[H{}", String::from_utf8(bytes).unwrap())
-            ])
+        let event = |time, contents: String| {
+            serde_json::json!([time, "o", format!("\x1b[2J\x1b[H{contents}")])
         };
         let cast = [
             serde_json::json!({"version": 2, "width": 120, "height": 40}),
@@ -5818,7 +5819,7 @@ impl Tui {
     fn session_row(&self, name: &str) -> Option<(u16, u16)> {
         use unicode_width::UnicodeWidthStr;
 
-        let rows = self.screen.lock().unwrap().screen().size().0;
+        let rows = self.screen.lock().unwrap().screen().size().0.get();
         (1..rows).find_map(|y| {
             let row = self.row(y);
             let body = row.strip_prefix('│').or_else(|| row.strip_prefix('┃'))?;
@@ -5834,7 +5835,7 @@ impl Tui {
     /// a pane are multi-byte glyphs, and a byte offset lands a press several
     /// cells into the text it was aimed at.
     fn find(&self, needle: &str) -> (u16, u16) {
-        let rows = self.screen.lock().unwrap().screen().size().0;
+        let rows = self.screen.lock().unwrap().screen().size().0.get();
         (0..rows)
             .find_map(|y| {
                 let row = self.row(y);
@@ -7496,7 +7497,7 @@ impl Tui {
 
     /// The first and last row a scrollbar occupies in column `x` — its caps.
     fn track_extent(&self, x: u16) -> (u16, u16) {
-        let rows = self.screen.lock().unwrap().screen().size().0;
+        let rows = self.screen.lock().unwrap().screen().size().0.get();
         let painted: Vec<u16> = (0..rows)
             .filter(|y| matches!(self.cell(x, *y).as_str(), "▲" | "▼" | "║" | "█"))
             .collect();
@@ -9997,7 +9998,7 @@ fn agent_border(tui: &Tui) -> u16 {
 /// strip's rows, which repeat the same text further down.
 fn agent_rows(tui: &Tui) -> Vec<(u16, String)> {
     let x = usize::from(agent_border(tui));
-    let rows = tui.screen.lock().unwrap().screen().size().0;
+    let rows = tui.screen.lock().unwrap().screen().size().0.get();
     (2..rows)
         .map(|y| (y, tui.row(y)))
         .filter(|(_, row)| {

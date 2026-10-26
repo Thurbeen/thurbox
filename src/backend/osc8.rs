@@ -71,6 +71,7 @@ fn close_run(screen: &vt100::Screen, table: &mut HyperlinkTable, open: PendingHy
         return;
     }
     let (_, cols) = screen.size();
+    let cols = cols.get();
     for row in open.row..=end_row {
         let from = if row == open.row { open.col } else { 0 };
         // The cursor sits on the cell the *next* glyph goes to, so `end_col` is
@@ -102,6 +103,7 @@ fn scroll_witness(screen: &vt100::Screen, row: u16, col: u16) -> String {
     let mut witness = row_glyphs(screen, row, 0, col);
     if row > 0 {
         let (_, cols) = screen.size();
+        let cols = cols.get();
         witness.push('\n');
         witness.push_str(&row_glyphs(screen, row - 1, 0, cols));
     }
@@ -151,13 +153,19 @@ mod tests {
     }
 
     fn feed(rows: u16, cols: u16, bytes: &[u8]) -> vt100::Parser<Capture> {
-        let mut parser = vt100::Parser::new_with_callbacks(rows, cols, 0, Capture::default());
+        let mut parser = vt100::Parser::new_with_callbacks(
+            rows.try_into().unwrap(),
+            cols.try_into().unwrap(),
+            0,
+            Capture::default(),
+        );
         parser.process(bytes);
         parser
     }
 
     fn screen_row(parser: &vt100::Parser<Capture>, row: u16) -> String {
         let (_, cols) = parser.screen().size();
+        let cols = cols.get();
         row_glyphs(parser.screen(), row, 0, cols)
     }
 
