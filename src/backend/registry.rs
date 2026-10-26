@@ -225,9 +225,22 @@ pub(crate) mod tests {
         }
         fn pane_state(
             &self,
-            _: &str,
+            pane: &str,
         ) -> crate::backend::contract::BackendResult<crate::backend::PaneState> {
-            Err(anyhow::anyhow!("this stub has no panes to read").into())
+            if self
+                .windows
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(id, ..)| id == pane)
+            {
+                Ok(crate::backend::PaneState {
+                    dead: Some(false),
+                    ..Default::default()
+                })
+            } else {
+                Err(anyhow::anyhow!("this stub has no such pane").into())
+            }
         }
         fn pane_path(&self, _: &str) -> crate::backend::contract::BackendResult<Option<String>> {
             Err(anyhow::anyhow!("this stub has no panes to read").into())

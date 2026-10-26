@@ -144,6 +144,52 @@ impl Database {
         Ok(taken == 1)
     }
 
+    /// Claim a directory only when no live lease in its scope overlaps it.
+    /// The write transaction keeps the overlap check and claim atomic.
+    pub fn take_directory_lease(
+        &self,
+        scope: &str,
+        path: &std::path::Path,
+        expires_at: u64,
+        now: u64,
+    ) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let prefix = format!("lock:name:{scope}:");
+        let mut stmt = self.conn.prepare(
+            "SELECT substr(consumer, length(?1) + 1) FROM event_cursors \
+             WHERE substr(consumer, 1, length(?1)) = ?1 AND lease_until > ?2",
+        )?;
+        let held = stmt.query_map(params![prefix, now as i64], |row| row.get::<_, String>(0))?;
+        for held in held {
+            let held = std::path::PathBuf::from(held?);
+            if path.starts_with(&held) || held.starts_with(path) {
+                return Ok(false);
+            }
+        }
+        drop(stmt);
+        let taken = self.take_lease(
+            &LockSubject::Name {
+                scope: scope.into(),
+                name: path.display().to_string(),
+            },
+            expires_at,
+            now,
+        )?;
+        tx.commit()?;
+        Ok(taken)
+    }
+
+    pub fn owns_lease(
+        &self,
+        subject: &LockSubject,
+        token: u64,
+        now: u64,
+    ) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM event_cursors WHERE consumer = ?1 AND lease_until = ?2 AND lease_until > ?3)",
+            params![subject.consumer(), token as i64, now as i64], |r| r.get(0))
+    }
+
     /// Give back the lease taken with `expires_at`, and only that one. A lock
     /// row is deleted rather than zeroed, so the table is bounded by the leases
     /// held, not by every name ever locked.

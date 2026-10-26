@@ -189,7 +189,6 @@ declares it.
 (`installed_with`/`is_stale`), and the full self-heal contract are in ADR-21 of
 `docs/ARCHITECTURE.md`.**
 
-
 ### User lifecycle hooks stay user-owned
 
 Installation refuses payload, symlink, external-file and config-merge targets

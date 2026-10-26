@@ -516,6 +516,7 @@ fn ensure_automation(
     let schedule = parse_trigger(&auto.trigger, None, None)?;
     let next_run_at = schedule.next_after(current_time_millis(), None);
     let new = NewAutomation {
+        owner_session_id: None,
         name: auto.name.clone(),
         enabled: true,
         schedule,

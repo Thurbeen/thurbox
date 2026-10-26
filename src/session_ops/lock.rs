@@ -65,6 +65,12 @@ pub struct Lock<'a> {
     expires_at: u64,
 }
 
+impl Lock<'_> {
+    pub(crate) fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+}
+
 impl Drop for Lock<'_> {
     fn drop(&mut self) {
         // Best-effort: a lease that cannot be deleted expires on its own, and
@@ -117,6 +123,141 @@ pub fn lock_for<'a>(
         op: op.to_string(),
         expires_at,
     }))
+}
+
+/// Conversation aliases can name one workspace across distinct session rows.
+pub(crate) fn workspace<'a>(
+    db: &'a Database,
+    backend_type: &str,
+    id: Option<&str>,
+    op: &str,
+) -> Result<Option<Lock<'a>>, crate::session_ops::OpError> {
+    let Some(name) = id
+        .map(crate::paths::sanitize_workspace_segment)
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(None);
+    };
+    lock(
+        db,
+        Subject::Name {
+            scope: format!("workspace:{}", super::machine_key(backend_type)),
+            name,
+        },
+        op,
+    )?
+    .map(Some)
+    .ok_or_else(|| {
+        crate::session_ops::OpError::Conflict(
+            "another lifecycle operation holds this workspace".into(),
+        )
+    })
+}
+
+/// Local aliases name one checkout. A remote path belongs to its host's
+/// filesystem and must never be resolved against the observer's directories.
+pub(crate) fn worktree_key(backend_type: &str, path: &std::path::Path) -> std::path::PathBuf {
+    if crate::session::Route::is_remote_key(backend_type) {
+        return path.to_path_buf();
+    }
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut normalized = std::path::PathBuf::new();
+    for part in absolute.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            part => normalized.push(part.as_os_str()),
+        }
+    }
+    // Planned checkouts do not exist yet; resolve their existing ancestor.
+    let mut ancestor = normalized.clone();
+    let mut suffix = Vec::new();
+    loop {
+        if let Ok(mut canonical) = std::fs::canonicalize(&ancestor) {
+            for part in suffix.into_iter().rev() {
+                canonical.push(part);
+            }
+            return canonical;
+        }
+        let Some(name) = ancestor.file_name() else {
+            return normalized;
+        };
+        suffix.push(name.to_os_string());
+        if !ancestor.pop() {
+            return normalized;
+        }
+    }
+}
+
+/// Whether removing a directory would remove one of this session's live paths.
+pub(crate) fn claims_directory(
+    session: &crate::sync::SharedSession,
+    backend_type: &str,
+    directory: &std::path::Path,
+) -> bool {
+    if !super::same_machine(&session.backend_type, backend_type) {
+        return false;
+    }
+    let directory = worktree_key(backend_type, directory);
+    session
+        .worktrees
+        .iter()
+        .map(|wt| &wt.worktree_path)
+        .chain(session.cwd.iter())
+        .chain(session.additional_dirs.iter())
+        .any(|path| worktree_key(&session.backend_type, path).starts_with(&directory))
+}
+
+/// Serialize checkout cleanup with every directory borrower, including children.
+pub(crate) fn worktrees<'a>(
+    db: &'a Database,
+    backend_type: &str,
+    paths: impl IntoIterator<Item = std::path::PathBuf>,
+    op: &str,
+) -> Result<Vec<Lock<'a>>, crate::session_ops::OpError> {
+    let paths: std::collections::BTreeSet<_> = paths
+        .into_iter()
+        .map(|path| worktree_key(backend_type, &path))
+        .collect();
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    let mut held = Vec::new();
+    let scope = format!("worktree:{}", super::machine_key(backend_type));
+    let now = current_time_millis();
+    let expires_at = now.saturating_add(ttl_ms());
+    for path in paths {
+        // One operation may borrow both a directory and its child.
+        if roots.iter().any(|root| path.starts_with(root)) {
+            continue;
+        }
+        if !db
+            .take_directory_lease(&scope, &path, expires_at, now)
+            .map_err(|e| format!("lock directory for {op}: {e}"))?
+        {
+            return Err(crate::session_ops::OpError::Conflict(
+                "another lifecycle operation holds this worktree".into(),
+            ));
+        }
+        held.push(Lock {
+            db,
+            subject: Subject::Name {
+                scope: scope.clone(),
+                name: path.display().to_string(),
+            },
+            op: op.into(),
+            expires_at,
+        });
+        roots.push(path);
+    }
+    Ok(held)
 }
 
 #[cfg(test)]

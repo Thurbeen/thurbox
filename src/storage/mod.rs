@@ -13,6 +13,7 @@
 pub mod audit;
 pub mod automations;
 pub mod event_cursors;
+pub mod intents;
 pub mod keybindings;
 pub mod messages;
 mod relaunches;

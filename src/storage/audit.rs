@@ -93,6 +93,29 @@ impl Database {
     pub fn prune_audit_log(&self) -> rusqlite::Result<usize> {
         let retention_days = crate::session::settings::global().audit_retention_days;
         let cutoff = current_time_millis().saturating_sub(retention_days * MS_PER_DAY);
+        let expired: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE purged_at IS NOT NULL AND purged_at < ?1)",
+            [cutoff as i64],
+            |row| row.get(0),
+        )?;
+        if expired {
+            let tx = self.write_transaction()?;
+            // Only retention lifts the marker guard; no reader sees the gap.
+            let ids = {
+                let mut stmt = self.conn.prepare("UPDATE sessions SET purged_at = NULL WHERE purged_at IS NOT NULL AND purged_at < ?1 RETURNING id")?;
+                let rows = stmt.query_map([cutoff as i64], |row| row.get::<_, String>(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            {
+                let mut delete = self
+                    .conn
+                    .prepare_cached("DELETE FROM sessions WHERE id = ?1")?;
+                for id in ids {
+                    delete.execute([id])?;
+                }
+            }
+            tx.commit()?;
+        }
         self.delete_if_any("audit_log WHERE timestamp < ?1", params![cutoff as i64])
     }
 

@@ -58,6 +58,8 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
                 "create_parity": true,
                 "agent_args": true,
                 "telemetry_attrs": true,
+                "purged_tombstones": true,
+                "lifecycle_preconditions": true,
             }),
             format!("thurbox {current}"),
         );

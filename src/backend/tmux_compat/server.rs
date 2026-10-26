@@ -17,8 +17,8 @@ use anyhow::{bail, Context, Result};
 use tracing::{debug, info, warn};
 
 use crate::backend::contract::{
-    AdoptedSession, DiscoveredSession, Key, Owner, PaneChunk, PaneId, PaneSize, PaneState, Placed,
-    SessionBackend, SpawnedSession, WindowRole, WindowSpec,
+    AdoptedSession, BackendLiveness, DiscoveredSession, Key, Owner, PaneChunk, PaneId, PaneSize,
+    PaneState, Placed, SessionBackend, SpawnedSession, WindowRole, WindowSpec,
 };
 use crate::backend::identity::{window_name_for, Located, WindowIndex, SHELL_WINDOW_PREFIX};
 use crate::backend::instance::{host_socket, known_host_socket, learned_host_socket, local_socket};
@@ -507,7 +507,7 @@ fn stamped_windows_in(listing: &str, session_id: &str, role: WindowRole) -> Vec<
     let mut found: Vec<(u64, String)> = listing
         .lines()
         .filter_map(|line| {
-            let mut parts = line.splitn(3, '|');
+            let mut parts = line.split('|');
             let window = parts.next()?;
             let stamp = parts.next()?;
             let stamped_role = parts.next()?;
@@ -3098,9 +3098,81 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         if self.transport.is_remote() {
             return Ok(self.create_remote_window(spec)?);
         }
-        let pane_id = PaneId::new(self.create_local_window(spec)?)?;
+        let pane_id = PaneId::new(self.create_local_window(spec, true)?)?;
         self.confirm_spawned(spec, &pane_id)?;
         Ok(pane_id)
+    }
+
+    fn create_window_observed(
+        &self,
+        spec: &WindowSpec<'_>,
+        settle: std::time::Duration,
+    ) -> crate::backend::contract::BackendResult<(PaneId, BackendLiveness)> {
+        let remote = self.transport.is_remote();
+        let pane = if remote || !M::WINDOW_OPTIONS {
+            self.create_window(spec)?
+        } else {
+            PaneId::new(self.create_local_window(spec, false)?)?
+        };
+        std::thread::sleep(settle);
+        let window_name = window_name_for(spec.role, spec.owner.name);
+        if !M::WINDOW_OPTIONS {
+            let panes = self.spawned_panes(&window_name)?;
+            if panes.iter().any(|(id, dead)| id != pane.as_str() && !dead) {
+                return Err(crate::backend::contract::BackendError::Refused(
+                    "created window identity is ambiguous".into(),
+                ));
+            }
+            let state = match panes.iter().find(|(id, _)| id == pane.as_str()) {
+                Some((_, false)) => BackendLiveness::Live,
+                Some((_, true)) => BackendLiveness::Exited,
+                None => BackendLiveness::Missing,
+            };
+            return Ok((pane, state));
+        }
+        let format = format!("{RETIRE_FORMAT}|#{{pane_id}}|#{{pane_dead}}|#{{window_name}}");
+        let output = self
+            .mux_command(&["list-windows", "-t", &self.session, "-F", &format])?
+            .output()
+            .context("observe created window")?;
+        if !output.status.success() {
+            return Err(self.command_failure(&["list-windows"], &output));
+        }
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let mut state = BackendLiveness::Missing;
+        for line in listing.lines() {
+            let fields: Vec<_> = line.split('|').collect();
+            if fields.get(3) == Some(&pane.as_str()) {
+                if fields.get(1) != Some(&spec.owner.session_id)
+                    || fields.get(2) != Some(&spec.role.as_str())
+                    || (spec.owner.session_id.is_empty()
+                        && fields.get(5) != Some(&window_name.as_str()))
+                {
+                    return Err(crate::backend::contract::BackendError::Refused(
+                        "created pane is now owned by another session or role".into(),
+                    ));
+                }
+                state = match fields.get(4).copied() {
+                    Some("0") => BackendLiveness::Live,
+                    Some("1") => BackendLiveness::Exited,
+                    _ => BackendLiveness::Unknown,
+                };
+            }
+        }
+        let retired = if remote {
+            Vec::new()
+        } else {
+            self.retire_windows_in(&listing, spec.owner.session_id, spec.role)
+        };
+        if retired.iter().any(|window| {
+            listing.lines().any(|line| {
+                let fields: Vec<_> = line.split('|').collect();
+                fields.first() == Some(&window.as_str()) && fields.get(3) == Some(&pane.as_str())
+            })
+        }) {
+            state = BackendLiveness::Missing;
+        }
+        Ok((pane, state))
     }
 
     fn locate(&self, owner: Owner<'_>) -> crate::backend::contract::BackendResult<Placed> {
@@ -4605,11 +4677,15 @@ impl<M: TmuxCompatible> Server<M> {
     /// for the id: it is the one pane under the window's name that was not
     /// there before `new-window` ([`Self::new_named_pane`]). With no id to
     /// weigh, a non-zero status is the whole answer there.
-    fn create_local_window(&self, spec: &WindowSpec<'_>) -> Result<String> {
+    fn create_local_window(&self, spec: &WindowSpec<'_>, retire: bool) -> Result<String> {
         let session_id = spec.owner.session_id;
         // Ensure the session exists and is configured, without opening a
         // control-mode connection (headless one-shot path).
-        self.ensure_session_configured()?;
+        let batch_config =
+            M::COMMAND_LISTS && M::ONE_SHOT_SPAWN_ANSWERS && M::VERSION_FLOOR.is_none();
+        if !batch_config {
+            self.ensure_session_configured()?;
+        }
         // The headless twin of the check in `spawn`.
         self.admit_server()?;
 
@@ -4666,6 +4742,17 @@ impl<M: TmuxCompatible> Server<M> {
             })
         };
         let mut output = run_new_window()?;
+        // A failed has-session stops the list before new-window. Only a typed
+        // absence permits bootstrap and redelivery; hook failures may have
+        // already created the pane.
+        if batch_config
+            && !output.status.success()
+            && new_window_pane_id(&output.stdout).is_empty()
+            && mux_answered_absent(&String::from_utf8_lossy(&output.stderr))
+        {
+            self.ensure_session_configured()?;
+            output = run_new_window()?;
+        }
         let deadline = std::time::Instant::now() + M::COLD_START_GRACE;
         loop {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -4728,7 +4815,7 @@ impl<M: TmuxCompatible> Server<M> {
         };
         // What stamping does after writing a stamp. A server without window
         // options writes none (ADR-13).
-        if stamped {
+        if stamped && retire {
             let _ = self.retire_duplicate_windows(session_id, spec.role);
         }
         Ok(pane_id)
@@ -4775,7 +4862,16 @@ impl<M: TmuxCompatible> Server<M> {
         cwd: Option<&Path>,
         env: &HashMap<String, String>,
     ) -> Result<Command> {
-        let mut tmux = self.mux_command(&["new-window", "-d"])?;
+        let configure = M::COMMAND_LISTS && M::ONE_SHOT_SPAWN_ANSWERS && M::VERSION_FLOOR.is_none();
+        let config = self.session_config();
+        let prefix = config_command_list(&["has-session", "-t", &self.session], &config);
+        let mut tmux = if configure {
+            let mut command = self.mux_command(&prefix)?;
+            command.args([";", "new-window", "-d"]);
+            command
+        } else {
+            self.mux_command(&["new-window", "-d"])?
+        };
         if M::ONE_SHOT_SPAWN_ANSWERS {
             tmux.arg("-a");
         }
@@ -4854,15 +4950,28 @@ impl<M: TmuxCompatible> Server<M> {
         }
         let listing = String::from_utf8_lossy(&output.stdout);
         let windows = stamped_windows_in(&listing, session_id, role);
-        let (keep, retire) = windows.split_last()?;
-        let mut retired = false;
+        let keep = windows.last()?.clone();
+        (!self
+            .retire_windows_in(&listing, session_id, role)
+            .is_empty())
+        .then_some(keep)
+    }
+
+    fn retire_windows_in(&self, listing: &str, session_id: &str, role: WindowRole) -> Vec<String> {
+        if session_id.is_empty() {
+            return Vec::new();
+        }
+        let windows = stamped_windows_in(listing, session_id, role);
+        let Some((keep, retire)) = windows.split_last() else {
+            return Vec::new();
+        };
+        let mut retired = Vec::new();
         for window in retire {
             match self.kill_window_at(window) {
                 Ok(()) => {
-                    retired = true;
+                    retired.push(window.clone());
                     warn!(
-                        "retired {window}: it carried session {session_id}'s {} stamp, which \
-                         {keep} now holds alone",
+                        "retired {window}: session {session_id}'s {} stamp is held by {keep}",
                         role.as_str()
                     );
                 }
@@ -4871,7 +4980,7 @@ impl<M: TmuxCompatible> Server<M> {
                 }
             }
         }
-        retired.then(|| keep.clone())
+        retired
     }
 
     /// Kill the window `target` is in on this machine's server, with a

@@ -9696,7 +9696,7 @@ fn creating_a_session_runs_a_handful_of_tmux_processes() {
     assert!(
         count <= 3,
         "one `session create` on a running server ran {count} tmux processes (budget 3: \
-         configure, create, check for a duplicate):\n{calls}"
+         before-listing, configure/create, observe/retire):\n{calls}"
     );
 }
 

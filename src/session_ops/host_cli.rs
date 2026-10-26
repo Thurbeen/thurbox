@@ -122,6 +122,8 @@ pub struct CliInfo {
     pub agent_args: bool,
     /// Whether creation, registration and owner reads preserve telemetry attributes.
     pub telemetry_attrs: bool,
+    pub purged_tombstones: bool,
+    pub lifecycle_preconditions: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -749,6 +751,14 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .unwrap_or(false),
         telemetry_attrs: json
             .get("telemetry_attrs")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        lifecycle_preconditions: json
+            .get("lifecycle_preconditions")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        purged_tombstones: json
+            .get("purged_tombstones")
             .and_then(Value::as_bool)
             .unwrap_or(false),
         create_parity: json
@@ -1539,6 +1549,8 @@ pub(crate) mod fake {
             create_parity: false,
             agent_args: false,
             telemetry_attrs: false,
+            purged_tombstones: false,
+            lifecycle_preconditions: false,
         }
     }
 }
@@ -1674,6 +1686,8 @@ mod tests {
             create_parity: false,
             agent_args: false,
             telemetry_attrs: false,
+            purged_tombstones: false,
+            lifecycle_preconditions: false,
         }
     }
 

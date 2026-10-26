@@ -95,6 +95,9 @@ pub enum Action {
         /// this machine reads, with each row's `force_deleted` mark.
         #[arg(long)]
         deleted: bool,
+        /// Include irreversible purge tombstones, for mirroring peers.
+        #[arg(long, requires = "deleted")]
+        include_purged: bool,
         /// With `--deleted`: rows deleted or changed at or after this instant,
         /// in epoch milliseconds on this machine's clock — how a mirroring
         /// peer asks for what changed instead of the whole history.
@@ -303,6 +306,8 @@ pub enum Action {
     /// delete. For a session a shared host deleted they are the host's own,
     /// and null where an older host does not report them.
     Delete {
+        #[arg(long, hide = true)]
+        if_generation: Option<u64>,
         /// Session UUID.
         uuid: String,
         /// Also kill the window and remove worktrees for this session.
@@ -330,6 +335,8 @@ pub enum Action {
     /// windows the row still owns come down. What a peer calls on a host that
     /// has no interface of its own to do it (ADR-24).
     Reap {
+        #[arg(long, hide = true)]
+        if_generation: Option<u64>,
         /// Session name, UUID, or unique id prefix — resolved against the
         /// deleted rows, since that is where a reapable session is.
         #[arg(value_name = "SESSION")]
@@ -341,14 +348,24 @@ pub enum Action {
     /// Safe while the interface runs. A soft-deleted row's windows come down
     /// first, the way the reaper takes them; a row inside its undo window, one
     /// whose teardown is still owed on its host, or one whose windows could
-    /// not be listed is kept and says why. Worktrees stay on disk and are
-    /// listed. `deleted_retention_days` in settings.toml does this on a timer.
+    /// not be listed is kept and says why. Worktrees thurbox created are removed;
+    /// opened user worktrees stay. `deleted_retention_days` runs this on a timer.
     Purge {
+        #[arg(long, hide = true)]
+        if_generation: Option<u64>,
+        /// A deleted session reference; omit for a bulk purge.
+        session: Option<String>,
+        /// Force-delete an active reference before purging it.
+        #[arg(long, requires = "session")]
+        force: bool,
+        /// Only rows deleted at least this age ago, such as 7d.
+        #[arg(long, conflicts_with = "older_than_days")]
+        older_than: Option<String>,
         /// Only rows deleted at least this many days ago.
-        #[arg(long, value_name = "DAYS", required_unless_present = "all")]
+        #[arg(long, value_name = "DAYS", required_unless_present_any = ["all", "session", "older_than"])]
         older_than_days: Option<u64>,
         /// Every deleted row, however recent.
-        #[arg(long, conflicts_with = "older_than_days")]
+        #[arg(long, visible_alias = "all-deleted", conflicts_with_all = ["older_than_days", "session"]) ]
         all: bool,
         /// List what would be purged, and change nothing.
         #[arg(long)]
@@ -793,8 +810,9 @@ pub fn run(
         Action::List {
             deleted: true,
             since,
+            include_purged,
             ..
-        } => run_list_deleted(db, since),
+        } => run_list_deleted_with_tombstones(db, since, include_purged),
         Action::List {
             parent,
             recursive,
@@ -804,6 +822,7 @@ pub fn run(
             key,
             key_prefix,
             since: _,
+            include_purged: _,
         } => run_list_active(
             db,
             backends,
@@ -867,24 +886,55 @@ pub fn run(
                 env_stdin,
             },
         ),
-        Action::Delete { uuid, force, soft } => {
+        Action::Delete {
+            uuid,
+            force,
+            soft,
+            if_generation,
+        } => {
             let force = force
                 || (!soft
                     && !crate::agent::settings_config::load_quiet()
                         .features
                         .soft_delete);
-            delete_session(db, backends.get(), &uuid, force)
+            delete_session_if_generation(db, backends.get(), &uuid, force, if_generation)
         }
         Action::Restore {
             session,
             best_effort,
         } => restore_deleted(db, backends.get(), &session, best_effort),
-        Action::Reap { session } => run_reap(db, backends.get(), session),
+        Action::Reap {
+            session,
+            if_generation,
+        } => run_reap_if_generation(db, backends.get(), session, if_generation),
         Action::Purge {
+            if_generation,
+            session,
+            force,
+            older_than,
             older_than_days,
             all: _,
             dry_run,
-        } => run_purge(db, backends.get(), older_than_days, dry_run),
+        } => {
+            let days = match older_than {
+                Some(age) => Some(
+                    age.strip_suffix('d')
+                        .ok_or("--older-than expects days, for example 7d")?
+                        .parse::<u64>()
+                        .map_err(|_| "invalid --older-than age")?,
+                ),
+                None => older_than_days,
+            };
+            run_purge_if_generation(
+                db,
+                backends.get(),
+                days,
+                dry_run,
+                session.as_deref(),
+                force,
+                if_generation,
+            )
+        }
         Action::Restart { uuid, if_missing } => run_restart(db, backends.get(), uuid, if_missing),
         Action::Rename { session, name } => run_rename(db, backends.get(), session, name),
         Action::Reparent {
@@ -963,10 +1013,18 @@ pub fn run(
     }
 }
 
-fn run_list_deleted(db: &Database, since: Option<u64>) -> Result<CommandOutput, CommandError> {
-    let rows = match since {
-        Some(since) => db.list_deleted_sessions_since(since),
-        None => db.list_deleted_sessions(),
+fn run_list_deleted_with_tombstones(
+    db: &Database,
+    since: Option<u64>,
+    include_purged: bool,
+) -> Result<CommandOutput, CommandError> {
+    let rows = if include_purged {
+        db.list_session_tombstones(since)
+    } else {
+        match since {
+            Some(since) => db.list_deleted_sessions_since(since),
+            None => db.list_deleted_sessions(),
+        }
     }
     .map_err(|e| format!("list_deleted_sessions: {e}"))?;
     let json = Value::Array(rows.iter().map(deleted_session_to_json).collect());
@@ -1156,6 +1214,7 @@ fn run_list_active(
     let facts = SessionFacts::load(db);
     let bases = db.load_base_branches().unwrap_or_default();
     let updated = db.load_updated_at().unwrap_or_default();
+    let generations = db.load_lifecycle_generations().unwrap_or_default();
     let registry = crate::agent::agent_config::load_or_seed();
     let assessments: Vec<crate::session::Assessment> = sessions
         .iter()
@@ -1175,6 +1234,7 @@ fn run_list_active(
                     updated.get(&s.id).copied(),
                 );
                 fields.annotate(db, Some(backends.local()), &registry, s, &mut row);
+                row["lifecycle_generation"] = json!(generations.get(&s.id));
                 row["depth"] = json!(depth);
                 row
             })
@@ -1244,6 +1304,7 @@ fn run_get(
             .load_launch_env(session.id)
             .map_err(|e| format!("read the launch environment: {e}"))?)
     };
+    row["lifecycle_generation"] = json!(db.lifecycle_generation(session.id).ok().flatten());
     crate::session_ops::read_fields::ReadFields::default().annotate(
         db,
         Some(backends.local()),
@@ -1575,13 +1636,15 @@ fn run_create(
     ))
 }
 
-fn run_reap(
+fn run_reap_if_generation(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     session: String,
+    if_generation: Option<u64>,
 ) -> Result<CommandOutput, CommandError> {
     let row = super::session_ref::resolve_deleted(db, &session)?;
-    let reaped = crate::session_ops::reap_soft_deleted(db, backends, row.id)?;
+    let reaped =
+        crate::session_ops::delete::reap_if_generation(db, backends, row.id, if_generation)?;
     let human = if reaped {
         format!("Reaped session '{}' ({})", row.name, row.id)
     } else {
@@ -1600,15 +1663,48 @@ fn run_reap(
     ))
 }
 
-fn run_purge(
+fn run_purge_if_generation(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     older_than_days: Option<u64>,
     dry_run: bool,
+    reference: Option<&str>,
+    force: bool,
+    if_generation: Option<u64>,
 ) -> Result<CommandOutput, CommandError> {
     use crate::session_ops::Age;
     let age = older_than_days.map_or(Age::All, Age::OlderThanDays);
-    let report = crate::session_ops::purge_deleted(db, backends, age, dry_run)?;
+    let selected = match reference {
+        Some(reference) => match super::session_ref::resolve_deleted(db, reference) {
+            Ok(row) => Some(row.id),
+            Err(_) => {
+                let active = super::session_ref::resolve(db, reference)?;
+                if if_generation.is_some() {
+                    return Err("conditional purge requires a deleted session".into());
+                }
+                if !force {
+                    return Err("purging an active session requires --force".into());
+                }
+                if dry_run {
+                    return Ok(CommandOutput::new(
+                        json!({"dry_run": true, "purged": [{"id": active.id.to_string(), "name": active.name}], "kept": []}),
+                        format!("Would force-delete and purge '{}'", active.name),
+                    ));
+                }
+                crate::session_ops::delete_session_headless(db, backends, active.id, true)?;
+                Some(active.id)
+            }
+        },
+        None => None,
+    };
+    let report = crate::session_ops::purge::purge_if_generation(
+        db,
+        backends,
+        age,
+        dry_run,
+        selected,
+        if_generation,
+    )?;
     let verb = if dry_run { "Would purge" } else { "Purged" };
     let mut human = format!("{verb} {} deleted session(s)", report.purged.len());
     if !report.kept.is_empty() {
@@ -2646,14 +2742,28 @@ fn capture_pane(
 }
 
 /// Delete a session, reporting what `--force` teardown actually managed.
-fn delete_session(
+fn delete_session_if_generation(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     uuid: &str,
     force: bool,
+    if_generation: Option<u64>,
 ) -> Result<CommandOutput, CommandError> {
-    let session = resolve(db, uuid)?;
-    let report = crate::session_ops::delete_session_headless(db, backends, session.id, force)?;
+    let session = match resolve(db, uuid) {
+        Ok(session) => session,
+        Err(error) if if_generation.is_some() && force => {
+            let row = super::session_ref::resolve_deleted(db, uuid).map_err(|_| error)?;
+            crate::session_ops::delete::shared_deleted(&row)
+        }
+        Err(error) => return Err(error),
+    };
+    let report = crate::session_ops::delete::delete_if_generation(
+        db,
+        backends,
+        session.id,
+        force,
+        if_generation,
+    )?;
     let mut human = format!("Deleted session '{}' ({})", session.name, session.id);
     if let Some(note) = &report.host_unknown {
         human.push_str(&format!("\n  {note}"));
@@ -2689,8 +2799,12 @@ fn delete_session(
             "kept_worktrees": report.kept_worktrees,
             "worktree_errors": report.worktree_errors,
             "disabled_automations": report.disabled_automations,
+            "disabled_automation_ids": report.disabled_automation_ids,
+            "removed_automation_ids": report.removed_automation_ids,
             "remote_teardown_error": report.remote_teardown_error,
             "remote_teardown_owed": report.remote_teardown_owed,
+            "teardown_owed": report.teardown_owed,
+            "teardown_error": report.teardown_error,
             "host_unknown": report.host_unknown,
             "host_unreachable": report.host_unreachable,
             "hook_failures": report.hook_failures,
@@ -2753,6 +2867,8 @@ fn force_delete_detail(
     }
     if let Some(err) = &report.remote_teardown_error {
         detail.push(("remote teardown error", err.clone()));
+    } else if let Some(err) = &report.teardown_error {
+        detail.push(("teardown error", err.clone()));
     }
     // Said whenever it is true, including for a teardown whose only casualty
     // was a worktree: "could not reach the host" on its own reads as work
@@ -2762,6 +2878,8 @@ fn force_delete_detail(
             "remote teardown",
             "owed — retried on the host whenever it next answers".to_string(),
         ));
+    } else if report.teardown_owed {
+        detail.push(("teardown", "owed; the reconciler will retry".to_string()));
     }
     detail
 }
@@ -3864,7 +3982,9 @@ fn deleted_session_to_json(r: &crate::storage::DeletedSessionInfo) -> Value {
         "parent_session_id": r.parent_session_id.map(|id| id.to_string()),
         "key": r.key,
         "deleted_at": r.deleted_at,
+        "purged_at": r.purged_at,
         "updated_at": r.updated_at,
+        "lifecycle_generation": r.lifecycle_generation,
         "force_deleted": r.force_deleted,
         "teardown_owed": r.teardown_owed,
         "worktrees": r.worktrees.iter().map(|w| json!({
@@ -4080,6 +4200,7 @@ mod tests {
         let db = db();
         let v = run(
             Action::List {
+                include_purged: false,
                 parent: None,
                 recursive: false,
                 tree: false,
@@ -4577,6 +4698,7 @@ mod tests {
 
         let v = run(
             Action::List {
+                include_purged: false,
                 parent: None,
                 recursive: false,
                 tree: false,
@@ -4635,6 +4757,7 @@ mod tests {
         // Unfiltered list carries the field on both rows.
         let v = run(
             Action::List {
+                include_purged: false,
                 parent: None,
                 recursive: false,
                 tree: false,
@@ -4659,6 +4782,7 @@ mod tests {
         // --parent filters to direct children only.
         let v = run(
             Action::List {
+                include_purged: false,
                 parent: Some(parent_id.to_string()),
                 recursive: false,
                 tree: false,
@@ -4681,6 +4805,7 @@ mod tests {
         // that looks like "this parent has no children".
         let err = run(
             Action::List {
+                include_purged: false,
                 parent: Some("no-such-parent".into()),
                 recursive: false,
                 tree: false,
@@ -4845,6 +4970,8 @@ mod tests {
     fn explicit_soft_delete_leaves_session_recoverable() {
         // `session delete --soft` marks the DB row and disables the sends
         // aimed at it, leaving the session restorable.
+        let root = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(root.path());
         let db = db();
         let id = SessionId::default();
         let shared = SharedSession {
@@ -4853,7 +4980,7 @@ mod tests {
             agent: "dev".into(),
             backend_id: String::new(),
             backend_type: "local-tmux".into(),
-            agent_session_id: None,
+            agent_session_id: Some("restore-test".into()),
             cwd: None,
             additional_dirs: Vec::new(),
             worktrees: Vec::new(),
@@ -4865,8 +4992,18 @@ mod tests {
             key: None,
         };
         db.upsert_session(&shared).unwrap();
+        db.set_launch_recipe(
+            id,
+            &crate::session::LaunchRecipe {
+                command: "sleep".into(),
+                args: vec!["600".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let auto = db
             .create_automation(&crate::storage::automations::NewAutomation {
+                owner_session_id: None,
                 name: "noop".into(),
                 enabled: true,
                 schedule: crate::session::AutomationSchedule::Once { at: u64::MAX },
@@ -4881,6 +5018,7 @@ mod tests {
 
         let v = run(
             Action::Delete {
+                if_generation: None,
                 uuid: id.to_string(),
                 force: false,
                 soft: true,
@@ -4912,14 +5050,27 @@ mod tests {
 
     #[test]
     fn restore_force_deleted_requires_best_effort_flag() {
+        let root = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(root.path());
         let db = db();
-        let shared = make_test_session("forced");
+        let mut shared = make_test_session("forced");
+        shared.agent_session_id = Some("restore-test".into());
         let id = shared.id;
         db.upsert_session(&shared).unwrap();
+        db.set_launch_recipe(
+            id,
+            &crate::session::LaunchRecipe {
+                command: "sleep".into(),
+                args: vec!["600".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // Force-delete marks the row force_deleted; restore must then opt in.
         run(
             Action::Delete {
+                if_generation: None,
                 uuid: id.to_string(),
                 force: true,
                 soft: false,
@@ -4962,9 +5113,12 @@ mod tests {
         // directories are still there. The pipeline has allowed this since
         // `restore_refusal`; the command line used to refuse it anyway on
         // `force_deleted` alone, which is the two interfaces disagreeing.
+        let root = tempfile::tempdir().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(root.path());
         let db = db();
         let dir = tempfile::tempdir().unwrap();
         let mut shared = make_test_session("borrowed");
+        shared.agent_session_id = Some("restore-test".into());
         shared.worktrees = vec![crate::sync::SharedWorktree {
             repo_path: dir.path().to_path_buf(),
             worktree_path: dir.path().to_path_buf(),
@@ -4973,8 +5127,18 @@ mod tests {
         }];
         let id = shared.id;
         db.upsert_session(&shared).unwrap();
+        db.set_launch_recipe(
+            id,
+            &crate::session::LaunchRecipe {
+                command: "sleep".into(),
+                args: vec!["600".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
         run(
             Action::Delete {
+                if_generation: None,
                 uuid: id.to_string(),
                 force: true,
                 soft: false,
@@ -5016,6 +5180,7 @@ mod tests {
         db.upsert_session(&shared).unwrap();
         run(
             Action::Delete {
+                if_generation: None,
                 uuid: id.to_string(),
                 force: false,
                 soft: true,
@@ -5191,6 +5356,7 @@ mod tests {
         let list = |key: Option<&str>, key_prefix: Option<&str>| -> Vec<Value> {
             run(
                 Action::List {
+                    include_purged: false,
                     parent: None,
                     recursive: false,
                     tree: false,

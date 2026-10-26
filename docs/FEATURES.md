@@ -977,15 +977,20 @@ has the rationale; the shape:
   on the host — asked for with `thurbox-cli session reap <ref>` there,
   since a host running only the CLI has no interface of its own to
   collect them.
-- **Purge.** `thurbox-cli session purge` (or `deleted_retention_days`)
-  drops deleted rows from *this* database only; a mirror never pushes a
-  purge to its host. Purge each machine's own history there. A deleted row is
-  retained unless its owned windows are confirmed gone, including a failed force
-  teardown or ambiguous ownership; the final transaction
-  also requires its selected deletion timestamp. The reaper retains that
-  selected deletion and rechecks it after local discovery or remote fallback
-  lookup before killing either window, preserving a fresh delete made while
-  teardown was being checked.
+- **Purge.** `thurbox-cli session purge <ref>` removes a deleted session's
+  windows, metadata and worktrees that thurbox created; opened user worktrees
+  stay. An active reference requires `--force`. Bulk selection accepts
+  `--all-deleted --older-than 7d --dry-run` (the existing `--all` and
+  `--older-than-days` spellings remain). Retention is off by default;
+  `deleted_retention_days` applies the same cleanup from the shared reconciler.
+  Ambiguous ownership, an open undo window or outstanding teardown keeps the
+  row. Failure during irreversible cleanup records debt for retry. A minimal
+  `purged_at` tombstone stays for peers until audit retention expires, is
+  hidden from `session list --deleted`, and cannot be restored. A shared host
+  performs its own purge; an older host must be upgraded before delegation.
+  Automated host cleanup carries the observed lifecycle generation, so a
+  delayed purge, reap or retry cannot delete a session restored on the host.
+  Unknown generations retain the cleanup until a sync obtains current facts.
 - **A delete sticks.** A tombstone here outranks a row the host still
   lists as active, unless the host wrote that row *after* the delete
   (which is a restore taken there): the listing carries `updated_at`
@@ -1691,6 +1696,25 @@ spent one-shot clears it and disables the automation.
   what lets a timeout kill everything it started — and also why a firer that
   is itself killed mid-run (a Ctrl+C on `run --wait`) leaves it running; the
   next tick past its deadline marks that run `timed_out`.
+
+### Optional lifetime owner
+
+`automation create --owner-session <ref>` explicitly ties Send, Spawn or Exec
+to an existing active session. `automation edit <ref> --owner-session none`
+clears the owner. Ownership is never inferred from the caller's session, and
+existing automations remain unowned. List and show JSON include
+`owner_session_id`.
+
+Soft deletion disables owned automations and Sends targeting the session in
+the same transaction as deletion. Undo preserves their ids, history and prior
+enabled state. A Send owned by one deleted session and targeting another
+stays disabled until both suspensions end. Previously disabled automations stay off.
+An explicit disable while suspended also survives undo; a name or schedule
+edit preserves the saved enabled state. Changing or clearing the owner restores
+the saved state and schedule when the last suspension ends, with an explicit
+enabled-state choice taking precedence.
+The window reap leaves automations intact; force delete and purge remove
+owned automations and their history. Delete JSON lists the affected ids.
 
 ### Execution model
 

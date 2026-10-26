@@ -18,8 +18,8 @@ use migrations::{
     migrate_v51_event_exit, migrate_v52_lost_rows_forget_pane, migrate_v53_session_key,
     migrate_v54_telemetry_export, migrate_v55_event_cursors, migrate_v55_move_cursors_and_claims,
     migrate_v56_automation_runs, migrate_v57_background_work, migrate_v58_agent_args,
-    migrate_v5_session_commands, migrate_v6_worktrees_pk, migrate_v7_shell_backend_id,
-    migrate_v8_vms, migrate_v9_agent_session_id,
+    migrate_v59_session_lifecycle, migrate_v5_session_commands, migrate_v6_worktrees_pk,
+    migrate_v7_shell_backend_id, migrate_v8_vms, migrate_v9_agent_session_id,
 };
 
 use rusqlite::{Connection, OptionalExtension};
@@ -123,7 +123,9 @@ use rusqlite::{Connection, OptionalExtension};
 /// flight (and recently ended), so a turn that ends with some still running
 /// stores `background` rather than `done` (issue #1510).
 /// v58 adds `agent_args`: per-session opaque registry-agent arguments.
-pub const SCHEMA_VERSION: u32 = 58;
+/// v59 adds lifecycle intents, purge tombstones, lifecycle generation fences
+/// and automation ownership.
+pub const SCHEMA_VERSION: u32 = 59;
 
 /// The oldest [`SCHEMA_VERSION`] that can still read and write a database this
 /// binary migrated, recorded as `min_reader_version` in `metadata`.
@@ -653,6 +655,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         (56, migrate_v56_automation_runs, Reapply::WhenMissing),
         (57, migrate_v57_background_work, Reapply::WhenMissing),
         (58, migrate_v58_agent_args, Reapply::WhenMissing),
+        (59, migrate_v59_session_lifecycle, Reapply::WhenMissing),
     ];
 
     for &(target, step, reapply) in steps {
@@ -814,6 +817,78 @@ mod tests {
         conn.execute_batch("UPDATE sessions SET agent_args = '[\"--opaque\"]' WHERE id='args';")
             .unwrap();
         assert!(revision() > before);
+    }
+
+    #[test]
+    fn v59_upgrades_a_v58_database_without_losing_agent_arguments() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        conn.execute_batch("INSERT INTO sessions(id, name, agent, agent_args, created_at, updated_at) VALUES ('args', 'args', 'shell', '[\"--kept\"]', 0, 0);").unwrap();
+        let triggers = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for trigger in triggers {
+            conn.execute_batch(&format!(
+                "DROP TRIGGER \"{}\"",
+                trigger.replace('"', "\"\"")
+            ))
+            .unwrap();
+        }
+        conn.execute_batch(
+            "DROP INDEX idx_purged_sessions; DROP INDEX idx_automation_owner;
+            DROP TABLE session_lifecycle_clock; DROP TABLE automation_suspensions;
+            DROP TABLE session_intents; DROP TABLE session_loss_suspects;
+            ALTER TABLE sessions DROP COLUMN purged_at;
+            ALTER TABLE sessions DROP COLUMN purge_owed;
+            ALTER TABLE sessions DROP COLUMN lifecycle_generation;
+            ALTER TABLE sessions DROP COLUMN host_lifecycle_generation;
+            ALTER TABLE automations DROP COLUMN owner_session_id;
+            ALTER TABLE automations DROP COLUMN enabled_before_delete;
+            UPDATE metadata SET value = '58' WHERE key = 'schema_version';",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(stored_version(&conn), 59);
+        assert_eq!(
+            conn.query_row(
+                "SELECT agent_args FROM sessions WHERE id = 'args'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "[\"--kept\"]"
+        );
+        assert!(column_exists(&conn, "sessions", "purged_at").unwrap());
+        assert!(column_exists(&conn, "automations", "owner_session_id").unwrap());
+        assert!(table_exists(&conn, "session_intents").unwrap());
+        assert!(table_exists(&conn, "session_lifecycle_clock").unwrap());
+        assert!(table_exists(&conn, "automation_suspensions").unwrap());
+        conn.execute_batch("UPDATE sessions SET deleted_at = 1 WHERE id = 'args';")
+            .unwrap();
+        let before: i64 = conn
+            .query_row(
+                "SELECT rows_version FROM snapshot_versions WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute_batch("UPDATE sessions SET purged_at = 1 WHERE id = 'args';")
+            .unwrap();
+        let after: i64 = conn
+            .query_row(
+                "SELECT rows_version FROM snapshot_versions WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            after > before,
+            "upgraded lifecycle columns did not invalidate the snapshot"
+        );
     }
 
     #[test]

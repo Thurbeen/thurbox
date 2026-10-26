@@ -1655,8 +1655,9 @@ down the payload, registers agents (append-only, comment-preserving),
 writes the home-resolved manifest to the discovery dir, and activates.
 Active extensions are recorded in SQLite `metadata` and **self-healed**
 (missing sessions/automations recreated) at TUI startup and on every
-`automation tick`. The core still knows the *format*, never a specific
-extension, so an extension's own `install.sh` is a thin shim over the CLI.
+`automation tick`.
+The core still knows the *format*, never a specific extension, so an extension's
+own `install.sh` is a thin shim over the CLI.
 The bare-name registry (`OFFICIAL_EXTENSIONS`) is empty today — nothing
 ships under a bare name — and the resolver is unchanged: an extension
 installs from a path, an `http(s)://` base, or a repository.
@@ -2182,9 +2183,10 @@ follow from the host owning the record, none of which the first cut had:
   soft-deleted one is restorable and its windows are the reaper's to take at
   the end of the undo window, and a second sweep killing them on its own
   schedule would make the undo hand back a session with nothing running in it.
-  The mark is only ever set by an attempt that failed, never by a migration:
-  an upgraded database cannot say which of its past force deletes left
-  something behind, and inventing owed teardowns for all of them would send
+  Schema v58 records the mark with force deletion, before the first attempt,
+  and clears it only after cleanup succeeds. Migrations never invent debt for
+  past deletions: an upgraded database cannot say which left resources behind,
+  and inventing owed teardowns for all of them would send
   the sweep after windows that are long gone.
 - **"The host holds nothing" and "the host did not answer" are different
   answers.** `discover` gates its listing on `has-session` and reads its
@@ -2403,17 +2405,70 @@ listing would retire every window on the server.
 
 ## ADR-26: One reaper, and a row is written by the column that changed
 
-**Choice**: the undo window is asked of the database and nowhere else.
-`session_ops::reap_overdue_soft_deletes` is the single sweep — every row whose
-`deleted_at` is older than `UNDO_WINDOW` and that still owns a window by its
-ADR-25 stamp — and both drivers call it: the interface's loop on a slow cadence
-(`REAP_INTERVAL`, a `Command::Reap` that names no session) and `thurbox-cli`'s
-heartbeat on its tick. `retry_owed_remote_teardowns` (ADR-24) rides the same two
-drivers and is deliberately a *separate* sweep rather than a branch inside this
-one: it asks a different durable question (`teardown_owed`, not
-`deleted_at + UNDO_WINDOW`) of a disjoint set of rows (force-deleted, which this
-sweep skips), and folding the two would put a kill that must not wait for the
-undo window in the same pass as one that must. `Command::Reap` is the one command the bus keeps no
+**Choice**: write a durable intent before resources, and publish a session only after its
+pane is confirmed. `session_intents` (schema v59) holds the UUID, planned worktrees, prior
+pane ids, the new pane id and the operation's lease expiry and workspace provenance. Only
+newly created worktrees and workspaces belong to rollback; opened and inherited resources
+do not. Older journals without workspace provenance conservatively retain it. Workspace
+builds and cleanup share a machine/normalized-namespace lease and refuse an active sibling
+claim; remote rows cannot authorize local workspace removal. A failed create rolls back
+immediately, while a killed creator leaves its plan for recovery after the lease expires.
+A retry can attach the branch left by rollback without resetting it. Restore keeps its
+deleted row until it can commit the confirmed pane; its pending resource plan is recovered
+the same way. Its launch projection preserves saved attached directories, including when
+the original pane has already been reaped. An explicit `session.pre_launch` refusal
+acknowledges preparation and closes the intent while retaining its directories for
+inspection, preserving the hook's preparation contract. Startup observations confirm the
+exact pane's owner and role; a
+backend without per-window stamps must instead confirm its unique live namesake. Ownerless
+windows never take part in session duplicate retirement.
+
+`session_ops::reconcile::tick` is the shared entry point for the interface's
+worker (`Command::Reap`) and the headless heartbeat. It retries force-delete
+teardowns, recovers expired creations, reaps soft-deleted windows after
+`UNDO_WINDOW`, applies deletion retention and confirms lost panes. The last
+step keeps its first observation in `session_loss_suspects`, because each
+heartbeat is a new process. Force delete records `teardown_owed` in the same
+transaction as deletion, including locally; a failed window or worktree
+removal keeps that debt. Creation, opening or inheriting a checkout, restore,
+recovery and cleanup share machine/path leases. Working directories and attached
+directories participate too; a lease on a directory conflicts with leases on its
+ancestors and descendants, with the overlap check and claim in one transaction.
+Local paths resolve aliases to one checkout identity; remote paths are resolved
+only on their owning host. Cleanup rechecks active checkout, cwd and attachment
+claims, including descendants, after slow window teardown before removing a directory.
+Namesakes with distinct ownership stamps remain independently removable. Ownership checks and
+the reap's durable backoff remain shared by these paths. A force cleanup retry
+refreshes debt without emitting another `Gone` transition.
+
+Upsert never revives a deleted row. Restore is explicit, and purge is
+irreversible: it removes thurbox-created worktrees and metadata, then retains
+a minimal row with `purged_at`. Ordinary deleted listings hide it; peers
+negotiate `purged_tombstones` and request `--include-purged`. A purge that
+cannot finish retains its cleanup plan and retries. A pending purge refuses restore
+before launch, and a restore commit must actually transition its row to active.
+Tombstones are pruned
+with the audit retention horizon. The schema additions leave
+`MIN_READER_VERSION` unchanged. Database guards reject legacy restore/delete
+writes against irreversible purge rows; retention releases the guard and removes
+expired markers in one transaction. Age-filtered shared-host purges also carry
+the age filter to the host, whose clock and deletion time decide eligibility.
+A database-wide lifecycle counter assigns a fresh `lifecycle_generation` on
+insertion and on delete, restore, force promotion, purge or route change, including legacy
+writers. The counter survives tombstone pruning and UUID reuse. Creation and
+restore commits also require their original, unexpired session lease and
+pending intent. Recovery checks active pane claims before killing a window.
+
+Shared hosts negotiate `lifecycle_preconditions`. Automated deletion pushes,
+reaps, owed teardown retries and purges carry the last observed host generation
+as `--if-generation`; the host checks it while holding the session lease and
+again when claiming irreversible database changes. Unknown or changed
+generations retain the work for a later sync. These paths never fall back to
+a direct kill after a host rejects the precondition. Explicit user deletes
+remain unconditional. A shared-host purge never implicitly force-deletes an
+active host session.
+
+`Command::Reap` is the one command the bus keeps no
 in-flight record of — it recurs forever with nobody waiting on it, and a row
 there is drawn, captioned and counted as activity (ADR-P22 in
 `docs/PERFORMANCE.md`). Alongside it, a caller that changes **one column** of a

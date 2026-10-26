@@ -17,12 +17,17 @@ pub struct ForceDeleteReport {
     /// would read as "nothing to clean up".
     pub kept_worktrees: Vec<String>,
     pub disabled_automations: usize,
+    pub disabled_automation_ids: Vec<i64>,
+    pub removed_automation_ids: Vec<i64>,
     /// Set when the session lived on a remote host (SSH/WSL) and its window
     /// could not be torn down there: the host is unreachable, has no
     /// `hosts.toml` entry, or does not vouch for a socket. An unreachable host
     /// is expected — that's often *why* someone force-deletes — so this is
     /// recorded rather than aborting the delete.
     pub remote_teardown_error: Option<String>,
+    /// Cleanup error on any backend, including this machine.
+    pub teardown_error: Option<String>,
+    pub teardown_owed: bool,
     /// Whether that failure was written down on the row, so the sweep will
     /// come back and finish the teardown once the host answers
     /// ([`retry_owed_remote_teardowns`]).
@@ -84,10 +89,34 @@ pub fn delete_session_headless(
     session_id: SessionId,
     force: bool,
 ) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
-    let session = db
+    delete_if_generation(db, backends, session_id, force, None)
+}
+
+pub fn delete_if_generation(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session_id: SessionId,
+    force: bool,
+    expected: Option<u64>,
+) -> Result<ForceDeleteReport, super::OpError> {
+    let _lease = super::lock::lock(db, super::lock::Subject::Session(session_id), "delete")?
+        .ok_or_else(|| {
+            super::OpError::Conflict("another lifecycle operation holds this session".into())
+        })?;
+    db.require_lifecycle_generation(session_id, expected)
+        .map_err(|_| super::OpError::Conflict("session lifecycle changed".into()))?;
+    let session = match db
         .get_session_by_id(session_id)
-        .map_err(|e| format!("get_session_by_id: {e}"))?
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|e| e.to_string())?
+    {
+        Some(session) => session,
+        None if force && expected.is_some() => shared_deleted(
+            &db.get_deleted_session_by_id(session_id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| session_not_found(session_id))?,
+        ),
+        None => return Err(session_not_found(session_id)),
+    };
 
     // A local row whose route no backend here serves lives on a server
     // nothing here drives. Its window cannot be found and its checkout may
@@ -110,6 +139,8 @@ pub fn delete_session_headless(
     let mut hook_ctx = super::lifecycle_hooks::context_for(&session);
     hook_ctx.force = Some(force);
     super::fire_pre(crate::session::HookEvent::PreDelete, &hook_ctx)?;
+    db.require_lifecycle_generation(session_id, expected)
+        .map_err(|_| super::OpError::Conflict("session lifecycle changed".into()))?;
 
     let mut report = ForceDeleteReport::default();
 
@@ -120,7 +151,22 @@ pub fn delete_session_headless(
         super::Executor::for_backend(&session.backend_type)
     {
         let id = session_id.to_string();
+        let host_generation = if expected.is_some() {
+            Some(
+                db.host_lifecycle_generation(session_id)
+                    .map_err(|e| e.to_string())?
+                    .filter(|_| cli.lifecycle_preconditions)
+                    .ok_or("host lifecycle precondition is unknown; sync the host first")?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
         let mut args = vec!["session", "delete", &id];
+        if let Some(generation) = host_generation.as_deref() {
+            args.extend(["--if-generation", generation]);
+        }
+
         if force {
             args.push("--force");
         } else if cli.soft_delete_choice {
@@ -134,12 +180,12 @@ pub fn delete_session_headless(
             // for it to go. Take the delete from here instead: the teardown
             // is addressed by uuid, so it still reaches exactly this
             // session's windows on that host if they are there at all.
-            Err(e) if matches!(e.error, super::OpError::NotFound(_)) => {
+            Err(e) if expected.is_none() && matches!(e.error, super::OpError::NotFound(_)) => {
                 report.host_unknown = Some(format!(
                     "'{}' does not know this session ({e}); deleted from here",
                     host.name
                 ));
-                return finish_locally(db, backends, &session, force, report, &hook_ctx);
+                return finish_locally(db, backends, &session, force, report, &hook_ctx, expected);
             }
             // The question never arrived — the launcher would not start,
             // or ssh failed on its own account — so nothing there acted on
@@ -167,12 +213,15 @@ pub fn delete_session_headless(
             // not it records the owed teardown for the sweep. Aborting
             // reaches nothing and records nothing, which is how a session
             // on a host with a broken CLI became undeletable.
-            Err(e) if e.reach != crate::session_ops::host_cli::Reach::Answered => {
+            Err(e)
+                if expected.is_none()
+                    && e.reach != crate::session_ops::host_cli::Reach::Answered =>
+            {
                 report.host_unreachable = Some(format!(
                     "'{}' did not answer the delete ({e}); deleted from here",
                     host.name
                 ));
-                return finish_locally(db, backends, &session, force, report, &hook_ctx);
+                return finish_locally(db, backends, &session, force, report, &hook_ctx, expected);
             }
             // The host itself refused — a locked database, a worktree it
             // could not release. It is up, it heard the question, and the
@@ -191,25 +240,49 @@ pub fn delete_session_headless(
         // owed on the host's own row, and its sweep is the one that can
         // finish it. Taking the mark here would send this machine after
         // windows on a third machine it may not even have an entry for.
-        report.remote_teardown_error = answer
-            .get("remote_teardown_error")
+        report.teardown_error = answer
+            .get("teardown_error")
+            .or_else(|| answer.get("remote_teardown_error"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        report.teardown_owed = answer
+            .get("teardown_owed")
+            .or_else(|| answer.get("remote_teardown_owed"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         report.host_deadlines = Some(HostDeadlines {
             undo_until: answer.get("undo_until").and_then(serde_json::Value::as_u64),
             reapable_at: answer
                 .get("reapable_at")
                 .and_then(serde_json::Value::as_u64),
         });
-        report.disabled_automations = db
-            .disable_send_automations_for_session(session_id)
-            .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
-        delete_row(db, session_id, force)?;
+        let effects = delete_row(db, session_id, force, expected)?;
+        report.disabled_automations = effects.disabled.len();
+        report.disabled_automation_ids = effects.disabled;
+        report.removed_automation_ids = effects.removed;
+        if let Some(generation) = answer
+            .get("session")
+            .and_then(|row| row.get("lifecycle_generation"))
+            .and_then(serde_json::Value::as_u64)
+        {
+            db.set_host_lifecycle_generation(session_id, generation)
+                .map_err(|e| e.to_string())?;
+        }
+        db.set_teardown_owed(session_id, false)
+            .map_err(|e| format!("record host teardown: {e}"))?;
         report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, &hook_ctx);
+        set_remote_report_aliases(&session, &mut report);
         return Ok(report);
     }
 
-    finish_locally(db, backends, &session, force, report, &hook_ctx)
+    if expected.is_some()
+        && super::resolve_host(&session.backend_type)
+            .flatten()
+            .is_some_and(|host| host.shareable())
+    {
+        return Err("shared host CLI is unavailable; conditional cleanup cannot proceed".into());
+    }
+    finish_locally(db, backends, &session, force, report, &hook_ctx, expected)
 }
 
 /// The delete taken from here: mark the row, tear down what `force` asks for,
@@ -223,51 +296,17 @@ fn finish_locally(
     force: bool,
     report: ForceDeleteReport,
     hook_ctx: &crate::session::HookContext,
+    expected: Option<u64>,
 ) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
     finish_locally_with(
         db,
         session,
         force,
         report,
-        Some(hook_ctx),
+        hook_ctx,
+        expected,
         |session, report| {
-            teardown_runtime_resources(backends, session, report);
-        },
-    )
-}
-
-/// Roll back a newly persisted spawn without delete hooks or host delegation:
-/// the failed creation owns its row and has not completed its lifecycle.
-pub(super) fn rollback_spawn(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    session: &crate::sync::SharedSession,
-    inherited: &[crate::sync::SharedWorktree],
-) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
-    let mut rollback = session.clone();
-    if !inherited.is_empty() {
-        // Successful forks retain recoverability. Only this failed creation's
-        // cleanup inventory treats inherited checkouts as borrowed, including
-        // the inventory a later remote-teardown retry will read.
-        for worktree in &mut rollback.worktrees {
-            if inherited
-                .iter()
-                .any(|parent| parent.worktree_path == worktree.worktree_path)
-            {
-                worktree.created_by_thurbox = false;
-            }
-        }
-        db.upsert_session(&rollback)
-            .map_err(|e| format!("record rollback worktrees: {e}"))?;
-    }
-    finish_locally_with(
-        db,
-        &rollback,
-        true,
-        ForceDeleteReport::default(),
-        None,
-        |session, report| {
-            teardown_runtime_resources(backends, session, report);
+            teardown_runtime_resources(db, backends, session, report);
         },
     )
 }
@@ -279,7 +318,8 @@ fn finish_locally_with(
     session: &crate::sync::SharedSession,
     force: bool,
     mut report: ForceDeleteReport,
-    hook_ctx: Option<&crate::session::HookContext>,
+    hook_ctx: &crate::session::HookContext,
+    expected: Option<u64>,
     teardown: impl FnOnce(&crate::sync::SharedSession, &mut ForceDeleteReport),
 ) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
     // Marked **before** anything is torn down. The teardown kills windows and
@@ -287,7 +327,10 @@ fn finish_locally_with(
     // leave an active, restore-listed row whose worktrees were already gone —
     // a restore that could only hand back a session with nothing in it. The
     // mark is the one write that makes the loss survivable news.
-    delete_row(db, session.id, force)?;
+    let effects = delete_row(db, session.id, force, expected)?;
+    report.disabled_automations = effects.disabled.len();
+    report.disabled_automation_ids = effects.disabled;
+    report.removed_automation_ids = effects.removed;
 
     if force {
         teardown(session, &mut report);
@@ -298,26 +341,26 @@ fn finish_locally_with(
         // that host running the agent for good. Cleared on the same statement
         // when the teardown did land, so a row force-deleted twice cannot
         // inherit an owed teardown from the first time.
-        report.remote_teardown_owed = owes_remote_teardown(session, &report);
-        if let Err(e) = db.set_teardown_owed(session.id, report.remote_teardown_owed) {
+        report.teardown_owed = owes_remote_teardown(session, &report);
+        if let Err(e) = db.set_teardown_owed(session.id, report.teardown_owed) {
             tracing::warn!(
                 "could not record the owed teardown of '{}': {e}",
                 session.name
             );
-            report.remote_teardown_owed = false;
+            report.teardown_owed = true;
         }
     }
-    // Soft or forced, as the delegated path above does: a send aimed at a
-    // deleted session has nothing to type into.
-    report.disabled_automations = db
-        .disable_send_automations_for_session(session.id)
-        .map_err(|e| format!("disable_send_automations_for_session: {e}"))?;
+    report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, hook_ctx);
 
-    if let Some(hook_ctx) = hook_ctx {
-        report.hook_failures = super::fire_post(crate::session::HookEvent::PostDelete, hook_ctx);
-    }
-
+    set_remote_report_aliases(session, &mut report);
     Ok(report)
+}
+
+fn set_remote_report_aliases(session: &crate::sync::SharedSession, report: &mut ForceDeleteReport) {
+    if crate::session::Route::is_remote_key(&session.backend_type) {
+        report.remote_teardown_error = report.teardown_error.clone();
+        report.remote_teardown_owed = report.teardown_owed;
+    }
 }
 
 /// Mark the row gone. A force delete says so in the same statement rather than
@@ -327,15 +370,10 @@ fn delete_row(
     db: &Database,
     session_id: SessionId,
     force: bool,
-) -> Result<(), crate::session_ops::OpError> {
-    if force {
-        db.force_delete_session(session_id)
-            .map_err(|e| format!("force_delete_session: {e}"))?;
-    } else {
-        db.soft_delete_session(session_id)
-            .map_err(|e| format!("soft_delete_session: {e}"))?;
-    }
-    Ok(())
+    expected: Option<u64>,
+) -> Result<crate::storage::automations::SessionAutomationEffects, crate::session_ops::OpError> {
+    db.delete_session_if_generation(session_id, force, expected)
+        .map_err(|e| format!("delete session: {e}").into())
 }
 
 fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {
@@ -353,18 +391,96 @@ fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {
 
 /// Tear down a session's slow runtime resources: kill the tmux windows
 /// (agent and companion shell), remove worktrees and the symlink workspace.
-/// Touches no SQLite — safe to call from a background thread after the row
-/// has been soft-deleted on the UI thread, so the TUI's hard-delete
-/// confirmation can close without blocking on a remote `kill-window` or a
-/// `git worktree remove`. Best-effort: failures are logged into `report`
-/// (or `tracing::warn`), never abort.
+/// Reads current ownership before cleanup; lifecycle writes belong to the
+/// caller. Failures remain in `report` for durable retry.
 ///
 /// **Backend-aware.** The windows are killed through the backend the row's
 /// route names, and each worktree is removed on the machine it lives on: local
-/// `git` here, or over the host's launcher for an `ssh:`/`wsl:` row. The
-/// symlink workspace is always local (a spawn-time process-cwd detail under the
-/// local data dir), so it is torn down regardless of backend.
+/// `git` here, or over the host's launcher for an `ssh:`/`wsl:` row. Local
+/// workspace cleanup respects namespace claims; a remote row never authorizes
+/// removal of the observer's workspace with the same conversation id.
 pub fn teardown_runtime_resources(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: &crate::sync::SharedSession,
+    report: &mut ForceDeleteReport,
+) {
+    let _workspace = match super::lock::workspace(
+        db,
+        &session.backend_type,
+        session.agent_session_id.as_deref(),
+        "remove workspace",
+    ) {
+        Ok(held) => held,
+        Err(error) => {
+            report.teardown_error = Some(error.to_string());
+            set_remote_report_aliases(session, report);
+            return;
+        }
+    };
+    let _resources = match super::lock::worktrees(
+        db,
+        &session.backend_type,
+        session
+            .worktrees
+            .iter()
+            .filter(|wt| wt.created_by_thurbox)
+            .map(|wt| wt.worktree_path.clone()),
+        "remove worktrees",
+    ) {
+        Ok(held) => held,
+        Err(error) => {
+            report.teardown_error = Some(error.to_string());
+            set_remote_report_aliases(session, report);
+            return;
+        }
+    };
+    if let Err(error) = unclaimed_resources(db, session) {
+        report.teardown_error = Some(error);
+    } else {
+        teardown_runtime_resources_inner(db, backends, session, report);
+    }
+    set_remote_report_aliases(session, report);
+}
+
+fn unclaimed_resources(db: &Database, session: &crate::sync::SharedSession) -> Result<(), String> {
+    let active = db
+        .list_active_sessions()
+        .map_err(|e| format!("cannot check resource ownership: {e}"))?;
+    if active.iter().filter(|row| row.id != session.id).any(|row| {
+        let same_server =
+            super::server_key(&row.backend_type) == super::server_key(&session.backend_type);
+        (same_server
+            && ((!session.backend_id.is_empty()
+                && (row.backend_id == session.backend_id
+                    || row.shell_backend_id.as_ref() == Some(&session.backend_id)))
+                || session.shell_backend_id.as_ref().is_some_and(|pane| {
+                    row.backend_id == *pane || row.shell_backend_id.as_ref() == Some(pane)
+                })))
+            || session
+                .worktrees
+                .iter()
+                .filter(|wt| wt.created_by_thurbox)
+                .any(|wt| {
+                    super::lock::claims_directory(row, &session.backend_type, &wt.worktree_path)
+                })
+            || (super::same_machine(&row.backend_type, &session.backend_type)
+                && session
+                    .agent_session_id
+                    .as_deref()
+                    .zip(row.agent_session_id.as_deref())
+                    .is_some_and(|(a, b)| {
+                        crate::paths::sanitize_workspace_segment(a)
+                            == crate::paths::sanitize_workspace_segment(b)
+                    }))
+    }) {
+        return Err("resources are still claimed by another active session".into());
+    }
+    Ok(())
+}
+
+fn teardown_runtime_resources_inner(
+    db: &Database,
     backends: &crate::backend::BackendRegistry,
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
@@ -381,10 +497,13 @@ pub fn teardown_runtime_resources(
                 // be running in them.
                 match super::windows::backend_for(backends, &session.backend_type) {
                     Ok(backend) => {
-                        kill_remote_window(backend.as_ref(), session, report);
+                        kill_remote_window(db, backend.as_ref(), session, report);
+                        if report.teardown_error.is_some() {
+                            return;
+                        }
                         super::image_drop::cleanup(host, &session.id.to_string());
                         for wt in &session.worktrees {
-                            remove_worktree_into(Some(host), wt, report);
+                            remove_worktree_into(db, session, Some(host), wt, report);
                         }
                     }
                     Err(e) => {
@@ -393,7 +512,7 @@ pub fn teardown_runtime_resources(
                             session.name
                         );
                         tracing::warn!("{msg}");
-                        report.remote_teardown_error = Some(msg);
+                        report.teardown_error = Some(msg);
                     }
                 }
             }
@@ -404,47 +523,40 @@ pub fn teardown_runtime_resources(
                     session.backend_type
                 );
                 tracing::warn!("{msg}");
-                report.remote_teardown_error = Some(msg);
+                report.teardown_error = Some(msg);
             }
         }
     } else {
         match super::windows::backend_for(backends, &session.backend_type) {
             Ok(backend) => {
-                kill_local_window(backend.as_ref(), session, report);
+                kill_local_window(db, backend.as_ref(), session, report);
+                if report.teardown_error.is_some() {
+                    return;
+                }
                 for wt in &session.worktrees {
-                    remove_worktree_into(None, wt, report);
+                    remove_worktree_into(db, session, None, wt, report);
                 }
             }
             // Refused before the row was marked (`delete_session_headless`);
             // reaching here means a caller skipped that, and the checkouts may
             // still be under the agent nothing here could kill.
-            Err(e) => tracing::warn!(
-                "left the window and worktrees of '{}' in place: {e}",
-                session.name
-            ),
+            Err(e) => {
+                report.teardown_error = Some(format!(
+                    "left the window and worktrees of '{}' in place: {e}",
+                    session.name
+                ));
+            }
         }
     }
 
-    // Tear down the multi-repo symlink workspace (if any). Only the symlinks
-    // are removed — the underlying repos are untouched. Always local: the
-    // workspace lives under the local data dir even for a remote session.
-    if let Some(asid) = &session.agent_session_id {
-        if let Err(e) = crate::workspace::remove_workspace(asid) {
-            tracing::warn!("remove_workspace({asid}) failed: {e}");
-        }
+    if let Err(e) = super::reconcile::remove_workspace(db, session) {
+        report.teardown_error = Some(format!("workspace removal failed: {e}"));
     }
 }
 
-/// Whether `report` describes a remote teardown that did not finish, and so
-/// leaves something running on a host for the sweep to collect.
-///
-/// A local session never owes one: its windows are on this machine's server,
-/// which either answered or is not there at all. Worktree failures count
-/// alongside the window kill because both are asked of the same host over the
-/// same connection — the usual reason either fails is that nothing reached it.
-fn owes_remote_teardown(session: &crate::sync::SharedSession, report: &ForceDeleteReport) -> bool {
-    crate::session::Route::is_remote_key(&session.backend_type)
-        && (report.remote_teardown_error.is_some() || !report.worktree_errors.is_empty())
+/// A cleanup error keeps the durable debt, including failed local worktree removal.
+fn owes_remote_teardown(_session: &crate::sync::SharedSession, report: &ForceDeleteReport) -> bool {
+    report.teardown_error.is_some() || !report.worktree_errors.is_empty()
 }
 
 /// Finish the teardowns that never reached their host: kill the windows a
@@ -495,7 +607,48 @@ pub fn retry_owed_remote_teardowns(
     let registry = crate::agent::host_config::load_all();
     let mut finished = Vec::new();
     let mut silent: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut attempts = 0;
     for row in rows {
+        if attempts >= 128 {
+            break;
+        }
+        if !claim_reap(db, row.id, crate::sync::current_time_millis()) {
+            continue;
+        }
+        let Ok(Some(_lease)) =
+            super::lock::lock(db, super::lock::Subject::Session(row.id), "finish teardown")
+        else {
+            continue;
+        };
+        let Ok(Some(current)) = db.get_deleted_session_by_id(row.id) else {
+            continue;
+        };
+        if !current.teardown_owed
+            || !current.force_deleted
+            || current.lifecycle_generation != row.lifecycle_generation
+        {
+            continue;
+        }
+        let row = current;
+        if unclaimed_resources(db, &shared_deleted(&row)).is_err() {
+            reap_failed(db, row.id, crate::sync::current_time_millis());
+            continue;
+        }
+        attempts += 1;
+        if !crate::session::Route::is_remote_key(&row.backend_type) {
+            let session = shared_deleted(&row);
+            let mut report = ForceDeleteReport::default();
+            teardown_runtime_resources(db, backends, &session, &mut report);
+            if !owes_remote_teardown(&session, &report) {
+                if db.complete_session_teardown(row.id).is_ok() {
+                    finished.push(row.id.to_string());
+                    reap_succeeded(db, row.id);
+                }
+            } else {
+                reap_failed(db, row.id, crate::sync::current_time_millis());
+            }
+            continue;
+        }
         // Not in `hosts.toml` (any more): there is no machine to aim at, and
         // the mark keeps the job on the books for whenever the entry is back.
         let Some(host) = remote_host_in(&registry, &row.backend_type) else {
@@ -505,14 +658,18 @@ pub fn retry_owed_remote_teardowns(
             continue;
         }
         let backend = super::windows::backend_for(backends, &row.backend_type);
-        match finish_remote_teardown(host, backend, &row) {
-            Ok(()) => match db.set_teardown_owed(row.id, false) {
-                Ok(()) => finished.push(row.id.to_string()),
+        match finish_remote_teardown(db, host, backend, &row) {
+            Ok(()) => match db.complete_session_teardown(row.id) {
+                Ok(()) => {
+                    finished.push(row.id.to_string());
+                    reap_succeeded(db, row.id);
+                }
                 Err(e) => {
                     tracing::warn!("could not clear the owed teardown of '{}': {e}", row.name)
                 }
             },
             Err(Owed::Unreached(e)) => {
+                reap_failed(db, row.id, crate::sync::current_time_millis());
                 tracing::debug!(
                     "'{}' still owes a teardown on '{}': {e}",
                     row.name,
@@ -523,6 +680,7 @@ pub fn retry_owed_remote_teardowns(
             // The host may be fine; this row's multiplexer is what nothing here
             // drives, so the other rows there still get their turn.
             Err(Owed::Undrivable(e)) => {
+                reap_failed(db, row.id, crate::sync::current_time_millis());
                 tracing::debug!("'{}' still owes a teardown: {e}", row.name);
             }
         }
@@ -534,7 +692,7 @@ pub fn retry_owed_remote_teardowns(
 enum Owed {
     /// The host did not answer: its other rows wait for the next pass too.
     Unreached(String),
-    /// No adapter here drives the row's multiplexer.
+    /// Cleanup is unsafe or incomplete for this row.
     Undrivable(String),
 }
 
@@ -542,23 +700,15 @@ enum Owed {
 /// not answer, or when nothing here drives the row's multiplexer — the two
 /// conditions that keep the row on the books ([`Owed`]).
 ///
-/// Delegated when the host runs a thurbox of its own, exactly as [`reap_remote`]
-/// delegates: the host owns its own row and its own windows, and forcing the
-/// delete there is how both go at once. A host that does not know the id has
-/// nothing to delete but may still be holding the windows, so that answer falls
-/// through to the direct kill rather than counting as done.
-///
-/// Worktree removals are attempted but do not decide the outcome. Once the
-/// window listing has come back the host is reachable by construction, so a
-/// `git worktree remove` that still fails is failing on its own merits — a
-/// checkout someone else's process is holding, a repo that moved — and retrying
-/// that on every sweep forever would never converge. It is logged and the mark
-/// comes off.
+/// A shared host must accept the observed lifecycle generation before it can
+/// delete anything. Unknown rows or generations stay owed; a direct kill would
+/// bypass the host's refusal. Window and worktree failures both retain debt.
 ///
 /// `backend` is what the row's route names ([`super::windows::backend_for`]),
 /// or why nothing does: the kill needs it, the delegated delete and the
 /// worktree removals do not.
 fn finish_remote_teardown(
+    db: &Database,
     host: &crate::session::HostDef,
     backend: Result<
         &std::sync::Arc<dyn crate::backend::SessionBackend>,
@@ -566,33 +716,84 @@ fn finish_remote_teardown(
     >,
     row: &DeletedSessionInfo,
 ) -> Result<(), Owed> {
+    let session = shared_deleted(row);
+    let _resources = super::lock::worktrees(
+        db,
+        &row.backend_type,
+        row.worktrees
+            .iter()
+            .filter(|wt| wt.created_by_thurbox)
+            .map(|wt| wt.worktree_path.clone()),
+        "finish worktree teardown",
+    )
+    .map_err(|e| Owed::Undrivable(e.to_string()))?;
     let id = row.id.to_string();
     if let Some(cli) = super::host_cli::delegated(host) {
-        match super::host_cli::run(host, &cli, &["session", "delete", &id, "--force"]) {
-            Ok(_) => return Ok(()),
-            Err(e) if matches!(e, super::OpError::NotFound(_)) => {
-                tracing::debug!("'{}' is unknown on '{}': {e}", row.name, host.name);
+        let generation = row
+            .host_lifecycle_generation
+            .filter(|_| cli.lifecycle_preconditions)
+            .ok_or_else(|| {
+                Owed::Undrivable(
+                    "host lifecycle precondition is unknown; sync the host first".into(),
+                )
+            })?
+            .to_string();
+        match super::host_cli::run(
+            host,
+            &cli,
+            &[
+                "session",
+                "delete",
+                &id,
+                "--force",
+                "--if-generation",
+                &generation,
+            ],
+        ) {
+            Ok(answer) => {
+                if let Some(generation) = answer
+                    .get("session")
+                    .and_then(|row| row.get("lifecycle_generation"))
+                    .and_then(serde_json::Value::as_u64)
+                {
+                    let _ = db.set_host_lifecycle_generation(row.id, generation);
+                }
+                if answer
+                    .get("teardown_owed")
+                    .or_else(|| answer.get("remote_teardown_owed"))
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                    || answer
+                        .get("worktree_errors")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|rows| !rows.is_empty())
+                {
+                    return Err(Owed::Undrivable("host cleanup is still owed".into()));
+                }
+                return Ok(());
             }
             Err(e) => return Err(Owed::Unreached(e.to_string())),
         }
     }
+    if host.shareable() {
+        return Err(Owed::Unreached(
+            "shared host CLI is unavailable; direct cleanup is unsafe".into(),
+        ));
+    }
     let backend = backend.map_err(|e| Owed::Undrivable(e.to_string()))?;
-    super::windows::kill_owned(backend.as_ref(), deleted_owner(row, &id))
+    kill_confirmed(db, backend.as_ref(), &shared_deleted(row))
         .map_err(|e| Owed::Unreached(format!("{e:#}")))?;
+    super::image_drop::cleanup(host, &id);
 
+    let mut report = ForceDeleteReport::default();
     for wt in &row.worktrees {
-        if !wt.created_by_thurbox {
-            continue;
-        }
-        if let Err(e) = crate::git::remove_worktree_on(Some(host), &wt.repo_path, &wt.worktree_path)
-        {
-            tracing::warn!(
-                "'{}': {} was not removed on '{}': {e:#}",
-                row.name,
-                wt.worktree_path.display(),
-                host.name
-            );
-        }
+        remove_worktree_into(db, &session, Some(host), wt, &mut report);
+    }
+    if let Some(error) = report.teardown_error {
+        return Err(Owed::Undrivable(error));
+    }
+    if !report.worktree_errors.is_empty() {
+        return Err(Owed::Undrivable(report.worktree_errors.join("; ")));
     }
     Ok(())
 }
@@ -646,6 +847,7 @@ pub fn reap_overdue_soft_deletes(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
 ) -> Vec<String> {
+    super::reconcile::creating(db, backends);
     let Ok(rows) = db.list_deleted_sessions() else {
         return Vec::new();
     };
@@ -667,6 +869,11 @@ pub fn reap_overdue_soft_deletes(
         if !claim_reap(db, row.id, now) {
             continue;
         }
+        let Ok(Some(_lease)) =
+            super::lock::lock(db, super::lock::Subject::Session(row.id), "reap overdue")
+        else {
+            continue;
+        };
         match reap_selected_soft_delete(db, backends, &row) {
             Ok(true) => {
                 reap_succeeded(db, row.id);
@@ -817,13 +1024,13 @@ fn reap_retry_after_ms(failures: u32) -> u64 {
 /// A database that will not answer claims lets the reap through: the gate
 /// exists to spare work, and skipping a teardown because of it would be the
 /// worse failure.
-fn claim_reap(db: &Database, id: SessionId, now_ms: u64) -> bool {
+pub(crate) fn claim_reap(db: &Database, id: SessionId, now_ms: u64) -> bool {
     db.claim_session_reap(id, now_ms, reap_retry_after_ms)
         .unwrap_or(true)
 }
 
 /// Record that `id`'s reap failed at `now_ms`, spacing the next attempt out.
-fn reap_failed(db: &Database, id: SessionId, now_ms: u64) {
+pub(super) fn reap_failed(db: &Database, id: SessionId, now_ms: u64) {
     if let Err(e) = db.note_session_reap_failed(id, now_ms) {
         tracing::debug!("could not record the failed reap of '{id}': {e}");
     }
@@ -868,6 +1075,20 @@ pub fn reap_soft_deleted(
     backends: &crate::backend::BackendRegistry,
     id: SessionId,
 ) -> Result<bool, crate::session_ops::OpError> {
+    reap_if_generation(db, backends, id, None)
+}
+
+pub fn reap_if_generation(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    id: SessionId,
+    expected: Option<u64>,
+) -> Result<bool, super::OpError> {
+    let Some(_lease) = super::lock::lock(db, super::lock::Subject::Session(id), "reap")? else {
+        return Ok(false);
+    };
+    db.require_lifecycle_generation(id, expected)
+        .map_err(|_| super::OpError::Conflict("session lifecycle changed".into()))?;
     let Some(row) = db
         .get_deleted_session_by_id(id)
         .map_err(|e| format!("get deleted session: {e}"))?
@@ -888,7 +1109,7 @@ pub(super) fn reap_selected_soft_delete(
         db.get_deleted_session_by_id(row.id)
             .map(|current| {
                 current.is_some_and(|current| {
-                    current.deleted_at == row.deleted_at
+                    current.lifecycle_generation == row.lifecycle_generation
                         && !current.force_deleted
                         && !current.teardown_owed
                 })
@@ -898,6 +1119,12 @@ pub(super) fn reap_selected_soft_delete(
     if row.force_deleted || !still_selected()? {
         return Ok(false);
     }
+    let _workspace = super::lock::workspace(
+        db,
+        &row.backend_type,
+        row.agent_session_id.as_deref(),
+        "reap workspace",
+    )?;
 
     // A local row whose route no backend here serves has no window here to
     // release: the one its name resolves to on some other server is somebody
@@ -921,7 +1148,7 @@ pub(super) fn reap_selected_soft_delete(
         // that is how deleting a frozen session came to kill its replacement
         // 30-60s later, and why each delete-and-recreate made the next one die
         // sooner.
-        let owned = owned_windows(db, backend.as_ref(), row);
+        let owned = owned_windows(db, backend.as_ref(), row)?;
         if owned.is_empty() {
             // The windows may already be gone — the agent exited, or a previous
             // reap got there first. Logged rather than silent: owning nothing is
@@ -951,15 +1178,10 @@ pub(super) fn reap_selected_soft_delete(
         return Ok(false);
     }
 
-    // Derived per-session artifacts, both rebuilt on restore. Released even
-    // when the host could not be reached: they are this machine's, and nothing
-    // about a host that did not answer makes them worth keeping.
+    super::reconcile::remove_workspace(db, &shared_deleted(row))?;
     if let Some(asid) = &row.agent_session_id {
         if let Some(dir) = crate::paths::metrics_directory() {
             let _ = std::fs::remove_file(dir.join(format!("{asid}.json")));
-        }
-        if let Err(e) = crate::workspace::remove_workspace(asid) {
-            tracing::warn!("remove_workspace({asid}) during reap: {e}");
         }
     }
     remote.map(|()| true)
@@ -983,20 +1205,17 @@ fn owned_windows(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
     row: &DeletedSessionInfo,
-) -> Vec<String> {
-    match backend.discover() {
-        Ok(listing) => owned_windows_in(
-            &crate::backend::identity::WindowIndex::from_listing(listing),
-            row,
-            has_live_namesake(db, row),
-        ),
-        Err(_) => Vec::new(),
-    }
+) -> Result<Vec<String>, super::OpError> {
+    let listing = backend.discover()?;
+    Ok(owned_windows_in(
+        &crate::backend::identity::WindowIndex::from_listing(listing),
+        row,
+        has_live_namesake(db, row),
+    ))
 }
 
 /// Whether a live session answers to `row`'s name on `row`'s server. A failed
-/// read counts as one, for the reason [`owned_windows`] owns nothing when it
-/// cannot tell.
+/// read counts as one: uncertainty never authorizes a namesake's teardown.
 pub(super) fn has_live_namesake(db: &Database, row: &DeletedSessionInfo) -> bool {
     super::names::live_namesakes(db, &row.name, &row.backend_type)
         .map_or(true, |live| !live.is_empty())
@@ -1057,16 +1276,22 @@ fn reap_remote(
     };
     if let Some(cli) = super::host_cli::delegated(&host) {
         let id = row.id.to_string();
-        match super::host_cli::run(&host, &cli, &["session", "reap", &id]) {
+        let generation = row
+            .host_lifecycle_generation
+            .filter(|_| cli.lifecycle_preconditions)
+            .ok_or("host lifecycle precondition is unknown; sync the host first")?
+            .to_string();
+        match super::host_cli::run(
+            &host,
+            &cli,
+            &["session", "reap", &id, "--if-generation", &generation],
+        ) {
             Ok(_) => return Ok(()),
-            // The host has no row to reap — the delete was taken here while it
-            // was unreachable, and the mirror has not pushed it yet. Its
-            // windows are still there, so they come down from here.
-            Err(super::OpError::NotFound(e)) => {
-                tracing::debug!("'{}' is unknown on '{}': {e}", row.name, host.name);
-            }
             Err(e) => return Err(e.context(format!("host '{}'", host.name))),
         }
+    }
+    if host.shareable() {
+        return Err("shared host CLI is unavailable; direct cleanup is unsafe".into());
     }
     let backend = super::windows::backend_for(backends, &row.backend_type)?;
     let id = row.id.to_string();
@@ -1114,14 +1339,57 @@ fn remote_host_in<'a>(
     registry.host_of(&crate::session::Route::parse(backend_type).ok()?)
 }
 
+fn kill_confirmed(
+    db: &Database,
+    backend: &dyn crate::backend::SessionBackend,
+    session: &crate::sync::SharedSession,
+) -> anyhow::Result<bool> {
+    let id = session.id.to_string();
+    let owner = session_owner(session, &id);
+    let placed = backend.locate(owner)?;
+    if matches!(&placed.agent, crate::backend::Located::Unknown)
+        || matches!(&placed.shell, crate::backend::Located::Unknown)
+    {
+        anyhow::bail!("window ownership is ambiguous");
+    }
+    let agent = placed.agent.pane();
+    let shell = placed.shell.pane();
+    let panes: Vec<&str> = [agent.as_deref(), shell.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let claimed = db.list_active_sessions()?.iter().any(|row| {
+        row.id != session.id
+            && super::server_key(&row.backend_type) == super::server_key(&session.backend_type)
+            && (panes.contains(&row.backend_id.as_str())
+                || row
+                    .shell_backend_id
+                    .as_deref()
+                    .is_some_and(|pane| panes.contains(&pane)))
+    });
+    if claimed {
+        anyhow::bail!("window is now claimed by another active session");
+    }
+    for pane in panes {
+        backend.kill(pane)?;
+    }
+    let confirmed = backend.locate(owner)?;
+    if !confirmed.agent.is_absent() || !confirmed.shell.is_absent() {
+        anyhow::bail!("window teardown could not be confirmed");
+    }
+    Ok(agent.is_some())
+}
+
 /// Kill a local session's windows — agent and companion shell — through its
 /// backend, reaping the pane's child process on Windows (where a live
 /// process's cwd blocks the later rmdir).
 fn kill_local_window(
+    db: &Database,
     backend: &dyn crate::backend::SessionBackend,
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
+    #[cfg(windows)]
     let id = session.id.to_string();
     // Capture the pane's OS pid *before* the kill so we can reap the pane's child
     // process below. Windows refuses to remove a directory that is a live
@@ -1137,9 +1405,14 @@ fn kill_local_window(
     // The companion shell is the session's second window and nothing else ever
     // takes it down — leaving it is how a force-deleted session kept a live
     // `tbs-` window on the server for good. Both are resolved by their stamps.
-    match super::windows::kill_owned(backend, session_owner(session, &id)) {
+    match kill_confirmed(db, backend, session) {
         Ok(killed) => report.killed_window = killed,
-        Err(e) => tracing::warn!("could not kill the windows of '{}': {e:#}", session.name),
+        Err(e) => {
+            report.teardown_error = Some(format!(
+                "could not kill the windows of '{}': {e:#}",
+                session.name
+            ));
+        }
     }
 
     // `kill-window` returns before the OS reaps the pane's child process; wait
@@ -1151,22 +1424,23 @@ fn kill_local_window(
     // still fail on Windows; that is a documented psmux limitation, not covered
     // here.
     #[cfg(windows)]
-    if let Some(pid) = pane_pid {
+    if let Some(pid) = pane_pid.filter(|_| report.killed_window && report.teardown_error.is_none())
+    {
         reap_pane_process(pid);
     }
 }
 
 /// Kill the session's windows — agent and companion shell — on a remote host,
 /// resolved by the stamp each carries. Best-effort: an unreachable host, or one
-/// whose socket is not known, is recorded in `report.remote_teardown_error` and
+/// whose socket is not known, is recorded in `report.teardown_error` and
 /// never aborts the delete.
 fn kill_remote_window(
+    db: &Database,
     backend: &dyn crate::backend::SessionBackend,
     session: &crate::sync::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
-    let id = session.id.to_string();
-    match super::windows::kill_owned(backend, session_owner(session, &id)) {
+    match kill_confirmed(db, backend, session) {
         Ok(true) => report.killed_window = true,
         // Nothing there the row could claim: already gone, or a window the
         // host's listing attributes to somebody else. Not an error, and not a
@@ -1183,7 +1457,7 @@ fn kill_remote_window(
                 backend.name()
             );
             tracing::warn!("{msg}");
-            report.remote_teardown_error = Some(msg);
+            report.teardown_error = Some(msg);
         }
     }
 }
@@ -1223,6 +1497,8 @@ fn reap_pane_process(pid: u32) {
 /// force-delete's contract. A worktree thurbox did not create is skipped
 /// outright and recorded in `report.kept_worktrees`.
 fn remove_worktree_into(
+    db: &Database,
+    session: &crate::sync::SharedSession,
     host: Option<&crate::session::HostDef>,
     wt: &crate::sync::SharedWorktree,
     report: &mut ForceDeleteReport,
@@ -1238,6 +1514,18 @@ fn remove_worktree_into(
         return;
     }
 
+    if let Err(error) = unclaimed_resources(db, session) {
+        report.teardown_error = Some(error);
+        return;
+    }
+    if let Ok(registered) = crate::git::list_worktrees_on(host, &wt.repo_path) {
+        if !registered.iter().any(|entry| {
+            super::lock::worktree_key(&session.backend_type, &entry.path)
+                == super::lock::worktree_key(&session.backend_type, &wt.worktree_path)
+        }) {
+            return;
+        }
+    }
     match crate::git::remove_worktree_on(host, &wt.repo_path, &wt.worktree_path) {
         Ok(()) => report
             .removed_worktrees
@@ -1245,6 +1533,26 @@ fn remove_worktree_into(
         Err(e) => report
             .worktree_errors
             .push(format!("{}: {e}", wt.worktree_path.display())),
+    }
+}
+
+pub(crate) fn shared_deleted(row: &DeletedSessionInfo) -> crate::sync::SharedSession {
+    crate::sync::SharedSession {
+        id: row.id,
+        name: row.name.clone(),
+        agent: row.agent.clone(),
+        backend_id: row.backend_id.clone(),
+        backend_type: row.backend_type.clone(),
+        agent_session_id: row.agent_session_id.clone(),
+        cwd: row.cwd.clone(),
+        additional_dirs: row.additional_dirs.clone(),
+        worktrees: row.worktrees.clone(),
+        shell_backend_id: row.shell_backend_id.clone(),
+        parent_session_id: row.parent_session_id,
+        display_order: None,
+        tombstone: true,
+        tombstone_at: Some(row.deleted_at),
+        key: row.key.clone(),
     }
 }
 
@@ -1381,6 +1689,7 @@ mod tests {
         use crate::session::{AutomationAction, AutomationSchedule};
         use crate::storage::automations::NewAutomation;
         db.create_automation(&NewAutomation {
+            owner_session_id: None,
             name: name.into(),
             enabled: true,
             schedule: AutomationSchedule::Once { at: u64::MAX },
@@ -1845,10 +2154,15 @@ mod tests {
         ));
         delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
 
+        db.set_host_lifecycle_generation(id, 7).unwrap();
         // By the time the sweep runs the host is answering again, and owns the
         // row: the delete is forced there, which takes its windows with it.
         crate::session_ops::host_cli::fake::force_usable(
-            crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
+            crate::session_ops::host_cli::Usable::Yes({
+                let mut cli = crate::session_ops::host_cli::fake::cli();
+                cli.lifecycle_preconditions = true;
+                cli
+            }),
         );
         crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
             Ok(serde_json::json!({ "deleted": true }))
@@ -1866,6 +2180,8 @@ mod tests {
                 "delete".to_string(),
                 id.to_string(),
                 "--force".to_string(),
+                "--if-generation".to_string(),
+                "7".to_string(),
             ]],
             "the host is asked to force the delete, so its row and its windows go together"
         );
@@ -1922,11 +2238,16 @@ mod tests {
         for name in ["one", "two", "three"] {
             let id = insert_session_on(&db, name, "ssh:devbox", "%3");
             delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
+            db.set_host_lifecycle_generation(id, 7).unwrap();
         }
         assert_eq!(db.list_owed_teardowns().unwrap().len(), 3);
 
         crate::session_ops::host_cli::fake::force_usable(
-            crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
+            crate::session_ops::host_cli::Usable::Yes({
+                let mut cli = crate::session_ops::host_cli::fake::cli();
+                cli.lifecycle_preconditions = true;
+                cli
+            }),
         );
         crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
             Err(crate::session_ops::host_cli::fake::unreached(
@@ -1968,6 +2289,7 @@ mod tests {
 
     #[test]
     fn teardown_leaves_a_worktree_thurbox_did_not_create_on_disk() {
+        let db = Database::open_in_memory().unwrap();
         // The whole point of opening an existing worktree is that the user (or
         // their agent) made it outside thurbox. Force-deleting the session must
         // not run `git worktree remove --force` on it: that deletes the
@@ -1998,7 +2320,12 @@ mod tests {
         };
 
         let mut report = ForceDeleteReport::default();
-        teardown_runtime_resources(&crate::backend::registry::inert(), &session, &mut report);
+        teardown_runtime_resources(
+            &db,
+            &crate::backend::registry::inert(),
+            &session,
+            &mut report,
+        );
 
         assert!(
             report.removed_worktrees.is_empty() && report.worktree_errors.is_empty(),
@@ -2013,6 +2340,7 @@ mod tests {
 
     #[test]
     fn teardown_still_removes_a_worktree_thurbox_created() {
+        let db = Database::open_in_memory().unwrap();
         // The counterpart to the test above: provenance must gate the removal,
         // not disable it. A thurbox-created worktree at a path that is gone
         // still reaches `git worktree remove` and reports the failure.
@@ -2040,7 +2368,12 @@ mod tests {
         };
 
         let mut report = ForceDeleteReport::default();
-        teardown_runtime_resources(&crate::backend::registry::inert(), &session, &mut report);
+        teardown_runtime_resources(
+            &db,
+            &crate::backend::registry::inert(),
+            &session,
+            &mut report,
+        );
 
         assert!(report.kept_worktrees.is_empty());
         assert_eq!(report.worktree_errors.len(), 1, "removal was attempted");
@@ -2048,6 +2381,7 @@ mod tests {
 
     #[test]
     fn remote_teardown_with_unresolved_host_leaves_worktrees_untouched() {
+        let db = Database::open_in_memory().unwrap();
         // A remote session whose host isn't configured: its worktree dirs live
         // on that (now unreachable) host, so they must be left alone — NOT
         // attempted against the local `git`, which would either error out or,
@@ -2078,7 +2412,12 @@ mod tests {
         };
 
         let mut report = ForceDeleteReport::default();
-        teardown_runtime_resources(&crate::backend::registry::inert(), &session, &mut report);
+        teardown_runtime_resources(
+            &db,
+            &crate::backend::registry::inert(),
+            &session,
+            &mut report,
+        );
 
         assert!(
             report.remote_teardown_error.is_some(),
@@ -2222,7 +2561,8 @@ mod tests {
             &session,
             true,
             ForceDeleteReport::default(),
-            Some(&ctx),
+            &ctx,
+            None,
             |_, _| {
                 seen_force_deleted = db
                     .get_deleted_session_by_id(id)
@@ -2267,5 +2607,94 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
+    }
+    #[test]
+    fn a_conditional_delete_keeps_its_precondition_through_a_delegated_host() {
+        let _guard = configured_host();
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "relay", "ssh:devbox", "%3");
+        db.set_host_lifecycle_generation(id, 7).unwrap();
+        let generation = db.lifecycle_generation(id).unwrap();
+        let mut cli = crate::session_ops::host_cli::fake::cli();
+        cli.lifecycle_preconditions = true;
+        crate::session_ops::host_cli::fake::force_usable(
+            crate::session_ops::host_cli::Usable::Yes(cli),
+        );
+        crate::session_ops::host_cli::fake::install_runner(Box::new(|_, args| {
+            assert!(
+                args.windows(2).any(|pair| pair == ["--if-generation", "7"]),
+                "delegation dropped the lifecycle precondition: {args:?}"
+            );
+            Ok(serde_json::json!({"deleted": true}))
+        }));
+        delete_if_generation(
+            &db,
+            &crate::backend::registry::inert(),
+            id,
+            true,
+            generation,
+        )
+        .unwrap();
+        crate::session_ops::host_cli::fake::clear();
+    }
+
+    #[test]
+    fn a_conditional_delete_never_turns_a_failed_delegation_into_local_cleanup() {
+        let _guard = configured_host();
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "relay", "ssh:devbox", "%3");
+        db.set_host_lifecycle_generation(id, 7).unwrap();
+        let generation = db.lifecycle_generation(id).unwrap();
+        for undetermined in [false, true] {
+            let mut cli = crate::session_ops::host_cli::fake::cli();
+            cli.lifecycle_preconditions = true;
+            crate::session_ops::host_cli::fake::force_usable(
+                crate::session_ops::host_cli::Usable::Yes(cli),
+            );
+            crate::session_ops::host_cli::fake::install_runner(Box::new(move |_, _| {
+                Err(if undetermined {
+                    crate::session_ops::host_cli::fake::undetermined("answer lost")
+                } else {
+                    crate::session_ops::host_cli::fake::unreached("link down")
+                })
+            }));
+            assert!(delete_if_generation(
+                &db,
+                &crate::backend::registry::inert(),
+                id,
+                true,
+                generation
+            )
+            .is_err());
+            crate::session_ops::host_cli::fake::clear();
+            assert!(db.get_session_by_id(id).unwrap().is_some());
+            assert_eq!(db.lifecycle_generation(id).unwrap(), generation);
+        }
+    }
+
+    #[test]
+    fn a_delegated_delete_reports_the_hosts_generic_cleanup_debt_without_adopting_it() {
+        let _guard = configured_host();
+        let db = Database::open_in_memory().unwrap();
+        let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
+        crate::session_ops::host_cli::fake::force_usable(
+            crate::session_ops::host_cli::Usable::Yes(crate::session_ops::host_cli::fake::cli()),
+        );
+        crate::session_ops::host_cli::fake::install_runner(Box::new(|_, _| {
+            Ok(serde_json::json!({
+                "teardown_error": "worktree is locked", "teardown_owed": true,
+            }))
+        }));
+        let result =
+            delete_session_headless(&db, &crate::backend::registry::inert(), id, true).unwrap();
+        crate::session_ops::host_cli::fake::clear();
+        assert_eq!(result.teardown_error.as_deref(), Some("worktree is locked"));
+        assert!(result.teardown_owed);
+        assert!(
+            !db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .teardown_owed
+        );
     }
 }
