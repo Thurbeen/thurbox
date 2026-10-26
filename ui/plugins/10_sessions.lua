@@ -63,7 +63,7 @@ end
 
 --- The status that follows the title, in two halves: `reason`, which says why
 --- the dot looks the way it does and is kept at every width, and `action`, the
---- agent's current action, which only a wide panel has room for.
+--- agent's current action.
 ---
 --- v1 shows the agent's notification (or the word "Blocked") for a blocked row,
 --- and the OSC activity title otherwise; a row with neither carries no text,
@@ -188,8 +188,7 @@ local function name_hits(session, search)
 end
 
 --- From this pane width up, a session row has room for the agent's current
---- action beside its title. Below it the title takes the whole row: an action
---- cut to a word or two says nothing and costs the title its columns.
+--- action in an aligned column. Narrow panels keep it after the session name.
 local WIDE = 100
 
 --- Show the agent's terminal title instead of the thurbox name?
@@ -294,8 +293,8 @@ local function session_line(item, layout, elapsed, is_selected, work, search)
   end
 
   local title, from_terminal = title_of(session, layout.terminal_title)
-  -- The action is shown once: as the title, or in the wide panel's column.
-  if from_terminal or not layout.column then
+  -- The action is shown once: as the title, or after the session name.
+  if from_terminal then
     action = nil
   end
   local trailing = reason

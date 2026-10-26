@@ -106,9 +106,9 @@ the user to remember which field to type into.
 Each row is a single line: `<status-dot> <name> [<status>]`, indented to show
 where it sits (see *Session list hierarchy* below). The agent's current action —
 the OSC `0`/`1`/`2` title the agent sets on its own terminal, with a leading
-`✳` or `*` activity prefix dropped — is shown
-only when the panel is at least 100 columns wide, in a column aligned just past
-the longest title. Below that the title takes the whole row and is cut with `…`.
+`✳` or `*` activity prefix dropped — stays after the session name at every panel
+width, truncated to the remaining space. At 100 columns and above, it uses a
+column aligned just past the longest title.
 What explains the dot — a blocked agent's question, why a host is unreachable,
 a failed command, a driver's `ui.note` — is kept at every width. A session
 waiting for you (`blocked`) has its whole row tinted in the status colour and

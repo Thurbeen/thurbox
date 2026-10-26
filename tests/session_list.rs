@@ -1988,7 +1988,7 @@ fn with_activity(world: &Snapshot, activity: &[(&str, &str)]) -> HashMap<String,
 }
 
 #[test]
-fn the_current_action_needs_a_panel_at_least_100_columns_wide() {
+fn the_terminal_title_stays_visible_and_aligns_on_wide_panels() {
     let host = host();
     let world = Snapshot {
         sessions: vec![row("alpha", "alpha"), row("beta", "beta-longer-name")],
@@ -2006,13 +2006,14 @@ fn the_current_action_needs_a_panel_at_least_100_columns_wide() {
         &Themes::load(None),
         &meta,
     );
-    let narrow = frame_at(&host, 99, 6);
-    assert!(
-        !narrow
-            .iter()
-            .any(|line| line.contains("Writing") || line.contains("Reviewing")),
-        "{narrow:#?}"
-    );
+    for width in [44, 99] {
+        let narrow = frame_at(&host, width, 6);
+        assert!(narrow[3].contains("alpha  Writing tests"), "{narrow:#?}");
+        assert!(
+            narrow[4].contains("beta-longer-name  Reviewing"),
+            "{narrow:#?}"
+        );
+    }
     let wide = frame_at(&host, 100, 6);
     let column = |needle: &str| {
         wide.iter()

@@ -3759,6 +3759,27 @@ fn shell_session() -> Option<(Profile, Tui)> {
     shell_session_with(|_| {})
 }
 
+#[test]
+fn the_terminal_title_stays_visible_in_a_narrow_session_list() {
+    let Some((_profile, mut tui)) = shell_session() else {
+        return;
+    };
+    tui.send(b"printf '\\033]0;Plan tests\\007'\r");
+    tui.wait_until("the terminal title beside its session name", |_| {
+        let Some((_, y)) = tui.session_row("probe") else {
+            return false;
+        };
+        let row = tui.row(y);
+        let body = row
+            .strip_prefix('│')
+            .or_else(|| row.strip_prefix('┃'))
+            .unwrap();
+        let sidebar = body.split(['│', '┃']).next().unwrap();
+        sidebar.contains("Plan tests")
+    });
+    assert!(tui.quit().success());
+}
+
 /// A local shell beside a stored SSH session, with no live remote connection.
 /// The session list is the subject; no test needs to attach to the remote pane.
 fn hosted_session_list() -> Option<(Profile, Tui)> {
