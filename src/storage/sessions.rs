@@ -183,7 +183,7 @@ impl Database {
                 "session has a pending lifecycle intent".into(),
             ));
         }
-        self.upsert_session_in_transaction(session, created_as)?;
+        self.upsert_session_in_transaction(session, created_as, attrs)?;
         if let Some(args) = agent_args {
             let active: bool = self.conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1 AND deleted_at IS NULL)",
@@ -201,6 +201,7 @@ impl Database {
         &self,
         session: &SharedSession,
         created_as: EventReason,
+        attrs: Option<&std::collections::BTreeMap<String, String>>,
     ) -> rusqlite::Result<()> {
         let now = current_time_millis() as i64;
         let id_str = session.id.to_string();
@@ -2404,7 +2405,7 @@ impl Database {
         if self.get_session_by_id(session.id)?.is_none() {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        self.upsert_session_in_transaction(session, EventReason::Restored)?;
+        self.upsert_session_in_transaction(session, EventReason::Restored, None)?;
         tx.commit()
     }
 }

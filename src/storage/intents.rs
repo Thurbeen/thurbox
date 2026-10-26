@@ -159,6 +159,7 @@ impl Database {
         recipe: Option<&LaunchRecipe>,
         env: &std::collections::BTreeMap<String, String>,
         agent_args: &[String],
+        attrs: Option<&std::collections::BTreeMap<String, String>>,
     ) -> rusqlite::Result<()> {
         let tx = self.write_transaction()?;
         self.check_create_fence(session.id, lease_token)?;
@@ -172,7 +173,7 @@ impl Database {
                 "session changed during creation".into(),
             ));
         }
-        self.upsert_session_in_transaction(session, super::EventReason::Spawned)?;
+        self.upsert_session_in_transaction(session, super::EventReason::Spawned, attrs)?;
         self.set_agent_args(session.id, agent_args)?;
         if let Some(recipe) = recipe {
             self.set_launch_recipe(session.id, recipe)?;

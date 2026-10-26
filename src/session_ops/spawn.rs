@@ -733,6 +733,7 @@ fn spawn(
         recipe.as_ref(),
         &req.env,
         &req.agent_args,
+        (!req.telemetry_attrs.is_empty()).then_some(&req.telemetry_attrs),
     ) {
         tracing::error!(
             "spawn race: DB upsert failed after the tmux window for '{}' spawned; \

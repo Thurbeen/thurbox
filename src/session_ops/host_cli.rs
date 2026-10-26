@@ -749,9 +749,18 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .get("agent_args")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        telemetry_attrs: json.get("telemetry_attrs").and_then(Value::as_bool).unwrap_or(false),
-        lifecycle_preconditions: json.get("lifecycle_preconditions").and_then(Value::as_bool).unwrap_or(false),
-        purged_tombstones: json.get("purged_tombstones").and_then(Value::as_bool).unwrap_or(false),
+        telemetry_attrs: json
+            .get("telemetry_attrs")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        lifecycle_preconditions: json
+            .get("lifecycle_preconditions")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        purged_tombstones: json
+            .get("purged_tombstones")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         create_parity: json
             .get("create_parity")
             .and_then(Value::as_bool)
