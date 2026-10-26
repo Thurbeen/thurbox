@@ -1564,18 +1564,21 @@ fn delete_branch_into(
     wt: &crate::sync::SharedWorktree,
     report: &mut ForceDeleteReport,
 ) {
-    match branch_wanted_elsewhere(db, session, wt) {
-        Ok(false) => {}
+    let outcome = match branch_wanted_elsewhere(db, session, host, wt) {
         Ok(true) => return,
-        Err(e) => {
-            report.branch_errors.push(format!("{}: {e}", wt.branch));
-            return;
-        }
-    }
-    match crate::git::delete_created_branch_on(host, &wt.repo_path, &wt.branch) {
+        Ok(false) => crate::git::delete_created_branch_on(host, &wt.repo_path, &wt.branch)
+            .map_err(|e| format!("{e:#}")),
+        Err(e) => Err(e),
+    };
+    match outcome {
         Ok(true) => report.deleted_branches.push(wt.branch.clone()),
         Ok(false) => {}
-        Err(e) => report.branch_errors.push(format!("{}: {e}", wt.branch)),
+        // Logged as well as reported: the reap and the owed-teardown retry
+        // run with no caller to read the report.
+        Err(e) => {
+            tracing::warn!("kept branch '{}' of '{}': {e}", wt.branch, session.name);
+            report.branch_errors.push(format!("{}: {e}", wt.branch));
+        }
     }
 }
 
@@ -1584,18 +1587,34 @@ fn delete_branch_into(
 /// parent's checkout, so a soft-deleted fork's undo re-attaches the very branch
 /// its parent's teardown is about to delete. A force-deleted row asks for
 /// nothing: its own teardown removed (or owes) the checkout already.
+///
+/// Repositories are compared by identity on `host`, not by the path a row
+/// recorded: one session may name the repository through a symlink, or through
+/// a linked worktree, that another names directly. A repository git cannot
+/// identify counts as the same one, since keeping a branch only leaks a ref.
 pub(super) fn branch_wanted_elsewhere(
     db: &Database,
     session: &crate::sync::SharedSession,
+    host: Option<&crate::session::HostDef>,
     wt: &crate::sync::SharedWorktree,
 ) -> Result<bool, String> {
+    let ours = std::cell::OnceCell::new();
+    let same_repo = |other: &std::path::Path| {
+        other == wt.repo_path || {
+            let ours = ours.get_or_init(|| crate::git::repository_identity_on(host, &wt.repo_path));
+            match (ours, crate::git::repository_identity_on(host, other)) {
+                (Some(a), Some(b)) => *a == b,
+                _ => true,
+            }
+        }
+    };
     let names_branch =
         |id: SessionId, backend_type: &str, worktrees: &[crate::sync::SharedWorktree]| {
             id != session.id
                 && super::same_machine(backend_type, &session.backend_type)
                 && worktrees
                     .iter()
-                    .any(|other| other.repo_path == wt.repo_path && other.branch == wt.branch)
+                    .any(|other| other.branch == wt.branch && same_repo(&other.repo_path))
         };
     let active = db
         .list_active_sessions()
@@ -2594,6 +2613,39 @@ mod tests {
         assert!(report.removed_worktrees.is_empty() && report.deleted_branches.is_empty());
         assert!(opened.exists());
         assert!(crate::git::branch_exists(&repo, "refs/heads/opened"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn teardown_keeps_a_branch_a_saved_session_names_through_a_symlinked_repo() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let repo = committed_repo(temp.path());
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&repo, &alias).unwrap();
+        let wt = created_worktree(&repo, "feat/shared");
+        let db = Database::open_in_memory().unwrap();
+        // A fork that recorded the repository by another name, soft-deleted
+        // and so still owed its undo.
+        let mut saved = session_with_worktree(crate::sync::SharedWorktree {
+            repo_path: alias,
+            ..wt.clone()
+        });
+        saved.backend_type = "local-tmux".into();
+        db.upsert_session(&saved).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), saved.id, false).unwrap();
+
+        let mut report = ForceDeleteReport::default();
+        teardown_runtime_resources(
+            &db,
+            &crate::backend::registry::inert(),
+            &session_with_worktree(wt),
+            &mut report,
+        );
+
+        assert_eq!(report.removed_worktrees.len(), 1);
+        assert!(report.deleted_branches.is_empty(), "{report:?}");
+        assert!(crate::git::branch_exists(&repo, "refs/heads/feat/shared"));
     }
 
     #[test]

@@ -731,6 +731,7 @@ fn registered_worktrees(repo: &Path) -> usize {
         .count()
 }
 
+#[cfg(unix)]
 fn has_branch(repo: &Path, branch: &str) -> bool {
     scrubbed_git(
         repo,
@@ -747,6 +748,7 @@ fn has_branch(repo: &Path, branch: &str) -> bool {
     .success()
 }
 
+#[cfg(unix)]
 fn scrubbed_git(repo: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
     command.args(args).current_dir(repo);

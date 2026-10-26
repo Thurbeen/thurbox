@@ -180,7 +180,7 @@ fn rollback(
         // restore was for.
         if wt.created_by_thurbox
             && intent.expected_deleted_at.is_none()
-            && super::delete::branch_wanted_elsewhere(db, row, wt) == Ok(false)
+            && super::delete::branch_wanted_elsewhere(db, row, host.as_ref(), wt) == Ok(false)
         {
             if let Err(e) =
                 crate::git::delete_created_branch_on(host.as_ref(), &wt.repo_path, &wt.branch)

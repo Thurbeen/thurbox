@@ -119,6 +119,20 @@ fn mark_branch_created(host: Option<&HostDef>, repo_path: &Path, branch: &str) {
     }
 }
 
+/// The repository `path` belongs to, as git names it on `host`: its common
+/// directory, absolute and with symlinks resolved, so a repository reached
+/// through a symlink, or through one of its linked worktrees, is still the same
+/// repository. `None` when git cannot say.
+pub fn repository_identity_on(host: Option<&HostDef>, path: &Path) -> Option<PathBuf> {
+    run_git_capture_on(
+        host,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        path,
+    )
+    .map(|dir| PathBuf::from(dir.trim()))
+    .filter(|dir| !dir.as_os_str().is_empty())
+}
+
 /// Whether thurbox created `branch` (`branch.<name>.thurboxCreated`).
 pub fn branch_created_by_thurbox_on(
     host: Option<&HostDef>,

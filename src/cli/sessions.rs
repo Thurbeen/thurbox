@@ -1727,6 +1727,11 @@ fn run_purge_if_generation(
             human.push_str(&format!("\n  {} ({})", path.display(), purged.backend_type));
         }
     }
+    for purged in &report.purged {
+        for error in &purged.branch_errors {
+            human.push_str(&format!("\n  branch kept for '{}': {error}", purged.name));
+        }
+    }
     let json = json!({
         "dry_run": dry_run,
         "purged": report.purged.iter().map(|p| json!({
@@ -1735,6 +1740,7 @@ fn run_purge_if_generation(
             "backend_type": p.backend_type,
             "deleted_at": p.deleted_at,
             "left_on_disk": p.left_on_disk.iter().map(|w| w.display().to_string()).collect::<Vec<_>>(),
+            "branch_errors": p.branch_errors,
         })).collect::<Vec<_>>(),
         "kept": report.kept.iter().map(|k| json!({
             "id": k.id.to_string(),
