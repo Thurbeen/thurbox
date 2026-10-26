@@ -12,6 +12,8 @@
 //! after a steer and after a create all along, and still moved the bar on an
 //! ordinary rebuild.
 
+use std::collections::HashMap;
+
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::Terminal;
@@ -22,6 +24,7 @@ use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
 use thurbox::kernel::paint::{render as paint_node, PlaceholderSurfaces};
 use thurbox::kernel::registry::{Registry, Value};
 use thurbox::kernel::snapshot::{GitState, HostRow, SessionRow, Snapshot};
+use thurbox::kernel::terminal::AgentMeta;
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
@@ -670,7 +673,7 @@ fn host_kind_uses_transport_and_platform_independently() {
         let frame = list_text(&host, &snapshot, &registry);
         println!("{frame}");
         assert!(frame.contains("⌂ local"), "{frame}");
-        for label in ["▣ ssh build-box", "▣ ssh win-desk", "▣ WSL dev-distro"] {
+        for label in ["@ build-box", "@ win-desk", "@ WSL dev-distro"] {
             assert!(frame.contains(label), "{frame}");
         }
         let buffer = paint(&host, PLUGIN, 24, 16);
@@ -682,8 +685,8 @@ fn host_kind_uses_transport_and_platform_independently() {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(narrow.contains("ssh build-box"), "{narrow}");
-        assert!(narrow.contains("ssh win-desk"), "{narrow}");
+        assert!(narrow.contains("@ build-box"), "{narrow}");
+        assert!(narrow.contains("@ win-desk"), "{narrow}");
     }
 }
 
@@ -698,7 +701,7 @@ fn an_unreachable_host_keeps_its_attention_visible_when_folded() {
     press_in(&host, &snapshot, "j");
     press_in(&host, &snapshot, "h");
     let frame = list_text(&host, &snapshot, &registry);
-    assert!(frame.contains("⊘▣"), "{frame}");
+    assert!(frame.contains("⊘@ example-ssh"), "{frame}");
     assert!(frame.contains("!2"), "{frame}");
     assert!(frame.contains("unreachable"), "{frame}");
     assert!(!frame.contains("remote-alpha"), "{frame}");
@@ -741,7 +744,24 @@ fn publish_inflight(
     registry: &Registry,
     inflight: &[InFlight],
 ) {
-    let themes = Themes::load(None);
+    publish_full(
+        host,
+        snapshot,
+        registry,
+        inflight,
+        &Themes::load(None),
+        &Default::default(),
+    );
+}
+
+fn publish_full(
+    host: &LuaHost,
+    snapshot: &Snapshot,
+    registry: &Registry,
+    inflight: &[InFlight],
+    themes: &Themes,
+    meta: &HashMap<String, AgentMeta>,
+) {
     let diffs = thurbox::kernel::diff::DiffStore::new();
     let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
     host.publish(&Published {
@@ -749,12 +769,12 @@ fn publish_inflight(
         snapshot,
         attach_errors: &Default::default(),
         inflight,
-        themes: &themes,
+        themes,
         registry,
         diffs: &diffs,
         links: &Default::default(),
         search: None,
-        meta: &Default::default(),
+        meta,
         metrics: &Default::default(),
         status_rows: 0,
         can_open: true,
@@ -978,13 +998,23 @@ fn paint(host: &LuaHost, plugin: &str, width: u16, height: u16) -> Buffer {
 /// assertion holds under any preset; the border rows are skipped because a
 /// focused pane's title wears a highlight of its own.
 fn selection_bar(buffer: &Buffer) -> Option<String> {
+    let band = selection_bg();
     (1..buffer.area.height.saturating_sub(1))
-        .find(|&y| buffer[(1, y)].bg != buffer[(0, y)].bg)
+        .find(|&y| buffer[(1, y)].bg != buffer[(0, y)].bg && buffer[(1, y)].bg == band)
         .map(|y| {
             (0..buffer.area.width)
                 .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>()
         })
+}
+
+/// The selection role as the painter draws it. A host row is a band too, so a
+/// background that merely differs from the border's no longer singles out the
+/// bar.
+fn selection_bg() -> ratatui::style::Color {
+    let role = Themes::load(None).roles()["selection_bg"].clone();
+    role.parse::<ratatui::style::Color>()
+        .unwrap_or_else(|_| panic!("selection_bg {role} is not a colour"))
 }
 
 /// A pane's top border, which is where a title is drawn.
@@ -1551,4 +1581,652 @@ fn the_sort_puts_a_nameless_block_at_its_groups_end() {
         drawn.contains("alpha,zulu,<nameless>"),
         "the named blocks sort and the nameless one lands last:\n{drawn}"
     );
+}
+
+// --- the hierarchy (issue #1551) ---------------------------------------------
+
+/// The painted pane as rows of text, read as a terminal shows it: a
+/// double-width glyph owns the cell after it, so that cell is skipped.
+fn frame_at(host: &LuaHost, width: u16, height: u16) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+    let buffer = paint(host, PLUGIN, width, height);
+    (0..buffer.area.height)
+        .map(|y| {
+            let mut line = String::new();
+            let mut owed = 0;
+            for x in 0..buffer.area.width {
+                if owed > 0 {
+                    owed -= 1;
+                    continue;
+                }
+                let symbol = buffer[(x, y)].symbol();
+                owed = symbol.width().saturating_sub(1);
+                line.push_str(symbol);
+            }
+            line
+        })
+        .collect()
+}
+
+fn act(host: &LuaHost, action: &str) {
+    let index = host.index_of(PLUGIN).expect("no sessions plugin");
+    assert!(
+        host.on_action(index, action).expect("on_action"),
+        "{action} was not handled"
+    );
+}
+
+fn with_settings(host: &LuaHost, settings: &[(&str, bool)]) -> Registry {
+    let mut registry = registry_for(host);
+    for (id, on) in settings {
+        registry
+            .set_setting(PLUGIN, id, Some(Value::Bool(*on)))
+            .unwrap();
+    }
+    registry
+}
+
+fn child(id: &str, name: &str, parent: &str) -> SessionRow {
+    let mut row = row(id, name);
+    row.parent_id = Some(parent.into());
+    row
+}
+
+/// A lead with two workers, one of them waiting for an answer, and a session
+/// of its own beside them.
+fn family() -> Snapshot {
+    let mut waiting = child("worker-b", "worker-b", "lead");
+    waiting.status = SessionState::Blocked;
+    Snapshot {
+        sessions: vec![
+            row("lead", "lead"),
+            child("worker-a", "worker-a", "lead"),
+            waiting,
+            row("solo", "solo"),
+        ],
+        ..Snapshot::default()
+    }
+}
+
+#[test]
+fn sessions_nest_by_indentation_under_their_host_and_parent() {
+    // Host handle in column 1, repo separator one column in, sessions two in
+    // from the host and two more per parent; a fold slot in front of every dot
+    // so a parent's dot lines up with its siblings'. No `└`, no `⇅`/`⑂`, and no
+    // status strip on the border.
+    let host = host();
+    publish_with(&host, &family(), &registry_for(&host));
+    assert_eq!(
+        frame_at(&host, 40, 9),
+        vec![
+            "┏ ▸ Sessions ━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+            "┃ ▾ ⌂ local  !1 ──────────── 4 sessions┃",
+            "┃  ▾ thurbox ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┃",
+            "┃   ▾ ○ lead                           ┃",
+            "┃       ○ worker-a                     ┃",
+            "┃       ◆ worker-b  Blocked            ┃",
+            "┃     ○ solo                           ┃",
+            "┃                                      ┃",
+            "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛",
+        ]
+    );
+}
+
+#[test]
+fn folding_a_parent_hides_its_children_but_not_one_waiting_for_you() {
+    let host = host();
+    let world = family();
+    let registry = registry_for(&host);
+    publish_with(&host, &world, &registry);
+    frame_at(&host, 40, 9);
+    // The cursor opens on the first session, the lead; Left folds it.
+    act(&host, "sessions.parent_host");
+    publish_with(&host, &world, &registry);
+    let folded = frame_at(&host, 40, 9);
+    assert_eq!(
+        folded[3..7],
+        [
+            "┃   ▸ ○ lead +2                        ┃",
+            "┃       ◆ worker-b  Blocked            ┃",
+            "┃     ○ solo                           ┃",
+            "┃                                      ┃",
+        ],
+        "{folded:#?}"
+    );
+    // The fold is saved like a host's, so it survives a restart.
+    assert!(host.drain_commands().iter().any(|command| matches!(
+        command,
+        Command::Setting { key, value: Some(Value::Text(value)) }
+            if key == "sessions.folded_parents" && value == "lead"
+    )));
+    // Right unfolds it, and the handle is a click target that folds it again.
+    act(&host, "sessions.first_child");
+    publish_with(&host, &world, &registry);
+    assert!(frame_at(&host, 40, 9)[4].contains("worker-a"));
+    let index = host.index_of(PLUGIN).unwrap();
+    host.on_click(
+        index,
+        &Click {
+            id: Some("fold:lead".into()),
+            ..Click::default()
+        },
+    )
+    .unwrap();
+    publish_with(&host, &world, &registry);
+    let clicked = frame_at(&host, 40, 9);
+    assert!(clicked[3].contains("▸ ○ lead +2"), "{clicked:#?}");
+    assert!(!clicked.iter().any(|line| line.contains("worker-a")));
+}
+
+#[test]
+fn clicking_a_parent_fold_keeps_a_visible_selection_or_selects_the_parent() {
+    for group_by_host in [true, false] {
+        for group_by_repo in [true, false] {
+            for selected in ["lead", "worker-a", "grandchild", "worker-b", "solo"] {
+                let host = host();
+                let mut world = family();
+                world
+                    .sessions
+                    .insert(2, child("grandchild", "grandchild", "worker-a"));
+                let registry = with_settings(
+                    &host,
+                    &[
+                        ("group_by_host", group_by_host),
+                        ("group_by_repo", group_by_repo),
+                    ],
+                );
+                publish_with(&host, &world, &registry);
+                frame_at(&host, 40, 9);
+                let index = host.index_of(PLUGIN).unwrap();
+                host.on_click(
+                    index,
+                    &Click {
+                        id: Some(selected.into()),
+                        ..Click::default()
+                    },
+                )
+                .unwrap();
+                assert_every_reading_names(&host, selected, selected);
+
+                let expected = if matches!(selected, "worker-a" | "grandchild") {
+                    "lead"
+                } else {
+                    selected
+                };
+                for folded in [true, false] {
+                    host.on_click(
+                        index,
+                        &Click {
+                            id: Some("fold:lead".into()),
+                            ..Click::default()
+                        },
+                    )
+                    .unwrap();
+                    publish_with(&host, &world, &registry);
+                    assert_every_reading_names(&host, expected, expected);
+                    let frame = frame_at(&host, 40, 9);
+                    assert_eq!(
+                        frame.iter().any(|line| line.contains("worker-a")),
+                        !folded,
+                        "the requested fold must remain applied: {frame:#?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn folding_a_parent_preserves_its_hosts_totals_and_active_count() {
+    let host = host();
+    let mut world = family();
+    world.sessions[1].status = SessionState::Working;
+    let registry = registry_for(&host);
+    publish_with(&host, &world, &registry);
+    let expanded = frame_at(&host, 80, 9);
+    act(&host, "sessions.parent_host");
+    publish_with(&host, &world, &registry);
+    let folded = frame_at(&host, 80, 9);
+    assert!(!folded.iter().any(|line| line.contains("worker-a")));
+    assert_eq!(
+        folded[1], expanded[1],
+        "folding changes visibility, not host counts"
+    );
+    assert!(folded[1].contains("4 sessions · 1 active"), "{folded:#?}");
+}
+
+#[test]
+fn left_on_a_visible_blocked_descendant_selects_its_nearest_visible_ancestor() {
+    for grouped in [true, false] {
+        let host = host();
+        let mut waiting = child("waiting", "waiting", "quiet");
+        waiting.status = SessionState::Blocked;
+        let world = Snapshot {
+            sessions: vec![
+                row("lead", "lead"),
+                child("quiet", "quiet", "lead"),
+                waiting,
+            ],
+            ..Snapshot::default()
+        };
+        let registry = with_settings(
+            &host,
+            &[("group_by_host", grouped), ("group_by_repo", grouped)],
+        );
+        publish_with(&host, &world, &registry);
+        frame_at(&host, 40, 9);
+        act(&host, "sessions.parent_host");
+        publish_with(&host, &world, &registry);
+        act(&host, "sessions.next");
+        act(&host, "sessions.parent_host");
+        publish_with(&host, &world, &registry);
+        assert!(selection_bar(&paint(&host, PLUGIN, 40, 9))
+            .unwrap()
+            .contains("lead"));
+    }
+}
+
+#[test]
+fn a_focus_request_unfolds_the_parent_of_the_session_it_names() {
+    let host = host();
+    let world = family();
+    let mut registry = registry_for(&host);
+    registry
+        .set_setting(PLUGIN, "folded_parents", Some(Value::Text("lead".into())))
+        .unwrap();
+    publish_with(&host, &world, &registry);
+    host.set_shared_string("focus_session", "worker-a");
+    let frame = frame_at(&host, 40, 9);
+    assert!(frame[3].contains("▾ ○ lead"), "{frame:#?}");
+    assert!(frame[4].contains("worker-a"), "{frame:#?}");
+}
+
+#[test]
+fn a_focus_request_reveals_a_descendant_beyond_sixty_four_parents() {
+    let host = host();
+    let mut world = Snapshot::default();
+    world.sessions.push(row("n0", "root"));
+    for depth in 1..=70 {
+        world.sessions.push(child(
+            &format!("n{depth}"),
+            &format!("descendant-{depth}"),
+            &format!("n{}", depth - 1),
+        ));
+    }
+    let mut registry = registry_for(&host);
+    registry
+        .set_setting(PLUGIN, "folded_parents", Some(Value::Text("n0".into())))
+        .unwrap();
+    publish_with(&host, &world, &registry);
+    frame_at(&host, 40, 12);
+    assert_eq!(host.shared_string("selected").as_deref(), Some("n0"));
+    host.set_shared_string("focus_session", "n70");
+    frame_at(&host, 40, 12);
+    assert_eq!(host.shared_string("selected").as_deref(), Some("n70"));
+    assert!(host.drain_commands().iter().any(|command| matches!(
+        command, Command::Setting { key, value: Some(Value::Text(value)) }
+            if key == "sessions.folded_parents" && value.is_empty()
+    )));
+}
+
+#[test]
+fn focus_requests_stop_at_repeated_ancestors() {
+    for self_parent in [false, true] {
+        let host = host();
+        let mut world = Snapshot {
+            sessions: vec![
+                row("safe", "safe"),
+                child("a", "cycle-a", if self_parent { "a" } else { "b" }),
+            ],
+            ..Snapshot::default()
+        };
+        if !self_parent {
+            world.sessions.push(child("b", "cycle-b", "a"));
+        }
+        let mut registry = registry_for(&host);
+        registry
+            .set_setting(PLUGIN, "folded_parents", Some(Value::Text("a;b".into())))
+            .unwrap();
+        publish_with(&host, &world, &registry);
+        frame_at(&host, 40, 12);
+        host.set_shared_string("focus_session", "a");
+        let frame = frame_at(&host, 40, 12);
+        assert!(frame.iter().any(|line| line.contains("safe")), "{frame:#?}");
+        assert_eq!(host.shared_string("selected").as_deref(), Some("safe"));
+    }
+}
+
+#[test]
+fn a_folded_repo_row_says_how_many_sessions_it_holds() {
+    let host = host();
+    let mut registry = registry_for(&host);
+    registry
+        .set_setting(
+            PLUGIN,
+            "folded_repos",
+            Some(Value::Text("repo:%00local%01thurbox".into())),
+        )
+        .unwrap();
+    publish_with(&host, &family(), &registry);
+    let frame = frame_at(&host, 40, 9);
+    assert_eq!(
+        frame[2], "┃  ▸ thurbox ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 4 sessions┃",
+        "{frame:#?}"
+    );
+}
+
+#[test]
+fn without_host_rows_only_a_top_level_remote_row_carries_the_host_mark() {
+    // Host rows are what says where a session runs; with them off, the top of
+    // each remote tree says it instead, once — its children do not repeat it.
+    let host = host();
+    let mut lead = row("remote-lead", "remote-lead");
+    lead.remote_host = Some("example-ssh".into());
+    lead.backend = "ssh:example-ssh".into();
+    let mut worker = child("remote-worker", "remote-worker", "remote-lead");
+    worker.remote_host = Some("example-ssh".into());
+    worker.backend = "ssh:example-ssh".into();
+    let world = Snapshot {
+        sessions: vec![lead, worker, row("local-one", "local-one")],
+        ..Snapshot::default()
+    };
+    let registry = with_settings(&host, &[("group_by_host", false), ("group_by_repo", false)]);
+    publish_with(&host, &world, &registry);
+    assert_eq!(
+        frame_at(&host, 40, 6)[1..4],
+        [
+            "┃ ▾ ○ @ remote-lead                    ┃",
+            "┃     ○ remote-worker                  ┃",
+            "┃   ○ local-one                        ┃",
+        ]
+    );
+    // Grouped by repo but not by host: the repo separators sit at the edge
+    // and the sessions two columns in from them.
+    let registry = with_settings(&host, &[("group_by_host", false)]);
+    publish_with(&host, &world, &registry);
+    let grouped = frame_at(&host, 40, 7);
+    assert_eq!(
+        grouped[1..5],
+        [
+            "┃ ▾ thurbox ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┃",
+            "┃   ▾ ○ @ remote-lead                  ┃",
+            "┃       ○ remote-worker                ┃",
+            "┃     ○ local-one                      ┃",
+        ],
+        "{grouped:#?}"
+    );
+}
+
+#[test]
+fn a_remote_host_row_is_named_with_an_at_rather_than_ssh() {
+    let host = host();
+    publish_with(&host, &hosted(), &registry_for(&host));
+    let frame = frame_at(&host, 40, 8);
+    assert!(
+        frame
+            .iter()
+            .any(|line| line.contains("▾ @ example-ssh  !1")),
+        "{frame:#?}"
+    );
+    assert!(!frame.iter().any(|line| line.contains("ssh example-ssh")));
+}
+
+fn with_activity(world: &Snapshot, activity: &[(&str, &str)]) -> HashMap<String, AgentMeta> {
+    activity
+        .iter()
+        .map(|(id, text)| {
+            assert!(world.sessions.iter().any(|row| row.id == *id));
+            (
+                id.to_string(),
+                AgentMeta {
+                    activity: Some(text.to_string()),
+                    notification: None,
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_terminal_title_stays_visible_and_aligns_on_wide_panels() {
+    let host = host();
+    let world = Snapshot {
+        sessions: vec![row("alpha", "alpha"), row("beta", "beta-longer-name")],
+        ..Snapshot::default()
+    };
+    let meta = with_activity(
+        &world,
+        &[("alpha", "✳ Writing tests"), ("beta", "Reviewing")],
+    );
+    publish_full(
+        &host,
+        &world,
+        &registry_for(&host),
+        &[],
+        &Themes::load(None),
+        &meta,
+    );
+    for width in [44, 99] {
+        let narrow = frame_at(&host, width, 6);
+        assert!(narrow[3].contains("alpha  Writing tests"), "{narrow:#?}");
+        assert!(
+            narrow[4].contains("beta-longer-name  Reviewing"),
+            "{narrow:#?}"
+        );
+    }
+    let wide = frame_at(&host, 100, 6);
+    let column = |needle: &str| {
+        wide.iter()
+            .find_map(|line| line.find(needle).map(|at| line[..at].chars().count()))
+            .unwrap_or_else(|| panic!("{needle} is not drawn: {wide:#?}"))
+    };
+    // Its own aligned column, just past the longest title, without the
+    // agent's spinner glyph.
+    assert_eq!(column("Writing tests"), column("Reviewing"), "{wide:#?}");
+    assert!(column("Writing tests") > column("beta-longer-name") + 16);
+    assert!(!wide.iter().any(|line| line.contains('✳')), "{wide:#?}");
+}
+
+#[test]
+fn terminal_titles_keep_words_outside_the_ascii_alphabet() {
+    let host = host();
+    let world = Snapshot {
+        sessions: vec![row("alpha", "alpha")],
+        ..Snapshot::default()
+    };
+    let meta = with_activity(&world, &[("alpha", "编写 测试")]);
+    publish_full(
+        &host,
+        &world,
+        &with_settings(&host, &[("show_window_title", true)]),
+        &[],
+        &Themes::load(None),
+        &meta,
+    );
+    let frame = frame_at(&host, 40, 6);
+    assert!(frame[3].contains("○ 编写 测试"), "{frame:#?}");
+}
+
+#[test]
+fn the_window_title_setting_shows_the_agents_title_in_place_of_the_name() {
+    let host = host();
+    let world = Snapshot {
+        sessions: vec![row("alpha", "alpha"), row("beta", "beta")],
+        ..Snapshot::default()
+    };
+    let meta = with_activity(&world, &[("alpha", "✳ Writing tests")]);
+    publish_full(
+        &host,
+        &world,
+        &registry_for(&host),
+        &[],
+        &Themes::load(None),
+        &meta,
+    );
+    let off = frame_at(&host, 40, 6);
+    assert!(off[3].contains("○ alpha"), "off by default: {off:#?}");
+    publish_full(
+        &host,
+        &world,
+        &with_settings(&host, &[("show_window_title", true)]),
+        &[],
+        &Themes::load(None),
+        &meta,
+    );
+    let on = frame_at(&host, 40, 6);
+    assert!(on[3].contains("○ Writing tests"), "{on:#?}");
+    // A session whose agent set no title keeps its name.
+    assert!(on[4].contains("○ beta"), "{on:#?}");
+}
+
+fn rgb(colour: &str) -> Option<(u8, u8, u8)> {
+    let hex = colour.strip_prefix('#')?;
+    let channel = |at: usize| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok();
+    Some((channel(0)?, channel(2)?, channel(4)?))
+}
+
+/// WCAG contrast ratio between two colours.
+fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
+    fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
+        let linear = |c: u8| {
+            let c = c as f64 / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    }
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+fn cell_rgb(colour: ratatui::style::Color) -> Option<(u8, u8, u8)> {
+    match colour {
+        ratatui::style::Color::Rgb(r, g, b) => Some((r, g, b)),
+        _ => None,
+    }
+}
+
+/// A tint may cost a colour some of the contrast it has on the preset's own
+/// background, never most of it: it keeps 70% of it, and still clears WCAG's
+/// 3:1 for bold UI text wherever the preset's colours give 4:1 on the plain
+/// background. An absolute 3:1 everywhere is not a floor a tint can meet: a few
+/// presets put these colours under 3:1 on their background already.
+#[track_caller]
+fn assert_readable(
+    preset: &str,
+    what: &str,
+    fg: (u8, u8, u8),
+    plain: (u8, u8, u8),
+    tint: (u8, u8, u8),
+) {
+    let (before, after) = (contrast(fg, plain), contrast(fg, tint));
+    assert!(
+        after >= before * 0.7,
+        "{preset}: the {what} drops from {before:.2}:1 to {after:.2}:1 on its tint"
+    );
+    if before >= 4.0 {
+        assert!(
+            after >= 3.0,
+            "{preset}: the {what} is {after:.2}:1 on its tint"
+        );
+    }
+}
+
+#[test]
+fn a_waiting_row_has_a_background_in_the_default_terminal_palette() {
+    let host = host();
+    publish_with(&host, &family(), &registry_for(&host));
+    let buffer = paint(&host, PLUGIN, 40, 9);
+    assert_ne!(buffer[(30, 5)].bg, ratatui::style::Color::Reset);
+    assert!(buffer[(10, 5)]
+        .modifier
+        .contains(ratatui::style::Modifier::BOLD));
+    assert_ne!(buffer[(10, 5)].fg, buffer[(10, 5)].bg);
+}
+
+#[test]
+fn the_host_band_and_a_waiting_row_are_tinted_readably_in_every_preset() {
+    // Tints are mixed from each preset's own roles over its own background, so
+    // the check is per preset: the band and the waiting row must differ from
+    // the background, and the text on them must still read. A preset whose
+    // colours are not `#rrggbb` has nothing to mix; its host band falls back to
+    // `modal_bg`.
+    let host = host();
+    let world = family();
+    let registry = registry_for(&host);
+    let mut themes = Themes::load(None);
+    let names: Vec<String> = themes
+        .choices()
+        .iter()
+        .filter(|choice| !choice.is_custom)
+        .map(|choice| choice.name.clone())
+        .collect();
+    let mut checked = 0;
+    for name in names {
+        themes.preview(&name).expect("a preset");
+        let roles = themes.roles();
+        publish_full(&host, &world, &registry, &[], &themes, &Default::default());
+        let buffer = paint(&host, PLUGIN, 40, 9);
+        let band = buffer[(20, 1)].bg;
+        assert_ne!(band, ratatui::style::Color::Reset, "{name}: no host band");
+        let Some(app_bg) = rgb(&roles["app_bg"]) else {
+            continue;
+        };
+        let band = cell_rgb(band).unwrap_or_else(|| panic!("{name}: band {band:?}"));
+        assert_ne!(band, app_bg, "{name}: the band is the background");
+        let name_fg = cell_rgb(buffer[(5, 1)].fg).expect("host name colour");
+        assert_readable(&name, "host name", name_fg, app_bg, band);
+        let waiting = (0..buffer.area.height)
+            .find(|&y| (0..40).any(|x| buffer[(x, y)].symbol() == "◆"))
+            .expect("the waiting row");
+        let tint = cell_rgb(buffer[(30, waiting)].bg).expect("a waiting tint");
+        assert_ne!(tint, app_bg, "{name}: the waiting row is not lit");
+        let title_fg = cell_rgb(buffer[(9, waiting)].fg).expect("title colour");
+        assert_readable(&name, "waiting title", title_fg, app_bg, tint);
+        checked += 1;
+    }
+    assert!(checked > 20, "only {checked} presets have hex colours");
+}
+
+#[test]
+fn answering_a_folded_blocked_child_keeps_it_selected() {
+    for group_by_host in [true, false] {
+        for group_by_repo in [true, false] {
+            let host = host();
+            let mut world = family();
+            let mut registry = with_settings(
+                &host,
+                &[
+                    ("group_by_host", group_by_host),
+                    ("group_by_repo", group_by_repo),
+                ],
+            );
+            registry
+                .set_setting(PLUGIN, "folded_parents", Some(Value::Text("lead".into())))
+                .unwrap();
+            publish_with(&host, &world, &registry);
+            frame_at(&host, 40, 9);
+            host.on_click(
+                host.index_of(PLUGIN).unwrap(),
+                &Click {
+                    id: Some("worker-b".into()),
+                    ..Click::default()
+                },
+            )
+            .unwrap();
+            frame_at(&host, 40, 9);
+            assert_eq!(host.shared_string("selected").as_deref(), Some("worker-b"));
+            world.sessions[2].status = SessionState::Working;
+            publish_with(&host, &world, &registry);
+            frame_at(&host, 40, 9);
+            let selected = host.shared_string("selected").unwrap();
+            assert_eq!(
+                selected, "worker-b",
+                "answering must keep the active session selected"
+            );
+        }
+    }
 }

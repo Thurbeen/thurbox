@@ -9,6 +9,9 @@ exact sequence (`scripts/demo/record-tutorial.sh`). The paths in them
 (`/tmp/tutorial-home/code/…`) come from the throwaway sandbox the capture runs
 in; yours will be your own `~/code`, `~/src`, or wherever you keep repositories.
 
+These captures show the earlier session-list layout. The current list uses
+host bands, repository separators and indented session rows.
+
 **Contents**
 
 - [Before you start](#before-you-start)
@@ -158,8 +161,8 @@ running inside it.
 
 What you are looking at:
 
-- the session row, grouped under its **repository** (`api-server`), with the
-  `⑂` worktree mark, its agent, and a status dot
+- the session row, indented under its **repository** (`api-server`), with its
+  status dot
 - the **agent terminal** on the right — a real terminal. Everything you type
   goes to the agent; `Ctrl+O` opens the worktree in your editor, and
   `Ctrl+T`/`F8` gives you a shell in the same directory

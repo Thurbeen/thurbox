@@ -658,6 +658,8 @@ end
 ---   id_of(item) → the row's identity, for hover, clicks and decoration
 ---                 (defaults to the cursor's)
 ---   class_of(item) → an extra class on the row
+---   style_of(item) → the row's own style (a band, a tint) when it is neither
+---                    selected nor hovered; both of those win over it
 ---   empty       — the lines `ui.empty` returned, or a string to centre
 ---   on_overflow — "rows" (markers take a line each) or "border" (the counts
 ---                 ride the frame, and no line is spent on them)
@@ -760,6 +762,8 @@ function ui.list(opts)
           style = selected_style()
         elseif id and hover.id(id) then
           style = hover_style()
+        elseif opts.style_of then
+          style = opts.style_of(item)
         end
         children[#children + 1] = {
           type = "text",

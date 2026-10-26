@@ -1165,15 +1165,6 @@ main {
   padding: 0 0.25rem;
 }
 
-/* One dot per session, in the title row, in session order. */
-.ui-pane__dots {
-  display: flex;
-  flex: 0 0 auto;
-  font-size: 0.6rem;
-  gap: 0.1rem;
-  margin-left: auto;
-}
-
 /* The pane's interior, and the reason it is a box of its own: the rows below
    do not shrink, so in a short rect they have to go somewhere. They clip here,
    which is what a terminal does - while the file annotation stays outside this
@@ -1190,11 +1181,16 @@ main {
   overflow: hidden;
 }
 
-/* Fold handles sit in the same hierarchy as the terminal's list rows. */
+/* A host is a band in the accent, its name in the accent too: the machines are
+   the list's sections. */
 .ui-pane__host {
   align-items: center;
-  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
   display: flex;
+  font-weight: 700;
+  margin: 0 -0.45rem;
+  padding: 0 0.45rem;
   font-size: 0.65rem;
   gap: 0.25rem;
   white-space: nowrap;
@@ -1211,14 +1207,22 @@ main {
   margin-left: auto;
 }
 
+/* A repo is a separator, not a level: its name in the accent and a lighter
+   dotted rule after it. */
 .ui-pane__group {
   align-items: center;
-  color: var(--tui-muted);
+  color: var(--accent);
   display: flex;
   font-size: 0.62rem;
   gap: 0.3rem;
-  padding-left: 0.6rem;
+  padding-left: 0.3rem;
   white-space: nowrap;
+}
+
+.ui-pane__group::after {
+  border-bottom: 1px dotted var(--tui-muted);
+  content: '';
+  flex: 1 1 auto;
 }
 
 .ui-pane__group::before {
@@ -1239,6 +1243,43 @@ main {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Nesting is indentation alone. A parent fills the fold slot in front of its
+   dot with its own handle; its children sit one level further in. */
+[data-pane='sessions'] .ui-pane__row {
+  padding-left: 1.5rem;
+}
+
+.ui-pane__row.is-parent::before {
+  color: var(--accent);
+  content: '▾';
+  margin-left: -0.8rem;
+}
+
+.ui-pane__row.is-parent .tui-name {
+  font-weight: 700;
+}
+
+[data-pane='sessions'] .ui-pane__row.is-child {
+  padding-left: 2.6rem;
+}
+
+/* A session waiting for you is washed in its status colour. */
+[data-pane='sessions'] .ui-pane__row.is-waiting,
+[data-pane='sessions'] .ui-pane__row.is-selected {
+  margin: 0 -0.45rem;
+  padding-left: 1.95rem;
+  padding-right: 0.45rem;
+}
+
+.ui-pane__row.is-waiting {
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+}
+
+.ui-pane__row.is-waiting .tui-name {
+  color: var(--red);
+  font-weight: 700;
 }
 
 /* The selection is a band across the whole row, not a marker on it. */
@@ -1275,28 +1316,6 @@ main {
 
 .tui-dot.done {
   color: var(--blue);
-}
-
-/* `branch_name`, and the mark the pane puts before every session name. Drawn
-   rather than typed: the pane paints U+2442 and the site's Latin-subset fonts
-   have no glyph for it, so a character here is a tofu box. Same reason the
-   borders above are CSS and not the ╭─╮ run the terminal writes. */
-.tui-branch {
-  color: var(--green);
-  flex: 0 0 auto;
-  height: 0.62rem;
-  width: 0.5rem;
-}
-
-/* The child prefix, U+2514, missing from those fonts for the same reason: an
-   L-shaped rule is the glyph. */
-.tui-tree {
-  border-bottom: 1px solid var(--tui-muted);
-  border-left: 1px solid var(--tui-muted);
-  flex: 0 0 auto;
-  height: 0.42rem;
-  margin-bottom: 0.18rem;
-  width: 0.32rem;
 }
 
 /* The session name, and the only part of a row allowed to lose characters -
