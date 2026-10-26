@@ -918,6 +918,13 @@ mod delegated_create {
                     "export TMUX_TMPDIR='{tmpdir}' THURBOX_SOCKET='{socket}'\n\
                      unset THURBOX_SOCKET_FOR THURBOX_SESSION THURBOX_SESSION_ID\n\
                      case \"$*\" in\n\
+                     \x20 *' session revision '*)\n\
+                     \x20   if [ -e '{race_arm}' ]; then\n\
+                     \x20     printf started > '{race_started}'; race_wait=0\n\
+                     \x20     while [ ! -e '{race_go}' ] && [ $race_wait -lt 400 ]; do sleep 0.05; race_wait=$((race_wait + 1)); done\n\
+                     \x20   fi ;;\n\
+                     \x20 *' session fork '*)\n\
+                     \x20   if [ -e '{fork_other}' ]; then cat '{fork_other}'; exit 0; fi ;;\n\
                      \x20 *' session create '*)\n\
                      \x20   if [ -e '{refuse}' ]; then exit 255; fi\n\
                      \x20   if [ -e '{drop}' ]; then sh -c \"$*\" >/dev/null 2>&1; exit 255; fi ;;\n\
@@ -926,6 +933,10 @@ mod delegated_create {
                      \x20     printf '%s\\n' '{{\"id\":\"00000000-0000-0000-0000-000000000001\"}}'; exit 0\n\
                      \x20   fi ;;\n\
                      esac",
+                    race_arm = path("race-arm").display(),
+                    race_started = path("race-started").display(),
+                    race_go = path("race-go").display(),
+                    fork_other = path("fork-answers-another").display(),
                     other = path("get-answers-another").display(),
                     tmpdir = host_server.tmpdir().display(),
                     socket = host_server.socket(),
@@ -1132,7 +1143,17 @@ mod delegated_create {
             "context-fork",
             "--json",
         ]));
-        let caller_attrs = pair.caller_db().load_telemetry_attrs(fork).unwrap();
+        let fork_meta = run(&[
+            "session",
+            "meta",
+            "get",
+            &fork.to_string(),
+            "thurbox.telemetry_attributes",
+            "--json",
+        ]);
+        assert!(fork_meta.status.success(), "{}", answer(&fork_meta));
+        let caller_attrs: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(answer(&fork_meta)["value"].as_str().unwrap()).unwrap();
         assert_eq!(
             caller_attrs.get("factory.task.id").map(String::as_str),
             Some("topic/task")
@@ -1143,10 +1164,13 @@ mod delegated_create {
             "{}",
             String::from_utf8_lossy(&synced.stdout)
         );
-        assert!(answer(&synced)[0]["registered"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!(fork.to_string())));
+        assert!(
+            answer(&synced)[0]["registered"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "the fork is already owned by the host"
+        );
         assert_eq!(
             pair.host_db().load_telemetry_attrs(fork).unwrap(),
             caller_attrs
@@ -1343,14 +1367,21 @@ mod delegated_create {
                 "--json",
             ],
         ));
-        assert_eq!(
-            pair.caller_db()
-                .load_telemetry_attrs(fork)
-                .unwrap()
-                .get("factory.task.id")
-                .map(String::as_str),
-            Some("topic/owner")
+        let fork_meta = run(
+            "caller",
+            &[
+                "session",
+                "meta",
+                "get",
+                &fork.to_string(),
+                "thurbox.telemetry_attributes",
+                "--json",
+            ],
         );
+        assert!(fork_meta.status.success(), "{}", answer(&fork_meta));
+        let fork_attrs: Value =
+            serde_json::from_str(answer(&fork_meta)["value"].as_str().unwrap()).unwrap();
+        assert_eq!(fork_attrs["factory.task.id"], "topic/owner");
 
         let key = "thurbox.telemetry_attributes";
         let fetched = run(
@@ -1644,6 +1675,390 @@ OTEL_RESOURCE_ATTRIBUTES = "flavor=target,target.only=yes"
 
     /// `--command`, `--arg`, `--env` and `--reports-as` reach the host's CLI;
     /// the environment's values never reach a command line on the way.
+
+    #[test]
+    fn a_caller_owned_remote_fork_keeps_its_environment_after_sharing_is_enabled() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let hosts = pair.path("config/hosts.toml");
+        let shared_hosts = std::fs::read_to_string(&hosts).unwrap();
+        std::fs::write(&hosts, shared_hosts.replace("true", "false")).unwrap();
+        let capture = pair.path("direct-account");
+        let script = format!(
+            "printf '%s' \"$ACCOUNT\" > '{}'; exec sleep 600",
+            capture.display()
+        );
+        std::fs::write(pair.path("config/agents.toml"), format!(
+            "default = 'account'\n[[agents]]\nname = 'account'\ncommand = 'sh'\nargs = ['-c', {script:?}]\nenv = {{ ACCOUNT = 'caller' }}\n"
+        )).unwrap();
+        let source = created_id(&pair.create(&["--name", "direct", "--agent", "account"]));
+        assert_eq!(wait_for_file(&capture), "caller");
+        assert!(pair.host_db().get_session_by_id(source).unwrap().is_none());
+        std::fs::write(&hosts, shared_hosts).unwrap();
+        std::fs::remove_file(&capture).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        command
+            .args([
+                "session",
+                "fork",
+                &source.to_string(),
+                "--name",
+                "direct-fork",
+                "--json",
+            ])
+            .env("HOME", pair.path("home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("config"))
+            .env("THURBOX_DATA_DIR", pair.path("data"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    pair.path("bin").display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .env_remove("THURBOX_SESSION")
+            .env_remove("THURBOX_SESSION_ID");
+        pair.caller_server.scope(&mut command);
+        let fork = created_id(&command.output().unwrap());
+        assert_eq!(wait_for_file(&capture), "caller");
+        let db = pair.caller_db();
+        assert_eq!(db.load_launch_env(fork).unwrap()["ACCOUNT"], "caller");
+        assert_eq!(
+            db.get_session_by_id(fork)
+                .unwrap()
+                .unwrap()
+                .parent_session_id,
+            Some(source)
+        );
+        assert!(pair.host_db().get_session_by_id(fork).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_delegated_agent_uses_the_hosts_environment_and_session_overrides() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let capture = pair.path("agent-env");
+        let script = format!(
+            "printf '%s\\n' \"$ACCOUNT\" \"$CHOICE\" \"$CONFIG_ROOT\" > '{}'; exec sleep 600",
+            capture.display()
+        );
+        use std::os::unix::fs::PermissionsExt;
+        let agent = pair.path("account-agent");
+        std::fs::write(&agent, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let hook_capture = pair.path("post-create.json");
+        let hook_command = format!("cat > '{}'", hook_capture.display());
+        std::fs::write(
+            pair.path("config/hooks.toml"),
+            format!("[[hooks]]\nevent = 'session.post_create'\ncommand = {hook_command:?}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            pair.path("host-config/agents.toml"),
+            format!(
+                r#"
+default = "codex"
+[[agents]]
+name = "codex"
+command = {agent_path:?}
+resume_args = ["resume", "{{id}}"]
+fork_args = ["fork", "{{id}}"]
+env = {{ ACCOUNT = "host-account", CHOICE = "agent", CONFIG_ROOT = "{{home}}/account" }}
+"#,
+                agent_path = agent.display().to_string()
+            ),
+        )
+        .unwrap();
+        let host_def = std::fs::read_to_string(pair.path("host-config/agents.toml")).unwrap();
+        std::fs::write(
+            pair.path("config/agents.toml"),
+            host_def
+                .replace("host-account", "caller-account")
+                .replace("fork_args = [\"fork\", \"{id}\"]", "fork_args = []"),
+        )
+        .unwrap();
+        let out = pair.create(&[
+            "--name",
+            "account",
+            "--agent",
+            "codex",
+            "--env",
+            "CHOICE=session",
+        ]);
+        let id = created_id(&out);
+        let env = pair.host_db().load_launch_env(id).unwrap();
+        assert_eq!(env.get("ACCOUNT").map(String::as_str), Some("host-account"));
+        assert_eq!(env["CHOICE"], "session");
+        assert_eq!(
+            env["CONFIG_ROOT"],
+            pair.path("host-home/account").display().to_string()
+        );
+        let text = wait_for_file(&capture);
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            [
+                "host-account",
+                "session",
+                pair.path("host-home/account").to_str().unwrap()
+            ]
+        );
+        assert!(
+            !pair.ssh_log().contains("host-account"),
+            "agent env must stay on the host"
+        );
+        pair.caller_db()
+            .set_session_meta(id, "ui.note", "caller-note")
+            .unwrap();
+        pair.host_db()
+            .set_session_meta(id, "ui.note", "host-note")
+            .unwrap();
+        let captured_parent = "00000000-0000-0000-0000-000000000123";
+        pair.host_db()
+            .set_session_meta(id, "thurbox.codex_conversation_id", captured_parent)
+            .unwrap();
+        std::fs::remove_file(&capture).unwrap();
+        let mut fork = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        fork.args([
+            "session",
+            "fork",
+            &id.to_string(),
+            "--name",
+            "account-fork",
+            "--json",
+        ])
+        .env("HOME", pair.path("home"))
+        .env("THURBOX_CONFIG_DIR", pair.path("config"))
+        .env("THURBOX_DATA_DIR", pair.path("data"))
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                pair.path("bin").display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .env_remove("THURBOX_SESSION")
+        .env_remove("THURBOX_SESSION_ID");
+        pair.caller_server.scope(&mut fork);
+        let forked = fork.output().unwrap();
+        let fork_id = created_id(&forked);
+        assert_eq!(
+            pair.host_db().load_launch_env(fork_id).unwrap()["ACCOUNT"],
+            "host-account"
+        );
+        assert_eq!(wait_for_file(&capture).lines().next(), Some("host-account"));
+        let mut problems = Vec::new();
+        let caller_program = fork.get_program().to_os_string();
+        let caller_env: Vec<_> = fork
+            .get_envs()
+            .map(|(key, value)| (key.to_os_string(), value.map(std::ffi::OsStr::to_os_string)))
+            .collect();
+        let caller = |args: &[&str]| {
+            let mut command = Command::new(&caller_program);
+            command.args(args);
+            for (key, value) in &caller_env {
+                match value {
+                    Some(value) => {
+                        command.env(key, value);
+                    }
+                    None => {
+                        command.env_remove(key);
+                    }
+                }
+            }
+            command.output().unwrap()
+        };
+        let shown = caller(&["session", "show", &id.to_string(), "--no-verify", "--json"]);
+        assert!(shown.status.success());
+        if !answer(&shown)["env"].is_null() {
+            problems.push("mirror reported an unknown saved environment as empty");
+        }
+        let plan = caller(&[
+            "agent",
+            "launch-args",
+            "codex",
+            "--session",
+            &id.to_string(),
+            "--json",
+        ]);
+        if !plan.status.success() || !answer(&plan)["env"]["ACCOUNT"].is_null() {
+            problems.push("mirror launch plan failed or claimed an unknown account environment");
+        }
+        let exec = caller(&[
+            "session",
+            "exec",
+            &id.to_string(),
+            "--json",
+            "--",
+            "sh",
+            "-c",
+            "printf '%s' \"$ACCOUNT\"",
+        ]);
+        if exec.status.success()
+            || !String::from_utf8_lossy(&exec.stdout).contains("saved environment")
+        {
+            problems.push("mirror exec used an unknown account environment");
+        }
+        let mut host_get = Command::new(fork.get_program());
+        host_get
+            .args(["session", "show", &id.to_string(), "--no-verify", "--json"])
+            .env("HOME", pair.path("host-home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("host-config"))
+            .env("THURBOX_DATA_DIR", pair.path("host-data"))
+            .env_remove("THURBOX_SESSION")
+            .env_remove("THURBOX_SESSION_ID");
+        pair.host_server.scope(&mut host_get);
+        let shown = host_get.output().unwrap();
+        assert!(shown.status.success());
+        assert_eq!(answer(&shown)["env"]["ACCOUNT"], "host-account");
+
+        if pair
+            .caller_db()
+            .get_session_meta(fork_id, "ui.note")
+            .unwrap()
+            .as_deref()
+            != Some("caller-note")
+        {
+            problems.push("caller fork lost its own published metadata");
+        }
+        assert_eq!(
+            pair.host_db()
+                .get_session_meta(fork_id, "ui.note")
+                .unwrap()
+                .as_deref(),
+            Some("host-note")
+        );
+
+        if answer(&forked)["continues_conversation"] != true {
+            problems.push("caller lost host conversation continuity");
+        }
+        let hook: Value =
+            serde_json::from_str(&std::fs::read_to_string(&hook_capture).unwrap()).unwrap();
+        if hook["fork_session_id"] != captured_parent {
+            problems.push("caller post-create hook lost the host-selected fork conversation");
+        }
+        let mut local = pair.caller_db().get_session_by_id(id).unwrap().unwrap();
+        local.id = "00000000-0000-0000-0000-000000000124".parse().unwrap();
+        local.name = "local-holder".into();
+        local.backend_type = "local:tmux".into();
+        local.backend_id.clear();
+        pair.caller_db().upsert_session(&local).unwrap();
+        pair.caller_db()
+            .set_session_meta(local.id, "ui.note", "sentinel")
+            .unwrap();
+        std::fs::write(
+            pair.path("fork-answers-another"),
+            format!(r#"{{"id":"{}","continues_conversation":false}}"#, local.id),
+        )
+        .unwrap();
+        let forged = caller(&[
+            "session",
+            "fork",
+            &id.to_string(),
+            "--name",
+            "forged",
+            "--json",
+        ]);
+        if forged.status.success()
+            || pair
+                .caller_db()
+                .get_session_meta(local.id, "ui.note")
+                .unwrap()
+                .as_deref()
+                != Some("sentinel")
+        {
+            problems.push("host fork response took over a locally owned session");
+        }
+        std::fs::remove_file(pair.path("fork-answers-another")).unwrap();
+        local.id = "00000000-0000-0000-0000-000000000125".parse().unwrap();
+        local.name = "racing-holder".into();
+        std::fs::write(
+            pair.path("fork-answers-another"),
+            format!(r#"{{"id":"{}","continues_conversation":false}}"#, local.id),
+        )
+        .unwrap();
+        std::fs::write(pair.path("race-arm"), "armed").unwrap();
+        let raced = std::thread::scope(|scope| {
+            let request = scope.spawn(|| {
+                caller(&[
+                    "session",
+                    "fork",
+                    &id.to_string(),
+                    "--name",
+                    "racing",
+                    "--json",
+                ])
+            });
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !pair.path("race-started").exists()
+                && !request.is_finished()
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let reached = pair.path("race-started").exists();
+            let inserted = if reached {
+                let db = Database::open(&pair.path("data/thurbox.db")).unwrap();
+                db.upsert_session(&local)
+                    .and_then(|_| db.set_session_meta(local.id, "ui.note", "race-sentinel"))
+            } else {
+                Ok(())
+            };
+            std::fs::write(pair.path("race-go"), "go").unwrap();
+            let answer = request.join().unwrap();
+            assert!(reached, "fork never reached its post-response mirror read");
+            inserted.unwrap();
+            answer
+        });
+        if raced.status.success()
+            || pair
+                .caller_db()
+                .get_session_meta(local.id, "ui.note")
+                .unwrap()
+                .as_deref()
+                != Some("race-sentinel")
+        {
+            problems.push("fork mirror race took over a locally owned session");
+        }
+        std::fs::remove_file(pair.path("race-arm")).unwrap();
+        std::fs::remove_file(pair.path("fork-answers-another")).unwrap();
+        let pre_capture = pair.path("pre-create.json");
+        let hook_command = format!("cat > '{}'", pre_capture.display());
+        std::fs::write(
+            pair.path("config/hooks.toml"),
+            format!("[[hooks]]\nevent = 'session.pre_create'\ncommand = {hook_command:?}\n"),
+        )
+        .unwrap();
+        assert!(!caller(&[
+            "session",
+            "fork",
+            &id.to_string(),
+            "--name",
+            "../bad",
+            "--json"
+        ])
+        .status
+        .success());
+        if pre_capture.exists() {
+            problems.push("invalid fork name ran a pre-create hook");
+        }
+        std::fs::write(
+            pair.path("config/hosts.toml"),
+            "[[hosts]]\nname = 'probe'\ndestination = 'probe'\nshare_sessions = false\n",
+        )
+        .unwrap();
+        let refused = fork.output().unwrap();
+        if refused.status.success() {
+            problems.push("mirror fork without owning CLI lost saved environment");
+        }
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
     #[test]
     fn a_delegated_create_carries_the_command_its_args_and_its_env() {
         if !super::have_tmux() {

@@ -66,9 +66,8 @@ pub(crate) fn build_restart_plan(
     };
     // The session's own env is part of what it *is*, so it goes on before
     // thurbox's identity vars — which must still win — exactly as at spawn.
-    // Recorded for a registry agent as much as for a command session: `--env`
-    // is the caller's, not the registry's, and there is nowhere else to
-    // re-resolve it from.
+    // Both agent defaults and caller overrides were frozen at creation;
+    // re-reading registry defaults here could move the account on restart.
     config
         .env
         .extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));

@@ -825,11 +825,11 @@ has the rationale; the shape:
   each host's own sessions, and the next pass forgets the rows it took
   on — dropped, not deleted, so nothing reaches the session's owner and
   turning it back on brings them back.
-- **Delegation.** Create, delete (soft or forced), restart and restore
+- **Delegation.** Create, delete (soft or forced), restart, restore and fork
   on a shareable host run `thurbox-cli session …` *on the host*, which
   does the worktree, the hooks and the launch with the host's own
   `agents.toml` and `hooks.toml`. Every caller goes
-  through the same four `session_ops` pipelines, so the creation flow,
+  through the shared `session_ops` pipelines, so the creation flow,
   the CLI, `spawn` automations and extension self-heal all delegate.
   The caller's own `hooks.toml` fires around the delegated call with
   `THURBOX_HOST` set; the host's fires there. A refusal on the host is
@@ -2403,11 +2403,16 @@ distinction matters at restart, not at spawn:
   (command, args, env) is persisted on its row and replayed verbatim. Without
   that it would restart into nothing and lose its `--env` on the first respawn.
 
-`--env` is the exception that belongs to both: it is the *caller's*, never the
-registry's, so there is nowhere to re-resolve it from either way. It is recorded
-on every session's row — command or registry agent — replayed on restart, and
-reproduced by `session exec`, which runs in the session's environment as well as
-its directory and on its machine.
+The launch environment belongs to the session: registry `env` defaults are
+merged with the caller's `--env` at creation, with caller values winning, and
+saved on the owning instance. Restart and fork replay that snapshot, so later
+registry edits cannot move an existing session to another account. `session
+exec` reproduces it alongside the session's directory and identity. A shared-host
+mirror holds no environment snapshot: its `session show` reports `env: null`,
+and exec requests must run on the owner. Caller-side launch plans can read
+telemetry labels from the owner; request a plan there for the complete saved
+account environment.
+See [CONFIG.md](CONFIG.md#agentstoml) for precedence and host-home expansion.
 
 A ready-made form ships as the `shell` built-in, whose `command` is the
 platform's own interactive shell (see [AGENTS.md](AGENTS.md)).

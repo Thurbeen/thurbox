@@ -238,9 +238,9 @@ A `--command` session persists its **launch recipe** (command, args) on its row,
 because there is no registry entry to re-resolve; `session restart` replays it
 verbatim. A registry agent deliberately stores no recipe, so it is resolved by
 name at every launch and editing `agents.toml` then restarting still takes
-effect. `--env` is the exception both kinds store: it is the *caller's*, not
-the registry's, so a registry agent's row carries it too — replayed on restart
-and reproduced by `session exec`.
+effect for command and arguments. Environment is frozen at creation:
+agent `env` defaults plus the caller's `--env` overrides are saved together,
+replayed on restart and fork, and reproduced by `session exec`.
 
 What a command session does **not** have is a conversation. `resume_args` and
 `fork_args` are what address one, and only an agent definition declares them —
@@ -290,7 +290,7 @@ thurbox-cli session exec worker -- git status --porcelain
 ```
 
 A separate process in the session's directory, on the machine the session lives
-on, **under the session's own environment** — its recorded `--env` plus the
+on, **under the session's own environment** — its saved launch snapshot plus the
 `THURBOX_*` identity its pane carries, with the *caller's* `THURBOX_*` scrubbed
 so a driver running inside one session cannot lend the child that session's
 identity (a `session signal` through `exec` used to record for the caller, with
@@ -302,6 +302,11 @@ exiting 2 is *that command's* 2, not a usage error, which is the distinction
 Gas City's `proc.exec` capability is defined by. `exit_code` is `null` when the
 command was terminated by a signal rather than exiting; passthrough then takes
 the generic failure code, since there is no code to carry.
+
+A shared-host mirror has no saved environment locally. Run `session exec` on
+the owning instance; the caller refuses to guess an account from an empty
+mirror snapshot. `session show --json` reports `env: null` on that mirror and
+the saved map on its owner.
 
 Arguments to `--command` may start with a dash (`--arg -c`): passing a switch is
 the usual reason to pass an argument at all.
@@ -324,8 +329,11 @@ through and the hooks are there.
 `--session <ref>` resolves it for one session: the conversation id is pinned to
 that row's, the host adapts the args (a remote session's hook configs are
 shipped there), and the env carries the `THURBOX_SESSION` the agent's
-`session signal` will report under. Without it the env names only this instance
-(config dir, data dir, socket). Always a **fresh** launch — continuing a
+`session signal` will report under. Shared-host mirrors can read telemetry
+labels through their owner; request the plan there for its complete saved
+account environment. Without a session, the env includes current agent
+defaults and this instance's locations (config dir, data dir, socket), with no
+session identity. Always a **fresh** launch — continuing a
 conversation is `session start`/`restart`.
 
 ### Session keys — the address a driver finds its sessions by

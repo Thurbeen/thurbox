@@ -337,9 +337,9 @@ session), never on the loop, ADR-P12).
   re-listed; and a host reporting `deleted_changes_since` has its deleted history
   read whole initially and hourly, and otherwise only the rows deleted or updated
   since the newest timestamp held (`session list --deleted --since`). This includes
-  force-delete promotions of older rows. Older hosts are read whole), and performs create/delete/restart/restore by
+  force-delete promotions of older rows. Older hosts are read whole), and performs create/delete/restart/restore/fork by
   running `thurbox-cli session …` **on the host** (`session_ops::host_cli`,
-  branched inside the four pipelines so every caller delegates; the choice
+  branched inside the shared pipelines so every caller delegates; the choice
   per verb on a live session is `session_ops::Executor`, #1471 — the
   deleted-row teardown sweeps in `delete` still ask `host_cli::delegated`). A delegated create forwards
   every `SpawnRequest` field or refuses it by name
@@ -380,7 +380,15 @@ session), never on the loop, ADR-P12).
   a host drive its window over the transport through the registry (ADR-30)
   instead of refusing. `session signal` also sets the pane
   option, so tmux hosts keep sub-second status. Relaunch after a reboot is the
-  host's (`session restart --if-missing`). A fork stays on the legacy path.
+  host's (`session restart --if-missing`). Shared-host forks run on that host
+  too, preserving its frozen environment and conversation selection. A mirrored
+  parent without its owning CLI is refused; a locally owned direct-remote row
+  forks through its backend with its saved environment, even if sharing is later
+  enabled or the host gains a usable CLI. Environment
+  snapshots are not mirrored: `session show` reports `env: null` on the caller,
+  and exec must run on the owning instance. Mirror launch plans can read the
+  owner's telemetry attributes; request them on the owner for its complete
+  saved account environment.
   Docs: `docs/FEATURES.md` → Shared sessions.
 - **Agent config on the host**: agent args referencing thurbox-managed config
   by *local* path (the hooks extension's `--settings <config>/hooks/

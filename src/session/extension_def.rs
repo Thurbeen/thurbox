@@ -691,6 +691,7 @@ prompt = "tick"
                 new_session_args: vec![],
                 resume_latest: false,
                 hook_schema: None,
+                env: Default::default(),
                 telemetry_env: Default::default(),
                 telemetry_args: Vec::new(),
                 additional_dir_args: Vec::new(),
