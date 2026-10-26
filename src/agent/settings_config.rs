@@ -289,7 +289,7 @@ pub fn retire_layout_preset() -> Option<String> {
         .find('\n')
         .map_or(contents.len(), |at| end + at + 1);
     let kept = format!("{}{}", &contents[..line_start], &contents[line_end..]);
-    if let Err(e) = write_atomically(&path, &kept) {
+    if let Err(e) = crate::paths::write_atomically(&path, &kept) {
         return Some(format!(
             "settings.toml: could not remove the withdrawn `layout` key: {e}"
         ));
@@ -401,29 +401,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         notifications["backend"] = value(backend);
     }
 
-    write_atomically(&path, &doc.to_string())
-}
-
-/// Write settings.toml aside and rename it into place.
-///
-/// Every mirror pass re-reads this file (`load_quiet`), and one that caught it
-/// truncated mid-write would read the defaults for a pass - re-adopting the
-/// transitive sessions a user had hidden, only to forget them again on the
-/// next. One staged file per write, so two processes (or threads) writing at
-/// once never rename each other's content into place.
-fn write_atomically(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
-    static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let staged = path.with_extension(format!(
-        "toml.saving-{}-{}",
-        std::process::id(),
-        SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::write(&staged, contents)
-        .and_then(|()| std::fs::rename(&staged, path))
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&staged);
-            e
-        })
+    crate::paths::write_atomically(&path, &doc.to_string())
 }
 
 #[cfg(test)]

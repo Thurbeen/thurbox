@@ -407,6 +407,12 @@ macOS, and this path is shown to people.
 (bundled / edited / yours / removed / installed); `ui.json` records what the *user*
 decided (disabled, trust, rebindings); `plugins.toml` records what the interface is
 **composed of** and `plugins.lock` what each entry resolved to.
+`ui.json` shares the atomic config writer with `settings.toml`: it stages the whole
+file beside the destination before a native same-directory replacement, so a failed
+save cannot expose a truncated mix of those decisions. It does not promise durability
+across storage or operating-system failure because neither file nor directory is
+explicitly synced. An existing config-file symlink remains a link and its target is
+replaced.
 Deleting a bundled file is how you remove it — delivery records
 the removal and never writes it back, which is what makes a differently-named
 replacement possible on equal terms. Turning one **off** is a third thing: present on
