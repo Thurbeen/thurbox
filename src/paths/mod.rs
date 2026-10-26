@@ -70,17 +70,56 @@ pub fn home_dir() -> Option<PathBuf> {
 /// neither the file nor its parent directory is synced explicitly.
 pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let path = write_destination(path)?;
     let staged = path.with_extension(format!(
         "saving-{}-{}",
         std::process::id(),
         SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::write(&staged, contents)
-        .and_then(|()| replace_file(&staged, path))
+        .and_then(|()| replace_file(&staged, &path))
         .map_err(|e| {
             let _ = std::fs::remove_file(&staged);
             e
         })
+}
+
+/// Resolve the file itself separately from its parent so an existing config
+/// symlink keeps pointing at the file its manager owns. Canonicalising the
+/// parent for a new file also gives Windows APIs the extended-length path Rust
+/// uses beyond `MAX_PATH`.
+fn write_destination(path: &Path) -> std::io::Result<PathBuf> {
+    const MAX_LINKS: usize = 40;
+
+    let mut destination = path.to_path_buf();
+    for _ in 0..MAX_LINKS {
+        match std::fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let target = std::fs::read_link(&destination)?;
+                destination = if target.is_absolute() {
+                    target
+                } else {
+                    destination
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(target)
+                };
+            }
+            Ok(_) => return std::fs::canonicalize(destination),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let name = destination.file_name().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "config path has no file name",
+                    )
+                })?;
+                let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+                return Ok(std::fs::canonicalize(parent)?.join(name));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("too many config file symlinks"))
 }
 
 #[cfg(not(windows))]

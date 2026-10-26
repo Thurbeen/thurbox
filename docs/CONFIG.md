@@ -68,9 +68,10 @@ TUI saves of `settings.toml` and `ui.json` stage a complete file beside the
 destination and replace it with one native same-directory rename, so a reader
 never observes a truncated intermediate file and a failed staged write leaves
 the previous decisions intact. On Unix this is `rename`; native Windows uses
-`MoveFileExW` with replacement. This protects the process-interruption boundary,
-not storage failure: the staged file and parent directory are not explicitly
-synced to stable storage.
+`MoveFileExW` with replacement. An existing config-file symlink is preserved and
+its target is replaced. This protects the process-interruption boundary, not
+storage failure: the staged file and parent directory are not explicitly synced
+to stable storage.
 
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 

@@ -46,7 +46,8 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   process under a Unix file-size limit: the forced mid-write failure must preserve
   every byte of the prior `ui.json` and leave no staged file behind. The native
   interruption probe is Unix-only; Windows replacement is compile-checked and uses
-  `MoveFileExW`, but is not exercised by that probe.
+  `MoveFileExW`, but is not exercised by that probe. The same file pins config-file
+  symlink preservation on Unix and paths beyond `MAX_PATH` on Windows.
 - **`tests/edited_interface.rs`** — an edited interface keeps working across an
   upgrade. It holds files frozen from old releases with a user's edit
   (`tests/fixtures/edited_interface/<release>/`: v2.22.4's layout, session

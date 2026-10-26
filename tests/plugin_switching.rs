@@ -279,6 +279,64 @@ fn a_failed_ui_json_save_leaves_every_existing_decision_intact() {
     assert_eq!(names, vec![std::ffi::OsString::from("ui.json")]);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_ui_json_symlink_survives_saving_a_decision() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let config = root.path().join("config");
+    let managed = root.path().join("managed");
+    std::fs::create_dir_all(&config).expect("config dir");
+    std::fs::create_dir_all(&managed).expect("managed dir");
+    let target = managed.join("ui.json");
+    std::fs::write(&target, "{}\n").expect("seed managed ui.json");
+    symlink(&target, config.join("ui.json")).expect("link ui.json");
+    std::env::set_var("THURBOX_CONFIG_DIR", &config);
+
+    let mut registry = Registry::load();
+    registry
+        .set_disabled("/ui/plugins/off.lua", true)
+        .expect("save through link");
+
+    assert!(
+        std::fs::symlink_metadata(config.join("ui.json"))
+            .expect("linked ui.json metadata")
+            .file_type()
+            .is_symlink(),
+        "saving must preserve the config-manager link"
+    );
+    assert!(
+        std::fs::read_to_string(target)
+            .expect("managed ui.json")
+            .contains("/ui/plugins/off.lua"),
+        "the linked target must receive the new decision"
+    );
+    std::env::remove_var("THURBOX_CONFIG_DIR");
+}
+
+#[cfg(windows)]
+#[test]
+fn ui_json_saves_beyond_windows_max_path() {
+    use std::os::windows::ffi::OsStrExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let mut config = root.path().to_path_buf();
+    while config.as_os_str().encode_wide().count() <= 300 {
+        config.push("config-path-segment");
+    }
+    std::fs::create_dir_all(&config).expect("long config dir");
+    std::env::set_var("THURBOX_CONFIG_DIR", &config);
+
+    let mut registry = Registry::load();
+    registry
+        .set_disabled("/ui/plugins/off.lua", true)
+        .expect("save ui.json beyond MAX_PATH");
+    assert!(Registry::load().is_disabled("/ui/plugins/off.lua"));
+
+    std::env::remove_var("THURBOX_CONFIG_DIR");
+}
+
 #[test]
 fn disabling_is_not_recorded_as_a_removal() {
     // A disabled bundled file is still one delivery should keep up to date, so
