@@ -557,6 +557,10 @@ impl Database {
             "DELETE FROM automation_suspensions WHERE session_id = ?1",
             [session.to_string()],
         )?;
+        self.resume_unsuspended_automations()
+    }
+
+    fn resume_unsuspended_automations(&self) -> rusqlite::Result<()> {
         let mut stmt = self.conn.prepare(&format!("SELECT {COLS} FROM automations WHERE enabled_before_delete IS NOT NULL
             AND NOT EXISTS (SELECT 1 FROM automation_suspensions s WHERE s.automation_id = automations.id)"))?;
         let rows = stmt
@@ -938,9 +942,7 @@ impl Database {
         self.conn.execute("DELETE FROM automation_suspensions WHERE automation_id = ?1
             AND NOT EXISTS (SELECT 1 FROM automations a WHERE a.id = ?1 AND
                 (a.owner_session_id = session_id OR (a.action_kind = 'send' AND a.target_session = session_id)))", [id])?;
-        self.conn.execute("UPDATE automations SET enabled_before_delete = NULL WHERE id = ?1
-            AND enabled_before_delete IS NOT NULL AND NOT EXISTS (SELECT 1 FROM automation_suspensions WHERE automation_id = ?1)", [id])?;
-        Ok(())
+        self.resume_unsuspended_automations()
     }
 }
 

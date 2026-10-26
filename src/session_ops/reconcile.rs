@@ -160,13 +160,7 @@ fn rollback(
     for wt in &row.worktrees {
         if active
             .iter()
-            .filter(|owner| super::same_machine(&owner.backend_type, &row.backend_type))
-            .any(|owner| {
-                owner.worktrees.iter().any(|other| {
-                    super::lock::worktree_key(&owner.backend_type, &other.worktree_path)
-                        == super::lock::worktree_key(&row.backend_type, &wt.worktree_path)
-                })
-            })
+            .any(|owner| super::lock::claims_directory(owner, &row.backend_type, &wt.worktree_path))
         {
             return Err("worktree is now used by an active session".into());
         }

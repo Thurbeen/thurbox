@@ -185,6 +185,12 @@ pub fn restore_session_headless(
             crate::session_ops::OpError::NotFound(format!("deleted session not found: {id}"))
         })?;
 
+    if deleted.purge_owed {
+        return Err(super::OpError::Refused(
+            "an irreversible purge cannot be restored".into(),
+        ));
+    }
+
     // Recovery the caller would not want is a decision, not a discovery: they
     // have to have been told before it happens. v1's confirm modal and the
     // CLI's `--best-effort` are the two places that ask — but only when there

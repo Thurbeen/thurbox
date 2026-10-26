@@ -64,6 +64,8 @@ pub struct DeletedSessionInfo {
     pub host_lifecycle_generation: Option<u64>,
     /// Purge tombstone; hidden from the restore list.
     pub purged_at: Option<u64>,
+    /// Irreversible purge requested, with cleanup still pending.
+    pub purge_owed: bool,
     pub id: SessionId,
     pub name: String,
     pub agent: String,
@@ -590,19 +592,20 @@ impl Database {
         tx.commit()
     }
 
-    fn restore_session_in_transaction(&self, id: SessionId) -> rusqlite::Result<()> {
+    fn restore_session_in_transaction(&self, id: SessionId) -> rusqlite::Result<bool> {
         let now = current_time_millis() as i64;
         let id_str = id.to_string();
 
-        // Clear `force_deleted` defensively — the app layer blocks restoring a
-        // force-deleted row, so this only matters if a future caller revives one.
-        // `teardown_owed` goes with it: a row that is alive again has no orphan
-        // for the sweep to collect, and its windows are not the sweep's to kill.
+        // Best-effort undo clears force deletion and teardown debt together,
+        // so the sweep cannot collect a restored pane.
         let restored = self.conn.execute(
             "UPDATE sessions SET deleted_at = NULL, force_deleted = 0, teardown_owed = 0, \
              updated_at = ?1 WHERE id = ?2 AND deleted_at IS NOT NULL AND purged_at IS NULL AND purge_owed = 0",
             params![now, id_str],
         )?;
+        if restored == 0 {
+            return Ok(false);
+        }
         // And the reap backoff, for the same reason: it belongs to the delete
         // that earned it, not to the session. Kept, it would defer the reap of
         // a *later* delete of this row by the interval an outage that is over
@@ -619,18 +622,15 @@ impl Database {
             None,
         )?;
 
-        if restored > 0 {
-            self.restore_session_automations(id)?;
-            self.record_session_event(
-                id,
-                SessionEventKind::Created,
-                EventReason::Restored,
-                None,
-                None,
-            )?;
-        }
-
-        Ok(())
+        self.restore_session_automations(id)?;
+        self.record_session_event(
+            id,
+            SessionEventKind::Created,
+            EventReason::Restored,
+            None,
+            None,
+        )?;
+        Ok(true)
     }
 
     /// List all active (non-deleted) sessions.
@@ -1411,7 +1411,7 @@ impl Database {
              s.cwd, s.parent_session_id, s.deleted_at, s.backend_type, \
              s.force_deleted, s.backend_id, s.shell_backend_id, \
              w.repo_path, w.worktree_path, w.branch, w.created_by_thurbox, \
-             s.host_updated_at, s.teardown_owed, s.key, s.updated_at, s.purged_at, s.lifecycle_generation, s.host_lifecycle_generation, s.additional_dirs \
+             s.host_updated_at, s.teardown_owed, s.key, s.updated_at, s.purged_at, s.lifecycle_generation, s.host_lifecycle_generation, s.additional_dirs, s.purge_owed \
              FROM sessions s \
              LEFT JOIN worktrees w ON s.id = w.session_id \
              WHERE {condition} \
@@ -1445,6 +1445,7 @@ impl Database {
                     lifecycle_generation: row.get::<_, i64>(20)? as u64,
                     host_lifecycle_generation: row.get::<_, Option<i64>>(21)?.map(|v| v as u64),
                     purged_at: row.get::<_, Option<i64>>(19)?.map(|v| v as u64),
+                    purge_owed: row.get(23)?,
                     id: id_str.parse().unwrap_or_default(),
                     name: row.get(1)?,
                     agent: row.get(2)?,
@@ -2379,7 +2380,9 @@ impl Database {
             "UPDATE sessions SET backend_id = ?2 WHERE id = ?1",
             params![session.id.to_string(), session.backend_id],
         )?;
-        self.restore_session_in_transaction(session.id)?;
+        if !self.restore_session_in_transaction(session.id)? {
+            return Ok(PaneClaim::RowGone);
+        }
         self.clear_create_intent(session.id)?;
         tx.commit()?;
         Ok(PaneClaim::Stored)

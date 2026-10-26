@@ -1357,3 +1357,79 @@ fn separate_heartbeat_processes_confirm_a_missing_pane() {
         .unwrap()
         .is_some());
 }
+
+#[test]
+#[cfg(unix)]
+fn owner_edits_restore_saved_state_when_the_last_suspension_clears() {
+    for clear in [true, false] {
+        for (initial, choice) in [
+            (true, None),
+            (false, None),
+            (true, Some(false)),
+            (false, Some(true)),
+        ] {
+            let env = Env::new();
+            let owner = env.seed_session("owner");
+            let replacement = env.seed_session("replacement");
+            let mut args = vec!["--owner-session", owner.as_str()];
+            if !initial {
+                args.push("--disabled");
+            }
+            let auto = env.exec("owned", "true", &args);
+            env.ok(&["session", "delete", &owner, "--soft"]);
+            let mut edit = vec![
+                "automation",
+                "edit",
+                &auto,
+                "--owner-session",
+                if clear { "none" } else { &replacement },
+            ];
+            if let Some(enabled) = choice {
+                edit.push(if enabled { "--enabled" } else { "--disabled" });
+            }
+            env.ok(&edit);
+            let actual = env.automation(&auto);
+            let expected = choice.unwrap_or(initial);
+            assert_eq!(
+                actual["enabled"], expected,
+                "owner-only edit lost saved state: {actual}"
+            );
+            assert_eq!(actual["next_run_at"].is_number(), expected);
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn owner_edits_preserve_a_targets_remaining_suspension() {
+    if !Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        return;
+    }
+    let env = Env::new();
+    let owner = env.seed_session("owner");
+    let target = env.seed_session("target");
+    let auto = id_of(&env.ok(&[
+        "automation",
+        "create",
+        "--name",
+        "send",
+        "--trigger",
+        "hourly",
+        "--prompt",
+        "continue",
+        "--session",
+        &target,
+        "--owner-session",
+        &owner,
+    ]));
+    env.ok(&["session", "delete", &owner, "--soft"]);
+    env.ok(&["session", "delete", &target, "--soft"]);
+    env.ok(&["automation", "edit", &auto, "--owner-session", "none"]);
+    assert_eq!(env.automation(&auto)["enabled"], false);
+    env.ok(&["session", "restore", &target]);
+    assert_eq!(env.automation(&auto)["enabled"], true);
+}

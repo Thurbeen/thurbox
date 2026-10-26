@@ -457,24 +457,13 @@ fn unclaimed_resources(db: &Database, session: &crate::sync::SharedSession) -> R
                 || session.shell_backend_id.as_ref().is_some_and(|pane| {
                     row.backend_id == *pane || row.shell_backend_id.as_ref() == Some(pane)
                 })))
-            || (super::same_machine(&row.backend_type, &session.backend_type)
-                && session
-                    .worktrees
-                    .iter()
-                    .filter(|wt| wt.created_by_thurbox)
-                    .any(|wt| {
-                        let cleanup =
-                            super::lock::worktree_key(&session.backend_type, &wt.worktree_path);
-                        row.worktrees
-                            .iter()
-                            .map(|other| &other.worktree_path)
-                            .chain(row.cwd.iter())
-                            .chain(row.additional_dirs.iter())
-                            .any(|path| {
-                                super::lock::worktree_key(&row.backend_type, path)
-                                    .starts_with(&cleanup)
-                            })
-                    }))
+            || session
+                .worktrees
+                .iter()
+                .filter(|wt| wt.created_by_thurbox)
+                .any(|wt| {
+                    super::lock::claims_directory(row, &session.backend_type, &wt.worktree_path)
+                })
             || (super::same_machine(&row.backend_type, &session.backend_type)
                 && session
                     .agent_session_id

@@ -198,6 +198,25 @@ pub(crate) fn worktree_key(backend_type: &str, path: &std::path::Path) -> std::p
     }
 }
 
+/// Whether removing a directory would remove one of this session's live paths.
+pub(crate) fn claims_directory(
+    session: &crate::sync::SharedSession,
+    backend_type: &str,
+    directory: &std::path::Path,
+) -> bool {
+    if !super::same_machine(&session.backend_type, backend_type) {
+        return false;
+    }
+    let directory = worktree_key(backend_type, directory);
+    session
+        .worktrees
+        .iter()
+        .map(|wt| &wt.worktree_path)
+        .chain(session.cwd.iter())
+        .chain(session.additional_dirs.iter())
+        .any(|path| worktree_key(&session.backend_type, path).starts_with(&directory))
+}
+
 /// Serialize checkout cleanup with every directory borrower, including children.
 pub(crate) fn worktrees<'a>(
     db: &'a Database,

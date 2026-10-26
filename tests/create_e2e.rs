@@ -4509,6 +4509,17 @@ fn a_resumed_create_cannot_rebuild_an_active_siblings_workspace() {
 #[test]
 #[cfg(unix)]
 fn purge_keeps_a_checkout_used_as_cwd_or_attached_directory() {
+    claimed_checkout_cleanup_case(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn creation_recovery_keeps_a_checkout_used_as_cwd_or_attached_directory() {
+    claimed_checkout_cleanup_case(true);
+}
+
+#[cfg(unix)]
+fn claimed_checkout_cleanup_case(recovery: bool) {
     use thurbox::session::{Multiplexer, Route, SessionId};
     use thurbox::sync::{SharedSession, SharedWorktree};
     for attached in [false, true] {
@@ -4559,7 +4570,18 @@ fn purge_keeps_a_checkout_used_as_cwd_or_attached_directory() {
                 tombstone_at: None,
                 key: None,
             };
-            db.upsert_session(&old).unwrap();
+            if recovery {
+                db.begin_create_intent(&thurbox::storage::intents::CreateIntent {
+                    session: old.clone(),
+                    workspace_created: false,
+                    expected_deleted_at: None,
+                    before: Vec::new(),
+                    expires_at: 0,
+                })
+                .unwrap();
+            } else {
+                db.upsert_session(&old).unwrap();
+            }
             let mut claimant = old.clone();
             claimant.id = SessionId::default();
             claimant.name = "new-checkout".into();
@@ -4578,43 +4600,161 @@ fn purge_keeps_a_checkout_used_as_cwd_or_attached_directory() {
                 claimant.cwd = Some(claim);
             }
             db.upsert_session(&claimant).unwrap();
-            thurbox::session_ops::delete_session_headless(&db, &registry, old.id, false).unwrap();
-            db.conn_ref()
-                .execute(
-                    "UPDATE sessions SET deleted_at = 1 WHERE id = ?1",
-                    [old.id.to_string()],
+            if recovery {
+                assert_eq!(
+                    thurbox::session_ops::reconcile::creating(&db, &registry),
+                    0,
+                    "recovery ignored a live directory claim"
+                );
+            } else {
+                thurbox::session_ops::delete_session_headless(&db, &registry, old.id, false)
+                    .unwrap();
+                db.conn_ref()
+                    .execute(
+                        "UPDATE sessions SET deleted_at = 1 WHERE id = ?1",
+                        [old.id.to_string()],
+                    )
+                    .unwrap();
+                let report = thurbox::session_ops::purge::purge_selected(
+                    &db,
+                    &registry,
+                    thurbox::session_ops::purge::Age::All,
+                    false,
+                    Some(old.id),
                 )
                 .unwrap();
-            let report = thurbox::session_ops::purge::purge_selected(
-                &db,
-                &registry,
-                thurbox::session_ops::purge::Age::All,
-                false,
-                Some(old.id),
-            )
-            .unwrap();
-            assert!(
-                report.purged.is_empty(),
-                "purge ignored a live directory claim"
-            );
+                assert!(
+                    report.purged.is_empty(),
+                    "purge ignored a live directory claim"
+                );
+            }
             assert!(
                 checkout.join("sentinel").exists(),
                 "cleanup removed another session's live checkout"
             );
             db.soft_delete_session(claimant.id).unwrap();
-            db.clear_session_reap_backoff(old.id).unwrap();
-            let finished = thurbox::session_ops::retry_owed_remote_teardowns(&db, &registry);
-            assert!(
-                finished.contains(&old.id.to_string()),
-                "unclaimed checkout stayed blocked"
-            );
-            assert!(db
-                .list_session_tombstones(None)
-                .unwrap()
-                .iter()
-                .any(|row| row.id == old.id && row.purged_at.is_some()));
+            if recovery {
+                let mut intent = db.create_intent(old.id).unwrap().unwrap();
+                intent.expires_at = 0;
+                db.update_create_intent(&intent).unwrap();
+                assert_eq!(thurbox::session_ops::reconcile::creating(&db, &registry), 1);
+                assert!(db.create_intent(old.id).unwrap().is_none());
+            } else {
+                db.clear_session_reap_backoff(old.id).unwrap();
+                let finished = thurbox::session_ops::retry_owed_remote_teardowns(&db, &registry);
+                assert!(
+                    finished.contains(&old.id.to_string()),
+                    "unclaimed checkout stayed blocked"
+                );
+                assert!(db
+                    .list_session_tombstones(None)
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.id == old.id && row.purged_at.is_some()));
+            }
             assert!(!checkout.exists());
         }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_pending_purge_refuses_restore_before_launching() {
+    restore_during_pending_purge(false);
+}
+
+#[test]
+#[cfg(unix)]
+fn a_purge_started_during_restore_cannot_commit_a_deleted_row_as_restored() {
+    restore_during_pending_purge(true);
+}
+
+#[cfg(unix)]
+fn restore_during_pending_purge(during_launch: bool) {
+    use thurbox::session::{Multiplexer, Route};
+    let (_home, _) = isolated_config();
+    let repo = repo();
+    let db = on_disk_db();
+    let route = Route::local(Some(Multiplexer::Tmux));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let registry = thurbox::backend::BackendRegistry::new(route, backend.clone());
+    let created = thurbox::session_ops::spawn_session_headless(
+        &db,
+        &registry,
+        thurbox::session_ops::SpawnRequest {
+            name: "pending-purge".into(),
+            repo_path: repo.path().into(),
+            command: Some("sleep 60".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let id = created.session_id;
+    let mut original = db.get_session_by_id(id).unwrap().unwrap();
+    thurbox::session_ops::delete_session_headless(&db, &registry, id, false).unwrap();
+    thurbox::session_ops::reap_soft_deleted(&db, &registry, id).unwrap();
+    let deleted = db.get_deleted_session_by_id(id).unwrap().unwrap();
+    if during_launch {
+        let path = thurbox::paths::database_file().unwrap();
+        backend.on_next_pane_state(move || {
+            assert!(thurbox::storage::Database::open(&path)
+                .unwrap()
+                .begin_session_purge(id, deleted.deleted_at)
+                .unwrap());
+        });
+    } else {
+        assert!(db.begin_session_purge(id, deleted.deleted_at).unwrap());
+    }
+    backend.forget_calls();
+    let result = thurbox::session_ops::restore_session_headless(&db, &registry, id, true);
+    assert!(
+        result.is_err(),
+        "restore reported success without restoring the row: {result:?}"
+    );
+    assert!(db.get_session_by_id(id).unwrap().is_none());
+    assert!(
+        backend.windows_of(&id.to_string()).is_empty(),
+        "failed restore left a new pane behind"
+    );
+    if !during_launch {
+        assert!(!backend.called("create_window"));
+        let deleted = db.get_deleted_session_by_id(id).unwrap().unwrap();
+        let now = thurbox::sync::current_time_millis();
+        let token = now + 60_000;
+        let subject = thurbox::storage::event_cursors::LockSubject::Session(id);
+        assert!(db.take_lease(&subject, token, now).unwrap());
+        original.backend_id = "uncommitted-pane".into();
+        db.begin_create_intent(&thurbox::storage::intents::CreateIntent {
+            session: original.clone(),
+            workspace_created: false,
+            expected_deleted_at: Some(deleted.deleted_at),
+            before: Vec::new(),
+            expires_at: token,
+        })
+        .unwrap();
+        assert_eq!(
+            db.commit_restored_session(
+                &original,
+                deleted.deleted_at,
+                deleted.lifecycle_generation,
+                token,
+                |a, b| a == b
+            )
+            .unwrap(),
+            thurbox::storage::PaneClaim::RowGone
+        );
+        assert!(
+            db.create_intent(id).unwrap().is_some(),
+            "rejected commit lost its recovery intent"
+        );
+        assert_eq!(
+            db.get_deleted_session_by_id(id)
+                .unwrap()
+                .unwrap()
+                .backend_id,
+            created.backend_id
+        );
+        db.release_lease(&subject, token).unwrap();
     }
 }
 

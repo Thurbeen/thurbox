@@ -2449,7 +2449,9 @@ Upsert never revives a deleted row. Restore is explicit, and purge is
 irreversible: it removes thurbox-created worktrees and metadata, then retains
 a minimal row with `purged_at`. Ordinary deleted listings hide it; peers
 negotiate `purged_tombstones` and request `--include-purged`. A purge that
-cannot finish retains its cleanup plan and retries. Tombstones are pruned
+cannot finish retains its cleanup plan and retries. A pending purge refuses restore
+before launch, and a restore commit must actually transition its row to active.
+Tombstones are pruned
 with the audit retention horizon. The schema additions leave
 `MIN_READER_VERSION` unchanged. Database guards reject legacy restore/delete
 writes against irreversible purge rows; retention releases the guard and removes
