@@ -8,8 +8,11 @@ isolated sandbox.
 ### Recommended: Nix flake
 
 The `flake.nix` provides the tools CI uses — the Rust toolchain (read from
-`rust-toolchain.toml`), `tmux`, `shellcheck`, `bats`, Node, `cargo-nextest`,
-`cargo-deny`, `cocogitto`, `just`, and the demo stack (`vhs`/`ffmpeg`/`ttyd`).
+`rust-toolchain.toml`), interactive Bash, `tmux`, `shellcheck`, `bats`, Node,
+`cargo-nextest`, `cargo-deny`, `cocogitto`, `just`, and the demo stack
+(`vhs`/`ffmpeg`/`ttyd`). Interactive Bash is explicit because the real-pane
+tests exercise Readline's bracketed-paste mode; Nix's stdenv Bash omits those
+interactive builtins.
 `flake.lock` pins nixpkgs, so the shell's tools move only when someone runs
 `nix flake update`; the Rust toolchain still follows `stable` from
 `rust-toolchain.toml`. The same flake also packages thurbox itself

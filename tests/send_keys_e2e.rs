@@ -541,13 +541,44 @@ fn a_wrapped_line_ending_in_a_prompt_glyph_is_still_retried() {
 /// A plain interactive bash with its default prompt, which carries more than
 /// its glyph: `bash-5.3$ `.
 fn live_shell(db: &Database) -> Option<SharedSession> {
-    let session = live_session_running(db, "env PS1='bash-5.3$ ' bash --norc --noprofile -i")?;
+    let session = live_session_running(
+        db,
+        "env INPUTRC=/dev/null PS1='bash-5.3$ ' bash --norc --noprofile -i",
+    )?;
     let drawn = screen_when(&session, |s| s.contains("bash-5.3$"));
     assert!(
         drawn.contains("bash-5.3$"),
         "the shell never drew its prompt; shows:\n{drawn}"
     );
     Some(session)
+}
+
+#[test]
+fn the_interactive_bash_fixture_enables_bracketed_paste() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let db = Database::open_in_memory().expect("db");
+    let Some(session) = live_shell(&db) else {
+        eprintln!("skipping: tmux would not spawn a window");
+        return;
+    };
+
+    tmux(&[
+        "send-keys",
+        "-l",
+        "-t",
+        &session.backend_id,
+        "bind -v | grep enable-bracketed-paste",
+    ]);
+    tmux(&["send-keys", "-t", &session.backend_id, "Enter"]);
+    let screen = screen_when(&session, |s| s.contains("set enable-bracketed-paste on"));
+    assert!(
+        screen.contains("set enable-bracketed-paste on"),
+        "the bash fixture has no active Readline bracketed-paste mode:\n{screen}"
+    );
 }
 
 /// Retro #1453: a bare `bash-5.3$ ` prompt read as a composer holding typing,
