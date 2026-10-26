@@ -160,6 +160,12 @@ every session, remote too, gets
 `OTEL_RESOURCE_ATTRIBUTES` with `thurbox.session.id`. Built-ins: claude (env),
 codex (`-c otel.*` args), vibe (env); an entry omitting both keys gains the
 built-in's in memory, explicit empty opts out. ADR-36.
+Repeatable `session create --telemetry-attr KEY=VALUE` adds persistent session
+labels after inherited, agent and session environment attributes, before
+Thurbox's identity keys. Restart and fork retain the raw labels in reserved
+session metadata. Delegation requires the host's `telemetry_attrs` capability;
+unsupported hosts refuse them. Labels also reach session event logs and,
+with `per_session`, Thurbox's own session metrics.
 
 ### Multi-repo sessions (symlink workspace)
 

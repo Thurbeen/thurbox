@@ -33,6 +33,36 @@ fn control_in_key() -> String {
 }
 
 impl Database {
+    /// Persist the session's raw telemetry labels, independently of its launch env.
+    pub fn set_telemetry_attrs(
+        &self,
+        id: SessionId,
+        attrs: &BTreeMap<String, String>,
+    ) -> rusqlite::Result<()> {
+        let json = serde_json::to_string(attrs)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.set_session_meta(id, "thurbox.telemetry_attributes", &json)
+    }
+
+    /// Telemetry labels retained across launches; malformed stored data is an error.
+    pub fn load_telemetry_attrs(
+        &self,
+        id: SessionId,
+    ) -> rusqlite::Result<BTreeMap<String, String>> {
+        self.get_session_meta(id, "thurbox.telemetry_attributes")?
+            .map(|json| {
+                serde_json::from_str(&json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+
     /// Set one metadata key, replacing any previous value.
     pub fn set_session_meta(&self, id: SessionId, key: &str, value: &str) -> rusqlite::Result<()> {
         self.conn.execute(

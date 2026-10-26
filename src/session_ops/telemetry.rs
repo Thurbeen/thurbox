@@ -14,6 +14,70 @@ use crate::session::settings::TelemetrySettings;
 use crate::session::{AgentDef, HostDef, SessionConfig};
 
 const RESOURCE_ATTRIBUTES: &str = "OTEL_RESOURCE_ATTRIBUTES";
+pub(crate) const ATTRIBUTES_KEY: &str = "thurbox.telemetry_attributes";
+/// Bound stale mirror cycles without imposing a traversal on local answers.
+pub(crate) const MAX_TELEMETRY_HOPS: u8 = 16;
+
+/// Read labels from the owner, retaining locally managed remote rows' labels.
+/// Mirrors carry no session metadata; an unavailable owner is not an empty map.
+pub(crate) fn load(
+    db: &crate::storage::Database,
+    session: &crate::sync::SharedSession,
+) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
+    load_with_hops(db, session, MAX_TELEMETRY_HOPS)
+}
+
+/// Follow intermediate mirrors, carrying a decreasing budget on every RPC.
+pub(crate) fn load_with_hops(
+    db: &crate::storage::Database,
+    session: &crate::sync::SharedSession,
+    remaining_hops: u8,
+) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
+    let remaining_hops = remaining_hops.min(MAX_TELEMETRY_HOPS);
+    let remote = crate::session::Route::is_remote_key(&session.backend_type);
+    if !remote
+        || !db
+            .is_mirrored_session(session.id)
+            .map_err(|e| format!("read session ownership: {e}"))?
+    {
+        return db
+            .load_telemetry_attrs(session.id)
+            .map_err(|e| format!("read telemetry attributes: {e}").into());
+    }
+    if remaining_hops == 0 {
+        return Err("telemetry attribute owner forwarding exceeded its hop limit".into());
+    }
+    let super::Executor::HostCli { host, cli } = super::Executor::for_session(session)? else {
+        return Err(format!(
+            "cannot read telemetry attributes from the owner of session '{}'",
+            session.name
+        )
+        .into());
+    };
+    if !cli.telemetry_attrs {
+        return Err(format!("host '{}' has an older thurbox-cli that cannot follow telemetry attribute owners; update that CLI", host.name).into());
+    }
+    let next_hops = (remaining_hops - 1).to_string();
+    let answer = super::host_cli::run(
+        &host,
+        &cli,
+        &[
+            "session",
+            "meta",
+            "get",
+            &session.id.to_string(),
+            ATTRIBUTES_KEY,
+            "--telemetry-hops",
+            &next_hops,
+        ],
+    )?;
+    match answer.get("value") {
+        Some(serde_json::Value::Null) => Ok(BTreeMap::new()),
+        Some(serde_json::Value::String(raw)) => serde_json::from_str(raw)
+            .map_err(|e| format!("decode host telemetry attributes: {e}").into()),
+        _ => Err("host reported malformed telemetry attributes".into()),
+    }
+}
 
 /// Add `[telemetry]`'s configuration for one launch to `config.env`, returning
 /// the arguments to append to the agent's command line.
@@ -25,8 +89,8 @@ const RESOURCE_ATTRIBUTES: &str = "OTEL_RESOURCE_ATTRIBUTES";
 /// this over an environment `session_process_env` already applied it to. A variable the
 /// session's own `--env` sets wins over layers 1 and 2: it is the caller's
 /// explicit choice for this one session. `OTEL_RESOURCE_ATTRIBUTES` is a list,
-/// so the session's value is merged into the inherited one instead, its keys
-/// winning, and thurbox's own keys win over both.
+/// merged in order: inherited environment, agent `telemetry_env`, session
+/// `--env`, then `--telemetry-attr`. Thurbox's own identity keys win last.
 ///
 /// A remote session exports to its host's `otel_endpoint` instead of
 /// `[telemetry] endpoint`: `localhost:4318` there is the host, not this
@@ -54,15 +118,37 @@ pub(crate) fn apply(
     let process = (!remote)
         .then(|| std::env::var(RESOURCE_ATTRIBUTES).ok())
         .flatten();
+    let endpoint = if remote {
+        host.and_then(|h| h.otel_endpoint.as_deref())
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+    } else {
+        Some(telemetry.endpoint.as_str())
+    };
+    let (agent_env, args) = endpoint
+        .map(|e| def.telemetry_launch(e, &telemetry.protocol))
+        .unwrap_or_default();
+    let agent_attributes = agent_env
+        .get(RESOURCE_ATTRIBUTES)
+        .map_or("", String::as_str);
+    let custom = config
+        .telemetry_attrs
+        .iter()
+        .map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let inherited = merge(process.as_deref().unwrap_or_default(), agent_attributes);
+    let inherited = merge(
+        &inherited,
+        config
+            .env
+            .get(RESOURCE_ATTRIBUTES)
+            .map_or("", String::as_str),
+    );
+    let inherited = merge(&inherited, &custom);
     let session_id = config.session_id.map(|id| id.to_string());
     let attributes = resource_attributes(
-        &merge(
-            process.as_deref().unwrap_or_default(),
-            config
-                .env
-                .get(RESOURCE_ATTRIBUTES)
-                .map_or("", String::as_str),
-        ),
+        &inherited,
         &[
             ("thurbox.session.id", session_id.as_deref().unwrap_or("")),
             ("thurbox.session.name", session_name),
@@ -70,17 +156,8 @@ pub(crate) fn apply(
         ],
     );
     config.env.insert(RESOURCE_ATTRIBUTES.into(), attributes);
-    let endpoint = if remote {
-        match host
-            .and_then(|h| h.otel_endpoint.as_deref())
-            .map(str::trim)
-            .filter(|e| !e.is_empty())
-        {
-            Some(endpoint) => endpoint,
-            None => return Vec::new(),
-        }
-    } else {
-        telemetry.endpoint.as_str()
+    let Some(endpoint) = endpoint else {
+        return Vec::new();
     };
 
     let mut spec = BTreeMap::from([
@@ -101,7 +178,6 @@ pub(crate) fn apply(
             .collect();
         spec.insert("OTEL_EXPORTER_OTLP_HEADERS".into(), headers.join(","));
     }
-    let (agent_env, args) = def.telemetry_launch(endpoint, &telemetry.protocol);
     for (k, v) in spec.into_iter().chain(agent_env) {
         config.env.entry(k).or_insert(v);
     }
@@ -181,6 +257,40 @@ mod tests {
     }
 
     // Remote, so this process's own OTEL_RESOURCE_ATTRIBUTES stays out of it.
+    #[test]
+    fn telemetry_attributes_merge_after_agent_and_session_env_and_are_idempotent() {
+        std::env::set_var(RESOURCE_ATTRIBUTES, "global=kept,level=global");
+        let def = AgentDef {
+            telemetry_env: BTreeMap::from([(
+                RESOURCE_ATTRIBUTES.into(),
+                "agent=kept,level=agent".into(),
+            )]),
+            ..AgentDef::default()
+        };
+        let mut config = config(None);
+        config.env.insert(
+            RESOURCE_ATTRIBUTES.into(),
+            "session=kept,level=session,empty=old".into(),
+        );
+        config.telemetry_attrs = BTreeMap::from([
+            ("level".into(), "attribute,=✓".into()),
+            ("empty".into(), "".into()),
+            ("thurbox.agent".into(), "spoofed".into()),
+        ]);
+        apply(&mut config, &def, "worker", None, &on());
+        let first = config.env[RESOURCE_ATTRIBUTES].clone();
+        assert!(
+            first.contains(
+                "global=kept,agent=kept,session=kept,empty=,level=attribute%2C%3D%E2%9C%93"
+            ),
+            "{first}"
+        );
+        assert!(first.ends_with("thurbox.agent=claude"), "{first}");
+        apply(&mut config, &def, "worker", None, &on());
+        assert_eq!(config.env[RESOURCE_ATTRIBUTES], first);
+        std::env::remove_var(RESOURCE_ATTRIBUTES);
+    }
+
     #[test]
     fn the_sessions_attributes_are_kept_but_never_override_its_identity() {
         let mut config = config(Some("ssh:devbox"));

@@ -1130,7 +1130,28 @@ With `enabled` and `configure_agents` both on, every local session gets:
 
 A variable the session's own `--env` sets wins, except
 `OTEL_RESOURCE_ATTRIBUTES`: the session's value is merged into the inherited
-one, its keys winning a conflict, and thurbox's three keys still win over both.
+one. Merge precedence is inherited environment, agent `telemetry_env`, session
+`--env`, repeatable `session create --telemetry-attr KEY=VALUE`, then Thurbox's
+three identity keys. Attribute values are percent-encoded in the launch
+environment. Repeated keys take the last value, including an empty value.
+Telemetry attributes persist in reserved session metadata across restart,
+Ctrl+R and fork. A delegated create forwards them to the host's CLI; a host
+without the `telemetry_attrs` capability explicitly refuses them. `sync --adopt`
+also preserves these labels when a caller-managed remote session becomes
+host-owned, and reports incompatible hosts instead of dropping the labels.
+When agent telemetry is configured, caller-side launch plans read a mirrored
+session's labels from its owner, following intermediate mirror hosts.
+All participating peers must support `telemetry_attrs`. Unavailable owners,
+unsupported peers and exhausted forwarding limits produce explicit errors.
+Forwarding is bounded to 16 hops to stop stale mirror cycles. Telemetry
+labels remain until row purge, so force-delete does not strip them from pending events or lifetime metrics.
+
+These attributes also label `thurbox.session.*` event logs and, with
+`per_session = true`, Thurbox's session metrics. Aggregate metrics keep their
+existing labels. Thurbox's own field names (`agent`, `state`, `backend`,
+`from`, `to`, `reason`, `outcome`, `exit_code` and `thurbox.*`) are reserved on
+these exports. Attributes label telemetry; use `--env` for other process
+configuration.
 A remote session exports to its host's `otel_endpoint` from
 [hosts.toml](#hoststoml) instead of `endpoint` (`localhost` there is the host),
 with this table's `protocol` and `headers`; a host that sets none gets only the

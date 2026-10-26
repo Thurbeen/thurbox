@@ -53,6 +53,9 @@ pub(crate) fn build_restart_plan(
     let mut config = SessionConfig {
         // Keep the same identity across a restart so `THURBOX_SESSION` is stable.
         session_id: Some(session.id),
+        telemetry_attrs: db
+            .load_telemetry_attrs(session.id)
+            .map_err(|e| format!("read telemetry attributes: {e}"))?,
         agent_session_id: Some(agent_session_id.clone()),
         cwd: session.cwd.clone(),
         agent: session.agent.clone(),

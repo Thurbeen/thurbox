@@ -120,6 +120,8 @@ pub struct CliInfo {
     pub create_parity: bool,
     /// Whether the peer persists and replays `session create --agent-arg`.
     pub agent_args: bool,
+    /// Whether creation, registration and owner reads preserve telemetry attributes.
+    pub telemetry_attrs: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -743,6 +745,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .unwrap_or(false),
         agent_args: json
             .get("agent_args")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        telemetry_attrs: json
+            .get("telemetry_attrs")
             .and_then(Value::as_bool)
             .unwrap_or(false),
         create_parity: json
@@ -1532,6 +1538,7 @@ pub(crate) mod fake {
             deleted_changes_since: false,
             create_parity: false,
             agent_args: false,
+            telemetry_attrs: false,
         }
     }
 }
@@ -1666,6 +1673,7 @@ mod tests {
             deleted_changes_since: false,
             create_parity: false,
             agent_args: false,
+            telemetry_attrs: false,
         }
     }
 

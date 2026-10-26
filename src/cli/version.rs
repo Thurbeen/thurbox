@@ -57,6 +57,7 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
                 "deleted_changes_since": true,
                 "create_parity": true,
                 "agent_args": true,
+                "telemetry_attrs": true,
             }),
             format!("thurbox {current}"),
         );
@@ -158,6 +159,7 @@ mod tests {
         assert_eq!(out["deleted_since"], true);
         assert_eq!(out["deleted_changes_since"], true);
         assert_eq!(out["create_parity"], true);
+        assert_eq!(out["telemetry_attrs"], true);
         assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
         assert!(out.failure.is_none(), "plain version never fails");
     }

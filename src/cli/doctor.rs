@@ -385,6 +385,7 @@ mod tests {
             deleted_changes_since: true,
             create_parity: true,
             agent_args: false,
+            telemetry_attrs: true,
         }
     }
 

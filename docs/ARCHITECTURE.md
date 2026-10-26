@@ -3049,8 +3049,20 @@ and the agent's `telemetry_env` / `telemetry_args` from `agents.toml`,
 substituted with `{otlp_endpoint}` / `{otlp_protocol}`, for switches the spec
 does not cover. The session's own `--env` wins over both, except that its
 `OTEL_RESOURCE_ATTRIBUTES` is merged into the inherited value, the session's
-keys winning a conflict; thurbox's resource attributes win over both for the
-same keys.
+keys winning a conflict. The full merge order is inherited environment,
+agent `telemetry_env`, session `--env`, session `--telemetry-attr`, then
+Thurbox's identity keys. Raw session attributes live under reserved metadata
+key `thurbox.telemetry_attributes`, separate from the launch environment, so
+restart and fork can merge them against current settings. Delegated creation
+forwards them only to a host advertising `telemetry_attrs`; older hosts refuse
+them explicitly. Creation and registration commit the labels alongside the
+session row and its event. Caller-side context reads retrieve a mirrored
+session's labels from its owner through `Executor`, since mirrors carry no
+metadata. Reserved telemetry metadata reads follow intermediate mirrors,
+requiring the capability at every peer and decrementing a 16-hop budget to
+bound stale cycles. Other metadata reads remain local. A caller-managed remote
+fork retains its local labels and hands them
+to the host on `sync --adopt`, gated by the same capability.
 
 **Why**: tokens, cost, models and tool calls are known only to the agent, and the
 agents that have OTel already export them. Reimplementing that per agent would
@@ -3087,6 +3099,12 @@ cursor, the `telemetry` row of `event_cursors` (schema v55; v54 kept it in a
 lease that one exporter holds at a time. A failed export moves
 nothing. The first export starts at the head of the log. Rows on a shared host
 (ADR-24) are left out: that host's own tick exports them.
+Session telemetry attributes label event logs and, when `per_session` is on,
+session metrics, including the live-session gauge. Aggregate metrics retain
+their existing dimensions. User labels never replace Thurbox's own identity,
+state, backend, outcome or reason fields. Force-delete retains the reserved
+telemetry metadata until row purge so pending events and the final lifetime
+metric keep their labels.
 
 **Why**: the turn, wait and lifecycle facts are thurbox's, the same for every
 agent, and are the only telemetry at all for an agent with no OTel of its own

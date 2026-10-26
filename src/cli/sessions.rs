@@ -231,6 +231,10 @@ pub enum Action {
         /// `THURBOX_*` identity vars always win over these.
         #[arg(long = "env")]
         env: Vec<String>,
+        /// Session telemetry attributes as KEY=VALUE (repeatable). Merged after
+        /// environment attributes; Thurbox's session identity always wins.
+        #[arg(long = "telemetry-attr", allow_hyphen_values = true)]
+        telemetry_attr: Vec<String>,
         /// Resume an existing agent conversation instead of starting a new one.
         ///
         /// The id as the *agent* knows it, or `latest` for an agent that
@@ -762,6 +766,8 @@ pub enum MetaAction {
         /// Session name, UUID, or unique id prefix.
         session: String,
         key: String,
+        #[arg(long, hide = true, value_parser = clap::value_parser!(u8).range(..=i64::from(crate::session_ops::telemetry::MAX_TELEMETRY_HOPS)))]
+        telemetry_hops: Option<u8>,
     },
     /// List every key set on a session.
     List {
@@ -824,6 +830,7 @@ pub fn run(
             command,
             arg,
             env,
+            telemetry_attr,
             resume,
             key,
             on_existing,
@@ -849,6 +856,7 @@ pub fn run(
                 command,
                 arg,
                 env,
+                telemetry_attr,
                 resume,
                 key,
                 on_existing,
@@ -1255,6 +1263,7 @@ struct CreateArgs {
     command: Option<String>,
     arg: Vec<String>,
     env: Vec<String>,
+    telemetry_attr: Vec<String>,
     resume: Option<String>,
     key: Option<String>,
     on_existing: OnExisting,
@@ -1284,6 +1293,7 @@ fn run_create(
         command,
         arg,
         env,
+        telemetry_attr,
         resume,
         key,
         on_existing,
@@ -1291,7 +1301,8 @@ fn run_create(
         id,
         env_stdin,
     } = args;
-    // Before anything else: a key that could not be stored is a usage error,
+    let telemetry_attrs = parse_telemetry_attrs(&telemetry_attr)?;
+    // A key that could not be stored is a usage error,
     // and the `--on-existing` lookup below would otherwise run on it.
     if let Some(key) = &key {
         crate::session_ops::names::validate_key(key)?;
@@ -1426,6 +1437,7 @@ fn run_create(
         args: arg,
         agent_args: agent_arg,
         env,
+        telemetry_attrs,
         resume_session_id: resume,
         key,
         session_id,
@@ -2091,7 +2103,14 @@ fn run_register(
         &value,
         &crate::session::Route::local(None).format(),
     )?;
-    register_running_session(db, backends, row)
+    let telemetry_attrs = value
+        .get("telemetry_attrs")
+        .map(|attrs| {
+            serde_json::from_value::<std::collections::BTreeMap<String, String>>(attrs.clone())
+                .map_err(|e| format!("--json-row telemetry_attrs: {e}"))
+        })
+        .transpose()?;
+    register_running_session(db, backends, row, telemetry_attrs)
 }
 
 fn run_stop(
@@ -3119,9 +3138,9 @@ fn refuse_reserved_meta(key: &str) -> Result<(), CommandError> {
     Ok(())
 }
 
-/// `session meta` — the driver's key/value space. Thurbox reads none of it
-/// back except the `ui.*` keys it publishes to plugins (ADR-40), and refuses
-/// changes to its own `thurbox.*` keys.
+/// `session meta` — the driver's key/value space. `ui.*` keys are published
+/// to plugins (ADR-40). Reserved telemetry reads follow the owner; other reads
+/// remain local, and changes to `thurbox.*` keys are refused.
 fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, CommandError> {
     match action {
         MetaAction::Set {
@@ -3149,11 +3168,30 @@ fn run_meta(action: MetaAction, db: &Database) -> Result<CommandOutput, CommandE
                 format!("{key} set on '{}'", target.name),
             ))
         }
-        MetaAction::Get { session, key } => {
+        MetaAction::Get {
+            session,
+            key,
+            telemetry_hops,
+        } => {
             let target = resolve(db, &session)?;
-            let value = db
-                .get_session_meta(target.id, &key)
-                .map_err(|e| format!("get_session_meta: {e}"))?;
+            let value = if key == crate::session_ops::telemetry::ATTRIBUTES_KEY {
+                let attrs = crate::session_ops::telemetry::load_with_hops(
+                    db,
+                    &target,
+                    telemetry_hops.unwrap_or(crate::session_ops::telemetry::MAX_TELEMETRY_HOPS),
+                )?;
+                if attrs.is_empty() {
+                    None
+                } else {
+                    Some(
+                        serde_json::to_string(&attrs)
+                            .map_err(|e| format!("encode telemetry attributes: {e}"))?,
+                    )
+                }
+            } else {
+                db.get_session_meta(target.id, &key)
+                    .map_err(|e| format!("get_session_meta: {e}"))?
+            };
             Ok(CommandOutput::new(
                 json!({ "id": target.id.to_string(), "key": key, "value": value }),
                 // Bare value on stdout: this is the one command whose output is
@@ -3224,6 +3262,22 @@ fn env_from_stdin() -> Result<std::collections::BTreeMap<String, String>, Comman
         ));
     }
     Ok(env)
+}
+
+fn parse_telemetry_attrs(
+    tokens: &[String],
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut attrs = std::collections::BTreeMap::new();
+    for token in tokens {
+        let (key, value) = token
+            .split_once('=')
+            .ok_or_else(|| format!("--telemetry-attr expects KEY=VALUE, got '{token}'"))?;
+        if key.is_empty() || key.trim() != key || key.chars().any(char::is_control) {
+            return Err("--telemetry-attr requires a non-empty key without surrounding whitespace or control characters".into());
+        }
+        attrs.insert(key.to_string(), value.to_string());
+    }
+    Ok(attrs)
 }
 
 /// Read repeatable `--env KEY=VALUE` tokens into a map.
@@ -3844,6 +3898,7 @@ fn register_running_session(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     row: crate::session_ops::mirror::HostRow,
+    telemetry_attrs: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<CommandOutput, CommandError> {
     let mut session = row.session;
     if db
@@ -3890,14 +3945,12 @@ fn register_running_session(
     if key_dropped.is_some() {
         session.key = None;
     }
-    match &row.agent_args {
-        Some(args) => db.upsert_session_with_agent_args(
-            &session,
-            args,
-            crate::storage::EventReason::Registered,
-        ),
-        None => db.upsert_session_as(&session, crate::storage::EventReason::Registered),
-    }
+    db.upsert_session_with_launch_metadata(
+        &session,
+        crate::storage::EventReason::Registered,
+        row.agent_args.as_deref(),
+        telemetry_attrs.as_ref(),
+    )
     .map_err(|e| format!("upsert_session: {e}"))?;
     drop(key_claim);
     if let Some(state) = row.hook_state.as_deref() {
@@ -4275,6 +4328,7 @@ mod tests {
                 action: MetaAction::Get {
                     session: session.id.to_string(),
                     key: "fm.task_id".into(),
+                    telemetry_hops: None,
                 },
             },
             &db,
