@@ -18,6 +18,11 @@ bats extensions/*/scripts/*.bats      # Test the extensions' shell scripts
 just test-scripts                     # Both of the above, the way CI runs them
 ```
 
+The Nix development shell includes `bashInteractive`, not merely stdenv's
+non-interactive Bash. Real-tmux fixtures exercise Readline's bracketed-paste
+mode, including its `bind` setting, so substituting the stdenv shell changes
+the terminal contract those tests are meant to drive.
+
 `tests/doc_references.rs` keeps the tracked documents honest about each other: every
 relative Markdown link, every `docs/<NAME>.md` and `.agents/skills/<name>` path
 and every `github.com/Thurbeen/thurbox/blob/main/…` link names a file that
@@ -98,8 +103,9 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   and arbitrary vt100 byte streams.
 - **`tests/tui_e2e.rs`** (unix) — the real binary on a real pty, via `libc`'s
   `openpty` (no PTY crate), fully isolated (private HOME/config/data, a short
-  private `TMUX_TMPDIR`, network and heartbeat features off). It asserts what no
-  `TestBackend` test can: the boot frame, the kernel overlays opening and closing,
+  private `TMUX_TMPDIR`, inherited `INPUTRC` scrubbed, network and heartbeat
+  features off). It asserts what no `TestBackend` test can: the boot frame, the
+  kernel overlays opening and closing,
   the search strip taking focus, a column toggle reflowing with no screen clear,
   a resize storm down to 1×1, a broken pane reported through the Interface tab,
   exit restoring the terminal (alternate screen, mouse, bracketed paste, cursor)

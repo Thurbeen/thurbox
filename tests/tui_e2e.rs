@@ -173,6 +173,8 @@ impl Profile {
             ),
         );
         cmd.env("TERM", "xterm-256color");
+        // Keep an explicit INPUTRC from bypassing the profile's private HOME.
+        cmd.env_remove("INPUTRC");
         // These tests assert terminal colours and reverse video. An inherited
         // NO_COLOR makes Crossterm omit colour escapes and reset attributes.
         cmd.env_remove("NO_COLOR");

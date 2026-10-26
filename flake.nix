@@ -178,6 +178,9 @@
 
         # System deps to build/test/lint thurbox (mirrors .github/workflows/ci.yml).
         systemTools = with pkgs; [
+          # Real-pane tests exercise Readline's bracketed-paste contract. The
+          # stdenv shell is Bash without interactive builtins such as `bind`.
+          bashInteractive
           tmux # session backend (AGENTS.md: >= 3.2)
           git
           shellcheck # shell linter (pre-commit + CI)
