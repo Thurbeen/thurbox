@@ -305,6 +305,9 @@ pub fn restore_session_headless(
         let answer = super::host_cli::run(&host, &cli, &args)?;
         db.restore_session(deleted.id)
             .map_err(|e| format!("restore session: {e}"))?;
+        // Mirroring takes the same session lease to replace the peer's old pane.
+        // The host has completed the restore, so local publication can release it.
+        drop(_session_lease);
         if let Err(e) = super::mirror::mirror_host(db, &host, &cli) {
             tracing::warn!("mirror of '{}' after restore failed: {e}", host.name);
         }

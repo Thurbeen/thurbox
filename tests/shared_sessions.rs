@@ -1039,6 +1039,60 @@ mod delegated_create {
     }
 
     #[test]
+    fn remote_restore_mirrors_the_recreated_pane_before_returning() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let id = created_id(&pair.create(&["--name", "restore-pane", "--agent", "shell"]));
+        let host_db = pair.host_db();
+        let old_pane = host_db.get_session_by_id(id).unwrap().unwrap().backend_id;
+        host_db.soft_delete_session(id).unwrap();
+        pair.caller_db().soft_delete_session(id).unwrap();
+        let killed = pair.host_server.tmux(&["kill-window", "-t", &old_pane]);
+        assert!(killed.status.success(), "{killed:?}");
+
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        cmd.args(["session", "restore", &id.to_string(), "--json"])
+            .env("HOME", pair.path("home"))
+            .env("USERPROFILE", pair.path("home"))
+            .env("THURBOX_CONFIG_DIR", pair.path("config"))
+            .env("THURBOX_DATA_DIR", pair.path("data"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    pair.path("bin").display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .env_remove("THURBOX_SESSION")
+            .env_remove("THURBOX_SESSION_ID");
+        pair.caller_server.scope(&mut cmd);
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "restore failed: {:?}", answer(&out));
+        let restored = host_db.get_session_by_id(id).unwrap().unwrap();
+        assert_ne!(
+            restored.backend_id, old_pane,
+            "host did not recreate the pane"
+        );
+        let mirrored = pair.caller_db().get_session_by_id(id).unwrap().unwrap();
+        assert_eq!(
+            mirrored.backend_id, restored.backend_id,
+            "restore returned with the old peer pane"
+        );
+        let pane = pair.host_server.tmux(&[
+            "display-message",
+            "-p",
+            "-t",
+            &mirrored.backend_id,
+            "#{pane_dead}",
+        ]);
+        assert!(pane.status.success(), "{pane:?}");
+        assert_eq!(String::from_utf8_lossy(&pane.stdout).trim(), "0");
+    }
+
+    #[test]
     fn an_offline_delete_learns_the_upgraded_hosts_generation_before_pushing() {
         if !super::have_tmux() {
             return;
