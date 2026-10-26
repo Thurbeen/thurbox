@@ -1031,7 +1031,7 @@ fn the_agent_pane_paints_a_live_screen_inside_its_border() {
     host.render(index_of(&host, "sessions"), ctx(40, 12, true))
         .expect("render list");
 
-    let mut parser = vt100::Parser::new(6, 58, 0);
+    let mut parser = vt100::Parser::new(6.try_into().unwrap(), 58.try_into().unwrap(), 0);
     parser.process(b"$ cargo test\r\n   Compiling thurbox v0.0.0-dev\r\n\x1b[32mtest result: ok.\x1b[m 3 passed \xe2\x9c\x93 \xe4\xb8\xad\r\n$ ");
     let live = LiveScreen {
         session: world.sessions[0].id.clone(),

@@ -80,7 +80,8 @@ fn pane_size(server: &TmuxServer, pane: &str) -> (u16, u16) {
 }
 
 fn grid_size(pane: &ProgramPane) -> (u16, u16) {
-    pane.parser.lock().unwrap().screen().size()
+    let (rows, cols) = pane.parser.lock().unwrap().screen().size();
+    (rows.get(), cols.get())
 }
 
 /// Wait until `check` holds, and fail with `what` if it never does.
@@ -341,7 +342,7 @@ fn frame(terminals: &mut Terminals, (rows, cols): (u16, u16), focused: bool) {
 
 /// The interface's grid for the session: the pane's size as it last heard it.
 fn session_grid(terminals: &Terminals) -> (u16, u16) {
-    terminals
+    let (rows, cols) = terminals
         .search_sources(&[ID.to_string()])
         .into_iter()
         .find(|source| !source.shell)
@@ -350,7 +351,8 @@ fn session_grid(terminals: &Terminals) -> (u16, u16) {
         .lock()
         .expect("parser")
         .screen()
-        .size()
+        .size();
+    (rows.get(), cols.get())
 }
 
 /// The server, with the session the interface finds its windows in.

@@ -377,7 +377,7 @@ impl Harness {
         let live = self.terminals.live.get(&self.id).expect("live");
         let parser = live.pane(shell).parser().expect("parser");
         let size = parser.lock().expect("lock").screen().size();
-        (size.0, size.1)
+        (size.0.get(), size.1.get())
     }
 
     /// Paint one frame of `arrangement` into a `width`×`height` screen, and

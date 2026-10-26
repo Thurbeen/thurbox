@@ -477,11 +477,11 @@ fn carried_state(screen: &vt100::Screen) -> Vec<u8> {
     if screen.alternate_screen() {
         out.extend_from_slice(b"\x1b[?1049h");
     }
-    out.extend(screen.input_mode_formatted());
+    out.extend_from_slice(screen.input_mode_formatted().as_bytes());
     if screen.hide_cursor() {
         out.extend_from_slice(b"\x1b[?25l");
     }
-    out.extend(screen.attributes_formatted());
+    out.extend_from_slice(screen.attributes_formatted().as_bytes());
     out
 }
 
@@ -511,11 +511,11 @@ pub fn snapshot_seed(snapshot: &PaneSnapshot, dormant: &vt100::Screen) -> Vec<u8
     }
     let (x, y) = snapshot.cursor;
     out.extend_from_slice(format!("\x1b[m\x1b[{};{}H", y + 1, x + 1).as_bytes());
-    out.extend(dormant.input_mode_formatted());
+    out.extend_from_slice(dormant.input_mode_formatted().as_bytes());
     if dormant.hide_cursor() {
         out.extend_from_slice(b"\x1b[?25l");
     }
-    out.extend(dormant.attributes_formatted());
+    out.extend_from_slice(dormant.attributes_formatted().as_bytes());
     out
 }
 
@@ -523,10 +523,14 @@ pub fn snapshot_seed(snapshot: &PaneSnapshot, dormant: &vt100::Screen) -> Vec<u8
 /// as it stands (the content search) and not as the pane's own grid.
 pub fn parser_from_snapshot(snapshot: &PaneSnapshot) -> SessionParser {
     let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
-    let blank = vt100::Parser::new(DORMANT_GRID.0, DORMANT_GRID.1, 0);
+    let blank = vt100::Parser::new(
+        DORMANT_GRID.0.try_into().unwrap(),
+        DORMANT_GRID.1.try_into().unwrap(),
+        0,
+    );
     let mut parser = vt100::Parser::new_with_callbacks(
-        rows,
-        cols,
+        rows.try_into().unwrap(),
+        cols.try_into().unwrap(),
         crate::session::settings::global().scrollback_lines,
         TermSignals::default(),
     );
@@ -718,7 +722,9 @@ impl WiredPane {
         if self.size.is_none() {
             if let Ok(mut parser) = self.parser.lock() {
                 if self.residency.is_resident() {
-                    parser.screen_mut().set_size(rows, cols);
+                    parser
+                        .screen_mut()
+                        .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
                 }
             }
         }
@@ -760,8 +766,12 @@ impl WiredPane {
         signals.hyperlinks = HyperlinkTable::default();
         signals.pending_link = None;
         let carried = carried_state(parser.screen());
-        let mut dormant =
-            vt100::Parser::new_with_callbacks(DORMANT_GRID.0, DORMANT_GRID.1, 0, signals);
+        let mut dormant = vt100::Parser::new_with_callbacks(
+            DORMANT_GRID.0.try_into().unwrap(),
+            DORMANT_GRID.1.try_into().unwrap(),
+            0,
+            signals,
+        );
         dormant.process(&carried);
         *parser = dormant;
         self.residency.dormant.store(true, Ordering::Release);
@@ -1145,8 +1155,8 @@ impl Session {
         };
         let residency = Arc::new(residency);
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            rows,
-            cols,
+            rows.try_into().unwrap(),
+            cols.try_into().unwrap(),
             scrollback,
             signals.term_signals(),
         )));
@@ -1239,8 +1249,8 @@ impl Session {
         let signals = SignalCells::new();
         let (rows, cols) = vt_floor(rows, cols);
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            rows,
-            cols,
+            rows.try_into().unwrap(),
+            cols.try_into().unwrap(),
             crate::session::settings::global().scrollback_lines,
             signals.term_signals(),
         )));
@@ -1342,7 +1352,8 @@ impl Session {
                 let (rows, cols) = vt_floor(rows, cols);
                 if let Ok(mut p) = parser.lock() {
                     if residency.is_resident() {
-                        p.screen_mut().set_size(rows, cols);
+                        p.screen_mut()
+                            .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
                     }
                 }
             }
@@ -1428,8 +1439,8 @@ impl Session {
                 signals.pending_link = None;
                 let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
                 let mut rebuilt = vt100::Parser::new_with_callbacks(
-                    rows,
-                    cols,
+                    rows.try_into().unwrap(),
+                    cols.try_into().unwrap(),
                     crate::session::settings::global().scrollback_lines,
                     signals,
                 );
@@ -1510,7 +1521,9 @@ impl Session {
         if self.placeholder {
             let (rows, cols) = vt_floor(rows, cols);
             if let Ok(mut parser) = self.wired.parser.lock() {
-                parser.screen_mut().set_size(rows, cols);
+                parser
+                    .screen_mut()
+                    .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
             }
             // Nothing to reach, and nothing to ask again for.
             return true;
@@ -1544,7 +1557,9 @@ impl Session {
         if self.placeholder {
             let (rows, cols) = vt_floor(rows, cols);
             if let Ok(mut parser) = shell.parser.lock() {
-                parser.screen_mut().set_size(rows, cols);
+                parser
+                    .screen_mut()
+                    .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
             }
             return true;
         }
@@ -1815,8 +1830,8 @@ impl Session {
         // `agent_title`/`needs_attention` the same way live PTY output does.
         let signals = SignalCells::new();
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            24,
-            80,
+            24.try_into().unwrap(),
+            80.try_into().unwrap(),
             0,
             signals.term_signals(),
         )));
@@ -1879,8 +1894,8 @@ mod tests {
     /// A parser wired to `copy`, fed one OSC 52 write of `text`.
     fn print_copy(copy: &Arc<AppCopy>, text: &str) {
         let mut parser = vt100::Parser::new_with_callbacks(
-            4,
-            20,
+            4.try_into().unwrap(),
+            20.try_into().unwrap(),
             0,
             TermSignals {
                 app_copy: Arc::clone(copy),
@@ -2000,8 +2015,11 @@ mod tests {
         // parser mutex and blanks that pane for the rest of the run.
         for (rows, cols) in [(0, 0), (1, 1), (1, 2), (2, 1), (1, 40), (3, 1)] {
             let (rows, cols) = vt_floor(rows, cols);
-            let mut parser = vt100::Parser::new(rows, cols, 0);
-            parser.screen_mut().set_size(rows, cols);
+            let mut parser =
+                vt100::Parser::new(rows.try_into().unwrap(), cols.try_into().unwrap(), 0);
+            parser
+                .screen_mut()
+                .set_size(rows.try_into().unwrap(), cols.try_into().unwrap());
             // A wide character (the `col_wrap` path) and enough plain text to
             // wrap and scroll (the `row_inc_scroll` path).
             parser.process("🚀 done\r\n".repeat(4).as_bytes());
@@ -2071,6 +2089,7 @@ mod tests {
         fn rows(p: &vt100::Parser) -> Vec<String> {
             let s = p.screen();
             let (r, c) = s.size();
+            let (r, c) = (r.get(), c.get());
             (0..r)
                 .map(|y| {
                     let mut t = String::new();
@@ -2084,14 +2103,14 @@ mod tests {
         }
 
         fn whole(bytes: &[u8]) -> Vec<String> {
-            let mut p = vt100::Parser::new(10, 38, 0);
+            let mut p = vt100::Parser::new(10.try_into().unwrap(), 38.try_into().unwrap(), 0);
             p.process(bytes);
             rows(&p)
         }
 
         /// Replays the reader-loop carry logic over `bytes` cut into `sizes`.
         fn carry_chunked(bytes: &[u8], sizes: &[usize]) -> Vec<String> {
-            let mut p = vt100::Parser::new(10, 38, 0);
+            let mut p = vt100::Parser::new(10.try_into().unwrap(), 38.try_into().unwrap(), 0);
             let mut carry: Vec<u8> = Vec::new();
             let (mut pos, mut i) = (0usize, 0usize);
             while pos < bytes.len() {
@@ -2196,8 +2215,8 @@ mod tests {
     #[test]
     fn reader_loop_does_not_stamp_output_for_replayed_scrollback() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            24,
-            80,
+            24.try_into().unwrap(),
+            80.try_into().unwrap(),
             0,
             TermSignals::default(),
         )));
@@ -2246,8 +2265,8 @@ mod tests {
     #[test]
     fn reader_loop_resizes_the_grid_where_the_stream_says() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            4,
-            20,
+            4.try_into().unwrap(),
+            20.try_into().unwrap(),
             0,
             TermSignals::default(),
         )));
@@ -2279,7 +2298,10 @@ mod tests {
         );
 
         let parser = parser.lock().unwrap();
-        assert_eq!(parser.screen().size(), (4, 10));
+        assert_eq!(
+            parser.screen().size(),
+            (4.try_into().unwrap(), 10.try_into().unwrap())
+        );
         let rows: Vec<String> = parser.screen().rows(0, 10).collect();
         assert_eq!(rows[..3], ["aaaaaaaaaa", "bbbbbbbbbb", "bbbbb"]);
         assert_eq!(size.current(), pack_size(4, 10));
@@ -2305,8 +2327,8 @@ mod tests {
         }
         let run = |script: Vec<PaneChunk>| {
             let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-                4,
-                20,
+                4.try_into().unwrap(),
+                20.try_into().unwrap(),
                 0,
                 TermSignals::default(),
             )));
@@ -2364,8 +2386,8 @@ mod tests {
     #[test]
     fn reader_loop_moves_the_output_seq_after_each_parse_seed_included() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            24,
-            80,
+            24.try_into().unwrap(),
+            80.try_into().unwrap(),
             0,
             TermSignals::default(),
         )));
@@ -2429,8 +2451,8 @@ mod tests {
         let (split_tx, split_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            24,
-            80,
+            24.try_into().unwrap(),
+            80.try_into().unwrap(),
             0,
             TermSignals::default(),
         )));
@@ -2478,8 +2500,8 @@ mod tests {
     #[test]
     fn reader_loop_carries_a_split_character_and_marks_the_end() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            4,
-            20,
+            4.try_into().unwrap(),
+            20.try_into().unwrap(),
             0,
             TermSignals::default(),
         )));
@@ -2516,8 +2538,8 @@ mod tests {
     #[test]
     fn reader_loop_stamps_output_for_live_bytes_after_the_seed() {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            24,
-            80,
+            24.try_into().unwrap(),
+            80.try_into().unwrap(),
             0,
             TermSignals::default(),
         )));
@@ -2560,8 +2582,8 @@ mod tests {
         use crate::session::{with_output_quiescence, SessionState};
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            24,
-            80,
+            24.try_into().unwrap(),
+            80.try_into().unwrap(),
             0,
             TermSignals::default(),
         )));
@@ -2601,8 +2623,8 @@ mod tests {
     fn title_capture_extracts_osc_title() {
         let title = Arc::new(Mutex::new(None));
         let mut parser = vt100::Parser::new_with_callbacks(
-            24,
-            80,
+            24.try_into().unwrap(),
+            80.try_into().unwrap(),
             0,
             TermSignals {
                 title: Arc::clone(&title),
@@ -2636,8 +2658,8 @@ mod tests {
         let attention_at = Arc::new(AtomicU64::new(0));
         let notification = Arc::new(Mutex::new(None));
         let mut parser = vt100::Parser::new_with_callbacks(
-            24,
-            80,
+            24.try_into().unwrap(),
+            80.try_into().unwrap(),
             0,
             TermSignals {
                 attention_at: Arc::clone(&attention_at),

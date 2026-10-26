@@ -40,6 +40,11 @@ the platform's multiplexer run locally (`tmux -L thurbox`; psmux on native
 Windows), and the same adapters run over SSH or WSL for a host (ADR-13).
 `vt100::Parser` interprets escape sequences,
 `tui_term::PseudoTerminal` renders the parsed screen into ratatui.
+The parser uses vt100 0.18's nonzero dimensions; backend sizes still pass
+through the existing two-cell floor. `vendor/tui-term` carries the published
+0.3.4 source with its vt100 dependency aligned to 0.18 and its parser size
+arguments converted. The library source, test fixtures, manifest and license are
+vendored. Remove the patch when a published tui-term supports vt100 0.18.
 
 **Why**: The trait-based design keeps the multiplexer behind a clean
 boundary so no consumer touches tmux directly (ADR-11). tmux provides truly persistent sessions

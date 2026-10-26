@@ -1,0 +1,38 @@
+---
+source: src/widget.rs
+expression: view
+---
+Buffer {
+    area: Rect { x: 0, y: 0, width: 80, height: 24 },
+    content: [
+        "        *       *       *       *       *       *       *       *       *      *",
+        "      *     *     *     *     *     *     *     *     *     *     *     *     * ",
+        "                                                                                ",
+        "Test of TAB setting/resetting. These two lines                                  ",
+        "should look the same. Push <RETURN>                                             ",
+        "                                   █                                            ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+        "                                                                                ",
+    ],
+    styles: [
+        x: 0, y: 0, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+        x: 35, y: 5, fg: Gray, bg: Reset, underline: Reset, modifier: NONE,
+        x: 36, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+    ]
+}

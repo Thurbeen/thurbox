@@ -7478,7 +7478,7 @@ done
 
     #[test]
     fn mouse_seed_lands_a_parser_in_the_reported_mode() {
-        let mut parser = vt100::Parser::new(2, 2, 0);
+        let mut parser = vt100::Parser::new(2.try_into().unwrap(), 2.try_into().unwrap(), 0);
         parser.process(&mouse_seed_bytes("0,1,0,1,0,1"));
         let screen = parser.screen();
         assert_eq!(
@@ -7756,7 +7756,7 @@ ERROR: something ps printed
     fn seeded_parser_exposes_history_as_scrollback() {
         // Feed more lines than the screen height: the overflow must land in
         // the parser's scrollback, scrollable from the UI.
-        let mut parser = vt100::Parser::new(5, 80, 100);
+        let mut parser = vt100::Parser::new(5.try_into().unwrap(), 80.try_into().unwrap(), 100);
         let raw: Vec<u8> = (1..=10)
             .map(|i| format!("line{i}\n"))
             .collect::<String>()

@@ -372,6 +372,11 @@ pub struct History {
     pub size: (u16, u16),
 }
 
+fn screen_size(screen: &vt100::Screen) -> (u16, u16) {
+    let (rows, cols) = screen.size();
+    (rows.get(), cols.get())
+}
+
 impl History {
     /// Read a screen's scrollback and visible rows in one go.
     ///
@@ -379,7 +384,7 @@ impl History {
     /// screen; the worker reads through [`Self::read_locked`] instead, which
     /// lets go of the parser between chunks. Both are the same read.
     pub fn read(screen: &mut vt100::Screen) -> Self {
-        let mut reading = Reading::fresh(screen.size());
+        let mut reading = Reading::fresh(screen_size(screen));
         while !reading.step(screen, usize::MAX) {}
         reading.finish()
     }
@@ -406,8 +411,8 @@ impl History {
             let screen = guard.screen_mut();
             let held = Instant::now();
             let reading = reading.get_or_insert_with(|| match cached {
-                Some(cached) if cached.size == screen.size() => Reading::resume(cached),
-                _ => Reading::fresh(screen.size()),
+                Some(cached) if cached.size == screen_size(screen) => Reading::resume(cached),
+                _ => Reading::fresh(screen_size(screen)),
             });
             let done = reading.step(screen, CHUNK_ROWS);
             drop(guard);
@@ -570,15 +575,15 @@ impl Reading {
     /// vt100 exposes scrollback only through the viewport, so this pages the
     /// offset to the rows it wants and puts it back where it was before
     /// returning — under the caller's lock, so no reader or paint sees it moved.
-    /// Both `set_scrollback` and `scrollback` are O(1) in vt100 0.16.
+    /// Setting the offset also grows visible history rows to the current width.
     ///
     /// On the alternate screen (a full-screen program) there is no scrollback
     /// to read: vt100 keeps none for it, and this reads the screen alone.
     fn step(&mut self, screen: &mut vt100::Screen, budget: usize) -> bool {
         self.holds += 1;
         let offset = screen.scrollback();
-        if screen.size() != self.size {
-            self.restart(screen.size());
+        if screen_size(screen) != self.size {
+            self.restart(screen_size(screen));
         }
         screen.set_scrollback(usize::MAX);
         let scrollback = screen.scrollback();
@@ -703,7 +708,9 @@ fn row_text(screen: &mut vt100::Screen, scrollback: usize, row: usize) -> Option
     let k = scrollback.saturating_sub(row);
     screen.set_scrollback(k);
     let base = scrollback - k;
-    screen.rows(0, screen.size().1).nth(row.checked_sub(base)?)
+    screen
+        .rows(0, screen_size(screen).1)
+        .nth(row.checked_sub(base)?)
 }
 
 /// An anchor for a read that stops at `end`: the rows just above it, reaching
@@ -882,8 +889,8 @@ fn hits_in(query: &Query, session: &str, shell: bool, history: &History) -> Vec<
         session: session.into(),
         shell,
         parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-            1,
-            1,
+            1.try_into().unwrap(),
+            1.try_into().unwrap(),
             0,
             crate::backend::TermSignals::default(),
         ))),
@@ -1195,7 +1202,8 @@ fn history_of(
         // printed since.
         let unchanged = *stamp == source.stamp
             && (source.restore.is_some()
-                || source.parser.lock().ok().map(|p| p.screen().size()) == Some(history.size));
+                || source.parser.lock().ok().map(|p| screen_size(p.screen()))
+                    == Some(history.size));
         if unchanged {
             return Some(Arc::clone(history));
         }
@@ -1448,7 +1456,8 @@ mod tests {
     }
 
     fn screen(rows: u16, cols: u16, input: &str) -> vt100::Parser {
-        let mut parser = vt100::Parser::new(rows, cols, 1000);
+        let mut parser =
+            vt100::Parser::new(rows.try_into().unwrap(), cols.try_into().unwrap(), 1000);
         parser.process(input.as_bytes());
         parser
     }
@@ -1544,8 +1553,8 @@ mod tests {
             session: session.into(),
             shell: false,
             parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-                10,
-                40,
+                10.try_into().unwrap(),
+                40.try_into().unwrap(),
                 1000,
                 crate::backend::TermSignals::default(),
             ))),
@@ -1665,8 +1674,8 @@ mod tests {
                 return None;
             }
             let mut parser = vt100::Parser::new_with_callbacks(
-                10,
-                40,
+                10.try_into().unwrap(),
+                40.try_into().unwrap(),
                 1000,
                 crate::backend::TermSignals::default(),
             );
@@ -1696,8 +1705,8 @@ mod tests {
             session: "s".into(),
             shell: false,
             parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-                rows,
-                cols,
+                rows.try_into().unwrap(),
+                cols.try_into().unwrap(),
                 scrollback,
                 crate::backend::TermSignals::default(),
             ))),
@@ -1739,7 +1748,7 @@ mod tests {
     /// Read in chunks, letting the terminal print `between` lines after every
     /// chunk — what a busy agent does while the lock is let go.
     fn read_while_printing(source: &Source, between: usize, cols: u16) -> History {
-        let size = source.parser.lock().unwrap().screen().size();
+        let size = screen_size(source.parser.lock().unwrap().screen());
         let mut reading = Reading::fresh(size);
         let mut printed = 1_000_000;
         loop {
@@ -1777,8 +1786,8 @@ mod tests {
             session: "s".into(),
             shell: false,
             parser: Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
-                20,
-                60,
+                20.try_into().unwrap(),
+                60.try_into().unwrap(),
                 1_000,
                 crate::backend::TermSignals::default(),
             ))),
@@ -1793,7 +1802,7 @@ mod tests {
             }
         }
         source.parser.lock().unwrap().process(text.as_bytes());
-        let size = source.parser.lock().unwrap().screen().size();
+        let size = screen_size(source.parser.lock().unwrap().screen());
         let mut reading = Reading::fresh(size);
         let mut printed = 0;
         loop {

@@ -2020,7 +2020,7 @@ fn a_reader_in_step_takes_a_plain_snapshot() {
 /// A two-cell parser fed a hidden pane's report.
 fn after_report(before: &[u8], value: &str) -> vt100::Parser {
     let (_, bytes) = hidden_state(value).expect("a report");
-    let mut parser = vt100::Parser::new(2, 2, 0);
+    let mut parser = vt100::Parser::new(2.try_into().unwrap(), 2.try_into().unwrap(), 0);
     parser.process(before);
     parser.process(&bytes);
     parser

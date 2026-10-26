@@ -81,6 +81,7 @@ fn find_url_runs(row: &str) -> Vec<(usize, &str)> {
 /// cell columns via display width rather than a per-cell placeholder.
 pub fn extract_screen_rows(screen: &vt100::Screen) -> Vec<String> {
     let (rows, cols) = screen.size();
+    let (rows, cols) = (rows.get(), cols.get());
     (0..rows)
         .map(|row| {
             let mut line = String::new();
@@ -621,6 +622,7 @@ pub fn paint_hyperlinks(paints: &[HyperlinkPaint]) -> std::io::Result<()> {
 /// rect, which happens for a frame after a resize while the pane catches up.
 pub(super) fn clear_uncovered(frame: &mut Frame, area: Rect, screen: &vt100::Screen) {
     let (rows, cols) = screen.size();
+    let (rows, cols) = (rows.get(), cols.get());
     if rows < area.height || cols < area.width {
         frame.render_widget(Clear, area);
     }
@@ -815,7 +817,7 @@ mod tests {
     fn wide_chars_through_parser_match_cell_columns() {
         // End-to-end over the real screen path: extract_screen_rows must agree
         // with the cell columns that a mouse click reports.
-        let mut parser = vt100::Parser::new(1, 40, 0);
+        let mut parser = vt100::Parser::new(1.try_into().unwrap(), 40.try_into().unwrap(), 0);
         parser.process("漢字 https://example.com".as_bytes());
         let rows = extract_screen_rows(parser.screen());
         let links = detect_urls(&rows);
@@ -827,7 +829,7 @@ mod tests {
 
     #[test]
     fn extract_screen_rows_from_parser() {
-        let mut parser = vt100::Parser::new(2, 10, 0);
+        let mut parser = vt100::Parser::new(2.try_into().unwrap(), 10.try_into().unwrap(), 0);
         parser.process(b"hello");
         let rows = extract_screen_rows(parser.screen());
         assert_eq!(rows.len(), 2);
@@ -840,7 +842,7 @@ mod tests {
     fn survives_clear(rect: (u16, u16), grid: (u16, u16)) -> bool {
         let (cols, rows) = rect;
         let mut terminal = Terminal::new(TestBackend::new(cols, rows)).expect("terminal");
-        let parser = vt100::Parser::new(grid.1, grid.0, 0);
+        let parser = vt100::Parser::new(grid.1.try_into().unwrap(), grid.0.try_into().unwrap(), 0);
         terminal
             .draw(|frame| {
                 frame.buffer_mut()[(0, 0)].set_symbol("x");

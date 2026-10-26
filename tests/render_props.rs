@@ -401,7 +401,7 @@ fn a_selection_over_any_vt100_stream_extracts() {
         a_row in 0usize..60, a_col in 0usize..160,
         c_row in 0usize..60, c_col in 0usize..160,
     )| {
-        let mut parser = vt100::Parser::new(rows, cols, 50);
+        let mut parser = vt100::Parser::new(rows.try_into().unwrap(), cols.try_into().unwrap(), 50);
         parser.process(&bytes);
         let pane = PaneBounds::from_rect(Rect { x: 1, y: 1, width: cols, height: rows });
         let mut selection = Selection::new(TermPos { row: a_row, col: a_col }, pane);
@@ -535,4 +535,33 @@ fn no_key_sequence_makes_the_palette_throw_or_stop_drawing() {
                 .expect("draw");
         }
     });
+}
+
+#[test]
+fn vt100_output_reaches_the_terminal_widget_with_styles_and_scrollback() {
+    use ratatui::style::{Color, Modifier};
+    use tui_term::widget::{Cursor, PseudoTerminal};
+
+    let mut parser = vt100::Parser::new(3.try_into().unwrap(), 12.try_into().unwrap(), 10);
+    parser.process(b"old\r\nline\r\n\x1b[1;31mred\x1b[0m\r\nlast");
+    parser.screen_mut().set_scrollback(1);
+    let mut terminal = Terminal::new(TestBackend::new(12, 3)).unwrap();
+    terminal
+        .draw(|frame| {
+            frame.render_widget(
+                PseudoTerminal::new(parser.screen()).cursor(Cursor::default().visibility(false)),
+                frame.area(),
+            );
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(0, 0)].symbol(), "o");
+    assert_eq!(buffer[(0, 1)].symbol(), "l");
+    assert_eq!(buffer[(0, 2)].symbol(), "r");
+    assert_eq!(buffer[(0, 2)].fg, Color::Indexed(1));
+    assert!(buffer[(0, 2)].modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        tui_term::widget::Screen::cursor_position(parser.screen()),
+        (3, 4)
+    );
 }
