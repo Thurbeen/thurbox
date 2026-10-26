@@ -54,6 +54,10 @@ fn failed_launch_rolls_back_its_worktree_and_allows_the_same_branch_retry() {
         1,
         "failed create leaked its checkout"
     );
+    assert!(
+        !has_branch(repo.path(), "fix/rollback"),
+        "failed create leaked the branch it cut"
+    );
     assert!(db.list_active_sessions().unwrap().is_empty());
     std::fs::write(
         config.join("agents.toml"),
@@ -61,7 +65,11 @@ fn failed_launch_rolls_back_its_worktree_and_allows_the_same_branch_retry() {
     )
     .unwrap();
     let retry = thurbox::session_ops::spawn_session_headless(&db, &backends, request()).unwrap();
-    thurbox::session_ops::delete_session_headless(&db, &backends, retry.session_id, true).unwrap();
+    let report =
+        thurbox::session_ops::delete_session_headless(&db, &backends, retry.session_id, true)
+            .unwrap();
+    assert_eq!(report.deleted_branches, vec!["fix/rollback".to_string()]);
+    assert!(!has_branch(repo.path(), "fix/rollback"));
 }
 
 #[test]
@@ -715,10 +723,35 @@ fn repo() -> tempfile::TempDir {
 /// unused helper as dead code and fails the build.
 #[cfg(unix)]
 fn registered_worktrees(repo: &Path) -> usize {
+    let out = scrubbed_git(repo, &["worktree", "list", "--porcelain"])
+        .output()
+        .expect("git");
+    String::from_utf8_lossy(&out.stdout)
+        .matches("worktree ")
+        .count()
+}
+
+#[cfg(unix)]
+fn has_branch(repo: &Path, branch: &str) -> bool {
+    scrubbed_git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .output()
+    .expect("git")
+    .status
+    .success()
+}
+
+#[cfg(unix)]
+fn scrubbed_git(repo: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
-    command
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(repo);
+    command.args(args).current_dir(repo);
     for var in [
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -731,10 +764,7 @@ fn registered_worktrees(repo: &Path) -> usize {
     ] {
         command.env_remove(var);
     }
-    let out = command.output().expect("git");
-    String::from_utf8_lossy(&out.stdout)
-        .matches("worktree ")
-        .count()
+    command
 }
 
 #[test]

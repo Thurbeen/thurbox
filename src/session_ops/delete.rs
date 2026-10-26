@@ -16,6 +16,13 @@ pub struct ForceDeleteReport {
     /// the caller can say what it deliberately did *not* delete — silence here
     /// would read as "nothing to clean up".
     pub kept_worktrees: Vec<String>,
+    /// Branches thurbox created for a worktree it just removed, and deleted
+    /// with it.
+    pub deleted_branches: Vec<String>,
+    /// Branch deletions that failed. Unlike `worktree_errors` these owe no
+    /// teardown: the checkout is gone, and a leftover branch costs a ref, not a
+    /// directory.
+    pub branch_errors: Vec<String>,
     pub disabled_automations: usize,
     pub disabled_automation_ids: Vec<i64>,
     pub removed_automation_ids: Vec<i64>,
@@ -236,6 +243,8 @@ pub fn delete_if_generation(
         report.removed_worktrees = string_list(&answer, "removed_worktrees");
         report.kept_worktrees = string_list(&answer, "kept_worktrees");
         report.worktree_errors = string_list(&answer, "worktree_errors");
+        report.deleted_branches = string_list(&answer, "deleted_branches");
+        report.branch_errors = string_list(&answer, "branch_errors");
         // Reported, not adopted: a teardown the *host* could not finish is
         // owed on the host's own row, and its sweep is the one that can
         // finish it. Taking the mark here would send this machine after
@@ -1492,10 +1501,10 @@ fn reap_pane_process(pid: u32) {
 }
 
 /// Best-effort worktree removal on `host` (local when `None`), recording
-/// success/failure into `report`. Removes the worktree *directory* only — the
-/// git branch is deliberately left behind (local and remote alike), matching
-/// force-delete's contract. A worktree thurbox did not create is skipped
-/// outright and recorded in `report.kept_worktrees`.
+/// success/failure into `report`. Once the worktree is gone its branch goes
+/// too, if thurbox created that branch ([`delete_branch_into`]). A worktree
+/// thurbox did not create is skipped outright and recorded in
+/// `report.kept_worktrees`.
 fn remove_worktree_into(
     db: &Database,
     session: &crate::sync::SharedSession,
@@ -1519,21 +1528,111 @@ fn remove_worktree_into(
         return;
     }
     if let Ok(registered) = crate::git::list_worktrees_on(host, &wt.repo_path) {
+        // Already removed, or its directory vanished (git lists that as
+        // prunable, which `list_worktrees_on` drops) — a teardown that died
+        // between the two steps still owes the branch.
         if !registered.iter().any(|entry| {
             super::lock::worktree_key(&session.backend_type, &entry.path)
                 == super::lock::worktree_key(&session.backend_type, &wt.worktree_path)
         }) {
+            delete_branch_into(db, session, host, wt, report);
             return;
         }
     }
     match crate::git::remove_worktree_on(host, &wt.repo_path, &wt.worktree_path) {
-        Ok(()) => report
-            .removed_worktrees
-            .push(wt.worktree_path.display().to_string()),
+        Ok(()) => {
+            report
+                .removed_worktrees
+                .push(wt.worktree_path.display().to_string());
+            delete_branch_into(db, session, host, wt, report);
+        }
         Err(e) => report
             .worktree_errors
             .push(format!("{}: {e}", wt.worktree_path.display())),
     }
+}
+
+/// Delete the branch of a thurbox-created worktree that is no longer checked
+/// out, if thurbox created the branch as well — attaching a worktree to a
+/// branch the user already had does not make it ours
+/// ([`crate::git::delete_created_branch_on`]). Only ever the local branch on
+/// the worktree's own host; a pushed copy is the remote's business.
+fn delete_branch_into(
+    db: &Database,
+    session: &crate::sync::SharedSession,
+    host: Option<&crate::session::HostDef>,
+    wt: &crate::sync::SharedWorktree,
+    report: &mut ForceDeleteReport,
+) {
+    let outcome = match branch_wanted_elsewhere(db, session, host, wt) {
+        Ok(true) => return,
+        Ok(false) => crate::git::delete_created_branch_on(host, &wt.repo_path, &wt.branch)
+            .map_err(|e| format!("{e:#}")),
+        Err(e) => Err(e),
+    };
+    match outcome {
+        Ok(true) => report.deleted_branches.push(wt.branch.clone()),
+        Ok(false) => {}
+        // Logged as well as reported: the reap and the owed-teardown retry
+        // run with no caller to read the report.
+        Err(e) => {
+            tracing::warn!("kept branch '{}' of '{}': {e}", wt.branch, session.name);
+            report.branch_errors.push(format!("{}: {e}", wt.branch));
+        }
+    }
+}
+
+/// Whether a session other than `session` still names `wt`'s branch — a live
+/// one, or one soft-deleted and so still restorable. A fork inherits its
+/// parent's checkout, so a soft-deleted fork's undo re-attaches the very branch
+/// its parent's teardown is about to delete. A force-deleted row asks for
+/// nothing: its own teardown removed (or owes) the checkout already.
+///
+/// Repositories are compared by identity on `host`, not by the path a row
+/// recorded: one session may name the repository through a symlink, or through
+/// a linked worktree, that another names directly. A repository git cannot
+/// identify counts as the same one, since keeping a branch only leaks a ref.
+pub(super) fn branch_wanted_elsewhere(
+    db: &Database,
+    session: &crate::sync::SharedSession,
+    host: Option<&crate::session::HostDef>,
+    wt: &crate::sync::SharedWorktree,
+) -> Result<bool, String> {
+    let ours = std::cell::OnceCell::new();
+    let same_repo = |other: &std::path::Path| {
+        other == wt.repo_path || {
+            let ours = ours.get_or_init(|| crate::git::repository_identity_on(host, &wt.repo_path));
+            match (ours, crate::git::repository_identity_on(host, other)) {
+                (Some(a), Some(b)) => *a == b,
+                _ => true,
+            }
+        }
+    };
+    let names_branch =
+        |id: SessionId, backend_type: &str, worktrees: &[crate::sync::SharedWorktree]| {
+            id != session.id
+                && super::same_machine(backend_type, &session.backend_type)
+                && worktrees
+                    .iter()
+                    .any(|other| other.branch == wt.branch && same_repo(&other.repo_path))
+        };
+    let active = db
+        .list_active_sessions()
+        .map_err(|e| format!("cannot check branch ownership: {e}"))?;
+    if active
+        .iter()
+        .any(|row| names_branch(row.id, &row.backend_type, &row.worktrees))
+    {
+        return Ok(true);
+    }
+    let deleted = db
+        .list_deleted_sessions()
+        .map_err(|e| format!("cannot check branch ownership: {e}"))?;
+    Ok(deleted.iter().any(|row| {
+        !row.force_deleted
+            && !row.purge_owed
+            && names_branch(row.id, &row.backend_type, &row.worktrees)
+    }))
 }
 
 pub(crate) fn shared_deleted(row: &DeletedSessionInfo) -> crate::sync::SharedSession {
@@ -2377,6 +2476,196 @@ mod tests {
 
         assert!(report.kept_worktrees.is_empty());
         assert_eq!(report.worktree_errors.len(), 1, "removal was attempted");
+    }
+
+    /// A one-commit repository under `dir`, for the teardown tests that need
+    /// git to actually hold the branch they ask about.
+    fn committed_repo(dir: &std::path::Path) -> std::path::PathBuf {
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            &["init", "-q", "--initial-branch=main"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "T"],
+            &["config", "commit.gpgsign", "false"],
+            &["commit", "-q", "--allow-empty", "-m", "seed"],
+        ] {
+            let ok = crate::git::git_program()
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        }
+        repo
+    }
+
+    fn session_with_worktree(wt: crate::sync::SharedWorktree) -> SharedSession {
+        SharedSession {
+            id: SessionId::default(),
+            name: "branchy".into(),
+            agent: "dev".into(),
+            backend_id: "%6".into(),
+            backend_type: "tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: vec![wt],
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        }
+    }
+
+    fn created_worktree(repo: &std::path::Path, branch: &str) -> crate::sync::SharedWorktree {
+        crate::sync::SharedWorktree {
+            repo_path: repo.to_path_buf(),
+            worktree_path: crate::git::create_worktree(repo, branch, "main").unwrap(),
+            branch: branch.into(),
+            created_by_thurbox: true,
+        }
+    }
+
+    fn teardown(session: &SharedSession) -> ForceDeleteReport {
+        let db = Database::open_in_memory().unwrap();
+        let mut report = ForceDeleteReport::default();
+        teardown_runtime_resources(
+            &db,
+            &crate::backend::registry::inert(),
+            session,
+            &mut report,
+        );
+        report
+    }
+
+    #[test]
+    fn teardown_deletes_the_branch_thurbox_created_with_its_worktree() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let repo = committed_repo(temp.path());
+        let wt = created_worktree(&repo, "feat/done");
+
+        let report = teardown(&session_with_worktree(wt.clone()));
+
+        assert_eq!(report.removed_worktrees.len(), 1);
+        assert_eq!(report.deleted_branches, vec!["feat/done".to_string()]);
+        assert!(report.branch_errors.is_empty());
+        assert!(!wt.worktree_path.exists());
+        assert!(!crate::git::branch_exists(&repo, "refs/heads/feat/done"));
+    }
+
+    #[test]
+    fn teardown_deletes_the_branch_when_its_worktree_directory_is_already_gone() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let repo = committed_repo(temp.path());
+        let wt = created_worktree(&repo, "feat/vanished");
+        // Still registered with git, directory gone: what a teardown interrupted
+        // by hand (or by a crash) leaves.
+        std::fs::remove_dir_all(&wt.worktree_path).unwrap();
+
+        let report = teardown(&session_with_worktree(wt));
+
+        assert!(report.worktree_errors.is_empty());
+        assert_eq!(report.deleted_branches, vec!["feat/vanished".to_string()]);
+        assert!(!crate::git::branch_exists(
+            &repo,
+            "refs/heads/feat/vanished"
+        ));
+    }
+
+    #[test]
+    fn teardown_keeps_a_branch_thurbox_did_not_create() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let repo = committed_repo(temp.path());
+        for branch in ["users-own", "opened"] {
+            let ok = crate::git::git_program()
+                .args(["branch", branch])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        }
+
+        // Attached by `--worktree-branch` to a branch the user already had: the
+        // directory is thurbox's, the branch is not.
+        let attached = created_worktree(&repo, "users-own");
+        let report = teardown(&session_with_worktree(attached.clone()));
+        assert_eq!(report.removed_worktrees.len(), 1);
+        assert!(report.deleted_branches.is_empty());
+        assert!(!attached.worktree_path.exists());
+        assert!(crate::git::branch_exists(&repo, "refs/heads/users-own"));
+
+        // An opened worktree: neither the directory nor the branch is touched.
+        let opened = crate::git::add_existing_worktree(&repo, "opened").unwrap();
+        let report = teardown(&session_with_worktree(crate::sync::SharedWorktree {
+            repo_path: repo.clone(),
+            worktree_path: opened.clone(),
+            branch: "opened".into(),
+            created_by_thurbox: false,
+        }));
+        assert!(report.removed_worktrees.is_empty() && report.deleted_branches.is_empty());
+        assert!(opened.exists());
+        assert!(crate::git::branch_exists(&repo, "refs/heads/opened"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn teardown_keeps_a_branch_a_saved_session_names_through_a_symlinked_repo() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let repo = committed_repo(temp.path());
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&repo, &alias).unwrap();
+        let wt = created_worktree(&repo, "feat/shared");
+        let db = Database::open_in_memory().unwrap();
+        // A fork that recorded the repository by another name, soft-deleted
+        // and so still owed its undo.
+        let mut saved = session_with_worktree(crate::sync::SharedWorktree {
+            repo_path: alias,
+            ..wt.clone()
+        });
+        saved.backend_type = "local-tmux".into();
+        db.upsert_session(&saved).unwrap();
+        delete_session_headless(&db, &crate::backend::registry::inert(), saved.id, false).unwrap();
+
+        let mut report = ForceDeleteReport::default();
+        teardown_runtime_resources(
+            &db,
+            &crate::backend::registry::inert(),
+            &session_with_worktree(wt),
+            &mut report,
+        );
+
+        assert_eq!(report.removed_worktrees.len(), 1);
+        assert!(report.deleted_branches.is_empty(), "{report:?}");
+        assert!(crate::git::branch_exists(&repo, "refs/heads/feat/shared"));
+    }
+
+    #[test]
+    fn soft_delete_keeps_the_worktree_and_its_branch_for_undo() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let repo = committed_repo(temp.path());
+        let wt = created_worktree(&repo, "feat/undo");
+        let db = Database::open_in_memory().unwrap();
+        let mut session = session_with_worktree(wt.clone());
+        session.backend_type = "local-tmux".into();
+        db.upsert_session(&session).unwrap();
+
+        let report =
+            delete_session_headless(&db, &crate::backend::registry::inert(), session.id, false)
+                .unwrap();
+
+        assert!(report.deleted_branches.is_empty());
+        assert!(wt.worktree_path.exists());
+        assert!(crate::git::branch_exists(&repo, "refs/heads/feat/undo"));
     }
 
     #[test]

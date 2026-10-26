@@ -712,11 +712,22 @@ left on disk and listed in the report's `kept_worktrees`: `git worktree remove
 --force` would take the uncommitted work in it too, which is thurbox's to discard
 only for a directory it made.
 
+Removing a worktree thurbox made also deletes its local branch
+(`git::delete_created_branch_on`: prune, then `git branch -D`, on the worktree's
+host), reported as `deleted_branches` / `branch_errors`. Only a branch thurbox cut
+with `-b` qualifies, which `git::create_worktree_on` records as
+`branch.<name>.thurboxCreated` in the repository's config; a branch it attached to
+keeps no mark and is never deleted, and neither is one another unpurged,
+not-force-deleted session still names (a soft-deleted fork shares its parent's
+branch). A soft delete removes nothing, so the branch waits for the purge. Creation
+rollback deletes the branch it cut; a restore's rollback never does.
+
 A `--force` delete stamps `sessions.force_deleted` (schema v37): the row still
 appears in the restore list **tagged `force-deleted`** and is restorable
-**best-effort** — force-delete removes the worktree *directory* but not the git
-branch, so restore reattaches each surviving branch's committed work
-(`App::recreate_worktrees`); only uncommitted/untracked changes are gone. Because
+**best-effort** — force-delete removes the worktree *directory* and the branch
+thurbox cut for it, so restore reattaches only branches that survived (one the
+user already had, or one created before the `thurboxCreated` mark existed;
+`recreate_worktrees` skips the rest); uncommitted/untracked changes are gone. Because
 that recovery is lossy, the headless `session restore` **refuses a force-deleted
 row unless `--best-effort`** (its JSON then carries `best_effort: true`) — but
 only when the teardown could actually have lost something. A session whose

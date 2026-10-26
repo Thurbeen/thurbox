@@ -28,6 +28,9 @@ pub struct Purged {
     pub deleted_at: u64,
     /// Legacy report field, empty after cleanup. Opened user worktrees are retained.
     pub left_on_disk: Vec<PathBuf>,
+    /// Branches the teardown could not delete. Best-effort, so the row is
+    /// still purged, but the leftover branch is said rather than silent.
+    pub branch_errors: Vec<String>,
 }
 
 /// A row a purge was asked for and kept, with why.
@@ -225,6 +228,7 @@ fn purge_selected_limited(
                         backend_type: row.backend_type,
                         deleted_at: row.deleted_at,
                         left_on_disk: Vec::new(),
+                        branch_errors: Vec::new(),
                     });
                 }
                 Ok(_) => report
@@ -294,6 +298,7 @@ fn purge_selected_limited(
             report.kept.push(kept("its windows are still present"));
             continue;
         }
+        let mut branch_errors = Vec::new();
         if !dry_run {
             if !row.force_deleted {
                 match super::delete::reap_selected_soft_delete(db, backends, &row) {
@@ -340,9 +345,11 @@ fn purge_selected_limited(
             }
             db.complete_session_teardown(row.id)
                 .map_err(|e| e.to_string())?;
+            branch_errors = teardown.branch_errors;
         }
         report.purged.push(Purged {
             left_on_disk: Vec::new(),
+            branch_errors,
             id: row.id,
             name: row.name,
             backend_type: row.backend_type,

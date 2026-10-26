@@ -1727,6 +1727,11 @@ fn run_purge_if_generation(
             human.push_str(&format!("\n  {} ({})", path.display(), purged.backend_type));
         }
     }
+    for purged in &report.purged {
+        for error in &purged.branch_errors {
+            human.push_str(&format!("\n  branch kept for '{}': {error}", purged.name));
+        }
+    }
     let json = json!({
         "dry_run": dry_run,
         "purged": report.purged.iter().map(|p| json!({
@@ -1735,6 +1740,7 @@ fn run_purge_if_generation(
             "backend_type": p.backend_type,
             "deleted_at": p.deleted_at,
             "left_on_disk": p.left_on_disk.iter().map(|w| w.display().to_string()).collect::<Vec<_>>(),
+            "branch_errors": p.branch_errors,
         })).collect::<Vec<_>>(),
         "kept": report.kept.iter().map(|k| json!({
             "id": k.id.to_string(),
@@ -2798,6 +2804,8 @@ fn delete_session_if_generation(
             "removed_worktrees": report.removed_worktrees,
             "kept_worktrees": report.kept_worktrees,
             "worktree_errors": report.worktree_errors,
+            "deleted_branches": report.deleted_branches,
+            "branch_errors": report.branch_errors,
             "disabled_automations": report.disabled_automations,
             "disabled_automation_ids": report.disabled_automation_ids,
             "removed_automation_ids": report.removed_automation_ids,
@@ -2864,6 +2872,12 @@ fn force_delete_detail(
     }
     if !report.worktree_errors.is_empty() {
         detail.push(("worktree errors", report.worktree_errors.join("; ")));
+    }
+    if !report.deleted_branches.is_empty() {
+        detail.push(("deleted branches", report.deleted_branches.join("; ")));
+    }
+    if !report.branch_errors.is_empty() {
+        detail.push(("branch errors", report.branch_errors.join("; ")));
     }
     if let Some(err) = &report.remote_teardown_error {
         detail.push(("remote teardown error", err.clone()));

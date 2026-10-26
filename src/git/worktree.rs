@@ -50,7 +50,9 @@ pub(crate) fn worktree_path_for(
 
 /// Create a git worktree and return its directory, preserving an existing branch.
 ///
-/// A new branch starts from `base_branch`; retries attach the branch rollback left.
+/// A new branch starts from `base_branch` and is marked as thurbox's
+/// (`branch.<name>.thurboxCreated`); an existing one, including the branch a rolled-back
+/// attempt left, is attached and keeps whatever mark it had.
 /// Path format: `~/.local/share/thurbox/worktrees/<repo-hash>/<sanitized-branch>`
 pub fn create_worktree(repo_path: &Path, new_branch: &str, base_branch: &str) -> Result<PathBuf> {
     create_worktree_on(None, repo_path, new_branch, base_branch)
@@ -82,8 +84,104 @@ pub fn create_worktree_on(
         let stderr = reportable_stderr(&output.stderr);
         anyhow::bail!("git worktree add failed: {stderr}");
     }
+    if !existing {
+        mark_branch_created(host, repo_path, new_branch);
+    }
 
     Ok(wt_path)
+}
+
+/// The per-branch git config key (`branch.<name>.thurboxCreated`) that records
+/// thurbox made a branch, rather than attaching a worktree to one that already
+/// existed.
+///
+/// Ownership lives in the repository, not the database, because only
+/// [`create_worktree_on`] knows which of the two it did, and a session's
+/// `created_by_thurbox` is true either way: the *directory* is thurbox's even
+/// when the branch is the user's. `git branch -D` drops the branch's config
+/// section, so the mark dies with the branch it vouches for.
+fn created_marker_key(branch: &str) -> String {
+    format!("branch.{branch}.thurboxCreated")
+}
+
+/// Best-effort: a branch left unmarked is merely kept at teardown, which is
+/// what every branch thurbox made before the mark existed already gets.
+fn mark_branch_created(host: Option<&HostDef>, repo_path: &Path, branch: &str) {
+    let marked = git_command(
+        host,
+        repo_path,
+        &["config", &created_marker_key(branch), "true"],
+    )
+    .output()
+    .is_ok_and(|o| o.status.success());
+    if !marked {
+        warn!("could not mark branch '{branch}' as thurbox-created; teardown will keep it");
+    }
+}
+
+/// The repository `path` belongs to, as git names it on `host`: its common
+/// directory, absolute and with symlinks resolved, so a repository reached
+/// through a symlink, or through one of its linked worktrees, is still the same
+/// repository. `None` when git cannot say.
+pub fn repository_identity_on(host: Option<&HostDef>, path: &Path) -> Option<PathBuf> {
+    run_git_capture_on(
+        host,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        path,
+    )
+    .map(|dir| PathBuf::from(dir.trim()))
+    .filter(|dir| !dir.as_os_str().is_empty())
+}
+
+/// Whether thurbox created `branch` (`branch.<name>.thurboxCreated`).
+pub fn branch_created_by_thurbox_on(
+    host: Option<&HostDef>,
+    repo_path: &Path,
+    branch: &str,
+) -> bool {
+    run_git_capture_on(
+        host,
+        &["config", "--bool", "--get", &created_marker_key(branch)],
+        repo_path,
+    )
+    .is_some_and(|value| value.trim() == "true")
+}
+
+/// Force-delete `branch` if thurbox created it, returning whether it did.
+///
+/// For a branch whose worktree has just been removed: `-D` rather than `-d`
+/// because a squash-merged branch is never an ancestor of its base, and its
+/// unpushed commits go the way `worktree remove --force` already sent its
+/// uncommitted ones. A branch thurbox merely attached to, or one already gone,
+/// is left alone and is not an error. The prune comes first because git refuses
+/// to delete a branch a registered worktree still has checked out, even one
+/// whose directory has vanished.
+pub fn delete_created_branch_on(
+    host: Option<&HostDef>,
+    repo_path: &Path,
+    branch: &str,
+) -> Result<bool> {
+    if branch.is_empty()
+        || !branch_exists_on(host, repo_path, &format!("refs/heads/{branch}"))
+        || !branch_created_by_thurbox_on(host, repo_path, branch)
+    {
+        return Ok(false);
+    }
+    let output = git_command(host, repo_path, &["worktree", "prune"])
+        .output()
+        .context("failed to run git worktree prune")?;
+    if !output.status.success() {
+        let stderr = reportable_stderr(&output.stderr);
+        anyhow::bail!("git worktree prune failed: {stderr}");
+    }
+    let output = git_command(host, repo_path, &["branch", "-D", branch])
+        .output()
+        .context("failed to run git branch -D")?;
+    if !output.status.success() {
+        let stderr = reportable_stderr(&output.stderr);
+        anyhow::bail!("git branch -D failed: {stderr}");
+    }
+    Ok(true)
 }
 
 /// Idempotently provision a worktree on `branch`, returning its directory.

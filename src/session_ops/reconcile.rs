@@ -173,6 +173,21 @@ fn rollback(
             crate::git::remove_worktree_on(host.as_ref(), &wt.repo_path, &wt.worktree_path)
                 .map_err(|e| e.to_string())?;
         }
+        // Best-effort, as at delete: a branch left behind is the one a retry
+        // would have attached to anyway, so it is no reason to keep the intent.
+        // Never for a restore (`expected_deleted_at`): its worktrees re-attach
+        // the soft-deleted session's own branch, whose commits are what the
+        // restore was for.
+        if wt.created_by_thurbox
+            && intent.expected_deleted_at.is_none()
+            && super::delete::branch_wanted_elsewhere(db, row, host.as_ref(), wt) == Ok(false)
+        {
+            if let Err(e) =
+                crate::git::delete_created_branch_on(host.as_ref(), &wt.repo_path, &wt.branch)
+            {
+                tracing::warn!("creation rollback kept branch '{}': {e:#}", wt.branch);
+            }
+        }
     }
     if intent.workspace_created {
         remove_workspace(db, row)?;

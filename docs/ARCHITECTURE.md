@@ -2418,7 +2418,9 @@ do not. Older journals without workspace provenance conservatively retain it. Wo
 builds and cleanup share a machine/normalized-namespace lease and refuse an active sibling
 claim; remote rows cannot authorize local workspace removal. A failed create rolls back
 immediately, while a killed creator leaves its plan for recovery after the lease expires.
-A retry can attach the branch left by rollback without resetting it. Restore keeps its
+Rollback deletes a branch the creation cut (never one it attached to, and never on a
+restore, whose branch is the session's own); a retry attaches a pre-existing branch
+without resetting it. Restore keeps its
 deleted row until it can commit the confirmed pane; its pending resource plan is recovered
 the same way. Its launch projection preserves saved attached directories, including when
 the original pane has already been reaped. An explicit `session.pre_launch` refusal

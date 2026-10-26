@@ -2352,7 +2352,8 @@ branch names is replaced by `-`.
 ### Cleanup behavior
 
 - Closing a worktree session (`Ctrl+D`) automatically removes the
-  worktree via `git worktree remove --force`.
+  worktree via `git worktree remove --force`, and with it the local branch
+  thurbox created for it (see the delete notes under session persistence).
 - Quitting Thurbox (`Ctrl+Q`) preserves worktrees on disk so they
   can be resumed on next launch (see [Session Persistence](#session-persistence)).
 - Cleanup errors are logged but do not block session close or app
@@ -2765,7 +2766,15 @@ branch name) is saved in the database and reconstructed on restore.
   (`created_by_thurbox`, schema v42): a session that *opened* a worktree the
   user already had leaves that directory exactly where it was and reports it
   as kept, because `git worktree remove --force` would take any uncommitted
-  work in it along with it. Such a session is also **restorable** where a
+  work in it along with it. Once a created worktree is removed, its local
+  branch is deleted too (`git branch -D`, after a `git worktree prune`, on the
+  worktree's own host), but only a branch thurbox **cut** with `-b`: creation
+  marks it `branch.<name>.thurboxCreated` in the repository's config, so a
+  `--worktree-branch` naming a branch the user already had attaches to it and
+  leaves it at teardown. A branch another session still names (a live one, or a
+  soft-deleted fork still within undo) is kept, and so is every branch while its
+  session is soft-deleted: it goes with the worktree at the purge. Failures land
+  in the report's `branch_errors` and owe no teardown. Such a session is also **restorable** where a
   force-deleted one normally is not: the refusal exists because the teardown
   destroyed uncommitted work, and a teardown that removed nothing destroyed
   nothing. A session with no worktrees at all stays refused — that is every
