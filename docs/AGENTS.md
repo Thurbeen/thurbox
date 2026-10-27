@@ -228,8 +228,10 @@ whether resume/fork can target *this* session or only *the last* one.
 resume; for `claude` it defers to an on-disk transcript check. Ahead of both,
 an id-pinned session whose hook has reported a turn (`session signal` with
 `THURBOX_SIGNAL_TURN=start`, which Claude's `UserPromptSubmit` hook sets) is
-resumed: the signal records the conversation id in `thurbox.conversation_started`
-session meta. That is what keeps a custom-named Claude launcher resumable when
+resumed: when the hook's stdin payload names the row's own id as its
+`session_id`, the signal records it in `thurbox.conversation_started` session
+meta. A fork's conversation carries an id Claude chose, so it records nothing
+and keeps the transcript check. That is what keeps a custom-named Claude launcher resumable when
 its wrapper script sets `CLAUDE_CONFIG_DIR` itself, so its transcript sits
 where the transcript check cannot look and `--session-id` would be refused as
 already in use.

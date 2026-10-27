@@ -1184,8 +1184,8 @@ fn a_wrapped_claude_resumes_the_conversation_its_hook_reported() {
          if [ \"$1\" = --session-id ]; then\n\
          mkdir -p \"$HOME/.custom-claude/projects/p\"\n\
          : > \"$HOME/.custom-claude/projects/p/$2.jsonl\"\n\
-         until THURBOX_SIGNAL_TURN=start \"$THURBOX_TEST_CLI\" session signal --state working \
-         >/dev/null 2>&1; do sleep 0.1; done\n\
+         until printf '{\"session_id\":\"%s\"}' \"$2\" | THURBOX_SIGNAL_TURN=start \
+         \"$THURBOX_TEST_CLI\" session signal --state working >/dev/null 2>&1; do sleep 0.1; done\n\
          fi\n\
          mv \"$CAPTURE.pending\" \"$CAPTURE\"\n\
          exec sleep 60\n",
@@ -1255,6 +1255,27 @@ fn a_wrapped_claude_resumes_the_conversation_its_hook_reported() {
         format!("--resume {id}"),
         "a conversation that reported a turn is resumed, wherever its transcript lives"
     );
+
+    // A fork's conversation has an id the agent chose, not the row's: a turn
+    // reported under it proves nothing about the row's id, and resuming that
+    // id would fail where a fresh start does not.
+    let meta = thurbox::session_ops::CONVERSATION_STARTED_META;
+    assert!(db.unset_session_meta(spawned.session_id, meta).unwrap());
+    let mut signal = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "signal", "--state", "working", "--session"])
+        .arg(spawned.session_id.to_string())
+        .env("THURBOX_SIGNAL_TURN", "start")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(
+        &mut signal.stdin.take().unwrap(),
+        br#"{"session_id":"a-forked-conversation"}"#,
+    )
+    .unwrap();
+    assert!(signal.wait().unwrap().success());
+    assert_eq!(db.get_session_meta(spawned.session_id, meta).unwrap(), None);
 }
 
 // ---------------------------------------------------------------------------
