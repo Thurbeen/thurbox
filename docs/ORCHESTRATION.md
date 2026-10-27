@@ -343,6 +343,7 @@ gone — and each one comes with what it takes to judge it:
 | `detected_agent` | which registered agent is in the pane, when it is not the row's own |
 | `state`, `state_source` | the best answer available, and where it came from |
 | `stopped` | whether the session is parked — `session stop`, no pane |
+| `ready` | whether the session can take input now, for every agent — see *Readiness* below |
 | `reports_as` | the agent the hook fields were read against, when a driver declared one |
 
 `state` is always a word, and one of `SessionState`'s — the single
@@ -410,6 +411,24 @@ instead of the command's file stem — including
 `hook_blocked_is_heuristic`, which otherwise reports `false` for a pane
 running claude and tells a supervisor the block signal is structured
 when it is a text match on a notification body.
+
+#### Readiness
+
+`ready` is the one agent-agnostic answer to "can I send this session input
+now", on `session get` and `session list` alike. A caller needs no agent
+knowledge of its own to read it:
+
+| `ready` | when |
+|---|---|
+| `true` | the last hook report is `idle` or `done`; or **no hook has reported yet** (`state: "running"`, `state_source: "process"`), an agent holds the pane, and its input line shows an empty, drawn composer — one prompt glyph with the cursor after it |
+| `false` | `working`, `blocked` or `background`; parked (`stopped`); the pane holds no agent (`shell`, `dead`, `missing`) or contradicts the report; or a fresh agent whose composer is not drawn yet |
+| `null` | nothing can say: the pane was not looked at (`session list` without `--verify`, before any report), it is remote and unreported, or its input line could not be read |
+
+The composer read covers the window between launch and the first hook, which
+some agents (Codex) only fire at their first turn: it is made only for a session
+no hook has reported on, and only by a verb that probes the pane. Once a hook
+has reported, the agent's own word decides and the screen is not read. Poll
+`session get` until `ready` is `true`; `null` is "ask again", never "go".
 
 `session capture --json` adds the pane's live state alongside its text —
 `cursor_row`/`cursor_col`, `foreground_process` and `foreground_command`,

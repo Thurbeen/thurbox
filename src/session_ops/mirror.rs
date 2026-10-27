@@ -217,6 +217,9 @@ pub fn session_to_json_assessed(
     // the stream learn the same fact from the same key. Without it the two
     // verbs describe a parked session exactly as they describe a running one.
     put("stopped", json!(hook.stopped));
+    // Whether the session can take input now, for every agent alike — the
+    // readiness contract (`Assessment::ready`, docs/ORCHESTRATION.md).
+    put("ready", json!(hook.ready()));
     // Null unless a driver declared one: the agent the hook fields above were
     // resolved against, when that is not the agent the row was created with.
     // Without it a `--command` session's `hook_coverage: "full"` reads as a
