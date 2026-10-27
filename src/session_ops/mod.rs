@@ -393,6 +393,29 @@ pub(crate) fn resume_id_if_transcript_exists(
         .then(|| agent_session_id.to_string())
 }
 
+/// The session-meta key under which a turn-start hook records the agent
+/// conversation id it started a turn on — proof that the conversation exists,
+/// wherever the agent keeps it.
+pub const CONVERSATION_STARTED_META: &str = "thurbox.conversation_started";
+
+/// Whether the session's agent has reported a turn on `agent_session_id`
+/// (see [`CONVERSATION_STARTED_META`]).
+///
+/// The agent's own word, so it holds where the transcript check cannot see: a
+/// custom launcher that sets its own `CLAUDE_CONFIG_DIR` inside a wrapper
+/// script keeps its transcript out of thurbox's sight, and relaunching such a
+/// conversation with `--session-id` is refused by Claude ("already in use").
+pub(crate) fn conversation_started(
+    db: &crate::storage::Database,
+    id: crate::session::SessionId,
+    agent_session_id: &str,
+) -> bool {
+    db.get_session_meta(id, CONVERSATION_STARTED_META)
+        .ok()
+        .flatten()
+        .is_some_and(|started| started == agent_session_id)
+}
+
 /// Decide the `resume_session_id` to use when restarting a session, given the
 /// agent's definition.
 ///

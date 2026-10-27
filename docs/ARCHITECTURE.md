@@ -1568,7 +1568,8 @@ id-less, cwd-scoped flags (`opencode --continue`, …) that make the agent resol
 "the last session in this directory" itself. `resume_latest` only governs *when* the resume
 group fires at restart (`session_ops::resume_trigger_for`): for these
 agents restart always resumes; claude still defers to an on-disk
-transcript check.
+transcript check, unless a hook already reported a turn on that id
+(`thurbox.conversation_started`), which resumes it wherever its transcript lives.
 
 **Why**: Thurbox started as Claude-Code-specific, with a hard-coded
 `ClaudeProvider` plus roles, skills, profiles, and an MCP/plugin

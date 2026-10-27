@@ -87,7 +87,9 @@ directory" itself (`opencode --continue`, `agy --continue`, `aider
 reuses the session's cwd and a single-repo fork reuses the parent's.
 `resume_latest` only changes *when* the resume group fires
 (`session_ops::resume_trigger_for`): for these agents restart always resumes; for
-claude it defers to an on-disk transcript check. **`omp`** (Oh My Pi) is a third
+claude it defers to an on-disk transcript check — unless a turn-start hook
+already recorded the id in `thurbox.conversation_started` session meta, which
+resumes it even when a wrapper's own `CLAUDE_CONFIG_DIR` hides the transcript. **`omp`** (Oh My Pi) is a third
 kind: it generates its own internal id and won't take thurbox's, but
 `--session-dir <dir>` keeps its session in a directory thurbox chooses, so
 thurbox maps its UUID to a deterministic directory (`--session-dir

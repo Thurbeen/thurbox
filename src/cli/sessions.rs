@@ -371,7 +371,9 @@ pub enum Action {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Restart a session in-place (kills the window, re-spawns with --resume).
+    /// Restart a session in-place: kill the window and re-spawn, resuming the
+    /// conversation when one exists (a hook reported a turn, or its transcript
+    /// is on disk) and starting it fresh otherwise.
     Restart {
         /// Session UUID.
         uuid: String,
@@ -2380,6 +2382,19 @@ fn run_signal(
                 .signal_hook_state(target.id, state, from)
                 .map_err(|e| format!("set_hook_state: {e}"))?
                 .ok_or_else(parked)?;
+            // A turn means the conversation exists, so a restart must resume
+            // it rather than pin its id afresh — see
+            // `session_ops::conversation_started`.
+            if matches!(from, ReportFrom::TurnStart) {
+                if let Some(conversation) = target.agent_session_id.as_deref() {
+                    db.set_session_meta(
+                        target.id,
+                        crate::session_ops::CONVERSATION_STARTED_META,
+                        conversation,
+                    )
+                    .map_err(|e| format!("record conversation start: {e}"))?;
+                }
+            }
             (Some(stored), true, None)
         }
         SignalReport::Work(edge, id) => {
