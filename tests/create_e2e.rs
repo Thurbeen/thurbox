@@ -1151,6 +1151,133 @@ fn resuming_an_id_pinned_agent_persists_the_resumed_id() {
     );
 }
 
+/// A Claude launcher under a custom name — a wrapper script that keeps its
+/// conversations in its own config directory — must be resumed, not re-pinned,
+/// once its hook has reported a turn. thurbox cannot see the wrapper's config
+/// directory, so the transcript check alone answered "fresh" and relaunched
+/// `--session-id` onto a conversation that already existed, which Claude
+/// refuses ("Session ID … is already in use") and the pane dies.
+#[test]
+#[cfg(unix)]
+fn a_wrapped_claude_resumes_the_conversation_its_hook_reported() {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, config) = isolated_config();
+    let db = on_disk_db();
+    let repo = repo();
+    let capture = home.path().join("launch");
+    let agent = home.path().join("custom-claude");
+    // Stands in for the wrapper and the agent's first prompt: on a fresh launch
+    // it writes its transcript where only it looks and fires the turn-start
+    // hook from inside the pane, with the environment thurbox gave the pane —
+    // retried, because unlike a real prompt it can run before spawn has
+    // written the row.
+    std::fs::write(
+        &agent,
+        "#!/bin/sh\n\
+         printf '%s\\n' \"$@\" > \"$CAPTURE.pending\"\n\
+         if [ \"$1\" = --session-id ]; then\n\
+         mkdir -p \"$HOME/.custom-claude/projects/p\"\n\
+         : > \"$HOME/.custom-claude/projects/p/$2.jsonl\"\n\
+         until printf '{\"session_id\":\"%s\"}' \"$2\" | THURBOX_SIGNAL_TURN=start \
+         \"$THURBOX_TEST_CLI\" session signal --state working >/dev/null 2>&1; do sleep 0.1; done\n\
+         fi\n\
+         mv \"$CAPTURE.pending\" \"$CAPTURE\"\n\
+         exec sleep 60\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        config.join("agents.toml"),
+        format!(
+            "default = \"claude-custom\"\n\n\
+             [[agents]]\n\
+             name = \"claude-custom\"\n\
+             command = \"{}\"\n\
+             resume_args = [\"--resume\", \"{{id}}\"]\n\
+             new_session_args = [\"--session-id\", \"{{id}}\"]\n",
+            agent.display()
+        ),
+    )
+    .unwrap();
+    let backends = thurbox::backend::wiring::configured().0;
+    let spawned = spawn_session_headless(
+        &db,
+        &backends,
+        SpawnRequest {
+            name: "wrapped".into(),
+            repo_path: repo.path().to_path_buf(),
+            agent: Some("claude-custom".into()),
+            env: [
+                ("CAPTURE".into(), capture.display().to_string()),
+                (
+                    "THURBOX_TEST_CLI".into(),
+                    env!("CARGO_BIN_EXE_thurbox-cli").into(),
+                ),
+            ]
+            .into(),
+            ..Default::default()
+        },
+    )
+    .expect("spawn");
+    let launched = |capture: &Path| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(capture) {
+                return text.lines().take(2).collect::<Vec<_>>().join(" ");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "agent did not record its launch"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    let id = spawned.agent_session_id.clone();
+    assert_eq!(launched(&capture), format!("--session-id {id}"));
+    let reported = db.load_hook_state(spawned.session_id).unwrap().unwrap();
+    assert_eq!(
+        reported.state.as_deref(),
+        Some("working"),
+        "the in-pane hook reached this database"
+    );
+
+    std::fs::remove_file(&capture).unwrap();
+    thurbox::session_ops::restart_session_headless(&db, &backends, spawned.session_id)
+        .expect("restart");
+    assert_eq!(
+        launched(&capture),
+        format!("--resume {id}"),
+        "a conversation that reported a turn is resumed, wherever its transcript lives"
+    );
+
+    // A fork's conversation has an id the agent chose, not the row's: a turn
+    // reported under it proves nothing about the row's id, and resuming that
+    // id would fail where a fresh start does not.
+    let meta = thurbox::session_ops::CONVERSATION_STARTED_META;
+    assert!(db.unset_session_meta(spawned.session_id, meta).unwrap());
+    let mut signal = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "signal", "--state", "working", "--session"])
+        .arg(spawned.session_id.to_string())
+        .env("THURBOX_SIGNAL_TURN", "start")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(
+        &mut signal.stdin.take().unwrap(),
+        br#"{"session_id":"a-forked-conversation"}"#,
+    )
+    .unwrap();
+    assert!(signal.wait().unwrap().success());
+    assert_eq!(db.get_session_meta(spawned.session_id, meta).unwrap(), None);
+}
+
 // ---------------------------------------------------------------------------
 // Session lifecycle hooks (`hooks.toml`), fired around the same pipeline.
 // ---------------------------------------------------------------------------

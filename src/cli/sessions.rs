@@ -376,7 +376,9 @@ pub enum Action {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Restart a session in-place (kills the window, re-spawns with --resume).
+    /// Restart a session in-place: kill the window and re-spawn, resuming the
+    /// conversation when one exists (a hook reported a turn, or its transcript
+    /// is on disk) and starting it fresh otherwise.
     Restart {
         /// Session UUID.
         uuid: String,
@@ -2385,6 +2387,25 @@ fn run_signal(
                 .signal_hook_state(target.id, state, from)
                 .map_err(|e| format!("set_hook_state: {e}"))?
                 .ok_or_else(parked)?;
+            // A turn means the conversation exists, so a restart must resume
+            // it rather than pin its id afresh — see
+            // `session_ops::conversation_started`. Recorded only when the
+            // agent's own payload names the row's id: a fork's conversation
+            // gets an id the agent chose, and resuming the row's would fail.
+            if matches!(from, ReportFrom::TurnStart) {
+                if let Some(conversation) = target
+                    .agent_session_id
+                    .as_deref()
+                    .filter(|id| hook_payload_session_id().as_deref() == Some(*id))
+                {
+                    db.set_session_meta(
+                        target.id,
+                        crate::session_ops::CONVERSATION_STARTED_META,
+                        conversation,
+                    )
+                    .map_err(|e| format!("record conversation start: {e}"))?;
+                }
+            }
             (Some(stored), true, None)
         }
         SignalReport::Work(edge, id) => {
@@ -2447,6 +2468,28 @@ fn run_signal(
         ),
     };
     Ok(CommandOutput::new(json, human))
+}
+
+/// The largest hook payload a turn-start signal reads; a prompt is part of it.
+const MAX_HOOK_PAYLOAD: u64 = 16 * 1024 * 1024;
+
+/// The `session_id` an agent hook passed on stdin (Claude's payload carries the
+/// conversation id). `None` from a terminal, which is a person rather than a
+/// hook, and for anything that is not such a payload.
+fn hook_payload_session_id() -> Option<String> {
+    use std::io::{IsTerminal, Read};
+
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return None;
+    }
+    let mut payload = String::new();
+    stdin
+        .take(MAX_HOOK_PAYLOAD)
+        .read_to_string(&mut payload)
+        .ok()?;
+    let value: Value = serde_json::from_str(&payload).ok()?;
+    value.get("session_id")?.as_str().map(str::to_string)
 }
 
 /// How much of an exited agent's screen `session exited` keeps.

@@ -116,6 +116,8 @@ pub(crate) fn build_restart_plan(
     };
     config.resume_session_id = if codex_builtin {
         codex_id.clone()
+    } else if super::conversation_started(db, session.id, &agent_session_id) {
+        Some(agent_session_id.clone())
     } else {
         super::resume_trigger_for(&def, &agent_session_id, &config.env)
     };
