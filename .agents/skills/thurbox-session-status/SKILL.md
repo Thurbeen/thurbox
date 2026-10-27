@@ -40,6 +40,14 @@ report it. `idle` means *the agent said it is at rest*; none of these three
 does, and spelling them apart is the whole reason the vocabulary has ten words
 instead of six.
 
+**Readiness (`ready`).** `Assessment::ready` folds the state into the
+agent-agnostic "can take input now" answer `session get`/`list` publish:
+`idle`/`done` are ready, active states and a parked or agent-less pane are not,
+and a `running` session no hook has reported on is ready once its composer is
+drawn — the probe reads the input line (`composer::shows_prompt`) only then.
+`null` means nothing could say. The contract is docs/ORCHESTRATION.md →
+Readiness.
+
 The interface now derives through the same `Assessment` the CLI does
 (`kernel::snapshot::assess`), which is what makes `running` reachable there —
 and `running` needs the pane, so see **Reading the pane from the interface**

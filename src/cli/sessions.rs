@@ -151,6 +151,11 @@ pub enum Action {
     /// `state: "stopped"`, and its pane is not probed — there is none.
     /// `backend_id` still names the window it had: it is what the row records,
     /// and `session start` replaces it with the new pane's id.
+    ///
+    /// `ready` says whether the session can take input now, for every agent:
+    /// the hook's `idle`/`done`, or — before any hook — an agent whose empty
+    /// composer is drawn. `null` means nothing could say; ask again
+    /// (docs/ORCHESTRATION.md → Readiness).
     Get {
         /// Session UUID.
         uuid: String,
@@ -3968,18 +3973,30 @@ pub(crate) fn probe_pane(
         .get(agent)
         .map(|d| d.command.clone())
         .unwrap_or_else(|| agent.to_string());
-    let pane = match crate::session_ops::windows::agent_pane(backends, s) {
+    let (pane, found) = match crate::session_ops::windows::agent_pane(backends, s) {
         Ok(None) => return hook.with_corroboration(crate::session::Corroboration::Missing),
-        Ok(Some((backend, pane))) => backend.pane_state(&pane).unwrap_or_default(),
-        Err(_) => crate::backend::PaneState::default(),
+        Ok(Some((backend, pane))) => (
+            backend.pane_state(&pane).unwrap_or_default(),
+            Some((backend, pane)),
+        ),
+        Err(_) => (crate::backend::PaneState::default(), None),
     };
-    hook.with_pane(
+    let mut hook = hook.with_pane(
         &command,
         registry,
         pane.foreground_process.as_deref(),
         pane.foreground_command.as_deref(),
         pane.dead,
-    )
+    );
+    // Only an agent no hook has reported on needs its screen read to say
+    // whether it is ready (`Assessment::ready`); a reported one has said.
+    if hook.state == Some(crate::session::SessionState::Running) {
+        hook.composer_drawn = found.and_then(|(backend, pane)| {
+            crate::session_ops::composer::read_line(backend.as_ref(), &pane)
+                .map(|line| crate::session_ops::composer::shows_prompt(&line))
+        });
+    }
+    hook
 }
 
 /// A deleted row as `session list --deleted` prints it: the session's facts

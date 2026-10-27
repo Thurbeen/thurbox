@@ -625,6 +625,84 @@ fn an_agent_thurbox_did_not_launch_is_still_reported_as_running() {
         .is_some_and(|c| c.contains("codex")));
 }
 
+/// `ready` is the one agent-agnostic answer to "can this session take input
+/// now": a fresh agent that has fired no hook is ready once its composer is
+/// drawn, and from the first hook on the agent's own report decides.
+#[test]
+fn a_session_is_ready_once_its_composer_is_drawn_and_then_as_its_hooks_say() {
+    if !have_tmux() || !have_ps() {
+        eprintln!("skipping: needs tmux and a ps that knows tpgid");
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+
+    // Boots without a prompt, then draws a composer — a prompt glyph with the
+    // cursor after it and a placeholder to its right — once `drawn` exists.
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    let fake = bin.join("codex");
+    let drawn = dir.path().join("drawn");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\n\
+         printf 'Starting'\n\
+         while [ ! -e \"$1\" ]; do sleep 0.1; done\n\
+         printf '\\033[2J\\033[H\\342\\200\\272 \\0337Ask anything\\0338'\n\
+         while :; do sleep 1; done\n",
+    )
+    .expect("write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+    tmux(&["new-session", "-d", "-s", SESSION, "-n", "bash", "sh"]);
+    tmux(&[
+        "new-window",
+        "-t",
+        SESSION,
+        "-n",
+        "tb-fresh",
+        &format!("{} {}", fake.display(), drawn.display()),
+    ]);
+    let db = Database::open_in_memory().expect("db");
+    let row = session_row("fresh", "codex", "local-tmux");
+    db.upsert_session(&row).expect("persist");
+
+    let booting = get_when_pane_settles(&db, row.id, "agent");
+    assert_eq!(booting["state"], Value::String("running".into()));
+    assert_eq!(
+        booting["ready"],
+        Value::Bool(false),
+        "no composer yet: {booting}"
+    );
+
+    std::fs::write(&drawn, "").expect("draw the composer");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let composed = loop {
+        let out = get(&db, row.id, true);
+        if out["ready"] == Value::Bool(true) || std::time::Instant::now() >= deadline {
+            break out;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(composed["hook_reported"], Value::Bool(false));
+    assert_eq!(
+        composed["ready"],
+        Value::Bool(true),
+        "a drawn, empty composer is ready before any hook: {composed}"
+    );
+
+    db.set_hook_state(row.id, "working").expect("signal");
+    let working = get(&db, row.id, true);
+    assert_eq!(working["ready"], Value::Bool(false), "{working}");
+    db.set_hook_state(row.id, "idle").expect("signal");
+    let idle = get(&db, row.id, true);
+    assert_eq!(idle["ready"], Value::Bool(true), "{idle}");
+}
+
 #[test]
 fn submitted_codex_prompt_with_silent_hooks_does_not_keep_old_idle_status() {
     silent_codex_submission(false);
