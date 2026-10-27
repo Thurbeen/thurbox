@@ -1593,6 +1593,69 @@ mod tests {
         assert_eq!(seen.coverage_source, None);
     }
 
+    /// `ready` is a contract callers send input on, so every override and every
+    /// unknown answer is pinned here: a pane that cannot take input must never
+    /// read ready, whatever the hook last said.
+    #[test]
+    fn readiness_answers_every_state_and_override() {
+        let registry = registry(vec![agent("claude", "claude", None)]);
+        let row = |hook: Option<&str>| {
+            Assessment::from_hooks(&registry, "claude", hook, hook.map(|_| 0), None, NOW)
+        };
+        let drawn = |drawn: Option<bool>| {
+            let mut a = row(None).with_corroboration(Corroboration::Agent);
+            a.composer_drawn = drawn;
+            a
+        };
+        let cases: Vec<(&str, Assessment, Option<bool>)> = vec![
+            ("idle, pane unchecked", row(Some("idle")), Some(true)),
+            ("done, pane unchecked", row(Some("done")), Some(true)),
+            (
+                "idle over its agent",
+                row(Some("idle")).with_corroboration(Corroboration::Agent),
+                Some(true),
+            ),
+            ("working", row(Some("working")), Some(false)),
+            ("blocked", row(Some("blocked")), Some(false)),
+            ("background", row(Some("background")), Some(false)),
+            ("idle but parked", row(Some("idle")).parked(), Some(false)),
+            ("done but parked", row(Some("done")).parked(), Some(false)),
+            (
+                "idle over a shell",
+                row(Some("idle")).with_corroboration(Corroboration::Shell),
+                Some(false),
+            ),
+            (
+                "done over a dead pane",
+                row(Some("done")).with_corroboration(Corroboration::Dead),
+                Some(false),
+            ),
+            (
+                "idle with no window",
+                row(Some("idle")).with_corroboration(Corroboration::Missing),
+                Some(false),
+            ),
+            (
+                "working contradicted",
+                row(Some("working")).with_corroboration(Corroboration::Shell),
+                Some(false),
+            ),
+            ("fresh, composer drawn", drawn(Some(true)), Some(true)),
+            ("fresh, composer not drawn", drawn(Some(false)), Some(false)),
+            ("fresh, input line unreadable", drawn(None), None),
+            ("never reported, pane unchecked", row(None), None),
+            (
+                "never reported, pane unknown",
+                row(None).with_corroboration(Corroboration::Unknown),
+                None,
+            ),
+            ("never reported, remote", row(None).pane_unavailable(), None),
+        ];
+        for (case, assessment, want) in cases {
+            assert_eq!(assessment.ready(), want, "{case}");
+        }
+    }
+
     #[test]
     fn a_reachable_session_keeps_the_state_its_hooks_reported() {
         assert_eq!(
