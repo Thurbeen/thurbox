@@ -17,6 +17,11 @@ All but the flake are published automatically on each release by jobs in
 distro-agnostic one-liner installer, see
 [`scripts/install.sh`](../scripts/install.sh).
 
+`signpath/` is not a channel. It holds the SignPath artifact configuration that
+signs the Windows executables before the release zip is packed, which every
+Windows channel above then carries. See
+[`docs/CODE-SIGNING.md`](../docs/CODE-SIGNING.md).
+
 ## Reboot-proof automations (`systemd/`, `launchd/`)
 
 Thurbox automations fire from two places out of the box:
