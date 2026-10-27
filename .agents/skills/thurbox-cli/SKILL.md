@@ -1000,7 +1000,8 @@ without double-processing.
   re-adoption (no soft-delete + new-row churn), so a cached id or queued message
   never goes stale. At spawn thurbox injects `THURBOX_SESSION` (= the `SessionId`,
   threaded via `SessionConfig.session_id` so it's known *before* launch and reused
-  on respawn) and, for task-spawned sessions, `THURBOX_TASK` (= the task id) —
+  on respawn), `THURBOX_SESSION_NAME` (= the launch-time display-name snapshot),
+  and, for task-spawned sessions, `THURBOX_TASK` (= the task id) —
   both distinct from the older `THURBOX_SESSION_ID` (= `agent_session_id`, read by
   the metrics statusline). So a `thurbox-cli` call *inside* a session proves its
   own identity without scraping panes or names.

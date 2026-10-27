@@ -2096,10 +2096,15 @@ mod tests {
         // for determinism. Values with spaces survive the PS single quotes.
         let mut env = HashMap::new();
         env.insert("THURBOX_SESSION".to_string(), "id-1".to_string());
+        env.insert(
+            "THURBOX_SESSION_NAME".to_string(),
+            "a 'name' λ;$HOME *".to_string(),
+        );
         env.insert("B".to_string(), "x y".to_string());
         assert_eq!(
             psmux_window_powershell("tbs-x", "claude", &[], &env),
-            "Set-Item Env:B 'x y'; Set-Item Env:THURBOX_SESSION 'id-1'; & 'claude'"
+            "Set-Item Env:B 'x y'; Set-Item Env:THURBOX_SESSION 'id-1'; Set-Item \
+             Env:THURBOX_SESSION_NAME 'a ''name'' λ;$HOME *'; & 'claude'"
         );
     }
 

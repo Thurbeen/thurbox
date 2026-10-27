@@ -1559,7 +1559,8 @@ codex, antigravity, opencode, aider, copilot, vibe, pi, omp) on first run via
 here if you want), and argument-template groups (`resume_args`,
 `fork_args`, `new_session_args`), plus a `resume_latest` flag. A
 single `agent::GenericProvider` (an `AgentProvider`) launches any
-defined agent by substituting `{id}` and appending each group only
+defined agent by substituting `{id}` and the launch-time display-name snapshot
+`{name}`, then appending each group only
 when its driving value is present. Claude and pi accept the
 thurbox-generated id (`--session-id {id}`). Codex reports its own ID through
 `SessionStart`, which thurbox stores separately for exact resume and fork.

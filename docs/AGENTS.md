@@ -85,6 +85,12 @@ account even after the agent definition changes. `hook_schema = "claude"` wires
 Claude's status hooks for this custom name; status and messaging follow the
 session's configuration directory and identity.
 
+Every conversation argument group may also contain `{name}`. Thurbox replaces it
+with the display name captured for that launch as one literal argument. A rename
+does not alter the running process; a later restart uses the persisted new name.
+The same snapshot is available to every agent and direct command as
+`THURBOX_SESSION_NAME`.
+
 The `ui-skill` extension installs into `~/.claude/skills` only. Link its skill into
 each additional directory:
 

@@ -693,14 +693,18 @@ Each definition (`session::AgentDef`) carries:
 - `command` — the CLI executable to launch.
 - argument-template groups: `args` (always passed — bake in flags
   like a model here if you want) and `resume_args` / `fork_args` /
-  `new_session_args` (with `{id}`).
+  `new_session_args` (with `{id}` and optional `{name}`).
 - `resume_latest` — when true, restart resumes the agent's most
   recent session in the launch directory via **id-less** flags
   (see below).
 
 `agent::GenericProvider` builds the launch arguments by appending
 each group **only when its driving value is present**, substituting
-`{id}` token-by-token. Selection precedence is fork > resume >
+`{id}` and `{name}` token-by-token. `{name}` is the display name captured for
+the launch, and remains one literal argument even when it contains spaces or
+shell metacharacters. A rename changes neither the running process nor its
+environment; the next restart resolves the current persisted name. Selection
+precedence is fork > resume >
 new-session id; static `args` follow. A group with no value is
 simply omitted — no unresolved-placeholder heuristics.
 

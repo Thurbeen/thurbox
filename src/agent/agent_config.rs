@@ -190,9 +190,9 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # name = "my-agent"             # shown in the new-session agent picker
 # command = "my-agent-cli"      # the executable on your PATH
 # args = []                     # ALWAYS passed (see "Pin a model" below)
-# resume_args = []              # appended on restart/resume, with {id} substituted
-# fork_args = []                # appended on Ctrl+F fork, with {id} substituted
-# new_session_args = []         # appended on a fresh spawn, with {id} substituted
+# resume_args = []              # on restart/resume; substitutes {id} and {name}
+# fork_args = []                # on Ctrl+F fork; substitutes {id} and {name}
+# new_session_args = []         # on a fresh spawn; substitutes {id} and {name}
 # additional_dir_args = []      # repeated per multi-repo member, with {dir} substituted
 # resume_latest = false         # true ⇒ resume "the last session in this dir"
 #                               #   (id-less flags); leave false to pin by {id}
@@ -205,7 +205,8 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 #                               #   claude's --settings hook wiring under its own
 #                               #   name. Omit if the agent has no known family.
 #
-# {id} is a thurbox-generated UUID. Only agents that accept it at creation
+# {id} is a thurbox-generated UUID. {name} is the display name captured for
+# this launch. Each replacement remains one literal argument. Only agents that accept it at creation
 # (claude and pi both take `--session-id {id}`) can resume/fork by that exact
 # id; for everything else use `resume_latest = true` with id-less, cwd-scoped flags
 # (e.g. `["resume", "--last"]`). Omit every resume group to start fresh on

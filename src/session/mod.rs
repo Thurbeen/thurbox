@@ -404,6 +404,9 @@ pub struct SessionConfig {
     /// `THURBOX_SESSION`) and can be reused across a respawn so a session's
     /// identity is stable for life. `None` mints a new id at spawn.
     pub session_id: Option<SessionId>,
+    /// Display name captured for this launch. A rename does not mutate an
+    /// existing process; the next launch resolves the persisted current name.
+    pub session_name: String,
     /// Resume an existing agent session (process restart of a known session).
     pub resume_session_id: Option<String>,
     /// Pin a session id on a fresh spawn (agents that support it).

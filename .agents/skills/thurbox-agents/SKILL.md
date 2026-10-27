@@ -52,7 +52,11 @@ fork_args = ["fork", "{id}"]
 ```
 
 Each conversation argument group is appended only when its driving id is
-present, with `{id}` substituted; `args` is always passed. No
+present, with `{id}` and `{name}` substituted; `args` is always passed. `{name}`
+is the session display name captured for that launch and remains one literal
+argument even when it contains spaces, quotes, Unicode or shell metacharacters.
+Definitions without it keep the same argv. A rename does not mutate the running
+process; the next restart uses the current persisted name. No
 model is ever passed — each agent uses its own default config
 (put `["--model", "opus"]` in `args` if you want to pin one).
 A second token, `{home}`, expands (at spawn, on the spawn worker —

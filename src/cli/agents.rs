@@ -157,6 +157,7 @@ args = ["-i"]
         // No session, so no identity to lend — and saying nothing is right:
         // an empty THURBOX_SESSION would report for no session at all.
         assert!(out["env"]["THURBOX_SESSION"].is_null());
+        assert!(out["env"]["THURBOX_SESSION_NAME"].is_null());
         assert!(out["session_id"].is_null());
     }
 

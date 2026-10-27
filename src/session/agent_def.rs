@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 /// Exposed so `session_ops` can reconstruct a path-pinned agent's session path
 /// (omp) using the *same* token [`AgentDef::build_args`] substitutes.
 pub const ID_PLACEHOLDER: &str = "{id}";
+/// Placeholder substituted with the display name captured for this launch.
+pub const NAME_PLACEHOLDER: &str = "{name}";
 
 /// Substituted with `[telemetry] endpoint` in `telemetry_env` /
 /// `telemetry_args`.
@@ -31,7 +33,7 @@ pub const OTLP_PROTOCOL_PLACEHOLDER: &str = "{otlp_protocol}";
 ///
 /// Resume, fork and new-session groups are appended **only** when their
 /// driving id is present, with
-/// `{id}` substituted token-by-token. This avoids any "unresolved placeholder"
+/// `{id}` and `{name}` substituted token-by-token. This avoids any "unresolved placeholder"
 /// heuristics: a group with no value is simply omitted. Directory arguments
 /// expand separately for the selected members, substituting `{dir}`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,13 +50,13 @@ pub struct AgentDef {
     /// launch-host path. Empty for CLIs that need no explicit directory scope.
     #[serde(default)]
     pub additional_dir_args: Vec<String>,
-    /// Emitted when resuming a known session; `{id}` is substituted.
+    /// Emitted when resuming a known session; `{id}` and `{name}` are substituted.
     #[serde(default)]
     pub resume_args: Vec<String>,
-    /// Emitted when forking from a parent conversation; `{id}` is substituted.
+    /// Emitted when forking from a parent conversation; `{id}` and `{name}` are substituted.
     #[serde(default)]
     pub fork_args: Vec<String>,
-    /// Emitted on a fresh spawn to pin a session id; `{id}` is substituted.
+    /// Emitted on a fresh spawn to pin a session id; `{id}` and `{name}` are substituted.
     #[serde(default)]
     pub new_session_args: Vec<String>,
     /// When true, this agent resumes its most-recent session in the launch
@@ -109,15 +111,16 @@ impl AgentDef {
         resume_id: Option<&str>,
         fork_id: Option<&str>,
         new_session_id: Option<&str>,
+        session_name: &str,
     ) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
 
         if let Some(id) = fork_id {
-            out.extend(subst(&self.fork_args, ID_PLACEHOLDER, id));
+            out.extend(subst_launch_group(&self.fork_args, id, session_name));
         } else if let Some(id) = resume_id {
-            out.extend(subst(&self.resume_args, ID_PLACEHOLDER, id));
+            out.extend(subst_launch_group(&self.resume_args, id, session_name));
         } else if let Some(id) = new_session_id {
-            out.extend(subst(&self.new_session_args, ID_PLACEHOLDER, id));
+            out.extend(subst_launch_group(&self.new_session_args, id, session_name));
         }
 
         out.extend(self.args.iter().cloned());
@@ -162,6 +165,10 @@ impl AgentDef {
             .flat_map(|dir| subst(&self.additional_dir_args, "{dir}", dir))
             .collect()
     }
+}
+
+fn subst_launch_group(tokens: &[String], id: &str, name: &str) -> Vec<String> {
+    subst(&subst(tokens, ID_PLACEHOLDER, id), NAME_PLACEHOLDER, name)
 }
 
 /// Replace `placeholder` with `value` in every token of `tokens`.
@@ -262,7 +269,7 @@ mod tests {
     #[test]
     fn fresh_session_pins_id() {
         let d = claude();
-        let args = d.build_args(None, None, Some("new-id"));
+        let args = d.build_args(None, None, Some("new-id"), "worker");
         assert_eq!(args, vec!["--session-id", "new-id"]);
         // No model is ever passed.
         assert!(!args.iter().any(|a| a == "--model"));
@@ -271,15 +278,46 @@ mod tests {
     #[test]
     fn resume_takes_precedence_over_new() {
         let d = claude();
-        let args = d.build_args(Some("resume-id"), None, Some("new-id"));
+        let args = d.build_args(Some("resume-id"), None, Some("new-id"), "worker");
         assert_eq!(args, vec!["--resume", "resume-id"]);
     }
 
     #[test]
     fn fork_takes_precedence_over_resume() {
         let d = claude();
-        let args = d.build_args(Some("resume-id"), Some("fork-id"), Some("new-id"));
+        let args = d.build_args(Some("resume-id"), Some("fork-id"), Some("new-id"), "worker");
         assert_eq!(args, vec!["--resume", "fork-id", "--fork-session"]);
+    }
+
+    #[test]
+    fn session_name_is_one_literal_argument_in_every_conversation_group() {
+        let mut d = claude();
+        d.resume_args = vec!["resume={id}".into(), "{name}".into()];
+        d.fork_args = vec!["fork={id}".into(), "{name}".into()];
+        d.new_session_args = vec!["new={id}".into(), "{name}".into()];
+        let name = "quoted 'name' λ;$HOME *";
+
+        assert_eq!(
+            d.build_args(None, None, Some("new-id"), name),
+            ["new=new-id", name]
+        );
+        assert_eq!(
+            d.build_args(Some("resume-id"), None, None, name),
+            ["resume=resume-id", name]
+        );
+        assert_eq!(
+            d.build_args(None, Some("fork-id"), None, name),
+            ["fork=fork-id", name]
+        );
+    }
+
+    #[test]
+    fn definitions_without_the_name_placeholder_keep_their_argv() {
+        let d = claude();
+        assert_eq!(
+            d.build_args(None, None, Some("new-id"), "ignored"),
+            ["--session-id", "new-id"]
+        );
     }
 
     #[test]
@@ -298,7 +336,7 @@ mod tests {
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
         };
-        let args = d.build_args(None, None, Some("ignored"));
+        let args = d.build_args(None, None, Some("ignored"), "worker");
         assert_eq!(args, vec!["--quiet"]);
     }
 
@@ -321,12 +359,12 @@ mod tests {
         };
         // resume id present, but no {id} token -> tokens unchanged.
         assert_eq!(
-            d.build_args(Some("ignored-uuid"), None, None),
+            d.build_args(Some("ignored-uuid"), None, None, "worker"),
             vec!["resume", "--last"]
         );
         // fork wins over resume, still id-less.
         assert_eq!(
-            d.build_args(Some("ignored-uuid"), Some("also-ignored"), None),
+            d.build_args(Some("ignored-uuid"), Some("also-ignored"), None, "worker",),
             vec!["fork", "--last"]
         );
         assert!(d.resumes_latest());
