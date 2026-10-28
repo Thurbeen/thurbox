@@ -59,8 +59,9 @@ const FACTS_FAILURE_JOIN: &str = "LEFT JOIN session_meta m ON m.session_id = s.i
 /// Whether a stored launch failure still describes the row whose pane is
 /// `backend_id`: the pane that failed, or no pane at all — a loss releases the
 /// pane (psmux closes a failed launch's window with its program) without a new
-/// launch, and the next launch or a recovery onto a live pane clears the
-/// record. A row pointing at another pane has moved on, and an earlier
+/// launch. The loss keeps only the failure of the pane it releases
+/// ([`Database::record_session_lost`]), and the next launch or a recovery onto
+/// a live pane clears the record. A row pointing at another pane has moved on, and an earlier
 /// launch's failure is over.
 fn launch_failure_holds(failure: &crate::session::LaunchFailure, backend_id: &str) -> bool {
     backend_id.is_empty() || failure.pane == backend_id
@@ -1055,6 +1056,17 @@ impl Database {
         let held = super::event_cursors::LockSubject::Session(id);
         if self.lease_held(&held, current_time_millis())? {
             return Ok(false);
+        }
+        // Without a pane, a stored launch failure reads as current
+        // (`launch_failure_holds`), so only the failure of the pane going now
+        // may stay. One left by an earlier pane — the row since adopted
+        // another without a relaunch — is over, and goes with this one.
+        let failed_here = self
+            .get_session_meta(id, crate::session::LAUNCH_FAILURE_META)?
+            .and_then(|stored| crate::session::LaunchFailure::parse(&stored))
+            .is_some_and(|failure| failure.pane == backend_id);
+        if !failed_here {
+            self.unset_session_meta(id, crate::session::LAUNCH_FAILURE_META)?;
         }
         self.conn.execute(
             "UPDATE sessions SET lost_at = ?1, backend_id = '' WHERE id = ?2",
@@ -3251,6 +3263,29 @@ mod tests {
         assert!(db.load_launch_failures().unwrap().is_empty());
         assert!(db.record_session_lost(session.id, "%42").unwrap());
         assert!(db.load_launch_failures().unwrap().is_empty());
+    }
+
+    /// Adopting a replacement pane is no relaunch, so the earlier failure is
+    /// still stored — hidden while the row names another pane, and never
+    /// brought back by that pane's loss.
+    #[test]
+    fn the_loss_of_an_adopted_pane_does_not_revive_an_earlier_failure() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        let failure =
+            crate::session::LaunchFailure::observed(&session.backend_id, Some(1), None, 7);
+        assert!(db.record_launch_failure(session.id, &failure).unwrap());
+        db.claim_backend_id(session.id, "%99", |_, _| false)
+            .unwrap();
+        assert!(db.load_launch_failures().unwrap().is_empty());
+
+        assert!(db.record_session_lost(session.id, "%99").unwrap());
+        assert!(db.load_launch_failures().unwrap().is_empty());
+        assert_eq!(
+            db.load_session_facts_for(&[session.id]).unwrap()[&session.id].launch_failure,
+            None
+        );
     }
 
     #[test]
