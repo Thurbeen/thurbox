@@ -501,13 +501,10 @@ different name (e.g. a rebranded-claude CLI called `fleet`): set `hook_schema =
 "claude"` and it inherits claude's `--settings` hook wiring under its own name.
 Only the per-arg-patch families (`claude`, `aider`) need it; the config-dir
 agents (codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own config
-dir, so a rebrand sharing that dir already reports without it. The info
-panel's account usage follows the same claim for a session on this machine: an
-agent with `hook_schema` naming `claude`, `codex` or `antigravity` shows that
-family's usage, read with the same credentials as the built-in. A session on a
-remote host is matched by its name alone, whether or not that host runs its own
-CLI: one that does launches from its own definitions, and the usage lookup does
-not tell the two kinds of host apart. See
+dir, so a rebrand sharing that dir already reports without it. `hook_schema`
+says nothing about accounts: thurbox reads no agent credentials and asks no
+provider for quotas, which is the job of a plugin such as `thurbox-info-panel`.
+See
 [CONFIG.md](CONFIG.md#agentstoml) and the `AgentDef.hook_schema` doc comment.
 
 ## Adding a new built-in agent

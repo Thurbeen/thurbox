@@ -11107,3 +11107,126 @@ fn an_image_drop_keeps_the_tui_responsive_while_metadata_is_blocked() {
     tui.wait_for("blocked image.png");
     assert!(tui.quit().success());
 }
+
+/// Core never asks a provider about an account (#1601): the open TUI samples
+/// machine and process metrics for supported-agent sessions, and must leave
+/// account quotas to whatever plugin the user installs to fetch them.
+///
+/// The agents are the built-in `claude` and `codex`, each a stand-in on the
+/// profile's `PATH` that runs a shell — and, asked for `app-server`, records
+/// the request instead. `security` (the macOS Keychain) and `curl` are
+/// recording stand-ins too; `security` hands back a token-shaped answer, so a
+/// core that read credentials would go on to curl's credential config rather
+/// than stopping at "not logged in". Nothing here reads a real credential or
+/// reaches a network.
+///
+/// The probe pane reports what reached `thurbox.metrics`, so the sampler is
+/// proven to have run: turning all metrics off cannot pass this.
+#[test]
+fn the_tui_samples_process_metrics_without_querying_a_provider_account() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let profile = Profile::new();
+    let record = profile.path("provider-calls");
+    let stub = |name: &str, body: &str| {
+        let path = profile.bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write stand-in");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    let log = |name: &str| format!("echo \"{name} $*\" >> '{}'", record.display());
+    stub("claude", "exec sh");
+    stub(
+        "codex",
+        &format!(
+            "case \" $* \" in *' app-server '*) {}; exit 0;; esac\nexec sh",
+            log("codex")
+        ),
+    );
+    stub(
+        "security",
+        &format!(
+            "{}\necho '{{\"claudeAiOauth\":{{\"accessToken\":\"stand-in\"}}}}'",
+            log("security")
+        ),
+    );
+    stub(
+        "curl",
+        &format!("{}\ncat >/dev/null\necho '{{}}'", log("curl")),
+    );
+
+    let repo = repo(profile.root.path());
+    for agent in ["claude", "codex"] {
+        profile.cli(&[
+            "session",
+            "create",
+            "--name",
+            agent,
+            "--repo-path",
+            repo.to_str().expect("utf-8 path"),
+            "--agent",
+            agent,
+        ]);
+    }
+    profile.cli(&["config", "accept-interface"]);
+
+    let interface = interface_plus(
+        "91_metrics_probe.lua",
+        r#"return {
+  name = "metrics-probe",
+  slot = "sessions",
+  render = function()
+    return { type = "text", text = "" }
+  end,
+  ui_state = function()
+    local metrics = thurbox.metrics
+    local sampled = 0
+    for _, session in pairs(metrics.sessions) do
+      if session.memory_bytes then
+        sampled = sampled + 1
+      end
+    end
+    return { memory_total = metrics.system.memory_total, sampled = sampled }
+  end,
+}"#,
+    );
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+        // A credentials directory inherited from the developer's own shell
+        // would hand the old sampler a real token.
+        cmd.env_remove("CLAUDE_CONFIG_DIR");
+    });
+    tui.wait_for("codex");
+
+    let probe = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+        profile.apply(&mut cmd);
+        let output = cmd.args(["--json", "ui", "state"]).output().expect("state");
+        assert!(output.status.success());
+        let state: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+        state["plugin_state"]["plugins/91_metrics_probe.lua"].clone()
+    };
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let seen = probe();
+        if seen["memory_total"].as_u64().unwrap_or(0) > 0 && seen["sampled"] == 2 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "machine and per-session metrics never arrived: {seen}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The first sample starts every source at once, and a provider query is a
+    // subprocess away from it; give one a moment to land before looking.
+    std::thread::sleep(Duration::from_secs(2));
+
+    let calls = std::fs::read_to_string(&record).unwrap_or_default();
+    assert!(
+        calls.is_empty(),
+        "core queried a provider account:\n{calls}"
+    );
+    assert!(tui.quit().success());
+}

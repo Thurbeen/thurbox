@@ -293,13 +293,12 @@ backend::rmux        session, shell, backend::contract, (the RMUX adapter)
 git                  session, paths, shell
 storage              session, sync, paths
 sync                 session
-usage                session, shell                    [paths]
 session_ops          session, storage, git, sync,      [agent::<the config it reads>,
                      paths, workspace, shell            backend::{contract,identity,
                                                         instance,registry}]
 kernel               session, storage, sync, paths,    [agent::<the config it reads>,
                      session_ops, git, notifications,   backend::{contract,identity,
-                     shell                              pane,registry}, usage]
+                     shell                              pane,registry}]
 cli                  session, storage, session_ops,    [agent::<the config it reads>,
                      sync, paths, notifications,        backend::{contract,instance,
                      ui_control                          registry}, kernel]

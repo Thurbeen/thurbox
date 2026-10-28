@@ -287,38 +287,6 @@ pub struct GitStats {
     pub head: Option<String>,
 }
 
-/// One account-level rate-limit window (e.g. Claude's 5-hour or weekly), as
-/// shown by an agent's `/usage` command. Agent-neutral.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageWindow {
-    /// Short label, e.g. "5h", "Week", or a model id.
-    pub label: String,
-    /// Percent of the window consumed, 0–100.
-    pub used_percent: f32,
-    /// Unix epoch seconds when the window resets, if known.
-    pub resets_at: Option<u64>,
-}
-
-/// Account-level usage/rate-limit info for an agent, fetched from the vendor
-/// (the `/usage`-equivalent). Account-global — but the *account* is scoped to
-/// wherever the agent's credentials live, i.e. the host the session runs on
-/// (local machine, SSH host, or WSL distro). Agent-neutral.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct AgentUsage {
-    pub windows: Vec<UsageWindow>,
-    /// Plan/tier label when known (e.g. "max", "pro").
-    pub plan: Option<String>,
-    /// Human note when no windows are available (not logged in, API error…).
-    pub note: Option<String>,
-}
-
-impl AgentUsage {
-    /// Nothing worth rendering (no windows and no note).
-    pub fn is_empty(&self) -> bool {
-        self.windows.is_empty() && self.note.is_none()
-    }
-}
-
 pub struct SessionInfo {
     pub id: SessionId,
     pub name: String,

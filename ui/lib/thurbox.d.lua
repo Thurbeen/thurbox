@@ -704,23 +704,10 @@
 ---@field cache_creation_tokens? number
 ---@field cache_read_tokens? number
 
---- One account rate-limit window.
----@class (exact) thurbox.UsageWindow
----@field label string
----@field used_percent number
----@field resets_at? integer Epoch seconds; absent when the account did not say.
-
---- The account's rate-limit windows, shared by every session on that agent.
----@class (exact) thurbox.Usage
----@field windows thurbox.UsageWindow[]
----@field plan? string
----@field note? string
-
 ---@class thurbox.SessionMetrics
 ---@field cpu_percent? number
 ---@field memory_bytes? integer
 ---@field agent? thurbox.AgentMetrics
----@field usage? thurbox.Usage
 
 ---@class (exact) thurbox.Metrics
 ---@field system thurbox.SystemMetrics

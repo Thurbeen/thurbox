@@ -1417,6 +1417,15 @@ run("quota:devbox", "quota-axi --json --no-credential-refresh", {
 })
 ```
 
+**Account quotas are yours to fetch.** Plugin API 3 removed
+`thurbox.metrics.sessions[id].usage`: thurbox no longer reads agent credentials
+or calls a provider's API for every session while the interface is open. A pane
+that drew those windows asks the account-owning tool itself, with a `run` like
+the two above, and declares `requires_api = 3` once it no longer reads the old
+field. [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)
+already does this with `quota-axi`, locally and on every configured host;
+installing it is the migration for its quota readout.
+
 This works with zero sessions and `share_sessions = false`. The command runs
 in the target user's home, with the environment supplied by its transport,
 using POSIX `sh` or Windows PowerShell according to `thurbox.hosts[].platform`.

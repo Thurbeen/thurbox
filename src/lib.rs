@@ -15,5 +15,4 @@ pub mod storage;
 pub mod sync;
 pub mod telemetry;
 pub mod ui_control;
-pub mod usage;
 pub mod workspace;
