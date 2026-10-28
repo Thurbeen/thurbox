@@ -2535,13 +2535,15 @@ fn run_exited(
         .ok()
         .map(|screen| screen.trim_end().to_string())
         .filter(|screen| !screen.is_empty());
-    db.record_session_exited(target.id, code, tail.as_deref())
-        .map_err(|e| format!("record_session_exited: {e}"))?;
     // An agent that exits before any hook reported from it never launched as
     // far as a driver is concerned; the window closes with it, so this is the
-    // only moment its failure can be read.
+    // only moment its failure can be read. Recorded before the exit itself: a
+    // `wait` ends at an `exited` event, and one waiting for `failed` must read
+    // the failure first.
     let launch_failed =
         crate::session_ops::launch_failure::record_exited(db, &target, code, tail.clone());
+    db.record_session_exited(target.id, code, tail.as_deref())
+        .map_err(|e| format!("record_session_exited: {e}"))?;
     let status = code.map_or_else(
         || "an unknown status".to_string(),
         |c| format!("status {c}"),

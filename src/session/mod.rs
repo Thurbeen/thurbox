@@ -38,7 +38,9 @@ pub use hook_status::{
 };
 pub use host_def::{current_wsl_distro, HostDef, HostKind, HostRegistry, WslRepairPlan};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
-pub use launch_failure::{LaunchFailure, LaunchFailureReason, LAUNCH_FAILURE_META};
+pub use launch_failure::{
+    LaunchFailure, LaunchFailureReason, LAUNCH_FAILURE_META, LAUNCH_REPORTED_META,
+};
 pub use message::SessionMessage;
 pub use multiplexer::{BackendChoice, Multiplexer};
 pub use op_error::OpError;

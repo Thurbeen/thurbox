@@ -25,6 +25,12 @@ use super::agent_def::SETUP_FAILURE_MARKER;
 /// `thurbox.` namespace, so no driver can forge or clear one.
 pub const LAUNCH_FAILURE_META: &str = "thurbox.launch_failure";
 
+/// The session meta key naming the pane whose agent has reported at least
+/// once, kept where the report itself is not: submitted input retires a Codex
+/// report (`hook_state` back to NULL) without a new launch, and an agent that
+/// started, took input and then exited is not a launch that failed.
+pub const LAUNCH_REPORTED_META: &str = "thurbox.launch_reported";
+
 /// How many of the dead pane's last lines a record keeps.
 pub const LAUNCH_FAILURE_TAIL_LINES: u32 = 20;
 

@@ -1098,6 +1098,10 @@ impl Database {
         if recorded.is_some_and(|r| r.pane == failure.pane) {
             return Ok(false);
         }
+        let reported = self.get_session_meta(id, crate::session::LAUNCH_REPORTED_META)?;
+        if reported.as_deref() == Some(failure.pane.as_str()) {
+            return Ok(false);
+        }
         let held = super::event_cursors::LockSubject::Session(id);
         if self.lease_held(&held, current_time_millis())? {
             return Ok(false);
@@ -2132,8 +2136,9 @@ impl Database {
              background_work = NULL WHERE id = ?1",
             params![id_str],
         )?;
-        // The launch it records is the one being replaced.
+        // The launch they record is the one being replaced.
         self.unset_session_meta(id, crate::session::LAUNCH_FAILURE_META)?;
+        self.unset_session_meta(id, crate::session::LAUNCH_REPORTED_META)?;
         if let Some(Some(previous)) = previous {
             self.record_session_event(
                 id,
@@ -2165,6 +2170,19 @@ impl Database {
             params![id.to_string(), previous, expected.state_at],
         )? != 0;
         if changed {
+            // The report goes; the fact that this launch's agent made one
+            // stays, so its later exit is not read as a failed launch.
+            let pane: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT backend_id FROM sessions WHERE id = ?1",
+                    params![id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(pane) = pane.filter(|pane| !pane.is_empty()) {
+                self.set_session_meta(id, crate::session::LAUNCH_REPORTED_META, &pane)?;
+            }
             self.record_session_event(
                 id,
                 SessionEventKind::Changed,
@@ -3158,6 +3176,28 @@ mod tests {
         let failure =
             crate::session::LaunchFailure::observed(&session.backend_id, Some(0), None, 7);
         assert!(!db.record_launch_failure(session.id, &failure).unwrap());
+    }
+
+    #[test]
+    fn an_agent_whose_report_input_retired_has_still_launched() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        db.set_hook_state(session.id, "idle").unwrap();
+        // Submitted input retires a Codex report: the row reads as never
+        // reported again, but the agent did start.
+        let prior = db.load_hook_state(session.id).unwrap().unwrap();
+        assert!(db
+            .clear_hook_state_if_unchanged(session.id, &prior)
+            .unwrap());
+        assert_eq!(db.load_hook_state(session.id).unwrap().unwrap().state, None);
+        let failure =
+            crate::session::LaunchFailure::observed(&session.backend_id, Some(0), None, 7);
+        assert!(!db.record_launch_failure(session.id, &failure).unwrap());
+
+        // The next launch starts with nothing reported.
+        db.clear_hook_state(session.id).unwrap();
+        assert!(db.record_launch_failure(session.id, &failure).unwrap());
     }
 
     #[test]

@@ -471,7 +471,8 @@ silence meant something: the hooks extension is on and the agent has hook
 coverage (by name or `hook_schema`), so it would have reported on boot. An
 uncovered agent, a plain `--command` session or a session with hooks off never
 reports at all, and a shell somebody `exit`ed an hour in is not a failed launch.
-A session that has reported once is never `failed`.
+A session that has reported once in this launch is never `failed`, including a
+Codex session whose report was retired by submitted input.
 
 When it is noticed. `session get` (unless `--no-verify`) looks at the pane of
 the session it reads, so a driver polling `get` sees `failed` on its first poll
@@ -483,6 +484,8 @@ session: `session create` itself fails with the pane's output.
 
 When it ends. The next launch — `session restart`, `session start`, restore —
 clears it; a record naming a pane the row has since left is never reported.
+A failed session whose window then goes (psmux closes it with the program) is
+not marked `lost`: it stays `failed` until it is relaunched.
 Local sessions only: a session on a host that shares its sessions is recorded
 by the host's own thurbox, and the host's `session get` reports it.
 

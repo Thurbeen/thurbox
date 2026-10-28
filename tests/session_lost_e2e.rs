@@ -372,6 +372,42 @@ fn a_crashed_backend_reports_each_running_session_lost_once() {
     again.silent_for(QUIET, "the loss was already in the log");
 }
 
+/// A failed launch's window going is part of the failure — psmux closes it
+/// with the program — not a loss, and marking it lost would blank the pane its
+/// failure record is read against: the session would go from `failed` back to
+/// `unreported`.
+#[test]
+fn a_failed_launch_whose_window_goes_stays_failed() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let db = env.db();
+    let worker = row("worker", env.window("worker"));
+    db.upsert_session(&worker).expect("persist worker");
+    db.set_hook_state(worker.id, "working").expect("working");
+    let failed = row("failed", env.window("failed"));
+    db.upsert_session(&failed).expect("persist failed");
+    let failure = thurbox::session::LaunchFailure::observed(&failed.backend_id, Some(1), None, 7);
+    assert!(db
+        .record_launch_failure(failed.id, &failure)
+        .expect("record"));
+
+    let watch = env.watch();
+    env.crash_server();
+    let lost = watch.event("the worker's loss");
+    assert_eq!(lost["reason"], "lost");
+    assert_eq!(lost["session"], worker.id.to_string());
+    watch.silent_for(QUIET, "the failed launch is not lost");
+    drop(watch);
+
+    assert_eq!(
+        env.db().load_launch_failures().expect("failures")[&failed.id],
+        failure
+    );
+}
+
 /// A fresh tmux server numbers its panes from `%0` again, so a worker brought
 /// back after a crash can sit on the very pane id it had. Its next death is
 /// still news.
