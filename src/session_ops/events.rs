@@ -49,7 +49,7 @@ pub fn assess(
     if stopped {
         hook.parked()
     } else {
-        hook
+        hook.with_launch_failure(facts.launch_failure.clone())
     }
 }
 

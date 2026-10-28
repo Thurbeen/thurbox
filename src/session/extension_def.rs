@@ -695,6 +695,8 @@ prompt = "tick"
                 telemetry_env: Default::default(),
                 telemetry_args: Vec::new(),
                 additional_dir_args: Vec::new(),
+                vars: Default::default(),
+                setup: Vec::new(),
             }],
             files: vec![ExtensionFile {
                 path: "FLOW.md".into(),

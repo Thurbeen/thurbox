@@ -634,10 +634,8 @@ fn spawn(
         && agent_def.fork_args == ["fork", "{id}"]
         && req.fork_session_id.as_deref() == Some("")
     {
-        args = std::iter::once("fork".to_string())
-            .chain(agent_def.args.iter().cloned())
-            .chain(agent_def.build_directory_args(&member_dirs))
-            .collect();
+        args = agent_def.place_session_group(vec!["fork".to_string()]);
+        args.extend(agent_def.build_directory_args(&member_dirs));
     }
     args.extend(telemetry_args);
     args.extend(req.agent_args.iter().cloned());
@@ -666,6 +664,8 @@ fn spawn(
             )));
         }
     }
+
+    let (command, args) = super::with_setup(&agent_def, platform_of(host.as_ref()), command, args)?;
 
     report(SpawnPhase::Launching);
     // The window is stamped with the row's id as it is created (ADR-25), which
@@ -2034,7 +2034,9 @@ pub(crate) fn resolve_launch_home(host: &HostDef) -> Option<String> {
 /// Whether any of `def`'s arg groups still carries an unexpanded `{home}`.
 fn def_references_home(def: &crate::session::AgentDef) -> bool {
     let has = |v: &[String]| v.iter().any(|t| t.contains(super::HOME_PLACEHOLDER));
-    has(&def.args)
+    def.command.contains(super::HOME_PLACEHOLDER)
+        || has(&def.args)
+        || has(&def.setup)
         || has(&def.resume_args)
         || has(&def.fork_args)
         || has(&def.new_session_args)

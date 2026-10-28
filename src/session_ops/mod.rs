@@ -44,6 +44,7 @@ pub mod host_cli;
 pub mod image_drop;
 #[cfg(test)]
 mod key_tests;
+pub mod launch_failure;
 pub mod lifecycle_hooks;
 pub mod lock;
 pub mod lost;
@@ -688,6 +689,7 @@ pub fn agent_launch_plan(
                 .map_err(|e| format!("read the agent arguments: {e}"))?,
         );
     }
+    let (command, args) = with_setup(&def, spawn::platform_of(host.as_ref()), command, args)?;
     Ok(LaunchPlan {
         agent: def.name,
         command,
@@ -1045,7 +1047,7 @@ fn unknown_agent(registry: &crate::session::AgentRegistry, name: &str) -> String
 /// `session` layer. Used by agents that want a session *file path* rather than
 /// a bare id (e.g. omp's `--session-dir {home}/.omp/…/thurbox-{id}`); the
 /// path can't rely on the shell to expand `~`, since args are POSIX-quoted.
-pub(crate) const HOME_PLACEHOLDER: &str = "{home}";
+pub(crate) const HOME_PLACEHOLDER: &str = crate::session::agent_def::HOME_PLACEHOLDER;
 
 /// Rewrite `{home}` in argument groups to `home`.
 ///
@@ -1062,7 +1064,11 @@ pub(crate) fn expand_home_in_def(def: &mut crate::session::AgentDef, home: &str)
             }
         }
     };
+    if def.command.contains(HOME_PLACEHOLDER) {
+        def.command = def.command.replace(HOME_PLACEHOLDER, home);
+    }
     subst(&mut def.args);
+    subst(&mut def.setup);
     subst(&mut def.resume_args);
     subst(&mut def.fork_args);
     subst(&mut def.new_session_args);
@@ -1091,6 +1097,34 @@ pub(crate) fn build_agent_invocation(
     );
     args.extend(def.build_directory_args(member_dirs));
     (command, args)
+}
+
+/// `(command, args)` behind `def`'s `setup`, for a launch on `platform`.
+///
+/// Applied last, once every arg is in place, so what is appended after the
+/// definition's own args (directory scope, telemetry, `--agent-arg`) still
+/// reaches the agent through the wrapper's `"$@"`. The setup script is POSIX
+/// `sh`, which a native-Windows host does not have, so a definition with a
+/// setup is refused there rather than launched without it.
+pub(crate) fn with_setup(
+    def: &crate::session::AgentDef,
+    platform: crate::session::Platform,
+    command: String,
+    args: Vec<String>,
+) -> Result<(String, Vec<String>), crate::session_ops::OpError> {
+    if def.setup.is_empty() {
+        return Ok((command, args));
+    }
+    if platform == crate::session::Platform::Windows {
+        return Err(crate::session_ops::OpError::Refused(format!(
+            "agent '{}' declares a setup, which runs through POSIX sh; \
+             a native-Windows host has none",
+            def.name
+        )));
+    }
+    Ok(crate::session::agent_def::wrap_with_setup(
+        &def.setup, &command, &args,
+    ))
 }
 
 /// Who carries out a verb on a session (#1471), decided once per verb from

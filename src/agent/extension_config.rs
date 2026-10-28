@@ -1137,6 +1137,8 @@ mod tests {
             telemetry_env: Default::default(),
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
+            vars: Default::default(),
+            setup: Vec::new(),
         };
         // claude already exists in the seeded built-ins → not re-added.
         let claude = AgentDef {
@@ -1174,6 +1176,8 @@ mod tests {
             telemetry_env: Default::default(),
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
+            vars: Default::default(),
+            setup: Vec::new(),
         };
         ensure_agents_registered(&[flow]).unwrap();
         // Sanity: flow + the seeded built-ins are present.
@@ -1263,6 +1267,8 @@ mod tests {
             telemetry_env: Default::default(),
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
+            vars: Default::default(),
+            setup: Vec::new(),
         };
         ensure_agents_registered(&[fleet]).unwrap();
 

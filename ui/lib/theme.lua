@@ -118,6 +118,9 @@ local STATUS_GLYPHS = {
   -- that the agent said it is at rest.
   uncovered = "◌",
   unreported = "◌",
+  -- The launch died before the agent said anything (a failed `setup`, or an
+  -- agent that exited first): the same mark as an error, because it is one.
+  failed = "✗",
 }
 local STATUS_ROLES = {
   working = "status_working",
@@ -130,6 +133,7 @@ local STATUS_ROLES = {
   running = "status_running",
   uncovered = "status_unknown",
   unreported = "status_unknown",
+  failed = "status_error",
 }
 
 --- Glyph and colour for a session status.

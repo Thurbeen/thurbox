@@ -28,6 +28,7 @@ module exists to prevent:
 | `running` | `status_running` (accent) | `◉`, animated while its pane prints | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
 | `uncovered` | `status_unknown` (muted) | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | `status_unknown` (muted) | `◌` | the agent *can* report and has not yet |
+| `failed` | `status_error` | `✗` | the launch died before the agent reported anything: a failed agents.toml `setup` step, or a hook-covered agent whose pane died with no report. Recorded once (`thurbox.launch_failure` meta + a `changed`/`launch_failed` event) by `session_ops::launch_failure` — the reconcile tick, `session get`, `list --verify`, `wait`, `watch`, and `session exited` on psmux — and published as `launch_failure` (`reason`, `exit_code`, `output`, `pane`, `at`). Outranks everything but `stopped`; the next launch clears it, and a record naming a pane the row has left is ignored. See docs/ORCHESTRATION.md → Launch failures |
 | `stopped` | — | — | parked by `session stop`: no process at all, which is why it outranks whatever the hook columns still hold |
 
 **Only `stopped` carries no dot**, because a parked session is at rest by

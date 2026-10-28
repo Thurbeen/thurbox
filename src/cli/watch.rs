@@ -157,6 +157,7 @@ pub fn run(
     let mut version = db.data_version().unwrap_or_default();
     let mut lost = crate::session_ops::lost::LostSweep::default();
     lost.sweep(db, local);
+    crate::session_ops::launch_failure::sweep(db, local);
     let mut swept = Instant::now();
     if !drain(
         db,
@@ -181,7 +182,7 @@ pub fn run(
         // cannot see — so it reads the log itself.
         let mut found = 0;
         if swept.elapsed() >= SWEEP {
-            found = lost.sweep(db, local);
+            found = lost.sweep(db, local) + crate::session_ops::launch_failure::sweep(db, local);
             swept = Instant::now();
         }
 
@@ -312,6 +313,7 @@ fn line(
         backend_id: String::new(),
         stopped: false,
         seen_at: None,
+        launch_failure: None,
     };
     let facts = facts.get(&event.session_id).unwrap_or(&unknown);
     // Only the pane probe needs the backend, and only a live row has a pane to
@@ -359,6 +361,7 @@ fn assess(
     if stopped {
         return hook.parked();
     }
+    let hook = hook.with_launch_failure(facts.launch_failure.clone());
     let Some((backends, session)) = probe else {
         return hook;
     };

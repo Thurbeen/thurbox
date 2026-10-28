@@ -67,6 +67,34 @@ Agents that omit `resume_args` simply start fresh on restart (the
 live tmux process is what carries state across TUI restarts). Add
 your own `[[agents]]` entry to support any CLI — no recompile.
 
+**Templates, ordering and setup (`vars`, `{session_args}`, `setup`).** What used
+to need a wrapper script as `command` is data now (full contract:
+`docs/CONFIG.md` → Templates, argument order and setup; worked example:
+`docs/AGENTS.md` → Replacing a launch wrapper):
+
+- `vars = { role = "coder" }` fills `{role}` in `command`, `args`, every
+  `*_args` group, `env`, `setup` and the telemetry fields — once, on the fully
+  resolved entry (`AgentDef::apply_vars`, called at the end of
+  `agent_config::resolve_agent_entry`), so a template base's `{role}` is filled
+  by whichever variant names it. `vars` merge **per key** across `extends`; every
+  other field replaces. One pass, values inserted verbatim (a value may carry
+  `{home}`/`{id}`, never another var).
+- Every placeholder must resolve (`AgentDef::placeholder_errors`): `{id}` only in
+  the session groups, `{dir}` only in `additional_dir_args`, the OTLP pair only in
+  telemetry fields, `{home}` in command/args/groups/env/setup. A placeholder is
+  `{identifier}`, so codex's TOML `-c` values are never one. An unknown one skips
+  the entry with a warning and fails `config validate` — never launched literally.
+- `{session_args}` as a whole `args` token is where `build_args` splices the
+  fork/resume/new-session group (`AgentDef::place_session_group`); without it the
+  group leads, as before. Codex's legacy-picker paths (`spawn.rs` fork with no id,
+  `restart.rs` resume picker) go through the same method.
+- `setup` steps become `sh -c '<steps under set -e>; exec "$@"' thurbox-setup CMD
+  ARGS…` (`agent_def::wrap_with_setup`), applied last by `session_ops::with_setup`
+  in spawn, the restart plan (restart/start/restore) and `agent launch-args`, so
+  appended args still reach the agent. Refused on a native-Windows host (no `sh`).
+  A failing step prints `agent_def::SETUP_FAILURE_MARKER`, which is how
+  `session::launch_failure` tells a `setup` failure from an `exited` one.
+
 **Session id pinning vs. `resume_latest`.** thurbox generates the
 `agent_session_id` (a UUID) and `claude`/`pi` accept it at creation
 (`--session-id {id}`), so those two resume/fork by that exact id. Codex instead

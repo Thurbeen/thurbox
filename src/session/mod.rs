@@ -6,6 +6,7 @@ pub mod hook_def;
 pub mod hook_status;
 pub mod host_def;
 pub mod hyperlink;
+pub mod launch_failure;
 pub mod message;
 pub mod multiplexer;
 pub mod op_error;
@@ -37,6 +38,7 @@ pub use hook_status::{
 };
 pub use host_def::{current_wsl_distro, HostDef, HostKind, HostRegistry, WslRepairPlan};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
+pub use launch_failure::{LaunchFailure, LaunchFailureReason, LAUNCH_FAILURE_META};
 pub use message::SessionMessage;
 pub use multiplexer::{BackendChoice, Multiplexer};
 pub use op_error::OpError;

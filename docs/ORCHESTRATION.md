@@ -343,6 +343,7 @@ gone — and each one comes with what it takes to judge it:
 | `detected_agent` | which registered agent is in the pane, when it is not the row's own |
 | `state`, `state_source` | the best answer available, and where it came from |
 | `stopped` | whether the session is parked — `session stop`, no pane |
+| `launch_failure` | why a `failed` session failed, `null` otherwise — see *Launch failures* below |
 | `ready` | whether the session can take input now, for every agent — see *Readiness* below |
 | `reports_as` | the agent the hook fields were read against, when a driver declared one |
 
@@ -351,10 +352,11 @@ vocabulary `session get`, `session list`, `thurbox-cli watch` and the
 interface all derive through, so no two of them answer differently for
 one row. Besides the five an agent can signal it can read `unreported`
 (nothing has reported for this session), `uncovered` (its agent is wired
-to report nothing), `stopped` (the session is parked) or `running` (an
-agent holds the pane and has not signalled — `session get`'s probe only).
-None of those four is a state an agent can signal, and `state_source` is
-null for the first three. The piped (TOON) `session list` shows this
+to report nothing), `stopped` (the session is parked), `failed` (its launch
+died before the agent reported anything — see *Launch failures*) or
+`running` (an agent holds the pane and has not signalled — `session get`'s
+probe only). None of those five is a state an agent can signal, and
+`state_source` is null for the first four. The piped (TOON) `session list` shows this
 column, and so does the interface — its session list derives through the
 same `Assessment`, so a driver reconciling the screen with a `session
 get` never has to reconcile two vocabularies.
@@ -421,7 +423,7 @@ knowledge of its own to read it:
 | `ready` | when |
 |---|---|
 | `true` | the last hook report is `idle` or `done`; or **no hook has reported yet** (`state: "running"`, `state_source: "process"`), an agent holds the pane, and its input line shows an empty, drawn composer — one prompt glyph with the cursor after it |
-| `false` | `working`, `blocked` or `background`; parked (`stopped`); the pane holds no agent (`shell`, `dead`, `missing`) or contradicts the report; or a fresh agent whose composer is not drawn yet |
+| `false` | `working`, `blocked` or `background`; parked (`stopped`); `failed`; the pane holds no agent (`shell`, `dead`, `missing`) or contradicts the report; or a fresh agent whose composer is not drawn yet |
 | `null` | nothing can say: the pane was not looked at (`session list` without `--verify`, before any report), it is remote and unreported, or its input line could not be read |
 
 The composer read covers the window between launch and the first hook, which
@@ -429,6 +431,60 @@ some agents (Codex) only fire at their first turn: it is made only for a session
 no hook has reported on, and only by a verb that probes the pane. Once a hook
 has reported, the agent's own word decides and the screen is not read. Poll
 `session get` until `ready` is `true`; `null` is "ask again", never "go".
+
+#### Launch failures
+
+A launch can die before its agent ever runs: a `setup` step in `agents.toml`
+fails, or the agent — or a wrapper standing in for it — exits before any hook
+reports from it. `remain-on-exit` keeps the dead pane, and before this the
+session read `unreported` ("can report, has not yet") for as long as the row
+stood, so a driver waiting for a first report waited forever. It now reads
+**`state: "failed"`**, with `ready: false` and the record on
+**`launch_failure`** (`session get --json` and `session list --json`; `null`
+for every other session):
+
+```json
+"launch_failure": {
+  "reason": "setup",
+  "exit_code": 3,
+  "output": "error: role 'debugger' not found\n\nthurbox: setup step 2 failed (exit 3)",
+  "pane": "%12",
+  "at": 1793011200000
+}
+```
+
+| field | meaning |
+|---|---|
+| `reason` | `setup` — a setup step failed and the agent was never started; `exited` — the agent's process exited before any hook reported |
+| `exit_code` | the pane program's exit status; `null` when the multiplexer could not say (a program killed by a signal) |
+| `output` | the pane's last 20 lines, trailing blank lines trimmed; `null` when the screen was empty or unreadable |
+| `pane` | the dead pane, still on screen until the session is relaunched — `session capture` reads more of it |
+| `at` | epoch ms the failure was recorded |
+
+The record is written once, with a `changed` event whose `reason` is
+`launch_failed` (`to_state: "failed"`, `exit_code`, and the output in
+`detail`) on `watch`. `session wait` ends on it — exit code 6, like a lost
+session — unless it was waiting for `--state failed`.
+
+What counts. A failed setup always does. An exit counts only for an agent whose
+silence meant something: the hooks extension is on and the agent has hook
+coverage (by name or `hook_schema`), so it would have reported on boot. An
+uncovered agent, a plain `--command` session or a session with hooks off never
+reports at all, and a shell somebody `exit`ed an hour in is not a failed launch.
+A session that has reported once is never `failed`.
+
+When it is noticed. `session get` (unless `--no-verify`) looks at the pane of
+the session it reads, so a driver polling `get` sees `failed` on its first poll
+after the death; `session list --verify`, `session wait` and `watch` look too,
+and so does the reconcile tick (the interface's worker and the headless
+heartbeat, every minute), which is what records it for a plain `session list`.
+A pane that dies within the spawn's 50 ms startup check never becomes a
+session: `session create` itself fails with the pane's output.
+
+When it ends. The next launch — `session restart`, `session start`, restore —
+clears it; a record naming a pane the row has since left is never reported.
+Local sessions only: a session on a host that shares its sessions is recorded
+by the host's own thurbox, and the host's `session get` reports it.
 
 `session capture --json` adds the pane's live state alongside its text —
 `cursor_row`/`cursor_col`, `foreground_process` and `foreground_command`,

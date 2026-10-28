@@ -83,6 +83,11 @@ pub enum EventReason {
     /// by a multiplexer that closes the window with its program (psmux), where
     /// nothing else would ever see why it went.
     Exited,
+    /// `changed`: the launch died before the agent reported anything — a
+    /// `setup` step failed, or the agent exited first (`to_state` is
+    /// `failed`, with `exit_code` and the pane's last lines in `detail`). See
+    /// [`crate::session::launch_failure`].
+    LaunchFailed,
     /// `changed`: a repairer (the interface's respawn, `restart --if-missing`)
     /// put back an agent whose window had vanished. The crash-loop guard keeps
     /// its own count (`storage::relaunches`), since this log is pruned.
@@ -109,6 +114,7 @@ impl EventReason {
             Self::Updated => "updated",
             Self::Lost => "lost",
             Self::Exited => "exited",
+            Self::LaunchFailed => "launch_failed",
             Self::Relaunched => "relaunched",
             Self::SoftDeleted => "soft_deleted",
             Self::ForceDeleted => "force_deleted",

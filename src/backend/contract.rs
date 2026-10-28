@@ -493,6 +493,10 @@ pub struct PaneState {
     /// absence, which a caller reconciling a latched state against reality must
     /// not be handed.
     pub dead: Option<bool>,
+    /// The exited program's status, for a [`dead`](Self::dead) pane whose
+    /// multiplexer reports one (`#{pane_dead_status}`). `None` while the pane
+    /// lives, for a program a signal killed, and where the format is unknown.
+    pub exit_status: Option<i64>,
 }
 
 /// Metadata returned when discovering existing sessions from the backend.

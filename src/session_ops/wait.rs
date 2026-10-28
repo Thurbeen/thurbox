@@ -60,6 +60,21 @@ pub fn run(
     if stopped {
         return Err(Error::Gone);
     }
+    // A launch that already failed, and was not what the caller waits for
+    // (the baseline above answers `--state failed`), will reach no state.
+    if since.is_none() {
+        super::launch_failure::check(db, backends, session.id);
+        let facts = db.load_session_facts_for(&[session.id]).map_err(failed)?;
+        if facts
+            .get(&session.id)
+            .is_some_and(|f| f.launch_failure.is_some())
+        {
+            if let Some(value) = baseline(db, &registry, session.id, seq, &conditions.states)? {
+                return Ok(value);
+            }
+            return Err(Error::Gone);
+        }
+    }
     let mut version = db.data_version().map_err(failed)?;
     let mut dirty = true;
     let mut lost = super::lost::LostSweep::default();
@@ -111,8 +126,9 @@ pub fn run(
                     return Ok(value);
                 }
                 // Checked after the match, so `--state stopped` is answered by
-                // the stop it was waiting for rather than ended by it.
-                if stopped {
+                // the stop it was waiting for rather than ended by it — and
+                // `--state failed` by the failure.
+                if stopped || event.reason == "launch_failed" {
                     return Err(Error::Gone);
                 }
             }
@@ -170,6 +186,7 @@ pub fn run(
         std::thread::sleep(nap);
         if swept.elapsed() >= Duration::from_secs(3) {
             dirty |= lost.sweep(db, backends) > 0;
+            dirty |= super::launch_failure::check(db, backends, session.id);
             swept = Instant::now();
         }
         let next = db.data_version().map_err(failed)?;

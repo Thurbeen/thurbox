@@ -137,6 +137,7 @@ persisted columns onto a `SessionState` once per tick:
 | `running` | accent | `◉`, spinner while its pane prints | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
 | `uncovered` | muted grey | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | muted grey | `◌` | the agent *can* report and has not yet |
+| `failed` | `status_error` (red) | `✗` | the launch died before the agent reported anything — a failed `setup`, or an early exit ([Launch failures](ORCHESTRATION.md#launch-failures)) |
 
 Those last three are drawn apart from `idle` on purpose, and it took a bug to
 prove why: the interface derived its dot from the hook columns alone, so a

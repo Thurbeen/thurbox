@@ -782,6 +782,16 @@ pub enum SessionState {
     /// *every* other word would describe an agent that is not running. It is
     /// also the one state thurbox knows first-hand rather than infers.
     Stopped,
+    /// The launch died before the agent said anything: a `setup` step failed,
+    /// or the agent's process exited before any hook reported from it. Carries
+    /// a [`LaunchFailure`](super::launch_failure::LaunchFailure) record
+    /// (exit status, the pane's last lines).
+    ///
+    /// Outranks every other word but `stopped`, for the reason `stopped` does:
+    /// nothing is running, and `unreported` — the word such a pane used to
+    /// keep — promises a report that can never come. It ends with the next
+    /// launch.
+    Failed,
     /// A remote session whose host cannot be reached. The row stands; the
     /// machine behind it does not, and the hook columns just hold its last
     /// word.
@@ -811,6 +821,7 @@ impl SessionState {
         SessionState::Done,
         SessionState::Idle,
         SessionState::Stopped,
+        SessionState::Failed,
         SessionState::Unreachable,
         SessionState::Running,
         SessionState::Uncovered,
@@ -826,6 +837,7 @@ impl SessionState {
             SessionState::Done => "done",
             SessionState::Idle => "idle",
             SessionState::Stopped => "stopped",
+            SessionState::Failed => "failed",
             SessionState::Unreachable => "unreachable",
             SessionState::Running => "running",
             SessionState::Uncovered => "uncovered",
@@ -1064,6 +1076,10 @@ pub struct Assessment {
     /// on yet ([`SessionState::Running`]), where it is the one evidence that
     /// the agent finished starting; `None` = not read, or unreadable.
     pub composer_drawn: Option<bool>,
+    /// The recorded launch failure, when the launch died before the agent
+    /// reported — what makes [`Self::state`] answer
+    /// [`SessionState::Failed`]. Set by [`Self::with_launch_failure`].
+    pub launch_failure: Option<super::launch_failure::LaunchFailure>,
     /// The agent every answer above was resolved against.
     ///
     /// Usually the session's own, but a `--command` session whose driver
@@ -1090,6 +1106,9 @@ impl Assessment {
     pub fn state(&self) -> SessionState {
         if self.stopped {
             return SessionState::Stopped;
+        }
+        if self.launch_failure.is_some() {
+            return SessionState::Failed;
         }
         match self.state {
             Some(state) => state,
@@ -1127,6 +1146,7 @@ impl Assessment {
             | SessionState::Blocked
             | SessionState::Background
             | SessionState::Stopped
+            | SessionState::Failed
             | SessionState::Unreachable => Some(false),
         }
     }
@@ -1190,8 +1210,18 @@ impl Assessment {
             state_source: state.map(|(_, source)| source),
             stopped: false,
             composer_drawn: None,
+            launch_failure: None,
             agent: agent.to_string(),
         }
+    }
+
+    /// Fold in the session's recorded launch failure, if it has one.
+    pub fn with_launch_failure(
+        mut self,
+        failure: Option<super::launch_failure::LaunchFailure>,
+    ) -> Self {
+        self.launch_failure = failure;
+        self
     }
 
     /// The agent found holding the pane, when it is not the one the session was
@@ -1337,6 +1367,8 @@ mod tests {
             telemetry_env: Default::default(),
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
+            vars: Default::default(),
+            setup: Vec::new(),
         }
     }
 

@@ -396,10 +396,12 @@
 
 --- A session's derived status, as `SessionState::as_str` spells it.
 --- `lib/theme.lua` has a glyph and a role for `working`, `blocked`,
---- `background`, `done`, `idle`, `unreachable`, `running`, `uncovered` and
---- `unreported`, and falls back to `idle` only for `stopped` — which is at
---- rest by definition. `background` is a turn at rest whose sub-work is
---- still running, so it is not finished. The three silences are drawn apart
+--- `background`, `done`, `idle`, `unreachable`, `running`, `uncovered`,
+--- `unreported` and `failed`, and falls back to `idle` only for `stopped` —
+--- which is at rest by definition. `failed` is a launch that died before its
+--- agent reported anything (a failed agents.toml `setup`, or an early
+--- exit). `background` is a turn at rest whose sub-work is still running,
+--- so it is not finished. The three silences are drawn apart
 --- from `idle` on purpose: `running` is "an agent holds the pane and said
 --- nothing", `uncovered` is "wired to report nothing" and `unreported` is
 --- "can report, has not yet". None of them is the agent saying it is at
@@ -412,6 +414,7 @@
 ---| "idle"
 ---| "unreachable"
 ---| "stopped"
+---| "failed"
 ---| "running"
 ---| "uncovered"
 ---| "unreported"

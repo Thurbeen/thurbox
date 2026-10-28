@@ -3469,6 +3469,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             "#{pane_dead}",
             "#{window_name}",
             "#{pane_id}",
+            "#{pane_dead_status}",
         ]
         .join(&PANE_STATE_SEP.to_string());
         let mut argv = M::DISPLAY_FLAGS.to_vec();
@@ -4473,6 +4474,10 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>, Option<String>) {
     });
 
     let window = next().map(str::to_string);
+    // The pane id, which `answered_for` reads on its own.
+    let _ = next();
+    // Empty while the pane lives, and for a program killed by a signal.
+    let exit_status = next().and_then(|f| f.parse().ok());
 
     (
         PaneState {
@@ -4482,6 +4487,7 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>, Option<String>) {
             foreground_command: None,
             foreground_cwd: cwd,
             dead,
+            exit_status,
         },
         tty,
         window,
@@ -7665,6 +7671,28 @@ done
             "",
         ]));
         assert_eq!(unknown.dead, None);
+    }
+
+    #[test]
+    fn parse_pane_state_reads_a_dead_panes_exit_status() {
+        let answer = |status: &str| {
+            parse_pane_state(&pane_state_answer(&[
+                "0",
+                "0",
+                "env",
+                "/w",
+                "/dev/pts/2",
+                "1",
+                "tb-demo",
+                "%3",
+                status,
+            ]))
+            .0
+            .exit_status
+        };
+        assert_eq!(answer("1"), Some(1));
+        assert_eq!(answer("127"), Some(127));
+        assert_eq!(answer(""), None);
     }
 
     #[test]

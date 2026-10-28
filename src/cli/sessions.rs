@@ -1218,6 +1218,9 @@ fn run_list_active(
         .iter()
         .map(|&(index, _)| sessions[index].clone())
         .collect();
+    if verify {
+        crate::session_ops::launch_failure::sweep(db, backends.get());
+    }
     let facts = SessionFacts::load(db);
     let bases = db.load_base_branches().unwrap_or_default();
     let updated = db.load_updated_at().unwrap_or_default();
@@ -1287,6 +1290,12 @@ fn run_get(
     no_verify: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
+    // Before the facts are read, so a launch that died since the last sweep
+    // reads `failed` on this very call — a driver polling `get` is the one
+    // waiting on it.
+    if !no_verify {
+        crate::session_ops::launch_failure::check(db, backends.get(), session.id);
+    }
     let facts = SessionFacts::load(db);
     let bases = db.load_base_branches().unwrap_or_default();
     let registry = crate::agent::agent_config::load_or_seed();
@@ -1909,9 +1918,10 @@ fn wait_error(error: crate::session_ops::wait::Error) -> CommandError {
     use crate::session_ops::wait::Error;
     match error {
         Error::Timeout => CommandError::with_code("wait timed out", super::EXIT_TIMEOUT),
-        Error::Gone => {
-            CommandError::with_code("session was deleted, stopped or lost", super::EXIT_GONE)
-        }
+        Error::Gone => CommandError::with_code(
+            "session was deleted, stopped or lost, or its launch failed",
+            super::EXIT_GONE,
+        ),
         Error::Failed(e) => e.into(),
     }
 }
@@ -2527,6 +2537,11 @@ fn run_exited(
         .filter(|screen| !screen.is_empty());
     db.record_session_exited(target.id, code, tail.as_deref())
         .map_err(|e| format!("record_session_exited: {e}"))?;
+    // An agent that exits before any hook reported from it never launched as
+    // far as a driver is concerned; the window closes with it, so this is the
+    // only moment its failure can be read.
+    let launch_failed =
+        crate::session_ops::launch_failure::record_exited(db, &target, code, tail.clone());
     let status = code.map_or_else(
         || "an unknown status".to_string(),
         |c| format!("status {c}"),
@@ -2538,6 +2553,7 @@ fn run_exited(
             "session_id": target.id.to_string(),
             "session_name": target.name,
             "exit_code": code,
+            "launch_failed": launch_failed,
         }),
         format!("Recorded that '{}' exited with {status}.", target.name),
     ))
@@ -3929,6 +3945,9 @@ pub(crate) struct SessionFacts {
     /// The rows created from a raw `--command` rather than an `agents.toml`
     /// entry — the ones thurbox never had an agent to wire hooks for.
     command_sessions: std::collections::HashSet<crate::session::SessionId>,
+    /// The launch failures recorded for the panes the rows point at.
+    launch_failures:
+        std::collections::HashMap<crate::session::SessionId, crate::session::LaunchFailure>,
 }
 
 impl SessionFacts {
@@ -3943,6 +3962,7 @@ impl SessionFacts {
             parked: db.load_stopped_sessions().unwrap_or_default(),
             reports_as: db.load_reports_as().unwrap_or_default(),
             command_sessions: db.load_command_sessions().unwrap_or_default(),
+            launch_failures: db.load_launch_failures().unwrap_or_default(),
         }
     }
 
@@ -3989,6 +4009,7 @@ impl SessionFacts {
         if self.parked.contains(&s.id) {
             return hook.parked();
         }
+        let hook = hook.with_launch_failure(self.launch_failures.get(&s.id).cloned());
         let Some(backends) = probe else {
             return hook;
         };
