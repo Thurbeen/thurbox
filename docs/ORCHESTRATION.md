@@ -485,7 +485,8 @@ session: `session create` itself fails with the pane's output.
 When it ends. The next launch — `session restart`, `session start`, restore —
 clears it; a record naming a pane the row has since left is never reported.
 A failed session whose window then goes (psmux closes it with the program) is
-not marked `lost`: it stays `failed` until it is relaunched.
+marked `lost` like any other and releases its pane, but stays `failed`, with
+its record, until it is relaunched.
 Local sessions only: a session on a host that shares its sessions is recorded
 by the host's own thurbox, and the host's `session get` reports it.
 

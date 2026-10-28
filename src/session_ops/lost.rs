@@ -51,10 +51,6 @@ impl LostSweep {
         };
         let stopped = db.load_stopped_sessions().unwrap_or_default();
         let lost = db.load_lost_sessions().unwrap_or_default();
-        // A failed launch's window closing is part of the failure (psmux takes
-        // the window with its program), not a loss — and marking it lost would
-        // blank the pane its failure record is read against.
-        let failed = db.load_launch_failures().unwrap_or_default();
         // One listing per backend. A backend that could not be asked proves
         // nothing about its rows: they are not missing on this look, so their
         // confirmation starts over.
@@ -62,10 +58,7 @@ impl LostSweep {
             HashMap::new();
         let mut missing = HashMap::new();
         for row in &rows {
-            if Route::is_remote_key(&row.backend_type)
-                || stopped.contains(&row.id)
-                || failed.contains_key(&row.id)
-            {
+            if Route::is_remote_key(&row.backend_type) || stopped.contains(&row.id) {
                 continue;
             }
             let Ok(backend) = super::windows::backend_for(backends, &row.backend_type) else {

@@ -56,6 +56,16 @@ const SESSION_FACTS: &str =
 const FACTS_FAILURE_JOIN: &str = "LEFT JOIN session_meta m ON m.session_id = s.id \
      AND m.key = 'thurbox.launch_failure'";
 
+/// Whether a stored launch failure still describes the row whose pane is
+/// `backend_id`: the pane that failed, or no pane at all — a loss releases the
+/// pane (psmux closes a failed launch's window with its program) without a new
+/// launch, and the next launch or a recovery onto a live pane clears the
+/// record. A row pointing at another pane has moved on, and an earlier
+/// launch's failure is over.
+fn launch_failure_holds(failure: &crate::session::LaunchFailure, backend_id: &str) -> bool {
+    backend_id.is_empty() || failure.pane == backend_id
+}
+
 /// The result of atomically assigning an agent pane to an active session row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneClaim {
@@ -1154,7 +1164,7 @@ impl Database {
             ) else {
                 continue;
             };
-            if failure.pane == pane {
+            if launch_failure_holds(&failure, &pane) {
                 map.insert(id, failure);
             }
         }
@@ -1218,6 +1228,14 @@ impl Database {
             "UPDATE sessions SET lost_at = NULL, backend_id = ?3 WHERE id = ?1 AND lost_at = ?2",
             params![id, lost_at, pane],
         )?;
+        if updated == 1 {
+            // Back on a live pane: whatever launch failed before the loss is
+            // over, and must not come back with the next loss.
+            tx.execute(
+                "DELETE FROM session_meta WHERE session_id = ?1 AND key = ?2",
+                params![id, crate::session::LAUNCH_FAILURE_META],
+            )?;
+        }
         tx.commit()?;
         Ok(updated == 1)
     }
@@ -1287,11 +1305,9 @@ impl Database {
         let mut map = HashMap::new();
         for row in rows {
             let (id, mut facts, failure) = row?;
-            // Only a record of the pane the row still points at: an earlier
-            // launch's failure is over once the row has moved on.
             facts.launch_failure = failure
                 .and_then(|stored| crate::session::LaunchFailure::parse(&stored))
-                .filter(|f| f.pane == facts.backend_id);
+                .filter(|f| launch_failure_holds(f, &facts.backend_id));
             if let Ok(id) = id.parse::<SessionId>() {
                 map.insert(id, facts);
             }
@@ -3198,6 +3214,43 @@ mod tests {
         // The next launch starts with nothing reported.
         db.clear_hook_state(session.id).unwrap();
         assert!(db.record_launch_failure(session.id, &failure).unwrap());
+    }
+
+    #[test]
+    fn a_launch_failure_outlives_the_loss_of_its_pane_until_a_recovery() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        let failure =
+            crate::session::LaunchFailure::observed(&session.backend_id, Some(1), None, 7);
+        assert!(db.record_launch_failure(session.id, &failure).unwrap());
+
+        // The window goes: the pane is released, the failure stands.
+        assert!(db
+            .record_session_lost(session.id, &session.backend_id)
+            .unwrap());
+        assert_eq!(
+            db.get_session_by_id(session.id)
+                .unwrap()
+                .unwrap()
+                .backend_id,
+            ""
+        );
+        assert_eq!(db.load_launch_failures().unwrap()[&session.id], failure);
+        assert_eq!(
+            db.load_session_facts_for(&[session.id]).unwrap()[&session.id].launch_failure,
+            Some(failure.clone())
+        );
+
+        // Found again on a live pane: that failure is over, and stays over
+        // through the next loss.
+        let lost_at = db.load_lost_sessions().unwrap()[&session.id];
+        assert!(db
+            .clear_session_lost(session.id, lost_at, "%42", |_| false)
+            .unwrap());
+        assert!(db.load_launch_failures().unwrap().is_empty());
+        assert!(db.record_session_lost(session.id, "%42").unwrap());
+        assert!(db.load_launch_failures().unwrap().is_empty());
     }
 
     #[test]
