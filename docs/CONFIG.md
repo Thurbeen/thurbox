@@ -338,7 +338,10 @@ telemetry and `--agent-arg` arguments still follow everything.
   starts. The pane prints `thurbox: setup step <n> failed (exit <status>)` and
   stays on screen, and the session reads
   [`failed`](ORCHESTRATION.md#launch-failures) with that status and the pane's
-  last lines.
+  last lines. That state is recorded for local sessions; on an SSH or WSL host
+  only one that shares its sessions records it (on the host). Elsewhere a
+  failed setup still stops the launch and stays on the pane, but the session
+  reads `unreported`.
 - **Every launch.** Create, restart, `session start`, restore and fork all run
   it, as a wrapper script in `command` would have. `agent launch-args` reports
   the wrapped `sh -c …` invocation.

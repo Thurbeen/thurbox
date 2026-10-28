@@ -167,7 +167,7 @@ pub(crate) fn build_restart_plan(
             .map_err(|e| format!("read the agent arguments: {e}"))?,
     );
 
-    let (command, args) = super::with_setup(&def, platform, command, args)?;
+    let (command, args) = super::with_setup(&def, host, command, args)?;
     Ok(RestartPlan {
         window_name: session.name.clone(),
         command,

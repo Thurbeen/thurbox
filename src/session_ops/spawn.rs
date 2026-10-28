@@ -665,7 +665,7 @@ fn spawn(
         }
     }
 
-    let (command, args) = super::with_setup(&agent_def, platform_of(host.as_ref()), command, args)?;
+    let (command, args) = super::with_setup(&agent_def, host.as_ref(), command, args)?;
 
     report(SpawnPhase::Launching);
     // The window is stamped with the row's id as it is created (ADR-25), which

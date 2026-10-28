@@ -58,13 +58,18 @@ fn sweep_where(
                 && hooks.get(&row.id).map_or(true, |h| h.state.is_none())
         })
         .collect();
-    if candidates.is_empty() {
+    // A session that never reports (an uncovered agent, a `--command`) stays
+    // a candidate for as long as it lives, so the panes are looked at first
+    // and agents.toml is read only once one of them is found dead.
+    let dead: Vec<_> = candidates
+        .into_iter()
+        .filter_map(|row| observe(backends, row).map(|failure| (row, failure)))
+        .collect();
+    if dead.is_empty() {
         return 0;
     }
     let expects = Expectations::load(db);
-    candidates
-        .into_iter()
-        .filter_map(|row| observe(backends, row).map(|failure| (row, failure)))
+    dead.into_iter()
         .filter(|(row, failure)| expects.judges(row, failure))
         .filter(|(row, failure)| {
             let recorded = db
