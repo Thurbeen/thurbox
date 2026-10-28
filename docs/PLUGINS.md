@@ -1421,8 +1421,8 @@ run("quota:devbox", "quota-axi --json --no-credential-refresh", {
 `thurbox.metrics.sessions[id].usage`: thurbox no longer reads agent credentials
 or calls a provider's API for every session while the interface is open. A pane
 that drew those windows asks the account-owning tool itself, with a `run` like
-the two above, and declares `requires_api = 3` once it no longer reads the old
-field. [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)
+the two above; on API 3 the old field is simply absent, so a pane still reading
+it draws nothing. [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)
 already does this with `quota-axi`, locally and on every configured host;
 installing it is the migration for its quota readout.
 
