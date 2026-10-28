@@ -888,7 +888,8 @@ vars = { role = "operator" }
 
     #[test]
     fn the_documented_wrapper_replacement_loads_and_launches_as_described() {
-        let doc = include_str!("../../docs/AGENTS.md");
+        // A Windows checkout may carry the doc with CRLF line endings.
+        let doc = include_str!("../../docs/AGENTS.md").replace("\r\n", "\n");
         let section = &doc[doc.find("### Replacing a launch wrapper").unwrap()..];
         let start = section.find("```toml\n").unwrap() + "```toml\n".len();
         let example = &section[start..start + section[start..].find("```").unwrap()];
