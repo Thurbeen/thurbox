@@ -482,9 +482,9 @@ mod tests {
     #[test]
     fn a_broken_v1_keybindings_file_does_not_fail_validation() {
         // It used to, and must not: nothing reads `keybindings.json` any more —
-        // the interface keeps rebindings in `ui.json`. Failing validation over it would send an upgrader to fix a file that
-        // cannot affect anything. It is still *reported*, so they can see where the
-        // old rebindings went.
+        // the interface keeps rebindings in `ui.json`. Failing validation over it
+        // would send an upgrader to fix a file that cannot affect anything. It is
+        // still *reported*, so they can see where the old rebindings went.
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
         crate::storage::keybindings::save_keybindings_json(
