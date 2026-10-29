@@ -392,8 +392,8 @@ pub struct Registry {
 ///
 /// A registry built with [`Default`] holds no overrides at all, so persisting
 /// one does not *change* `ui.json` and `plugin-state.json` — it empties them:
-/// every disabled plugin, every trust grant and every setting a user chose is gone, replaced by the empty
-/// tables the fresh registry has. That is not hypothetical. thurbox
+/// every disabled plugin, every trust grant and every setting a user chose is
+/// gone, replaced by the empty tables the fresh registry has. That is not hypothetical. thurbox
 /// injects `THURBOX_CONFIG_DIR` into the sessions it spawns, so a `cargo test`
 /// run from inside thurbox resolves the *real* config directory, and the tests
 /// that build a registry to assert routing wiped the running interface's
@@ -416,8 +416,8 @@ impl Registry {
     /// `ui.json`'s trust and disabled tables on first run.
     ///
     /// The one constructor that reads `ui.json` and `plugin-state.json`, and so
-    /// the one whose registry may write them back — see the private `Origin`, which carries that
-    /// distinction so no caller has to remember it.
+    /// the one whose registry may write them back — see the private `Origin`,
+    /// which carries that distinction so no caller has to remember it.
     pub fn load() -> Self {
         let mut registry = Self {
             origin: Origin::File,
@@ -446,8 +446,9 @@ impl Registry {
                 warnings.extend(notes);
                 legacy
             }
-            // Writing back over a store that did not parse would replace the
-            // user's grants with the empty set this load fell back to.
+            // Migrating over a store that did not parse would replace it with
+            // the legacy tables and leave nothing to repair.
+            // `config validate` names the file instead.
             Decisions::Unreadable(note) => {
                 warnings.push(note);
                 false
