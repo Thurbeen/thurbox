@@ -248,7 +248,7 @@ fn is_fresh(verdict: &Verdict) -> bool {
 }
 
 fn verdicts_path() -> Option<std::path::PathBuf> {
-    crate::paths::data_directory().map(|dir| dir.join(VERDICTS_FILE))
+    crate::paths::log_directory().map(|dir| dir.join(VERDICTS_FILE))
 }
 
 /// Every stored `No`. Unreadable reads as empty: the cost is one probe.
@@ -2516,6 +2516,8 @@ mod tests {
     fn a_refused_launch_is_not_reprovisioned_and_stays_backed_off() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
+        let temp = tempfile::TempDir::new().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(temp.path());
         let _guard = FakeGuard;
         let probes = std::sync::Arc::new(AtomicUsize::new(0));
         let counted = std::sync::Arc::clone(&probes);
@@ -2554,6 +2556,8 @@ mod tests {
     /// clock can hold must read as no verdict, never as a panic.
     #[test]
     fn a_stored_time_past_the_clock_is_ignored() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(temp.path());
         let path = verdicts_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
