@@ -183,10 +183,10 @@ trap cleanup EXIT INT TERM
 #     declares Ctrl+S, and a rebinding that collides is a conflict the registry
 #     has to resolve rather than an override.
 #
-# The kernel reads rebindings from `ui.json`, as `bindings: { action: chord }` —
-# the same file that carries trust and the disabled set, because those are all
-# *user decisions* (v1 used a separate keybindings.json with arrays of chords).
-# Written before first launch so the registry picks it up on the first frame.
+# The kernel reads rebindings from `ui.json`, as `bindings: { action: chord }`,
+# and trust from `plugin-state.json` beside it (v1 used a separate
+# keybindings.json with arrays of chords). Both are written before first launch
+# so the registry picks them up on the first frame.
 #
 # The two example panes are rebound for the same reason: they declare F5 and F7.
 #
@@ -223,7 +223,7 @@ print(f"{h:016x}")
 PYDIGEST
 )
 
-python3 - "$CFG_DIR/ui.json" "$TOP_PLUGIN" "$TOP_DIGEST" <<'PYUI'
+python3 - "$CFG_DIR/ui.json" "$TOP_PLUGIN" "$TOP_DIGEST" "$CFG_DIR/plugin-state.json" <<'PYUI'
 import json, sys
 path, top, digest = sys.argv[1], sys.argv[2], sys.argv[3]
 json.dump(
@@ -234,11 +234,11 @@ json.dump(
             "tasks.open": "ctrl+e",
             "top.open": "ctrl+w",
         },
-        "trusted": {top: digest},
     },
     open(path, "w"),
     indent=2,
 )
+json.dump({"trusted": {top: digest}}, open(sys.argv[4], "w"), indent=2)
 PYUI
 
 # --- The demo repo: a vendored snapshot of thurbox's own tree ----------------

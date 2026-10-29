@@ -404,11 +404,16 @@ macOS, and this path is shown to people.
 
 **Delivery vs. decision vs. composition.** `.bundled.json` records what delivery did
 (bundled / edited / yours / removed / installed); `ui.json` records what the *user*
-decided (disabled, trust, rebindings); `plugins.toml` records what the interface is
+decided about the interface (rebindings, settings, pill order) and `plugin-state.json`
+what a plugin may do (trust, the disabled set); `plugins.toml` records what the interface is
 **composed of** and `plugins.lock` what each entry resolved to.
-`ui.json` shares the atomic config writer with `settings.toml`: it stages the whole
-file beside the destination before a native same-directory replacement, so a failed
-save cannot expose a truncated mix of those decisions. It does not promise durability
+`ui.json` and `plugin-state.json` share the atomic config writer with
+`settings.toml`: each stages the whole file beside the destination before a native
+same-directory replacement, so a failed save cannot expose a truncated mix of those
+decisions. A grant or a disabled toggle writes only `plugin-state.json`. A legacy
+`ui.json` still holding `trusted`/`disabled` is migrated by `Registry::load`: the
+store is written first, then the tables leave `ui.json`, and an existing store wins
+(#1467). It does not promise durability
 across storage or operating-system failure because neither file nor directory is
 explicitly synced. An existing config-file symlink remains a link and its target is
 replaced.
@@ -475,8 +480,8 @@ replace `lib/theme.lua`.
 (`registry::Granted::Managed`, `inventory::Trust::resolve_installed`). Contents alone
 would report every ordinary release as tampering; `(src, pin)` alone would let an
 upstream re-tag of the same version inherit a grant made to what that version used to
-be. Both are checked, and `ui.json`'s bare-string grant form is still read so an
-upgrade forgets nothing.
+be. Both are checked, and the bare-string grant form earlier releases wrote is still
+read so an upgrade forgets nothing.
 
 **A plugin can run a program you interact with** (`Capability::Program`,
 `kernel::terminal`'s `programs` map). `run` captures output once with no stdin and

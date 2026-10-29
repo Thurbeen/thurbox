@@ -183,7 +183,7 @@ fn the_decision_is_per_file_and_survives_a_restart() {
     let home = tempfile::tempdir().expect("tempdir");
     std::env::set_var("THURBOX_CONFIG_DIR", home.path());
 
-    // Loaded, not default: only a registry that read `ui.json` writes it back,
+    // Loaded, not default: only a registry that read its files writes them back,
     // which is what keeps a test from erasing the config directory it inherited
     // (`registry::Origin`). The loop's registry is a loaded one.
     let mut registry = Registry::load();
@@ -215,14 +215,14 @@ fn the_decision_is_per_file_and_survives_a_restart() {
 
 #[cfg(unix)]
 #[test]
-fn a_failed_ui_json_save_leaves_every_existing_decision_intact() {
+fn a_failed_decision_save_leaves_every_existing_decision_intact() {
     const CHILD: &str = "THURBOX_ATOMIC_UI_JSON_CHILD";
     const ROOT: &str = "THURBOX_ATOMIC_UI_JSON_ROOT";
 
     if std::env::var_os(CHILD).is_some() {
         let root = std::path::PathBuf::from(std::env::var_os(ROOT).expect("test root"));
         let _guard = thurbox::paths::TestPathGuard::new(&root);
-        let path = root.join("ui.json");
+        let path = root.join("plugin-state.json");
         let limit = std::fs::metadata(&path).expect("seed metadata").len();
         let limits = libc::rlimit {
             rlim_cur: limit as libc::rlim_t,
@@ -241,21 +241,26 @@ fn a_failed_ui_json_save_leaves_every_existing_decision_intact() {
     }
 
     let root = tempfile::tempdir().expect("tempdir");
-    let path = root.path().join("ui.json");
-    let original = r#"{
+    let ui_json = root.path().join("ui.json");
+    let overrides = r#"{
   "bindings": {"sessions.next": "ctrl+n"},
   "settings": {"sessions.group_by_repo": false},
-  "pills": {"sessions.create": 7},
+  "pills": {"sessions.create": 7}
+}
+"#;
+    std::fs::write(&ui_json, overrides).expect("seed ui.json");
+    let store = root.path().join("plugin-state.json");
+    let decisions = r#"{
   "trusted": {"/ui/plugins/mine.lua": "sha256:kept"},
   "disabled": ["/ui/plugins/off.lua"]
 }
 "#;
-    std::fs::write(&path, original).expect("seed ui.json");
+    std::fs::write(&store, decisions).expect("seed plugin-state.json");
 
     let output = Command::new(std::env::current_exe().expect("test binary"))
         .args([
             "--exact",
-            "a_failed_ui_json_save_leaves_every_existing_decision_intact",
+            "a_failed_decision_save_leaves_every_existing_decision_intact",
             "--nocapture",
         ])
         .env(CHILD, "1")
@@ -268,20 +273,33 @@ fn a_failed_ui_json_save_leaves_every_existing_decision_intact() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        std::fs::read_to_string(&path).expect("read ui.json after failed save"),
-        original,
-        "bindings, settings, pills, trust and disabled choices must survive a failed save"
+        std::fs::read_to_string(&store).expect("read the store after failed save"),
+        decisions,
+        "trust and disabled choices must survive a failed save"
     );
-    let names: Vec<_> = std::fs::read_dir(root.path())
+    assert_eq!(
+        std::fs::read_to_string(&ui_json).expect("read ui.json after failed save"),
+        overrides,
+        "a decision save does not touch bindings, settings or pills"
+    );
+    let mut names: Vec<_> = std::fs::read_dir(root.path())
         .expect("read config dir")
         .map(|entry| entry.expect("entry").file_name())
         .collect();
-    assert_eq!(names, vec![std::ffi::OsString::from("ui.json")]);
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            std::ffi::OsString::from("plugin-state.json"),
+            std::ffi::OsString::from("ui.json")
+        ],
+        "no staged file is left behind"
+    );
 }
 
 #[cfg(unix)]
 #[test]
-fn a_ui_json_symlink_survives_saving_a_decision() {
+fn a_store_symlink_survives_saving_a_decision() {
     use std::os::unix::fs::symlink;
 
     let root = tempfile::tempdir().expect("tempdir");
@@ -289,9 +307,9 @@ fn a_ui_json_symlink_survives_saving_a_decision() {
     let managed = root.path().join("managed");
     std::fs::create_dir_all(&config).expect("config dir");
     std::fs::create_dir_all(&managed).expect("managed dir");
-    let target = managed.join("ui.json");
-    std::fs::write(&target, "{}\n").expect("seed managed ui.json");
-    symlink(&target, config.join("ui.json")).expect("link ui.json");
+    let target = managed.join("plugin-state.json");
+    std::fs::write(&target, "{}\n").expect("seed managed store");
+    symlink(&target, config.join("plugin-state.json")).expect("link the store");
     std::env::set_var("THURBOX_CONFIG_DIR", &config);
 
     let mut registry = Registry::load();
@@ -300,15 +318,15 @@ fn a_ui_json_symlink_survives_saving_a_decision() {
         .expect("save through link");
 
     assert!(
-        std::fs::symlink_metadata(config.join("ui.json"))
-            .expect("linked ui.json metadata")
+        std::fs::symlink_metadata(config.join("plugin-state.json"))
+            .expect("linked store metadata")
             .file_type()
             .is_symlink(),
         "saving must preserve the config-manager link"
     );
     assert!(
         std::fs::read_to_string(target)
-            .expect("managed ui.json")
+            .expect("managed store")
             .contains("/ui/plugins/off.lua"),
         "the linked target must receive the new decision"
     );
@@ -317,7 +335,7 @@ fn a_ui_json_symlink_survives_saving_a_decision() {
 
 #[cfg(windows)]
 #[test]
-fn ui_json_saves_beyond_windows_max_path() {
+fn decisions_save_beyond_windows_max_path() {
     use std::os::windows::ffi::OsStrExt;
 
     let root = tempfile::tempdir().expect("tempdir");
@@ -331,7 +349,7 @@ fn ui_json_saves_beyond_windows_max_path() {
     let mut registry = Registry::load();
     registry
         .set_disabled("/ui/plugins/off.lua", true)
-        .expect("save ui.json beyond MAX_PATH");
+        .expect("save the store beyond MAX_PATH");
     assert!(Registry::load().is_disabled("/ui/plugins/off.lua"));
 
     std::env::remove_var("THURBOX_CONFIG_DIR");
