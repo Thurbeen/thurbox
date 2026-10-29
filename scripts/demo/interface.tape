@@ -21,15 +21,19 @@
 # or Ctrl+, and VHS can send neither). `]` crosses to the Interface tab, `space`
 # turns a file off, `Esc` closes.
 #
-# ROW ORDER matters here and is easy to get wrong. The tab groups by kind, panes
-# first, and sorts each group by state — what needs you first — so with the demo
-# installed it is:
+# ROW ORDER matters here and is easy to get wrong. The tab groups panes by where
+# they came from — YOURS, each installed package, SHIPPED — and sorts each group by
+# state, what needs you first, so with the demo installed it is:
 #
-#   0  plugins/65_search.lua      not placed   (its strip is closed)
-#   1  plugins/10_sessions.lua    on screen
-#   2  plugins/20_agent.lua       on screen
-#   3  plugins/80_tasks.lua       on screen   yours
-#   4  plugins/85_top.lua         on screen   yours
+#   YOURS
+#   0  80_tasks.lua      on screen
+#   1  85_top.lua        on screen · run granted
+#   SHIPPED
+#   2  65_search.lua     not placed   (its strip is closed)
+#   …
+#
+# Turned off, `85_top.lua` reads `off`, which sorts above `on screen`: on the
+# second visit it is row 0.
 #
 # Movement is `j`/`k`, as the modal's own hint line says; arrows are not bound for
 # up. Verify with `thurbox-cli plugin list` after changing anything here.
@@ -61,14 +65,8 @@ Sleep 1400ms
 Type "]"
 Sleep 2200ms
 
-# Walk down to the two panes that came from `examples/panes/`. They are marked
-# `yours`; the bundled ones above say nothing, because there is nothing to say.
-Type "j"
-Sleep 700ms
-Type "j"
-Sleep 700ms
-Type "j"
-Sleep 1400ms
+# The two panes that came from `examples/panes/` lead the list, under YOURS; the
+# shipped ones follow under their own header. Down one, to `85_top.lua`.
 Type "j"
 Sleep 1800ms
 
@@ -87,21 +85,13 @@ Sleep 3200ms
 Ctrl+B
 Sleep 1200ms
 Type "]"
-Sleep 1000ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 400ms
-Type "j"
-Sleep 700ms
+Sleep 1700ms
 Space
 Sleep 2000ms
 
-# Then keep walking. Every row is a real file: the bundled panes, the two that are
-# `yours`, `layout.lua` marked `edited` because the demo replaced the shipped one,
-# and the shared libraries under `lib/`.
+# Then keep walking. Every row is a real file: the two of yours, the shipped panes
+# and, under SUPPORT FILES, `layout.lua` marked `edited` because the demo replaced
+# the shipped one.
 Type "j"
 Sleep 700ms
 Type "j"

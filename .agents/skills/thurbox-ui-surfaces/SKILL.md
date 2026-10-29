@@ -180,19 +180,29 @@ proposes reverting every such change already saved — one visit saved
 thirds of the core rows are restart-only, which made it read as "my settings do
 not survive a restart".
 
-`]` switches to the **Interface tab** (`kernel::modals::interface`): every file,
-grouped `PANES` / `LAYOUT` / `MODULES` / `DOCS`, one state word per row (`failed`,
-`deleted`, `not placed`, `off`, `on screen`, `on demand`, `hidden`; no word shared
-with a source or a key), then trust, then origin (`edited` / `yours` /
-`from <package>` — silent for a shipped, untouched file). Four detail lines under
-the list explain the selected row: kind, slot and full source; why it is in that
-state; the fix (an unplaced pane gets its `{ slot = "…" }` line, hedged because the
+`]` switches to the **Interface tab** (`kernel::modals::interface`). Panes are
+grouped by where they came from — `YOURS` / `PACKAGE · <name>` / `SHIPPED` — and the
+rest (modules, docs, `layout.lua`, `plugins.toml`) under `SUPPORT FILES`, listed on
+`a` or when one needs attention (failed, deleted, edited). A row names the file, one
+state word (`failed`, `not loaded`, `deleted`, `not placed`, `off`, `on screen`,
+`on demand`, `hidden`; no word shared with a source or a key), what it asks for and
+whether it holds it (`run not granted`; read from `Trust::grants`, the rule the
+enforced grant uses — #1467), then `edited`. `not loaded` is a pane held back by
+another file's failure (a reload is all or nothing): only the file the error names
+is `failed`, and while the bundled floor runs the coordinator hands the inventory
+the user's error from `floor_cause`, since the bundled host reports none. The
+header line counts `failed` / `not granted` / `off` and shows the directory as
+`~/…`. Four detail lines under the list explain the selected row: kind, slot, full
+source and path; why it is in that state (a load error wraps over the fix line);
+the fix (an unplaced pane gets its `{ slot = "…" }` line, hedged because the
 shipped layout places `search` only while it is open); what it asks to run and
-whether that is granted. The footer lists only the keys that act on that
-row: `r` restore · `d` delete · `space` turn off/on · `t` trust/revoke. `d` always
-asks twice; `r` asks twice on an **edited** file (nothing keeps a pane's edits;
-`layout.lua` goes to `.bak`). The cursor follows its file by path, since an action
-re-sorts the list. It was a pane
+whether that is granted. The footer lists only the keys that act on that row:
+`space` turn off/on · `t` grant/revoke · `r` restore · `d` delete · `a` all files,
+dropping hints from the end to fit before the Close pill. `d` always asks twice;
+`r` asks twice on an **edited** file (nothing keeps a pane's edits; `layout.lua`
+goes to `.bak`); `t` asks twice when **granting** (the footer names the file and
+its capabilities; any other key cancels) and revokes on one press. The cursor
+follows its file by path, since an action re-sorts the list. It was a pane
 once — an honest test of whether the plugin API could build a pane that lists panes
 — and is chrome now because a recovery tool must not be the thing that is broken.
 
@@ -203,8 +213,9 @@ wrote ("thurbox ships no version of it") and points an installed pane at
 `thurbox-cli plugin sync`. For a pane of the user's own the way back is `space`:
 present on disk, not loaded, so nothing tried to load it and its error is silent
 until it is switched on. Each of the four keys reloads the interface, so the result
-is on the next frame. Documented for users in `docs/PLUGINS.md` → **When something
-goes wrong**; the same three answers with no TTY are `plugin list` / `plugin dir` /
+is on the next frame. The `reload failed` panel is not painted over an open system
+modal — it used to cover this tab, the tool for fixing it; it returns on close.
+Documented for users in `docs/PLUGINS.md` → **When something goes wrong**; the same three answers with no TTY are `plugin list` / `plugin dir` /
 `plugin check`.
 
 `settings.toml` is **live-reloaded** (mtime poll): an outside edit re-applies the
