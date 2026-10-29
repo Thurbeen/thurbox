@@ -464,7 +464,8 @@ for every other session):
 The record is written once, with a `changed` event whose `reason` is
 `launch_failed` (`to_state: "failed"`, `exit_code`, and the output in
 `detail`) on `watch`, which reads that event as `failed` even when replayed
-(`--since`) after a relaunch has cleared the record. `session wait` ends on it —
+(`--since`) after a relaunch has cleared the record; an edge from before the
+failure keeps the state it had. `session wait` ends on it —
 exit code 6, like a lost session — unless it was waiting for `--state failed`.
 
 What counts. A failed setup always does. An exit counts only for an agent whose

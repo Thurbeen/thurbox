@@ -33,21 +33,28 @@ pub fn render(
     line
 }
 
-/// The facts a replayed edge is judged by. A `launch_failed` edge carries its
-/// own failure: the record it was written with is cleared by the next launch,
-/// and the edge must still read `failed` when a stream resumed from before it
-/// reads it after that. Every other edge is judged by the current record.
+/// The facts a replayed edge is judged by: the launch failure as of the
+/// moment the edge happened. The current record applies to the edge that
+/// recorded it and those after it, never to an earlier edge — a `done` from
+/// before a failed relaunch is still `done`. A `launch_failed` edge whose
+/// record a relaunch has since cleared carries its own failure, so it still
+/// reads `failed`. Current-state reads use the record as it stands.
 pub fn as_of<'a>(event: &SessionEventRow, facts: &'a SessionFacts) -> Cow<'a, SessionFacts> {
-    if event.reason != "launch_failed" || facts.launch_failure.is_some() {
-        return Cow::Borrowed(facts);
-    }
-    Cow::Owned(SessionFacts {
-        launch_failure: Some(crate::session::LaunchFailure::observed(
+    let failure = match &facts.launch_failure {
+        Some(failure) if event.at_ms >= failure.at => Some(failure.clone()),
+        _ if event.reason == "launch_failed" => Some(crate::session::LaunchFailure::observed(
             &facts.backend_id,
             event.exit_code,
             event.detail.clone(),
             event.at_ms,
         )),
+        _ => None,
+    };
+    if failure == facts.launch_failure {
+        return Cow::Borrowed(facts);
+    }
+    Cow::Owned(SessionFacts {
+        launch_failure: failure,
         ..facts.clone()
     })
 }

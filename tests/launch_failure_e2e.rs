@@ -212,6 +212,51 @@ fn a_replayed_launch_failure_reads_failed_after_a_relaunch() {
     assert_eq!(replayed["state"], "failed", "{replayed:#}");
 }
 
+/// The other way round: an edge from before a failed relaunch is judged as of
+/// when it happened, not by the failure that came after it.
+#[test]
+fn an_edge_replayed_from_before_a_failed_relaunch_keeps_its_state() {
+    let Some(env) = Env::new() else { return };
+    let config = thurbox::paths::config_file().unwrap();
+    let agents = config.parent().unwrap().join("agents.toml");
+    let failing = r#"args = ["-c", "sleep 1; echo \"error: role 'debugger' not found\"; exit 1"]"#;
+    std::fs::write(
+        &agents,
+        AGENTS.replace(failing, r#"args = ["-c", "sleep 60"]"#),
+    )
+    .unwrap();
+    let id = env.spawn("claude-debugger");
+    let cursor = env.db().latest_session_event_seq().unwrap();
+    env.db()
+        .set_hook_state(id.parse().unwrap(), "done")
+        .unwrap();
+
+    std::fs::write(&agents, AGENTS).unwrap();
+    env.cli(&["session", "restart", &id, "--json"]);
+    env.until_state(&id, "failed");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["watch", "--session", &id, "--for-secs", "1"])
+        .args(["--since", &cursor.to_string(), "--json"])
+        .output()
+        .expect("run thurbox-cli");
+    assert!(out.status.success(), "{out:?}");
+    let lines: Vec<Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect();
+    let done = lines
+        .iter()
+        .find(|line| line["to_state"] == "done")
+        .expect("the done edge replayed");
+    assert_eq!(done["state"], "done", "{done:#}");
+    let failed = lines
+        .iter()
+        .find(|line| line["reason"] == "launch_failed")
+        .expect("the launch_failed edge replayed");
+    assert_eq!(failed["state"], "failed", "{failed:#}");
+}
+
 #[test]
 fn an_uncovered_agents_exit_is_not_a_failed_launch() {
     let Some(env) = Env::new() else { return };
