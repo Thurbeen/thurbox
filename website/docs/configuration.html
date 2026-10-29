@@ -146,8 +146,18 @@ breadcrumb: 'Configuration'
                 <td><code>F1</code> / Interface tab (or you)</td>
                 <td>startup</td>
                 <td>
-                  your decisions <em>about</em> the interface: rebound chords, plugins turned off,
-                  files trusted, plugin settings
+                  your decisions <em>about</em> the interface: rebound chords, plugin settings,
+                  the action band's order
+                </td>
+              </tr>
+              <tr>
+                <td><code>~/.config/thurbox/plugin-state.json</code></td>
+                <td>JSON</td>
+                <td>Interface tab (or <code>thurbox-cli plugin</code>)</td>
+                <td>startup</td>
+                <td>
+                  what a plugin may do: files trusted and plugins turned off. Older releases kept
+                  both in <code>ui.json</code>; the first start moves them here
                 </td>
               </tr>
               <tr>
@@ -794,7 +804,8 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             <p>
               <strong>A pane is not switched off here.</strong>
               Panes are files, so turning one off is <code>space</code> on its row in the Interface
-              tab (<code>Ctrl+,</code> then <code>]</code>), recorded in <code>ui.json</code>. Five
+              tab (<code>Ctrl+,</code> then <code>]</code>), recorded in
+              <code>plugin-state.json</code>. Five
               keys are still <em>accepted and ignored</em> &mdash; <code>tasks</code>,
               <code>file_viewer</code>, <code>info_panel</code>, <code>code_review</code> and
               <code>global_search</code> &mdash; because they gated panes the binary no longer
@@ -1049,9 +1060,8 @@ app_bg = "reset"             # keep the terminal's native background</code></pre
           </h2>
           <p>
             Rebindings live in
-            <code>~/.config/thurbox/ui.json</code>, beside the panes you have turned off and the
-            files you trust &mdash; all three are decisions <em>you</em> made about the interface,
-            which is why they share a file. Its
+            <code>~/.config/thurbox/ui.json</code>. The panes you have turned off and the files
+            you trust live beside it, in <code>plugin-state.json</code>. Its
             <code>bindings</code>
             object maps an action id to the one chord string that action answers to. Action ids are
             dotted and lowercase &mdash; the kernel's own are
