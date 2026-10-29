@@ -78,8 +78,9 @@ pub enum Edit {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Group {
     Yours,
-    /// An installed package, by name.
-    Package(String),
+    /// An installed package: its name, then its source, so two packages whose
+    /// sources end in the same name are still two groups.
+    Package(String, String),
     Shipped,
     /// Modules, docs, `layout.lua` and `plugins.toml`: what the panes are built
     /// from and arranged by. Listed only on `a`, or when one needs attention.
@@ -94,7 +95,7 @@ impl Group {
         match &row.source {
             Source::User => Group::Yours,
             Source::Installed { src } | Source::InstalledEdited { src } => {
-                Group::Package(package(src).to_string())
+                Group::Package(package(src).to_string(), src.clone())
             }
             Source::Bundled | Source::Edited | Source::Removed => Group::Shipped,
         }
@@ -103,7 +104,7 @@ impl Group {
     fn title(&self) -> String {
         match self {
             Group::Yours => "YOURS".to_string(),
-            Group::Package(name) => format!("PACKAGE · {name}"),
+            Group::Package(name, _) => format!("PACKAGE · {name}"),
             Group::Shipped => "SHIPPED".to_string(),
             Group::Support => "SUPPORT FILES".to_string(),
         }
@@ -198,7 +199,7 @@ fn package(src: &str) -> &str {
 /// `lib/ui.lua` from `ui.lua`. The full path is in the details.
 fn label(row: &Row) -> &str {
     match Group::of(row) {
-        Group::Package(_) => row.path.rsplit('/').next().unwrap_or(&row.path),
+        Group::Package(..) => row.path.rsplit('/').next().unwrap_or(&row.path),
         Group::Yours | Group::Shipped => row.path.strip_prefix("plugins/").unwrap_or(&row.path),
         Group::Support => &row.path,
     }
@@ -862,7 +863,9 @@ impl InterfaceTab {
             .filter(|row| row.kind == Kind::Pane && row.state != FileState::Removed)
             .count();
         let count = |pick: &dyn Fn(&Row) -> bool| inventory.iter().filter(|row| pick(row)).count();
-        let failed = count(&|row| state_of(row, culprit).fault);
+        // Failed, not merely drawn as a fault: a deleted shipped file is red too,
+        // and counting it would send the reader looking for an error.
+        let failed = count(&|row| row.state == FileState::Failed && state_of(row, culprit).fault);
         let ungranted = count(&|row| grant_word(row).is_some_and(|(_, granted)| !granted));
         let off = count(&|row| row.state == FileState::Disabled);
 
@@ -1534,6 +1537,33 @@ mod tests {
         assert!(lines[0].contains("1 off"), "{}", lines[0]);
         assert!(!lines[0].contains("failed"), "{}", lines[0]);
         assert_eq!(truncate_front("/a/long/dir/ui", 8), "…/dir/ui");
+
+        // A shipped pane you deleted is drawn as a fault, but it did not fail:
+        // counting it would send the reader looking for an error that is not there.
+        let gone = [row(
+            "plugins/20_agent.lua",
+            Source::Removed,
+            FileState::Removed,
+        )];
+        let lines = paint(&mut InterfaceTab::default(), &gone, 90, 12);
+        assert!(!lines[0].contains("failed"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn two_packages_sharing_a_name_stay_in_groups_of_their_own() {
+        let mut ours = installed_top();
+        ours.path = "plugins/85_top.lua".into();
+        let mut theirs = installed_top();
+        theirs.path = "other/plugins/86_top.lua".into();
+        theirs.source = Source::Installed {
+            src: "git+https://github.com/someone/top".into(),
+        };
+        let lines = paint(&mut InterfaceTab::default(), &[ours, theirs], 90, 14);
+        let headers = lines
+            .iter()
+            .filter(|line| line.contains("PACKAGE · top"))
+            .count();
+        assert_eq!(headers, 2, "{lines:#?}");
     }
 
     #[test]
