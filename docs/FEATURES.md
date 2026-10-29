@@ -3731,7 +3731,11 @@ recorded before their pane's whole-rect focus fallback.
   thurbox to move. Scrolling such a session is then the program's
   own job; Claude Code, vim and htop are all in this class.
 - **Modal scrolling**: while a modal is open the wheel steps its
-  selection (one row per notch, like `j`/`k`); overflowing picker
+  selection (one row per notch, like `j`/`k`) — except in help
+  (`F1`), which is mostly read: there each report scrolls the text a
+  line, as a terminal scrolls a document, down to the end of the
+  events list below the last selectable row; the next key brings
+  the view back to the selection. Overflowing picker
   lists window around the selection and draw a draggable scrollbar
   (`ScrollTarget::Modal`) in their rightmost column. Drag replays
   Up/Down through the modal's own key handler, so clamping and side
@@ -3801,7 +3805,8 @@ changes a number); the in-pane automation/task editors record
 the repo picker
 `ClickAction::RepoFocus(..)` for its path-input/search sub-fields. Hovering a
 button reverses its fill (`Modifier::REVERSED`), distinct from the row
-underline. With a modal open the wheel steps its selection and overflowing
+underline. With a modal open the wheel steps its selection (help scrolls its
+text a line per report instead) and overflowing
 picker lists render a draggable scrollbar (`ScrollTarget::Modal`, drag replayed
 as Up/Down through the modal's key handler). All gated by `[features] mouse` —
 disabled, mouse capture is never enabled and the terminal keeps native mouse

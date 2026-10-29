@@ -166,11 +166,16 @@ impl App {
         let code = if up { KeyCode::Up } else { KeyCode::Down };
         let key = KeyEvent::new(code, KeyModifiers::NONE);
 
-        // A modal takes the wheel as one selection step, never the panes it
-        // covers. While help is capturing a chord it is left alone: the capture
-        // would record the synthesized keystroke as the new binding.
+        // A modal takes the wheel, never the panes it covers. Help scrolls its
+        // text a line per report, which synthesizes no keystroke, so it is
+        // safe even while help is capturing a chord. Any other modal takes it
+        // as one selection step per notch.
         if self.modals.is_open() {
-            if !self.modals.captures_everything() && self.wheel_notch.opens(Instant::now(), up) {
+            if self.modals.on_wheel(up) {
+                self.dirty = true;
+            } else if !self.modals.captures_everything()
+                && self.wheel_notch.opens(Instant::now(), up)
+            {
                 self.dispatch_modal_key(&key);
             }
             return;

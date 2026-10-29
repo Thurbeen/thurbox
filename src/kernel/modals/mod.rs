@@ -242,6 +242,18 @@ impl Modals {
         matches!(&self.open, Some(Open::Help(help)) if help.capturing())
     }
 
+    /// Take one wheel report as a scroll of the open modal's text. `false` when
+    /// the open modal has no text to scroll, and the wheel steps its selection.
+    pub fn on_wheel(&mut self, up: bool) -> bool {
+        match &mut self.open {
+            Some(Open::Help(help)) => {
+                help.on_wheel(up);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Open `kind`, or close it when it is already the open one.
     ///
     /// Opening replaces whatever was open, which is what "one at a time" means:

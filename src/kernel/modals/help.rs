@@ -143,6 +143,11 @@ pub struct HelpModal {
     /// Where each action row and footer pill was drawn, so a click reaches the
     /// one under it.
     hits: Hits,
+    /// The first screen line on view, as the last frame drew it.
+    scroll: usize,
+    /// The wheel moved the view off the selection, so the next frame keeps
+    /// [`Self::scroll`] rather than following the selection. A key re-attaches it.
+    wheeled: bool,
 }
 
 impl HelpModal {
@@ -174,6 +179,7 @@ impl HelpModal {
         registry: &mut Registry,
     ) -> Option<String> {
         let total = actions(registry).len();
+        self.wheeled = false;
         if self.capturing {
             return self.capture(key, chord, registry);
         }
@@ -242,6 +248,22 @@ impl HelpModal {
         self.hits.rows.len().max(1)
     }
 
+    /// One wheel report moves the text a line, the way a terminal scrolls a
+    /// document: a notch is several reports, one per line it means to travel.
+    ///
+    /// The view, not the selection, because help is mostly read. Stepping the
+    /// selection a row per notch moved nothing on screen until it passed the
+    /// middle, and could never reach the lines below the last action. Clamped
+    /// at the next frame, which is the first thing that knows the height.
+    pub fn on_wheel(&mut self, up: bool) {
+        self.wheeled = true;
+        self.scroll = if up {
+            self.scroll.saturating_sub(1)
+        } else {
+            self.scroll + 1
+        };
+    }
+
     /// A click selects the row under it — the same act as `j`/`k`.
     pub fn on_click(&mut self, x: u16, y: u16) {
         if let Some(index) = self.hits.row_at(x, y) {
@@ -298,7 +320,12 @@ impl HelpModal {
 
         let total = lines.len();
         let height = usize::from(body.height);
-        let scroll = scroll_for(total, height, selected_line);
+        let scroll = if self.wheeled {
+            self.scroll.min(total.saturating_sub(height))
+        } else {
+            scroll_for(total, height, selected_line)
+        };
+        self.scroll = scroll;
         let (rows_area, track) = chrome::reserve_track(body, total, height);
         frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), rows_area);
         record_row_hits(
@@ -312,7 +339,12 @@ impl HelpModal {
         // The bar tracks ACTIONS, not screen lines, so its thumb matches what
         // the selection cursor moves through — v1's rule, and why the viewport
         // is the number of rows that survived the window above.
-        if let Some(track) = track {
+        // Once the wheel has moved the view off the selection, the thumb
+        // follows the view instead — it is the only thing still moving.
+        if let (Some(track), true) = (track, self.wheeled) {
+            let positions = total - height + 1;
+            chrome::scrollbar(frame, track, positions, height, scroll, chrome);
+        } else if let Some(track) = track {
             chrome::scrollbar(
                 frame,
                 track,
