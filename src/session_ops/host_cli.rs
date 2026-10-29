@@ -264,7 +264,7 @@ fn stored_no(key: &str) -> Option<Verdict> {
     let stored = read_stored().remove(key)?;
     Some(Verdict {
         usable: Usable::No(stored.reason),
-        at: SystemTime::UNIX_EPOCH + Duration::from_secs(stored.at),
+        at: SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(stored.at))?,
         failures: stored.failures,
     })
 }
@@ -2548,6 +2548,24 @@ mod tests {
             !read_stored().contains_key(&host.backend_name()),
             "a hand-run sync must ask the host afresh"
         );
+    }
+
+    /// `host-verdicts.json` is a file anybody can edit or damage: a time no
+    /// clock can hold must read as no verdict, never as a panic.
+    #[test]
+    fn a_stored_time_past_the_clock_is_ignored() {
+        let path = verdicts_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"ssh:far-future\":{{\"reason\":\"x\",\"at\":{},\"failures\":1}}}}",
+                u64::MAX
+            ),
+        )
+        .unwrap();
+
+        assert!(stored_no("ssh:far-future").is_none());
     }
 
     /// And the message an operator reads has to name the cause. "printed no
