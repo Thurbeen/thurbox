@@ -315,7 +315,10 @@ fn line(
         seen_at: None,
         launch_failure: None,
     };
-    let facts = facts.get(&event.session_id).unwrap_or(&unknown);
+    let facts = &*crate::session_ops::events::as_of(
+        event,
+        facts.get(&event.session_id).unwrap_or(&unknown),
+    );
     // Only the pane probe needs the backend, and only a live row has a pane to
     // probe — so the lookup is paid for exactly where it is used.
     let row = backends

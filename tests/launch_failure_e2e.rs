@@ -137,6 +137,81 @@ fn an_agent_exiting_before_it_reports_reads_failed() {
     );
 }
 
+/// psmux closes a window once its program exits, so a failed launch is
+/// usually lost next. The failure outlives that loss, and so must a wait for
+/// it.
+#[test]
+fn a_wait_for_failed_answers_after_the_failed_pane_is_lost() {
+    let Some(env) = Env::new() else { return };
+    // Keeps the server up once the failed window is gone.
+    env.spawn("shell");
+    let id = env.spawn("claude-debugger");
+    let session = env.until_state(&id, "failed");
+    let pane = session["backend_id"].as_str().expect("a pane").to_string();
+
+    env._server.tmux(&["kill-window", "-t", &pane]);
+    let db = env.db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let mut sweep = thurbox::session_ops::lost::LostSweep::default();
+    let deadline = Instant::now() + WAIT;
+    while db.session_lost_at(id.parse().unwrap()).unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the loss was never recorded");
+        sweep.sweep(&db, &backends);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(env.get(&id)["state"], "failed");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args([
+            "session",
+            "wait",
+            &id,
+            "--state",
+            "failed",
+            "--timeout",
+            "5",
+        ])
+        .args(["--json"])
+        .output()
+        .expect("run thurbox-cli");
+    assert!(out.status.success(), "{out:?}");
+    let answer: Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(answer["state"], "failed", "{answer:#}");
+}
+
+/// A relaunch clears the failure record, but the `launch_failed` edge stays in
+/// the log, and a stream resumed from before it replays it as `failed`.
+#[test]
+fn a_replayed_launch_failure_reads_failed_after_a_relaunch() {
+    let Some(env) = Env::new() else { return };
+    let cursor = env.db().latest_session_event_seq().unwrap();
+    let id = env.spawn("claude-debugger");
+    env.until_state(&id, "failed");
+
+    let agents = AGENTS.replace(
+        r#"args = ["-c", "sleep 1; echo \"error: role 'debugger' not found\"; exit 1"]"#,
+        r#"args = ["-c", "sleep 60"]"#,
+    );
+    assert_ne!(agents, AGENTS);
+    let config = thurbox::paths::config_file().unwrap();
+    std::fs::write(config.parent().unwrap().join("agents.toml"), agents).unwrap();
+    env.cli(&["session", "restart", &id, "--json"]);
+    assert_eq!(env.get(&id)["launch_failure"], Value::Null);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["watch", "--session", &id, "--for-secs", "1"])
+        .args(["--since", &cursor.to_string(), "--json"])
+        .output()
+        .expect("run thurbox-cli");
+    assert!(out.status.success(), "{out:?}");
+    let replayed: Value = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|line| line["reason"] == "launch_failed")
+        .expect("the launch_failed edge replayed");
+    assert_eq!(replayed["state"], "failed", "{replayed:#}");
+}
+
 #[test]
 fn an_uncovered_agents_exit_is_not_a_failed_launch() {
     let Some(env) = Env::new() else { return };

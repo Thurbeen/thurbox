@@ -463,8 +463,9 @@ for every other session):
 
 The record is written once, with a `changed` event whose `reason` is
 `launch_failed` (`to_state: "failed"`, `exit_code`, and the output in
-`detail`) on `watch`. `session wait` ends on it — exit code 6, like a lost
-session — unless it was waiting for `--state failed`.
+`detail`) on `watch`, which reads that event as `failed` even when replayed
+(`--since`) after a relaunch has cleared the record. `session wait` ends on it —
+exit code 6, like a lost session — unless it was waiting for `--state failed`.
 
 What counts. A failed setup always does. An exit counts only for an agent whose
 silence meant something: the hooks extension is on and the agent has hook
@@ -486,7 +487,8 @@ When it ends. The next launch — `session restart`, `session start`, restore �
 clears it; a record naming a pane the row has since left is never reported.
 A failed session whose window then goes (psmux closes it with the program) is
 marked `lost` like any other and releases its pane, but stays `failed`, with
-its record, until it is relaunched.
+its record, until it is relaunched — and `session wait --state failed` still
+answers with it.
 Local sessions only: a session on a host that shares its sessions is recorded
 by the host's own thurbox, and the host's `session get` reports it.
 

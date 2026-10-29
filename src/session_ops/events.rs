@@ -2,6 +2,7 @@
 use crate::session::{Assessment, SessionId};
 use crate::storage::{Database, SessionEventRow, SessionFacts};
 use serde_json::{json, Value};
+use std::borrow::Cow;
 
 pub const BATCH: usize = 512;
 
@@ -30,6 +31,25 @@ pub fn render(
     line["stopped"] = json!(stopped);
     line["at"] = json!(event.at_ms);
     line
+}
+
+/// The facts a replayed edge is judged by. A `launch_failed` edge carries its
+/// own failure: the record it was written with is cleared by the next launch,
+/// and the edge must still read `failed` when a stream resumed from before it
+/// reads it after that. Every other edge is judged by the current record.
+pub fn as_of<'a>(event: &SessionEventRow, facts: &'a SessionFacts) -> Cow<'a, SessionFacts> {
+    if event.reason != "launch_failed" || facts.launch_failure.is_some() {
+        return Cow::Borrowed(facts);
+    }
+    Cow::Owned(SessionFacts {
+        launch_failure: Some(crate::session::LaunchFailure::observed(
+            &facts.backend_id,
+            event.exit_code,
+            event.detail.clone(),
+            event.at_ms,
+        )),
+        ..facts.clone()
+    })
 }
 
 pub fn assess(

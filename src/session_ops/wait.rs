@@ -44,6 +44,15 @@ pub fn run(
     // queued after it, a turn ahead of the loss among them: those are read in
     // order first, and the loop's idle check ends the wait on the mark after.
     if since.is_none() && db.session_lost_at(session.id).map_err(failed)?.is_some() {
+        // Except a launch failure, which outlives the loss of its pane (psmux
+        // closes the window once its program exits): it still answers a wait
+        // for `failed`, which nothing else can match on a lost row.
+        let failure = crate::session::SessionState::Failed.as_str();
+        if conditions.states.iter().any(|state| state == failure) {
+            if let Some(value) = baseline(db, &registry, session.id, seq, &[failure.into()])? {
+                return Ok(value);
+            }
+        }
         return Err(Error::Gone);
     }
     // With an explicit cursor the park is replayed from the edges like
@@ -102,6 +111,7 @@ pub fn run(
                 let Some(facts) = facts.get(&session.id) else {
                     return Err(Error::Gone);
                 };
+                let facts = &*super::events::as_of(&event, facts);
                 let hook = super::events::assess(
                     &registry,
                     facts,
