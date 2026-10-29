@@ -765,6 +765,7 @@ fn housekeeping(db: &Database, backends: &crate::backend::BackendRegistry) -> Va
         "reaped": reaped,
         "teardowns": teardowns,
         "lost": lifecycle.lost,
+        "launch_failed": lifecycle.launch_failed,
         "telemetry": telemetry,
         "hooks": hooks,
     })

@@ -155,10 +155,8 @@ pub(crate) fn build_restart_plan(
     if codex_builtin && codex_id.is_none() {
         // An old row has only Thurbox's generated id. The interactive picker
         // can recover its real conversation without guessing from the CWD.
-        args = std::iter::once("resume".to_string())
-            .chain(def.args.iter().cloned())
-            .chain(def.build_directory_args(&member_dirs))
-            .collect();
+        args = def.place_session_group(vec!["resume".to_string()]);
+        args.extend(def.build_directory_args(&member_dirs));
         config
             .env
             .insert(super::CODEX_PICKER_ENV.into(), "1".into());
@@ -169,6 +167,7 @@ pub(crate) fn build_restart_plan(
             .map_err(|e| format!("read the agent arguments: {e}"))?,
     );
 
+    let (command, args) = super::with_setup(&def, host, command, args)?;
     Ok(RestartPlan {
         window_name: session.name.clone(),
         command,

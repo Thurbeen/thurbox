@@ -587,6 +587,49 @@ fn an_exited_agent_leaves_its_status_in_the_event_log() {
     assert_eq!(events[0].exit_code, Some(-1073741819));
 }
 
+/// An agent that exits before any hook reported is a failed launch, and the
+/// failure is logged before the exit: `session wait` ends at an `exited`
+/// event, so one waiting for `failed` has to read the failure first.
+#[test]
+fn an_agent_exiting_before_it_reports_logs_the_failure_before_the_exit() {
+    use std::io::Write;
+
+    let env = Env::new();
+    let target = env.seed("target", None);
+    let db = env.db();
+    let mut row = db.get_session_by_id(target).expect("read").expect("row");
+    row.agent = "claude".into();
+    row.backend_id = "%7".into();
+    db.upsert_session(&row).expect("persist");
+    let head = db.latest_session_event_seq().expect("head");
+
+    let mut cmd = env.command(&["session", "exited", "--json"]);
+    cmd.env("THURBOX_SESSION", target.to_string());
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().expect("run thurbox-cli");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(b"1\r\n")
+        .expect("write the status");
+    let out = child.wait_with_output().expect("wait");
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert_eq!(doc["launch_failed"], Value::Bool(true), "{doc}");
+
+    let reasons: Vec<_> = env
+        .db()
+        .session_events_since(head, Some(target), 10)
+        .expect("events")
+        .into_iter()
+        .map(|event| event.reason)
+        .collect();
+    assert_eq!(reasons, ["launch_failed", "exited"]);
+}
+
 /// Outside a session there is nothing to record against, and nothing to fail:
 /// the call is the last thing a closing window runs.
 #[test]

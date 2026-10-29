@@ -300,6 +300,7 @@ pub struct Report {
     pub reaped: Vec<String>,
     pub teardowns: Vec<String>,
     pub lost: usize,
+    pub launch_failed: usize,
 }
 
 /// The interface worker and the headless heartbeat run this same sweep.
@@ -307,9 +308,11 @@ pub fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Report
     let teardowns = super::retry_owed_remote_teardowns(db, backends);
     let reaped = super::reap_overdue_soft_deletes(db, backends);
     let lost = super::lost::LostSweep::persistent(db, backends);
+    let launch_failed = super::launch_failure::sweep(db, backends);
     Report {
         reaped,
         teardowns,
         lost,
+        launch_failed,
     }
 }
