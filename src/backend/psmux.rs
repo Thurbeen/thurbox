@@ -462,12 +462,10 @@ const EXIT_REPORT: &str =
 /// psmux ignores `new-window -e` — env vars never reach the window's
 /// process — so they are folded into the script itself (`Set-Item Env:K
 /// 'v'; …`, chosen over `$env:K` so the string stays `$`-free). Quoting is
-/// PowerShell **single** quotes (`''` = literal `'`). A raw `"` in a value is
-/// neutralized to a space: Windows PowerShell 5.1 hands an embedded `"` to the
-/// program unescaped, which splits the argument there. A newline is too, a
-/// rule kept from when the script itself rode the window's command line,
-/// where a shell ends the command at one; encoded it would survive, but no
-/// agent's argv or env relies on an embedded newline.
+/// PowerShell **single** quotes (`''` = literal `'`), so an env value — the
+/// session name in `THURBOX_SESSION_NAME` included — arrives exactly: it is a
+/// literal inside the encoded script and never rides a command line. An
+/// argument does ride one, which [`windows_native_arg`] spells.
 ///
 /// The script is not what the window runs: psmux runs a single-string window
 /// command through the shell it resolves, which is `cmd.exe` on a server
@@ -490,13 +488,75 @@ fn psmux_window_powershell(
     ps.push_str(&format!("& {}", powershell_quote(command)));
     for a in args {
         ps.push(' ');
-        ps.push_str(&powershell_quote(a));
+        ps.push_str(&powershell_quote(&windows_native_arg(a)));
     }
-    let mut ps = ps.replace(['"', '\n'], " ");
     if WindowRole::from_window_name(window_name) == Some(WindowRole::Agent) {
         ps.push_str(EXIT_REPORT);
     }
     ps
+}
+
+/// `arg` as the PowerShell string `&` hands a native program, which Windows
+/// PowerShell 5.1 turns into command-line text without escaping an embedded
+/// `"` — the program would split the argument there.
+///
+/// An argument holding `"` is therefore quoted here and passed verbatim (5.1
+/// adds no quotes of its own to text whose whitespace is already inside
+/// quotes): one quoted region with each `"` doubled, and the backslashes
+/// before a `"` doubled. A C runtime (UCRT, Rust, Go, Python) reads `""`
+/// inside quotes as a literal `"`, and `cmd.exe` — running an npm `.cmd` shim —
+/// toggles twice on it, so the whole argument stays inside its quotes and
+/// `&`, `|` or `>` in it are never syntax. `\"` would serve the runtime but
+/// let `cmd.exe` read what follows as unquoted. 5.1 does not count a `"` right
+/// after a `\` ([`ps51_requotes`]); where that would make it wrap the result
+/// a second time, the argument's `"` become spaces instead, as every argument's
+/// once did. A newline becomes a space everywhere: `cmd.exe` ends a command at
+/// one.
+fn windows_native_arg(arg: &str) -> String {
+    let arg = arg.replace('\n', " ");
+    if !arg.contains('"') {
+        return arg;
+    }
+    let mut quoted = String::from('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.push_str(&"\\".repeat(backslashes * 2));
+                quoted.push_str("\"\"");
+                backslashes = 0;
+            }
+            _ => {
+                quoted.push_str(&"\\".repeat(backslashes));
+                quoted.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    quoted.push_str(&"\\".repeat(backslashes * 2));
+    quoted.push('"');
+    if ps51_requotes(&quoted) {
+        arg.replace('"', " ")
+    } else {
+        quoted
+    }
+}
+
+/// Whether Windows PowerShell 5.1 would wrap `arg` in quotes of its own: it
+/// has whitespace outside quotes, counting only the `"` not right after a `\`
+/// (`NeedQuotes` in its native command parameter binder).
+fn ps51_requotes(arg: &str) -> bool {
+    let (mut quotes, mut after_backslash) = (0, false);
+    for c in arg.chars() {
+        if c == '"' && !after_backslash {
+            quotes += 1;
+        } else if c.is_whitespace() && quotes % 2 == 0 {
+            return true;
+        }
+        after_backslash = c == '\\';
+    }
+    false
 }
 
 /// The program a psmux window runs: [`psmux_window_powershell`] handed to
@@ -2128,12 +2188,115 @@ mod tests {
 
     #[test]
     fn psmux_window_script_escapes_and_sanitizes() {
-        // A literal ' doubles (PowerShell escaping); a raw " or newline is
-        // neutralized to a space (Windows PowerShell 5.1 would hand the program
-        // an unescaped `"`). Backslash paths pass through untouched.
-        let args = vec!["it's".to_string(), "say \"hi\"\nnow".to_string()];
+        // A literal ' doubles (PowerShell escaping); a newline in an argument
+        // is neutralized to a space. Backslash paths pass through untouched.
+        let args = vec!["it's".to_string(), "say hi\nnow".to_string()];
         let cmd = psmux_window_powershell("tbs-x", "C:\\Tools\\claude.exe", &args, &HashMap::new());
-        assert_eq!(cmd, "& 'C:\\Tools\\claude.exe' 'it''s' 'say  hi  now'");
+        assert_eq!(cmd, "& 'C:\\Tools\\claude.exe' 'it''s' 'say hi now'");
+    }
+
+    /// An argument holding `"` is quoted by thurbox, not by Windows PowerShell
+    /// 5.1: each `"` doubled inside one quoted region, backslashes before a
+    /// `"` doubled, so a C runtime reads the argument back exactly and
+    /// `cmd.exe` never leaves its quotes.
+    #[test]
+    fn an_argument_keeps_its_double_quotes() {
+        let args = [
+            "review \"API\"",
+            "\"",
+            "a\\\"b",
+            "tail\\",
+            "x\" & echo pwned & \"y",
+        ]
+        .map(String::from);
+        assert_eq!(
+            psmux_window_powershell("tbs-x", "claude", &args, &HashMap::new()),
+            "& 'claude' '\"review \"\"API\"\"\"' '\"\"\"\"' '\"a\\\\\"\"b\"' 'tail\\' \
+             '\"x\"\" & echo pwned & \"\"y\"'"
+        );
+    }
+
+    /// Windows PowerShell 5.1 does not count a `"` right after a `\` when it
+    /// decides whether an argument needs quotes, so it would wrap a quoted
+    /// `a\" b` a second time and leave its space outside `cmd.exe`'s quotes.
+    /// That argument keeps today's spelling: its `"` becomes a space.
+    #[test]
+    fn an_argument_powershell_would_requote_is_neutralized() {
+        let args = ["dir\\\" tail".to_string()];
+        assert_eq!(
+            psmux_window_powershell("tbs-x", "claude", &args, &HashMap::new()),
+            "& 'claude' 'dir\\  tail'"
+        );
+    }
+
+    /// An environment value never rides a command line — it is a PowerShell
+    /// literal inside the encoded script — so it arrives exactly, quotes and
+    /// newlines included.
+    #[test]
+    fn an_env_value_keeps_its_double_quotes() {
+        let name = "review \"API\"\nnext";
+        let env = HashMap::from([("THURBOX_SESSION_NAME".to_string(), name.to_string())]);
+        assert_eq!(
+            psmux_window_powershell("tbs-x", "claude", &[], &env),
+            "Set-Item Env:THURBOX_SESSION_NAME 'review \"API\"\nnext'; & 'claude'"
+        );
+    }
+
+    /// The window program psmux would run, on a real Windows PowerShell 5.1,
+    /// launching a node probe directly and through a `.cmd` shim (how npm
+    /// installs an agent): the probe reads a hostile session name back exactly
+    /// from its argv and its environment, and the shim's `cmd.exe` runs
+    /// nothing the name spells.
+    #[cfg(windows)]
+    #[test]
+    fn a_native_window_hands_its_child_the_exact_name() {
+        if Command::new("node").arg("--version").output().is_err() {
+            eprintln!("skipped: no node on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("probe.js");
+        std::fs::write(
+            &probe,
+            "require('fs').writeFileSync(process.env.PROBE_OUT, JSON.stringify(\
+             {env: process.env.THURBOX_SESSION_NAME, args: process.argv.slice(2)}));\n",
+        )
+        .unwrap();
+        let shim = dir.path().join("probe.cmd");
+        std::fs::write(&shim, "@node \"%~dp0probe.js\" %*\r\n").unwrap();
+        let pwned = dir.path().join("pwned.txt");
+        let names = [
+            "review \"API\" 'x'".to_string(),
+            "a\\\"b".to_string(),
+            "trail \"q\" \\".to_string(),
+            format!("x\" & echo pwned > \"{}\" & \"y", pwned.display()),
+        ];
+        let node = probe.display().to_string();
+        let shim = shim.display().to_string();
+        for (command, lead) in [("node", vec![node]), (shim.as_str(), vec![])] {
+            for name in &names {
+                let out = dir.path().join("out.json");
+                let _ = std::fs::remove_file(&out);
+                let env = HashMap::from([
+                    ("THURBOX_SESSION_NAME".to_string(), name.clone()),
+                    ("PROBE_OUT".to_string(), out.display().to_string()),
+                ]);
+                let mut args = lead.clone();
+                args.push(name.clone());
+                let program = psmux_window_program("tbs-x", command, &args, &env).unwrap();
+                let tokens: Vec<&str> = program.split(' ').collect();
+                let status = Command::new(tokens[0]).args(&tokens[1..]).status().unwrap();
+                assert!(status.success(), "{command} {name}: {status}");
+                let seen: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+                assert_eq!(
+                    seen,
+                    serde_json::json!({"env": name, "args": [name]}),
+                    "{command}"
+                );
+                assert!(!pwned.exists(), "{command} ran part of {name:?}");
+            }
+        }
     }
 
     #[test]

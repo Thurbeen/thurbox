@@ -253,9 +253,14 @@ directory scope, preserving the permission mode and deny/ask rules; see
 `{id}` is substituted with the thurbox-generated session UUID, and `{name}`
 with the display name captured for that launch. Substitution happens inside
 each argument token: a name containing spaces, quotes, Unicode or shell
-metacharacters remains one literal argument. Definitions without `{name}` keep
-the same argv. Renaming a running session does not change its process
-environment or arguments; its next restart uses the current persisted name.
+metacharacters remains one literal argument — on a Windows (psmux) host too,
+where an argument holding `"` is quoted for both a C runtime and an npm `.cmd`
+shim. There a newline in an argument becomes a space, and so does every `"` of
+an argument holding whitespace and a `"` right after a `\`, which Windows
+PowerShell 5.1 would otherwise re-quote; `THURBOX_SESSION_NAME` keeps the name
+exactly everywhere. Definitions without `{name}` keep the same argv. Renaming
+a running session does not change its process environment or arguments; its
+next restart uses the current persisted name.
 `thurbox-cli agent launch-args --session` reports the same expansion. `{home}`
 is substituted with the resolved home dir at spawn time (the remote home
 for an SSH/WSL host) — for an agent that wants a session *file path*

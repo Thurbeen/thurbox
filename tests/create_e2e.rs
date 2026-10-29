@@ -476,7 +476,7 @@ env = {{ CAPTURE = {:?} }}
     .unwrap();
     drop(on_disk_db());
 
-    let original = "launch 'quoted' λ;$HOME *";
+    let original = "launch 'quoted' \"API\" λ;$HOME *";
     let created = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .args([
             "session",
