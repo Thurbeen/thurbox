@@ -146,7 +146,8 @@ it is **stops reloading at all**. Generated files belong in
 - **`run` is nil until the user trusts the file.** Declaring
   `capabilities = { "run" }` does not grant it — the user does, in settings
   (`Ctrl+,` → `]` → `t`). Check `if not run then` and draw something honest. You
-  cannot do that step for them, and you must not edit `ui.json` to fake it.
+  cannot do that step for them, and you must not edit `plugin-state.json` to fake
+  it.
 - **A program pane needs `focusable = true`**, and `thurbox.granted.program`
   checked, since `command` is present whether or not you may.
 - **A plugin-scoped chord does not outrank a global one.** After adding a key,
