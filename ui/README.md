@@ -510,9 +510,9 @@ spec; nothing edits the lock. Commit both and this interface reproduces elsewher
 
 ## Files here are yours, and recoverable
 
-`.bundled.json` records what delivery did; `ui.json` records what you decided
-(which files are off, which are trusted, any rebindings, and the action band's
-order). Editing a shipped
+`.bundled.json` records what delivery did; `ui.json` and `plugin-state.json`
+record what you decided (any rebindings and the action band's order; which files
+are off and which are trusted). Editing a shipped
 file is fine — delivery stops overwriting it once you have. Deleting one is how
 you remove it, and the Interface tab (`Ctrl+,` → `]`) will `r` restore it from
 the binary (an edited `layout.lua` is kept as `layout.lua.bak` first). So no edit

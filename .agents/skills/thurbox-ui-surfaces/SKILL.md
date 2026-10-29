@@ -31,8 +31,8 @@ Global chords (kernel-owned):
 | `Ctrl+C` / `Ctrl+V` (+ `Cmd+C` / `Cmd+V` on macOS) | Copy the selection / paste — copy only with `[clipboard] copy_on_select = false`; by default a drag's release copies and `Ctrl+C` is the interrupt |
 
 Everything else belongs to a plugin and is listed in `F1`. Rebindings persist to
-`ui.json` beside trust and the disabled set — a *user decision*, distinct from the
-delivery facts in `.bundled.json`.
+`ui.json` — a *user decision*, distinct from the delivery facts in `.bundled.json`;
+trust and the disabled set live in `plugin-state.json` beside it.
 
 **Reserved is not the same as kernel-owned.** Five chords are handled before the
 registry is consulted and cannot be rebound at all (`registry::RESERVED`: quit,

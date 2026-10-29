@@ -49,7 +49,10 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   loading are exercised together.
   `plugin_switching` also runs the registry persistence path in an isolated child
   process under a Unix file-size limit: the forced mid-write failure must preserve
-  every byte of the prior `ui.json` and leave no staged file behind. The native
+  every byte of the prior `plugin-state.json` and `ui.json` and leave no staged
+  file behind. `tui_e2e`'s
+  `legacy_trust_and_disabled_choices_move_to_their_own_store_and_still_apply` pins
+  the migration out of a legacy `ui.json` across two starts of the real binary. The native
   interruption probe is Unix-only; Windows replacement is compile-checked and uses
   `MoveFileExW`, but is not exercised by that probe. The same file pins config-file
   symlink preservation on Unix and paths beyond `MAX_PATH` on Windows.
