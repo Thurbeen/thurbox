@@ -2034,17 +2034,23 @@ The verdict is cached per host, and a failing one **backs off**:
 `host_cli::retry_after` doubles `PROBE_RETRY` (60 s) per consecutive failure
 up to `PROBE_RETRY_MAX` (15 min), the count reset by the first usable answer
 and by `forget` (what `session sync` calls, since somebody running it by hand
-has usually just fixed the host). A flat interval was wrong because the
-failures divide in two and only one of them is transient: a host that is
-rebooting answers on the next pass, while a host whose shell will not take a
-10 MB payload fails *identically* every time — and each of those attempts
-re-downloaded the release archive and opened an ssh, once a minute, for as
-long as thurbox ran. The transfer itself reaps its transport child on both
-paths (`git::stream_into_child`, killing it first when the write failed):
-`Child`'s `Drop` neither kills nor waits, so returning on the `EPIPE`
-`write_all` saw left one orphaned `ssh` per attempt. It also reports the
-peer's own stderr in preference to that `EPIPE`, which is the symptom of the
-remote dying and never the reason.
+has usually just fixed the host). A `No` and its count are also written to
+`<data dir>/host-verdicts.json` and read by any process that has no fresher
+verdict of its own: the heartbeat's `automation tick` is a new process every
+time, and with the backoff in memory only it asked — and re-provisioned — a
+failing host on every tick (#1576). A `Yes` stays in memory, since what it
+carries (the CLI's path and abilities) should come from the host.
+
+A flat interval was wrong because the failures divide in two and only one of
+them is transient: a host that is rebooting answers on the next pass, while a
+host whose shell will not take a 10 MB payload fails *identically* every time
+— and each of those attempts re-downloaded the release archive and opened an
+ssh, once a minute, for as long as thurbox ran. The transfer itself reaps its
+transport child on both paths (`git::stream_into_child`, killing it first when
+the write failed): `Child`'s `Drop` neither kills nor waits, so returning on
+the `EPIPE` `write_all` saw left one orphaned `ssh` per attempt. It also
+reports the peer's own stderr in preference to that `EPIPE`, which is the
+symptom of the remote dying and never the reason.
 
 **Nor may the transfer wait unboundedly**, because it runs inside the
 automation tick and the heartbeat starts no tick until the last one ends. The
@@ -2070,6 +2076,18 @@ carries `@status <n>`, what the binary it found exited with, and
 `host_cli::ProbeFailure` says whether the host answered at all: a probe that
 found a broken CLI falls through to provisioning exactly as a host with no CLI
 does, and a host that genuinely did not answer still backs off as above.
+
+**Nor is a CLI the host refused to start a broken one** (#1576). Defender ASR,
+AppLocker and WDAC refuse the *launch* of a new, unsigned binary: no process
+runs, `$LASTEXITCODE` stays unset, and the probe read that as a CLI that ran
+and printed nothing. Re-provisioning then wrote a file with even less
+reputation, which was refused again, every pass. So the Windows probe proves
+launch — it clears `$LASTEXITCODE` and catches the call, answering
+`@launch-error <win32 code> <message>` when no process ran — and a blank
+`@status` reads the same way. `ProbeFault::Refused` backs off like a host that
+is down and is never re-provisioned. A launch error that says the file is not
+a runnable image (`ERROR_BAD_EXE_FORMAT` and its two siblings) is still the
+binary's fault, and still re-provisions.
 
 **Why**: two thurboxes already shared a host's tmux server — a laptop spawning
 on `ssh:devbox` and a thurbox on devbox both use `tmux -L thurbox` there —
