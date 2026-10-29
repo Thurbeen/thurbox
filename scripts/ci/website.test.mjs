@@ -65,32 +65,56 @@ const retiredFleet = [
   /nothing else is periodic/i,
 ];
 
-test('orchestration page leads with Fleet and its current install route', () => {
+// Fleet v1: the Python control plane that installed as a Thurbox extension.
+const fleetV1 = [/uv run fleet/, /\/fleet-onboarding/, /Mission Control/, /Kanban/, /result\.md/, /--kind result/];
+
+test('orchestration page leads with Fleet v2, its release installer and Fleet Lens', () => {
   const page = built('docs/orchestration.html');
   const fleet = 'https://github.com/Thurbeen/fleet';
   assert.ok(page.querySelector(`a[href="${fleet}"]`), 'links the Fleet repository');
+  assert.ok(page.querySelector('a[href="https://github.com/Thurbeen/thurbox-fleetlens"]'), 'links Fleet Lens');
   const h2s = page.querySelectorAll('h2').map((h) => h.getAttribute('id'));
   assert.equal(h2s[0], 'fleet', 'Fleet is the first section');
   const copy = text(page);
   const code = page.querySelectorAll('pre').map((pre) => text(parse(pre.innerHTML))).join('\n');
-  assert.match(code, /curl -LsSf https:\/\/raw\.githubusercontent\.com\/Thurbeen\/fleet\/main\/install\.sh \| sh/);
-  assert.match(copy, /\/fleet-onboarding/);
-  assert.match(copy, /result\.md/, 'completion is the result file');
-  assert.match(copy, /uv run fleet queue/);
-  for (const stale of retiredFleet) assert.doesNotMatch(copy, stale);
-  assert.doesNotMatch(copy, /--kind result/, 'workers no longer mail their result');
+  assert.match(
+    code,
+    /curl -fsSL https:\/\/github\.com\/Thurbeen\/fleet\/releases\/latest\/download\/install-release\.sh \| sh/,
+  );
+  assert.match(code, /thurbox-cli plugin install git\+https:\/\/github\.com\/Thurbeen\/thurbox-fleetlens/);
+  assert.match(copy, /fleet result/, 'the worker reports its own result');
+  for (const stale of [...retiredFleet, ...fleetV1]) assert.doesNotMatch(copy, stale);
+  assert.doesNotMatch(page.innerHTML, /raw\.githubusercontent\.com\/Thurbeen\/fleet\//, 'no file from Fleet v1');
 });
 
-test('extensions page describes Fleet as it ships today', () => {
-  const copy = text(built('docs/extensions.html'));
-  for (const stale of retiredFleet) assert.doesNotMatch(copy, stale);
-  assert.doesNotMatch(copy, /fleet ships none on purpose/);
+test('Fleet v1 is no longer offered as a Thurbox extension', () => {
+  const extensions = built('docs/extensions.html');
+  const copy = text(extensions);
+  for (const stale of [...retiredFleet, ...fleetV1]) assert.doesNotMatch(copy, stale);
+  assert.doesNotMatch(copy, /\bfleet\b/i, 'the manifest example and the catalog are not Fleet');
+  assert.doesNotMatch(built('index.html').innerHTML, /<code>fleet<\/code>/);
+});
+
+test('plugin catalog lists Fleet Lens in place of the Fleet v1 extension', () => {
+  const cards = built('plugins.html').querySelectorAll('[data-plugin]');
+  const repos = cards.map((c) => c.querySelector('h2 a').getAttribute('href'));
+  assert.ok(!repos.includes('https://github.com/Thurbeen/fleet'), 'Fleet v1 is not a plugin');
+  const repo = 'https://github.com/Thurbeen/thurbox-fleetlens';
+  const card = cards.find((c) => c.querySelector('h2 a').getAttribute('href') === repo);
+  assert.ok(card, 'a catalog card links to thurbox-fleetlens');
+  assert.equal(card.getAttribute('data-kind'), 'pane');
+  assert.equal(card.getAttribute('data-badge'), 'official');
+  assert.match(text(parse(card.querySelector('pre').innerHTML)), /thurbox-cli plugin install git\+https:\/\/github\.com\/Thurbeen\/thurbox-fleetlens/);
+  assert.equal(
+    card.querySelector('img').getAttribute('src'),
+    'https://raw.githubusercontent.com/Thurbeen/thurbox-fleetlens/main/media/demo.gif',
+  );
 });
 
 test('homepage links each official plugin from the interface section, and stays light on commands', () => {
   const home = built('index.html');
   const section = home.querySelector('#customizable');
-  const plugins = ['info-panel', 'code-review', 'automations', 'auto-continue', 'doom'];
+  const plugins = ['info-panel', 'code-review', 'automations', 'auto-continue', 'fleetlens', 'doom'];
   for (const name of plugins) {
     const repo = `https://github.com/Thurbeen/thurbox-${name}`;
     const link = section.querySelector(`a[href="${repo}"]`);

@@ -55,11 +55,9 @@ breadcrumb: 'Extensions'
             <p>
               <strong>Two extensions ship with Thurbox, and both are built in.</strong>
               Everything else you install yourself, from a URL, a local directory, or a git
-              repository. The worked example is
-              <a href="https://github.com/Thurbeen/fleet" target="_blank" rel="noopener">fleet</a>
-              , the maintained control plane you install with one command &mdash; see
+              repository &mdash; see
               <a href="#catalog">Available extensions</a>
-              . The commands and manifest fields below are generic; the examples use fleet.
+              . The commands and manifest fields below are generic.
             </p>
           </div>
           <div class="info-box">
@@ -276,28 +274,23 @@ thurbox-cli extension install https://example.com/ext/my-extension --home ~/work
             token is substituted with the resolved home directory.
           </p>
           <p>
-            The example below is modelled on fleet. Its real manifest uses one
-            <code>[[files]]</code>
-            , three
-            <code>[[symlinks]]</code>
-            and one
-            <code>[[sessions]]</code>
-            ; the rest is illustrative, so every field the format supports appears once.
+            The example below is illustrative: it uses every field once, which no real extension
+            needs.
           </p>
-          <pre data-title="extension.toml"><code class="language-toml">name = "fleet"
-description = "Control-plane session: the repo map and thurbox orchestration"
+          <pre data-title="extension.toml"><code class="language-toml">name = "lead"
+description = "A long-lived lead session with its standing instructions"
 config_version = 1
-# home = "~/fleet"              # OPTIONAL; default is under the config dir
+# home = "~/lead"               # OPTIONAL; default is under the config dir
                                 # ({home} is substituted everywhere it appears)
 
 # install spec ---------------------------------------------------------------
 [[agents]]                      # registered in agents.toml (existing kept)
-name = "fleet"
+name = "lead"
 command = "claude"
 args = ["--model", "claude-haiku-4-5"]
 
 [[files]]                       # fetched from the source, written under home
-path = "FLEET.md"
+path = "LEAD.md"
 [[files]]
 path = "scripts/hook.sh"
 executable = true               # chmod +x
@@ -311,24 +304,21 @@ substitute = true               # replace {home} in the content
 
 [[symlinks]]                    # never clobbers a real file at `link`
 link = "CLAUDE.md"
-target = "FLEET.md"
+target = "LEAD.md"
 
 # runtime spec (ensured on activate, self-healed if deleted) -----------------
 [[sessions]]
-name = "fleet"
-agent = "fleet"
+name = "lead"
+agent = "lead"
 repo_path = "{home}"            # resolved to the absolute home at install.
                                 # {home} is the EXTENSION home, so an extension
                                 # whose session must open your own checkout ships
                                 # a placeholder its installer renders instead
 
-# [[automations]] is an OPTIONAL runtime resource (fleet ships none: its
-# periodic work is its own supervised reconciler). An extension that wants a
-# scheduled tick declares:
-[[automations]]
+[[automations]]                 # OPTIONAL: a scheduled tick
 name = "example-tick"
 trigger = "cron:*/10 * * * *"   # same grammar as `automation create --trigger`
-session_ref = "fleet"           # must match a [[sessions]] name above
+session_ref = "lead"            # must match a [[sessions]] name above
 prompt = "tick"</code></pre>
           <table>
             <thead>
@@ -477,33 +467,34 @@ prompt = "tick"</code></pre>
             </a>
           </div>
 
-          <h3 class="docs-hub-category" id="cat-control-plane">Install it yourself</h3>
+          <h3 class="docs-hub-category" id="cat-install">Install it yourself</h3>
           <p class="docs-hub-category-desc">
             Lives in its own repository, installs through the same manifest machinery.
           </p>
           <div class="docs-hub-grid">
             <a
-              href="https://github.com/Thurbeen/fleet"
+              href="https://github.com/Thurbeen/thurbox-auto-continue"
               class="docs-hub-card"
               target="_blank"
               rel="noopener"
             >
               <div class="card">
-                <div class="card-icon" aria-hidden="true">&#x2316;</div>
-                <h3>fleet <span class="badge">official</span></h3>
+                <div class="card-icon" aria-hidden="true">&#x21BB;</div>
+                <h3>auto-continue <span class="badge">official</span></h3>
                 <p>
-                  The maintained control plane for Thurbox. Mission Control turns a goal into a
-                  queue of tasks, runs one worker session per task on its own worktree, and follows
-                  each change request until it lands. One command installs it, and its manifest
-                  registers the long-lived Mission Control session. The
-                  <a
-                    href="https://github.com/Thurbeen/thurbox/blob/main/docs/ORCHESTRATION.md"
-                    target="_blank"
-                    rel="noopener"
-                    >orchestration guide</a
-                  >
-                  walks through it.
+                  Types
+                  <code>continue</code>
+                  into a Claude session once its usage limit has reset. Its manifest seeds a
+                  config file, merges a hook into Claude's settings and declares a sweep
+                  automation; its
+                  <code>install.sh</code>
+                  also puts the binary in place. Off by default.
                 </p>
               </div>
             </a>
           </div>
+          <p>
+            The
+            <a href="../plugins.html">plugin catalog</a>
+            lists every extension and pane you can install, official and community.
+          </p>
