@@ -151,6 +151,11 @@ pub enum Action {
     /// `state: "stopped"`, and its pane is not probed — there is none.
     /// `backend_id` still names the window it had: it is what the row records,
     /// and `session start` replaces it with the new pane's id.
+    ///
+    /// `ready` says whether the session can take input now, for every agent:
+    /// the hook's `idle`/`done`, or — before any hook — an agent whose empty
+    /// composer is drawn. `null` means nothing could say; ask again
+    /// (docs/ORCHESTRATION.md → Readiness).
     Get {
         /// Session UUID.
         uuid: String,
@@ -371,7 +376,9 @@ pub enum Action {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Restart a session in-place (kills the window, re-spawns with --resume).
+    /// Restart a session in-place: kill the window and re-spawn, resuming the
+    /// conversation when one exists (a hook reported a turn, or its transcript
+    /// is on disk) and starting it fresh otherwise.
     Restart {
         /// Session UUID.
         uuid: String,
@@ -1211,6 +1218,9 @@ fn run_list_active(
         .iter()
         .map(|&(index, _)| sessions[index].clone())
         .collect();
+    if verify {
+        crate::session_ops::launch_failure::sweep(db, backends.get());
+    }
     let facts = SessionFacts::load(db);
     let bases = db.load_base_branches().unwrap_or_default();
     let updated = db.load_updated_at().unwrap_or_default();
@@ -1280,6 +1290,12 @@ fn run_get(
     no_verify: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
+    // Before the facts are read, so a launch that died since the last sweep
+    // reads `failed` on this very call — a driver polling `get` is the one
+    // waiting on it.
+    if !no_verify {
+        crate::session_ops::launch_failure::check(db, backends.get(), session.id);
+    }
     let facts = SessionFacts::load(db);
     let bases = db.load_base_branches().unwrap_or_default();
     let registry = crate::agent::agent_config::load_or_seed();
@@ -1902,9 +1918,10 @@ fn wait_error(error: crate::session_ops::wait::Error) -> CommandError {
     use crate::session_ops::wait::Error;
     match error {
         Error::Timeout => CommandError::with_code("wait timed out", super::EXIT_TIMEOUT),
-        Error::Gone => {
-            CommandError::with_code("session was deleted, stopped or lost", super::EXIT_GONE)
-        }
+        Error::Gone => CommandError::with_code(
+            "session was deleted, stopped or lost, or its launch failed",
+            super::EXIT_GONE,
+        ),
         Error::Failed(e) => e.into(),
     }
 }
@@ -2380,6 +2397,25 @@ fn run_signal(
                 .signal_hook_state(target.id, state, from)
                 .map_err(|e| format!("set_hook_state: {e}"))?
                 .ok_or_else(parked)?;
+            // A turn means the conversation exists, so a restart must resume
+            // it rather than pin its id afresh — see
+            // `session_ops::conversation_started`. Recorded only when the
+            // agent's own payload names the row's id: a fork's conversation
+            // gets an id the agent chose, and resuming the row's would fail.
+            if matches!(from, ReportFrom::TurnStart) {
+                if let Some(conversation) = target
+                    .agent_session_id
+                    .as_deref()
+                    .filter(|id| hook_payload_session_id().as_deref() == Some(*id))
+                {
+                    db.set_session_meta(
+                        target.id,
+                        crate::session_ops::CONVERSATION_STARTED_META,
+                        conversation,
+                    )
+                    .map_err(|e| format!("record conversation start: {e}"))?;
+                }
+            }
             (Some(stored), true, None)
         }
         SignalReport::Work(edge, id) => {
@@ -2444,6 +2480,28 @@ fn run_signal(
     Ok(CommandOutput::new(json, human))
 }
 
+/// The largest hook payload a turn-start signal reads; a prompt is part of it.
+const MAX_HOOK_PAYLOAD: u64 = 16 * 1024 * 1024;
+
+/// The `session_id` an agent hook passed on stdin (Claude's payload carries the
+/// conversation id). `None` from a terminal, which is a person rather than a
+/// hook, and for anything that is not such a payload.
+fn hook_payload_session_id() -> Option<String> {
+    use std::io::{IsTerminal, Read};
+
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return None;
+    }
+    let mut payload = String::new();
+    stdin
+        .take(MAX_HOOK_PAYLOAD)
+        .read_to_string(&mut payload)
+        .ok()?;
+    let value: Value = serde_json::from_str(&payload).ok()?;
+    value.get("session_id")?.as_str().map(str::to_string)
+}
+
 /// How much of an exited agent's screen `session exited` keeps.
 const EXIT_TAIL_LINES: u32 = 20;
 
@@ -2477,6 +2535,13 @@ fn run_exited(
         .ok()
         .map(|screen| screen.trim_end().to_string())
         .filter(|screen| !screen.is_empty());
+    // An agent that exits before any hook reported from it never launched as
+    // far as a driver is concerned; the window closes with it, so this is the
+    // only moment its failure can be read. Recorded before the exit itself: a
+    // `wait` ends at an `exited` event, and one waiting for `failed` must read
+    // the failure first.
+    let launch_failed =
+        crate::session_ops::launch_failure::record_exited(db, &target, code, tail.clone());
     db.record_session_exited(target.id, code, tail.as_deref())
         .map_err(|e| format!("record_session_exited: {e}"))?;
     let status = code.map_or_else(
@@ -2490,6 +2555,7 @@ fn run_exited(
             "session_id": target.id.to_string(),
             "session_name": target.name,
             "exit_code": code,
+            "launch_failed": launch_failed,
         }),
         format!("Recorded that '{}' exited with {status}.", target.name),
     ))
@@ -3881,6 +3947,9 @@ pub(crate) struct SessionFacts {
     /// The rows created from a raw `--command` rather than an `agents.toml`
     /// entry — the ones thurbox never had an agent to wire hooks for.
     command_sessions: std::collections::HashSet<crate::session::SessionId>,
+    /// The launch failures recorded for the panes the rows point at.
+    launch_failures:
+        std::collections::HashMap<crate::session::SessionId, crate::session::LaunchFailure>,
 }
 
 impl SessionFacts {
@@ -3895,6 +3964,7 @@ impl SessionFacts {
             parked: db.load_stopped_sessions().unwrap_or_default(),
             reports_as: db.load_reports_as().unwrap_or_default(),
             command_sessions: db.load_command_sessions().unwrap_or_default(),
+            launch_failures: db.load_launch_failures().unwrap_or_default(),
         }
     }
 
@@ -3941,6 +4011,7 @@ impl SessionFacts {
         if self.parked.contains(&s.id) {
             return hook.parked();
         }
+        let hook = hook.with_launch_failure(self.launch_failures.get(&s.id).cloned());
         let Some(backends) = probe else {
             return hook;
         };
@@ -3968,18 +4039,30 @@ pub(crate) fn probe_pane(
         .get(agent)
         .map(|d| d.command.clone())
         .unwrap_or_else(|| agent.to_string());
-    let pane = match crate::session_ops::windows::agent_pane(backends, s) {
+    let (pane, found) = match crate::session_ops::windows::agent_pane(backends, s) {
         Ok(None) => return hook.with_corroboration(crate::session::Corroboration::Missing),
-        Ok(Some((backend, pane))) => backend.pane_state(&pane).unwrap_or_default(),
-        Err(_) => crate::backend::PaneState::default(),
+        Ok(Some((backend, pane))) => (
+            backend.pane_state(&pane).unwrap_or_default(),
+            Some((backend, pane)),
+        ),
+        Err(_) => (crate::backend::PaneState::default(), None),
     };
-    hook.with_pane(
+    let mut hook = hook.with_pane(
         &command,
         registry,
         pane.foreground_process.as_deref(),
         pane.foreground_command.as_deref(),
         pane.dead,
-    )
+    );
+    // Only an agent no hook has reported on needs its screen read to say
+    // whether it is ready (`Assessment::ready`); a reported one has said.
+    if hook.state == Some(crate::session::SessionState::Running) {
+        hook.composer_drawn = found.and_then(|(backend, pane)| {
+            crate::session_ops::composer::read_line(backend.as_ref(), &pane)
+                .map(|line| crate::session_ops::composer::shows_prompt(&line))
+        });
+    }
+    hook
 }
 
 /// A deleted row as `session list --deleted` prints it: the session's facts

@@ -444,6 +444,28 @@ mod tests {
     }
 
     #[test]
+    fn validate_fails_on_an_unknown_agents_toml_placeholder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = TestPathGuard::new(tmp.path());
+        let path = crate::agent::agent_config::agents_config_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[[agents]]\nname = \"ok\"\ncommand = \"x\"\n\
+             [[agents]]\nname = \"coder\"\ncommand = \"x\"\n\
+             setup = [\"scripts/role.sh {rol}\"]\nvars = { role = \"coder\" }\n",
+        )
+        .unwrap();
+
+        let (report, failed) = validate();
+        assert!(failed.iter().any(|f| f == "agents.toml"), "got: {failed:?}");
+        assert!(
+            report.to_string().contains("unknown placeholder {rol}"),
+            "the message names the placeholder: {report}"
+        );
+    }
+
+    #[test]
     fn a_broken_v1_keybindings_file_does_not_fail_validation() {
         // It used to, and must not: nothing reads `keybindings.json` any more —
         // the interface keeps rebindings in `ui.json` beside trust and the disabled

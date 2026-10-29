@@ -44,6 +44,7 @@ pub mod host_cli;
 pub mod image_drop;
 #[cfg(test)]
 mod key_tests;
+pub mod launch_failure;
 pub mod lifecycle_hooks;
 pub mod lock;
 pub mod lost;
@@ -393,6 +394,29 @@ pub(crate) fn resume_id_if_transcript_exists(
         .then(|| agent_session_id.to_string())
 }
 
+/// The session-meta key under which a turn-start hook records the agent
+/// conversation id it started a turn on — proof that the conversation exists,
+/// wherever the agent keeps it.
+pub const CONVERSATION_STARTED_META: &str = "thurbox.conversation_started";
+
+/// Whether the session's agent has reported a turn on `agent_session_id`
+/// (see [`CONVERSATION_STARTED_META`]).
+///
+/// The agent's own word, so it holds where the transcript check cannot see: a
+/// custom launcher that sets its own `CLAUDE_CONFIG_DIR` inside a wrapper
+/// script keeps its transcript out of thurbox's sight, and relaunching such a
+/// conversation with `--session-id` is refused by Claude ("already in use").
+pub(crate) fn conversation_started(
+    db: &crate::storage::Database,
+    id: crate::session::SessionId,
+    agent_session_id: &str,
+) -> bool {
+    db.get_session_meta(id, CONVERSATION_STARTED_META)
+        .ok()
+        .flatten()
+        .is_some_and(|started| started == agent_session_id)
+}
+
 /// Decide the `resume_session_id` to use when restarting a session, given the
 /// agent's definition.
 ///
@@ -667,6 +691,7 @@ pub fn agent_launch_plan(
                 .map_err(|e| format!("read the agent arguments: {e}"))?,
         );
     }
+    let (command, args) = with_setup(&def, host.as_ref(), command, args)?;
     Ok(LaunchPlan {
         agent: def.name,
         command,
@@ -1025,7 +1050,7 @@ fn unknown_agent(registry: &crate::session::AgentRegistry, name: &str) -> String
 /// `session` layer. Used by agents that want a session *file path* rather than
 /// a bare id (e.g. omp's `--session-dir {home}/.omp/…/thurbox-{id}`); the
 /// path can't rely on the shell to expand `~`, since args are POSIX-quoted.
-pub(crate) const HOME_PLACEHOLDER: &str = "{home}";
+pub(crate) const HOME_PLACEHOLDER: &str = crate::session::agent_def::HOME_PLACEHOLDER;
 
 /// Rewrite `{home}` in argument groups to `home`.
 ///
@@ -1042,7 +1067,11 @@ pub(crate) fn expand_home_in_def(def: &mut crate::session::AgentDef, home: &str)
             }
         }
     };
+    if def.command.contains(HOME_PLACEHOLDER) {
+        def.command = def.command.replace(HOME_PLACEHOLDER, home);
+    }
     subst(&mut def.args);
+    subst(&mut def.setup);
     subst(&mut def.resume_args);
     subst(&mut def.fork_args);
     subst(&mut def.new_session_args);
@@ -1071,6 +1100,46 @@ pub(crate) fn build_agent_invocation(
     );
     args.extend(def.build_directory_args(member_dirs));
     (command, args)
+}
+
+/// `(command, args)` behind `def`'s `setup`, for a launch on `host` (`None`
+/// for this machine).
+///
+/// Applied last, once every arg is in place, so what is appended after the
+/// definition's own args (directory scope, telemetry, `--agent-arg`) still
+/// reaches the agent through the wrapper's `"$@"`. The setup script is POSIX
+/// `sh`, which a native-Windows host does not have, so a definition with a
+/// setup is refused there rather than launched without it.
+///
+/// A local agent's command is resolved against thurbox's own `PATH` first,
+/// as the backend resolves a window's program: wrapped, the multiplexer only
+/// sees `sh`, and the agent would otherwise be found by `exec` on the tmux
+/// server's `PATH` — which misses a fish user's `fish_add_path` directories.
+pub(crate) fn with_setup(
+    def: &crate::session::AgentDef,
+    host: Option<&crate::session::HostDef>,
+    command: String,
+    args: Vec<String>,
+) -> Result<(String, Vec<String>), crate::session_ops::OpError> {
+    if def.setup.is_empty() {
+        return Ok((command, args));
+    }
+    let platform = spawn::platform_of(host);
+    if platform == crate::session::Platform::Windows {
+        return Err(crate::session_ops::OpError::Refused(format!(
+            "agent '{}' declares a setup, which runs through POSIX sh; \
+             a native-Windows host has none",
+            def.name
+        )));
+    }
+    let command = match host {
+        None => crate::paths::resolve_on_path(&command)
+            .map_or(command, |path| path.to_string_lossy().into_owned()),
+        Some(_) => command,
+    };
+    Ok(crate::session::agent_def::wrap_with_setup(
+        &def.setup, &command, &args,
+    ))
 }
 
 /// Who carries out a verb on a session (#1471), decided once per verb from
@@ -1288,6 +1357,32 @@ pub(crate) fn inject_thurbox_env(
 mod tests {
     use super::*;
     use crate::session::SessionId;
+
+    /// Behind a setup the multiplexer only sees `sh`, so a local agent is
+    /// resolved here against thurbox's `PATH`, as an unwrapped one is by the
+    /// backend — otherwise a fish user's `fish_add_path` agent goes unfound.
+    #[cfg(unix)]
+    #[test]
+    fn a_local_agent_behind_a_setup_is_resolved_on_thurboxs_path() {
+        let def = crate::session::AgentDef {
+            name: "probe".into(),
+            setup: vec!["true".into()],
+            ..Default::default()
+        };
+        let (command, args) = with_setup(&def, None, "sh".into(), vec!["-x".into()]).unwrap();
+        assert_eq!(command, "sh");
+        let agent = std::path::Path::new(&args[3]);
+        assert!(agent.is_absolute(), "{args:?}");
+        assert_eq!(agent.file_name().unwrap(), "sh");
+        assert_eq!(args[4], "-x");
+
+        let unwrapped = crate::session::AgentDef::default();
+        assert_eq!(
+            with_setup(&unwrapped, None, "sh".into(), Vec::new()).unwrap(),
+            ("sh".to_string(), Vec::new()),
+            "without a setup the backend resolves it, as before"
+        );
+    }
 
     #[test]
     fn inject_env_sets_identity_and_task() {

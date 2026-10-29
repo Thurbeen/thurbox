@@ -1834,6 +1834,7 @@ impl SnapshotStore {
             bases,
             stopped,
             reports_as,
+            mut launch_failures,
             meta,
             deleted,
             tasks,
@@ -1882,7 +1883,8 @@ impl SnapshotStore {
                     stopped.contains(&session.id),
                     &session.backend_type,
                     self.panes.get(&session.id.to_string()),
-                );
+                )
+                .with_launch_failure(launch_failures.remove(&session.id));
                 let status = assessment.state();
                 let detected_agent = assessment.detected_agent().map(str::to_string);
                 let worktree = session.worktrees.first();

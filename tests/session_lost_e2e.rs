@@ -372,6 +372,62 @@ fn a_crashed_backend_reports_each_running_session_lost_once() {
     again.silent_for(QUIET, "the loss was already in the log");
 }
 
+/// A failed launch's window going — psmux closes it with the program — is a
+/// loss like any other, and releases the pane id for a restarted server to
+/// reuse. The failure survives it: the session reads `failed`, not
+/// `unreported`, until it is launched again.
+#[test]
+fn a_failed_launch_whose_window_goes_stays_failed() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let db = env.db();
+    let worker = row("worker", env.window("worker"));
+    db.upsert_session(&worker).expect("persist worker");
+    db.set_hook_state(worker.id, "working").expect("working");
+    let failed = row("failed", env.window("failed"));
+    db.upsert_session(&failed).expect("persist failed");
+    let failure = thurbox::session::LaunchFailure::observed(&failed.backend_id, Some(1), None, 7);
+    assert!(db
+        .record_launch_failure(failed.id, &failure)
+        .expect("record"));
+
+    let watch = env.watch();
+    env.crash_server();
+    let mut lost: Vec<String> = (0..2)
+        .map(|_| {
+            let event = watch.event("a loss");
+            assert_eq!(event["reason"], "lost");
+            event["session"].as_str().expect("session").to_string()
+        })
+        .collect();
+    lost.sort();
+    let mut expected = vec![worker.id.to_string(), failed.id.to_string()];
+    expected.sort();
+    assert_eq!(lost, expected);
+    drop(watch);
+
+    let db = env.db();
+    assert_eq!(
+        db.get_session_by_id(failed.id)
+            .expect("read")
+            .expect("row")
+            .backend_id,
+        "",
+        "the dead pane is no longer claimed"
+    );
+    assert_eq!(
+        db.load_launch_failures().expect("failures")[&failed.id],
+        failure
+    );
+    assert_eq!(
+        db.load_session_facts_for(&[failed.id]).expect("facts")[&failed.id].launch_failure,
+        Some(failure)
+    );
+}
+
 /// A fresh tmux server numbers its panes from `%0` again, so a worker brought
 /// back after a crash can sit on the very pane id it had. Its next death is
 /// still news.

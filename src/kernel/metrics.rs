@@ -1,16 +1,14 @@
-//! Machine, per-agent and account metrics, sampled off the render path.
+//! Machine and per-agent metrics, sampled off the render path.
 //!
-//! Everything here touches the world: `sysinfo` walks `/proc`, resolving a
-//! session's root pid is a control-mode round trip, and account usage shells out
-//! to `curl` against a vendor API. So this is the fifth instance of the kernel's
-//! worker pattern — sample on a thread, publish the result, let the UI read
-//! whatever is currently known.
+//! Everything here touches the world: `sysinfo` walks `/proc`, and resolving a
+//! session's root pid is a control-mode round trip. So this is the fifth
+//! instance of the kernel's worker pattern — sample on a thread, publish the
+//! result, let the UI read whatever is currently known.
 //!
-//! The three sources refresh on their own cadences because they cost wildly
-//! different amounts: the machine every second, statusline files with it, and
-//! account usage every five minutes (it is a network call, and a rate-limit
-//! window does not move faster than that). v1 spends the same three intervals
-//! (`METRICS_REFRESH_TICKS`, `USAGE_REFRESH_TICKS`) on the same split.
+//! Account quotas are not sampled here (#1601). Asking a provider means reading
+//! credentials and calling its API, which belongs to a plugin the user installs
+//! and grants `run` — `thurbox-info-panel` does it with `quota-axi` — not to a
+//! core that would do it for every session whether anything reads the answer.
 //!
 //! Absence is a real state and is kept distinct from zero: a session whose agent
 //! writes no statusline file has no metrics, which must not render as an agent
@@ -22,14 +20,11 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::session::{AgentMetrics, AgentUsage};
+use crate::session::AgentMetrics;
 
 /// How often the machine and statusline sample is retaken. v1's
 /// `METRICS_REFRESH_TICKS` at its ~10ms tick.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
-
-/// How often account usage is refetched. v1's `USAGE_REFRESH_TICKS`.
-const USAGE_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Machine-wide and per-session resource use.
 ///
@@ -51,16 +46,6 @@ pub struct SessionResources {
     pub cpu_percent: f32,
     pub memory_bytes: u64,
 }
-
-/// The scope account usage is fetched for: an agent family
-/// ([`crate::usage::family`]), as seen from a host.
-///
-/// Usage is account-global, but *which* account depends on the credentials on
-/// the machine the agent runs on — so a session on `ssh:devbox` may report a
-/// different account than a local one. v1 keys its cache the same way. The
-/// family rather than the agent name, so `claude` and a custom agent asserting
-/// `hook_schema = "claude"` share one fetch: both read the same credentials.
-type UsageKey = (&'static str, Option<String>);
 
 /// One session's sampling inputs, reduced to what crosses a thread boundary:
 /// its id, where its statusline file is, and the handle its pid is resolved
@@ -90,9 +75,6 @@ pub struct Subject {
     /// Backend plus pane id, for the pid lookup. Absent for a session with no
     /// live pane, which then contributes no per-session numbers.
     pub pane: Option<(Arc<dyn crate::backend::SessionBackend>, String)>,
-    /// Agent name and host, for the usage scope.
-    pub agent: String,
-    pub host: Option<String>,
 }
 
 /// Everything the info panel reads, and the workers that keep it current.
@@ -101,39 +83,26 @@ pub struct Metrics {
     system: SystemMetrics,
     resources: HashMap<String, SessionResources>,
     agents: HashMap<String, AgentMetrics>,
-    usage: HashMap<UsageKey, AgentUsage>,
-    /// Each (agent name, host) scope's usage family as of the last fetch, so
-    /// [`Self::usage`] can be asked by the name a row carries.
-    families: HashMap<(String, Option<String>), &'static str>,
     /// Parked between samples so CPU deltas survive. `None` while a worker has
     /// it, which is also what keeps a second sample from starting.
     collector: Option<Box<sysinfo::System>>,
     last_sample: Option<Instant>,
-    last_usage: Option<Instant>,
     tx: Sender<Sample>,
     rx: Receiver<Sample>,
-    usage_tx: Sender<(UsageKey, AgentUsage)>,
-    usage_rx: Receiver<(UsageKey, AgentUsage)>,
 }
 
 impl Metrics {
     pub fn new() -> Self {
         let (tx, rx) = channel();
-        let (usage_tx, usage_rx) = channel();
         Self {
             version: 0,
             system: SystemMetrics::default(),
             resources: HashMap::new(),
             agents: HashMap::new(),
-            usage: HashMap::new(),
-            families: HashMap::new(),
             collector: Some(Box::new(sysinfo::System::new())),
             last_sample: None,
-            last_usage: None,
             tx,
             rx,
-            usage_tx,
-            usage_rx,
         }
     }
 
@@ -154,36 +123,16 @@ impl Metrics {
         self.agents.get(session)
     }
 
-    /// Account usage for a session's (agent, host) scope, when it has been
-    /// fetched. The agent is a name; it reads its family's usage. A built-in
-    /// name needs no registry to find its family, so a session started since
-    /// the last fetch shows the usage already held for it; a custom name is
-    /// learned at the next fetch.
-    pub fn usage(&self, agent: &str, host: Option<&str>) -> Option<&AgentUsage> {
-        let host = host.map(str::to_string);
-        let family = self
-            .families
-            .get(&(agent.to_string(), host.clone()))
-            .copied()
-            .or_else(|| crate::usage::family(agent, None))?;
-        self.usage.get(&(family, host))
-    }
-
     /// Whether the next [`Self::sample`] would actually start work — the
-    /// machine sample or the account-usage fetch is due.
+    /// machine sample is due.
     ///
-    /// Asked before the subject list is built: assembling it clones four
+    /// Asked before the subject list is built: assembling it clones two
     /// strings per session, and doing that on every 10 ms iteration for a
     /// once-per-second consumer was the same waste `serve_runs` already
     /// refuses one function away.
     pub fn wants_sample(&self) -> bool {
-        let sample_due = self
-            .last_sample
-            .map_or(true, |at| at.elapsed() >= SAMPLE_INTERVAL);
-        let usage_due = self
-            .last_usage
-            .map_or(true, |at| at.elapsed() >= USAGE_INTERVAL);
-        sample_due || usage_due
+        self.last_sample
+            .map_or(true, |at| at.elapsed() >= SAMPLE_INTERVAL)
     }
 
     /// Start a sample if one is due and none is running.
@@ -195,7 +144,6 @@ impl Metrics {
     pub fn sample(&mut self, subjects: Vec<Subject>) {
         self.forget_gone(&subjects);
         self.sample_machine(&subjects);
-        self.fetch_usage(&subjects);
     }
 
     /// Drop per-session numbers for sessions that no longer exist.
@@ -204,9 +152,6 @@ impl Metrics {
     /// whose statusline was unreadable this round keeps what it last reported —
     /// which means a deleted one keeps it for the life of the process. `Notifier`
     /// prunes its own per-session bookkeeping off the same live set.
-    ///
-    /// The account usage map is keyed by agent and host rather than by session, so
-    /// it is not per-session state and is left alone.
     fn forget_gone(&mut self, subjects: &[Subject]) {
         let live: std::collections::HashSet<&str> = subjects
             .iter()
@@ -251,68 +196,6 @@ impl Metrics {
         });
     }
 
-    fn fetch_usage(&mut self, subjects: &[Subject]) {
-        let due = self
-            .last_usage
-            .map_or(true, |at| at.elapsed() >= USAGE_INTERVAL);
-        if !due {
-            return;
-        }
-        self.last_usage = Some(Instant::now());
-
-        let (hosts, _warnings) = crate::agent::host_config::cached_registry();
-        // The generation the interface already adopted (no file read there);
-        // a custom agent's `hook_schema` names the family whose usage it reads.
-        // Only for a local session: a host that runs its own CLI launches from
-        // its own definitions, which may give the same name another family, so
-        // a remote session is matched by its name alone.
-        let agents = crate::agent::agent_config::load_for_launch();
-        self.families = subjects
-            .iter()
-            .filter_map(|subject| {
-                let schema = agents
-                    .get(&subject.agent)
-                    .filter(|_| subject.host.is_none())
-                    .and_then(|def| def.hook_schema.as_deref());
-                crate::usage::family(&subject.agent, schema)
-                    .map(|family| ((subject.agent.clone(), subject.host.clone()), family))
-            })
-            .collect();
-        let mut planned: std::collections::HashSet<UsageKey> = std::collections::HashSet::new();
-        for subject in subjects {
-            let scope = (subject.agent.clone(), subject.host.clone());
-            let Some(&family) = self.families.get(&scope) else {
-                continue;
-            };
-            let key: UsageKey = (family, subject.host.clone());
-            if !planned.insert(key.clone()) {
-                continue;
-            }
-            // A remote scope needs its host definition to read credentials
-            // there. A host that is configured away is reported rather than
-            // retried, and only when nothing was ever fetched for that scope —
-            // keeping last-known numbers across a transient outage, as v1 does.
-            let host = match &subject.host {
-                None => None,
-                Some(name) => match hosts.get(name) {
-                    Some(host) => Some(host.clone()),
-                    None => {
-                        self.usage.entry(key).or_insert_with(|| AgentUsage {
-                            note: Some("usage unavailable (host not configured)".to_string()),
-                            ..Default::default()
-                        });
-                        continue;
-                    }
-                },
-            };
-            let tx = self.usage_tx.clone();
-            tokio::spawn(async move {
-                let usage = crate::usage::fetch(key.0, host.as_ref()).await;
-                let _ = tx.send((key, usage));
-            });
-        }
-    }
-
     /// Fold finished samples in. Returns true when anything arrived, so the
     /// caller can repaint.
     pub fn poll(&mut self) -> bool {
@@ -324,10 +207,6 @@ impl Metrics {
             // this round keeps what it last reported instead of blanking.
             self.agents.extend(sample.agents);
             self.collector = Some(sample.collector);
-            changed = true;
-        }
-        while let Ok((key, usage)) = self.usage_rx.try_recv() {
-            self.usage.insert(key, usage);
             changed = true;
         }
         if changed {

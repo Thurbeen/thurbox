@@ -115,6 +115,8 @@ pub(crate) struct RowsRead {
     pub bases: HashMap<SessionId, String>,
     pub stopped: HashSet<SessionId>,
     pub reports_as: HashMap<SessionId, String>,
+    /// The launch failures recorded for the panes the rows point at.
+    pub launch_failures: HashMap<SessionId, crate::session::LaunchFailure>,
     /// Each session's published meta, already cleaned and capped, or why it
     /// could not be read.
     pub meta: Result<HashMap<SessionId, std::collections::BTreeMap<String, String>>, String>,
@@ -378,6 +380,7 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
     // `session get` reads it: the coverage a state is judged against belongs
     // to the declared agent, not to the shell the row was created with.
     let reports_as = database.load_reports_as().unwrap_or_default();
+    let launch_failures = database.load_launch_failures().unwrap_or_default();
     // Bounded by the query and cleaned here, on the worker, so a publish only
     // copies strings.
     let meta = database
@@ -533,6 +536,7 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
         bases,
         stopped,
         reports_as,
+        launch_failures,
         meta,
         deleted,
         tasks,

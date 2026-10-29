@@ -158,6 +158,8 @@ resume_latest = false       # true = id-less "resume last session in cwd"
 env = { CLAUDE_CONFIG_DIR = "{home}/.claude-work" } # frozen at creation
 telemetry_env = { CLAUDE_CODE_ENABLE_TELEMETRY = "1" }  # only while [telemetry] is on
 # telemetry_args = []       # appended only while [telemetry] is on
+# vars = { role = "coder" } # {role} in command/args/groups/env/setup — see below
+# setup = []                # sh commands run in the session's cwd before launch
 ```
 
 A variant can inherit a named entry, including another variant. Definitions may
@@ -272,6 +274,85 @@ Groups
 are emitted only when their driving value exists; precedence is
 fork > resume > new-session. See the seeded file's comments and
 the `thurbox-agents` skill for the `resume_latest` semantics.
+
+### Templates, argument order and setup
+
+Three fields let one entry say what used to need a wrapper script in front of
+the CLI (the worked example replacing one is
+[Replacing a launch wrapper](AGENTS.md#replacing-a-launch-wrapper)):
+
+```toml
+[[agents]]
+name = "claude-coder"
+command = "claude"
+args = ["--permission-mode", "auto", "{session_args}", "--add-dir", "{home}/skills"]
+new_session_args = ["--session-id", "{id}"]
+resume_args = ["--resume", "{id}"]
+vars = { role = "coder" }
+setup = ["[ -x scripts/role.sh ] && scripts/role.sh {role} --agent claude"]
+```
+
+**`vars`** are per-entry template values. Each `{key}` naming a var is
+replaced by its value in `command`, `args`, every `*_args` group, `env`,
+`setup`, `telemetry_env` and `telemetry_args`, once, when the registry loads.
+A value is inserted as written: it may carry the launch-time placeholders
+(`{home}`, and `{id}` or `{name}` where the field allows it), but not another
+var. A var
+name is an identifier (letters, digits, `_`) and may not be one thurbox
+substitutes itself (`id`, `name`, `home`, `dir`, `session_args`, `otlp_endpoint`,
+`otlp_protocol`). Unlike every other field, a variant's `vars` **merge per
+key** over its base's: a template entry can give each var a default and each
+`extends` variant name only the ones it changes.
+
+**Every placeholder must resolve.** A placeholder is `{` + identifier + `}`;
+TOML-shaped text such as codex's `-c 'projects={"/w"={trust_level="trusted"}}'`
+is not one. What each field may name is what its own substitution handles —
+`{id}` and `{name}` only in the session groups, `{dir}` only in
+`additional_dir_args`,
+`{otlp_endpoint}`/`{otlp_protocol}` only in the telemetry fields, `{home}` in
+`command`, `args`, the groups, `env` and `setup`, and `{session_args}` only as
+one whole `args` token. Anything else — a misspelt `{rol}`, `{id}` in `args` —
+fails `thurbox-cli config validate` and skips that entry on load (with a
+warning naming the field and the placeholder); it is never passed to the agent
+as literal text.
+
+**`{session_args}` places the session-selection group.** Without it, the
+fork/resume/new-session group comes first and `args` follow — the order every
+existing entry launches with, unchanged. As a whole `args` token it is replaced
+by that group (or by nothing, when no group applies), so a flag can precede
+`--session-id`, and a CLI whose subcommand must lead can put its flags after
+it: with `resume_args = ["resume", "--last"]` and `args = ["{session_args}",
+"--approve-for-me"]`, codex launches as `codex resume --last --approve-for-me`
+on a restart and `codex --approve-for-me` fresh. It may appear once. Directory,
+telemetry and `--agent-arg` arguments still follow everything.
+
+**`setup`** is a list of shell commands run before the agent starts:
+
+- **Shell.** The steps run as one POSIX `sh -c` script, in order, under
+  `set -e`, then `exec` the agent — so a guard such as
+  `[ -f scripts/setup.mjs ] && node scripts/setup.mjs` does not fail the launch
+  when the script is absent, while the script failing does. Because the steps
+  share that one shell, a `cd` or `export` in a step carries into the agent.
+- **Where and with what.** In the session's launch directory (its worktree, or
+  the multi-repo workspace) and with the session's launch environment — the
+  same env the agent gets, `THURBOX_*` included. `vars` and `{home}` are
+  substituted first.
+- **Remote hosts.** The script runs in the agent's own pane, so on an SSH or
+  WSL host it runs on that host, where the agent runs. A native-Windows host
+  has no `sh`: an entry with a `setup` is refused there rather than launched
+  without it.
+- **Output.** It stays on the pane, above the agent.
+- **Failure.** A step exiting non-zero aborts the launch; the agent never
+  starts. The pane prints `thurbox: setup step <n> failed (exit <status>)` and
+  stays on screen, and the session reads
+  [`failed`](ORCHESTRATION.md#launch-failures) with that status and the pane's
+  last lines. That state is recorded for local sessions; on an SSH or WSL host
+  only one that shares its sessions records it (on the host). Elsewhere a
+  failed setup still stops the launch and stays on the pane, but the session
+  reads `unreported`.
+- **Every launch.** Create, restart, `session start`, restore and fork all run
+  it, as a wrapper script in `command` would have. `agent launch-args` reports
+  the wrapped `sh -c …` invocation.
 
 ### How `command` is resolved
 
@@ -401,7 +482,7 @@ configured hosts, error shown.
 | `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Names are `tmux`, `psmux`, `rmux`, and `herdr` (no Herdr adapter yet). Use `psmux` for a native Windows SSH host |
 | `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
 | `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
-| `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands, the delegated `thurbox-cli` and the agent's pane on a POSIX host (not git, the usage probe or an image drop) — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
+| `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands, the delegated `thurbox-cli` and the agent's pane on a POSIX host (not git or an image drop) — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
 | `otel_endpoint` | no | — | the OTLP endpoint, as the host reaches it, that a session on this host exports to while [`[telemetry]`](#telemetry--opentelemetry-for-sessions) configures agents; unset = resource attributes only. On a shared host the agent's pane is launched by the host's own CLI from the host's `[telemetry]`; this endpoint still applies to `session exec` and `agent launch-args` run from here |
 
 **The agent's `PATH` on a host.** ssh and `wsl.exe` hand a command a
@@ -415,7 +496,7 @@ tmux in `/opt/homebrew/bin`, which only a macOS login shell puts on the
 `PATH`, is found), the delegated `thurbox-cli`, and so the agent's pane,
 run there on `path_prepend`, then the login shells' `PATH`, then the
 launcher's own (on WSL that includes the Windows `PATH` WSL appends unless
-`appendWindowsPath = false`), each directory once. git, the usage probe
+`appendWindowsPath = false`), each directory once. git
 and an image drop keep the launcher's `PATH`. A host whose shells cannot be read keeps
 the launcher's `PATH` with a warning in the log; session creation never
 waits longer than the timeout on it, and never fails for it.
@@ -1451,8 +1532,9 @@ hooks`. The status colours are tunable theme keys (`status_working` /
 an agent seen holding a pane that has reported nothing, and `status_unknown`
 the two silences behind it (`uncovered`, `unreported`); both are spelled apart
 from `status_idle`, which is the agent's own report that it is at rest.
-`status_error` is a separate role, for a failed *command* in the list, not a
-session state.
+`status_error` is the role of a failed *command* in the list and of the one
+session state that is a failure: `failed`, a launch that died before its agent
+reported anything (see [Launch failures](ORCHESTRATION.md#launch-failures)).
 
 The wiring is applied **only to agents thurbox launches** — it never edits your
 own global agent config (e.g. your personal `~/.claude/settings.json`). thurbox's

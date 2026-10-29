@@ -782,6 +782,16 @@ pub enum SessionState {
     /// *every* other word would describe an agent that is not running. It is
     /// also the one state thurbox knows first-hand rather than infers.
     Stopped,
+    /// The launch died before the agent said anything: a `setup` step failed,
+    /// or the agent's process exited before any hook reported from it. Carries
+    /// a [`LaunchFailure`](super::launch_failure::LaunchFailure) record
+    /// (exit status, the pane's last lines).
+    ///
+    /// Outranks every other word but `stopped`, for the reason `stopped` does:
+    /// nothing is running, and `unreported` — the word such a pane used to
+    /// keep — promises a report that can never come. It ends with the next
+    /// launch.
+    Failed,
     /// A remote session whose host cannot be reached. The row stands; the
     /// machine behind it does not, and the hook columns just hold its last
     /// word.
@@ -811,6 +821,7 @@ impl SessionState {
         SessionState::Done,
         SessionState::Idle,
         SessionState::Stopped,
+        SessionState::Failed,
         SessionState::Unreachable,
         SessionState::Running,
         SessionState::Uncovered,
@@ -826,6 +837,7 @@ impl SessionState {
             SessionState::Done => "done",
             SessionState::Idle => "idle",
             SessionState::Stopped => "stopped",
+            SessionState::Failed => "failed",
             SessionState::Unreachable => "unreachable",
             SessionState::Running => "running",
             SessionState::Uncovered => "uncovered",
@@ -1059,6 +1071,15 @@ pub struct Assessment {
     /// not. Set by [`Self::parked`], and the one fact here that is thurbox's
     /// own rather than the agent's or the pane's.
     pub stopped: bool,
+    /// Whether the pane's input line shows an empty composer — a bare prompt
+    /// with the cursor after it. Read only for a session no hook has reported
+    /// on yet ([`SessionState::Running`]), where it is the one evidence that
+    /// the agent finished starting; `None` = not read, or unreadable.
+    pub composer_drawn: Option<bool>,
+    /// The recorded launch failure, when the launch died before the agent
+    /// reported — what makes [`Self::state`] answer
+    /// [`SessionState::Failed`]. Set by [`Self::with_launch_failure`].
+    pub launch_failure: Option<super::launch_failure::LaunchFailure>,
     /// The agent every answer above was resolved against.
     ///
     /// Usually the session's own, but a `--command` session whose driver
@@ -1086,10 +1107,47 @@ impl Assessment {
         if self.stopped {
             return SessionState::Stopped;
         }
+        if self.launch_failure.is_some() {
+            return SessionState::Failed;
+        }
         match self.state {
             Some(state) => state,
             None if self.coverage == Coverage::None => SessionState::Uncovered,
             None => SessionState::Unreported,
+        }
+    }
+
+    /// Whether the session can take input now — the agent-agnostic readiness
+    /// contract callers rely on (docs/ORCHESTRATION.md → Readiness).
+    ///
+    /// Once any hook has reported, the agent's own word decides: `idle` and
+    /// `done` are ready, every active state is not. Before the first hook — a
+    /// fresh agent that signals nothing until its first turn — an agent in the
+    /// pane is ready once its composer is drawn and empty. A parked session, a
+    /// pane with no agent, or a report the pane contradicts is never ready.
+    /// `None` when nothing here can say: the pane was not looked at, or its
+    /// input line could not be read.
+    pub fn ready(&self) -> Option<bool> {
+        if self.stopped
+            || self.contradicted == Some(true)
+            || self
+                .corroboration
+                .as_ref()
+                .and_then(Corroboration::agent_present)
+                == Some(false)
+        {
+            return Some(false);
+        }
+        match self.state() {
+            SessionState::Idle | SessionState::Done => Some(true),
+            SessionState::Running => self.composer_drawn,
+            SessionState::Uncovered | SessionState::Unreported => None,
+            SessionState::Working
+            | SessionState::Blocked
+            | SessionState::Background
+            | SessionState::Stopped
+            | SessionState::Failed
+            | SessionState::Unreachable => Some(false),
         }
     }
 
@@ -1151,8 +1209,19 @@ impl Assessment {
             state: state.map(|(state, _)| state),
             state_source: state.map(|(_, source)| source),
             stopped: false,
+            composer_drawn: None,
+            launch_failure: None,
             agent: agent.to_string(),
         }
+    }
+
+    /// Fold in the session's recorded launch failure, if it has one.
+    pub fn with_launch_failure(
+        mut self,
+        failure: Option<super::launch_failure::LaunchFailure>,
+    ) -> Self {
+        self.launch_failure = failure;
+        self
     }
 
     /// The agent found holding the pane, when it is not the one the session was
@@ -1298,6 +1367,8 @@ mod tests {
             telemetry_env: Default::default(),
             telemetry_args: Vec::new(),
             additional_dir_args: Vec::new(),
+            vars: Default::default(),
+            setup: Vec::new(),
         }
     }
 
@@ -1552,6 +1623,69 @@ mod tests {
             .with_corroboration(Corroboration::ForeignAgent(None));
         assert_eq!(seen.coverage, Coverage::None);
         assert_eq!(seen.coverage_source, None);
+    }
+
+    /// `ready` is a contract callers send input on, so every override and every
+    /// unknown answer is pinned here: a pane that cannot take input must never
+    /// read ready, whatever the hook last said.
+    #[test]
+    fn readiness_answers_every_state_and_override() {
+        let registry = registry(vec![agent("claude", "claude", None)]);
+        let row = |hook: Option<&str>| {
+            Assessment::from_hooks(&registry, "claude", hook, hook.map(|_| 0), None, NOW)
+        };
+        let drawn = |drawn: Option<bool>| {
+            let mut a = row(None).with_corroboration(Corroboration::Agent);
+            a.composer_drawn = drawn;
+            a
+        };
+        let cases: Vec<(&str, Assessment, Option<bool>)> = vec![
+            ("idle, pane unchecked", row(Some("idle")), Some(true)),
+            ("done, pane unchecked", row(Some("done")), Some(true)),
+            (
+                "idle over its agent",
+                row(Some("idle")).with_corroboration(Corroboration::Agent),
+                Some(true),
+            ),
+            ("working", row(Some("working")), Some(false)),
+            ("blocked", row(Some("blocked")), Some(false)),
+            ("background", row(Some("background")), Some(false)),
+            ("idle but parked", row(Some("idle")).parked(), Some(false)),
+            ("done but parked", row(Some("done")).parked(), Some(false)),
+            (
+                "idle over a shell",
+                row(Some("idle")).with_corroboration(Corroboration::Shell),
+                Some(false),
+            ),
+            (
+                "done over a dead pane",
+                row(Some("done")).with_corroboration(Corroboration::Dead),
+                Some(false),
+            ),
+            (
+                "idle with no window",
+                row(Some("idle")).with_corroboration(Corroboration::Missing),
+                Some(false),
+            ),
+            (
+                "working contradicted",
+                row(Some("working")).with_corroboration(Corroboration::Shell),
+                Some(false),
+            ),
+            ("fresh, composer drawn", drawn(Some(true)), Some(true)),
+            ("fresh, composer not drawn", drawn(Some(false)), Some(false)),
+            ("fresh, input line unreadable", drawn(None), None),
+            ("never reported, pane unchecked", row(None), None),
+            (
+                "never reported, pane unknown",
+                row(None).with_corroboration(Corroboration::Unknown),
+                None,
+            ),
+            ("never reported, remote", row(None).pane_unavailable(), None),
+        ];
+        for (case, assessment, want) in cases {
+            assert_eq!(assessment.ready(), want, "{case}");
+        }
     }
 
     #[test]

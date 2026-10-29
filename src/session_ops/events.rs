@@ -2,6 +2,7 @@
 use crate::session::{Assessment, SessionId};
 use crate::storage::{Database, SessionEventRow, SessionFacts};
 use serde_json::{json, Value};
+use std::borrow::Cow;
 
 pub const BATCH: usize = 512;
 
@@ -32,6 +33,32 @@ pub fn render(
     line
 }
 
+/// The facts a replayed edge is judged by: the launch failure as of the
+/// moment the edge happened. The current record applies to the edge that
+/// recorded it and those after it, never to an earlier edge — a `done` from
+/// before a failed relaunch is still `done`. A `launch_failed` edge whose
+/// record a relaunch has since cleared carries its own failure, so it still
+/// reads `failed`. Current-state reads use the record as it stands.
+pub fn as_of<'a>(event: &SessionEventRow, facts: &'a SessionFacts) -> Cow<'a, SessionFacts> {
+    let failure = match &facts.launch_failure {
+        Some(failure) if event.at_ms >= failure.at => Some(failure.clone()),
+        _ if event.reason == "launch_failed" => Some(crate::session::LaunchFailure::observed(
+            &facts.backend_id,
+            event.exit_code,
+            event.detail.clone(),
+            event.at_ms,
+        )),
+        _ => None,
+    };
+    if failure == facts.launch_failure {
+        return Cow::Borrowed(facts);
+    }
+    Cow::Owned(SessionFacts {
+        launch_failure: failure,
+        ..facts.clone()
+    })
+}
+
 pub fn assess(
     registry: &crate::session::AgentRegistry,
     facts: &SessionFacts,
@@ -49,7 +76,7 @@ pub fn assess(
     if stopped {
         hook.parked()
     } else {
-        hook
+        hook.with_launch_failure(facts.launch_failure.clone())
     }
 }
 

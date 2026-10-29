@@ -6,6 +6,7 @@ pub mod hook_def;
 pub mod hook_status;
 pub mod host_def;
 pub mod hyperlink;
+pub mod launch_failure;
 pub mod message;
 pub mod multiplexer;
 pub mod op_error;
@@ -37,6 +38,9 @@ pub use hook_status::{
 };
 pub use host_def::{current_wsl_distro, HostDef, HostKind, HostRegistry, WslRepairPlan};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
+pub use launch_failure::{
+    LaunchFailure, LaunchFailureReason, LAUNCH_FAILURE_META, LAUNCH_REPORTED_META,
+};
 pub use message::SessionMessage;
 pub use multiplexer::{BackendChoice, Multiplexer};
 pub use op_error::OpError;
@@ -285,38 +289,6 @@ pub struct GitStats {
     /// *about*, so a caller caching that answer keys it on this rather than on
     /// the worktree — see `git::worktree_stats`. `None` on an unborn branch.
     pub head: Option<String>,
-}
-
-/// One account-level rate-limit window (e.g. Claude's 5-hour or weekly), as
-/// shown by an agent's `/usage` command. Agent-neutral.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UsageWindow {
-    /// Short label, e.g. "5h", "Week", or a model id.
-    pub label: String,
-    /// Percent of the window consumed, 0–100.
-    pub used_percent: f32,
-    /// Unix epoch seconds when the window resets, if known.
-    pub resets_at: Option<u64>,
-}
-
-/// Account-level usage/rate-limit info for an agent, fetched from the vendor
-/// (the `/usage`-equivalent). Account-global — but the *account* is scoped to
-/// wherever the agent's credentials live, i.e. the host the session runs on
-/// (local machine, SSH host, or WSL distro). Agent-neutral.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct AgentUsage {
-    pub windows: Vec<UsageWindow>,
-    /// Plan/tier label when known (e.g. "max", "pro").
-    pub plan: Option<String>,
-    /// Human note when no windows are available (not logged in, API error…).
-    pub note: Option<String>,
-}
-
-impl AgentUsage {
-    /// Nothing worth rendering (no windows and no note).
-    pub fn is_empty(&self) -> bool {
-        self.windows.is_empty() && self.note.is_none()
-    }
 }
 
 pub struct SessionInfo {

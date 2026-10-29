@@ -44,6 +44,27 @@ pub struct SessionFacts {
     /// acknowledgment every other surface does, rather than reporting a turn
     /// somebody has already looked at as unseen forever.
     pub seen_at: Option<i64>,
+    /// The launch failure recorded for the pane the row points at — see
+    /// [`Database::record_launch_failure`].
+    pub launch_failure: Option<crate::session::LaunchFailure>,
+}
+
+/// The columns [`SessionFacts`] is read from, and the launch-failure meta
+/// beside them.
+const SESSION_FACTS: &str =
+    "SELECT s.id, s.name, s.agent, s.backend_id, s.stopped_at, s.seen_at, m.value FROM sessions s";
+const FACTS_FAILURE_JOIN: &str = "LEFT JOIN session_meta m ON m.session_id = s.id \
+     AND m.key = 'thurbox.launch_failure'";
+
+/// Whether a stored launch failure still describes the row whose pane is
+/// `backend_id`: the pane that failed, or no pane at all — a loss releases the
+/// pane (psmux closes a failed launch's window with its program) without a new
+/// launch. The loss keeps only the failure of the pane it releases
+/// ([`Database::record_session_lost`]), and the next launch or a recovery onto
+/// a live pane clears the record. A row pointing at another pane has moved on, and an earlier
+/// launch's failure is over.
+fn launch_failure_holds(failure: &crate::session::LaunchFailure, backend_id: &str) -> bool {
+    backend_id.is_empty() || failure.pane == backend_id
 }
 
 /// The result of atomically assigning an agent pane to an active session row.
@@ -1036,6 +1057,17 @@ impl Database {
         if self.lease_held(&held, current_time_millis())? {
             return Ok(false);
         }
+        // Without a pane, a stored launch failure reads as current
+        // (`launch_failure_holds`), so only the failure of the pane going now
+        // may stay. One left by an earlier pane — the row since adopted
+        // another without a relaunch — is over, and goes with this one.
+        let failed_here = self
+            .get_session_meta(id, crate::session::LAUNCH_FAILURE_META)?
+            .and_then(|stored| crate::session::LaunchFailure::parse(&stored))
+            .is_some_and(|failure| failure.pane == backend_id);
+        if !failed_here {
+            self.unset_session_meta(id, crate::session::LAUNCH_FAILURE_META)?;
+        }
         self.conn.execute(
             "UPDATE sessions SET lost_at = ?1, backend_id = '' WHERE id = ?2",
             params![current_time_millis() as i64, id_str],
@@ -1049,6 +1081,106 @@ impl Database {
         )?;
         tx.commit()?;
         Ok(true)
+    }
+
+    /// Record that the launch on `id`'s pane died before its agent reported
+    /// anything — the `thurbox.launch_failure` meta and the
+    /// `changed`/`launch_failed` event, in one write. Returns whether one was
+    /// written.
+    ///
+    /// Checked and written under one write lock, so two watchers seeing the
+    /// same dead pane record it once. Nothing is written when the row has
+    /// moved on since the caller looked — deleted, parked, lost, pointing at
+    /// another pane, or with a hook report after all (the agent did run) —
+    /// while a restart holds it, or when this pane's failure is already
+    /// recorded.
+    pub fn record_launch_failure(
+        &self,
+        id: SessionId,
+        failure: &crate::session::LaunchFailure,
+    ) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let current: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT backend_id FROM sessions \
+                 WHERE id = ?1 AND deleted_at IS NULL AND stopped_at IS NULL \
+                 AND lost_at IS NULL AND hook_state IS NULL",
+                params![id_str],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.as_deref() != Some(failure.pane.as_str()) || failure.pane.is_empty() {
+            return Ok(false);
+        }
+        let recorded = self
+            .get_session_meta(id, crate::session::LAUNCH_FAILURE_META)?
+            .and_then(|stored| crate::session::LaunchFailure::parse(&stored));
+        if recorded.is_some_and(|r| r.pane == failure.pane) {
+            return Ok(false);
+        }
+        let reported = self.get_session_meta(id, crate::session::LAUNCH_REPORTED_META)?;
+        if reported.as_deref() == Some(failure.pane.as_str()) {
+            return Ok(false);
+        }
+        let held = super::event_cursors::LockSubject::Session(id);
+        if self.lease_held(&held, current_time_millis())? {
+            return Ok(false);
+        }
+        self.set_session_meta(id, crate::session::LAUNCH_FAILURE_META, &failure.to_meta())?;
+        self.conn.execute(
+            "INSERT INTO session_events \
+             (session_id, event, reason, to_state, at_ms, exit_code, detail) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id_str,
+                SessionEventKind::Changed.as_str(),
+                EventReason::LaunchFailed.as_str(),
+                crate::session::SessionState::Failed.as_str(),
+                failure.at,
+                failure.exit_code,
+                failure.output,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The launch failure of every active session whose row still points at
+    /// the pane that failed — see
+    /// [`record_launch_failure`](Self::record_launch_failure). A record left
+    /// behind by an earlier launch names a pane the row has since left, and is
+    /// not returned.
+    pub fn load_launch_failures(
+        &self,
+    ) -> rusqlite::Result<HashMap<SessionId, crate::session::LaunchFailure>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.id, s.backend_id, m.value FROM sessions s \
+             JOIN session_meta m ON m.session_id = s.id AND m.key = ?1 \
+             WHERE s.deleted_at IS NULL",
+        )?;
+        let rows = stmt.query_map(params![crate::session::LAUNCH_FAILURE_META], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id, pane, stored) = row?;
+            let (Ok(id), Some(failure)) = (
+                id.parse::<SessionId>(),
+                crate::session::LaunchFailure::parse(&stored),
+            ) else {
+                continue;
+            };
+            if launch_failure_holds(&failure, &pane) {
+                map.insert(id, failure);
+            }
+        }
+        Ok(map)
     }
 
     /// The sessions marked lost, with when — see
@@ -1108,6 +1240,14 @@ impl Database {
             "UPDATE sessions SET lost_at = NULL, backend_id = ?3 WHERE id = ?1 AND lost_at = ?2",
             params![id, lost_at, pane],
         )?;
+        if updated == 1 {
+            // Back on a live pane: whatever launch failed before the loss is
+            // over, and must not come back with the next loss.
+            tx.execute(
+                "DELETE FROM session_meta WHERE session_id = ?1 AND key = ?2",
+                params![id, crate::session::LAUNCH_FAILURE_META],
+            )?;
+        }
         tx.commit()?;
         Ok(updated == 1)
     }
@@ -1133,10 +1273,7 @@ impl Database {
     /// included. One lean scan with no worktree join: `thurbox-cli watch` reads
     /// it once per wake to name the sessions its events are about.
     pub fn load_session_facts(&self) -> rusqlite::Result<HashMap<SessionId, SessionFacts>> {
-        self.session_facts_query(
-            "SELECT id, name, agent, backend_id, stopped_at, seen_at FROM sessions",
-            [],
-        )
+        self.session_facts_query(&format!("{SESSION_FACTS} {FACTS_FAILURE_JOIN}"), [])
     }
 
     /// Naming facts for a bounded batch of event subjects, without scanning
@@ -1149,7 +1286,7 @@ impl Database {
             return Ok(HashMap::new());
         }
         let slots = vec!["?"; ids.len()].join(",");
-        let sql = format!("SELECT id, name, agent, backend_id, stopped_at, seen_at FROM sessions WHERE id IN ({slots})");
+        let sql = format!("{SESSION_FACTS} {FACTS_FAILURE_JOIN} WHERE s.id IN ({slots})");
         self.session_facts_query(
             &sql,
             rusqlite::params_from_iter(ids.iter().map(ToString::to_string)),
@@ -1172,12 +1309,17 @@ impl Database {
                     backend_id: row.get(3)?,
                     stopped: row.get::<_, Option<i64>>(4)?.is_some(),
                     seen_at: row.get(5)?,
+                    launch_failure: None,
                 },
+                row.get::<_, Option<String>>(6)?,
             ))
         })?;
         let mut map = HashMap::new();
         for row in rows {
-            let (id, facts) = row?;
+            let (id, mut facts, failure) = row?;
+            facts.launch_failure = failure
+                .and_then(|stored| crate::session::LaunchFailure::parse(&stored))
+                .filter(|f| launch_failure_holds(f, &facts.backend_id));
             if let Ok(id) = id.parse::<SessionId>() {
                 map.insert(id, facts);
             }
@@ -2022,6 +2164,9 @@ impl Database {
              background_work = NULL WHERE id = ?1",
             params![id_str],
         )?;
+        // The launch they record is the one being replaced.
+        self.unset_session_meta(id, crate::session::LAUNCH_FAILURE_META)?;
+        self.unset_session_meta(id, crate::session::LAUNCH_REPORTED_META)?;
         if let Some(Some(previous)) = previous {
             self.record_session_event(
                 id,
@@ -2053,6 +2198,19 @@ impl Database {
             params![id.to_string(), previous, expected.state_at],
         )? != 0;
         if changed {
+            // The report goes; the fact that this launch's agent made one
+            // stays, so its later exit is not read as a failed launch.
+            let pane: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT backend_id FROM sessions WHERE id = ?1",
+                    params![id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(pane) = pane.filter(|pane| !pane.is_empty()) {
+                self.set_session_meta(id, crate::session::LAUNCH_REPORTED_META, &pane)?;
+            }
             self.record_session_event(
                 id,
                 SessionEventKind::Changed,
@@ -2996,6 +3154,160 @@ mod tests {
             PaneClaim::Stored,
             "pane ids belong to a server and may repeat across servers"
         );
+    }
+
+    #[test]
+    fn a_launch_failure_is_recorded_once_for_the_pane_that_died() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        let failure = |pane: &str| {
+            crate::session::LaunchFailure::observed(pane, Some(1), Some("boom".into()), 7)
+        };
+
+        assert!(
+            !db.record_launch_failure(session.id, &failure("%other"))
+                .unwrap(),
+            "not the row's pane"
+        );
+        assert!(db
+            .record_launch_failure(session.id, &failure(&session.backend_id))
+            .unwrap());
+        assert!(
+            !db.record_launch_failure(session.id, &failure(&session.backend_id))
+                .unwrap(),
+            "once"
+        );
+        let facts = &db.load_session_facts_for(&[session.id]).unwrap()[&session.id];
+        assert_eq!(facts.launch_failure, Some(failure(&session.backend_id)));
+        assert_eq!(
+            db.load_launch_failures().unwrap()[&session.id],
+            failure(&session.backend_id)
+        );
+        let events = db.session_events_since(0, Some(session.id), 100).unwrap();
+        let event = events.iter().find(|e| e.reason == "launch_failed").unwrap();
+        assert_eq!(event.to_state.as_deref(), Some("failed"));
+        assert_eq!(event.exit_code, Some(1));
+        assert_eq!(event.detail.as_deref(), Some("boom"));
+
+        // The next launch replaces the one that failed.
+        db.clear_hook_state(session.id).unwrap();
+        assert!(db.load_launch_failures().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_launch_failure_is_not_recorded_for_an_agent_that_reported() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        db.set_hook_state(session.id, "idle").unwrap();
+        let failure =
+            crate::session::LaunchFailure::observed(&session.backend_id, Some(0), None, 7);
+        assert!(!db.record_launch_failure(session.id, &failure).unwrap());
+    }
+
+    #[test]
+    fn an_agent_whose_report_input_retired_has_still_launched() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        db.set_hook_state(session.id, "idle").unwrap();
+        // Submitted input retires a Codex report: the row reads as never
+        // reported again, but the agent did start.
+        let prior = db.load_hook_state(session.id).unwrap().unwrap();
+        assert!(db
+            .clear_hook_state_if_unchanged(session.id, &prior)
+            .unwrap());
+        assert_eq!(db.load_hook_state(session.id).unwrap().unwrap().state, None);
+        let failure =
+            crate::session::LaunchFailure::observed(&session.backend_id, Some(0), None, 7);
+        assert!(!db.record_launch_failure(session.id, &failure).unwrap());
+
+        // The next launch starts with nothing reported.
+        db.clear_hook_state(session.id).unwrap();
+        assert!(db.record_launch_failure(session.id, &failure).unwrap());
+    }
+
+    #[test]
+    fn a_launch_failure_outlives_the_loss_of_its_pane_until_a_recovery() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        let failure =
+            crate::session::LaunchFailure::observed(&session.backend_id, Some(1), None, 7);
+        assert!(db.record_launch_failure(session.id, &failure).unwrap());
+
+        // The window goes: the pane is released, the failure stands.
+        assert!(db
+            .record_session_lost(session.id, &session.backend_id)
+            .unwrap());
+        assert_eq!(
+            db.get_session_by_id(session.id)
+                .unwrap()
+                .unwrap()
+                .backend_id,
+            ""
+        );
+        assert_eq!(db.load_launch_failures().unwrap()[&session.id], failure);
+        assert_eq!(
+            db.load_session_facts_for(&[session.id]).unwrap()[&session.id].launch_failure,
+            Some(failure.clone())
+        );
+
+        // Found again on a live pane: that failure is over, and stays over
+        // through the next loss.
+        let lost_at = db.load_lost_sessions().unwrap()[&session.id];
+        assert!(db
+            .clear_session_lost(session.id, lost_at, "%42", |_| false)
+            .unwrap());
+        assert!(db.load_launch_failures().unwrap().is_empty());
+        assert!(db.record_session_lost(session.id, "%42").unwrap());
+        assert!(db.load_launch_failures().unwrap().is_empty());
+    }
+
+    /// Adopting a replacement pane is no relaunch, so the earlier failure is
+    /// still stored — hidden while the row names another pane, and never
+    /// brought back by that pane's loss.
+    #[test]
+    fn the_loss_of_an_adopted_pane_does_not_revive_an_earlier_failure() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        let failure =
+            crate::session::LaunchFailure::observed(&session.backend_id, Some(1), None, 7);
+        assert!(db.record_launch_failure(session.id, &failure).unwrap());
+        db.claim_backend_id(session.id, "%99", |_, _| false)
+            .unwrap();
+        assert!(db.load_launch_failures().unwrap().is_empty());
+
+        assert!(db.record_session_lost(session.id, "%99").unwrap());
+        assert!(db.load_launch_failures().unwrap().is_empty());
+        assert_eq!(
+            db.load_session_facts_for(&[session.id]).unwrap()[&session.id].launch_failure,
+            None
+        );
+    }
+
+    #[test]
+    fn a_launch_failure_of_an_earlier_pane_is_over() {
+        let db = Database::open_in_memory().unwrap();
+        let session = make_session("Worker");
+        db.upsert_session(&session).unwrap();
+        let failure =
+            crate::session::LaunchFailure::observed(&session.backend_id, Some(1), None, 7);
+        assert!(db.record_launch_failure(session.id, &failure).unwrap());
+        db.claim_backend_id(session.id, "%99", |_, _| false)
+            .unwrap();
+        assert!(db.load_launch_failures().unwrap().is_empty());
+        assert_eq!(
+            db.load_session_facts_for(&[session.id]).unwrap()[&session.id].launch_failure,
+            None
+        );
+    }
+
+    #[test]
+    fn the_facts_join_reads_the_launch_failure_key() {
+        assert!(FACTS_FAILURE_JOIN.contains(&format!("'{}'", crate::session::LAUNCH_FAILURE_META)));
     }
 
     #[test]

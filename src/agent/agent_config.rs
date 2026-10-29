@@ -227,6 +227,24 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # append_args = ["--model", "opus"]    # added after the base's args
 #
 # Set `default = "claude-opus"` at the top of this file to make it the default.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# Per-entry values, argument order and pre-launch setup
+# ──────────────────────────────────────────────────────────────────────────
+#
+# vars fills {key} in command, args, the *_args groups, env and setup.
+# {session_args}, as a whole `args` token, is where the resume/fork/new-session
+# group goes (without it the group comes first). setup runs in the session's
+# directory, with its environment, as one `sh -c` script under `set -e` before
+# the agent starts; a failing step stops the launch and the session reads
+# `failed`. See docs/CONFIG.md → "Templates, argument order and setup".
+#
+# [[agents]]
+# name = "claude-coder"
+# extends = "claude"
+# vars = { role = "coder" }
+# setup = ["[ -x scripts/role.sh ] && scripts/role.sh {role} --agent claude"]
+# args = ["--permission-mode", "auto", "{session_args}"]
 "#;
 
 /// Path to the agent-definition config file:
@@ -495,6 +513,16 @@ fn resolve_agent_entry(
             }
             None => toml::Table::new(),
         };
+        // `vars` are named parameters, so a variant overrides the ones it names
+        // and keeps the rest — unlike every other field, which it replaces
+        // whole. That is what lets one template entry serve several roles.
+        if let (Some(toml::Value::Table(base_vars)), Some(toml::Value::Table(own_vars))) =
+            (merged.get("vars"), own.get("vars"))
+        {
+            let mut vars = base_vars.clone();
+            vars.extend(own_vars.clone());
+            own.insert("vars".into(), toml::Value::Table(vars));
+        }
         merged.extend(own);
         let mut ignored = Vec::new();
         let mut agent = deserialize_agent(&toml::Value::Table(merged), member, &mut ignored)?;
@@ -507,7 +535,11 @@ fn resolve_agent_entry(
         agent.args.extend(append);
         resolved = Some(agent);
     }
-    resolved.ok_or("empty extends chain".into())
+    // Substituted on the fully resolved entry, never on a base on the way: a
+    // template's `{role}` is filled by whichever variant names a role.
+    let mut agent = resolved.ok_or("empty extends chain")?;
+    agent.apply_vars().map_err(|errors| errors.join("; "))?;
+    Ok(agent)
 }
 
 fn upgrade_seeded_agent(agent: &mut AgentDef, entry: &toml::Value, builtins: &AgentRegistry) {
@@ -701,6 +733,252 @@ telemetry_args = ["telemetry"]
         assert_eq!(variant.hook_schema.as_deref(), Some("other-family"));
         assert!(variant.telemetry_env.is_empty());
         assert!(variant.telemetry_args.is_empty());
+    }
+
+    /// The shape of an `agents.toml` written before `vars`, `setup` and
+    /// `{session_args}` existed — role wrappers as `command`, codex `-c`
+    /// overrides whose TOML values carry braces, id-less codex groups.
+    const LEGACY_AGENTS: &str = r#"
+config_version = 1
+default = "claude"
+
+[[agents]]
+name = "claude"
+command = "claude"
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+args = ["--settings", "/home/u/.config/thurbox/hooks/claude.json"]
+
+[[agents]]
+name = "codex"
+command = "codex"
+resume_args = ["resume", "--last"]
+fork_args = ["fork", "--last"]
+resume_latest = true
+args = ["-c", 'notify=["sh","-c","thurbox-cli session signal --state done || true"]']
+
+[[agents]]
+name = "claude-coder"
+hook_schema = "claude"
+command = "thurbox-role-coder"
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+args = ["--settings", "/home/u/.config/thurbox/hooks/claude.json"]
+
+[[agents]]
+name = "codex-coder"
+hook_schema = "codex"
+command = "thurbox-role-codex-coder"
+resume_args = ["resume", "--last"]
+fork_args = ["fork", "--last"]
+resume_latest = true
+args = ["-c", 'projects={"/w"={trust_level="trusted"}}', "-c", "x={}"]
+
+[[agents]]
+name = "omp-copy"
+command = "omp"
+resume_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}", "--continue"]
+new_session_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"]
+"#;
+
+    #[test]
+    fn a_config_from_before_vars_and_setup_loads_and_launches_unchanged() {
+        let (reg, warnings) = parse_agents_toml(LEGACY_AGENTS);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let raw: toml::Table = LEGACY_AGENTS.parse().unwrap();
+        let entries = raw["agents"].as_array().unwrap();
+        assert_eq!(reg.agents.len(), entries.len(), "every entry still loads");
+        let strings = |entry: &toml::Value, key: &str| -> Vec<String> {
+            entry
+                .get(key)
+                .map(|v| v.clone().try_into().unwrap())
+                .unwrap_or_default()
+        };
+        for entry in entries {
+            let name = entry["name"].as_str().unwrap();
+            let def = reg.get(name).unwrap();
+            assert_eq!(def.command, entry["command"].as_str().unwrap(), "{name}");
+            assert!(def.vars.is_empty() && def.setup.is_empty(), "{name}");
+            // The order every launch used to have: the selected group, then
+            // `args` verbatim.
+            let args = strings(entry, "args");
+            let legacy = |group: &str, id: &str| -> Vec<String> {
+                strings(entry, group)
+                    .into_iter()
+                    .map(|t| t.replace("{id}", id))
+                    .chain(args.iter().cloned())
+                    .collect()
+            };
+            assert_eq!(def.args, args, "{name}");
+            if name == "codex" {
+                // The one in-memory seed upgrade, which predates this change.
+                continue;
+            }
+            assert_eq!(
+                def.build_args(None, None, Some("new"), "worker"),
+                legacy("new_session_args", "new"),
+                "{name}"
+            );
+            assert_eq!(
+                def.build_args(Some("old"), None, None, "worker"),
+                legacy("resume_args", "old"),
+                "{name}"
+            );
+            assert_eq!(
+                def.build_args(None, Some("parent"), None, "worker"),
+                legacy("fork_args", "parent"),
+                "{name}"
+            );
+        }
+        // And the launch itself: no setup means the command is not wrapped.
+        let coder = reg.get("claude-coder").unwrap();
+        let args = coder.build_args(None, None, Some("new"), "worker");
+        assert_eq!(
+            crate::session::agent_def::wrap_with_setup(&coder.setup, &coder.command, &args),
+            (coder.command.clone(), args)
+        );
+    }
+
+    #[test]
+    fn variants_fill_a_templates_vars_and_merge_them_per_key() {
+        let (reg, warnings) = parse_agents_toml(
+            r#"
+[[agents]]
+name = "claude-role"
+command = "claude"
+args = ["--model", "{model}", "{session_args}", "--add-dir", "{home}/skills"]
+new_session_args = ["--session-id", "{id}"]
+vars = { role = "coder", model = "opus" }
+setup = ["[ -x scripts/role.sh ] && scripts/role.sh {role} --agent claude"]
+
+[[agents]]
+name = "claude-operator"
+extends = "claude-role"
+vars = { role = "operator" }
+"#,
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let operator = reg.get("claude-operator").unwrap();
+        assert_eq!(
+            operator.setup,
+            ["[ -x scripts/role.sh ] && scripts/role.sh operator --agent claude"]
+        );
+        assert_eq!(
+            operator.vars["model"], "opus",
+            "a var it does not name is kept"
+        );
+        assert_eq!(
+            operator.build_args(None, None, Some("u"), "worker"),
+            [
+                "--model",
+                "opus",
+                "--session-id",
+                "u",
+                "--add-dir",
+                "{home}/skills"
+            ]
+        );
+        // The template itself resolves against its own defaults.
+        assert_eq!(
+            reg.get("claude-role").unwrap().setup,
+            ["[ -x scripts/role.sh ] && scripts/role.sh coder --agent claude"]
+        );
+    }
+
+    #[test]
+    fn the_documented_wrapper_replacement_loads_and_launches_as_described() {
+        // A Windows checkout may carry the doc with CRLF line endings.
+        let doc = include_str!("../../docs/AGENTS.md").replace("\r\n", "\n");
+        let section = &doc[doc.find("### Replacing a launch wrapper").unwrap()..];
+        let start = section.find("```toml\n").unwrap() + "```toml\n".len();
+        let example = &section[start..start + section[start..].find("```").unwrap()];
+        let (reg, warnings) = parse_agents_toml(example);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let strs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        let operator = reg.get("claude-operator").unwrap();
+        assert_eq!(operator.command, "claude");
+        assert_eq!(
+            operator.setup,
+            strs(&[
+                "[ -f scripts/worktree-setup.mjs ] && node scripts/worktree-setup.mjs",
+                "[ -x scripts/role.sh ] && scripts/role.sh operator --agent claude",
+            ])
+        );
+        assert_eq!(
+            operator.build_args(None, None, Some("u"), "worker"),
+            strs(&[
+                "--permission-mode",
+                "auto",
+                "--model",
+                "opus",
+                "--add-dir",
+                "{home}/dev/skills/thurbox/",
+                "--session-id",
+                "u",
+            ])
+        );
+        assert_eq!(
+            reg.get("claude-ops")
+                .unwrap()
+                .build_args(Some("u"), None, None, "worker")[..2],
+            strs(&["--model", "opus"])
+        );
+
+        let codex = reg.get("codex-coder").unwrap();
+        let flags = strs(&[
+            "--approve-for-me",
+            "-p",
+            "spotpay-coder",
+            "-c",
+            "sandbox_workspace_write.network_access=true",
+            "--add-dir",
+            "{home}/dev/skills/thurbox/",
+        ]);
+        let after = |lead: &[&str]| {
+            strs(lead)
+                .into_iter()
+                .chain(flags.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            codex.build_args(Some("x"), None, None, "worker"),
+            after(&["resume", "--last"])
+        );
+        assert_eq!(
+            codex.build_args(None, Some("x"), None, "worker"),
+            after(&["fork", "--last"])
+        );
+        assert_eq!(codex.build_args(None, None, Some("x"), "worker"), flags);
+    }
+
+    #[test]
+    fn an_unknown_placeholder_skips_the_entry_and_names_it() {
+        let (reg, warnings) = parse_agents_toml(
+            r#"
+[[agents]]
+name = "good"
+command = "x"
+
+[[agents]]
+name = "typo"
+command = "x"
+args = ["--role", "{rol}"]
+vars = { role = "coder" }
+"#,
+        );
+        assert!(reg.get("good").is_some());
+        assert!(
+            reg.get("typo").is_none(),
+            "never launched with a literal {{rol}}"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("\"typo\"") && warnings[0].contains("unknown placeholder {rol}"),
+            "{warnings:?}"
+        );
     }
 
     #[test]

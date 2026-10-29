@@ -750,7 +750,7 @@ TmuxTransport` is two independent halves: an optional **launcher**
 `Wsl { distro }` for `wsl.exe -d <distro> …`, none to run on this machine) and
 the **multiplexer** binary run there (the adapter's own, whatever the host
 prefers). The launcher is the same one every other remote command uses (`git`,
-probes, usage reads), built by the one conversion `HostLauncher::for_host`, and
+probes), built by the one conversion `HostLauncher::for_host`, and
 it carries any program's command line unchanged (`shell::launch`); it adds no
 `-L` — that is the tmux grammar's flag, added by `TmuxTransport::tmux_command`. The
 transport's *only* job is to build the `Command`; everything downstream
@@ -1569,7 +1569,8 @@ id-less, cwd-scoped flags (`opencode --continue`, …) that make the agent resol
 "the last session in this directory" itself. `resume_latest` only governs *when* the resume
 group fires at restart (`session_ops::resume_trigger_for`): for these
 agents restart always resumes; claude still defers to an on-disk
-transcript check.
+transcript check, unless the agent's own hook payload already reported a turn on that id
+(`thurbox.conversation_started`), which resumes it wherever its transcript lives.
 
 **Why**: Thurbox started as Claude-Code-specific, with a hard-coded
 `ClaudeProvider` plus roles, skills, profiles, and an MCP/plugin

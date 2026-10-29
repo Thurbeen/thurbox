@@ -231,7 +231,16 @@ whether resume/fork can target *this* session or only *the last* one.
 
 `resume_latest` only changes **when** the resume group fires
 (`session_ops::resume_trigger_for`): for id-less agents restart always triggers
-resume; for `claude` it defers to an on-disk transcript check.
+resume; for `claude` it defers to an on-disk transcript check. Ahead of both,
+an id-pinned session whose hook has reported a turn (`session signal` with
+`THURBOX_SIGNAL_TURN=start`, which Claude's `UserPromptSubmit` hook sets) is
+resumed: when the hook's stdin payload names the row's own id as its
+`session_id`, the signal records it in `thurbox.conversation_started` session
+meta. A fork's conversation carries an id Claude chose, so it records nothing
+and keeps the transcript check. That is what keeps a custom-named Claude launcher resumable when
+its wrapper script sets `CLAUDE_CONFIG_DIR` itself, so its transcript sits
+where the transcript check cannot look and `--session-id` would be refused as
+already in use.
 
 ### Fork
 
@@ -498,13 +507,10 @@ different name (e.g. a rebranded-claude CLI called `fleet`): set `hook_schema =
 "claude"` and it inherits claude's `--settings` hook wiring under its own name.
 Only the per-arg-patch families (`claude`, `aider`) need it; the config-dir
 agents (codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own config
-dir, so a rebrand sharing that dir already reports without it. The info
-panel's account usage follows the same claim for a session on this machine: an
-agent with `hook_schema` naming `claude`, `codex` or `antigravity` shows that
-family's usage, read with the same credentials as the built-in. A session on a
-remote host is matched by its name alone, whether or not that host runs its own
-CLI: one that does launches from its own definitions, and the usage lookup does
-not tell the two kinds of host apart. See
+dir, so a rebrand sharing that dir already reports without it. `hook_schema`
+says nothing about accounts: thurbox reads no agent credentials and asks no
+provider for quotas, which is the job of a plugin such as `thurbox-info-panel`.
+See
 [CONFIG.md](CONFIG.md#agentstoml) and the `AgentDef.hook_schema` doc comment.
 
 ## Adding a new built-in agent
@@ -582,8 +588,18 @@ automatically. Work the checklist top to bottom:
 
 ## Local preparation before an agent starts
 
-Use the user's `hooks.toml`, rather than a wrapper or a `pre_launch` field in
-`agents.toml`, to prepare a fresh directory:
+Two places can prepare a directory before an agent starts, and they answer
+different questions:
+
+- **`setup` in the agent's `agents.toml` entry** is part of *how this agent
+  launches*: shell steps run in the agent's own pane, in its launch directory
+  and environment, on every launch (create, restart, start, restore, fork) and
+  on the host the agent runs on. A failing step aborts the launch and the
+  session reads `failed`. See [CONFIG.md](CONFIG.md#templates-argument-order-and-setup).
+- **A `session.pre_launch` hook in the user's `hooks.toml`** is *policy around
+  launches*: one command for whichever agents it names, run by thurbox outside
+  the pane, on local create/fork only, before the window exists; a refusal
+  leaves the prepared directories for inspection.
 
 ```toml
 [[hooks]]
@@ -593,10 +609,106 @@ command = 'my-trust-script "$THURBOX_CWD"'
 timeout_secs = 10
 ```
 
-The script is yours: Thurbox supplies the final cwd and worktree paths without
-knowing an agent's trust-file format. It runs on local create/fork before the
-agent starts; failure refuses launch. Restart, start, restore and remote-host
-preparation are excluded. See [CONFIG.md](CONFIG.md#hookstoml).
+Either way the script is yours: Thurbox supplies the final cwd and worktree
+paths without knowing an agent's trust-file format. See
+[CONFIG.md](CONFIG.md#hookstoml) for the hook's contract.
+
+### Replacing a launch wrapper
+
+A wrapper script as an entry's `command` used to be the only way to run
+something before the CLI, or to put a flag ahead of the session-selection
+group, because thurbox emitted that group *before* `args`. The wrapper this
+section replaces was symlinked once per role (`thurbox-role-coder`,
+`thurbox-role-codex-coder`, …) and derived the role from its own name; it ran
+`node scripts/worktree-setup.mjs` and `scripts/role.sh <role> --agent <agent>`
+when they existed, then exec'd claude or codex with the role's flags. With
+`vars`, `setup` and `{session_args}` the same entries are data:
+
+```toml
+[[agents]]
+name = "claude-coder"
+hook_schema = "claude"
+command = "claude"
+vars = { role = "coder" }
+setup = [
+  "[ -f scripts/worktree-setup.mjs ] && node scripts/worktree-setup.mjs",
+  "[ -x scripts/role.sh ] && scripts/role.sh {role} --agent claude",
+]
+args = [
+  "--permission-mode", "auto",
+  "--model", "opus",
+  "--add-dir", "{home}/dev/skills/thurbox/",
+  "{session_args}",
+]
+resume_args = ["--resume", "{id}"]
+fork_args = ["--resume", "{id}", "--fork-session"]
+new_session_args = ["--session-id", "{id}"]
+
+# Another role is a variant naming only what differs. `vars` merge per key.
+[[agents]]
+name = "claude-operator"
+extends = "claude-coder"
+vars = { role = "operator" }
+
+# `ops` runs without --permission-mode, so it replaces `args`.
+[[agents]]
+name = "claude-ops"
+extends = "claude-coder"
+vars = { role = "ops" }
+args = ["--model", "opus", "--add-dir", "{home}/dev/skills/thurbox/", "{session_args}"]
+
+[[agents]]
+name = "codex-coder"
+hook_schema = "codex"
+command = "codex"
+vars = { role = "coder" }
+setup = [
+  "[ -f scripts/worktree-setup.mjs ] && node scripts/worktree-setup.mjs",
+  "[ -x scripts/role.sh ] && scripts/role.sh {role} --agent codex",
+]
+# Codex takes its flags after `resume`/`fork`, never before them.
+args = [
+  "{session_args}",
+  "--approve-for-me",
+  "-p", "spotpay-{role}",
+  "-c", "sandbox_workspace_write.network_access=true",
+  "--add-dir", "{home}/dev/skills/thurbox/",
+]
+resume_args = ["resume", "--last"]
+fork_args = ["fork", "--last"]
+resume_latest = true
+```
+
+These launch as `claude --permission-mode auto --model opus --add-dir …
+--session-id <id> --settings …/claude.json` and as `codex resume --last
+--approve-for-me -p spotpay-coder -c … --add-dir …` (or the same flags with no
+subcommand on a fresh launch). The `--settings` file the wrapper passed
+itself is the hooks extension's patch, which it appends to every
+`hook_schema = "claude"` entry's `args`, after the token. A setup step that
+fails — `scripts/role.sh` refusing an unknown role — stops the launch with the
+session `failed` instead of starting an agent without its role.
+
+What the entries cannot say, and why:
+
+- **Arguments that depend on a file.** The wrapper passed `-p spotpay-<role>`
+  only when `scripts/role.sh` had written that profile, so it worked in any
+  checkout. An `args` token is always passed: the entry above is for checkouts
+  that have `scripts/role.sh`; elsewhere codex is given a profile that does not
+  exist and the launch fails. Use a plain `codex` entry for other repositories.
+- **Codex's per-launch trust override.** The wrapper passed `-c
+  projects={"<cwd>"={trust_level="trusted"},"<repo root>"={…}}`, computed at
+  launch from `pwd -P` and `git rev-parse --git-common-dir`, so codex would not
+  open on its "trust this directory?" prompt and swallow the brief. Those paths
+  are only known once the session's directory exists, and no placeholder
+  carries them; a `setup` step runs in that directory but cannot add
+  arguments. Until codex can be told otherwise, keep that one step in a
+  codex-specific script (a `command` that adds the `-c` and `exec`s codex), or
+  record trust for each repository root in `~/.codex/config.toml` (the wrapper
+  notes codex resolves a worktree's trust to its repository root; unlike `-c`,
+  a config file's quoted keys handle the dots in worktree paths).
+- **Diagnostics about an old `scripts/role.sh`.** The wrapper's warning when a
+  checkout's `role.sh` predates `--agent` is not reproduced; a `setup` step can
+  print its own.
 
 `last_output_at` and `transcript_path` are read-side supervision fields, null
 for a session on a remote host. The latter is an existing local Claude-family transcript under the session's

@@ -64,16 +64,26 @@ fn is_shell_prompt(line: &str) -> bool {
 /// an interactive shell, whose own prompt then reads as empty too.
 pub fn classify(before_cursor: &str, shell: bool) -> Composer {
     let line = unframed(before_cursor);
-    let mut chars = line.chars();
-    let bare_prompt = matches!(
-        (chars.next(), chars.next()),
-        (Some(c), None) if PROMPT_GLYPHS.contains(&c)
-    );
-    if line.is_empty() || bare_prompt || (shell && is_shell_prompt(line)) {
+    if line.is_empty() || is_bare_prompt(line) || (shell && is_shell_prompt(line)) {
         Composer::Empty
     } else {
         Composer::Holding
     }
+}
+
+/// Whether the text left of the cursor is a drawn, empty composer: one prompt
+/// glyph and nothing typed. Stricter than [`classify`]'s `Empty`, which also
+/// takes a blank line — what a pane shows while its agent is still starting.
+pub fn shows_prompt(before_cursor: &str) -> bool {
+    is_bare_prompt(unframed(before_cursor))
+}
+
+fn is_bare_prompt(line: &str) -> bool {
+    let mut chars = line.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(c), None) if PROMPT_GLYPHS.contains(&c)
+    )
 }
 
 /// Whether the text left of the cursor still ends with what was sent — the
@@ -159,6 +169,16 @@ mod tests {
     fn a_bare_prompt_is_empty_whatever_its_glyph() {
         for line in ["", "  ", "❯ ", "› ", "│ > ", "→ ", "$ ", "┃  "] {
             assert_eq!(classify(line, false), Composer::Empty, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_drawn_prompt_shows_one() {
+        for line in ["❯ ", "› ", "│ > ", "→ "] {
+            assert!(shows_prompt(line), "{line:?}");
+        }
+        for line in ["", "  ", "┃  ", "Starting", "› fix it"] {
+            assert!(!shows_prompt(line), "{line:?}");
         }
     }
 

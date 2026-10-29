@@ -21,9 +21,11 @@
 ///
 /// Bumped when the plugin contract changes incompatibly (ADR-40).
 /// API 2 makes `files.read` asynchronous: `nil` means pending.
+/// API 3 removes `thurbox.metrics.sessions[id].usage`: account quotas belong
+/// to a plugin that fetches them through `run`, such as `thurbox-info-panel`.
 /// Additions never bump it: a plugin reads a newer field defensively, as it
 /// reads any optional one.
-pub const API: u32 = 2;
+pub const API: u32 = 3;
 
 /// The prefix of the session meta keys published as `session.meta`.
 ///
@@ -205,10 +207,12 @@ pub static STATUS: Alias = Alias {
     doc: &[
         "A session's derived status, as `SessionState::as_str` spells it.",
         "`lib/theme.lua` has a glyph and a role for `working`, `blocked`,",
-        "`background`, `done`, `idle`, `unreachable`, `running`, `uncovered` and",
-        "`unreported`, and falls back to `idle` only for `stopped` — which is at",
-        "rest by definition. `background` is a turn at rest whose sub-work is",
-        "still running, so it is not finished. The three silences are drawn apart",
+        "`background`, `done`, `idle`, `unreachable`, `running`, `uncovered`,",
+        "`unreported` and `failed`, and falls back to `idle` only for `stopped` —",
+        "which is at rest by definition. `failed` is a launch that died before its",
+        "agent reported anything (a failed agents.toml `setup`, or an early",
+        "exit). `background` is a turn at rest whose sub-work is still running,",
+        "so it is not finished. The three silences are drawn apart",
         "from `idle` on purpose: `running` is \"an agent holds the pane and said",
         "nothing\", `uncovered` is \"wired to report nothing\" and `unreported` is",
         "\"can report, has not yet\". None of them is the agent saying it is at",
@@ -222,6 +226,7 @@ pub static STATUS: Alias = Alias {
         "idle",
         "unreachable",
         "stopped",
+        "failed",
         "running",
         "uncovered",
         "unreported",
@@ -733,30 +738,6 @@ pub static AGENT_METRICS: Class = Class {
     ],
 };
 
-pub static USAGE_WINDOW: Class = Class {
-    name: "thurbox.UsageWindow",
-    doc: &["One account rate-limit window."],
-    exact: true,
-    fields: &[
-        leaf("label", "string"),
-        leaf("used_percent", "number"),
-        leaf("resets_at", "integer")
-            .opt()
-            .doc("Epoch seconds; absent when the account did not say."),
-    ],
-};
-
-pub static USAGE: Class = Class {
-    name: "thurbox.Usage",
-    doc: &["The account's rate-limit windows, shared by every session on that agent."],
-    exact: true,
-    fields: &[
-        field("windows", Ty::List(&USAGE_WINDOW)),
-        leaf("plan", "string").opt(),
-        leaf("note", "string").opt(),
-    ],
-};
-
 pub static SESSION_METRICS: Class = Class {
     name: "thurbox.SessionMetrics",
     doc: &[],
@@ -765,7 +746,6 @@ pub static SESSION_METRICS: Class = Class {
         leaf("cpu_percent", "number").opt(),
         leaf("memory_bytes", "integer").opt(),
         field("agent", Ty::Record(&AGENT_METRICS)).opt(),
-        field("usage", Ty::Record(&USAGE)).opt(),
     ],
 };
 
@@ -1026,8 +1006,6 @@ pub static ITEMS: &[Item] = &[
     Item::Class(&WORKTREES),
     Item::Class(&SYSTEM_METRICS),
     Item::Class(&AGENT_METRICS),
-    Item::Class(&USAGE_WINDOW),
-    Item::Class(&USAGE),
     Item::Class(&SESSION_METRICS),
     Item::Class(&METRICS),
     Item::Class(&PLATFORM),

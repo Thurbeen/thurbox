@@ -217,6 +217,14 @@ pub fn session_to_json_assessed(
     // the stream learn the same fact from the same key. Without it the two
     // verbs describe a parked session exactly as they describe a running one.
     put("stopped", json!(hook.stopped));
+    // Why a `failed` session failed — null otherwise. A stable, documented
+    // record (docs/ORCHESTRATION.md → Launch failures): `reason` (`setup` or
+    // `exited`), `exit_code`, `output` (the pane's last lines), `pane` and
+    // `at`.
+    put("launch_failure", json!(hook.launch_failure));
+    // Whether the session can take input now, for every agent alike — the
+    // readiness contract (`Assessment::ready`, docs/ORCHESTRATION.md).
+    put("ready", json!(hook.ready()));
     // Null unless a driver declared one: the agent the hook fields above were
     // resolved against, when that is not the agent the row was created with.
     // Without it a `--command` session's `hook_coverage: "full"` reads as a

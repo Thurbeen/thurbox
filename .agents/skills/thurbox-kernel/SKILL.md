@@ -112,13 +112,12 @@ backend::rmux        session, shell, backend::contract, (the RMUX adapter)
 git                  session, paths, shell
 storage              session, sync, paths
 sync                 session
-usage                session, shell                    [paths]
 session_ops          session, storage, git, sync,      [agent::<the config it reads>,
                      paths, workspace, shell            backend::{contract,identity,
                                                         instance,registry}]
 kernel               session, storage, sync, paths,    [agent::<the config it reads>,
                      session_ops, git, notifications,   backend::{contract,identity,
-                     shell                              pane,registry}, usage]
+                     shell                              pane,registry}]
 cli                  session, storage, session_ops,    [agent::<the config it reads>,
                      sync, paths, notifications         backend::{contract,instance,
                                                         registry}, kernel]
@@ -141,7 +140,7 @@ modules have for the library), so a new module fails the test until its place is
 declared. Only the crate roots (`bin`, `lib`, `main`) are `EXEMPT`;
 `coordinator/` has an entry of its own listing the layers it wires, because
 "wires everything" was never the same claim as "may reach anything". `kernel` reaches
-`agent`, `backend::*` and `usage` by fully-qualified path only — never `use` — so
+`agent` and `backend::*` by fully-qualified path only — never `use` — so
 every crossing into the side-effect layer is visible at its call site, the rule
 `session_ops` and `cli` already follow. A function-local `use crate::agent::…` (or
 `as` alias) breaks it too. One test, `every_module_rule_holds`, loops over every

@@ -205,9 +205,9 @@ impl std::error::Error for CommandLineTooLong {}
 /// A launcher for a command on an off-local host: `ssh <opts> <dest>` or
 /// `wsl.exe -d <distro>`.
 ///
-/// One implementation of a construction that had grown four copies —
-/// `git::command::host_launcher`, `git::remote::host_shell_c`,
-/// `usage::remote_read_command` and the transport's prefix branch — each one
+/// One implementation of a construction that had grown several copies —
+/// `git::command::host_launcher`, `git::remote::host_shell_c` and the
+/// transport's prefix branch — each one
 /// more place for the two quoting rules below to drift apart. It launches, and
 /// nothing else: it names no multiplexer and adds no `-L`, so the tmux
 /// transport and a plain `git` or `sh -c` call build on the same one.
