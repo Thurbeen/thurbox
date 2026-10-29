@@ -352,18 +352,20 @@ Every session row has a two-column fold slot in front of its dot, filled by a
 parent's arrow and blank otherwise, so siblings' dots line up whichever of them
 is a parent. Sessions are indented from the host row, not the repo row: the repo
 row is a separator, and giving it a level of its own would spend two more
-columns of a narrow sidebar on every row. With no group rows at all the
-sessions start at the panel's edge.
+columns of a narrow sidebar on every row. Each group row above a session moves
+it one step in: with no group rows the sessions start at the panel's edge
+(column 1), under a host row alone they take the repo rows' column (2), and
+under a repo row they start from column 3.
 
 **Why the host row sits left of its repo rows.** The arrow column is what reads
 as the nesting: a host handle in column 1, its repo rows in column 2, and its
-sessions from column 3. A host row is set apart by a rule that runs up to its
-right-aligned counts. To keep the rule, the row first drops the active count
-and shows only the session total. When even that leaves no room for a rule,
-the total trails the label as on any other row: cut short with `…` when it
-does not fit, and dropped when fewer than four columns are left. Aligning
-costs the host row one column, so a very narrow panel loses its counts sooner
-than before.
+sessions from column 3 (column 2 when repo grouping is off). A host row is set
+apart by a rule that runs up to its right-aligned counts. To keep the rule,
+the row first drops the active count and shows only the session total. When
+even that leaves no room for a rule, the total trails the label as on any
+other row: cut short with `…` when it does not fit, and dropped when fewer than
+four columns are left. Aligning costs the host row one column, so a very narrow
+panel loses its counts sooner than before.
 
 **Why local has a host row.** Local work can be folded by the same gesture as
 remote work. It stays first, and the cursor initially selects the first session

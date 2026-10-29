@@ -2230,3 +2230,67 @@ fn answering_a_folded_blocked_child_keeps_it_selected() {
         }
     }
 }
+
+#[test]
+fn each_grouping_level_indents_sessions_once() {
+    // Issue #1605: a session is indented once per group row above it. Grouped
+    // by host alone, it sits where a repo row would under that host, not where
+    // a session under a repo row does.
+    let host = host();
+    let world = Snapshot {
+        sessions: vec![
+            row("lead", "lead"),
+            child("worker", "worker", "lead"),
+            row("solo", "solo"),
+        ],
+        ..Snapshot::default()
+    };
+    let frame = |by_host, by_repo| {
+        let registry = with_settings(
+            &host,
+            &[("group_by_host", by_host), ("group_by_repo", by_repo)],
+        );
+        publish_with(&host, &world, &registry);
+        frame_at(&host, 40, 7)[1..6].to_vec()
+    };
+    assert_eq!(
+        frame(true, true),
+        [
+            "┃ ▾ ⌂ local ──────────────── 3 sessions┃",
+            "┃  ▾ thurbox ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┃",
+            "┃   ▾ ○ lead                           ┃",
+            "┃       ○ worker                       ┃",
+            "┃     ○ solo                           ┃",
+        ]
+    );
+    assert_eq!(
+        frame(true, false),
+        [
+            "┃ ▾ ⌂ local ──────────────── 3 sessions┃",
+            "┃  ▾ ○ lead                            ┃",
+            "┃      ○ worker                        ┃",
+            "┃    ○ solo                            ┃",
+            "┃                                      ┃",
+        ]
+    );
+    assert_eq!(
+        frame(false, true),
+        [
+            "┃ ▾ thurbox ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┃",
+            "┃   ▾ ○ lead                           ┃",
+            "┃       ○ worker                       ┃",
+            "┃     ○ solo                           ┃",
+            "┃                                      ┃",
+        ]
+    );
+    assert_eq!(
+        frame(false, false),
+        [
+            "┃ ▾ ○ lead                             ┃",
+            "┃     ○ worker                         ┃",
+            "┃   ○ solo                             ┃",
+            "┃                                      ┃",
+            "┃                                      ┃",
+        ]
+    );
+}
