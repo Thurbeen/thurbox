@@ -338,21 +338,16 @@ impl HelpModal {
 
         // The bar tracks ACTIONS, not screen lines, so its thumb matches what
         // the selection cursor moves through — v1's rule, and why the viewport
-        // is the number of rows that survived the window above.
-        // Once the wheel has moved the view off the selection, the thumb
-        // follows the view instead — it is the only thing still moving.
-        if let (Some(track), true) = (track, self.wheeled) {
-            let positions = total - height + 1;
-            chrome::scrollbar(frame, track, positions, height, scroll, chrome);
-        } else if let Some(track) = track {
-            chrome::scrollbar(
-                frame,
-                track,
-                index,
-                self.hits.rows.len().max(1),
-                self.selected,
-                chrome,
-            );
+        // is the number of rows that survived the window above. Once the wheel
+        // has moved the view off the selection, it tracks the view instead:
+        // that is the only thing still moving.
+        if let Some(track) = track {
+            let (len, viewport, position) = if self.wheeled {
+                (total - height + 1, height, scroll)
+            } else {
+                (index, self.hits.rows.len().max(1), self.selected)
+            };
+            chrome::scrollbar(frame, track, len, viewport, position, chrome);
         }
 
         frame.render_widget(
