@@ -474,7 +474,7 @@ configured hosts, error shown.
 | `multiplexer` | no | platform default | host preference for new sessions; an explicit per-create choice wins. Names are `tmux`, `psmux`, `rmux`, and `herdr` (no Herdr adapter yet). Use `psmux` for a native Windows SSH host |
 | `platform` | no | `windows` if `multiplexer = "psmux"`, else `posix` | the host's OS: `posix` or `windows`. Decides its shell and paths, independent of `multiplexer` (ssh only — a WSL distro is always `posix`) |
 | `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
-| `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands, the delegated `thurbox-cli` and the agent's pane on a POSIX host (not git, the usage probe or an image drop) — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
+| `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands, the delegated `thurbox-cli` and the agent's pane on a POSIX host (not git or an image drop) — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
 | `otel_endpoint` | no | — | the OTLP endpoint, as the host reaches it, that a session on this host exports to while [`[telemetry]`](#telemetry--opentelemetry-for-sessions) configures agents; unset = resource attributes only. On a shared host the agent's pane is launched by the host's own CLI from the host's `[telemetry]`; this endpoint still applies to `session exec` and `agent launch-args` run from here |
 
 **The agent's `PATH` on a host.** ssh and `wsl.exe` hand a command a
@@ -488,7 +488,7 @@ tmux in `/opt/homebrew/bin`, which only a macOS login shell puts on the
 `PATH`, is found), the delegated `thurbox-cli`, and so the agent's pane,
 run there on `path_prepend`, then the login shells' `PATH`, then the
 launcher's own (on WSL that includes the Windows `PATH` WSL appends unless
-`appendWindowsPath = false`), each directory once. git, the usage probe
+`appendWindowsPath = false`), each directory once. git
 and an image drop keep the launcher's `PATH`. A host whose shells cannot be read keeps
 the launcher's `PATH` with a warning in the log; session creation never
 waits longer than the timeout on it, and never fails for it.

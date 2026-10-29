@@ -336,15 +336,6 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session", "storage"],
         allowed_path_only: &[],
     },
-    // `shell` builds the host launchers (ssh/wsl) for reading a remote
-    // session's credentials where the agent actually runs.
-    ModuleRules {
-        name: "usage",
-        allowed: &["session", "shell"],
-        // `paths::home_dir()` (fully-qualified, never `use`) to resolve agent
-        // credential files cross-platform ($HOME / %USERPROFILE%).
-        allowed_path_only: &["paths"],
-    },
     // Headless session ops: no TUI state or PTY-attached backend. Reaches the
     // agent config and the backend contract via fully-qualified paths only
     // (never `use`), same pattern as the cli module. `shell` for the same
@@ -448,8 +439,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "shell",
         ],
         // Live agent terminals: `kernel::terminal` adopts a session's real pane
-        // through the backend contract and paints its vt100 screen.
-        // `kernel::metrics` fetches account usage through `usage`. All are
+        // through the backend contract and paints its vt100 screen. All are
         // reachable by fully-qualified path only (never `use`), the same rule
         // `session_ops` and `cli` follow, so every crossing into the
         // side-effect layer is visible at its call site.
@@ -467,7 +457,6 @@ const MODULE_RULES: &[ModuleRules] = &[
             "backend::identity",
             "backend::pane",
             "backend::registry",
-            "usage",
         ],
     },
     // Leaf utilities.

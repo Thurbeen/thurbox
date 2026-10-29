@@ -45,7 +45,7 @@ slash matches by basename at any depth.
 
 Module boundaries are enforced by tests/architecture_rules.rs as an allowlist
 over resolved edges: session is pure data, agent may reference neither git nor
-backend, and kernel reaches agent, the backend contract or usage by
+backend, and kernel reaches agent or the backend contract by
 fully-qualified path only, never a use - a function-local use or an alias
 included, since a reference counts where it resolves. Consumers name the
 backend contract; only backend::wiring names an adapter, and only a

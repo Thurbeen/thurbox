@@ -355,8 +355,6 @@ impl App {
                 session: row.id.clone(),
                 agent_session_id: row.agent_session_id.clone(),
                 pane: self.terminals.backend_handle(&row.id),
-                agent: row.agent.clone(),
-                host: row.remote_host.clone(),
             })
             .collect()
     }

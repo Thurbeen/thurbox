@@ -64,7 +64,7 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
    files     rooted file reads
    theme     36 palettes resolved
    notify    the blocked edge
-   metrics   machine, agent, account
+   metrics   machine, agent
    perf      counters
    bundled   embedded interface, and what was done to your copy of it
    inventory which files exist, and which are running
@@ -110,10 +110,11 @@ sharpest teeth: it opens the backend's control-mode connection, so a host that i
 down runs out its ssh timeout — inline, that was the whole interface frozen
 before its first paint. It also needs the runtime *entered* on the worker, since
 adopting a pane wires its reader and writer as tokio tasks.) (`kernel::metrics` is the
-clearest to copy: `sysinfo` walks `/proc`, a pane's pid is a control-mode round
-trip, and account usage shells out to `curl` — three cadences, one published
-result. `kernel::repos` is the newest, and adds the one wrinkle the others do not
-have: its reads are *parameterised* — which directory, which repository — and a
+clearest to copy: `sysinfo` walks `/proc` and a pane's pid is a control-mode
+round trip — one cadence, one published result. Account quotas are not among
+them: a provider query belongs to a plugin granted `run`, not to the kernel.
+`kernel::repos` is the newest, and adds the one wrinkle the others do not have:
+its reads are *parameterised* — which directory, which repository — and a
 plugin cannot call something that waits, so the flow asks by leaving a key in
 `store` and the loop serves it.)
 
@@ -399,9 +400,10 @@ were found by running it, not by reading the spec.
 ## Where the boundary sits
 
 `kernel` may reference `session`, `storage`, `sync`, `paths`, `session_ops`,
-`git`, `notifications`, `clipboard` and `shell`, plus `agent` and `usage` by
-fully-qualified path only — enforced by `tests/architecture_rules.rs`. It may never reference `ui` or
-`app`: it is their replacement, not their peer.
+`git`, `notifications`, `clipboard` and `shell`, plus `agent` and the backend
+contract by fully-qualified path only — enforced by
+`tests/architecture_rules.rs`. It may never reference `ui` or `app`: it is their
+replacement, not their peer.
 
 ## Testing
 

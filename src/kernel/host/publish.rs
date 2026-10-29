@@ -1266,12 +1266,6 @@ fn build_metrics(lua: &Lua, snapshot: &Snapshot, metrics: &Metrics) -> Result<Va
             set(&entry, "agent", agent_metrics_table(lua, agent)?)?;
             any = true;
         }
-        if let Some(usage) = metrics.usage(&row.agent, row.remote_host.as_deref()) {
-            if !usage.is_empty() {
-                set(&entry, "usage", usage_table(lua, usage)?)?;
-                any = true;
-            }
-        }
         if any {
             per_session
                 .raw_set(row.id.clone(), entry)
@@ -1410,38 +1404,5 @@ fn agent_metrics_table(lua: &Lua, m: &crate::session::AgentMetrics) -> Result<Ta
         count(m.cache_creation_input_tokens),
     )?;
     set("cache_read_tokens", count(m.cache_read_input_tokens))?;
-    Ok(table)
-}
-
-/// Account rate-limit windows as a Lua table.
-fn usage_table(lua: &Lua, usage: &crate::session::AgentUsage) -> Result<Table, String> {
-    let table = lua.create_table().map_err(|e| e.to_string())?;
-    let windows = lua.create_table().map_err(|e| e.to_string())?;
-    for (index, window) in usage.windows.iter().enumerate() {
-        let entry = lua.create_table().map_err(|e| e.to_string())?;
-        entry
-            .set("label", to_lua_string(lua, &window.label)?)
-            .map_err(|e| e.to_string())?;
-        entry
-            .set("used_percent", window.used_percent)
-            .map_err(|e| e.to_string())?;
-        if let Some(resets_at) = window.resets_at {
-            entry
-                .set("resets_at", resets_at)
-                .map_err(|e| e.to_string())?;
-        }
-        windows.set(index + 1, entry).map_err(|e| e.to_string())?;
-    }
-    table.set("windows", windows).map_err(|e| e.to_string())?;
-    if let Some(plan) = &usage.plan {
-        table
-            .set("plan", to_lua_string(lua, plan)?)
-            .map_err(|e| e.to_string())?;
-    }
-    if let Some(note) = &usage.note {
-        table
-            .set("note", to_lua_string(lua, note)?)
-            .map_err(|e| e.to_string())?;
-    }
     Ok(table)
 }

@@ -627,8 +627,8 @@ impl App {
             self.toast(message);
         }
 
-        // Machine, statusline and account metrics. Asked whether a sample is
-        // due before the subject list is built — `metric_subjects` clones four
+        // Machine and statusline metrics. Asked whether a sample is
+        // due before the subject list is built — `metric_subjects` clones two
         // strings per session, which is worth paying once a second but not per
         // iteration.
         if self.metrics.wants_sample() {

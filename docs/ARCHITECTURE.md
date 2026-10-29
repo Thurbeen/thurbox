@@ -750,7 +750,7 @@ TmuxTransport` is two independent halves: an optional **launcher**
 `Wsl { distro }` for `wsl.exe -d <distro> …`, none to run on this machine) and
 the **multiplexer** binary run there (the adapter's own, whatever the host
 prefers). The launcher is the same one every other remote command uses (`git`,
-probes, usage reads), built by the one conversion `HostLauncher::for_host`, and
+probes), built by the one conversion `HostLauncher::for_host`, and
 it carries any program's command line unchanged (`shell::launch`); it adds no
 `-L` — that is the tmux grammar's flag, added by `TmuxTransport::tmux_command`. The
 transport's *only* job is to build the `Command`; everything downstream
