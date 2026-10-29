@@ -3734,8 +3734,9 @@ recorded before their pane's whole-rect focus fallback.
   selection (one row per notch, like `j`/`k`) — except in help
   (`F1`), which is mostly read: there each report scrolls the text a
   line, as a terminal scrolls a document, down to the end of the
-  events list below the last selectable row; the next key brings
-  the view back to the selection. Overflowing picker
+  events list below the last selectable row, and a press or drag on
+  its scrollbar moves the text to that point of the track; the next
+  key brings the view back to the selection. Overflowing picker
   lists window around the selection and draw a draggable scrollbar
   (`ScrollTarget::Modal`) in their rightmost column. Drag replays
   Up/Down through the modal's own key handler, so clamping and side
@@ -3806,7 +3807,8 @@ the repo picker
 `ClickAction::RepoFocus(..)` for its path-input/search sub-fields. Hovering a
 button reverses its fill (`Modifier::REVERSED`), distinct from the row
 underline. With a modal open the wheel steps its selection (help scrolls its
-text a line per report instead) and overflowing
+text a line per report instead, and its scrollbar takes a press or drag) and
+overflowing
 picker lists render a draggable scrollbar (`ScrollTarget::Modal`, drag replayed
 as Up/Down through the modal's key handler). All gated by `[features] mouse` —
 disabled, mouse capture is never enabled and the terminal keeps native mouse

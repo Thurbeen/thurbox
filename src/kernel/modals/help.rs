@@ -17,7 +17,7 @@
 //! kernel's rather than Lua's.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -148,6 +148,12 @@ pub struct HelpModal {
     /// The wheel moved the view off the selection, so the next frame keeps
     /// [`Self::scroll`] rather than following the selection. A key re-attaches it.
     wheeled: bool,
+    /// The scrollbar's track and the furthest the text scrolls, as the last
+    /// frame drew them, so a press on the bar can say where it landed.
+    track: Option<Rect>,
+    max_scroll: usize,
+    /// The last press landed on the bar, so a drag moves the text with it.
+    holding_bar: bool,
 }
 
 impl HelpModal {
@@ -264,11 +270,38 @@ impl HelpModal {
         };
     }
 
-    /// A click selects the row under it — the same act as `j`/`k`.
+    /// A click selects the row under it — the same act as `j`/`k` — or, on
+    /// the scrollbar, scrolls the text to that point of the track.
     pub fn on_click(&mut self, x: u16, y: u16) {
-        if let Some(index) = self.hits.row_at(x, y) {
+        self.holding_bar = self
+            .track
+            .is_some_and(|track| track.contains(Position::new(x, y)));
+        if self.holding_bar {
+            self.scroll_to(y);
+        } else if let Some(index) = self.hits.row_at(x, y) {
             self.selected = index;
         }
+    }
+
+    /// A drag with the button held. `false` when the press that began it was
+    /// not on the scrollbar, and the drag is not help's.
+    pub fn on_drag(&mut self, y: u16) -> bool {
+        if self.holding_bar {
+            self.scroll_to(y);
+        }
+        self.holding_bar
+    }
+
+    /// Scroll so the track's row `y` stands for the view, top cap for the top
+    /// and bottom cap for the end. A pointer past either cap holds there.
+    fn scroll_to(&mut self, y: u16) {
+        let Some(track) = self.track else {
+            return;
+        };
+        let last = usize::from(track.height.saturating_sub(1)).max(1);
+        let row = usize::from(y.saturating_sub(track.y)).min(last);
+        self.scroll = (row * self.max_scroll + last / 2) / last;
+        self.wheeled = true;
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, registry: &Registry, chrome: Chrome) {
@@ -326,7 +359,9 @@ impl HelpModal {
             scroll_for(total, height, selected_line)
         };
         self.scroll = scroll;
+        self.max_scroll = total.saturating_sub(height);
         let (rows_area, track) = chrome::reserve_track(body, total, height);
+        self.track = track;
         frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), rows_area);
         record_row_hits(
             &mut self.hits.rows,

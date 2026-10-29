@@ -48,13 +48,16 @@ impl App {
                 self.on_context_click(mouse.column, mouse.row)
             }
             // A pty holding the button comes first — the press already chose
-            // the program inside as the owner of this gesture. Then a held
-            // node: while a scrollbar has the pointer, the movement is that
-            // pane's, not a selection over the text beside it.
+            // the program inside as the owner of this gesture. Then help's
+            // scrollbar, then a held node: while a scrollbar has the pointer,
+            // the movement is its owner's, not a selection over the text
+            // beside it.
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(surface) = self.pty_pointer.clone() {
                     self.terminals
                         .forward_motion(&surface, mouse.column, mouse.row);
+                } else if self.modals.on_drag(mouse.row) {
+                    self.dirty = true;
                 } else if !self.drag_held(mouse.column, mouse.row) {
                     self.drag_selection(mouse.column, mouse.row);
                 }
