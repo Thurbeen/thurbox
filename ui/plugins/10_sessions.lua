@@ -487,8 +487,9 @@ local function host_line(item, width, selected)
     return nil
   end or nil })
   -- Every host's handle shares column 1, one column left of its repo rows and
-  -- three left of its sessions. The reach colour is the handle's; the mark and
-  -- the name are one accent run, so `@` reads as part of the name.
+  -- of the sessions it holds directly, three left of those under a repo row.
+  -- The reach colour is the handle's; the mark and the name are one accent
+  -- run, so `@` reads as part of the name.
   row:add((item.collapsed and " ▸ " or " ▾ ") .. reach_glyph, { fg = color, bold = true })
   local label = local_host and "⌂ local" or wsl and ("@ WSL " .. item.host) or ("@ " .. item.host)
   row:add(label, { fg = theme.accent, bold = true })
@@ -1357,18 +1358,21 @@ pane = {
     local cursor = ui.cursor("sessions", items, CURSOR_OPTS_WITH_REQUEST)
     state["sessions.page_size"] = math.max(1, height - 2)
 
-    -- Sessions sit two columns in from the group rows above them, or at the
-    -- edge of a list with none.
-    local grouped = false
+    -- One step in per group row above a session: past a repo row, in from a
+    -- host row alone to where a repo row would sit, or at the edge of a list
+    -- with neither (issue #1605).
+    local base = 1
     for _, item in ipairs(items) do
-      if item.kind == "host" or item.kind == "repo" then
-        grouped = true
+      if item.kind == "repo" then
+        base = 3
         break
+      elseif item.kind == "host" then
+        base = 2
       end
     end
     local layout = {
       width = inner_width,
-      base = grouped and 3 or 1,
+      base = base,
       terminal_title = show_window_title(),
     }
     layout.column = action_column(items, layout)
