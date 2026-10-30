@@ -1,18 +1,19 @@
 [
   {
-    "name": "fleet",
-    "description": "Turn prompts into queued tasks for Thurbox workers and follow them on a full-screen Kanban board.",
+    "name": "thurbox-fleetlens",
+    "description": "Browse Fleet v2 resources, Tasks first, in a read-only keyboard-first float.",
     "author": "Thurbeen",
     "badge": "official",
-    "repo": "https://github.com/Thurbeen/fleet",
-    "kind": "extension",
-    "platforms": [
-      "Linux",
-      "Windows (native)"
-    ],
-    "updated": "2026-10-07",
-    "install": "curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh",
-    "notes": "Requires Thurbox, tmux (psmux on Windows), git and an agent CLI. On Windows, install from PowerShell with irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex. Start Mission Control and run /fleet-onboarding to install the Kanban dashboard. Alt+K opens the board; the legacy queue pane is optional."
+    "repo": "https://github.com/Thurbeen/thurbox-fleetlens",
+    "kind": "pane",
+    "platforms": ["Linux"],
+    "updated": "2026-10-29",
+    "install": "thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-fleetlens\nthurbox-cli plugin check",
+    "notes": "Requires Thurbox \u2265 2.76.2 and Fleet v2, whose fleet binary ships for Linux. Trust the pane to run fleet: Settings (Ctrl+,), then ], select thurbox-fleetlens/plugins/88_fleet_lens.lua and press t. Alt+K opens it. Read-only. The fleetlens settings choose the fleet binary, its config, and the host it runs on (POSIX only).",
+    "media": {
+      "url": "https://raw.githubusercontent.com/Thurbeen/thurbox-fleetlens/main/media/demo.gif",
+      "alt": "Fleet Lens in the Doom theme: Alt+K opens it on four Tasks, the one that needs attention on top, enter reads a shipped Task as YAML and tab steps to the ChangeRequest it declared"
+    }
   },
   {
     "name": "thurbox-info-panel",

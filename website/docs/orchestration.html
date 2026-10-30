@@ -1,7 +1,7 @@
 ---
 layout: docs.njk
 title: 'Orchestration — Thurbox Docs'
-description: 'Fleet, the maintained control plane for Thurbox: install it, then see how its task queue, workers and reconciler use Thurbox sessions, worktrees and events.'
+description: 'Fleet, an orchestrator built on Thurbox: install it, run one agent session per Task, and browse its resources from Thurbox with the Fleet Lens pane. Then the Thurbox primitives it uses.'
 currentPage: 'orchestration'
 breadcrumb: 'Orchestration'
 ---
@@ -9,251 +9,178 @@ breadcrumb: 'Orchestration'
 <p>
   Running agents across many repos raises a question that one repo never does:
   <strong>where does the plan live?</strong>
-  The ready-made answer is
+  One ready-made answer is
   <a href="https://github.com/Thurbeen/fleet" target="_blank" rel="noopener">Fleet</a>
-  , the maintained control plane for Thurbox. This page starts there, then walks through the
-  Thurbox primitives Fleet is built from, for when you want to drive them yourself.
+  , an orchestrator that runs its agent sessions in Thurbox. This page starts there, then walks
+  through the Thurbox primitives it is built from, for when you want to drive them yourself.
 </p>
 
 <h2 id="fleet">
-  Fleet: orchestration, ready to run
+  Fleet: one session per Task
   <a href="#fleet" class="heading-anchor">#</a>
 </h2>
 <p>
   <a href="https://github.com/Thurbeen/fleet" target="_blank" rel="noopener">Fleet</a>
-  maps your repositories and runs a task queue. You give its lead session, Mission Control, a goal
-  in plain words. It splits the goal into tasks, runs one worker session per task in the real
-  repository, and hands you back pull or merge requests to review.
+  is a standalone program, not a Thurbox extension. A Task is a resource that names a harness (the
+  agent), a host, a workspace and a brief. Fleet starts one Thurbox session for it, sends the brief
+  once, records the result the worker reports, and releases the session when you delete the Task.
 </p>
 <ul>
   <li>
-    <strong>Durable topics and tasks.</strong>
-    A prompt is kept verbatim as a topic, and every task has its own brief, record and result file
-    on disk, so the plan outlives the lead session.
+    <strong>Resources, not chat.</strong>
+    Tasks, the ChangeRequests they declare, and the configuration they run with are stored as
+    versioned resources on disk, so the plan outlives every session.
   </li>
   <li>
     <strong>Isolated workers.</strong>
-    Each task runs in its own Thurbox session on its own git worktree, one per repository it
-    spans.
+    A Task's workspace is a directory, or one or more repositories, each on its own git worktree.
   </li>
   <li>
-    <strong>Mission Control.</strong>
-    A long-lived lead session that Thurbox keeps alive.
-    <kbd>Ctrl</kbd>+<kbd>X</kbd>
-    returns to it from any session, a worker's included.
+    <strong>A reconcile loop.</strong>
+    <code>fleet up</code>
+    keeps every Task moving until you stop it, and starts VEGA, the bundled lead workspace.
   </li>
   <li>
-    <strong>A Kanban board.</strong>
-    <kbd>Alt</kbd>+<kbd>K</kbd>
-    opens the whole queue full-screen, and
-    <kbd>Enter</kbd>
-    on a card focuses its live worker.
-  </li>
-  <li>
-    <strong>Supervised follow-through.</strong>
-    A reconciler collects results, shepherds change requests, restarts workers that ran out of
-    quota, and releases sessions once their work lands.
+    <strong>Forge follow-through.</strong>
+    A ChangeRequest mirrors one pull or merge request on GitHub, GitLab, Azure DevOps or Bitbucket.
   </li>
 </ul>
+
+<h3 id="fleet-install">Install</h3>
+<p>
+  Fleet ships one binary for Linux, x86_64 and aarch64; it has no Windows or macOS release. To run
+  real sessions it needs Thurbox with
+  <code>thurbox-cli</code>
+  on
+  <code>PATH</code>
+  , and an agent CLI that is installed and logged in (the VEGA starter uses Codex).
+</p>
+<pre data-wrap><code class="language-bash">curl -fsSL https://github.com/Thurbeen/fleet/releases/latest/download/install-release.sh | sh
+fleet init     # the config and the VEGA workspace, offline
+fleet up       # the manager; keep it running in its own terminal</code></pre>
+<p>
+  Fleet's
+  <a href="https://github.com/Thurbeen/fleet#setup" target="_blank" rel="noopener">README</a>
+  covers setup, updates and uninstalling, and its
+  <a
+    href="https://github.com/Thurbeen/fleet/blob/main/docs/configuration/init.md"
+    target="_blank"
+    rel="noopener"
+    >initialization guide</a
+  >
+  covers the config, the workspace and
+  <code>fleet up</code>
+  .
+</p>
+
+<h3 id="fleet-lens">Fleet Lens, in Thurbox</h3>
+<p>
+  <a href="https://github.com/Thurbeen/thurbox-fleetlens" target="_blank" rel="noopener"
+    >Fleet Lens</a
+  >
+  is the Thurbox pane for Fleet: a read-only float that lists every resource kind Fleet serves,
+  Tasks first, with the ones that need a person on top.
+  <kbd>Alt</kbd>+<kbd>K</kbd>
+  opens it,
+  <kbd>Enter</kbd>
+  reads a resource as YAML, and
+  <kbd>Tab</kbd>
+  steps through the kinds. It reads Fleet only through
+  <code>fleet &hellip; --json</code>
+  and writes nothing.
+</p>
 <figure class="perf-figure">
   <img
-    src="https://raw.githubusercontent.com/Thurbeen/fleet/main/media/fleet-board.gif"
-    alt="Fleet's Kanban board in Thurbox: six task columns, topic filters, and a card that opens its worker session"
+    src="https://raw.githubusercontent.com/Thurbeen/thurbox-fleetlens/main/media/demo.gif"
+    alt="Fleet Lens in Thurbox: Alt+K opens it on four Tasks, the one that needs attention on top; enter reads a shipped Task as YAML; tab steps to the ChangeRequest it declared"
     loading="lazy"
     decoding="async"
   />
   <figcaption>
-    <kbd>Alt</kbd>+<kbd>K</kbd> opens the board; <kbd>Enter</kbd> on a running card opens its
-    worker session.
+    <kbd>Alt</kbd>+<kbd>K</kbd> opens the Lens; <kbd>Enter</kbd> reads a Task, and
+    <kbd>Tab</kbd> steps through the kinds.
   </figcaption>
 </figure>
-
-<h3 id="fleet-install">Install</h3>
+<pre data-wrap><code class="language-bash">thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-fleetlens
+thurbox-cli plugin check</code></pre>
 <p>
-  Fleet needs Thurbox with tmux (psmux on Windows), git, and an agent CLI that Thurbox runs, such
-  as Claude Code or Codex.
-  <code>gh</code>
-  or
-  <code>glab</code>
-  is optional. The installer fetches uv itself.
-</p>
-<pre data-wrap><code class="language-bash">curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh</code></pre>
-<p>On Windows, from PowerShell:</p>
-<pre data-wrap><code class="language-powershell">irm https://raw.githubusercontent.com/Thurbeen/fleet/main/install.ps1 | iex</code></pre>
-<p>
-  Pick a clone location you will keep, since the extension records its path. Running the installer
-  again is safe, and
-  <code>uv run fleet preflight</code>
-  lists anything still missing. Then:
-</p>
-<ol>
-  <li>Open Thurbox and start the Mission Control session.</li>
-  <li>
-    Run
-    <code>/fleet-onboarding</code>
-    . It builds the repository map if you work on a forge, installs the Kanban board and starts
-    the reconciler, and asks wherever the choice is yours.
-  </li>
-  <li>Type a goal into Mission Control.</li>
-</ol>
-<p>
-  Fleet's
-  <a href="https://github.com/Thurbeen/fleet#readme" target="_blank" rel="noopener">README</a>
-  covers the board,
-  <a href="https://github.com/Thurbeen/fleet/blob/main/AGENTS.md" target="_blank" rel="noopener"
-    >AGENTS.md</a
+  It needs Thurbox 2.76.2 or later. Then trust it, because it runs
+  <code>fleet</code>
+  : Settings (
+  <kbd>Ctrl</kbd>+<kbd>,</kbd>
+  ), then
+  <kbd>]</kbd>
+  , select
+  <code>thurbox-fleetlens/plugins/88_fleet_lens.lua</code>
+  and press
+  <kbd>t</kbd>
+  . Its
+  <a href="https://github.com/Thurbeen/thurbox-fleetlens#readme" target="_blank" rel="noopener"
+    >README</a
   >
-  is its operating guide, and
-  <a href="https://github.com/Thurbeen/fleet/tree/main/.agents/skills" target="_blank" rel="noopener"
-    >its skills</a
-  >
-  hold one job each. Fleet installs from its
-  <code>main</code>
-  branch; this page describes what is there, not proposals that have not landed.
+  lists its keys, columns and settings.
 </p>
 
 <h2 id="fleet-loop">
-  How Fleet runs a goal
+  How Fleet runs a Task
   <a href="#fleet-loop" class="heading-anchor">#</a>
 </h2>
-<pre data-title="the loop"><code class="language-bash">prompt ─▶ topic ─▶ tasks + briefs ─▶ plan / dispatch ─▶ one worker per task
-                                                            │ writes result.md
-reap ◀── landed ◀── shepherd / refuel ◀── watch / collect ◀─┘</code></pre>
+<pre data-title="the loop"><code class="language-bash">fleet apply ─▶ spawn session ─▶ send brief ─▶ worker runs
+                                                  │ fleet result
+fleet delete ─▶ release session ◀── Concluded ◀───┘</code></pre>
 <p>
-  Every stage is a
-  <code>uv run fleet queue</code>
-  command. The lead runs the first three; the reconciler keeps the rest moving.
+  While
+  <code>fleet up</code>
+  runs, you drive Tasks with the CLI:
 </p>
 <table>
   <thead>
     <tr>
-      <th>Stage</th>
       <th>Command</th>
       <th>What it does</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td>Topic</td>
-      <td><code>queue topic add</code></td>
-      <td>Keeps the prompt verbatim as the topic's <code>PROMPT.md</code></td>
+      <td><code>fleet apply -f task.json</code></td>
+      <td>Creates or updates a Task; <code>dispatch: true</code> lets it start</td>
     </tr>
     <tr>
-      <td>Brief</td>
-      <td><code>queue add</code></td>
-      <td>
-        One task per branch, with a <code>BRIEF.md</code> that states the goal, the constraints and
-        what done means; <code>dispatch</code> refuses a placeholder
-      </td>
+      <td><code>fleet list task</code> &middot; <code>fleet status task &lt;name&gt;</code></td>
+      <td>Every Task and its phase; one Task's conditions: Spawned, Briefed, Concluded</td>
     </tr>
     <tr>
-      <td>Plan, dispatch</td>
-      <td><code>queue plan</code> &middot; <code>queue dispatch</code></td>
-      <td>
-        Shows what is ready and why the rest waits, then launches every ready task at once;
-        <code>queue block</code> records a real reason to wait
-      </td>
+      <td><code>fleet send &lt;name&gt; &lt;text&gt;</code></td>
+      <td>Messages the running session</td>
     </tr>
     <tr>
-      <td>Watch, collect</td>
-      <td><code>queue watch</code> &middot; <code>queue collect</code></td>
-      <td>
-        Folds Thurbox's event stream into each record; <code>collect</code> reads the worker's
-        <code>result.md</code> and checks its artifact, and only that closes a task
-      </td>
+      <td><code>fleet result &lt;name&gt; --generation N --outcome &hellip;</code></td>
+      <td>The worker's own report; only that concludes a Task</td>
     </tr>
     <tr>
-      <td>Shepherd, refuel</td>
-      <td><code>queue shepherd</code> &middot; <code>queue refuel</code></td>
-      <td>
-        Follows every open change request and merges only where you allowed it; restarts workers
-        that stopped on a spent quota window
-      </td>
-    </tr>
-    <tr>
-      <td>Land, reap</td>
-      <td><code>queue reap</code></td>
-      <td>
-        Once the forge says every artifact merged, the task is landed and its session is released
-      </td>
+      <td><code>fleet delete task &lt;name&gt;</code></td>
+      <td>Releases the session, then removes the Task</td>
     </tr>
   </tbody>
 </table>
 <p>
-  <strong>The reconciler</strong>
-  is
-  <code>uv run fleet reconcile</code>
-  , a supervised loop you control with
-  <code>ensure</code>
-  ,
-  <code>start</code>
-  ,
-  <code>stop</code>
-  and
-  <code>status</code>
-  . It runs
-  <code>watch</code>
-  ,
-  <code>collect</code>
-  ,
-  <code>shepherd</code>
-  ,
-  <code>refuel</code>
-  and the read-only
-  <code>plan</code>
-  on their own intervals, and tells the lead when new work is ready or a worker stalls. It never
-  dispatches and writes no record of its own.
-  <code>stop</code>
-  leaves a down flag that
-  <code>ensure</code>
-  honours until
-  <code>start</code>
-  clears it.
+  <code>fleet up</code>
+  holds one manager lease and sweeps once a second by default. Ctrl-C releases the lease and keeps
+  the sessions, so a restarted
+  <code>fleet up</code>
+  reconnects to them. Fleet passes no credentials to a session: they stay with the agent and its
+  host.
 </p>
-
-<h3 id="fleet-config">What Fleet keeps, and what it needs</h3>
-<ul>
-  <li>
-    <strong>A forge is optional.</strong>
-    GitHub through
-    <code>gh</code>
-    and GitLab through
-    <code>glab</code>
-    , self-hosted included. A local-only fleet needs neither: it proves a pushed commit with git
-    alone.
-  </li>
-  <li>
-    <strong>Merging is your explicit choice.</strong>
-    <code>shepherd</code>
-    merges, by squash only, just the repositories your own
-    <code>auto-merge.conf</code>
-    names. The tracked example names none, so a fresh clone merges nowhere.
-  </li>
-  <li>
-    <strong>The map is generated.</strong>
-    <code>uv run fleet sync-registry</code>
-    rebuilds the repository index from your owners list. Nobody hand-edits it, and both files stay
-    local, so there is nothing to commit or push.
-  </li>
-  <li>
-    <strong>Facts are written once.</strong>
-    A worker records what it learned about a project in its result; each fact is its own file and
-    is never edited, only replaced by a newer one.
-    <code>uv run fleet context repo &lt;repo&gt;</code>
-    hands them to the next worker on that project.
-  </li>
-  <li>
-    <strong>Your state stays on your machine.</strong>
-    The queue, run logs, map, facts and settings are gitignored in the public repo, which does not
-    back them up. Back up your clone yourself.
-  </li>
-  <li>
-    <strong>A served document waits for its reader.</strong>
-    A task that serves a page for review stays open, its session kept to answer questions, until
-    <code>uv run fleet queue reviewed</code>
-    records that the reader is done.
-  </li>
-</ul>
+<p>
+  Fleet v1, the Python control plane that installed itself as a Thurbox extension, is frozen
+  at
+  <code>v1.0.0</code>
+  . Fleet v2 does not read its data; the README's
+  <a href="https://github.com/Thurbeen/fleet#frozen-python-v100" target="_blank" rel="noopener"
+    >v1 section</a
+  >
+  says how to keep or leave it.
+</p>
 <h2 id="just-ask">
   Start by just asking
   <a href="#just-ask" class="heading-anchor">#</a>
@@ -386,33 +313,6 @@ reap ◀── landed ◀── shepherd / refuel ◀── watch / collect ◀�
   worktrees cannot accidentally become a place where work happens.
 </p>
 
-<h2 id="layout">
-  The layout
-  <a href="#layout" class="heading-anchor">#</a>
-</h2>
-<p>Fleet's checkout, trimmed to the parts this page talks about:</p>
-<pre data-title="the control-plane repo"><code class="language-bash">fleet/, scripts/lib/         the `uv run fleet` command and its modules
-registry/
-  owners.txt                 owners to index, one per line
-  repos.generated.yaml       generated by `uv run fleet sync-registry`; never hand-edited
-  facts/&lt;repo&gt;/&lt;id&gt;.md       one learned fact per file, never edited
-  context/&lt;repo&gt;.md          optional narrative about a project
-orchestration/
-  queue/&lt;topic&gt;/             PROMPT.md, then one directory per task:
-    &lt;task&gt;/                  task.yaml, BRIEF.md, progress.jsonl, result.md
-  runs/                      one log per topic
-  playbooks/                 reusable recipes
-  reconcile/, shepherd/      the loop's runtime state
-  *.example.conf             tracked settings; your copies are gitignored
-interface/                   the Kanban board and the Ctrl+X key
-extension.toml.in            manifest source, rendered at install time
-FLEET.md                     standing instructions for Mission Control
-AGENTS.md                    how an agent works inside the checkout</code></pre>
-<p>
-  Everything a running fleet writes (the queue, the logs, the map and its facts) is gitignored.
-  The public repo tracks the machinery and none of your content.
-</p>
-
 <h2 id="loop">
   The run loop, in Thurbox calls
   <a href="#loop" class="heading-anchor">#</a>
@@ -420,7 +320,9 @@ AGENTS.md                    how an agent works inside the checkout</code></pre>
 <p>
   Fleet is built on the same
   <code>thurbox-cli</code>
-  you have. If you build a lead of your own, these are the calls to reach for:
+  you have: it creates, reads, messages and deletes sessions by a stable
+  <code>--key</code>
+  . If you build a lead of your own, these are the calls to reach for:
 </p>
 <pre><code class="language-bash"># Spawn a worker: its own worktree, parented to the lead.
 thurbox-cli session create \
@@ -439,8 +341,9 @@ thurbox-cli session list --parent "$LEAD" --json
 # A replacement lead adopts a worker.
 thurbox-cli session reparent "$WORKER" "$NEW_LEAD"</code></pre>
 <p>
-  A Fleet worker finishes by writing a result file in the queue: an outcome, the artifact it
-  produced and what it learned. The lead reads that file, and only that file closes the task.
+  A Fleet worker finishes by running
+  <code>fleet result</code>
+  with an outcome and a summary, recorded on its Task. Only that concludes the Task.
 </p>
 <h2 id="primitives">
   Why it is a Thurbox pattern
@@ -459,7 +362,7 @@ thurbox-cli session reparent "$WORKER" "$NEW_LEAD"</code></pre>
 
 <h3>The lead is a real session</h3>
 <p>
-  The control plane installs itself as an
+  A lead you build yourself can install itself as an
   <a href="extensions.html">extension</a>
   with one long-lived
   <code>[[sessions]]</code>
@@ -479,14 +382,13 @@ thurbox-cli session reparent "$WORKER" "$NEW_LEAD"</code></pre>
   in its environment like any other session.
 </p>
 
-<h3>A result file, not a poll</h3>
+<h3>A reported result, not a poll</h3>
 <p>
-  A Fleet worker reports by writing
-  <code>result.md</code>
-  , which
-  <code>uv run fleet queue collect</code>
-  reads and checks against the forge, or against git for a pushed commit. A turn ending is not a
-  task finishing, so nothing else closes a task.
+  A Fleet worker reports by running
+  <code>fleet result</code>
+  , which records its outcome and summary on the Task, and declares any pull or merge request it
+  opened as a ChangeRequest that Fleet follows on the forge. A turn ending is not a task finishing,
+  so nothing else concludes a Task.
 </p>
 <div class="info-box">
   <p>
@@ -495,7 +397,7 @@ thurbox-cli session reparent "$WORKER" "$NEW_LEAD"</code></pre>
       <code>gh pr list</code>
       ?
     </strong>
-    A file the worker writes on purpose is
+    A report the worker makes on purpose is
     <em>exact</em>
     (it comes from a worker that knows it finished, not from a side effect), it is
     <em>durable</em>
@@ -509,24 +411,24 @@ thurbox-cli session reparent "$WORKER" "$NEW_LEAD"</code></pre>
 <p>
   Thurbox's
   <a href="features.html#inter-session-messages">inter-session messages</a>
-  are still there for a lead you build yourself, and Fleet's reconciler uses them with
+  are there for a lead you build yourself: a worker can mail its lead, and
   <code>--no-wake</code>
-  to leave Mission Control a note when it cannot type into its terminal.
+  leaves a note without typing into the lead's terminal.
 </p>
 
 <h3>A supervised loop, not automations</h3>
 <p>
   Fleet's periodic work is not a Thurbox
   <a href="features.html#automations">automation</a>
-  . It is the reconciler: one supervised process holding a lock and a heartbeat, brought back by a
-  user service or by Mission Control's session start, and stopped only by you. It runs the queue's
-  own commands on a timer, because a worker that died on a token limit fires no hook to say so.
+  . It is
+  <code>fleet up</code>
+  : one manager holding a lease, run in a terminal or under your own service supervisor, and
+  stopped only by you. It sweeps on a timer, because a worker that died on a token limit fires no
+  hook to say so.
 </p>
 <p>
-  Restraint is still part of the pattern. The reconciler never dispatches, cancels or reorders,
-  and every change it makes goes through
-  <code>uv run fleet queue</code>
-  . Rebuilding the map is a command you run, and it writes only local files.
+  Restraint is still part of the pattern. A session Fleet cannot observe is never blindly
+  replaced, and a stalled Task waits for a person to inspect it.
 </p>
 <h2 id="constraints">
   Three constraints
@@ -561,8 +463,10 @@ thurbox-cli session reparent "$WORKER" "$NEW_LEAD"</code></pre>
   is how a lead waits forever on a worker that finished an hour ago.
 </p>
 <p>
-  So headless completion detection is something the worker writes on purpose &mdash; a result file,
-  as Fleet uses, a mailbox message, or a printed sentinel the lead greps out
+  So headless completion detection is something the worker reports on purpose &mdash; a result
+  command such as
+  <code>fleet result</code>
+  , a result file, a mailbox message, or a printed sentinel the lead greps out
   of
   <code>session capture</code>
   . What the state fields are for is
@@ -705,25 +609,20 @@ git -C "$REPO" merge --ff-only origin/main
 git -C "$REPO" rev-list --count main..origin/main   # expect 0</code></pre>
 
 <h2 id="build-your-own">
-  Borrowing Fleet's arrangement
+  Building your own lead
   <a href="#build-your-own" class="heading-anchor">#</a>
 </h2>
 <p>
-  Fleet is an
+  Fleet is a separate program: nothing in Thurbox knows it exists. If you would rather build a lead
+  as an
   <a href="extensions.html">extension</a>
-  , not a Thurbox feature: nothing in Thurbox knows it exists. If you build your own lead, the part
-  worth copying is the arrangement, not the files. Two of its choices are that arrangement rather
-  than its own taste.
+  , two choices are worth copying because they follow from how extensions work, not from taste.
 </p>
 <p>
   <strong>The lead's job description is a payload file, not a prompt.</strong>
-  The manifest's
+  A
   <code>[[files]]</code>
-  lays down
-  <code>FLEET.rendered.md</code>
-  , rendered from the checkout's
-  <code>FLEET.md</code>
-  , in the extension home, and three
+  entry lays it down in the extension home, and
   <code>[[symlinks]]</code>
   surface it as
   <code>CLAUDE.md</code>
@@ -733,27 +632,20 @@ git -C "$REPO" rev-list --count main..origin/main   # expect 0</code></pre>
   <code>GEMINI.md</code>
   , so the lead reads what it is
   <em>for</em>
-  whichever CLI is behind it. That text is deliberately not the repo's own
+  whichever CLI is behind it. Keep that text apart from the repo's own
   <code>AGENTS.md</code>
   : one says what the session is for &mdash; hold the plan and the log, never the branches &mdash;
   and the other says how to work inside the checkout. A lead whose invariant lives only in the
   conversation that stated it keeps that invariant exactly as long as the conversation.
 </p>
 <p>
-  <strong>The manifest ships as</strong>
-  <code>extension.toml.in</code>
-  <strong>because no token spells "my clone".</strong>
+  <strong>A manifest that names your clone has to be rendered.</strong>
   <code>[[sessions]] repo_path</code>
-  has to name the checkout &mdash; that is where
-  <code>registry/</code>
-  and
-  <code>orchestration/</code>
-  are &mdash; and
+  may need to name a checkout, and
   <code>{home}</code>
-  is substituted, but it resolves to the extension home. A committed file cannot hardcode a path
-  that exists on one machine, so it ships a
-  <code>__REPO_PATH__</code>
-  placeholder that
-  <code>uv run fleet install-extension</code>
-  renders with the clone's absolute path before installing.
+  resolves to the extension home, not to it. A committed file cannot hardcode a path that exists on
+  one machine, so ship the manifest as a template with a placeholder, and have your installer
+  render it with the clone's absolute path before running
+  <code>thurbox-cli extension install</code>
+  .
 </p>
