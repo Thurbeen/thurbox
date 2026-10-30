@@ -945,7 +945,17 @@ fn the_wheel_scrolls_the_help_overlay_by_lines() {
     tui.send(F1);
     tui.wait_for("Navigation");
 
+    // One report is one line: the body's second line moves up to its first.
+    // Only the cells left of the scrollbar, whose thumb moves too.
+    let (_, title) = tui.find("Keybindings");
+    let (track, _) = tui.find("▲");
+    let text =
+        |tui: &Tui, y: u16| -> String { tui.row(y).chars().take(usize::from(track)).collect() };
+    let second = text(&tui, title + 2);
     let over_help = (60, 20);
+    tui.wheel(over_help, false, 1);
+    tui.wait_until("one line of scroll", |_| text(&tui, title + 1) == second);
+
     tui.wheel(over_help, false, 30);
     tui.wait_gone("Navigation");
     tui.wheel(over_help, false, 300);
@@ -955,8 +965,9 @@ fn the_wheel_scrolls_the_help_overlay_by_lines() {
     tui.wait_for("Navigation");
     tui.wheel(over_help, false, 300);
     tui.wait_gone("Navigation");
-    // A key brings the view back to the selection the wheel left behind.
-    tui.send(b"g");
+    // A key that moves nothing still brings the view back to the selection
+    // the wheel left behind, on the first row.
+    tui.send(b"x");
     tui.wait_for("Navigation");
 
     tui.send(ESC);

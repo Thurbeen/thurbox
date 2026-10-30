@@ -260,13 +260,14 @@ impl HelpModal {
     /// The view, not the selection, because help is mostly read. Stepping the
     /// selection a row per notch moved nothing on screen until it passed the
     /// middle, and could never reach the lines below the last action. Clamped
-    /// at the next frame, which is the first thing that knows the height.
+    /// to the end the last frame measured, since a whole batch of reports lands
+    /// before the next one; that frame clamps again for a resize.
     pub fn on_wheel(&mut self, up: bool) {
         self.wheeled = true;
         self.scroll = if up {
             self.scroll.saturating_sub(1)
         } else {
-            self.scroll + 1
+            (self.scroll + 1).min(self.max_scroll)
         };
     }
 
@@ -695,6 +696,20 @@ mod tests {
             .expect("declared");
         assert_eq!(restart.chord, "f7");
         assert!(restart.overridden);
+    }
+
+    #[test]
+    fn the_wheel_turns_at_the_end_without_losing_a_line() {
+        // Every report of an input batch lands before the next frame clamps,
+        // so a report past the end must not bank a line the reversal spends.
+        let mut help = HelpModal {
+            scroll: 5,
+            max_scroll: 5,
+            ..HelpModal::default()
+        };
+        help.on_wheel(false);
+        help.on_wheel(true);
+        assert_eq!(help.scroll, 4);
     }
 
     #[test]
