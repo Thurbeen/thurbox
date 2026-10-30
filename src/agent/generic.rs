@@ -35,6 +35,7 @@ impl AgentProvider for GenericProvider {
             config.resume_session_id.as_deref(),
             config.fork_session_id.as_deref(),
             config.agent_session_id.as_deref(),
+            &config.session_name,
         )
     }
 }

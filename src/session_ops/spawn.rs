@@ -592,6 +592,7 @@ fn spawn(
 
     let mut config = SessionConfig {
         session_id: Some(session_id),
+        session_name: req.name.clone(),
         telemetry_attrs: req.telemetry_attrs.clone(),
         agent_session_id: Some(agent_session_id.clone()),
         cwd: Some(launch_cwd.clone()),

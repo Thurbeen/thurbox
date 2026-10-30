@@ -250,7 +250,18 @@ their own group. Restart affected sessions after upgrading. This changes
 directory scope, preserving the permission mode and deny/ask rules; see
 [Multi-repo directory scope](AGENTS.md#multi-repo-directory-scope).
 
-`{id}` is substituted with the thurbox-generated session UUID. `{home}`
+`{id}` is substituted with the thurbox-generated session UUID, and `{name}`
+with the display name captured for that launch. Substitution happens inside
+each argument token: a name containing spaces, quotes, Unicode or shell
+metacharacters remains one literal argument — on a Windows (psmux) host too,
+where an argument holding `"` is quoted for both a C runtime and an npm `.cmd`
+shim. There a newline in an argument becomes a space, and so does every `"` of
+an argument holding whitespace and a `"` right after a `\`, which Windows
+PowerShell 5.1 would otherwise re-quote; `THURBOX_SESSION_NAME` keeps the name
+exactly everywhere. Definitions without `{name}` keep the same argv. Renaming
+a running session does not change its process environment or arguments; its
+next restart uses the current persisted name.
+`thurbox-cli agent launch-args --session` reports the same expansion. `{home}`
 is substituted with the resolved home dir at spawn time (the remote home
 for an SSH/WSL host) — for an agent that wants a session *file path*
 rather than a bare id. The built-in `omp` (Oh My Pi) uses it: it generates
@@ -286,13 +297,14 @@ vars = { role = "coder" }
 setup = ["[ -x scripts/role.sh ] && scripts/role.sh {role} --agent claude"]
 ```
 
-**`vars`** are per-entry template values. Each `{name}` naming a var is
+**`vars`** are per-entry template values. Each `{key}` naming a var is
 replaced by its value in `command`, `args`, every `*_args` group, `env`,
 `setup`, `telemetry_env` and `telemetry_args`, once, when the registry loads.
 A value is inserted as written: it may carry the launch-time placeholders
-(`{home}`, and `{id}` where the field allows it), but not another var. A var
+(`{home}`, and `{id}` or `{name}` where the field allows it), but not another
+var. A var
 name is an identifier (letters, digits, `_`) and may not be one thurbox
-substitutes itself (`id`, `home`, `dir`, `session_args`, `otlp_endpoint`,
+substitutes itself (`id`, `name`, `home`, `dir`, `session_args`, `otlp_endpoint`,
 `otlp_protocol`). Unlike every other field, a variant's `vars` **merge per
 key** over its base's: a template entry can give each var a default and each
 `extends` variant name only the ones it changes.
@@ -300,7 +312,8 @@ key** over its base's: a template entry can give each var a default and each
 **Every placeholder must resolve.** A placeholder is `{` + identifier + `}`;
 TOML-shaped text such as codex's `-c 'projects={"/w"={trust_level="trusted"}}'`
 is not one. What each field may name is what its own substitution handles —
-`{id}` only in the session groups, `{dir}` only in `additional_dir_args`,
+`{id}` and `{name}` only in the session groups, `{dir}` only in
+`additional_dir_args`,
 `{otlp_endpoint}`/`{otlp_protocol}` only in the telemetry fields, `{home}` in
 `command`, `args`, the groups, `env` and `setup`, and `{session_args}` only as
 one whole `args` token. Anything else — a misspelt `{rol}`, `{id}` in `args` —
@@ -1866,6 +1879,7 @@ these to prove its own identity without scraping panes or names:
 | Variable | Set into agent process |
 |----------|------------------------|
 | `THURBOX_SESSION` | the stable thurbox `SessionId` (the registry key); read back by `thurbox-cli message`/`inbox` for self-identity, and by `session signal` — see below |
+| `THURBOX_SESSION_NAME` | the display name captured at launch; a rename appears after the next restart, not in the already-running pane |
 | `THURBOX_SESSION_ID` | the agent's own conversation id (`agent_session_id`); consumed by the metrics statusline. Distinct from `THURBOX_SESSION` |
 | `THURBOX_TASK` | the originating task id; task-spawned sessions only (headless `task run`) |
 | `THURBOX_SESSION_KEY` | the session's key (`session create --key`, issue #1408), so a process in the pane knows which role it plays without a lookup; unset when it has none, and never taken from `--env` |
@@ -1944,9 +1958,9 @@ timer, a hand-run tick, `run --wait`):
 | `THURBOX_CONFIG_DIR` / `THURBOX_DATA_DIR`, `THURBOX_SOCKET`, `THURBOX_SOCKET_FOR` | the location overrides above |
 
 It runs in its `--cwd`, or your home directory — never in whatever directory
-the firer was started in. `THURBOX_SESSION`, `THURBOX_SESSION_ID`,
-`THURBOX_SESSION_KEY` and `THURBOX_TASK` are removed: an exec fired from a pane
-does not act as that pane's session.
+the firer was started in. `THURBOX_SESSION`, `THURBOX_SESSION_NAME`,
+`THURBOX_SESSION_ID`, `THURBOX_SESSION_KEY` and `THURBOX_TASK` are removed: an
+exec fired from a pane does not act as that pane's session.
 
 Set **at build time** (not runtime):
 

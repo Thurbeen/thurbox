@@ -22,8 +22,9 @@ const TAIL_CHARS: usize = 4096;
 
 /// The session identity a pane gives its processes, which an exec never
 /// inherits from whoever fired it.
-const IDENTITY_VARS: [&str; 4] = [
+const IDENTITY_VARS: [&str; 5] = [
     "THURBOX_SESSION",
+    "THURBOX_SESSION_NAME",
     "THURBOX_SESSION_ID",
     "THURBOX_SESSION_KEY",
     "THURBOX_TASK",

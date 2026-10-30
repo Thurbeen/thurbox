@@ -52,7 +52,11 @@ fork_args = ["fork", "{id}"]
 ```
 
 Each conversation argument group is appended only when its driving id is
-present, with `{id}` substituted; `args` is always passed. No
+present, with `{id}` and `{name}` substituted; `args` is always passed. `{name}`
+is the session display name captured for that launch and remains one literal
+argument even when it contains spaces, quotes, Unicode or shell metacharacters.
+Definitions without it keep the same argv. A rename does not mutate the running
+process; the next restart uses the current persisted name. No
 model is ever passed — each agent uses its own default config
 (put `["--model", "opus"]` in `args` if you want to pin one).
 A second token, `{home}`, expands (at spawn, on the spawn worker —
@@ -78,9 +82,9 @@ to need a wrapper script as `command` is data now (full contract:
   `agent_config::resolve_agent_entry`), so a template base's `{role}` is filled
   by whichever variant names it. `vars` merge **per key** across `extends`; every
   other field replaces. One pass, values inserted verbatim (a value may carry
-  `{home}`/`{id}`, never another var).
-- Every placeholder must resolve (`AgentDef::placeholder_errors`): `{id}` only in
-  the session groups, `{dir}` only in `additional_dir_args`, the OTLP pair only in
+  `{home}`/`{id}`/`{name}`, never another var).
+- Every placeholder must resolve (`AgentDef::placeholder_errors`): `{id}` and
+  `{name}` only in the session groups, `{dir}` only in `additional_dir_args`, the OTLP pair only in
   telemetry fields, `{home}` in command/args/groups/env/setup. A placeholder is
   `{identifier}`, so codex's TOML `-c` values are never one. An unknown one skips
   the entry with a warning and fails `config validate` — never launched literally.

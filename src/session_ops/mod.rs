@@ -630,6 +630,7 @@ pub fn agent_launch_plan(
     let def = shell_for(def, spawn::platform_of(host.as_ref()));
     let mut config = SessionConfig {
         session_id: session.map(|s| s.id),
+        session_name: session.map_or_else(String::new, |s| s.name.clone()),
         agent_session_id: session.and_then(|s| s.agent_session_id.clone()),
         agent: def.name.clone(),
         cwd: session.and_then(|s| s.cwd.clone()),
@@ -662,6 +663,7 @@ pub fn agent_launch_plan(
         }
         for key in [
             "THURBOX_SESSION",
+            "THURBOX_SESSION_NAME",
             "THURBOX_SESSION_ID",
             "THURBOX_SESSION_KEY",
             "THURBOX_TASK",
@@ -744,6 +746,7 @@ fn session_process_env_for_agent(
     let telemetry_settings = crate::agent::settings_config::load_quiet().telemetry;
     let mut config = SessionConfig {
         session_id: Some(session.id),
+        session_name: session.name.clone(),
         telemetry_attrs: if telemetry_settings.configures_agents() {
             telemetry::load(db, session)?
         } else {
@@ -1267,6 +1270,7 @@ pub fn same_machine(a: &str, b: &str) -> bool {
 /// - `THURBOX_SESSION` — the thurbox [`SessionId`] (the registry key). Read by
 ///   the mailbox CLI to auto-stamp provenance and default the inbox to "me".
 ///   Requires `config.session_id` to be set before calling.
+/// - `THURBOX_SESSION_NAME` — the display name captured for this launch.
 /// - `THURBOX_SESSION_ID` — the *agent's* conversation id (`agent_session_id`),
 ///   consumed by the metrics statusline. Distinct from `THURBOX_SESSION`.
 /// - `THURBOX_SESSION_KEY` — the session's key (issue #1408), when it has one,
@@ -1286,8 +1290,9 @@ pub fn same_machine(a: &str, b: &str) -> bool {
 /// them — the local dirs don't exist on the host, its socket is the host's own,
 /// and a remote `thurbox-cli` pinned to them would resolve garbage instead of
 /// its own defaults. The
-/// identity vars (`THURBOX_SESSION`/`THURBOX_SESSION_ID`/`THURBOX_TASK`) are
-/// opaque and travel everywhere, the key with them.
+/// identity vars (`THURBOX_SESSION`/`THURBOX_SESSION_NAME`/
+/// `THURBOX_SESSION_ID`/`THURBOX_TASK`) are opaque and travel everywhere, the
+/// key with them.
 ///
 /// Kept in sync with `App::build_spawn_inputs` so headless and TUI sessions look
 /// identical to the spawned process (modulo `THURBOX_TASK` as noted above).
@@ -1306,6 +1311,13 @@ pub(crate) fn inject_thurbox_env(
         .insert("THURBOX_SESSION_ID".into(), agent_session_id.into());
     if let Some(id) = config.session_id {
         config.env.insert("THURBOX_SESSION".into(), id.to_string());
+    }
+    if config.session_name.is_empty() {
+        config.env.remove("THURBOX_SESSION_NAME");
+    } else {
+        config
+            .env
+            .insert("THURBOX_SESSION_NAME".into(), config.session_name.clone());
     }
     // Removed when absent rather than left alone: the caller's `--env` went in
     // first, and a session must not be able to claim a role it was not given.
@@ -1377,6 +1389,7 @@ mod tests {
         let sid = SessionId::default();
         let mut config = SessionConfig {
             session_id: Some(sid),
+            session_name: "quoted 'name' λ;$HOME *".into(),
             ..SessionConfig::default()
         };
         inject_thurbox_env(&mut config, "agent-conv-uuid", Some(42), None);
@@ -1387,6 +1400,10 @@ mod tests {
             Some(&"agent-conv-uuid".to_string())
         );
         assert_eq!(config.env.get("THURBOX_TASK"), Some(&"42".to_string()));
+        assert_eq!(
+            config.env.get("THURBOX_SESSION_NAME").map(String::as_str),
+            Some("quoted 'name' λ;$HOME *")
+        );
     }
 
     #[test]
@@ -1440,12 +1457,17 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(tmp.path());
         let mut config = SessionConfig {
             session_id: Some(SessionId::default()),
+            session_name: "remote worker".into(),
             backend: Some("ssh:devbox".into()),
             ..SessionConfig::default()
         };
         inject_thurbox_env(&mut config, "agent-conv-uuid", None, None);
         assert!(config.env.contains_key("THURBOX_SESSION"));
         assert!(config.env.contains_key("THURBOX_SESSION_ID"));
+        assert_eq!(
+            config.env.get("THURBOX_SESSION_NAME").map(String::as_str),
+            Some("remote worker")
+        );
         assert!(!config.env.contains_key("THURBOX_METRICS_DIR"));
         assert!(!config
             .env

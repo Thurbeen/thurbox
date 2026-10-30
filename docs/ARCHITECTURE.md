@@ -982,7 +982,11 @@ reference to read before touching that path.
   -e` is ignored** (on the argv path too — no `THURBOX_SESSION` identity).
   `psmux::psmux_window_powershell` folds env + command into **one** PowerShell
   script (`Set-Item Env:K 'v'; & 'claude' '--session-id' …`, PowerShell
-  single-quoting throughout), and `psmux_window_program` hands it to
+  single-quoting throughout, so an env value arrives exactly), and an argument
+  holding `"` is quoted by thurbox rather than Windows PowerShell 5.1, which
+  passes an embedded `"` unescaped (`windows_native_arg`: one quoted region,
+  `"` doubled, safe for a C runtime and for an npm `.cmd` shim's `cmd.exe`).
+  `psmux_window_program` hands the script to
   `powershell.exe -NoLogo -EncodedCommand <base64>` explicitly. psmux runs a
   single-string window command through the shell it resolves (`cached_shell` /
   `build_command`, psmux `src/pane.rs`): since 3.4.0 (#683) that is `$SHELL`
@@ -1559,7 +1563,8 @@ codex, antigravity, opencode, aider, copilot, vibe, pi, omp) on first run via
 here if you want), and argument-template groups (`resume_args`,
 `fork_args`, `new_session_args`), plus a `resume_latest` flag. A
 single `agent::GenericProvider` (an `AgentProvider`) launches any
-defined agent by substituting `{id}` and appending each group only
+defined agent by substituting `{id}` and the launch-time display-name snapshot
+`{name}`, then appending each group only
 when its driving value is present. Claude and pi accept the
 thurbox-generated id (`--session-id {id}`). Codex reports its own ID through
 `SessionStart`, which thurbox stores separately for exact resume and fork.

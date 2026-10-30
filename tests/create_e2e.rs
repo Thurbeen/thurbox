@@ -439,6 +439,197 @@ fn have_tmux() -> bool {
 
 #[test]
 #[cfg(unix)]
+fn session_name_reaches_launch_args_and_pane_env_then_refreshes_on_restart() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, config) = isolated_config();
+    let repo = repo();
+    let capture = home.path().join("session-name-launch");
+    let agent = home.path().join("record-session-name");
+    std::fs::write(
+        &agent,
+        "#!/bin/sh\n{ printf 'env=<%s>\\n' \"$THURBOX_SESSION_NAME\"; printf 'arg=<%s>\\n' \"$@\"; } > \"$CAPTURE.pending\"\nmv \"$CAPTURE.pending\" \"$CAPTURE\"\nexec sleep 60\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        config.join("agents.toml"),
+        format!(
+            r#"
+default = "recorder"
+[[agents]]
+name = "recorder"
+command = {:?}
+new_session_args = ["--new", "{{id}}", "--name", "{{name}}"]
+resume_args = ["--resume", "{{id}}", "--name", "{{name}}"]
+fork_args = ["--fork", "{{id}}", "--name", "{{name}}"]
+env = {{ CAPTURE = {:?} }}
+"#,
+            agent.display().to_string(),
+            capture.display().to_string(),
+        ),
+    )
+    .unwrap();
+    drop(on_disk_db());
+
+    let original = "launch 'quoted' \"API\" λ;$HOME *";
+    let created = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args([
+            "session",
+            "create",
+            "--name",
+            original,
+            "--repo-path",
+            repo.path().to_str().unwrap(),
+            "--agent",
+            "recorder",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        created.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&created.stdout),
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let created: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let id = created["id"].as_str().unwrap();
+    let first = read_session_name_capture(&capture);
+    assert!(first.contains(&format!("env=<{original}>")), "{first}");
+    assert!(first.contains(&format!("arg=<{original}>")), "{first}");
+    assert!(!repo.path().join("expanded").exists());
+
+    let launch_args = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args([
+            "agent",
+            "launch-args",
+            "recorder",
+            "--session",
+            id,
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(launch_args.status.success());
+    let launch_args: serde_json::Value = serde_json::from_slice(&launch_args.stdout).unwrap();
+    assert_eq!(launch_args["args"][3], original);
+    assert_eq!(launch_args["env"]["THURBOX_SESSION_NAME"], original);
+
+    let renamed = "restart “unicode” 'name' $(touch expanded)";
+    let rename = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "rename", id, renamed, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        rename.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rename.stdout)
+    );
+    assert_eq!(
+        read_session_name_capture(&capture),
+        first,
+        "renaming must not mutate the already-running agent"
+    );
+
+    std::fs::remove_file(&capture).unwrap();
+    let restart = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "restart", id, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        restart.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&restart.stdout),
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    let second = read_session_name_capture(&capture);
+    assert!(second.contains(&format!("env=<{renamed}>")), "{second}");
+    assert!(second.contains(&format!("arg=<{renamed}>")), "{second}");
+    assert!(!repo.path().join("expanded").exists());
+
+    let fork_name = "forked name λ;*";
+    std::fs::remove_file(&capture).unwrap();
+    let fork = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "fork", id, "--name", fork_name, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        fork.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&fork.stdout),
+        String::from_utf8_lossy(&fork.stderr)
+    );
+    let fork_capture = read_session_name_capture(&capture);
+    assert!(
+        fork_capture.contains(&format!("env=<{fork_name}>")),
+        "{fork_capture}"
+    );
+    assert!(
+        fork_capture.contains(&format!("arg=<{fork_name}>")),
+        "{fork_capture}"
+    );
+
+    let direct_capture = home.path().join("direct-session-name-launch");
+    let direct_name = "direct 'command' λ;$HOME *";
+    let direct = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args([
+            "session",
+            "create",
+            "--name",
+            direct_name,
+            "--repo-path",
+            repo.path().to_str().unwrap(),
+            "--command",
+            agent.to_str().unwrap(),
+            "--arg",
+            "literal-direct",
+            "--env",
+            &format!("CAPTURE={}", direct_capture.display()),
+            "--env",
+            "THURBOX_SESSION_NAME=forged",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        direct.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&direct.stdout),
+        String::from_utf8_lossy(&direct.stderr)
+    );
+    let direct_capture = read_session_name_capture(&direct_capture);
+    assert!(
+        direct_capture.contains(&format!("env=<{direct_name}>")),
+        "{direct_capture}"
+    );
+    assert!(
+        direct_capture.contains("arg=<literal-direct>"),
+        "{direct_capture}"
+    );
+}
+
+#[cfg(unix)]
+fn read_session_name_capture(capture: &Path) -> String {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(capture) {
+            return text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "agent did not record its session name"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+#[cfg(unix)]
 fn multi_repo_launch_grants_only_member_targets_and_keeps_them_on_restart() {
     scoped_launch_case(true, true, false, false);
 }

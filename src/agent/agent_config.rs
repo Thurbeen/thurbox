@@ -190,9 +190,9 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # name = "my-agent"             # shown in the new-session agent picker
 # command = "my-agent-cli"      # the executable on your PATH
 # args = []                     # ALWAYS passed (see "Pin a model" below)
-# resume_args = []              # appended on restart/resume, with {id} substituted
-# fork_args = []                # appended on Ctrl+F fork, with {id} substituted
-# new_session_args = []         # appended on a fresh spawn, with {id} substituted
+# resume_args = []              # on restart/resume; substitutes {id} and {name}
+# fork_args = []                # on Ctrl+F fork; substitutes {id} and {name}
+# new_session_args = []         # on a fresh spawn; substitutes {id} and {name}
 # additional_dir_args = []      # repeated per multi-repo member, with {dir} substituted
 # resume_latest = false         # true ⇒ resume "the last session in this dir"
 #                               #   (id-less flags); leave false to pin by {id}
@@ -205,7 +205,8 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 #                               #   claude's --settings hook wiring under its own
 #                               #   name. Omit if the agent has no known family.
 #
-# {id} is a thurbox-generated UUID. Only agents that accept it at creation
+# {id} is a thurbox-generated UUID. {name} is the display name captured for
+# this launch. Each replacement remains one literal argument. Only agents that accept it at creation
 # (claude and pi both take `--session-id {id}`) can resume/fork by that exact
 # id; for everything else use `resume_latest = true` with id-less, cwd-scoped flags
 # (e.g. `["resume", "--last"]`). Omit every resume group to start fresh on
@@ -231,7 +232,7 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # Per-entry values, argument order and pre-launch setup
 # ──────────────────────────────────────────────────────────────────────────
 #
-# vars fills {name} in command, args, the *_args groups, env and setup.
+# vars fills {key} in command, args, the *_args groups, env and setup.
 # {session_args}, as a whole `args` token, is where the resume/fork/new-session
 # group goes (without it the group comes first). setup runs in the session's
 # directory, with its environment, as one `sh -c` script under `set -e` before
@@ -816,24 +817,24 @@ new_session_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"]
                 continue;
             }
             assert_eq!(
-                def.build_args(None, None, Some("new")),
+                def.build_args(None, None, Some("new"), "worker"),
                 legacy("new_session_args", "new"),
                 "{name}"
             );
             assert_eq!(
-                def.build_args(Some("old"), None, None),
+                def.build_args(Some("old"), None, None, "worker"),
                 legacy("resume_args", "old"),
                 "{name}"
             );
             assert_eq!(
-                def.build_args(None, Some("parent"), None),
+                def.build_args(None, Some("parent"), None, "worker"),
                 legacy("fork_args", "parent"),
                 "{name}"
             );
         }
         // And the launch itself: no setup means the command is not wrapped.
         let coder = reg.get("claude-coder").unwrap();
-        let args = coder.build_args(None, None, Some("new"));
+        let args = coder.build_args(None, None, Some("new"), "worker");
         assert_eq!(
             crate::session::agent_def::wrap_with_setup(&coder.setup, &coder.command, &args),
             (coder.command.clone(), args)
@@ -869,7 +870,7 @@ vars = { role = "operator" }
             "a var it does not name is kept"
         );
         assert_eq!(
-            operator.build_args(None, None, Some("u")),
+            operator.build_args(None, None, Some("u"), "worker"),
             [
                 "--model",
                 "opus",
@@ -907,7 +908,7 @@ vars = { role = "operator" }
             ])
         );
         assert_eq!(
-            operator.build_args(None, None, Some("u")),
+            operator.build_args(None, None, Some("u"), "worker"),
             strs(&[
                 "--permission-mode",
                 "auto",
@@ -922,7 +923,7 @@ vars = { role = "operator" }
         assert_eq!(
             reg.get("claude-ops")
                 .unwrap()
-                .build_args(Some("u"), None, None)[..2],
+                .build_args(Some("u"), None, None, "worker")[..2],
             strs(&["--model", "opus"])
         );
 
@@ -943,14 +944,14 @@ vars = { role = "operator" }
                 .collect::<Vec<_>>()
         };
         assert_eq!(
-            codex.build_args(Some("x"), None, None),
+            codex.build_args(Some("x"), None, None, "worker"),
             after(&["resume", "--last"])
         );
         assert_eq!(
-            codex.build_args(None, Some("x"), None),
+            codex.build_args(None, Some("x"), None, "worker"),
             after(&["fork", "--last"])
         );
-        assert_eq!(codex.build_args(None, None, Some("x")), flags);
+        assert_eq!(codex.build_args(None, None, Some("x"), "worker"), flags);
     }
 
     #[test]

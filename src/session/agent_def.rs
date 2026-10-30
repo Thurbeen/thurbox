@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 /// Exposed so `session_ops` can reconstruct a path-pinned agent's session path
 /// (omp) using the *same* token [`AgentDef::build_args`] substitutes.
 pub const ID_PLACEHOLDER: &str = "{id}";
+/// Placeholder substituted with the display name captured for this launch.
+pub const NAME_PLACEHOLDER: &str = "{name}";
 
 /// Placeholder expanded to the resolved home dir at spawn, on the launch host.
 /// Substituted in `session_ops` (it needs the filesystem); named here so
@@ -45,7 +47,7 @@ pub const OTLP_PROTOCOL_PLACEHOLDER: &str = "{otlp_protocol}";
 ///
 /// Resume, fork and new-session groups are appended **only** when their
 /// driving id is present, with
-/// `{id}` substituted token-by-token. This avoids any "unresolved placeholder"
+/// `{id}` and `{name}` substituted token-by-token. This avoids any "unresolved placeholder"
 /// heuristics: a group with no value is simply omitted. Directory arguments
 /// expand separately for the selected members, substituting `{dir}`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,13 +64,13 @@ pub struct AgentDef {
     /// launch-host path. Empty for CLIs that need no explicit directory scope.
     #[serde(default)]
     pub additional_dir_args: Vec<String>,
-    /// Emitted when resuming a known session; `{id}` is substituted.
+    /// Emitted when resuming a known session; `{id}` and `{name}` are substituted.
     #[serde(default)]
     pub resume_args: Vec<String>,
-    /// Emitted when forking from a parent conversation; `{id}` is substituted.
+    /// Emitted when forking from a parent conversation; `{id}` and `{name}` are substituted.
     #[serde(default)]
     pub fork_args: Vec<String>,
-    /// Emitted on a fresh spawn to pin a session id; `{id}` is substituted.
+    /// Emitted on a fresh spawn to pin a session id; `{id}` and `{name}` are substituted.
     #[serde(default)]
     pub new_session_args: Vec<String>,
     /// When true, this agent resumes its most-recent session in the launch
@@ -104,7 +106,7 @@ pub struct AgentDef {
     /// per-session `-c otel.*` overrides).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub telemetry_args: Vec<String>,
-    /// Per-entry template values: `{name}` in `command`, `args`, every
+    /// Per-entry template values: `{key}` in `command`, `args`, every
     /// `*_args` group, `env`, `setup` and the telemetry fields is replaced by
     /// the value, once, when the registry is loaded
     /// ([`Self::apply_vars`]). A variant (`extends`) merges these per key
@@ -138,13 +140,14 @@ impl AgentDef {
         resume_id: Option<&str>,
         fork_id: Option<&str>,
         new_session_id: Option<&str>,
+        session_name: &str,
     ) -> Vec<String> {
         let group = if let Some(id) = fork_id {
-            subst(&self.fork_args, ID_PLACEHOLDER, id)
+            subst_launch_group(&self.fork_args, id, session_name)
         } else if let Some(id) = resume_id {
-            subst(&self.resume_args, ID_PLACEHOLDER, id)
+            subst_launch_group(&self.resume_args, id, session_name)
         } else if let Some(id) = new_session_id {
-            subst(&self.new_session_args, ID_PLACEHOLDER, id)
+            subst_launch_group(&self.new_session_args, id, session_name)
         } else {
             Vec::new()
         };
@@ -171,11 +174,12 @@ impl AgentDef {
         }
     }
 
-    /// Replace every `{name}` naming one of [`Self::vars`] in every templated
+    /// Replace every `{key}` naming one of [`Self::vars`] in every templated
     /// field, then report what is left unresolved.
     ///
     /// One pass, and a value is inserted verbatim: a var's value may carry the
-    /// launch-time placeholders (`{home}`, and `{id}` in a session group),
+    /// launch-time placeholders (`{home}`, and `{id}` or `{name}` in a session
+    /// group),
     /// which resolve later like any other, but not another var — that is left
     /// as written and reported. An unknown placeholder is an error rather than
     /// text passed to the agent: a misspelt `{rol}` would otherwise launch
@@ -227,13 +231,13 @@ impl AgentDef {
     /// it, one message per field and name.
     ///
     /// What each field may name is the set its own substitution handles:
-    /// `{id}` only in the session groups, `{dir}` only in
+    /// `{id}` and `{name}` only in the session groups, `{dir}` only in
     /// `additional_dir_args`, the OTLP pair only in the telemetry fields,
     /// `{home}` wherever the launch expands it, and
     /// [`SESSION_ARGS_PLACEHOLDER`] only as one whole `args` token.
     pub fn placeholder_errors(&self) -> Vec<String> {
         const HOME: &[&str] = &["home"];
-        const SESSION: &[&str] = &["home", "id"];
+        const SESSION: &[&str] = &["home", "id", "name"];
         const DIR: &[&str] = &["home", "dir"];
         const TELEMETRY: &[&str] = &["otlp_endpoint", "otlp_protocol"];
         let mut errors = Vec::new();
@@ -324,9 +328,14 @@ impl AgentDef {
     }
 }
 
+fn subst_launch_group(tokens: &[String], id: &str, name: &str) -> Vec<String> {
+    subst(&subst(tokens, ID_PLACEHOLDER, id), NAME_PLACEHOLDER, name)
+}
+
 /// The names thurbox substitutes itself, which a `vars` entry may not shadow.
 const RESERVED_PLACEHOLDERS: &[&str] = &[
     "id",
+    "name",
     "home",
     "dir",
     "session_args",
@@ -345,7 +354,7 @@ fn is_placeholder_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Each `{name}` in `text` where `name` [is a placeholder
+/// Each `{key}` in `text` where `key` [is a placeholder
 /// name](is_placeholder_name), with its byte range.
 fn placeholder_spans(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
     let mut spans = Vec::new();
@@ -367,7 +376,7 @@ fn placeholders(text: &str) -> impl Iterator<Item = &str> {
     placeholder_spans(text).into_iter().map(|(_, name)| name)
 }
 
-/// `text` with each `{name}` naming a var replaced by its value. Scanned once,
+/// `text` with each `{key}` naming a var replaced by its value. Scanned once,
 /// so a value containing a placeholder is inserted as it is.
 fn fill_vars(text: &str, vars: &BTreeMap<String, String>) -> String {
     let mut out = String::with_capacity(text.len());
@@ -531,7 +540,7 @@ mod tests {
     #[test]
     fn fresh_session_pins_id() {
         let d = claude();
-        let args = d.build_args(None, None, Some("new-id"));
+        let args = d.build_args(None, None, Some("new-id"), "worker");
         assert_eq!(args, vec!["--session-id", "new-id"]);
         // No model is ever passed.
         assert!(!args.iter().any(|a| a == "--model"));
@@ -540,15 +549,46 @@ mod tests {
     #[test]
     fn resume_takes_precedence_over_new() {
         let d = claude();
-        let args = d.build_args(Some("resume-id"), None, Some("new-id"));
+        let args = d.build_args(Some("resume-id"), None, Some("new-id"), "worker");
         assert_eq!(args, vec!["--resume", "resume-id"]);
     }
 
     #[test]
     fn fork_takes_precedence_over_resume() {
         let d = claude();
-        let args = d.build_args(Some("resume-id"), Some("fork-id"), Some("new-id"));
+        let args = d.build_args(Some("resume-id"), Some("fork-id"), Some("new-id"), "worker");
         assert_eq!(args, vec!["--resume", "fork-id", "--fork-session"]);
+    }
+
+    #[test]
+    fn session_name_is_one_literal_argument_in_every_conversation_group() {
+        let mut d = claude();
+        d.resume_args = vec!["resume={id}".into(), "{name}".into()];
+        d.fork_args = vec!["fork={id}".into(), "{name}".into()];
+        d.new_session_args = vec!["new={id}".into(), "{name}".into()];
+        let name = "quoted 'name' λ;$HOME *";
+
+        assert_eq!(
+            d.build_args(None, None, Some("new-id"), name),
+            ["new=new-id", name]
+        );
+        assert_eq!(
+            d.build_args(Some("resume-id"), None, None, name),
+            ["resume=resume-id", name]
+        );
+        assert_eq!(
+            d.build_args(None, Some("fork-id"), None, name),
+            ["fork=fork-id", name]
+        );
+    }
+
+    #[test]
+    fn definitions_without_the_name_placeholder_keep_their_argv() {
+        let d = claude();
+        assert_eq!(
+            d.build_args(None, None, Some("new-id"), "ignored"),
+            ["--session-id", "new-id"]
+        );
     }
 
     #[test]
@@ -569,7 +609,7 @@ mod tests {
             vars: Default::default(),
             setup: Vec::new(),
         };
-        let args = d.build_args(None, None, Some("ignored"));
+        let args = d.build_args(None, None, Some("ignored"), "worker");
         assert_eq!(args, vec!["--quiet"]);
     }
 
@@ -594,12 +634,12 @@ mod tests {
         };
         // resume id present, but no {id} token -> tokens unchanged.
         assert_eq!(
-            d.build_args(Some("ignored-uuid"), None, None),
+            d.build_args(Some("ignored-uuid"), None, None, "worker"),
             vec!["resume", "--last"]
         );
         // fork wins over resume, still id-less.
         assert_eq!(
-            d.build_args(Some("ignored-uuid"), Some("also-ignored"), None),
+            d.build_args(Some("ignored-uuid"), Some("also-ignored"), None, "worker",),
             vec!["fork", "--last"]
         );
         assert!(d.resumes_latest());
@@ -672,7 +712,7 @@ mod tests {
             ..claude()
         };
         assert_eq!(
-            d.build_args(None, None, Some("new-id")),
+            d.build_args(None, None, Some("new-id"), "worker"),
             ["--session-id", "new-id", "--settings", "/h/claude.json"]
         );
     }
@@ -692,7 +732,7 @@ mod tests {
             ..claude()
         };
         assert_eq!(
-            d.build_args(None, None, Some("new-id")),
+            d.build_args(None, None, Some("new-id"), "worker"),
             [
                 "--permission-mode",
                 "auto",
@@ -705,7 +745,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            d.build_args(Some("old"), None, None),
+            d.build_args(Some("old"), None, None, "worker"),
             [
                 "--permission-mode",
                 "auto",
@@ -733,7 +773,7 @@ mod tests {
             ..AgentDef::default()
         };
         assert_eq!(
-            d.build_args(Some("x"), None, None),
+            d.build_args(Some("x"), None, None, "worker"),
             [
                 "resume",
                 "--last",
@@ -743,12 +783,12 @@ mod tests {
             ]
         );
         assert_eq!(
-            d.build_args(None, Some("x"), None),
+            d.build_args(None, Some("x"), None, "worker"),
             ["fork", "--last", "--approve-for-me", "--add-dir", "/skills"]
         );
         // No new_session_args: the token expands to nothing.
         assert_eq!(
-            d.build_args(None, None, Some("x")),
+            d.build_args(None, None, Some("x"), "worker"),
             ["--approve-for-me", "--add-dir", "/skills"]
         );
         assert_eq!(
@@ -784,7 +824,7 @@ mod tests {
         );
         assert_eq!(d.env["ROLE"], "coder");
         assert_eq!(
-            d.build_args(None, None, Some("u")),
+            d.build_args(None, None, Some("u"), "worker"),
             ["--role=coder", "--session-id", "u"]
         );
     }
@@ -846,13 +886,15 @@ mod tests {
             command: "x".into(),
             vars: [
                 ("id".to_string(), "1".to_string()),
+                ("name".to_string(), "1".to_string()),
                 ("a-b".to_string(), "1".to_string()),
             ]
             .into(),
             ..AgentDef::default()
         };
         let errors = d.apply_vars().unwrap_err();
-        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("`name` is reserved")));
         assert!(errors
             .iter()
             .any(|e| e.contains("`a-b` is not a valid name")));
