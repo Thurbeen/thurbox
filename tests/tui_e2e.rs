@@ -931,6 +931,75 @@ fn f1_opens_the_help_overlay_and_escape_closes_it() {
     assert!(tui.quit().success());
 }
 
+/// The wheel scrolls help's text a line per report, as it would any document.
+///
+/// It used to step the *selection* once per notch, dropping the reports behind
+/// it, so a spin moved the cursor a few rows while the text stayed put until
+/// the cursor passed the middle — and the end of the events list, below the
+/// last selectable row, could not be scrolled to at all.
+#[test]
+fn the_wheel_scrolls_the_help_overlay_by_lines() {
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(F1);
+    tui.wait_for("Navigation");
+
+    // One report is one line: the body's second line moves up to its first.
+    // Only the cells left of the scrollbar, whose thumb moves too.
+    let (_, title) = tui.find("Keybindings");
+    let (track, _) = tui.find("▲");
+    let text =
+        |tui: &Tui, y: u16| -> String { tui.row(y).chars().take(usize::from(track)).collect() };
+    let second = text(&tui, title + 2);
+    let over_help = (60, 20);
+    tui.wheel(over_help, false, 1);
+    tui.wait_until("one line of scroll", |_| text(&tui, title + 1) == second);
+
+    tui.wheel(over_help, false, 30);
+    tui.wait_gone("Navigation");
+    tui.wheel(over_help, false, 300);
+    tui.wait_for("a plugin ran");
+
+    tui.wheel(over_help, true, 300);
+    tui.wait_for("Navigation");
+    tui.wheel(over_help, false, 300);
+    tui.wait_gone("Navigation");
+    // A key that moves nothing still brings the view back to the selection
+    // the wheel left behind, on the first row.
+    tui.send(b"x");
+    tui.wait_for("Navigation");
+
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+    assert!(tui.quit().success());
+}
+
+/// Help's scrollbar takes the pointer: a press on the track jumps the text to
+/// that point, and a drag along it scrolls with the pointer.
+#[test]
+fn the_help_overlay_scrollbar_can_be_pressed_and_dragged() {
+    let profile = Profile::new();
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("No sessions yet");
+    tui.send(F1);
+    tui.wait_for("Navigation");
+
+    let (x, _) = tui.find("▲");
+    let (top, bottom) = tui.track_extent(x);
+    tui.press(0, (x, bottom));
+    tui.wait_for("a plugin ran");
+    tui.press(0, (x, top));
+    tui.wait_for("Navigation");
+
+    tui.drag_down((x, top), bottom);
+    tui.wait_for("a plugin ran");
+
+    tui.send(ESC);
+    tui.wait_gone("Keybindings");
+    assert!(tui.quit().success());
+}
+
 #[test]
 fn f12_shows_the_per_pane_cost_table() {
     let profile = Profile::new();

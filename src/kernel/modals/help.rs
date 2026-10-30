@@ -17,7 +17,7 @@
 //! kernel's rather than Lua's.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -143,6 +143,17 @@ pub struct HelpModal {
     /// Where each action row and footer pill was drawn, so a click reaches the
     /// one under it.
     hits: Hits,
+    /// The first screen line on view, as the last frame drew it.
+    scroll: usize,
+    /// The wheel moved the view off the selection, so the next frame keeps
+    /// [`Self::scroll`] rather than following the selection. A key re-attaches it.
+    wheeled: bool,
+    /// The scrollbar's track and the furthest the text scrolls, as the last
+    /// frame drew them, so a press on the bar can say where it landed.
+    track: Option<Rect>,
+    max_scroll: usize,
+    /// The last press landed on the bar, so a drag moves the text with it.
+    holding_bar: bool,
 }
 
 impl HelpModal {
@@ -174,6 +185,7 @@ impl HelpModal {
         registry: &mut Registry,
     ) -> Option<String> {
         let total = actions(registry).len();
+        self.wheeled = false;
         if self.capturing {
             return self.capture(key, chord, registry);
         }
@@ -242,11 +254,55 @@ impl HelpModal {
         self.hits.rows.len().max(1)
     }
 
-    /// A click selects the row under it — the same act as `j`/`k`.
+    /// One wheel report moves the text a line, the way a terminal scrolls a
+    /// document: a notch is several reports, one per line it means to travel.
+    ///
+    /// The view, not the selection, because help is mostly read. Stepping the
+    /// selection a row per notch moved nothing on screen until it passed the
+    /// middle, and could never reach the lines below the last action. Clamped
+    /// to the end the last frame measured, since a whole batch of reports lands
+    /// before the next one; that frame clamps again for a resize.
+    pub fn on_wheel(&mut self, up: bool) {
+        self.wheeled = true;
+        self.scroll = if up {
+            self.scroll.saturating_sub(1)
+        } else {
+            (self.scroll + 1).min(self.max_scroll)
+        };
+    }
+
+    /// A click selects the row under it — the same act as `j`/`k` — or, on
+    /// the scrollbar, scrolls the text to that point of the track.
     pub fn on_click(&mut self, x: u16, y: u16) {
-        if let Some(index) = self.hits.row_at(x, y) {
+        self.holding_bar = self
+            .track
+            .is_some_and(|track| track.contains(Position::new(x, y)));
+        if self.holding_bar {
+            self.scroll_to(y);
+        } else if let Some(index) = self.hits.row_at(x, y) {
             self.selected = index;
         }
+    }
+
+    /// A drag with the button held. `false` when the press that began it was
+    /// not on the scrollbar, and the drag is not help's.
+    pub fn on_drag(&mut self, y: u16) -> bool {
+        if self.holding_bar {
+            self.scroll_to(y);
+        }
+        self.holding_bar
+    }
+
+    /// Scroll so the track's row `y` stands for the view, top cap for the top
+    /// and bottom cap for the end. A pointer past either cap holds there.
+    fn scroll_to(&mut self, y: u16) {
+        let Some(track) = self.track else {
+            return;
+        };
+        let last = usize::from(track.height.saturating_sub(1)).max(1);
+        let row = usize::from(y.saturating_sub(track.y)).min(last);
+        self.scroll = (row * self.max_scroll + last / 2) / last;
+        self.wheeled = true;
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, registry: &Registry, chrome: Chrome) {
@@ -298,8 +354,15 @@ impl HelpModal {
 
         let total = lines.len();
         let height = usize::from(body.height);
-        let scroll = scroll_for(total, height, selected_line);
+        let scroll = if self.wheeled {
+            self.scroll.min(total.saturating_sub(height))
+        } else {
+            scroll_for(total, height, selected_line)
+        };
+        self.scroll = scroll;
+        self.max_scroll = total.saturating_sub(height);
         let (rows_area, track) = chrome::reserve_track(body, total, height);
+        self.track = track;
         frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), rows_area);
         record_row_hits(
             &mut self.hits.rows,
@@ -311,16 +374,16 @@ impl HelpModal {
 
         // The bar tracks ACTIONS, not screen lines, so its thumb matches what
         // the selection cursor moves through — v1's rule, and why the viewport
-        // is the number of rows that survived the window above.
+        // is the number of rows that survived the window above. Once the wheel
+        // has moved the view off the selection, it tracks the view instead:
+        // that is the only thing still moving.
         if let Some(track) = track {
-            chrome::scrollbar(
-                frame,
-                track,
-                index,
-                self.hits.rows.len().max(1),
-                self.selected,
-                chrome,
-            );
+            let (len, viewport, position) = if self.wheeled {
+                (total - height + 1, height, scroll)
+            } else {
+                (index, self.hits.rows.len().max(1), self.selected)
+            };
+            chrome::scrollbar(frame, track, len, viewport, position, chrome);
         }
 
         frame.render_widget(
@@ -633,6 +696,20 @@ mod tests {
             .expect("declared");
         assert_eq!(restart.chord, "f7");
         assert!(restart.overridden);
+    }
+
+    #[test]
+    fn the_wheel_turns_at_the_end_without_losing_a_line() {
+        // Every report of an input batch lands before the next frame clamps,
+        // so a report past the end must not bank a line the reversal spends.
+        let mut help = HelpModal {
+            scroll: 5,
+            max_scroll: 5,
+            ..HelpModal::default()
+        };
+        help.on_wheel(false);
+        help.on_wheel(true);
+        assert_eq!(help.scroll, 4);
     }
 
     #[test]

@@ -242,6 +242,27 @@ impl Modals {
         matches!(&self.open, Some(Open::Help(help)) if help.capturing())
     }
 
+    /// Take a drag with the left button held. `true` when the open modal took
+    /// it — help, while its scrollbar holds the pointer.
+    pub fn on_drag(&mut self, y: u16) -> bool {
+        match &mut self.open {
+            Some(Open::Help(help)) => help.on_drag(y),
+            _ => false,
+        }
+    }
+
+    /// Take one wheel report as a scroll of the open modal's text. `false` when
+    /// the open modal has no text to scroll, and the wheel steps its selection.
+    pub fn on_wheel(&mut self, up: bool) -> bool {
+        match &mut self.open {
+            Some(Open::Help(help)) => {
+                help.on_wheel(up);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Open `kind`, or close it when it is already the open one.
     ///
     /// Opening replaces whatever was open, which is what "one at a time" means:

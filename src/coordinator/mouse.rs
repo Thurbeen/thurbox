@@ -48,13 +48,16 @@ impl App {
                 self.on_context_click(mouse.column, mouse.row)
             }
             // A pty holding the button comes first — the press already chose
-            // the program inside as the owner of this gesture. Then a held
-            // node: while a scrollbar has the pointer, the movement is that
-            // pane's, not a selection over the text beside it.
+            // the program inside as the owner of this gesture. Then help's
+            // scrollbar, then a held node: while a scrollbar has the pointer,
+            // the movement is its owner's, not a selection over the text
+            // beside it.
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(surface) = self.pty_pointer.clone() {
                     self.terminals
                         .forward_motion(&surface, mouse.column, mouse.row);
+                } else if self.modals.on_drag(mouse.row) {
+                    self.dirty = true;
                 } else if !self.drag_held(mouse.column, mouse.row) {
                     self.drag_selection(mouse.column, mouse.row);
                 }
@@ -166,11 +169,16 @@ impl App {
         let code = if up { KeyCode::Up } else { KeyCode::Down };
         let key = KeyEvent::new(code, KeyModifiers::NONE);
 
-        // A modal takes the wheel as one selection step, never the panes it
-        // covers. While help is capturing a chord it is left alone: the capture
-        // would record the synthesized keystroke as the new binding.
+        // A modal takes the wheel, never the panes it covers. Help scrolls its
+        // text a line per report, which synthesizes no keystroke, so it is
+        // safe even while help is capturing a chord. Any other modal takes it
+        // as one selection step per notch.
         if self.modals.is_open() {
-            if !self.modals.captures_everything() && self.wheel_notch.opens(Instant::now(), up) {
+            if self.modals.on_wheel(up) {
+                self.dirty = true;
+            } else if !self.modals.captures_everything()
+                && self.wheel_notch.opens(Instant::now(), up)
+            {
                 self.dispatch_modal_key(&key);
             }
             return;
