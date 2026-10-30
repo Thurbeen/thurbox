@@ -518,10 +518,12 @@ impl SettingsModal {
             match key.code {
                 KeyCode::Char(']') => {
                     self.tab = self.tab.step(true);
+                    self.interface.disarm();
                     return Outcome::Stay(None);
                 }
                 KeyCode::Char('[') => {
                     self.tab = self.tab.step(false);
+                    self.interface.disarm();
                     return Outcome::Stay(None);
                 }
                 _ => {}

@@ -150,6 +150,9 @@ struct Reading {
 
 fn state_of(row: &Row, culprit: Option<&Row>) -> Reading {
     let (rank, glyph, word, fault) = match row.state {
+        // Its own load error outranks the state: the inventory calls a broken
+        // `layout.lua` or module present, since only a pane is expected to load.
+        _ if row.error.is_some() => (1, "✗", "failed", true),
         // Not its own fault: drawn plainly, so the one red row is the file to fix.
         FileState::Failed if held_back(row, culprit) => (2, "◇", "not loaded", false),
         FileState::Failed => (1, "✗", "failed", true),
@@ -275,6 +278,11 @@ fn reason(row: &Row, culprit: Option<&Row>) -> (String, Option<String>) {
             Some(why(
                 "fix the file and press F10 to reload, or space turns it off",
             )),
+        ),
+        // A support file has no `space` to offer, so its fix line is the reload.
+        _ if row.error.is_some() => (
+            row.error.clone().unwrap_or_default(),
+            Some(why("fix the file and press F10 to reload")),
         ),
         FileState::Removed => (
             why("you deleted this shipped file"),
@@ -499,6 +507,13 @@ impl InterfaceTab {
         self.armed.as_ref().map(|(path, _)| path.as_str())
     }
 
+    /// Withdraw the armed question. For keys the settings modal takes before
+    /// this tab sees them — a tab switch — since the question promises that
+    /// any other key cancels it.
+    pub fn disarm(&mut self) {
+        self.armed = None;
+    }
+
     /// Take a key. Returns a message to report, and an edit for the loop.
     pub fn on_key(
         &mut self,
@@ -506,6 +521,15 @@ impl InterfaceTab {
         inventory: &[Row],
         hits: &Hits,
     ) -> (Option<String>, Option<Edit>) {
+        if key.code == KeyCode::Char('a') {
+            // Before the empty-list return: with nothing but untouched support
+            // files, `a` is the only key that lists anything. The cursor stays
+            // on its file — `following` — when that file is still listed;
+            // otherwise `follow` clamps it.
+            self.all = !self.all;
+            self.armed = None;
+            return (None, None);
+        }
         let ordered = self.ordered(inventory);
         let total = ordered.len();
         if total == 0 {
@@ -537,13 +561,6 @@ impl InterfaceTab {
             KeyCode::End => {
                 self.selected = total - 1;
                 self.armed = None;
-            }
-            KeyCode::Char('a') => {
-                // The cursor stays on its file — `following` — when that file
-                // is still listed; otherwise `follow` clamps it.
-                self.all = !self.all;
-                self.armed = None;
-                return (None, None);
             }
             KeyCode::Char('r') => return self.restore(inventory),
             KeyCode::Char('d') => return self.remove(inventory),
@@ -865,7 +882,7 @@ impl InterfaceTab {
         let count = |pick: &dyn Fn(&Row) -> bool| inventory.iter().filter(|row| pick(row)).count();
         // Failed, not merely drawn as a fault: a deleted shipped file is red too,
         // and counting it would send the reader looking for an error.
-        let failed = count(&|row| row.state == FileState::Failed && state_of(row, culprit).fault);
+        let failed = count(&|row| state_of(row, culprit).word == "failed");
         let ungranted = count(&|row| grant_word(row).is_some_and(|(_, granted)| !granted));
         let off = count(&|row| row.state == FileState::Disabled);
 
@@ -936,9 +953,18 @@ impl InterfaceTab {
                         .find(|row| row.path == *path)
                         .map(capability_names)
                         .unwrap_or_default();
+                    // Gives way in order: the aside, then the file name — never
+                    // what is granted or the key that grants it. The question is
+                    // drawn padded by a space each side.
+                    let fixed = format!("grant : {caps}?").chars().count() + 2;
+                    let mut consequence = " t again to grant · any other key cancels";
+                    if fixed + name.chars().count() + consequence.chars().count() > width {
+                        consequence = " t again to grant";
+                    }
+                    let room = width.saturating_sub(fixed + consequence.chars().count());
                     (
-                        format!("grant {name}: {caps}?"),
-                        " t again to grant · any other key cancels".to_string(),
+                        format!("grant {}: {caps}?", chrome::truncate(name, room.max(1))),
+                        consequence.to_string(),
                     )
                 }
             };
@@ -1432,6 +1458,60 @@ mod tests {
         let text = screen(&mut tab, &rows);
         assert!(text.contains("lib/chrome.lua"), "{text}");
         assert!(footer(&tab, &rows).contains("plugins only"));
+    }
+
+    #[test]
+    fn a_toggles_the_support_files_even_when_nothing_else_is_listed() {
+        // No plugins and nothing needing attention lists nothing at all, and
+        // the footer still offers `a`; it has to answer.
+        let rows = [file("lib/chrome.lua", Kind::Module)];
+        let mut tab = InterfaceTab::default();
+        assert_eq!(tab.listed(&rows), 0);
+        tab.on_key(&press(KeyCode::Char('a')), &rows, &Hits::default());
+        let text = screen(&mut tab, &rows);
+        assert!(text.contains("lib/chrome.lua"), "{text}");
+    }
+
+    #[test]
+    fn a_support_file_that_fails_to_load_reads_failed_and_is_counted() {
+        // The inventory calls `layout.lua` present whether it loaded or not;
+        // its error is what says it did not.
+        let mut layout = file("layout.lua", Kind::Arrangement);
+        layout.error = Some("layout.lua: unexpected symbol near <eof>".into());
+        let rows = [layout];
+        let reading = state_of(&rows[0], culprit(&rows));
+        assert_eq!((reading.word, reading.fault), ("failed", true));
+        let (why, fix) = reason(&rows[0], culprit(&rows));
+        assert!(why.contains("unexpected symbol"), "{why}");
+        assert!(fix.is_some());
+        let mut tab = InterfaceTab::default();
+        let text = screen(&mut tab, &rows);
+        assert!(text.contains("1 failed"), "{text}");
+    }
+
+    #[test]
+    fn the_grant_question_shortens_the_file_name_to_fit() {
+        let mut long = row(
+            "plugins/94_a_pane_with_a_name_long_enough_to_need_cutting.lua",
+            Source::User,
+            FileState::Unplaced,
+        );
+        long.capabilities = vec![Capability::Run];
+        long.trust = FileTrust::Untrusted;
+        let rows = [long];
+        let mut tab = InterfaceTab::default();
+        tab.on_key(&press(KeyCode::Char('t')), &rows, &Hits::default());
+        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let text: String = tab
+            .footer(&rows, 48, Chrome::new(&palette))
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.chars().count() <= 48, "{text}");
+        assert!(text.contains("run?"), "{text}");
+        assert!(text.contains("t again"), "{text}");
+        assert!(text.contains('…'), "{text}");
     }
 
     #[test]

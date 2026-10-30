@@ -2903,6 +2903,35 @@ fn a_plugin_that_breaks_the_reload_is_named_and_the_others_are_not_blamed() {
 }
 
 #[test]
+fn a_broken_layout_reads_failed_with_its_error() {
+    // `layout.lua` is not a pane, so the inventory calls it present whether it
+    // loaded or not. Read that way, the one file to fix said `in use`, the
+    // summary counted nothing, and — with the error panel kept off the open
+    // modal — its error was shown nowhere.
+    let profile = Profile::new();
+    let interface = profile.path("config/ui");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("ui"),
+        &interface,
+    );
+    std::fs::write(interface.join("layout.lua"), "return {\n").expect("break");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("using the bundled interface");
+    open_interface_tab(&mut tui);
+    tui.wait_for("1 failed");
+
+    let layout = line_of(&tui, "layout.lua");
+    assert!(layout.contains("failed"), "{layout}");
+    assert!(!layout.contains("in use"), "{layout}");
+    select_file(&mut tui, "layout.lua");
+    tui.wait_for("unexpected symbol");
+
+    tui.send(ESC);
+    tui.wait_gone("SHIPPED");
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn granting_a_capability_asks_first_and_revoking_does_not() {
     // `t` is the one key in the tab that hands something away: `run` lets a
     // pane start programs. It used to grant on a single press while `d`, which
@@ -2934,8 +2963,18 @@ fn granting_a_capability_asks_first_and_revoking_does_not() {
     tui.send(b"j");
     tui.wait_gone("t again to grant");
     select_file(&mut tui, "92_tbrun.lua");
+    // So does leaving the tab: `[`/`]` never reach the tab, and a question
+    // still armed on return would grant on the next `t` without asking.
     tui.send(b"t");
     tui.wait_for("t again to grant");
+    tui.send(b"]");
+    tui.wait_gone("SHIPPED");
+    tui.send(b"[");
+    tui.wait_for("SHIPPED");
+    tui.wait_gone("t again to grant");
+    tui.send(b"t");
+    tui.wait_for("t again to grant");
+    assert!(!granted(), "a press after coming back asks again");
     tui.send(b"t");
     tui.wait_for("granted; t revokes it");
     assert!(granted(), "the second press grants");
@@ -2982,6 +3021,17 @@ fn the_interface_tab_keeps_each_rows_state_on_a_narrow_terminal() {
     assert!(footer.contains("Close"), "{footer}");
     // The hints stop short of the pill rather than run into it.
     assert!(!footer.contains("ta Close"), "{footer}");
+
+    // The grant question fits too: the file name gives way, never what is
+    // granted or the key that grants it.
+    select_file(&mut tui, "94_a_pane");
+    tui.send(b"t");
+    tui.wait_for("grant 94_");
+    let question = line_of(&tui, "grant 94_");
+    assert!(question.contains("run?"), "{question}");
+    assert!(question.contains("t again"), "{question}");
+    assert!(question.contains("Close"), "{question}");
+    tui.send(b"j");
 
     tui.send(ESC);
     tui.wait_gone("SHIPPED");
