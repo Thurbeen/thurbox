@@ -379,6 +379,10 @@ pub struct Registry {
     /// `plugin-state.json`, and so whether writing them back is an edit or an
     /// erasure.
     origin: Origin,
+    /// Set when load could not write `plugin-state.json`: until a restart
+    /// migrates them, `ui.json` still carries trust and the disabled set, so
+    /// its writes keep them rather than erase choices the store never received.
+    unmigrated: bool,
     /// Moves whenever anything published from this registry does — the
     /// declarations, a rebinding, a setting, the disabled set, a trust grant.
     ///
@@ -455,10 +459,9 @@ impl Registry {
             }
         };
         if migrate {
-            if let Err(e) = registry
-                .persist_decisions()
-                .and_then(|()| registry.persist_overrides())
-            {
+            let moved = registry.persist_decisions();
+            registry.unmigrated = moved.is_err();
+            if let Err(e) = moved.and_then(|()| registry.persist_overrides()) {
                 warnings.push(format!(
                     "moving trust and the disabled set out of ui.json: {e}"
                 ));
@@ -1148,6 +1151,10 @@ impl Registry {
             "pills".to_string(),
             serde_json::to_value(&self.pill_overrides).map_err(|e| e.to_string())?,
         );
+        if self.unmigrated {
+            json.insert("trusted".to_string(), serde_json::json!(self.trusted));
+            json.insert("disabled".to_string(), serde_json::json!(self.disabled));
+        }
 
         let text = serde_json::to_string_pretty(&serde_json::Value::Object(json))
             .map_err(|e| e.to_string())?;
@@ -1335,7 +1342,7 @@ enum Decisions {
     Absent,
     /// The grants, the disabled set, and what was dropped while reading them.
     Read(BTreeMap<String, Granted>, BTreeSet<String>, Vec<String>),
-    /// Present but not JSON.
+    /// Present but not readable, or not JSON.
     Unreadable(String),
 }
 
@@ -1343,8 +1350,12 @@ fn read_decisions() -> Decisions {
     let Some(path) = decisions_path() else {
         return Decisions::Absent;
     };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Decisions::Absent;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Decisions::Absent,
+        // Not absent: legacy tables standing in for it could restore a revoked
+        // grant.
+        Err(e) => return Decisions::Unreadable(format!("{}: {e}", path.display())),
     };
     match serde_json::from_str::<serde_json::Value>(&text) {
         Ok(parsed) => {

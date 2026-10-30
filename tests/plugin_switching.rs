@@ -380,3 +380,72 @@ fn disabling_is_not_recorded_as_a_removal() {
 
     std::env::remove_var("THURBOX_CONFIG_DIR");
 }
+
+#[cfg(unix)]
+#[test]
+fn a_migration_that_could_not_write_the_store_keeps_the_legacy_tables() {
+    use std::os::unix::fs::symlink;
+
+    // The store links into a directory that does not exist yet, so the
+    // migration's write fails while `ui.json`'s own write still succeeds.
+    let root = tempfile::tempdir().expect("tempdir");
+    let config = root.path().join("config");
+    let unmounted = root.path().join("unmounted");
+    std::fs::create_dir_all(&config).expect("config dir");
+    std::fs::write(
+        config.join("ui.json"),
+        r#"{"disabled": ["/ui/plugins/off.lua"]}"#,
+    )
+    .expect("seed legacy ui.json");
+    symlink(
+        unmounted.join("plugin-state.json"),
+        config.join("plugin-state.json"),
+    )
+    .expect("link the store");
+    std::env::set_var("THURBOX_CONFIG_DIR", &config);
+
+    let mut registry = Registry::load();
+    assert!(registry.is_disabled("/ui/plugins/off.lua"));
+    registry
+        .rebind("sessions.next", None)
+        .expect("save ui.json");
+
+    std::fs::create_dir_all(&unmounted).expect("the store's directory comes back");
+    assert!(
+        Registry::load().is_disabled("/ui/plugins/off.lua"),
+        "a later ui.json save must not drop choices the store never received"
+    );
+
+    std::env::remove_var("THURBOX_CONFIG_DIR");
+}
+
+#[test]
+fn a_store_that_cannot_be_read_is_not_replaced_by_legacy_tables() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        home.path().join("ui.json"),
+        r#"{"disabled": ["/ui/plugins/off.lua"]}"#,
+    )
+    .expect("seed legacy ui.json");
+    let store = home.path().join("plugin-state.json");
+    let unreadable = b"{\"disabled\": [\"\xff\"]}".to_vec();
+    std::fs::write(&store, &unreadable).expect("seed a store that is not UTF-8");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+
+    let registry = Registry::load();
+    assert!(
+        !registry.is_disabled("/ui/plugins/off.lua"),
+        "the legacy tables do not stand in for a store that exists"
+    );
+    assert_eq!(
+        std::fs::read(&store).expect("read the store"),
+        unreadable,
+        "and the store is left for the user to repair"
+    );
+    assert!(
+        !thurbox::kernel::registry::validate_decisions().is_empty(),
+        "config validate names it"
+    );
+
+    std::env::remove_var("THURBOX_CONFIG_DIR");
+}
