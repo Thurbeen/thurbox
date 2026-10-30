@@ -14,8 +14,9 @@
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::session::HostDef;
@@ -80,9 +81,33 @@ pub(super) fn retry_after(failures: u32) -> Duration {
 /// A cached probe verdict: what the host said, when it said it, and how many
 /// times in a row it has now failed — which is what sets the next retry's
 /// distance. A `Yes` carries `failures: 0` and never expires.
+///
+/// Wall-clock rather than `Instant`, because a `No` is also written to
+/// [`VERDICTS_FILE`] for the next process to read.
 struct Verdict {
     usable: Usable,
-    at: Instant,
+    at: SystemTime,
+    failures: u32,
+}
+
+/// Where every `No` verdict is kept between processes, under this instance's
+/// data directory.
+///
+/// The headless heartbeat runs `thurbox-cli automation tick` as a new process
+/// each time, so a backoff held only in memory restarted on every tick: a host
+/// whose endpoint refused to start its CLI was asked — and re-provisioned —
+/// every couple of minutes for as long as the heartbeat ran (#1576). A `Yes`
+/// is not kept here: it carries the CLI's path and abilities, which a peer
+/// should learn from the host rather than from a file that may have outlived
+/// them.
+const VERDICTS_FILE: &str = "host-verdicts.json";
+
+/// A `No` as [`VERDICTS_FILE`] stores it, keyed by backend name.
+#[derive(Serialize, Deserialize)]
+struct StoredNo {
+    reason: String,
+    /// Seconds since the Unix epoch.
+    at: u64,
     failures: u32,
 }
 
@@ -145,7 +170,9 @@ fn verdicts() -> &'static Mutex<HashMap<String, Verdict>> {
 /// delegate to. Cached per host: a `Yes` for the process lifetime (the host's
 /// CLI does not change under us), a `No` for `retry_after` its consecutive
 /// failure count — [`PROBE_RETRY`] the first time, doubling towards
-/// [`PROBE_RETRY_MAX`] for a host that cannot be made usable at all.
+/// [`PROBE_RETRY_MAX`] for a host that cannot be made usable at all. A `No`
+/// and its count are also kept in `host-verdicts.json`, so every process on this
+/// instance — the interface and each heartbeat tick — shares one backoff.
 ///
 /// A host with `share_sessions = false` is never contacted: it is used
 /// exactly as before sharing existed.
@@ -169,6 +196,17 @@ pub fn usable(host: &HostDef) -> Usable {
             failures = verdict.failures;
         }
     }
+    // Another process may have asked since — or this one has just started.
+    if let Some(stored) = stored_no(&key) {
+        if is_fresh(&stored) {
+            let usable = stored.usable.clone();
+            if let Ok(mut cache) = verdicts().lock() {
+                cache.insert(key, stored);
+            }
+            return usable;
+        }
+        failures = failures.max(stored.failures);
+    }
     let verdict = establish(host);
     remember_socket(host, &verdict);
     let failures = match &verdict {
@@ -183,25 +221,91 @@ pub fn usable(host: &HostDef) -> Usable {
             failures
         }
     };
+    let verdict = Verdict {
+        usable: verdict,
+        at: SystemTime::now(),
+        failures,
+    };
+    store(&key, Some(&verdict));
+    let usable = verdict.usable.clone();
     if let Ok(mut cache) = verdicts().lock() {
-        cache.insert(
-            key,
-            Verdict {
-                usable: verdict.clone(),
-                at: Instant::now(),
-                failures,
-            },
-        );
+        cache.insert(key, verdict);
     }
-    verdict
+    usable
 }
 
 /// Whether a cached verdict still stands: a `Yes` for the process lifetime, a
-/// `No` until its backoff runs out.
+/// `No` until its backoff runs out. A clock that went backwards past `at` ends
+/// the backoff — one early probe, rather than a host left alone indefinitely.
 fn is_fresh(verdict: &Verdict) -> bool {
     match &verdict.usable {
         Usable::Yes(_) => true,
-        Usable::No(_) => verdict.at.elapsed() < retry_after(verdict.failures),
+        Usable::No(_) => verdict
+            .at
+            .elapsed()
+            .is_ok_and(|age| age < retry_after(verdict.failures)),
+    }
+}
+
+fn verdicts_path() -> Option<std::path::PathBuf> {
+    crate::paths::log_directory().map(|dir| dir.join(VERDICTS_FILE))
+}
+
+/// Every stored `No`. Unreadable reads as empty: the cost is one probe.
+fn read_stored() -> HashMap<String, StoredNo> {
+    verdicts_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// The `No` another process stored for `key`, as a verdict.
+fn stored_no(key: &str) -> Option<Verdict> {
+    let stored = read_stored().remove(key)?;
+    Some(Verdict {
+        usable: Usable::No(stored.reason),
+        at: SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(stored.at))?,
+        failures: stored.failures,
+    })
+}
+
+/// Record `verdict` for `key` in [`VERDICTS_FILE`] — a `No` with its count, or,
+/// for a `Yes` or `None`, the removal of whatever was there. Two processes
+/// writing at once can lose one update, which costs one extra probe.
+fn store(key: &str, verdict: Option<&Verdict>) {
+    let Some(path) = verdicts_path() else {
+        return;
+    };
+    let mut stored = read_stored();
+    let changed = match verdict {
+        Some(Verdict {
+            usable: Usable::No(reason),
+            at,
+            failures,
+        }) => {
+            let at = at
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            stored.insert(
+                key.to_string(),
+                StoredNo {
+                    reason: reason.clone(),
+                    at,
+                    failures: *failures,
+                },
+            );
+            true
+        }
+        _ => stored.remove(key).is_some(),
+    };
+    if !changed {
+        return;
+    }
+    let written = std::fs::create_dir_all(path.parent().unwrap_or(&path))
+        .and_then(|()| serde_json::to_string_pretty(&stored).map_err(std::io::Error::other))
+        .and_then(|text| crate::paths::write_atomically(&path, &text));
+    if let Err(e) = written {
+        tracing::warn!("could not record host verdicts in {}: {e}", path.display());
     }
 }
 
@@ -228,13 +332,15 @@ pub fn delegated(host: &HostDef) -> Option<CliInfo> {
     }
 }
 
-/// Drop the cached verdict for `host`, so the next question asks the host
-/// again — what `session sync` does, since a user running it by hand has
-/// usually just fixed something.
+/// Drop the cached verdict for `host`, here and in `host-verdicts.json`, so the
+/// next question asks the host again — what `session sync --host` does, since
+/// a user running it by hand has usually just fixed something.
 pub fn forget(host: &HostDef) {
+    let key = host.backend_name();
     if let Ok(mut cache) = verdicts().lock() {
-        cache.remove(&host.backend_name());
+        cache.remove(&key);
     }
+    store(&key, None);
 }
 
 /// The reason text a session created without delegation carries.
@@ -400,12 +506,19 @@ fn establish(host: &HostDef) -> Usable {
         // replaced it, and the backoff made it quieter rather than better.
         // Provisioning *is* the repair for this state, so fall through to it
         // exactly as a host with no CLI at all does.
-        Err(e) if e.broken_cli => {
+        Err(e) if e.fault == ProbeFault::Broken => {
             tracing::info!(
                 "host '{}' has a broken thurbox-cli ({e}); provisioning a replacement",
                 host.name
             );
             None
+        }
+        // Replacing a binary the host will not start puts down a file with
+        // even less reputation, which is refused again (#1576). Backed off
+        // like a host that is down, and said loudly: nothing here can fix it.
+        Err(e) if e.fault == ProbeFault::Refused => {
+            tracing::warn!("host '{}': {e}", host.name);
+            return Usable::No(e.message);
         }
         // A host that did not answer is the other state, and the only one
         // waiting helps. It keeps its backoff untouched.
@@ -531,48 +644,94 @@ pub(crate) fn probe_script_windows() -> String {
 /// in `$LASTEXITCODE` as its NTSTATUS (an access violation is `0xC0000005`),
 /// which [`describe_status`] reads back as a crash rather than an exit code.
 ///
+/// Launch is proven, not assumed: `$LASTEXITCODE` is cleared first, and only a
+/// process that ran sets it again. One the host refused to start — Defender
+/// ASR, AppLocker, WDAC, an antivirus — throws instead, leaves it unset, and is
+/// reported as `@launch-error <win32 code> <message>` (#1576). Reading the
+/// unset status as `@status ` with nothing after it is what used to make that
+/// refusal look like a CLI that ran and printed nothing.
+///
 /// The native command's stderr is left to flow to PowerShell's own, as it
 /// always did — `run_script_classified` reads that separately and ignores it
 /// on success, and `2>$null` on a native command is the redirection
 /// PowerShell handles least predictably across its versions.
 fn probe_run_windows(cli: &str) -> String {
     format!(
-        "$v = & {cli} version --json; Write-Output \"@status $LASTEXITCODE\"; \
-         if ($v) {{ Write-Output $v }}"
+        "$global:LASTEXITCODE = $null; $e = ''; \
+         try {{ $v = & {cli} version --json }} catch {{ $x = $_.Exception; \
+         while ($x.InnerException) {{ $x = $x.InnerException }}; \
+         $e = \"$([int]$x.NativeErrorCode) $($x.Message -replace '\\s+', ' ')\" }}; \
+         if ($null -eq $global:LASTEXITCODE) {{ Write-Output \"@launch-error $e\" }} \
+         else {{ Write-Output \"@status $global:LASTEXITCODE\"; if ($v) {{ Write-Output $v }} }}"
     )
 }
 
-/// Why a probe produced no usable CLI — and, the part that decides what
-/// happens next, whether the host answered at all.
+/// The Win32 errors a launch fails with when the file is not a runnable image
+/// — `ERROR_BAD_FORMAT`, `ERROR_BAD_EXE_FORMAT`, `ERROR_EXE_MACHINE_TYPE_MISMATCH`
+/// — which a truncated or wrong-architecture binary gets and a fresh copy
+/// fixes. Every other refusal is the host's policy, not the file.
+const BAD_IMAGE_ERRORS: [u32; 3] = [11, 193, 216];
+
+/// What a failed probe says about the host — and so what `establish` does
+/// next.
 ///
-/// The two are not degrees of the same failure. A host that is down is helped
-/// by waiting, and [`usable`] backs it off. A host that answered with a
-/// `thurbox-cli` that does not run is helped by nothing but replacing that
-/// binary, and waiting is how it stays broken: the cached `No` skips the
-/// mirror, and the mirror is the only caller that reaches [`provision`].
+/// Not degrees of one failure. A host that is down is helped by waiting, and
+/// [`usable`] backs it off. A host that answered with a `thurbox-cli` that does
+/// not run is helped by nothing but replacing that binary, and waiting is how
+/// it stays broken: the cached `No` skips the mirror, and the mirror is the
+/// only caller that reaches [`provision`]. A host that refused to *start* the
+/// binary is helped by neither: a fresh copy is refused too, and has even less
+/// reputation with the policy that refused it (#1576).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeFault {
+    /// No shell, no output, a line that is not the protocol. Nothing here
+    /// says a CLI was even found, so nothing justifies re-provisioning.
+    Unanswered,
+    /// A `thurbox-cli` was found on the host and it does not work.
+    Broken,
+    /// A `thurbox-cli` was found and the host would not start it — no process
+    /// ran, so no status and no output came back.
+    Refused,
+}
+
+/// Why a probe produced no usable CLI, and which [`ProbeFault`] that is.
 #[derive(Debug, Clone)]
 pub struct ProbeFailure {
     pub message: String,
-    /// The host ran the probe and the `thurbox-cli` it found there is broken.
-    pub broken_cli: bool,
+    pub fault: ProbeFault,
 }
 
 impl ProbeFailure {
-    /// The probe itself did not come back in a shape this side can read — no
-    /// shell, no output, a line that is not the protocol. Nothing here says a
-    /// CLI was even found, so nothing here justifies re-provisioning.
     fn unreadable(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            broken_cli: false,
+            fault: ProbeFault::Unanswered,
         }
     }
 
-    /// A `thurbox-cli` was found on the host and it does not work.
     fn broken(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            broken_cli: true,
+            fault: ProbeFault::Broken,
+        }
+    }
+
+    /// The text names the refusal and where it comes from, because the
+    /// operator's fix is on the host's endpoint policy and nowhere here.
+    fn refused(path: &str, detail: &str) -> Self {
+        let detail = if detail.is_empty() {
+            "no process started and no exit status came back".to_string()
+        } else {
+            detail.to_string()
+        };
+        Self {
+            message: format!(
+                "thurbox-cli at {path} could not be started ({detail}); the host refused to \
+                 launch it, as an endpoint policy (Defender ASR, AppLocker, WDAC, antivirus) \
+                 does, so it is not re-provisioned — allow it there, or set \
+                 share_sessions = false for this host"
+            ),
+            fault: ProbeFault::Refused,
         }
     }
 }
@@ -678,13 +837,27 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
     };
     let path = path.trim();
     let mut rest: Vec<&str> = lines.collect();
+    if let Some(error) = rest.first().and_then(|l| l.strip_prefix("@launch-error")) {
+        let (code, message) = error.trim().split_once(' ').unwrap_or((error.trim(), ""));
+        let detail = message.trim();
+        return Err(match code.parse::<u32>() {
+            Ok(code) if BAD_IMAGE_ERRORS.contains(&code) => ProbeFailure::broken(format!(
+                "thurbox-cli at {path} is not a runnable image ({detail}, Win32 error {code})"
+            )),
+            _ => ProbeFailure::refused(path, detail),
+        });
+    }
     // Written by every script above, and those ship with this parser, so its
     // absence is a malformed answer rather than an older host. Read as a
-    // clean exit: the lines after it still decide.
-    let status = rest
-        .first()
-        .and_then(|line| line.strip_prefix("@status "))
-        .and_then(|code| code.trim().parse::<i64>().ok());
+    // clean exit: the lines after it still decide. Lines are trimmed, so a
+    // status with no value is the bare word.
+    let status = match rest.first().and_then(|l| l.strip_prefix("@status")) {
+        // No status at all is a process that never ran — what a refused launch
+        // printed before `@launch-error` existed.
+        Some(code) if code.trim().is_empty() => return Err(ProbeFailure::refused(path, "")),
+        Some(code) => code.trim().parse::<i64>().ok(),
+        None => None,
+    };
     if status.is_some() {
         rest.remove(0);
     }
@@ -1255,10 +1428,10 @@ fn verify_provisioned(host: &HostDef, dest: &str) -> Result<CliInfo, String> {
         Ok(None) => Err(format!(
             "the provisioned thurbox-cli at {dest} is not there"
         )),
-        // A broken-CLI message already names the binary it is about. Anything
-        // else is the host failing to answer at all, and says nothing about
+        // A broken or refused CLI's message already names the binary it is
+        // about. Anything else is the host failing to answer at all, and says nothing about
         // `dest`, so it is not worth reading as though it did.
-        Err(e) if e.broken_cli => Err(format!("the provisioned {e}")),
+        Err(e) if e.fault != ProbeFault::Unanswered => Err(format!("the provisioned {e}")),
         Err(e) => Err(format!(
             "could not ask the provisioned thurbox-cli at {dest} for its version: {e}"
         )),
@@ -1761,7 +1934,7 @@ mod tests {
         // re-provisioning; both are the host failing to answer the protocol.
         for stdout in ["", "bash: no such thing\n"] {
             let e = parse_probe(stdout).unwrap_err();
-            assert!(!e.broken_cli, "{}", e.message);
+            assert_eq!(e.fault, ProbeFault::Unanswered, "{}", e.message);
         }
         // An old CLI prints only its version.
         let old = parse_probe("@cli thurbox-cli\n@status 0\n{\"version\":\"1.1.0\"}")
@@ -1782,7 +1955,7 @@ mod tests {
             "thurbox-cli at /x/thurbox-cli died on signal 11 (SIGSEGV) \
              instead of reporting a version"
         );
-        assert!(died.broken_cli);
+        assert_eq!(died.fault, ProbeFault::Broken);
         // Windows has no 128+n convention: an unhandled exception arrives as
         // the NTSTATUS itself (0xC0000005 is an access violation), in whichever
         // of its two spellings the shell printed it. Read as an exit code, the
@@ -1794,7 +1967,7 @@ mod tests {
                 crashed.message.contains("crashed (0xC0000005)"),
                 "{crashed}"
             );
-            assert!(crashed.broken_cli);
+            assert_eq!(crashed.fault, ProbeFault::Broken);
         }
         let silent = parse_probe("@cli /x/thurbox-cli\n@status 0\n").unwrap_err();
         assert!(
@@ -1809,6 +1982,67 @@ mod tests {
         // And "there is none" stays its own answer, which provisioning
         // already handled.
         assert_eq!(parse_probe("@none\n").unwrap(), None);
+    }
+
+    /// A launch the host refused — ASR, AppLocker, WDAC — started no process,
+    /// so it has no status and printed nothing. That is neither a host that
+    /// did not answer nor a broken binary, and re-provisioning it only put a
+    /// file with less reputation in front of the same policy (#1576).
+    #[test]
+    fn a_refused_launch_is_neither_broken_nor_silent() {
+        // `$LASTEXITCODE` unset in a fresh PowerShell, as the old probe
+        // printed it; trimmed, the line is the bare word.
+        let blank = parse_probe("@cli C:/x/thurbox-cli.exe\n@status \n").unwrap_err();
+        assert_eq!(blank.fault, ProbeFault::Refused, "{blank}");
+        assert!(
+            blank
+                .message
+                .contains("C:/x/thurbox-cli.exe could not be started")
+                && blank.message.contains("endpoint policy"),
+            "{blank}"
+        );
+        let asr = parse_probe(
+            "@cli C:/x/thurbox-cli.exe\r\n@launch-error 225 Operation did not complete \
+             successfully because the file contains a virus\r\n",
+        )
+        .unwrap_err();
+        assert_eq!(asr.fault, ProbeFault::Refused, "{asr}");
+        assert!(asr.message.contains("contains a virus"), "{asr}");
+        let unknown = parse_probe("@cli C:/x/thurbox-cli.exe\n@launch-error \n").unwrap_err();
+        assert_eq!(unknown.fault, ProbeFault::Refused, "{unknown}");
+        // A file that is not a runnable image is the binary's fault, and a
+        // fresh copy is the repair.
+        let truncated = parse_probe(
+            "@cli C:/x/thurbox-cli.exe\n@launch-error 193 is not a valid Win32 application\n",
+        )
+        .unwrap_err();
+        assert_eq!(truncated.fault, ProbeFault::Broken, "{truncated}");
+    }
+
+    /// The Windows probe proves launch, run for real by this machine's own
+    /// PowerShell: a `thurbox-cli.exe` that is not a runnable image never
+    /// starts, so it must come back as `@launch-error` with its Win32 code —
+    /// not as the blank `@status` the old probe printed — and that code is
+    /// the one refusal a fresh copy repairs.
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_probe_reports_a_launch_that_never_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("thurbox-cli.exe");
+        std::fs::write(&cli, b"MZ not an image").unwrap();
+        let path = cli.to_string_lossy().into_owned();
+        let script = format!(
+            "Write-Output \"@cli {path}\"; {run}",
+            run = probe_run_windows(&crate::shell::powershell_quote(&path))
+        );
+        let out = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("@launch-error "), "{stdout}");
+        let e = parse_probe(&stdout).unwrap_err();
+        assert_eq!(e.fault, ProbeFault::Broken, "{e}");
     }
 
     #[test]
@@ -2272,6 +2506,72 @@ mod tests {
         );
     }
 
+    /// A host that refused to start its CLI is not re-provisioned, and its
+    /// backoff outlives the process that recorded it: the heartbeat's
+    /// `automation tick` is a new process every time, and with the verdict
+    /// in memory only it re-probed — and re-provisioned — on every tick
+    /// (#1576). The in-memory cache is emptied here as a new process starts.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_launch_is_not_reprovisioned_and_stays_backed_off() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = FakeGuard;
+        let probes = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&probes);
+        fake::install_script_runner(Box::new(move |_, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok("@cli C:/x/thurbox-cli.exe\r\n@status \r\n".to_string())
+        }));
+        fake::install_installer(Box::new(|_| {
+            Err("a host that refused to launch its CLI must never get this far".to_string())
+        }));
+        let host = probe_host("asr-blocked");
+        forget(&host);
+
+        let first = usable(&host);
+        assert!(
+            matches!(&first, Usable::No(reason) if reason.contains("could not be started")),
+            "{first:?}"
+        );
+        verdicts().lock().unwrap().clear();
+        let second = usable(&host);
+
+        assert_eq!(second, first);
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            1,
+            "a fresh process asked a backed-off host again"
+        );
+        forget(&host);
+        assert!(
+            !read_stored().contains_key(&host.backend_name()),
+            "a hand-run sync must ask the host afresh"
+        );
+    }
+
+    /// `host-verdicts.json` is a file anybody can edit or damage: a time no
+    /// clock can hold must read as no verdict, never as a panic.
+    #[test]
+    fn a_stored_time_past_the_clock_is_ignored() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(temp.path());
+        let path = verdicts_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"ssh:far-future\":{{\"reason\":\"x\",\"at\":{},\"failures\":1}}}}",
+                u64::MAX
+            ),
+        )
+        .unwrap();
+
+        assert!(stored_no("ssh:far-future").is_none());
+    }
+
     /// And the message an operator reads has to name the cause. "printed no
     /// JSON version" sends them to look at versions and protocols; the truth
     /// was a signal death from a half-written file.
@@ -2293,7 +2593,7 @@ mod tests {
             err.message
         );
         assert!(
-            err.broken_cli,
+            err.fault == ProbeFault::Broken,
             "the host answered; it is its CLI that is broken, and only that \
              state is repaired by provisioning rather than by waiting"
         );

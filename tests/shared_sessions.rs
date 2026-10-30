@@ -2893,3 +2893,137 @@ fn a_remote_purge_cannot_touch_a_different_routes_deleted_row_with_the_same_id()
         Some("value")
     );
 }
+
+// A Windows host whose `thurbox-cli.exe` the endpoint refuses to start is backed
+// off, never re-provisioned, and stays backed off across processes (#1576).
+//
+// Defender's ASR rules, AppLocker and WDAC refuse the *launch*: no process
+// starts, so the probe gets its `@cli` line and then nothing the binary said.
+// Reading that as a broken CLI re-provisioned the host on every pass, and the
+// fresh file — with even less reputation — was refused again. The headless
+// heartbeat runs `automation tick` as a new process each time, so a backoff
+// kept only in memory restarted every tick.
+//
+// The host is a stand-in `ssh` that logs each call and answers every script
+// the way a refused launch does. Two separate `automation tick` processes run
+// against it: the first may ask once and must not start provisioning, the
+// second must not ask at all.
+
+#[cfg(unix)]
+const REFUSING_HOST_TOML: &str = "[[hosts]]\nname = 'winbox'\ndestination = 'me@winbox.invalid'\n\
+                          platform = 'windows'\nmultiplexer = 'psmux'\n";
+
+/// What `probe_script_windows` printed on a refused launch before the fix:
+/// the candidate was found, `& path` never started a process, and
+/// `$LASTEXITCODE` was still unset in the fresh PowerShell.
+#[cfg(unix)]
+const REFUSED_BLANK_STATUS: &str =
+    "@cli C:\\Users\\me\\AppData\\Local\\thurbox\\bin\\thurbox-cli.exe\r\n@status \r\n";
+
+/// The same refusal as the fixed probe reports it: the Win32 error the launch
+/// failed with, and PowerShell's message for it.
+#[cfg(unix)]
+const REFUSED_LAUNCH_ERROR: &str =
+    "@cli C:\\Users\\me\\AppData\\Local\\thurbox\\bin\\thurbox-cli.exe\r\n\
+     @launch-error 225 Operation did not complete successfully because the file contains a \
+     virus or potentially unwanted software\r\n";
+
+#[cfg(unix)]
+#[test]
+fn a_blank_status_is_a_refused_launch_backed_off_across_ticks() {
+    refused_host_is_left_alone_across_ticks(REFUSED_BLANK_STATUS);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_launch_error_is_backed_off_across_ticks() {
+    refused_host_is_left_alone_across_ticks(REFUSED_LAUNCH_ERROR);
+}
+
+#[cfg(unix)]
+fn refused_host_is_left_alone_across_ticks(answer: &str) {
+    let root = tempfile::TempDir::new().expect("tempdir");
+    let root = root.path();
+    for sub in ["home", "config", "data", "bin"] {
+        std::fs::create_dir_all(root.join(sub)).expect("mkdir");
+    }
+    std::fs::write(root.join("config/hosts.toml"), REFUSING_HOST_TOML).expect("hosts.toml");
+    std::fs::write(root.join("answer"), answer).expect("answer");
+    let ssh = root.join("bin/ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncat '{answer}'\n",
+            log = root.join("ssh.log").display(),
+            answer = root.join("answer").display()
+        ),
+    )
+    .expect("ssh stand-in");
+    std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+        .expect("chmod");
+
+    let first = tick_once(root);
+    assert_eq!(
+        ssh_calls(root),
+        1,
+        "the first tick may probe once, and must not go on to provision a host \
+         that refused to start the CLI it already has: {first}"
+    );
+    assert!(
+        first.contains("could not be started") && first.contains("endpoint policy"),
+        "the report must name the refused launch and point at the endpoint \
+         policy, not call the CLI broken: {first}"
+    );
+
+    let second = tick_once(root);
+    assert_eq!(
+        ssh_calls(root),
+        1,
+        "a second `automation tick` — a new process — asked the backed-off host \
+         again: {second}"
+    );
+    assert!(
+        second.contains("could not be started"),
+        "a backed-off host is still reported with its reason: {second}"
+    );
+}
+
+/// One `automation tick`, as its own process, returning what it reported.
+#[cfg(unix)]
+fn tick_once(root: &std::path::Path) -> String {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![root.join("bin")];
+    dirs.extend(std::env::split_paths(&path));
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["automation", "tick", "--json"])
+        .env("PATH", std::env::join_paths(dirs).expect("PATH"))
+        .env("HOME", root.join("home"))
+        .env("XDG_DATA_HOME", root.join("home/xdg-data"))
+        .env("XDG_CONFIG_HOME", root.join("home/xdg-config"))
+        .env("THURBOX_CONFIG_DIR", root.join("config"))
+        .env("THURBOX_DATA_DIR", root.join("data"))
+        .env_remove("THURBOX_SOCKET")
+        .env_remove("THURBOX_SOCKET_FOR")
+        .env_remove("THURBOX_SESSION")
+        .env_remove("THURBOX_SESSION_ID")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run thurbox-cli");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "tick failed: {stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stdout
+}
+
+#[cfg(unix)]
+fn ssh_calls(root: &std::path::Path) -> usize {
+    std::fs::read_to_string(root.join("ssh.log"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}

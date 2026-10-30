@@ -953,7 +953,9 @@ has the rationale; the shape:
   next pass, while one that can never be provisioned stops costing an
   archive download and a connection every minute. The first usable
   answer resets it, and so does `session sync`, since running it by
-  hand usually means the host was just fixed.
+  hand usually means the host was just fixed. The backoff is kept in
+  `host-verdicts.json` under the data dir, so the interface and each
+  headless `automation tick` share it rather than each starting over.
 - **When the CLI on the host is broken.** A host that answers with a
   `thurbox-cli` that does not run is a different state from a host
   that is unreachable, and only the unreachable one is helped by
@@ -965,6 +967,13 @@ has the rationale; the shape:
   that broke it. Backing off was a deadlock: the failed probe marked
   the host unusable, an unusable host's mirror pass is skipped, and
   that mirror is the only caller that reaches provisioning.
+- **When the host will not start its CLI.** An endpoint policy —
+  Defender ASR, AppLocker, WDAC — can refuse to launch a new, unsigned
+  `thurbox-cli.exe`. No process starts, so the probe gets no exit
+  status, and that is reported as a refused launch rather than a broken
+  binary: the host is backed off and **not** re-provisioned, because a
+  fresh copy would be refused too. The reason names the policy, and
+  the repair is on the host (see `docs/CONFIG.md`).
 - **Status.** Hooks on a shared host call the host's own `thurbox-cli
   session signal`, which writes the host's database (mirrored at 10 s)
   **and** the pane option a remote observer's control-mode subscription

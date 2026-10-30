@@ -34,6 +34,7 @@ development checkout never touches your real setup.
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
 | `~/.local/share/thurbox/automation-tick.json` | JSON | `automation tick` | each tick | the last tick's time, outcome, error, fire counts and the automations it could not fire, which `thurbox-cli runtime status` reports — the heartbeat keeper throws the tick's own output away |
+| `~/.local/share/thurbox/host-verdicts.json` | JSON | thurbox | on each host-CLI question past the in-memory cache | why each shared host is not usable right now, when that was found and how many times in a row — the probe's backoff, so the interface and every heartbeat tick share one instead of each starting over (#1576). Not user-set; an entry goes the first time its host is usable, and `session sync --host <name>` drops it. A file rather than a `metadata` row because nothing needs it live and a write there would rebuild the session snapshot |
 | `~/.local/share/thurbox/automation-tick.log` | text | `automation tick` | each failed tick | one timestamped line per tick that failed (the database would not open, the due scan failed, a panic), and per automation a tick could not fire (its lock or claim could not be written). Capped at 64 KB, its older half dropped past that |
 
 `agents.toml` and `settings.toml` reload **live**: the TUI checks them about
@@ -489,6 +490,20 @@ configured hosts, error shown.
 | `share_sessions` | no | `true` | the host's own database is the record of its sessions: mirrored here, operated through the host's `thurbox-cli` (provisioned under `~/.local/share/thurbox/bin/` — `thurbox-dev/bin/` for a dev build — there when missing); `false` = drive the host from here as before |
 | `path_prepend` | no | `[]` | directories put first on the `PATH` of the multiplexer commands, the delegated `thurbox-cli` and the agent's pane on a POSIX host (not git or an image drop) — absolute or `~/`-rooted (`~` = the host's `$HOME`); for what the host's login shell cannot report |
 | `otel_endpoint` | no | — | the OTLP endpoint, as the host reaches it, that a session on this host exports to while [`[telemetry]`](#telemetry--opentelemetry-for-sessions) configures agents; unset = resource attributes only. On a shared host the agent's pane is launched by the host's own CLI from the host's `[telemetry]`; this endpoint still applies to `session exec` and `agent launch-args` run from here |
+
+**A Windows host whose endpoint policy will not start `thurbox-cli.exe`.**
+Defender's attack surface reduction rules (notably *Use advanced protection
+against ransomware*), AppLocker and WDAC can refuse to start a binary that is
+new and unsigned, which a just-provisioned `thurbox-cli.exe` is. The probe
+tells that refusal apart from a broken binary: no process started, so it has
+no exit status. Such a host is **not** re-provisioned, since a fresh copy is
+refused the same way, and is backed off like an unreachable one, across
+processes. Its sessions show `Sharing: off (… could not be started …)` and
+`thurbox-cli doctor` names the policy. The repair is on the host: allow the
+binary in the policy that refused it (for an ASR rule, a per-file exclusion for
+`%LOCALAPPDATA%\thurbox\bin\thurbox-cli.exe` after checking its hash
+against the release), or set `share_sessions = false` for that host. Then
+run `thurbox-cli session sync --host <name>` to ask it again at once.
 
 **The agent's `PATH` on a host.** ssh and `wsl.exe` hand a command a
 non-login environment — `wsl.exe -e` skips the user's shell entirely, so

@@ -358,6 +358,14 @@ session), never on the loop, ADR-P12).
   that answered with a **broken** CLI re-provisions instead of backing off:
   the cached `No` skips the mirror pass, and the mirror is the only caller
   that reaches provisioning, so the bad binary used to disable its own repair.
+  A CLI the host **refused to start** (Defender ASR, AppLocker, WDAC) is the
+  third `ProbeFault`, `Refused`: the Windows probe clears `$LASTEXITCODE` and
+  catches the call, printing `@launch-error <win32 code> <message>` when no
+  process ran, and a blank `@status` reads the same. It is backed off and never
+  re-provisioned — a fresh copy is refused again (#1576) — unless the code says
+  the file is not a runnable image (`BAD_IMAGE_ERRORS`). Every `No` and its
+  failure count persist in `<data dir>/host-verdicts.json`, so each
+  `automation tick` process shares the interface's backoff; `forget` clears it.
   But a thurbox running on the host **advertises its own CLI** there first
   (`host_cli::advertise_running_cli`, a symlink refreshed at TUI boot and on
   every CLI call), which is how a host running a dev checkout is shareable

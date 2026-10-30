@@ -246,7 +246,15 @@ fn sharing_finding(
                  installed there — {sync} installs it, or says why it cannot"
             ),
         ),
-        Err(e) if e.broken_cli => (
+        Err(e) if e.fault == crate::session_ops::host_cli::ProbeFault::Refused => (
+            Level::Warn,
+            format!(
+                "{name} would not start its thurbox-cli ({}), so its sessions are not shared \
+                 until its endpoint policy allows it — replacing the binary would not help",
+                first_line(&e.message)
+            ),
+        ),
+        Err(e) if e.fault == crate::session_ops::host_cli::ProbeFault::Broken => (
             Level::Warn,
             format!(
                 "{name}'s thurbox-cli does not work ({}), so its sessions are not shared until it \
@@ -417,7 +425,7 @@ mod tests {
     fn a_host_with_a_broken_cli_is_not_reported_as_silent() {
         let failure = crate::session_ops::host_cli::ProbeFailure {
             message: "thurbox-cli died on signal 11 (SIGSEGV)".into(),
-            broken_cli: true,
+            fault: crate::session_ops::host_cli::ProbeFault::Broken,
         };
         let finding = sharing_finding("box", "ssh", &Err(failure));
         assert_eq!(finding.level, Level::Warn);
@@ -436,11 +444,29 @@ mod tests {
         );
     }
 
+    /// A host whose endpoint refused to start the CLI is sent to that policy,
+    /// not to `session sync`, which would only re-provision a binary the
+    /// policy refuses again (#1576).
+    #[test]
+    fn a_host_that_refused_to_start_its_cli_points_at_the_policy() {
+        let failure = crate::session_ops::host_cli::ProbeFailure {
+            message: "thurbox-cli at C:/x/thurbox-cli.exe could not be started".into(),
+            fault: crate::session_ops::host_cli::ProbeFault::Refused,
+        };
+        let finding = sharing_finding("box", "ssh", &Err(failure));
+        assert_eq!(finding.level, Level::Warn);
+        assert!(
+            finding.detail.contains("endpoint policy") && !finding.detail.contains("session sync"),
+            "{}",
+            finding.detail
+        );
+    }
+
     #[test]
     fn a_host_that_did_not_answer_says_why_on_one_line() {
         let failure = crate::session_ops::host_cli::ProbeFailure {
             message: "ssh: connect to host box port 22: Connection refused\nsecond line".into(),
-            broken_cli: false,
+            fault: crate::session_ops::host_cli::ProbeFault::Unanswered,
         };
         let finding = sharing_finding("box", "ssh", &Err(failure));
         assert_eq!(finding.level, Level::Warn);
