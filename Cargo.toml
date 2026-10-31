@@ -68,7 +68,7 @@ toml = "1.0"
 toml_edit = "0.25"
 
 # Storage
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 
 # OpenTelemetry export of thurbox's own session metrics and session event logs
 # (ADR-37, `telemetry`), and of the interface's own diagnostic logs through the
