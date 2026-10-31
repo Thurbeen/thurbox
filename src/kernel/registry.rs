@@ -375,9 +375,14 @@ pub struct Registry {
     /// What would not load: a config file that failed to parse, a rejected
     /// override. Conflicts are *not* kept here — see [`Registry::warnings`].
     load_warnings: Vec<String>,
-    /// Whether this registry's overrides came from `ui.json`, and so whether
-    /// writing them back is an edit or an erasure.
+    /// Whether this registry's overrides came from `ui.json` and
+    /// `plugin-state.json`, and so whether writing them back is an edit or an
+    /// erasure.
     origin: Origin,
+    /// Set when load could not write `plugin-state.json`: until a restart
+    /// migrates them, `ui.json` still carries trust and the disabled set, so
+    /// its writes keep them rather than erase choices the store never received.
+    unmigrated: bool,
     /// Moves whenever anything published from this registry does — the
     /// declarations, a rebinding, a setting, the disabled set, a trust grant.
     ///
@@ -390,9 +395,9 @@ pub struct Registry {
 /// Where a registry's overrides came from.
 ///
 /// A registry built with [`Default`] holds no overrides at all, so persisting
-/// one does not *change* `ui.json` — it empties it: every disabled plugin, every
-/// trust grant and every setting a user chose is gone, replaced by the five
-/// empty tables the fresh registry has. That is not hypothetical. thurbox
+/// one does not *change* `ui.json` and `plugin-state.json` — it empties them:
+/// every disabled plugin, every trust grant and every setting a user chose is
+/// gone, replaced by the empty tables the fresh registry has. That is not hypothetical. thurbox
 /// injects `THURBOX_CONFIG_DIR` into the sessions it spawns, so a `cargo test`
 /// run from inside thurbox resolves the *real* config directory, and the tests
 /// that build a registry to assert routing wiped the running interface's
@@ -405,27 +410,63 @@ enum Origin {
     /// Never read: it has nothing of the user's to write back.
     #[default]
     Detached,
-    /// Read from `ui.json` — a write back is an edit of what was read.
+    /// Read from `ui.json` and `plugin-state.json` — a write back is an edit of
+    /// what was read.
     File,
 }
 
 impl Registry {
-    /// Load persisted overrides, migrating v1's bindings on first run.
+    /// Load persisted overrides, migrating v1's bindings and a legacy
+    /// `ui.json`'s trust and disabled tables on first run.
     ///
-    /// The one constructor that reads `ui.json`, and so the one whose registry
-    /// may write it back — see the private `Origin`, which carries that
-    /// distinction so no caller has to remember it.
+    /// The one constructor that reads `ui.json` and `plugin-state.json`, and so
+    /// the one whose registry may write them back — see the private `Origin`,
+    /// which carries that distinction so no caller has to remember it.
     pub fn load() -> Self {
         let mut registry = Self {
             origin: Origin::File,
             ..Self::default()
         };
-        let (bindings, settings, pills, trusted, disabled, mut warnings) = read_overrides();
+        let (bindings, settings, pills, legacy_trusted, legacy_disabled, mut warnings) =
+            read_overrides();
         registry.binding_overrides = bindings;
-        registry.trusted = trusted;
-        registry.disabled = disabled;
         registry.setting_overrides = settings;
         registry.pill_overrides = pills;
+
+        // Trust and the disabled set used to be two more tables of `ui.json`.
+        // They move to their own store the first time a release that has one
+        // reads them: the store is written before `ui.json` loses them, so an
+        // interruption between the two leaves both copies, and the store wins.
+        let legacy = !legacy_trusted.is_empty() || !legacy_disabled.is_empty();
+        let migrate = match read_decisions() {
+            Decisions::Absent => {
+                registry.trusted = legacy_trusted;
+                registry.disabled = legacy_disabled;
+                legacy
+            }
+            Decisions::Read(trusted, disabled, notes) => {
+                registry.trusted = trusted;
+                registry.disabled = disabled;
+                warnings.extend(notes);
+                legacy
+            }
+            // Migrating over a store that did not parse would replace it with
+            // the legacy tables and leave nothing to repair.
+            // `config validate` names the file instead.
+            Decisions::Unreadable(note) => {
+                warnings.push(note);
+                false
+            }
+        };
+        if migrate {
+            let moved = registry.persist_decisions();
+            registry.unmigrated = moved.is_err();
+            if let Err(e) = moved.and_then(|()| registry.persist_overrides()) {
+                warnings.push(format!(
+                    "moving trust and the disabled set out of ui.json: {e}"
+                ));
+            }
+        }
 
         if registry.binding_overrides.is_empty() {
             let (migrated, notes) = migrate_v1_bindings();
@@ -680,7 +721,7 @@ impl Registry {
         } else {
             self.disabled.remove(path);
         }
-        self.persist()?;
+        self.persist_decisions()?;
         Ok(off)
     }
 
@@ -713,7 +754,7 @@ impl Registry {
             path.to_string(),
             Granted::Contents(super::bundled::digest(contents)),
         );
-        self.persist()
+        self.persist_decisions()
     }
 
     /// Trust an **installed** file at the source and version it came from.
@@ -734,7 +775,7 @@ impl Registry {
                 digest: super::bundled::digest(contents),
             },
         );
-        self.persist()
+        self.persist_decisions()
     }
 
     /// Withdraw trust. Idempotent: revoking what was never trusted is not an
@@ -742,7 +783,7 @@ impl Registry {
     pub fn revoke(&mut self, path: &str) -> Result<(), String> {
         self.mark_changed();
         self.trusted.remove(path);
-        self.persist()
+        self.persist_decisions()
     }
 
     pub fn bindings(&self) -> &[Binding] {
@@ -1032,7 +1073,7 @@ impl Registry {
         self.apply_overrides();
         self.conflicts.clear();
         self.detect_conflicts();
-        self.persist()
+        self.persist_overrides()
     }
 
     /// Set a setting's value, or clear the override when `value` is `None`.
@@ -1079,10 +1120,10 @@ impl Registry {
             setting.value = setting.default.clone();
         }
         self.apply_overrides();
-        self.persist()
+        self.persist_overrides()
     }
 
-    fn persist(&self) -> Result<(), String> {
+    fn persist_overrides(&self) -> Result<(), String> {
         // Nothing was read, so there is nothing to write back: this registry's
         // empty tables are not the user's decisions (see `Origin`). Reported as
         // success because the caller asked for a state, and in memory it has it.
@@ -1110,17 +1151,38 @@ impl Registry {
             "pills".to_string(),
             serde_json::to_value(&self.pill_overrides).map_err(|e| e.to_string())?,
         );
-        json.insert(
-            "trusted".to_string(),
-            serde_json::to_value(&self.trusted).map_err(|e| e.to_string())?,
-        );
-        json.insert(
-            "disabled".to_string(),
-            serde_json::to_value(&self.disabled).map_err(|e| e.to_string())?,
-        );
+        if self.unmigrated {
+            json.insert("trusted".to_string(), serde_json::json!(self.trusted));
+            json.insert("disabled".to_string(), serde_json::json!(self.disabled));
+        }
 
         let text = serde_json::to_string_pretty(&serde_json::Value::Object(json))
             .map_err(|e| e.to_string())?;
+        crate::paths::write_atomically(&path, &text)
+            .map_err(|e| format!("write {}: {e}", path.display()))
+    }
+
+    /// Write trust and the disabled set to their own store.
+    ///
+    /// Apart from `ui.json` so the one file a capability is granted from is
+    /// written only when a grant or the disabled set changes — rebinding a chord
+    /// never rewrites it — and so a dotfiles-managed `ui.json` can be replaced
+    /// without taking the grants with it (#1467).
+    fn persist_decisions(&self) -> Result<(), String> {
+        if self.origin == Origin::Detached {
+            return Ok(());
+        }
+        let Some(path) = decisions_path() else {
+            return Err("could not resolve the config directory".to_string());
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("create config dir: {e}"))?;
+        }
+        let json = serde_json::json!({
+            "trusted": self.trusted,
+            "disabled": self.disabled,
+        });
+        let text = serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?;
         crate::paths::write_atomically(&path, &text)
             .map_err(|e| format!("write {}: {e}", path.display()))
     }
@@ -1252,6 +1314,59 @@ pub fn validate_overrides() -> Vec<String> {
     read_overrides().5
 }
 
+/// Problems with `plugin-state.json`, the store trust and the disabled set
+/// live in. Empty when it is absent: a fresh install has decided nothing yet.
+pub fn validate_decisions() -> Vec<String> {
+    match read_decisions() {
+        Decisions::Absent => Vec::new(),
+        Decisions::Read(_, _, notes) => notes,
+        Decisions::Unreadable(note) => vec![note],
+    }
+}
+
+/// Where trust grants and the disabled set live: `<config>/plugin-state.json`.
+///
+/// Public so `thurbox-cli config` can report it, like [`overrides_file`].
+pub fn decisions_file() -> Option<PathBuf> {
+    decisions_path()
+}
+
+fn decisions_path() -> Option<PathBuf> {
+    crate::paths::config_file()
+        .and_then(|config| config.parent().map(|dir| dir.join("plugin-state.json")))
+}
+
+/// What `plugin-state.json` held when it was read.
+enum Decisions {
+    /// No store yet: an install that predates it, or one that decided nothing.
+    Absent,
+    /// The grants, the disabled set, and what was dropped while reading them.
+    Read(BTreeMap<String, Granted>, BTreeSet<String>, Vec<String>),
+    /// Present but not readable, or not JSON.
+    Unreadable(String),
+}
+
+fn read_decisions() -> Decisions {
+    let Some(path) = decisions_path() else {
+        return Decisions::Absent;
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Decisions::Absent,
+        // Not absent: legacy tables standing in for it could restore a revoked
+        // grant.
+        Err(e) => return Decisions::Unreadable(format!("{}: {e}", path.display())),
+    };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(parsed) => {
+            let mut notes = Vec::new();
+            let trusted = read_trusted(&parsed, &mut notes);
+            Decisions::Read(trusted, read_disabled(&parsed), notes)
+        }
+        Err(e) => Decisions::Unreadable(format!("{}: {e}", path.display())),
+    }
+}
+
 /// Where the user's interface decisions live: `<config>/ui.json`.
 ///
 /// Public so `thurbox-cli config` can report it. It sits beside `settings.toml`
@@ -1266,7 +1381,8 @@ fn overrides_path() -> Option<PathBuf> {
 }
 
 /// What `ui.json` carries: rebound chords, changed settings, reordered pills,
-/// trusted plugins, and anything worth warning about.
+/// the trust and disabled tables a release before `plugin-state.json` kept
+/// there, and anything worth warning about.
 type Overrides = (
     BTreeMap<String, String>,
     BTreeMap<String, Value>,
@@ -1396,7 +1512,8 @@ fn read_pills(
     pills
 }
 
-/// The `trusted` half of `ui.json`: path → the grant made to it.
+/// The `trusted` table of `plugin-state.json` (or of a legacy `ui.json`): path
+/// → the grant made to it.
 fn read_trusted(
     parsed: &serde_json::Value,
     warnings: &mut Vec<String>,
@@ -1421,7 +1538,8 @@ fn read_trusted(
     trusted
 }
 
-/// The `disabled` half of `ui.json`: the files present but not loaded.
+/// The `disabled` table of `plugin-state.json` (or of a legacy `ui.json`): the
+/// files present but not loaded.
 fn read_disabled(parsed: &serde_json::Value) -> BTreeSet<String> {
     let Some(list) = parsed.get("disabled").and_then(|v| v.as_array()) else {
         return BTreeSet::new();
@@ -1432,7 +1550,7 @@ fn read_disabled(parsed: &serde_json::Value) -> BTreeSet<String> {
         .collect()
 }
 
-/// One `trusted` entry, in either of the two forms `ui.json` carries.
+/// One `trusted` entry, in either of the two forms the store carries.
 ///
 /// A bare string is what every release before managed panes wrote, and is still
 /// what an unmanaged file gets. Read first so an upgrade cannot forget a grant the
@@ -2007,8 +2125,11 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(dir.path());
         let path = overrides_path().expect("a config directory");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-        let decisions = r#"{"bindings":{},"disabled":["/ui/plugins/40_review.lua"],"settings":{"sessions.group_by_repo":false},"trusted":{}}"#;
+        let decisions = r#"{"bindings":{},"settings":{"sessions.group_by_repo":false}}"#;
         std::fs::write(&path, decisions).expect("write");
+        let store = decisions_path().expect("a store path");
+        let grants = r#"{"disabled":["/ui/plugins/40_review.lua"],"trusted":{}}"#;
+        std::fs::write(&store, grants).expect("write store");
 
         let mut registry = Registry::default();
         registry.declare(
@@ -2035,6 +2156,11 @@ mod tests {
             decisions,
             "the user's decisions were overwritten by a registry that never read them"
         );
+        assert_eq!(
+            std::fs::read_to_string(&store).expect("read store"),
+            grants,
+            "the user's grants were overwritten by a registry that never read them"
+        );
     }
 
     /// The other half: a registry that *did* read the file still writes it, or
@@ -2053,8 +2179,8 @@ mod tests {
             .set_disabled("/ui/plugins/65_search.lua", true)
             .expect("disable");
 
-        let path = overrides_path().expect("a config directory");
-        let written = std::fs::read_to_string(&path).expect("ui.json was not written");
+        let path = decisions_path().expect("a config directory");
+        let written = std::fs::read_to_string(&path).expect("the store was not written");
         assert!(written.contains("65_search.lua"), "{written}");
 
         // And it comes back on the next launch, which is the whole point.
@@ -2184,8 +2310,8 @@ mod tests {
 
         // The write that used to take the evidence with it.
         registry
-            .trust("/ui/plugins/mine.lua", "return {}")
-            .expect("trust");
+            .rebind("fleetqueue.toggle", Some("f4"))
+            .expect("rebind");
         let written = std::fs::read_to_string(home.path().join("ui.json")).expect("read back");
         assert!(written.contains("\"75\""), "{written}");
         assert!(written.contains("12.5"), "{written}");

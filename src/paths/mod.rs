@@ -437,7 +437,8 @@ pub enum PathKind {
     /// The *file* is legacy and read only for migration, but the path is not:
     /// every config location is derived from it by
     /// `with_file_name`/`parent().join(..)` — `agents.toml`, `hosts.toml`,
-    /// `settings.toml`, `themes.toml`, `extensions/`, `ui/`, `ui.json`. So this is
+    /// `settings.toml`, `themes.toml`, `extensions/`, `ui/`, `ui.json`,
+    /// `plugin-state.json`. So this is
     /// the single place the `thurbox` / `thurbox-dev` split enters for all of
     /// them, and calling it "migration only" invited the conclusion that the
     /// interface directory was derived from something vestigial.

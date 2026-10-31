@@ -28,7 +28,8 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/ui/` | Lua | you | **live** (watched, 120 ms debounce; `F10` forces) | **the interface itself** — one file per pane, plus `layout.lua`, `lib/`, `AGENTS.md`/`README.md` for whoever edits it, and a directory per plugin installed from a repository (its own working copy, `.git` included) |
 | `~/.config/thurbox/ui/plugins.toml` | TOML | you (or `thurbox-cli plugin`) | on each `plugin` command | **what the interface is composed of**: a source, a destination file and an optional pin, per installed pane |
 | `~/.config/thurbox/ui/plugins.lock` | TOML | `thurbox-cli plugin` | on each `plugin` command | what each entry resolved to, and the digest of every file delivered. Machine-written — commit it beside the spec and the same interface reproduces elsewhere |
-| `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, plugins turned off, files trusted, plugin settings, and the action band's order (`"pills": { "<action>": <priority> }`, replacing what the declaring plugin chose — an entry naming an action nothing declares is ignored, not drawn). Written back only by a registry that **read** it (`registry::Origin`), so a process holding no decisions cannot empty it |
+| `~/.config/thurbox/ui.json` | JSON | `F1` / Interface tab (or you) | startup | your decisions *about* the interface: rebound chords, plugin settings, and the action band's order (`"pills": { "<action>": <priority> }`, replacing what the declaring plugin chose — an entry naming an action nothing declares is ignored, not drawn). Written back only by a registry that **read** it (`registry::Origin`), so a process holding no decisions cannot empty it |
+| `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli plugin`) | startup | **what a plugin may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. A release before it kept both tables in `ui.json`; the first start that finds them there writes this file, then removes them from `ui.json` — in that order, so an interruption leaves both copies and this file wins. If this file cannot be written, `ui.json` keeps both tables until a later start moves them; one that exists but cannot be read or parsed is never replaced by them, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
 | `~/.config/thurbox/extensions/<name>.toml` | TOML | `thurbox-cli extension install` | startup + tick | extension manifests (self-healed resources) |
 | `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
 | `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
@@ -65,7 +66,7 @@ the panel — set it only by hand-editing `settings.toml`. Hand-editing
 the file (or the panel in another instance) is picked up the same way,
 via the live mtime poll.
 
-TUI saves of `settings.toml` and `ui.json` stage a complete file beside the
+TUI saves of `settings.toml`, `ui.json` and `plugin-state.json` stage a complete file beside the
 destination and replace it with one native same-directory rename, so a reader
 never observes a truncated intermediate file and a failed staged write leaves
 the previous decisions intact. On Unix this is `rename`; native Windows uses
@@ -1051,7 +1052,7 @@ the next launch. Data is never touched, so re-enabling a flag is lossless.
 
 **A pane is not switched off here.** Panes are files, so turning one off
 is `space` on its row in the Interface tab (`Ctrl+,` then `]`), recorded
-in `ui.json`. That does strictly more than a flag could: it works for a
+in `plugin-state.json`. That does strictly more than a flag could: it works for a
 plugin *you* wrote, which no compiled-in flag could know about.
 
 Five keys are **accepted and ignored**: `tasks`, `file_viewer`,
