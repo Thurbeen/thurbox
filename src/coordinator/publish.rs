@@ -69,7 +69,7 @@ impl App {
             &self.sources,
             &visible,
             &self.visible_slots,
-            self.host.error.as_deref(),
+            self.host.error.as_deref().or(self.floor_cause.as_deref()),
             &|path| {
                 trust
                     .get(path)

@@ -2773,7 +2773,7 @@ fn the_interface_tab_explains_each_file_and_drives_every_action() {
     tui.send(F6);
     tui.wait_for("Settings");
     tui.send(b"]");
-    tui.wait_for("PANES");
+    tui.wait_for("YOURS");
     tui.wait_for("not placed");
 
     // Not on screen: the reason, and the line that fixes it.
@@ -2797,6 +2797,8 @@ fn the_interface_tab_explains_each_file_and_drives_every_action() {
     select_file(&mut tui, "92_tbrun.lua");
     tui.wait_for("not granted");
     tui.send(b"t");
+    tui.wait_for("t again to grant");
+    tui.send(b"t");
     tui.wait_for("t revokes it");
 
     // r on an edited file asks, says what is lost, and then restores.
@@ -2811,9 +2813,298 @@ fn the_interface_tab_explains_each_file_and_drives_every_action() {
     assert!(!restored.contains("tb-edit"), "the shipped copy is back");
 
     tui.send(ESC);
-    tui.wait_gone("PANES");
+    tui.wait_gone("YOURS");
     let status = tui.quit();
     assert!(status.success(), "exit must be clean: {status:?}");
+}
+
+/// A copy of the shipped interface with a mix of plugins in it: the `top`
+/// example installed as a package, a pane of your own the layout does not
+/// place, one that asks to run programs, and an edited shipped pane.
+fn mixed_interface(profile: &Profile) -> tempfile::TempDir {
+    let interface = interface_with("plugins/10_sessions.lua", {
+        let shipped = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("ui/plugins/10_sessions.lua"),
+        )
+        .expect("shipped pane");
+        &format!("{shipped}\n-- tb-edit\n")
+    });
+    std::fs::write(
+        interface.path().join("plugins/91_tbnotes.lua"),
+        r#"return { name = "tbnotes", slot = "tbnotes",
+  render = function() return { type = "text", text = "tb-notes" } end }"#,
+    )
+    .expect("an unplaced pane");
+    std::fs::write(
+        interface.path().join("plugins/92_tbrun.lua"),
+        r#"return { name = "tbrun", slot = "tbrun", capabilities = { "run" },
+  render = function() return { type = "text", text = "tb-run" } end }"#,
+    )
+    .expect("a pane asking to run programs");
+    let top = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/panes/top");
+    let mut install = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut install);
+    let output = install
+        .env("THURBOX_UI_DIR", interface.path())
+        .args(["plugin", "install", top.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run thurbox-cli");
+    assert!(
+        output.status.success(),
+        "plugin install failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    interface
+}
+
+/// Settings, then the Interface tab, then wait for its plugin groups.
+fn open_interface_tab(tui: &mut Tui) {
+    tui.send(F6);
+    tui.wait_for("Settings");
+    tui.send(b"]");
+    tui.wait_for("SHIPPED");
+}
+
+/// The frame line that lists `path`.
+fn line_of(tui: &Tui, path: &str) -> String {
+    tui.frame()
+        .lines()
+        .find(|line| line.contains(path))
+        .unwrap_or_else(|| tui.give_up(&format!("a line listing {path}")))
+        .to_string()
+}
+
+#[test]
+fn the_interface_tab_groups_plugins_by_where_they_came_from() {
+    // A real interface is forty-odd files, and twenty of them are modules and
+    // docs nobody acts on. The plugins are what an operator manages, so they are
+    // grouped by where they came from — yours, each installed package, shipped —
+    // with what each asks for on its row, and the support files stay out of the
+    // way until asked for or until one of them needs attention.
+    let profile = Profile::new();
+    let interface = mixed_interface(&profile);
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    open_interface_tab(&mut tui);
+    tui.wait_for("YOURS");
+    tui.wait_for("PACKAGE · top");
+
+    let frame = tui.frame();
+    let at = |needle: &str| {
+        frame
+            .lines()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| tui.give_up(&format!("{needle} listed")))
+    };
+    assert!(at("YOURS") < at("91_tbnotes.lua"), "{frame}");
+    assert!(at("PACKAGE · top") < at("85_top.lua"), "{frame}");
+    assert!(at("85_top.lua") < at("SHIPPED"), "{frame}");
+    assert!(at("SHIPPED") < at("10_sessions.lua"), "{frame}");
+
+    let asks = line_of(&tui, "92_tbrun.lua");
+    assert!(asks.contains("run not granted"), "{asks}");
+    let edited = line_of(&tui, "10_sessions.lua");
+    assert!(edited.contains("edited"), "{edited}");
+    // The edited layout needs attention — r restores it — so it stays; the
+    // untouched modules do not.
+    assert!(!frame.contains("lib/chrome.lua"), "{frame}");
+
+    tui.send(b"a");
+    tui.wait_for("SUPPORT FILES");
+    tui.wait_for("AGENTS.md");
+    tui.send(b"a");
+    tui.wait_gone("AGENTS.md");
+
+    tui.send(ESC);
+    tui.wait_gone("SHIPPED");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_plugin_that_breaks_the_reload_is_named_and_the_others_are_not_blamed() {
+    // A reload is all-or-nothing, so one broken file leaves every other file of
+    // yours unloaded. Calling all of them `failed` hid the one to fix among
+    // several red rows; the summary counts the culprit, its row carries the
+    // error, and the rest read as held back by it.
+    //
+    // In the profile's own interface directory rather than `THURBOX_UI_DIR`:
+    // that is where a user's edits live, and the one place a failed load swaps
+    // in the bundled interface — whose host reports no error of its own, so the
+    // culprit has to be named from the user's error it replaced.
+    let profile = Profile::new();
+    let interface = profile.path("config/ui");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("ui"),
+        &interface,
+    );
+    std::fs::write(interface.join("plugins/93_tbbroken.lua"), "return {\n").expect("break");
+    std::fs::write(
+        interface.join("plugins/92_tbrun.lua"),
+        r#"return { name = "tbrun", slot = "tbrun", capabilities = { "run" },
+  render = function() return { type = "text", text = "tb-run" } end }"#,
+    )
+    .expect("a pane that is fine");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("using the bundled interface");
+    open_interface_tab(&mut tui);
+    tui.wait_for("1 failed");
+
+    let broken = line_of(&tui, "93_tbbroken.lua");
+    assert!(broken.contains("failed"), "{broken}");
+    assert!(
+        broken.contains('▸'),
+        "the culprit is selected first: {broken}"
+    );
+    let held = line_of(&tui, "92_tbrun.lua");
+    assert!(held.contains("not loaded"), "{held}");
+    assert!(!held.contains("failed"), "{held}");
+    // The load error itself, under the list.
+    tui.wait_for("unexpected symbol");
+
+    select_file(&mut tui, "92_tbrun.lua");
+    tui.wait_for("93_tbbroken.lua failed to load");
+
+    tui.send(ESC);
+    tui.wait_gone("SHIPPED");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_broken_layout_reads_failed_with_its_error() {
+    // `layout.lua` is not a pane, so the inventory calls it present whether it
+    // loaded or not. Read that way, the one file to fix said `in use`, the
+    // summary counted nothing, and — with the error panel kept off the open
+    // modal — its error was shown nowhere.
+    let profile = Profile::new();
+    let interface = profile.path("config/ui");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("ui"),
+        &interface,
+    );
+    std::fs::write(interface.join("layout.lua"), "return {\n").expect("break");
+    let mut tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_for("using the bundled interface");
+    open_interface_tab(&mut tui);
+    tui.wait_for("1 failed");
+
+    let layout = line_of(&tui, "layout.lua");
+    assert!(layout.contains("failed"), "{layout}");
+    assert!(!layout.contains("in use"), "{layout}");
+    select_file(&mut tui, "layout.lua");
+    tui.wait_for("unexpected symbol");
+
+    tui.send(ESC);
+    tui.wait_gone("SHIPPED");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn granting_a_capability_asks_first_and_revoking_does_not() {
+    // `t` is the one key in the tab that hands something away: `run` lets a
+    // pane start programs. It used to grant on a single press while `d`, which
+    // only costs a file, asked twice. Granting now spells out what is granted
+    // and waits for a second press; taking it back stays one press.
+    let profile = Profile::new();
+    let interface = mixed_interface(&profile);
+    let mut tui = Tui::spawn_with(&profile, 40, 120, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("No sessions yet");
+    open_interface_tab(&mut tui);
+    let ui_json = profile.path("config/ui.json");
+    let granted = || {
+        std::fs::read_to_string(&ui_json)
+            .unwrap_or_default()
+            .contains("92_tbrun.lua")
+    };
+
+    select_file(&mut tui, "92_tbrun.lua");
+    tui.wait_for("not granted; t grants it");
+    tui.send(b"t");
+    tui.wait_for("grant 92_tbrun.lua");
+    tui.wait_for("runs programs and reads their output");
+    tui.wait_for("t again to grant");
+    assert!(!granted(), "the first press only asks");
+
+    // Any other key withdraws the question.
+    tui.send(b"j");
+    tui.wait_gone("t again to grant");
+    select_file(&mut tui, "92_tbrun.lua");
+    // So does leaving the tab: `[`/`]` never reach the tab, and a question
+    // still armed on return would grant on the next `t` without asking.
+    tui.send(b"t");
+    tui.wait_for("t again to grant");
+    tui.send(b"]");
+    tui.wait_gone("SHIPPED");
+    tui.send(b"[");
+    tui.wait_for("SHIPPED");
+    tui.wait_gone("t again to grant");
+    tui.send(b"t");
+    tui.wait_for("t again to grant");
+    assert!(!granted(), "a press after coming back asks again");
+    tui.send(b"t");
+    tui.wait_for("granted; t revokes it");
+    assert!(granted(), "the second press grants");
+    let row = line_of(&tui, "92_tbrun.lua");
+    assert!(row.contains("run granted"), "{row}");
+
+    tui.send(b"t");
+    tui.wait_for("not granted; t grants it");
+    assert!(!granted(), "revoking takes one press");
+
+    tui.send(ESC);
+    tui.wait_gone("SHIPPED");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn the_interface_tab_keeps_each_rows_state_on_a_narrow_terminal() {
+    // At 60 columns the modal is the whole screen. The file name gives way
+    // first, then where it came from; the state and the grant never do, and
+    // the footer still offers its keys.
+    let profile = Profile::new();
+    let interface = mixed_interface(&profile);
+    std::fs::write(
+        interface
+            .path()
+            .join("plugins/94_a_pane_with_a_name_long_enough_to_need_cutting.lua"),
+        r#"return { name = "tblong", slot = "tblong", capabilities = { "run" },
+  render = function() return { type = "text", text = "tb-long" } end }"#,
+    )
+    .expect("a long-named pane");
+    let mut tui = Tui::spawn_with(&profile, 30, 60, |cmd| {
+        cmd.env("THURBOX_UI_DIR", interface.path());
+    });
+    tui.wait_for("thurbox");
+    open_interface_tab(&mut tui);
+
+    let long = line_of(&tui, "94_a_pane");
+    assert!(long.contains('…'), "the name is what gives way: {long}");
+    assert!(long.contains("not placed"), "{long}");
+    assert!(long.contains("run not granted"), "{long}");
+    let asks = line_of(&tui, "92_tbrun.lua");
+    assert!(asks.contains("run not granted"), "{asks}");
+    let footer = line_of(&tui, "j/k");
+    assert!(footer.contains("Close"), "{footer}");
+    // The hints stop short of the pill rather than run into it.
+    assert!(!footer.contains("ta Close"), "{footer}");
+
+    // The grant question fits too: the file name gives way, never what is
+    // granted or the key that grants it.
+    select_file(&mut tui, "94_a_pane");
+    tui.send(b"t");
+    tui.wait_for("grant 94_");
+    let question = line_of(&tui, "grant 94_");
+    assert!(question.contains("run?"), "{question}");
+    assert!(question.contains("t again"), "{question}");
+    assert!(question.contains("Close"), "{question}");
+    tui.send(b"j");
+
+    tui.send(ESC);
+    tui.wait_gone("SHIPPED");
+    assert!(tui.quit().success());
 }
 
 /// A pane written for this test, dropped in beside the bundled ones.

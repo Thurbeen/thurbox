@@ -518,10 +518,12 @@ impl SettingsModal {
             match key.code {
                 KeyCode::Char(']') => {
                     self.tab = self.tab.step(true);
+                    self.interface.disarm();
                     return Outcome::Stay(None);
                 }
                 KeyCode::Char('[') => {
                     self.tab = self.tab.step(false);
+                    self.interface.disarm();
                     return Outcome::Stay(None);
                 }
                 _ => {}
@@ -857,7 +859,10 @@ impl SettingsModal {
         // a line per file and per group header up to the cap, the selected
         // file's details, the footer, and the border. A fixed height left blank
         // rows under a short list.
-        let listed = InterfaceTab::listed(files.rows).clamp(1, INTERFACE_MAX_ROWS);
+        let listed = self
+            .interface
+            .listed(files.rows)
+            .clamp(1, INTERFACE_MAX_ROWS);
         let height = u16::try_from(listed + 8)
             .unwrap_or(u16::MAX)
             .min(area.height.saturating_sub(2))
@@ -883,15 +888,19 @@ impl SettingsModal {
             inner.width,
             1,
         );
-        frame.render_widget(
-            Paragraph::new(self.interface.footer(files.rows, chrome)),
-            footer_row,
-        );
         let pills = [Pill {
             label: "Close",
             primary: true,
             key: Replay::ESC,
         }];
+        // The pill's label and its padding, plus a space before it.
+        let room = footer_row
+            .width
+            .saturating_sub(pills[0].label.len() as u16 + 3);
+        frame.render_widget(
+            Paragraph::new(self.interface.footer(files.rows, usize::from(room), chrome)),
+            footer_row,
+        );
         let placed = chrome::button_bar(frame, footer_row, &pills, chrome);
         self.hits.buttons.extend(placed);
     }

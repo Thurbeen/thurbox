@@ -110,12 +110,12 @@ fn the_inventory_view_draws_what_the_kernel_computed() {
         "every file is listed: {screen}"
     );
     assert!(
-        // `lib/chrome.lua` rather than `theme.lua`: the listing windows to the
-        // rect and the lib set has grown past it, so the anchor is the module
-        // that sorts first and stays on the visible page.
-        screen.contains("lib/chrome.lua"),
-        "modules too, since they are restorable: {screen}"
+        // Untouched modules are support files: folded away until `a`, since
+        // nothing about them needs the operator.
+        !screen.contains("lib/chrome.lua"),
+        "untouched modules wait for `a`: {screen}"
     );
+    assert!(screen.contains("all files"), "and `a` is offered: {screen}");
     assert!(
         screen.contains("thurbox/ui"),
         "the directory in use is named: {screen}"

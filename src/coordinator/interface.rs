@@ -47,6 +47,7 @@ impl App {
         }
         Counters::bump(&self.perf.reloads);
         if self.host.error.is_none() {
+            self.floor_cause = None;
             if self.floor.take().is_some() {
                 self.toast(format!("{} loaded again", self.ui_dir.display()));
             }
@@ -93,10 +94,11 @@ impl App {
         }
         // Recorded before the swap: the reason is the *user's* error, and the
         // host that carries it is about to be replaced by one with none.
+        self.floor_cause = self.host.error.clone();
         self.floor = Some(format!(
             "using the bundled interface — {} failed to load: {}",
             self.ui_dir.display(),
-            self.host.error.clone().unwrap_or_default()
+            self.floor_cause.clone().unwrap_or_default()
         ));
         self.host = embedded;
         true
