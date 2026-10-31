@@ -239,6 +239,11 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: [check-release, create-tag]
     runs-on: ${{ matrix.os }}
+    # `actions: read` lets the SignPath step hand SignPath this run's artifact
+    # and job details, which is how it verifies the files came from this build.
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -285,6 +290,72 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
+      # Authenticode signing through SignPath Foundation (docs/CODE-SIGNING.md).
+      # It sits between the build and the archive so the zip, the checksums
+      # taken over it, and every installer, self-update and host provisioning
+      # that reads it carry the signed bytes (#1576). Without the SignPath
+      # settings this leg packages unsigned executables, exactly as before;
+      # tests/release_signing.rs pins the order and the gate.
+      - name: Read the SignPath configuration
+        id: signpath
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: bash scripts/ci/signpath-config.sh
+
+      # SignPath reads what it signs from this run's artifacts rather than
+      # taking an upload from the runner, which is its proof of origin. The two
+      # files land at the zip's root, as packaging/signpath/artifact-configuration.xml
+      # expects. `checksums` and `publish` take only `.zip`/`.tar.gz` files
+      # from the run's artifacts, so these bare `.exe`s never reach a release.
+      - name: Upload the unsigned Windows executables
+        id: unsigned
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/thurbox.exe
+            target/${{ matrix.target }}/release/thurbox-cli.exe
+          if-no-files-found: error
+          # Re-running this leg after a request timed out uploads it again.
+          overwrite: true
+
+      # Every request waits for a person to approve it in SignPath (a Foundation
+      # rule), so the wait is an hour rather than the action's ten minutes. A
+      # request that is not approved in time fails this leg before anything is
+      # published; re-running the failed jobs submits a fresh one.
+      - name: Sign the Windows executables with SignPath
+        if: steps.signpath.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed
+
+      - name: Verify and stage the signed executables
+        if: steps.signpath.outputs.enabled == 'true'
+        shell: pwsh
+        run: |
+          $rel = "target/${{ matrix.target }}/release"
+          foreach ($exe in "thurbox.exe", "thurbox-cli.exe") {
+            $sig = Get-AuthenticodeSignature -LiteralPath "signed/$exe"
+            if ($sig.Status -ne 'Valid') {
+              throw "signed/$exe is not validly signed: $($sig.Status) $($sig.StatusMessage)"
+            }
+            Write-Host "$exe signed by $($sig.SignerCertificate.Subject)"
+            Copy-Item -Force -LiteralPath "signed/$exe" -Destination "$rel/$exe"
+          }
+
       # Unix archive: .tar.gz with the bare binaries + LICENSE.
       - name: Create archive (Unix)
         if: runner.os != 'Windows'
@@ -302,8 +373,9 @@ jobs:
           tar czf "../../../$ARCHIVE_NAME" thurbox thurbox-cli LICENSE
           cd ../../..
 
-      # Windows archive: .zip with the .exe binaries + LICENSE. install.ps1
-      # extracts this with the built-in Expand-Archive (no tar dependency).
+      # Windows archive: .zip with the .exe binaries (signed, when SignPath is
+      # configured) + LICENSE. install.ps1 extracts this with the built-in
+      # Expand-Archive (no tar dependency).
       - name: Create archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -413,6 +485,57 @@ jobs:
           make_latest: ${{ needs.check-release.outputs.newest }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Check the published Windows release as everything that installs it reads
+  # it: install.ps1, the self-update (`self_update::fetch_archive`) and the
+  # provisioning of a Windows peer host all download this zip from the GitHub
+  # Release and hold it to the checksums file. With SignPath configured, both
+  # executables inside must also carry a valid Authenticode signature, so a zip
+  # that lost the signed files between the build and the release turns red here
+  # rather than on a user's Defender (#1576).
+  verify-windows-release:
+    name: Verify the Windows release
+    needs: [check-release, publish]
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.check-release.outputs.version }}
+
+      # The same gate as the build's, so this expects a signature exactly when
+      # the build was asked to sign.
+      - name: Read the SignPath configuration
+        id: signpath
+        shell: bash
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: bash scripts/ci/signpath-config.sh
+
+      - name: Verify the published Windows archive
+        shell: pwsh
+        env:
+          SIGNED: ${{ steps.signpath.outputs.enabled }}
+        run: |
+          # install.ps1 itself: it downloads the zip from the release and
+          # refuses it unless it matches the published checksums.
+          $dir = Join-Path $env:RUNNER_TEMP 'thurbox'
+          ./scripts/install.ps1 -Version "${{ needs.check-release.outputs.version }}" `
+            -InstallDir $dir -Repo "${{ github.repository }}"
+          foreach ($exe in "thurbox.exe", "thurbox-cli.exe") {
+            $sig = Get-AuthenticodeSignature -LiteralPath (Join-Path $dir $exe)
+            if ($env:SIGNED -eq 'true') {
+              if ($sig.Status -ne 'Valid') {
+                throw "$exe from the published zip is not validly signed: $($sig.Status) $($sig.StatusMessage)"
+              }
+              Write-Host "$exe signed by $($sig.SignerCertificate.Subject)"
+            } else {
+              Write-Host "$exe is $($sig.Status); SignPath is not configured, so no signature is expected"
+            }
+          }
 
   # Publish the Arch Linux AUR packages.
   # Runs after `publish` so the GitHub Release assets (needed by thurbox-bin)

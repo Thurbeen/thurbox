@@ -47,6 +47,14 @@ jobs:
               - 'src/**'
               - 'tests/**'
               - 'build.rs'
+              # Read by tests/release_signing.rs, which pins the Windows signing
+              # steps, their gate and the public policy; nothing else would
+              # re-run it, and a policy edit that broke it would first fail an
+              # unrelated Rust PR.
+              - '.github/workflows/cd.yml'
+              - 'scripts/ci/signpath-config.sh'
+              - 'README.md'
+              - 'docs/CODE-SIGNING.md'
               # The Lua trees are Rust inputs, not merely neighbours: they are
               # `include_str!`d into the binary, and the suite asserts on their
               # CONTENT — `tests/new_session.rs` checks a string that exists

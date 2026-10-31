@@ -143,6 +143,20 @@ tag. The binary still reports `0.0.0-unstable-…`, dated to the tagged commit. 
 more effect: `official_ref()` fetches official extensions from `main` rather
 than from a tag, which is the same thing a source build does.
 
+## Windows executables are signed before they are packed
+
+Once SignPath is configured, the Windows leg of `build` sends `thurbox.exe` and
+`thurbox-cli.exe` to SignPath and packs what comes back. Everything downstream
+reads that zip: the checksums, `install.ps1`, self-update, Windows host
+provisioning, Chocolatey and winget. So signing has to happen between
+`cargo build` and `Compress-Archive`. A signature added after packing never
+reaches a user. A checksum taken before signing no longer matches the zip, and
+every installer then refuses the download. A release that adds a Windows
+binary also adds it to `packaging/signpath/artifact-configuration.xml` and to
+the SignPath project. Otherwise that binary ships unsigned.
+[`CODE-SIGNING.md`](CODE-SIGNING.md) is the public policy and lists the
+settings that turn signing on.
+
 ## Checklist for a release that changes artifacts
 
 - [ ] `thurbox` and `thurbox-cli` are still in **both** archive steps of `cd.yml`
@@ -156,6 +170,9 @@ than from a tag, which is the same thing a source build does.
 - [ ] Installers handle its **absence**, so installing an older release still
       works (`scripts/install.bats` asserts this).
 - [ ] Adding to `BINARIES` was a deliberate decision, not a reflex.
+- [ ] A new Windows binary is in `packaging/signpath/artifact-configuration.xml`
+      and in the SignPath project's copy of it, and in the signing steps of
+      `cd.yml`.
 - [ ] Chocolatey is throttled to one publish per 30 days and winget attempts
       every release but skips while its previous PR is still open, so both
       channels can lag behind GitHub Releases. Do not treat a missing package
