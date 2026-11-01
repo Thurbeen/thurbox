@@ -50,7 +50,7 @@ ALL_TAPES="interface theme session-creation fork search"
 TAPES="${*:-$ALL_TAPES}"
 
 # thurbox TUI theme every clip starts in (persisted string in metadata.active_theme,
-# see src/session/theme_config.rs). The `theme` clip switches away from it to show
+# see src/session/theme_config/mod.rs). The `theme` clip switches away from it to show
 # the picker, so we re-apply this before EVERY tape to keep all videos on-brand.
 DEMO_THEME="${DEMO_THEME:-doom}"
 

@@ -578,7 +578,7 @@ fn a_failing_run_raises_nothing_by_default() {
     let tick = fail_once(&instance, &address, &id);
     assert_eq!(tick["fired"][0]["status"], "error", "{tick}");
     assert!(
-        tick["alerts"].as_array().map_or(true, Vec::is_empty),
+        tick["alerts"].as_array().is_none_or(Vec::is_empty),
         "{tick}"
     );
     assert!(bus.shown().is_empty(), "{:?}", bus.shown());

@@ -482,7 +482,11 @@ mod tests {
             let mut n = 0u64;
             let mut refused = 0u64;
             while !peer_stop.load(Ordering::Relaxed) {
-                let state = if n % 2 == 0 { "working" } else { "done" };
+                let state = if n.is_multiple_of(2) {
+                    "working"
+                } else {
+                    "done"
+                };
                 if db.set_hook_state(peer_id, state).is_err() {
                     refused += 1;
                 }

@@ -2150,11 +2150,7 @@ impl LuaHost {
         let took = start?.elapsed();
         if self.op_open.get() {
             let mut heaviest = self.op_heaviest.borrow_mut();
-            // `map_or(true, ..)` rather than `is_none_or`: MSRV 1.75.
-            if heaviest
-                .as_ref()
-                .map_or(true, |(_, longest)| took > *longest)
-            {
+            if heaviest.as_ref().is_none_or(|(_, longest)| took > *longest) {
                 *heaviest = Some((plugin.name.clone(), took));
             }
         }

@@ -465,8 +465,8 @@ fn list(
         .list_automations()
         .map_err(|e| format!("list_automations: {e}"))?
         .into_iter()
-        .filter(|a| key.map_or(true, |k| a.key.as_deref() == Some(k)))
-        .filter(|a| name.map_or(true, |n| a.name == n))
+        .filter(|a| key.is_none_or(|k| a.key.as_deref() == Some(k)))
+        .filter(|a| name.is_none_or(|n| a.name == n))
         .collect();
     let json = Value::Array(autos.iter().map(automation_to_json).collect());
     Ok(CommandOutput::new(json, render_automation_list(&autos))

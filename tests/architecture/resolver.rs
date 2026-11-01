@@ -1063,7 +1063,7 @@ fn skip_raw_string(bytes: &[u8], i: usize, out: &mut Vec<u8>) -> usize {
     }
     let hashes = j - (i + 1);
     let mut close = vec![b'"'];
-    close.extend(std::iter::repeat(b'#').take(hashes));
+    close.extend(std::iter::repeat_n(b'#', hashes));
     let mut at = j + 1;
     while at < bytes.len() && bytes[at..].len() >= close.len() {
         if bytes[at..at + close.len()] == close[..] {

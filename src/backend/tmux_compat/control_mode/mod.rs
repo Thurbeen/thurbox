@@ -414,8 +414,7 @@ impl PaneSender {
     /// and output that finds the channel full puts it behind.
     fn send_output(&self, chunk: PaneChunk) -> Sent {
         // Only this thread puts a reader behind, so one seen in step is.
-        // `map_or(true, ..)`: `is_none_or` is newer than this crate's MSRV.
-        let in_step = self.resync.as_ref().map_or(true, |r| !r.is_behind());
+        let in_step = self.resync.as_ref().is_none_or(|r| !r.is_behind());
         let chunk = if in_step {
             match self.tx.try_send(chunk) {
                 Ok(()) => return Sent::Kept,

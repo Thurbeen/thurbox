@@ -531,8 +531,7 @@ impl PluginTable {
     /// begin — a run in flight when the HUD opened, or across a window roll.
     pub fn note_run(&mut self, event: &RunEvent) {
         let opened = self.opened_at;
-        // `map_or(true, ..)` rather than `is_none_or`: MSRV 1.75.
-        let inside = |at: Instant| opened.map_or(true, |opened| at >= opened);
+        let inside = |at: Instant| opened.is_none_or(|opened| at >= opened);
         match event {
             RunEvent::Started { plugin, at } if inside(*at) => {
                 self.stats_mut(plugin).runs.started += 1;

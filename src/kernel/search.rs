@@ -240,7 +240,7 @@ fn regex_end(text: &str) -> Option<usize> {
             '\\' if !escaped => escaped = true,
             '/' if !escaped => {
                 let after = &body[at + 1..];
-                if at > 0 && after.chars().next().map_or(true, char::is_whitespace) {
+                if at > 0 && after.chars().next().is_none_or(char::is_whitespace) {
                     return Some(at + 1);
                 }
             }
@@ -272,8 +272,8 @@ fn find_str(haystack: &str, needle: &str) -> Option<(usize, usize, i32)> {
     let open = before
         .chars()
         .next_back()
-        .map_or(true, |c| !c.is_alphanumeric());
-    let close = after.chars().next().map_or(true, |c| !c.is_alphanumeric());
+        .is_none_or(|c| !c.is_alphanumeric());
+    let close = after.chars().next().is_none_or(|c| !c.is_alphanumeric());
     let bonus = match (open, close) {
         (true, true) => 30,
         (true, false) | (false, true) => 15,
@@ -324,7 +324,7 @@ fn tight_subsequence(haystack: &[char], needle: &[char]) -> Option<Vec<usize>> {
             }
         }
         let span = at - start;
-        if positions.len() == needle.len() && best.as_ref().map_or(true, |(b, _)| span < *b) {
+        if positions.len() == needle.len() && best.as_ref().is_none_or(|(b, _)| span < *b) {
             best = Some((span, positions));
         }
     }
@@ -1312,7 +1312,7 @@ impl SearchStore {
                 let printed = generation != self.generation;
                 let due = self
                     .dispatched
-                    .map_or(true, |at| at.elapsed() >= RESCAN_INTERVAL);
+                    .is_none_or(|at| at.elapsed() >= RESCAN_INTERVAL);
                 if !(printed && due) {
                     return false;
                 }

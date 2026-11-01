@@ -12,7 +12,10 @@
 //!   in any text file — a doc comment, a skill, a workflow, the website;
 //! - a `github.com/Thurbeen/thurbox/blob/main/<path>` link whose path does not
 //!   exist here;
-//! - a name in [`RETIRED`], anywhere.
+//! - a `src/<path>` in a Markdown file that does not exist, unless it is
+//!   another project's ([`FOREIGN_SOURCES`]);
+//! - a name in [`RETIRED`], anywhere;
+//! - a stated minimum Rust version other than `Cargo.toml`'s `rust-version`.
 //!
 //! Historical prose about code that went with v1 (`src/app`, `src/ui`) is not
 //! checked: it says where something used to be, which is the point of it.
@@ -37,6 +40,21 @@ const RETIRED: &[(&str, &str)] = &[
     ("LOCAL_TMUX_BACKEND_TYPE", "Route::local"),
     ("RemoteSignalTarget", "SessionBackend::hook_signal_command"),
 ];
+
+/// `src/` paths that Markdown cites from another project's tree, not this one.
+const FOREIGN_SOURCES: &[&str] = &[
+    // psmux's, where it picks the shell a window command runs through.
+    "src/pane.rs",
+];
+
+/// A source path in this repository, not the tail of a longer one
+/// (`vendor/crossterm/src/…`). It ends on a name character, so a sentence's
+/// full stop or a directory's trailing slash is not part of it.
+const SRC_PATH: &str = r"(?:^|[^\w.~/-])(src/[\w./-]*\w)";
+
+/// A minimum Rust version as prose states one: `MSRV: 1.95,`, `MSRV is 1.95.`,
+/// `Rust 1.95+`. A toolchain a measurement ran on (`Rust 1.99.1`) is not one.
+const MSRV_CLAIM: &str = r"(?:MSRV(?: is)?:? |Rust )(1\.\d+)[+,.](?:\D|$)";
 
 /// Tracked paths never read: fixtures that are deliberately old or broken,
 /// and `.claude/skills`, whose entries are links into `.agents/skills` (read
@@ -172,6 +190,38 @@ fn every_document_path_names_a_document() {
     );
 }
 
+/// Documents name source files to send a reader there, so a file that moved
+/// strands them. v1's `src/app` and `src/ui` are history, and history keeps
+/// its old paths.
+#[test]
+fn every_source_path_in_a_document_exists() {
+    let path = Regex::new(SRC_PATH).unwrap();
+    let mut missing = Vec::new();
+    for (rel, text) in texts().iter().filter(|(rel, _)| rel.ends_with(".md")) {
+        for m in path.captures_iter(text).map(|m| m.get(1).unwrap()) {
+            let target = m.as_str();
+            // By directory, so `src/ui_control.rs` is still checked.
+            let v1 = ["src/app", "src/ui"].iter().any(|dir| {
+                target == *dir
+                    || target
+                        .strip_prefix(dir)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            });
+            if v1 {
+                continue;
+            }
+            if !FOREIGN_SOURCES.contains(&target) && !root().join(target).exists() {
+                missing.push(format!("{rel}:{}: {target}", line_of(text, m.start())));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "source paths that do not exist:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 #[test]
 fn retired_names_stay_retired() {
     let mut cited = Vec::new();
@@ -192,6 +242,37 @@ fn retired_names_stay_retired() {
     );
 }
 
+/// The supported Rust is whatever the manifest declares. A copy anywhere else
+/// drifts the moment a dependency raises the floor, as `1.75` did for years
+/// after the lockfile needed 1.95.
+#[test]
+fn every_stated_rust_version_is_the_manifests() {
+    let manifest = std::fs::read_to_string(root().join("Cargo.toml")).expect("read Cargo.toml");
+    let declared = Regex::new(r#"(?m)^rust-version = "([\d.]+)""#)
+        .unwrap()
+        .captures(&manifest)
+        .expect("Cargo.toml declares rust-version")[1]
+        .to_string();
+    let stated = Regex::new(MSRV_CLAIM).unwrap();
+    let mut wrong = Vec::new();
+    for (rel, text) in texts() {
+        for m in stated.captures_iter(&text).map(|m| m.get(1).unwrap()) {
+            if m.as_str() != declared {
+                let at = line_of(&text, m.start());
+                wrong.push(format!(
+                    "{rel}:{at}: {} (Cargo.toml: {declared})",
+                    m.as_str()
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "minimum Rust versions that are not Cargo.toml's:\n  {}",
+        wrong.join("\n  ")
+    );
+}
+
 /// The checks above are only as good as their patterns, so each is shown a
 /// reference it must catch.
 #[test]
@@ -208,6 +289,27 @@ fn the_patterns_catch_what_they_are_for() {
     assert!(hits("~/.agents/skills/thurbox-ui/SKILL.md").is_empty());
     assert!(hits("website/docs/INDEX.md").is_empty());
     assert!(hits("a demo repo's docs/notes.md").is_empty());
+
+    let src = Regex::new(SRC_PATH).unwrap();
+    let sources =
+        |s: &str| -> Vec<String> { src.captures_iter(s).map(|m| m[1].to_string()).collect() };
+    assert_eq!(
+        sources("see `src/storage/schema.rs`."),
+        ["src/storage/schema.rs"]
+    );
+    assert_eq!(sources("in src/kernel/ itself"), ["src/kernel"]);
+    assert!(sources("vendor/crossterm/src/event.rs").is_empty());
+    assert!(sources("a crate's ~/src/lib.rs").is_empty());
+
+    let msrv = Regex::new(MSRV_CLAIM).unwrap();
+    let claims =
+        |s: &str| -> Vec<String> { msrv.captures_iter(s).map(|m| m[1].to_string()).collect() };
+    assert_eq!(claims("- MSRV: 1.75, Edition 2021"), ["1.75"]);
+    assert_eq!(claims("MSRV is Rust 1.75, Edition 2021"), ["1.75"]);
+    assert_eq!(claims("Requires Rust 1.75+."), ["1.75"]);
+    assert_eq!(claims("`map_or(true, ..)`: MSRV 1.75."), ["1.75"]);
+    assert_eq!(claims("this crate's MSRV is 1.75.\n"), ["1.75"]);
+    assert!(claims("Measured with Rust 1.99.1, cargo-nextest").is_empty());
 
     let link = Regex::new(MD_LINK).unwrap();
     let targets =

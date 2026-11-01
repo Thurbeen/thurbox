@@ -188,8 +188,7 @@ impl Database {
         if backends.is_empty() {
             return Ok((0, 0));
         }
-        let list = std::iter::repeat("?")
-            .take(backends.len())
+        let list = std::iter::repeat_n("?", backends.len())
             .collect::<Vec<_>>()
             .join(", ");
         let count = |sql: String| -> rusqlite::Result<usize> {

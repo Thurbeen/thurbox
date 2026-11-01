@@ -128,7 +128,7 @@ impl PasteBurst {
         // A character that arrived slowly ends the previous run before starting
         // its own; one that arrived fast continues the burst.
         let mut out = Vec::new();
-        if gap.map_or(true, |gap| gap >= MACHINE_GAP) {
+        if gap.is_none_or(|gap| gap >= MACHINE_GAP) {
             out = self.flush();
         }
         self.run.push(key);

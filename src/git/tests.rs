@@ -985,7 +985,9 @@ fn the_powershell_payload_is_utf16le_base64_so_no_shell_can_rewrite_it() {
         .decode(encoded)
         .expect("valid base64");
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
     assert_eq!(

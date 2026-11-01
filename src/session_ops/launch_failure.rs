@@ -48,14 +48,14 @@ fn sweep_where(
     // row has reported, and nothing below runs at all.
     let candidates: Vec<_> = rows
         .iter()
-        .filter(|row| only.map_or(true, |id| row.id == id))
+        .filter(|row| only.is_none_or(|id| row.id == id))
         .filter(|row| {
             !Route::is_remote_key(&row.backend_type)
                 && !row.backend_id.is_empty()
                 && !stopped.contains(&row.id)
                 && !lost.contains_key(&row.id)
                 && !failed.contains_key(&row.id)
-                && hooks.get(&row.id).map_or(true, |h| h.state.is_none())
+                && hooks.get(&row.id).is_none_or(|h| h.state.is_none())
         })
         .collect();
     // A session that never reports (an uncovered agent, a `--command`) stays

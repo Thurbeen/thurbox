@@ -78,9 +78,8 @@ pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<(
     ));
     std::fs::write(&staged, contents)
         .and_then(|()| replace_file(&staged, &path))
-        .map_err(|e| {
+        .inspect_err(|_| {
             let _ = std::fs::remove_file(&staged);
-            e
         })
 }
 

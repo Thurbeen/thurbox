@@ -1181,8 +1181,7 @@ pub fn canonical_chord(press: &KeyPress) -> String {
     if shifted && key != "tab" {
         // A shifted symbol is its own key ("!"), not "shift+1"; only letters
         // and named keys take the prefix.
-        //  is stable only from 1.82; this crate targets 1.75.
-        if press.ch.map_or(true, |c| c.is_ascii_alphabetic()) {
+        if press.ch.is_none_or(|c| c.is_ascii_alphabetic()) {
             parts.push("shift".to_string());
         } else if let Some(c) = press.ch {
             key = c.to_string();
