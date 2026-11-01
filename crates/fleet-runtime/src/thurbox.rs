@@ -41,9 +41,11 @@ use fleet_api::task::{
 use fleet_exec::{Outcome, Spec, run};
 use serde_json::Value;
 
-/// The longest brief sent as one argument: Windows caps a whole command line
-/// near 32 767 characters.
-pub const MAX_BRIEF: usize = 24_000;
+/// The longest text sent as one argument, in bytes. Thurbox types it as one
+/// tmux `send-keys` argument, and tmux refuses a command past its 16 KiB
+/// client message before it types anything. Windows caps a whole command
+/// line near 32 767 characters.
+pub const MAX_BRIEF: usize = 16_000;
 
 /// The most thurbox-cli calls one operation makes: a brief (meta get, meta
 /// set, send, meta set).
@@ -209,9 +211,18 @@ impl ThurboxRuntime {
             } => Answer::Ok(String::from_utf8_lossy(&stdout).into_owned()),
             Outcome::Exited {
                 code: Some(_),
+                stdout,
                 stderr,
                 ..
-            } => Answer::No(first_line(&stderr)),
+            } => {
+                // thurbox-cli prints a runtime error on stdout, not stderr.
+                let why = first_line(&stderr);
+                Answer::No(if why.is_empty() {
+                    first_line(&stdout)
+                } else {
+                    why
+                })
+            }
             other => Answer::Unknown(format!("thurbox-cli {what}: {}", other.failure())),
         }
     }
@@ -997,7 +1008,7 @@ impl Runtime for ThurboxRuntime {
         if text.len() > MAX_BRIEF {
             return Observation::Known(EffectOutcome::Failed {
                 why: format!(
-                    "the brief is {} bytes; thurbox-cli send takes at most {MAX_BRIEF}",
+                    "the text is {} bytes; thurbox-cli send takes at most {MAX_BRIEF}",
                     text.len()
                 ),
             });

@@ -778,6 +778,11 @@ fn render_message(a: &Above<'_>) -> String {
     head
 }
 
+/// The longest child summary or declaration text quoted into the parent's
+/// inbox, in bytes. A longer one is named with where to read it, so that one
+/// entry stays short enough to type into a session.
+pub const MAX_RELAYED_TEXT: usize = 4_000;
+
 /// A child's result generation as one entry in its parent's inbox.
 fn child_result(
     task_name: &str,
@@ -792,7 +797,12 @@ fn child_result(
         result.generation,
         word(result.outcome)
     );
-    if !result.summary.is_empty() {
+    if result.summary.len() > MAX_RELAYED_TEXT {
+        text.push_str(&format!(
+            "Summary not relayed: it is {} bytes. Read it with: fleet get task {name}\n",
+            result.summary.len()
+        ));
+    } else if !result.summary.is_empty() {
         text.push_str("Summary, quoted as data:\n");
         quote(&mut text, &result.summary);
     }
@@ -839,7 +849,12 @@ fn render_child_item(name: &str, uid: &str, item: &serde_json::Value) -> String 
         ),
     };
     let body = field("text");
-    if !body.is_empty() {
+    if body.len() > MAX_RELAYED_TEXT {
+        text.push_str(&format!(
+            "Text not relayed: it is {} bytes. Read it with: fleet get task {name}\n",
+            body.len()
+        ));
+    } else if !body.is_empty() {
         quote(&mut text, body);
     }
     let url = field("url");

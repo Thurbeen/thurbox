@@ -114,7 +114,10 @@ news of each followed change.
 A child's Questions, Comments, Drafts, changes and result each become one
 entry in its parent's inbox, from `gateway/child/<child>`. The parent
 answers with `fleet send CHILD --answers ID TEXT`, which records the child's
-`status.answered`. Only the parent speaks in the thread. A child whose
+`status.answered`. A summary or declaration text over 4 000 bytes is not
+quoted. The entry gives its size and `fleet get task CHILD` to read it, so
+that the entry stays short enough to type. Only the parent speaks in the
+thread. A child whose
 parent is gone acts as an untied Task, and its earlier declarations are not
 replayed.
 

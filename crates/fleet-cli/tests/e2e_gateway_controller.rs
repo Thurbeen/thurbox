@@ -632,6 +632,42 @@ fn a_child_relays_its_declarations_and_result_into_its_parents_inbox() {
 }
 
 #[test]
+fn a_long_child_result_reaches_its_parent_as_a_short_pointer() {
+    // A 16 KiB summary, as a review child reported to Mission Control: the
+    // parent is told where to read it, not given it to type.
+    let mut env = Env::new("child-long-result");
+    env.set_var("USER", "tester");
+    env.apply(support::task("p", true)).ok();
+    env.reconcile().ok();
+    let p_uid = uid_of(&env, "task", "p");
+    env.apply(child_of("c", "p", &p_uid, true)).ok();
+    env.reconcile().ok();
+    let summary = "A review line of markdown.\n".repeat(600);
+    env.fleet(&[
+        "result",
+        "c",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--summary",
+        &summary,
+        "--output",
+        "prUrl=\"https://example.test/pr/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    let got = texts(&env, "p");
+    let relayed = got.last().unwrap();
+    assert!(relayed.len() < 1_000, "{} bytes: {relayed}", relayed.len());
+    assert!(
+        relayed.contains("outcome shipped") && relayed.contains("fleet get task c"),
+        "{relayed}"
+    );
+    assert!(!relayed.contains("A review line"), "{relayed}");
+}
+
+#[test]
 fn a_parent_relays_more_unread_child_items_than_its_inbox_holds_in_bounded_batches() {
     let mut env = Env::new("child-burst");
     env.set_var("USER", "tester");

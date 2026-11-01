@@ -869,7 +869,7 @@ fn an_inbox_send_without_a_known_receipt_is_read_back_never_resent_blind() {
 }
 
 #[test]
-fn three_unreadable_delivery_probes_ask_for_attention_and_keep_reading() {
+fn three_unreadable_delivery_probes_give_the_entry_up_unsent() {
     let obj = briefed_with(&["task/t/u7/send/1"], |st| {
         st.intents
             .insert("task/t/u7/send/1".into(), intent(NOW - 5));
@@ -895,11 +895,15 @@ fn three_unreadable_delivery_probes_ask_for_attention_and_keep_reading() {
     assert!(plan.effects.is_empty());
     assert_eq!(cond(&st, "NeedsAttention").reason, "DeliveryUnconfirmed");
     assert_eq!(st.phase, Phase::Briefed, "a read never stalls the Task");
+    let attempt = &st.delivery_attempts["task/t/u7/send/1"];
+    assert!(attempt.failed, "given up, so later entries go past it");
+    assert_eq!(attempt.sends, 1, "never sent again");
+    assert_eq!(st.inbox.len(), 1, "the entry stays queued");
     assert!(
-        probes(&task(true, Some(st)))
+        !probes(&task(true, Some(st)))
             .iter()
             .any(|p| matches!(p, Probe::BriefDelivered { .. })),
-        "the journal is still asked"
+        "a given-up entry's journal is not read again"
     );
 }
 

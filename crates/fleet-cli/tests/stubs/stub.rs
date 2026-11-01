@@ -1115,6 +1115,11 @@ mod forge {
     }
 }
 
+/// tmux's largest client message, and what a `send-keys -t PANE -l` command
+/// adds to the text in it: the paste markers, the other arguments, framing.
+const TMUX_MESSAGE_LIMIT: usize = 16_384;
+const TMUX_COMMAND_OVERHEAD: usize = 80;
+
 fn thurbox(args: &[String]) -> ExitCode {
     let call = match (
         args.first().map(String::as_str),
@@ -1362,6 +1367,16 @@ fn answer(
                 return err(format!(
                     "send: session '{name}' has no window of its own here"
                 ));
+            }
+            // As thurbox 2.81 over tmux 3: the text is one bracketed
+            // `send-keys -l` argument, and tmux refuses a command past its
+            // 16 KiB message before typing anything. thurbox-cli prints that
+            // error on stdout and leaves stderr empty.
+            if text.len() + TMUX_COMMAND_OVERHEAD > TMUX_MESSAGE_LIMIT {
+                return (
+                    ExitCode::from(1),
+                    Some(json!({"error": "send: command too long"}).to_string()),
+                );
             }
             let s = &mut state["sessions"][i];
             s["sent"].as_array_mut().expect("sent").push(json!(text));

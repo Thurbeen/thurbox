@@ -159,8 +159,13 @@ return `Observation<T>`; a refused effect is
 The thurbox adapter executes bounded `thurbox-cli` calls via `fleet-exec`.
 Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
 session metadata as pending before sending and delivered afterward. A pending
-journal entry is ambiguous, so it is never a license to resend. On release,
-a different id holding the key returns Unknown and is not deleted.
+journal entry is ambiguous, so it is never a license to resend. A text over
+16 000 bytes is a Known failure, refused before the journal and the send.
+Thurbox types the text as one tmux `send-keys` argument, and tmux refuses
+a command past its 16 KiB message. A refused call's reason is the first
+line of its stderr, else of its stdout, where `thurbox-cli` prints runtime
+errors. On release, a different id holding the key returns Unknown and is
+not deleted.
 `lost` reads `session get`: `hook_corroboration` `missing` is lost. Any
 window that is there, even a dead one, is not lost. `revive` runs
 `session restart --if-missing`. A session with no window is at rest.

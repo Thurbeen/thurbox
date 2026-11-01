@@ -246,7 +246,8 @@ Guarantees, each with its test:
   drops its intent, receipt and attempt records. Three refused sends raise
   `NeedsAttention/DeliveryFailed` naming the entry, which stays while later
   entries go out; three unreadable journal reads raise
-  `DeliveryUnconfirmed` and reading continues; more than 20 undelivered raise
+  `DeliveryUnconfirmed` naming the entry, which is never resent and stays
+  while later entries go out; more than 20 undelivered raise
   `InboxFull`. Delivery runs in Spawned (after the brief), Briefed and
   Concluded, which stays terminal and is due while its inbox is nonempty.
   At rest, a Concluded Task is due once every `SESSION_RECHECK_MS` (5

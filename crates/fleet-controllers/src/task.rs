@@ -763,13 +763,21 @@ impl Pass<'_, '_> {
                         .or_default();
                     attempt.probe_failures += 1;
                     let failures = attempt.probe_failures;
-                    self.wait_from(self.now());
                     if failures >= MAX_ATTEMPTS {
+                        // Unknown is not absence, so the entry is never sent
+                        // again; it is given up so that later entries go out.
+                        attempt.failed = true;
+                        self.st.not_before = None;
                         self.needs_attention(
                             "DeliveryUnconfirmed",
-                            format!("{what}: its delivery could not be read: {why}"),
+                            format!(
+                                "{what}: its delivery could not be read: {why}. It is not sent again; \
+                                 it stays in status.inbox and later entries are delivered past it"
+                            ),
                         );
+                        return Sent::GivenUp;
                     }
+                    self.wait_from(self.now());
                 }
                 None => {}
             }
@@ -790,7 +798,14 @@ impl Pass<'_, '_> {
                 .or_default()
                 .failed = true;
             self.st.not_before = None;
-            self.needs_attention("DeliveryFailed", format!("{what}: {sends} sends refused"));
+            let why = match self.st.receipts.get(key).map(|r| &r.outcome) {
+                Some(Observation::Known(EffectOutcome::Failed { why })) => format!(": {why}"),
+                _ => String::new(),
+            };
+            self.needs_attention(
+                "DeliveryFailed",
+                format!("{what}: {sends} sends refused{why}"),
+            );
             return Sent::GivenUp;
         }
         if !matches!(
@@ -820,7 +835,10 @@ impl Pass<'_, '_> {
         self.st.intents.remove(&key);
         self.st.receipts.remove(&key);
         self.st.not_before = None;
-        self.settle_attention("DeliveryUnconfirmed");
+        // A given-up entry keeps its attention while it stays queued.
+        if !self.st.delivery_attempts.values().any(|a| a.failed) {
+            self.settle_attention("DeliveryUnconfirmed");
+        }
         self.delivery = Some(DeliveryReceipt {
             key,
             from: entry.from.clone(),

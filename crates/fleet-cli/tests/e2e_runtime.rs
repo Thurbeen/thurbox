@@ -269,6 +269,80 @@ fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
 }
 
 #[test]
+fn an_inbox_entry_too_long_for_tmux_is_refused_and_never_blocks_the_inbox() {
+    // A relayed result of 16 440 bytes, as Mission Control received: tmux
+    // refuses it before typing, so it must never wait on a journal forever.
+    let env = setup("thurbox-inbox-too-long", vec![task("t1", true)]);
+    env.reconcile().ok();
+    let key = thurbox_key(&env, "t1");
+    let long = "x".repeat(16_440);
+    env.fleet(&["send", "t1", &long]).ok();
+    env.fleet(&["send", "t1", "short"]).ok();
+    for _ in 0..6 {
+        set_session_state(&env, &key, "idle");
+        env.expire_wait("t1");
+        env.reconcile().ok();
+    }
+    let sent = &env.stub_sessions()[0]["sent"];
+    assert!(
+        sent.as_array().unwrap().iter().any(|t| t == "short"),
+        "the entry behind the long one was delivered: {sent:#} {:#}",
+        env.status("t1")["conditions"]
+    );
+    assert!(
+        !argv_of(&env, "send").iter().any(|a| a.contains(&long)),
+        "the long text never reached thurbox-cli"
+    );
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryFailed");
+    let attention = st["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "NeedsAttention")
+        .unwrap()["message"]
+        .to_string();
+    assert!(attention.contains("16440 bytes"), "{attention}");
+    let inbox = full_status(&env, "t1")["inbox"].clone();
+    assert_eq!(inbox.as_array().unwrap().len(), 1, "{inbox:#}");
+    assert_eq!(inbox[0]["text"], json!(long), "the refused entry is kept");
+}
+
+#[test]
+fn an_unconfirmed_inbox_entry_is_given_up_and_later_entries_go_past_it() {
+    // A send that fails may have typed part of the entry: it is never typed
+    // again, but neither does it hold every later entry forever.
+    let env = setup("thurbox-inbox-unconfirmed", vec![task("t1", true)]);
+    env.reconcile().ok();
+    let key = thurbox_key(&env, "t1");
+    env.fleet(&["send", "t1", "first"]).ok();
+    env.fleet(&["send", "t1", "second"]).ok();
+    env.stub_fault("send", "fail", 1);
+    for _ in 0..6 {
+        set_session_state(&env, &key, "idle");
+        env.expire_wait("t1");
+        env.reconcile().ok();
+    }
+    let sends = argv_of(&env, "send");
+    assert_eq!(
+        sends.iter().filter(|a| a.contains(&"first".into())).count(),
+        1,
+        "never typed twice: {sends:?}"
+    );
+    let sent = &env.stub_sessions()[0]["sent"];
+    assert!(
+        sent.as_array().unwrap().iter().any(|t| t == "second"),
+        "the entry behind it was delivered: {sent:#} {:#}",
+        env.status("t1")["conditions"]
+    );
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryUnconfirmed");
+    let inbox = full_status(&env, "t1")["inbox"].clone();
+    assert_eq!(inbox.as_array().unwrap().len(), 1, "{inbox:#}");
+    assert_eq!(inbox[0]["text"], "first", "the unconfirmed entry is kept");
+}
+
+#[test]
 fn a_release_whose_answer_is_unknown_is_never_assumed_done() {
     let env = setup("thurbox-release", vec![task("t1", true), task("t2", true)]);
     env.reconcile().ok();

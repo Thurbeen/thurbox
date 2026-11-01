@@ -163,22 +163,26 @@ undelivered, and a deleting Task; and record-and-remove, TaskController's
 status write that also moves one entry's receipt into `deliveries` and the
 entry out of `inbox`. No manager may replace the list.
 
-TaskController delivers inbox entries as it delivers the brief, oldest
-first, one per pass: only to a session observed ready on that pass, under
-the entry's key as the runtime intent key, journaled by the runtime, at most
-3 sends, then a receipt. A send whose answer was lost is read back from the
-journal, never repeated blindly. An entry that exhausts its sends raises
-`NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing:
-later entries are still delivered. More than 20 undelivered entries raise
-`NeedsAttention/InboxFull`. A Concluded Task with a nonempty inbox is due
-again for delivery, and at rest for a session recheck every 5 minutes, as the
-[Task state machine](../controllers/task/state-machine.md#transition-rules)
-describes; a readable lookup that no longer shows its session is
-`WorkerGone` and `NeedsAttention`, never a respawn. A session that is still
-there without its window, as after a host reboot, is revived to read its
-inbox. See [after a host reboot](../controllers/task/state-machine.md#after-a-host-reboot). A Stalled or deleting
-Task delivers nothing: a deleting Task refuses `fleet send` and releases its
-session as before.
+TaskController delivers inbox entries as it delivers the brief, oldest first,
+one per pass: only to a session observed ready on that pass, under the entry's
+key as the runtime intent key, journaled by the runtime, at most 3 sends, then a
+receipt. A send whose answer was lost is read back from the journal, never
+repeated blindly. An entry that exhausts its sends raises
+`NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing: later
+entries are still delivered. An entry whose journal stays unreadable for 3 reads
+raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
+again, stays in `status.inbox`, and holds back no later entry. The Thurbox
+runtime refuses an entry over 16 000 bytes before it types anything, because
+tmux refuses a longer command. More than 20 undelivered entries raise
+`NeedsAttention/InboxFull`. A Concluded Task with a nonempty inbox is due again
+for delivery, and at rest for a session recheck every 5 minutes, as the [Task
+state machine](../controllers/task/state-machine.md#transition-rules) describes;
+a readable lookup that no longer shows its session is `WorkerGone` and
+`NeedsAttention`, never a respawn. A session that is still there without its
+window, as after a host reboot, is revived to read its inbox. See [after a host
+reboot](../controllers/task/state-machine.md#after-a-host-reboot). A Stalled or
+deleting Task delivers nothing: a deleting Task refuses `fleet send` and
+releases its session as before.
 
 ## Following declared changes
 
