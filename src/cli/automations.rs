@@ -898,12 +898,13 @@ mod tests {
         // payloads resolve against `$HOME` — which `TestPathGuard` does not
         // redirect, because they target the *agent's* config dir rather than
         // thurbox's. Without opting out, running the test suite installs hook
-        // files into the developer's own `~/.codex`, `~/.grok`, … Opt both
-        // built-ins out: these tests are about what `tick` reports, not about
+        // files into the developer's own `~/.codex`, `~/.grok`, … Opt every
+        // built-in out: these tests are about what `tick` reports, not about
         // what an install does.
         for name in [
             crate::session_ops::builtin_hooks::HOOKS_EXTENSION_NAME,
             crate::session_ops::builtin_ui_skill::UI_SKILL_EXTENSION_NAME,
+            crate::session_ops::builtin_sessions_skill::SESSIONS_SKILL_EXTENSION_NAME,
         ] {
             db.set_builtin_extension_optout(name, true).unwrap();
         }

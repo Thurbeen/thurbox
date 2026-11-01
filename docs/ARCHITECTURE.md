@@ -1646,8 +1646,8 @@ load-bearing contract.
   private repo, not a directory in ours. What the original
   reasoning was really protecting is the CLI's JSON surface being a
   tested contract, and that is guarded by its own tests either way.
-  `extensions/` now holds only the two built-ins (`hooks`,
-  `ui-skill`), whose assets the binary `include_str!`s, and
+  `extensions/` now holds only the built-ins (`hooks`,
+  `ui-skill`, `sessions-skill`), whose assets the binary `include_str!`s, and
   `install` grew the `git+<repo>` source form (ADR-21) so an
   out-of-repo extension is an ordinary install.
 

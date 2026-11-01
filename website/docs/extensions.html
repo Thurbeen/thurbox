@@ -62,7 +62,7 @@ breadcrumb: 'Extensions'
           </div>
           <div class="info-box">
             <p>
-              <strong>Two extensions ship built in:</strong>
+              <strong>Three extensions ship built in:</strong>
               <a href="agent-hooks.html">agent hooks</a>
               , which wires each agent's lifecycle hooks to
               <code>thurbox-cli session signal</code>
@@ -70,10 +70,13 @@ breadcrumb: 'Extensions'
               <strong>ui-skill</strong>
               , which teaches whichever coding CLI you run
               <a href="interface.html#ask-the-agent">how to edit the interface</a>
-              . Unlike the others both are
+              , and
+              <strong>sessions-skill</strong>
+              , which teaches it how to read and message your other sessions. Unlike the others all
+              three are
               <strong>embedded in the binary and auto-activated</strong>
-              &mdash; they still install through the same manifest machinery shown here. Turn either
-              off with
+              &mdash; they still install through the same manifest machinery shown here. Turn any of
+              them off with
               <code>thurbox-cli extension deactivate &lt;name&gt;</code>
               .
             </p>
@@ -209,7 +212,7 @@ thurbox-cli extension install git+https://github.com/you/my-extension</code></pr
               <code>main</code>
               ), so a fetched extension always matches the binary reading it.
               <strong>Nothing ships under a bare name today:</strong>
-              the only extensions in the Thurbox repository are the two built-ins, which install
+              the only extensions in the Thurbox repository are the built-ins, which install
               themselves.
             </li>
           </ul>
@@ -462,6 +465,23 @@ prompt = "tick"</code></pre>
                   <code>thurbox-ui</code>
                   skill into whichever coding CLIs you have, so an agent in any session knows how
                   to edit the interface. Embedded and on by default.
+                </p>
+              </div>
+            </a>
+            <a
+              href="https://github.com/Thurbeen/thurbox/blob/main/extensions/sessions-skill/README.md"
+              class="docs-hub-card"
+              target="_blank"
+              rel="noopener"
+            >
+              <div class="card">
+                <div class="card-icon" aria-hidden="true">&#x21C4;</div>
+                <h3>sessions-skill <span class="badge badge-green">built in</span></h3>
+                <p>
+                  Installs a
+                  <code>thurbox-sessions</code>
+                  skill, so an agent can find your other sessions, read what they are doing without
+                  disturbing them, and message them safely. Embedded and on by default.
                 </p>
               </div>
             </a>

@@ -91,12 +91,13 @@ does not alter the running process; a later restart uses the persisted new name.
 The same snapshot is available to every agent and direct command as
 `THURBOX_SESSION_NAME`.
 
-The `ui-skill` extension installs into `~/.claude/skills` only. Link its skill into
-each additional directory:
+The `ui-skill` and `sessions-skill` extensions install into `~/.claude/skills`
+only. Link their skills into each additional directory:
 
 ```bash
 mkdir -p ~/.claude-work/skills
 ln -s ~/.claude/skills/thurbox-ui ~/.claude-work/skills/thurbox-ui
+ln -s ~/.claude/skills/thurbox-sessions ~/.claude-work/skills/thurbox-sessions
 ```
 
 Repeat the entry and link for another account directory. On a shared host, define

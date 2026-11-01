@@ -63,6 +63,7 @@ jobs:
               - 'extensions/hooks/**.js'
               - 'extensions/hooks/**.ts'
               - 'extensions/ui-skill/**'
+              - 'extensions/sessions-skill/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               # The patched crossterm `[patch.crates-io]` builds in.

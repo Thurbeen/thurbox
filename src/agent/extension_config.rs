@@ -86,8 +86,8 @@ pub struct OfficialExtension {
 /// The official extensions shipped in `extensions/<name>/` of the thurbox repo.
 ///
 /// **Source of truth for discovery + typo suggestions**, and deliberately
-/// **empty**: what `extensions/` still holds is the two built-ins (`hooks`,
-/// `ui-skill`), which ship embedded in the binary and auto-activate, so no bare
+/// **empty**: what `extensions/` still holds is the three built-ins (`hooks`,
+/// `ui-skill`, `sessions-skill`), which ship embedded in the binary and auto-activate, so no bare
 /// name resolves to anything. An extension living in its own repository — the
 /// `fleet` control plane is the worked example, see `docs/ORCHESTRATION.md` —
 /// installs by URL, path or `git+<repo>` instead, which needs no entry here.
@@ -165,7 +165,7 @@ pub fn unknown_extension_help(name: &str, cause: &str) -> String {
 /// point at the same three install forms.
 pub const NO_BARE_NAME_HELP: &str =
     "\nNo extension installs by bare name: thurbox ships the built-in \
-     `hooks` and `ui-skill`, which activate themselves. Install any other extension from an \
+     `hooks`, `ui-skill` and `sessions-skill`, which activate themselves. Install any other extension from an \
      `http(s)://` base URL, a local directory, or a repository (`git+https://...`).";
 
 /// Classic Levenshtein edit distance (two-row DP). Small inputs only.

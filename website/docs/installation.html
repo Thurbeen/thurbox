@@ -518,8 +518,8 @@ tmux -L thurbox kill-server     # stops every session and the heartbeat</code></
 
           <h3 id="uninstall-other-tools">2. Remove what Thurbox added to other tools</h3>
           <p>
-            Thurbox ships two built-in extensions that reach outside its own directories, and
-            reinstalls both on every start unless you opt out.
+            Thurbox ships three built-in extensions that reach outside its own directories, and
+            reinstalls each on every start unless you opt out.
             <code>hooks</code>
             wires your agents' status hooks: it merges entries into
             <code>~/.codex/hooks.json</code>
@@ -529,9 +529,13 @@ tmux -L thurbox kill-server     # stops every session and the heartbeat</code></
             <code>~/.kimi-code/config.toml</code>
             , and drops its own files for opencode, vibe, pi, omp, Copilot and grok.
             <code>ui-skill</code>
-            installs the
+            and
+            <code>sessions-skill</code>
+            install the
             <code>thurbox-ui</code>
-            skill into Claude Code, Codex, opencode, Copilot and
+            and
+            <code>thurbox-sessions</code>
+            skills into Claude Code, Codex, opencode, Copilot and
             <code>~/.agents</code>
             . Each file is written only if that agent's directory already exists.
           </p>
@@ -547,11 +551,14 @@ tmux -L thurbox kill-server     # stops every session and the heartbeat</code></
           </p>
           <pre data-wrap><code class="language-bash">thurbox-cli extension deactivate hooks
 thurbox-cli extension deactivate ui-skill
+thurbox-cli extension deactivate sessions-skill
 thurbox-cli extension list                        # anything else you installed?
 thurbox-cli extension uninstall &lt;name&gt; --purge   # for each one listed</code></pre>
           <p>
             That can leave empty directories behind &mdash; the
             <code>thurbox-ui</code>
+            and
+            <code>thurbox-sessions</code>
             skill directories, and a hooks or plugin directory Thurbox created for an agent &mdash;
             and a merge target that Thurbox created itself, such as
             <code>~/.codex/hooks.json</code>
@@ -563,7 +570,9 @@ thurbox-cli extension uninstall &lt;name&gt; --purge   # for each one listed</co
           </p>
           <pre data-wrap><code class="language-bash">rmdir ~/.claude/skills/thurbox-ui ~/.codex/skills/thurbox-ui \
   ~/.config/opencode/skills/thurbox-ui ~/.copilot/skills/thurbox-ui \
-  ~/.agents/skills/thurbox-ui 2&gt;/dev/null</code></pre>
+  ~/.agents/skills/thurbox-ui ~/.claude/skills/thurbox-sessions \
+  ~/.codex/skills/thurbox-sessions ~/.config/opencode/skills/thurbox-sessions \
+  ~/.copilot/skills/thurbox-sessions ~/.agents/skills/thurbox-sessions 2&gt;/dev/null</code></pre>
           <p>
             Beyond these, the git worktrees and branches of step 4, and the Windows
             <code>PATH</code>
@@ -672,6 +681,7 @@ psmux -L thurbox kill-server
 # 2. Remove what Thurbox added to other tools
 thurbox-cli extension deactivate hooks
 thurbox-cli extension deactivate ui-skill
+thurbox-cli extension deactivate sessions-skill
 
 # 3. Remove the binaries
 winget uninstall Thurbeen.thurbox       # winget

@@ -1,6 +1,6 @@
 ---
 name: thurbox-extensions
-description: Thurbox extensions: the declarative extension.toml manifest format with its install and runtime halves, the three outside-reaching payload kinds, the two built-in embedded extensions (hooks, ui-skill) and their opt-out, the fleet control plane as the worked out-of-repo example, and the self-heal contract that recreates an active extension's sessions and automations. Use when writing, installing, debugging or removing an extension, or when a deleted session keeps coming back.
+description: Thurbox extensions: the declarative extension.toml manifest format with its install and runtime halves, the three outside-reaching payload kinds, the three built-in embedded extensions (hooks, ui-skill, sessions-skill) and their opt-out, the fleet control plane as the worked out-of-repo example, and the self-heal contract that recreates an active extension's sessions and automations. Use when writing, installing, debugging or removing an extension, or when a deleted session keeps coming back.
 ---
 
 # Thurbox extensions
@@ -14,8 +14,9 @@ An extension is an opt-in, **agent-agnostic** add-on that builds on
 plus whatever files it lays down, installed with `thurbox-cli extension install
 <url|dir|git+repo|name>`.
 
-`extensions/` in this repo holds **only the two built-ins**, `hooks` and
-`ui-skill`. Both ship embedded in the binary and auto-activate, so neither is
+`extensions/` in this repo holds **only the three built-ins**, `hooks`,
+`ui-skill` and `sessions-skill`. All ship embedded in the binary and
+auto-activate, so none is
 something a user installs by name — which is why
 `agent::extension_config::OFFICIAL_EXTENSIONS`, the bare-name registry behind
 `extension available` and the typo hints, is currently **empty**. The mechanism
@@ -48,6 +49,17 @@ installs from a URL, a local path, or a repository (`git+https://...`).
   act on thurbox's own copies and leave one the user has taken ownership of alone
   (drop the `Managed by` line and it is theirs), while `reinstall` and `install
   --force` overwrite as they do everywhere else.
+- **`extensions/sessions-skill/`** *(built-in, on by default)* — `ui-skill`'s
+  twin, delivered the same way to the same five guarded destinations. Its one
+  `SKILL.md`, `thurbox-sessions`, teaches an agent the cross-session half of
+  `thurbox-cli`: find peers and itself (`session list`, `THURBOX_SESSION`), read
+  one without disturbing it (`session get`/`capture`/`exec`, the state
+  vocabulary), and reach it — `message send`/`inbox`/`reply` first, `session
+  send` only on request after checking the target is idle and is not the
+  `selected_session` of `ui state`. It names only existing commands, and
+  `tests/sessions_skill_e2e.rs` fails if one it names stops existing. Opt out
+  with `thurbox-cli extension deactivate sessions-skill`; each built-in has its
+  own opt-out flag.
 
 ### fleet — the worked example of a real extension
 
@@ -111,8 +123,9 @@ our old entries out of the events the payload owns
 (`json_merge::prune_marked_under`). Uninstall matches stamp *and* command,
 document-wide, so nothing of ours is ever orphaned.
 
-**Built-in extensions** (`session_ops::builtin`) — two of them, `hooks`
-(`extensions/hooks/`) and `ui-skill` (`extensions/ui-skill/`), which unlike user
+**Built-in extensions** (`session_ops::builtin`) — three of them, `hooks`
+(`extensions/hooks/`), `ui-skill` (`extensions/ui-skill/`) and `sessions-skill`
+(`extensions/sessions-skill/`), which unlike user
 extensions ship **embedded** in the binary and are **auto-activated by default**
 (`ensure_builtin_extensions` at TUI startup, the headless tick, and before each
 `thurbox-cli session create`/`start`/`restart`/`fork` and each task or automation
@@ -124,8 +137,9 @@ describes what it just did — and the shared `Builtin::ensure` materializes the
 assets locally and installs them through the ordinary machinery above, so a
 built-in is not a second installer with its own bugs. They exist for the same
 reason: what they wire up has to be there before the user knows to ask for it.
-`hooks` gives the default agent's status hook zero-setup, and `ui-skill` gives
-whichever coding CLI the user runs the knowledge of how to edit the interface.
+`hooks` gives the default agent's status hook zero-setup, `ui-skill` gives
+whichever coding CLI the user runs the knowledge of how to edit the interface,
+and `sessions-skill` the knowledge of how to read and message other sessions.
 **Which hook delivery mechanism each built-in *agent* gets (and the exact states
 each can report) is documented per agent in `docs/AGENTS.md` → "Status hook
 mechanisms"** — that is the reference to update when adding an agent.

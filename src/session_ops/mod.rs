@@ -34,6 +34,7 @@ pub mod automations;
 pub mod bounded;
 pub mod builtin;
 pub mod builtin_hooks;
+pub mod builtin_sessions_skill;
 pub mod builtin_ui_skill;
 pub mod composer;
 pub mod delete;

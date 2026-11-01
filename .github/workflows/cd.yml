@@ -133,8 +133,8 @@ jobs:
           # can install.
           # `extensions/`, `ui/` and `examples/lua/` are here for the same reason
           # and, more directly, because all three are `include_str!`d into the
-          # binary — `extensions/` now holds only the two built-ins, whose assets
-          # `session_ops::builtin_hooks`/`builtin_ui_skill` embed — so they are
+          # binary — `extensions/` now holds only the built-ins, whose assets
+          # `session_ops::builtin_*` embed — so they are
           # bytes a user installs. A releasable span confined to a pane fix would
           # otherwise be suppressed as "no shipped artifact changed" — no tag, no
           # binaries, no channel pushes — and the `ui` commit scope cannot separate

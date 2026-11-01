@@ -606,7 +606,7 @@ Fetch and fast-forward before `session create`, and verify
 **[Fleet](https://github.com/Thurbeen/fleet)** is all of the above,
 maintained. It is also the worked example of a thurbox extension — the one
 the rest of the documentation points at, since `extensions/` in the thurbox
-repo holds only the two built-ins.
+repo holds only the built-ins.
 
 ```sh
 curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh

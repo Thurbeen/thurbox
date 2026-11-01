@@ -39,7 +39,7 @@ function Wait-WindowGone {
     throw 'Fixture agent window did not close'
 }
 try {
-    foreach ($extension in @('hooks','ui-skill')) {
+    foreach ($extension in @('hooks','ui-skill','sessions-skill')) {
         $ErrorActionPreference='Continue'
         $out=& $cli --json extension deactivate $extension 2> "$run/optout-stderr" | Out-String
         $code=$LASTEXITCODE

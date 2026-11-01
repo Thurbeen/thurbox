@@ -31,7 +31,9 @@
 > session for the change in English — thurbox ships a built-in `ui-skill`
 > extension that teaches whichever CLI is running how the interface is put
 > together, so "add my project logs within a dedicated pane on the right in the
-> thurbox UI" works from any session. The same holds for orchestration:
+> thurbox UI" works from any session. A built-in `sessions-skill` does the same
+> for the other sessions: "ask the backend session what it changed" reads its
+> screen and messages it through `thurbox-cli`. The same holds for orchestration:
 > `thurbox-cli` is installed beside `thurbox`, so it is already on every session
 > agent's PATH, and "using thurbox-cli, start refactor sessions for this repo,
 > one per crate, each on its own worktree branch" spins up a fleet without a
