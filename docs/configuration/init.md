@@ -9,10 +9,38 @@ reference owns the config fields.
 
 `init` works offline. To run real sessions, install Thurbox (`thurbox-cli`
 on PATH), configure its local multiplexer, and install and authenticate the
-starter's `codex` harness first. Fleet does not install prerequisites or change
+chosen harness first. Fleet does not install prerequisites or change
 login state. `up` checks host availability and reports unavailable or unknown
 prerequisites. Harness login/readiness failures remain visible in Task status;
 inspect `fleet status task vega --json` and Thurbox's session before retrying.
+
+## Choosing the harness
+
+The harness is the coding agent that a Task's session runs, such as `claude`
+or `codex`. `fleet init` writes one harness into the workspace's `task.json`:
+
+- `fleet init --harness NAME` writes `NAME`.
+- With no flag, `init` asks at a terminal if it never installed a
+  `task.json` in this workspace. An empty answer, or no terminal, keeps the
+  bundled default, `codex`.
+- With no flag and an installed `task.json`, `init` keeps its harness.
+
+VEGA's brief tells VEGA to give each worker Task the same harness as
+`Task/vega`. A user or a repository can ask for another harness for one
+worker.
+
+The first `fleet up` creates `Task/vega` from `task.json`. Before that,
+`init --harness NAME` rewrites an unedited `task.json`. If you edited
+`task.json`, `init` keeps your file. It writes its own version as a conflict
+copy, as `init --update` does.
+
+After the first `up`, the harness of `Task/vega` is immutable.
+`init --harness` refuses a different harness at that point.
+
+Fleet trusts the `codex`, `claude` and `claude-code` harnesses in their
+workspaces by default. For another harness, set
+[`runtime.workspaceTrust`](fleet-toml.md) before the first `up`. Without that
+entry, `Task/vega` waits and starts no session.
 
 ## Running `fleet up`
 
@@ -54,7 +82,7 @@ Default init writes a workspace at `$XDG_DATA_HOME/fleet/vega` (fallback
 directory at `store-v1`. The config records absolute paths and a generated
 per-instance session key prefix. `[starter] workspace` selects the workspace.
 Its `task.json` is a runnable JSON array containing one Task. Before first
-`up`, edit its harness or brief and customize `AGENTS.md`, prompts and skills.
+`up`, edit its brief and customize `AGENTS.md`, prompts and skills.
 To set `spec.model`, first configure the matching `[runtime.modelEnv]`
 harness-to-variable mapping; the starter does not assume a Codex model
 environment variable. After creation, reconnect keeps the stored immutable

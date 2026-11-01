@@ -28,11 +28,13 @@ offline:
 
 ```sh
 fleet version
-fleet init
+fleet init --harness claude   # or codex; the default is codex
 ```
 
-To run real sessions, install [Thurbox](https://github.com/Thurbeen/thurbox)
-with `thurbox-cli` on PATH, and install and log in to the `codex` harness.
+`--harness` chooses the coding agent for VEGA and, by default, its workers.
+Without it, `fleet init` asks in a terminal. To run real sessions, install
+[Thurbox](https://github.com/Thurbeen/thurbox) with `thurbox-cli` on PATH,
+and install and log in to the chosen harness.
 Fleet installs neither. Then start the manager and keep it running in its
 own terminal:
 

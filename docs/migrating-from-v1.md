@@ -252,8 +252,8 @@ V1's lead session is Mission Control, which the v1 thurbox extension
 creates. V2's lead is `Task/vega`, an ordinary Task. `fleet up` starts it
 from the VEGA workspace that `fleet init` writes.
 
-- The VEGA starter uses the `codex` harness. Install and log in to it, or
-  change the harness in the workspace's `task.json`.
+- The VEGA starter uses the `codex` harness by default. Choose another with
+  `fleet init --harness NAME`, then install and log in to it.
 - VEGA's skills are `task-intake`, `task-status` and `status-digest`. They
   create, inspect and summarize v2 Tasks. V1's skills, such as
   `fleet-intake` and `fleet-queue`, use v1 commands and do not work with v2.

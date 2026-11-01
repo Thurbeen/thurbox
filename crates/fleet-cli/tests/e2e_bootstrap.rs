@@ -85,6 +85,12 @@ fn until(mut predicate: impl FnMut() -> bool) {
 }
 
 fn fake_bootstrap(name: &str) -> Env {
+    fake_bootstrap_with(name, &["init"])
+}
+
+/// Bootstrap with `init_args`, then point the generated config at the fake
+/// runtime and the test store.
+fn fake_bootstrap_with(name: &str, init_args: &[&str]) -> Env {
     let mut env = Env::new(name);
     env.set_var(
         "LOCALAPPDATA",
@@ -93,7 +99,7 @@ fn fake_bootstrap(name: &str) -> Env {
     env.set_var("APPDATA", &env.root.join("config").to_string_lossy());
     // An explicit fresh config uses the same discovery and bootstrap machinery.
     fs::remove_file(&env.config).unwrap();
-    env.fleet(&["init"]).ok();
+    env.fleet(init_args).ok();
     let generated = fs::read_to_string(&env.config).unwrap();
     let mut config: toml::Value = toml::from_str(&generated).unwrap();
     // The three shipped ready policies, exactly as the config page shows
@@ -1063,4 +1069,117 @@ fn up_reloads_runtime_repositories_without_a_restart() {
 
     up.assert_running();
     assert_eq!(env.get("vega")["metadata"]["uid"], vega);
+}
+
+fn starter_task(env: &Env) -> (std::path::PathBuf, serde_json::Value) {
+    let config: toml::Value = toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
+    let path =
+        std::path::Path::new(config["starter"]["workspace"].as_str().unwrap()).join("task.json");
+    let task = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    (path, task)
+}
+
+/// The coding agent is chosen at `fleet init`, without a manual edit of
+/// `task.json`. The choice reaches Mission Control's Task and its brief,
+/// which gives the same harness to the workers it dispatches.
+#[test]
+fn init_harness_flag_reaches_mission_control_and_its_workers() {
+    let env = fake_bootstrap_with("init-harness", &["init", "--harness", "claude"]);
+    let (path, task) = starter_task(&env);
+    assert_eq!(task[0]["spec"]["harness"], "claude");
+    let brief = task[0]["spec"]["brief"].as_str().unwrap();
+    assert!(
+        brief.contains("Give each worker Task the same harness as Task/vega"),
+        "{brief}"
+    );
+    assert_config_instruction(brief, &env.config);
+
+    // Repeating init, or updating it, keeps the choice.
+    let chosen = fs::read(&path).unwrap();
+    env.fleet(&["init"]).ok().stdout_has("harness claude");
+    env.fleet(&["init", "--update"]).ok();
+    assert_eq!(fs::read(&path).unwrap(), chosen);
+
+    // Before the first `fleet up`, init can choose again.
+    env.fleet(&["init", "--harness", "codex"])
+        .ok()
+        .stdout_has("harness codex");
+    let (_, task) = starter_task(&env);
+    assert_eq!(task[0]["spec"]["harness"], "codex");
+    env.fleet(&["init", "--harness", "claude"]).ok();
+
+    // The first `fleet up` creates Mission Control on the chosen harness.
+    let _up = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
+    until(|| env.status("vega")["phase"] == "Briefed");
+    assert_eq!(env.get("vega")["spec"]["harness"], "claude");
+    let session = env.host().session(&env.session_key("vega")).unwrap();
+    assert_eq!(session.unwrap().harness, "claude");
+}
+
+#[test]
+fn init_without_a_harness_flag_uses_the_bundled_default_and_keeps_edits() {
+    let env = fake_bootstrap("init-harness-default");
+    let (path, mut task) = starter_task(&env);
+    assert_eq!(task[0]["spec"]["harness"], "codex");
+    // A hand-edited task.json is the user's: a new choice does not replace it.
+    task[0]["spec"]["model"] = serde_json::json!("custom");
+    let edited = serde_json::to_vec_pretty(&task).unwrap();
+    fs::write(&path, &edited).unwrap();
+    let run = env.fleet(&["init", "--harness", "claude"]);
+    run.ok().stdout_has("preserved customization");
+    assert_eq!(fs::read(&path).unwrap(), edited);
+    // The candidate carries the new choice for the user to merge.
+    let stdout = run.stdout.clone();
+    let (_, candidate) = stdout.split_once("; candidate ").unwrap();
+    let candidate: serde_json::Value =
+        serde_json::from_slice(&fs::read(candidate.lines().next().unwrap()).unwrap()).unwrap();
+    assert_eq!(candidate[0]["spec"]["harness"], "claude");
+
+    // A deleted task.json is not reported as choosing a harness.
+    fs::remove_file(&path).unwrap();
+    let run = env.fleet(&["init", "--harness", "claude"]);
+    let stdout = run.stdout.clone();
+    assert!(!stdout.contains("chooses harness"), "{stdout}");
+}
+
+/// After the first `fleet up`, Task/vega's harness is immutable, so init
+/// refuses another choice instead of reporting one that never applies.
+#[test]
+fn init_refuses_a_new_harness_once_mission_control_exists() {
+    let env = fake_bootstrap("init-harness-after-up");
+    let (path, task) = starter_task(&env);
+    env.apply(task).ok();
+    let before = fs::read(&path).unwrap();
+    env.fleet(&["init", "--harness", "claude"])
+        .code(1)
+        .stderr_has("immutable");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    // `fleet up` keeps the config's store, so another --data-dir changes nothing.
+    let other = env.root.join("other-store");
+    env.fleet(&[
+        "--data-dir",
+        other.to_str().unwrap(),
+        "init",
+        "--harness",
+        "claude",
+    ])
+    .code(1)
+    .stderr_has("immutable");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    env.fleet(&["init", "--harness", "codex"]).ok();
+}
+
+#[test]
+fn init_refuses_an_invalid_harness_before_writing_anything() {
+    let env = Env::without_tools("init-bad-harness");
+    let config = env.root.join("config/fleet/config.toml");
+    wait(
+        installed(&env, &["init", "--harness", "Not A Harness"])
+            .spawn()
+            .unwrap(),
+    )
+    .code(1)
+    .stderr_has("harness");
+    assert!(!config.exists());
 }
