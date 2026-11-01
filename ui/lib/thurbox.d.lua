@@ -1061,6 +1061,9 @@ function require(name) end
 ---@class (exact) thurbox.cmd.Session
 ---@field session string A session id, or for `copy` a surface: `<id>#shell` reads the companion shell's screen rather than the agent's.
 
+--- Type text into a session and press Enter, as `thurbox-cli session send`
+--- does: refused when empty or stopped, handed to the agent's inbox while its
+--- composer holds typing, and done by a sharing host's own CLI.
 ---@class (exact) thurbox.cmd.Send
 ---@field session string
 ---@field text string

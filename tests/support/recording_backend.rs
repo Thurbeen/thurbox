@@ -87,6 +87,9 @@ pub struct RecordingBackend {
     /// The pause between a submitting send's paste and its Enter — see
     /// [`RecordingBackend::delay_enter`].
     enter_delay: Mutex<std::time::Duration>,
+    /// Whether it answers `text_before_cursor` — see
+    /// [`RecordingBackend::read_cursor`].
+    reads_cursor: std::sync::atomic::AtomicBool,
 }
 
 impl RecordingBackend {
@@ -99,6 +102,7 @@ impl RecordingBackend {
             on_locate: Mutex::new(None),
             on_pane_state: Mutex::new(None),
             enter_delay: Mutex::new(std::time::Duration::ZERO),
+            reads_cursor: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -177,6 +181,14 @@ impl RecordingBackend {
     /// above the backend serializes them.
     pub fn delay_enter(&self, delay: std::time::Duration) {
         *self.enter_delay.lock().unwrap() = delay;
+    }
+
+    /// Answer `text_before_cursor` with the screen's last row, so the
+    /// composer guard can see a half-typed line. Off by default: a backend
+    /// that cannot tell is the plain-send path most tests drive.
+    pub fn read_cursor(&self) {
+        self.reads_cursor
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn on_next_pane_state(&self, callback: impl FnOnce() + Send + 'static) {
@@ -641,6 +653,20 @@ impl SessionBackend for RecordingBackend {
         let all: Vec<&str> = screen.lines().collect();
         let keep = all.len().saturating_sub(lines as usize);
         Ok(all[keep..].join("\n"))
+    }
+
+    fn text_before_cursor(
+        &self,
+        pane: &str,
+    ) -> thurbox::backend::contract::BackendResult<Option<String>> {
+        if !self.reads_cursor.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let state = self.lock(format!("text_before_cursor {pane}"))?;
+        let screen = &state.find(pane)?.screen;
+        Ok(Some(
+            screen.rsplit('\n').next().unwrap_or_default().to_string(),
+        ))
     }
 
     fn pane_state(&self, pane: &str) -> thurbox::backend::contract::BackendResult<PaneState> {

@@ -1935,107 +1935,60 @@ fn run_send(
     force: bool,
     wait: SendWaitArgs,
 ) -> Result<CommandOutput, CommandError> {
-    if !wait.wait_turn && !wait.strict {
-        return run_send_delivery(db, backends, uuid, text, no_enter, force);
-    }
+    use crate::session_ops::send::{self, Delivery, SendPolicy};
     let session = resolve(db, &uuid)?;
-    // The plain send's local checks, made before the host is asked.
-    check_send(db, &session, &text)?;
-    let id = session.id.to_string();
-    let timeout = wait.timeout.map(|s| s.to_string());
-    let mut args = vec!["session", "send", &id, &text];
-    if force {
-        args.push("--force");
+    let policy = SendPolicy {
+        submit: !no_enter,
+        force,
+        strict: wait.strict,
+        wait_turn: wait.wait_turn,
+        timeout: wait.timeout.map(std::time::Duration::from_secs),
+        from_session: super::identity::calling_session(db).map(|s| s.id),
+        from_task: super::messages::calling_task_id(),
+    };
+    let report = send::send(db, backends, &session, &text, &policy)?;
+    let (mut json, human) = match &report.delivery {
+        Delivery::Typed {
+            submit,
+            submitted,
+            enter_retried,
+        } => typed_output(&session, *submit, *submitted, *enter_retried),
+        Delivery::Handed(handed) => handed_output(&session, handed),
+        Delivery::Host(answer) => {
+            let output = host_output(answer.clone());
+            (output.json, output.human)
+        }
+    };
+    if let Some(failure) = report.failure {
+        let error = CommandError::from(failure);
+        return Ok(CommandOutput::failed(json, human, error.message).exiting_with(error.exit_code));
     }
-    if wait.strict {
-        args.push("--strict");
-    }
-    if wait.wait_turn {
-        args.push("--wait-turn");
-    }
-    if let Some(timeout) = &timeout {
-        args.extend(["--timeout", timeout]);
-    }
-    if let Some(remote) = delegate_send_to_host(&session, &args)? {
-        return Ok(remote);
-    }
-    let seq = db.latest_session_event_seq().map_err(|e| e.to_string())?;
-    let mut output = run_send_delivery(db, backends, uuid, text, no_enter, force)?;
-    if output.failure.is_some() {
-        return Ok(output);
-    }
-    if wait.strict && output.json["submitted"].is_null() {
-        return Ok(CommandOutput::failed(
-            output.json,
-            output.human,
-            "submission could not be confirmed".to_string(),
-        ));
-    }
-    if wait.wait_turn {
-        // Text left in the mailbox starts its turn once the agent takes it,
-        // so that is waited for too. Whatever ends the wait, the text was
-        // delivered: the send result stays on the answer, so a driver does
-        // not read a timeout as "send again".
-        output.json["turn"] = Value::Null;
-        match crate::session_ops::wait::run(
-            db,
-            backends,
-            &session,
-            crate::session_ops::wait::Conditions {
-                states: vec!["working".into()],
-                pane: None,
-                timeout: wait.timeout.map(std::time::Duration::from_secs),
-            },
-            Some(seq),
-        ) {
-            Ok(event) => output.json["turn"] = event,
+    // Whatever ends the wait, the text was delivered: the send result stays on
+    // the answer, so a driver does not read a timeout as "send again".
+    if let Some(turn) = report.turn {
+        json["turn"] = Value::Null;
+        match turn {
+            Ok(event) => json["turn"] = event,
             Err(e) => {
                 let error = wait_error(e);
-                output.json["error"] = json!(error.message);
-                output.json["error_kind"] = json!(error.error.kind());
+                json["error"] = json!(error.message);
+                json["error_kind"] = json!(error.error.kind());
                 return Ok(
-                    CommandOutput::failed(output.json, output.human, error.message)
-                        .exiting_with(error.exit_code),
+                    CommandOutput::failed(json, human, error.message).exiting_with(error.exit_code)
                 );
             }
         }
     }
-    Ok(output)
+    Ok(CommandOutput::new(json, human))
 }
 
-fn run_send_delivery(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    uuid: String,
-    text: String,
-    no_enter: bool,
-    force: bool,
-) -> Result<CommandOutput, CommandError> {
-    use crate::session_ops::SendOutcome;
-    let session = resolve(db, &uuid)?;
-    check_send(db, &session, &text)?;
-    let id = session.id.to_string();
-    let mut args = vec!["session", "send", &id, &text];
-    if no_enter {
-        args.push("--no-enter");
-    }
-    if force {
-        args.push("--force");
-    }
-    if let Some(remote) = delegate_to_host(&session, &args)? {
-        return Ok(remote);
-    }
-    let submit = !no_enter;
-    let outcome =
-        crate::session_ops::send_text_confirmed(db, backends, &session, &text, submit, force)
-            .map_err(|e| e.context("send"))?;
-    let (submitted, enter_retried) = match outcome {
-        SendOutcome::ComposerBusy => return leave_in_mailbox(db, &session, text),
-        SendOutcome::Typed {
-            submitted,
-            enter_retried,
-        } => (submitted, enter_retried),
-    };
+/// What a send typed into the pane is reported as.
+fn typed_output(
+    session: &SharedSession,
+    submit: bool,
+    submitted: Option<bool>,
+    enter_retried: bool,
+) -> (Value, String) {
     let json = json!({
         "sent": true,
         "submitted": submitted,
@@ -2049,87 +2002,41 @@ fn run_send_delivery(
     } else {
         ""
     };
-    Ok(match (submit, submitted) {
-        (false, _) => CommandOutput::new(
-            json,
-            format!("Typed into '{}' (not submitted).", session.name),
+    let human = match (submit, submitted) {
+        (false, _) => format!("Typed into '{}' (not submitted).", session.name),
+        (true, Some(true)) => format!("Sent to '{}'{retried}.", session.name),
+        (true, None) => format!(
+            "Sent to '{}'; the input line could not confirm whether it was submitted.",
+            session.name
         ),
-        (true, Some(true)) => {
-            CommandOutput::new(json, format!("Sent to '{}'{retried}.", session.name))
-        }
-        (true, None) => CommandOutput::new(
-            json,
-            format!(
-                "Sent to '{}'; the input line could not confirm whether it was submitted.",
-                session.name
-            ),
+        (true, Some(false)) => format!(
+            "Typed into '{}', but it is still in the composer.",
+            session.name
         ),
-        (true, Some(false)) => CommandOutput::failed(
-            json,
-            format!(
-                "Typed into '{}', but it is still in the composer.",
-                session.name
-            ),
-            format!(
-                "'{}' did not submit the text: it is still in its composer after a second Enter",
-                session.name
-            ),
-        ),
-    })
+    };
+    (json, human)
 }
 
-/// `session send` into a composer that holds someone else's typing: the text
-/// is not typed onto their line but handed over the way `message send` hands a
-/// body — the agent's own inbox where it has one, the mailbox otherwise. Only
-/// the mailbox is a failure: nothing will show the agent the text there.
-fn leave_in_mailbox(
-    db: &Database,
+/// What a send that met someone else's typing is reported as: the message it
+/// became instead, as `message send` reports one.
+fn handed_output(
     session: &SharedSession,
-    text: String,
-) -> Result<CommandOutput, CommandError> {
-    let new = crate::storage::messages::NewMessage {
-        to_session_id: session.id,
-        from_session_id: super::identity::calling_session(db).map(|s| s.id),
-        from_task_id: std::env::var("THURBOX_TASK")
-            .ok()
-            .and_then(|t| t.parse().ok()),
-        kind: "session-send".into(),
-        body: text,
-    };
-    let delivered = super::messages::enqueue_and_deliver(db, session, new, false)?;
-    let mut json = delivered.json.clone();
+    handed: &crate::session_ops::delivery::Handed,
+) -> (Value, String) {
+    let mut json = super::messages::handed_json(session, handed);
     json["sent"] = json!(false);
     json["submitted"] = json!(false);
     json["enter_retried"] = json!(false);
     json["session_id"] = json!(session.id.to_string());
     json["session_name"] = json!(session.name);
-    let via = json["delivered_via"]
-        .as_str()
-        .unwrap_or("mailbox")
-        .to_string();
-    let id = json["message_id"].clone();
     let human = format!(
-        "'{}' has text in its composer, so nothing was typed; message #{id} went via {via} \
+        "'{}' has text in its composer, so nothing was typed; message #{} went via {} \
          (if that is only its prompt, `--force` types anyway).",
-        session.name
+        session.name,
+        handed.id,
+        handed.outcome.via.as_str()
     );
-    let note = json["delivery_note"]
-        .as_str()
-        .unwrap_or("no reason given")
-        .to_string();
-    Ok(if via == "mailbox" {
-        CommandOutput::failed(
-            json,
-            human,
-            format!(
-                "'{}' has text in its composer and its agent inbox was not reached ({}); the \
-                 text is only in its mailbox (message #{id})",
-                session.name, note,
-            ),
-        )
-    } else {
-        CommandOutput::new(json, human)
-    })
+    (json, human)
 }
 
 fn run_key(
@@ -2440,7 +2347,7 @@ fn run_signal(
     // the target's own. With an explicit `--session` the environment is the
     // caller's, so it is not even considered.
     if session.is_none() {
-        super::delivery::remember_claude_socket(db, &target);
+        crate::session_ops::delivery::remember_claude_socket(db, &target);
     }
     // The same state in the row's backend, on the row's own pane — the
     // channel a peer attached to that backend reads live, and the one the
@@ -2608,7 +2515,7 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
     }
     let conversation = payload["session_id"]
         .as_str()
-        .filter(|id| super::delivery::valid_codex_thread(id))
+        .filter(|id| crate::session_ops::delivery::valid_codex_thread(id))
         .ok_or("Codex SessionStart did not report a valid session_id")?;
 
     // A new window can report before its row is published. On restart the
@@ -3785,33 +3692,10 @@ fn existing_session_output(
 
 /// What every send checks here before it types or asks a host: one place, so
 /// a waiting send and a plain one cannot drift apart.
-fn check_send(db: &Database, session: &SharedSession, text: &str) -> Result<(), CommandError> {
-    if text.trim().is_empty() {
-        return Err("text must not be empty".into());
-    }
-    Ok(refuse_if_parked(db, session)?)
-}
-
-/// Refuse a pane verb pointed at a **parked** session, naming the fix.
-///
-/// `session stop` killed the window on purpose, so `send`, `key` and `capture`
-/// have nothing to reach. Without this they reach for it anyway and report
-/// whatever the multiplexer says about a window that is not there — `can't find
-/// window: tb-<name>`, which describes a crash rather than the deliberate state
-/// the caller itself asked for. One database read, on verbs that already do
-/// several.
-fn refuse_if_parked(db: &Database, session: &SharedSession) -> Result<(), String> {
-    let parked = db
-        .session_stopped_at(session.id)
-        .map_err(|e| format!("session_stopped_at: {e}"))?
-        .is_some();
-    if !parked {
-        return Ok(());
-    }
-    Err(format!(
-        "session '{}' is stopped: it has no pane. `thurbox-cli session start {}` puts one back",
-        session.name, session.name
-    ))
+/// Refuse a pane verb pointed at a **parked** session, naming the fix — the
+/// same refusal `session send` gives ([`crate::session_ops::send::refuse_if_parked`]).
+fn refuse_if_parked(db: &Database, session: &SharedSession) -> Result<(), CommandError> {
+    Ok(crate::session_ops::send::refuse_if_parked(db, session)?)
 }
 
 /// Resolve the session a command was pointed at — a name, a UUID or an id
@@ -3844,32 +3728,6 @@ fn delegate_to_host(
     };
     let answer = crate::session_ops::host_cli::run(&host, &cli, args)?;
     Ok(Some(host_output(answer)))
-}
-
-/// [`delegate_to_host`] for a send that waits. A host's failure there — a
-/// timeout, a session that left — comes after the text was delivered, so its
-/// whole answer, `sent` included, is passed on with the host's exit code
-/// rather than reduced to the error.
-fn delegate_send_to_host(
-    session: &SharedSession,
-    args: &[&str],
-) -> Result<Option<CommandOutput>, CommandError> {
-    let Some((host, cli)) = host_cli_for(session)? else {
-        return Ok(None);
-    };
-    match crate::session_ops::host_cli::run_classified(&host, &cli, args) {
-        Ok(answer) => Ok(Some(host_output(answer))),
-        Err(failure) => {
-            let Some(answer) = failure.answer else {
-                return Err(failure.error.into());
-            };
-            let error = CommandError::from(failure.error);
-            Ok(Some(
-                CommandOutput::failed(answer, error.message.clone(), error.message)
-                    .exiting_with(error.exit_code),
-            ))
-        }
-    }
 }
 
 /// The host and its CLI a remote row's verbs are delegated to, or `None` for a

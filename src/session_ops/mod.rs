@@ -39,6 +39,7 @@ pub mod builtin_ui_skill;
 pub mod composer;
 pub mod delete;
 pub mod deliver;
+pub mod delivery;
 pub mod events;
 pub mod extensions;
 pub mod host_cli;
@@ -59,6 +60,7 @@ pub mod rename;
 pub mod reparent;
 pub mod restart;
 pub mod restore;
+pub mod send;
 pub mod set_key;
 #[cfg(test)]
 mod shared_tests;

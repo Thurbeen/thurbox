@@ -596,8 +596,12 @@ literal: no shell sees it, a leading `-` cannot read as a `send-keys` flag, and 
 newline cannot submit the line before it. Locally the verbs go through the
 backend the row's route names (ADR-30); on an `ssh:`/`wsl:` backend
 `send`/`key`/`capture` are delegated to that host's own `thurbox-cli`
-(`delegate_to_host` in `src/cli/sessions.rs`), which records their effects in
-the host's own database. A host with no usable `thurbox-cli` (sharing off, or
+(`session_ops::send` for `send`, `delegate_to_host` in `src/cli/sessions.rs` for
+the other two), which records their effects in the host's own database.
+`session_ops::send::send` is the one send (#1468): `session send` and the
+interface's `send` command both call it, so the empty and parked refusals, the
+composer guard, the mailbox hand-over and the host delegation apply to both; the
+command sends with Enter and no turn wait. A host with no usable `thurbox-cli` (sharing off, or
 none reachable) falls through to the registry path, which drives its window
 over the transport; only a backend with no `hosts.toml` entry is refused.
 
@@ -974,7 +978,7 @@ a `body`, and optional provenance. Storage is the `session_messages` table (sche
 without double-processing.
 
 - **Delivery is native, never keystrokes.** `send`/`reply` hand the body to the
-  recipient agent's own inbox (`cli/delivery.rs`): a Claude Code inbox socket,
+  recipient agent's own inbox (`session_ops/delivery.rs`): a Claude Code inbox socket,
   or `codex queue --thread <thurbox.codex_conversation_id>`. Anything else stays
   mailbox-only. A Claude socket is used only when **proven** the recipient's
   (`owned_sockets`): its `~/.claude/sessions/<pid>.json` entry is

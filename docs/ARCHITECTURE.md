@@ -1988,7 +1988,7 @@ thurbox database, whoever created it. A thurbox reaching the host from
 elsewhere *mirrors* that database (`session list --json` + `--deleted`) into
 local rows on `ssh:<name>` / `wsl:<name>` — same id, the host's facts and hook
 status — and performs lifecycle operations there through the host's own
-`thurbox-cli`: `session create|delete|restart|restore|fork`, inside the shared
+`thurbox-cli`: `session create|delete|restart|restore|fork|send`, inside the shared
 `session_ops` pipelines, so every caller delegates without knowing it
 (`session_ops::host_cli`, `session_ops::mirror`). Which side carries out a
 verb on a live session is decided in one place,

@@ -53,7 +53,7 @@ const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Which inbox carried a message. Reported as `delivered_via` and stored on the
 /// row for the native two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeliveredVia {
+pub enum DeliveredVia {
     ClaudeSocket,
     CodexQueue,
     /// Not handed to the agent: the body waits for `message inbox`.
@@ -66,11 +66,11 @@ impl DeliveredVia {
     /// cannot see the recipient's permission mode, and the socket accepts the
     /// body either way. Claude Code holds a cross-session message behind a
     /// dialog unless its `crossSessionInbound` setting is `accept`.
-    pub(crate) fn may_hold(self) -> bool {
+    pub fn may_hold(self) -> bool {
         matches!(self, Self::ClaudeSocket)
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeSocket => "claude-socket",
             Self::CodexQueue => "codex-queue",
@@ -507,7 +507,7 @@ pub(crate) fn delivery_text(message: &SessionMessage, sender: Option<&str>) -> S
 
 /// How a delivery went, for the command output.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Outcome {
+pub struct Outcome {
     pub via: DeliveredVia,
     /// Why the message stayed in the mailbox; `None` once delivered natively.
     pub note: Option<String>,
@@ -617,6 +617,46 @@ pub(crate) fn deliver(
         tracing::warn!("message #{}: release the delivery lease: {e}", message.id);
     }
     Outcome::mailbox(format!("native delivery failed: {}", failures.join("; ")))
+}
+
+/// A message `enqueue_and_deliver` left for its recipient.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Handed {
+    pub id: i64,
+    pub outcome: Outcome,
+}
+
+/// Enqueue `new` for `recipient` and hand it to the recipient agent's own
+/// inbox, unless `no_wake`. The mailbox row is the durable copy either way;
+/// `message send`/`reply` and a `session send` that met a busy composer all
+/// come through here.
+pub(crate) fn enqueue_and_deliver(
+    db: &Database,
+    recipient: &SharedSession,
+    new: crate::storage::messages::NewMessage,
+    no_wake: bool,
+) -> Result<Handed, String> {
+    let id = db
+        .enqueue_message(&new)
+        .map_err(|e| format!("enqueue_message: {e}"))?;
+    if no_wake {
+        return Ok(Handed {
+            id,
+            outcome: Outcome::mailbox("--no-wake: enqueued only"),
+        });
+    }
+    let message = db
+        .get_message(id)
+        .map_err(|e| format!("get_message: {e}"))?
+        .ok_or_else(|| format!("message #{id} vanished after enqueue"))?;
+    let sender = new
+        .from_session_id
+        .and_then(|from| db.get_session_by_id(from).ok().flatten())
+        .map(|s| s.name);
+    let text = delivery_text(&message, sender.as_deref());
+    let evidence = gather(db, recipient);
+    let outcome = deliver(db, &message, &text, &evidence, &Native);
+    Ok(Handed { id, outcome })
 }
 
 #[cfg(test)]
@@ -1027,7 +1067,7 @@ mod tests {
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "cli::delivery::tests::idle_as_a_claude_stand_in",
+                "session_ops::delivery::tests::idle_as_a_claude_stand_in",
                 "--ignored",
             ])
             .env("THURBOX_SESSION", session)
