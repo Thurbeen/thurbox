@@ -605,10 +605,10 @@ mod tests {
             checked.push(named.to_string());
         }
         // The exact set, not a count: it also pins that the walk found the real
-        // tree, and that the two built-ins — the only extensions thurbox ships,
-        // and the ones `session_ops::builtin` embeds — are both still there.
+        // tree, and that the built-ins — the only extensions thurbox ships,
+        // and the ones `session_ops::builtin` embeds — are all still there.
         checked.sort();
-        assert_eq!(checked, ["hooks", "ui-skill"]);
+        assert_eq!(checked, ["hooks", "sessions-skill", "ui-skill"]);
     }
 
     #[test]

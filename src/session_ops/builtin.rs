@@ -1,12 +1,13 @@
 //! **Built-in extensions** — the ones that ship embedded in the binary and are
 //! auto-activated, rather than being fetched from a source on demand (ADR-20).
 //!
-//! There are two, and they exist for the same reason: what they wire up has to
-//! be there before the user knows to ask for it. [`builtin_hooks`] gives every
-//! session its status dot with zero setup; [`builtin_ui_skill`] gives whichever
-//! coding CLI the user runs the knowledge of how to edit thurbox's own
-//! interface, in every session rather than only the one they thought to attach
-//! the interface directory to.
+//! There are three, and they exist for the same reason: what they wire up has
+//! to be there before the user knows to ask for it. [`builtin_hooks`] gives
+//! every session its status dot with zero setup; [`builtin_ui_skill`] gives
+//! whichever coding CLI the user runs the knowledge of how to edit thurbox's
+//! own interface, in every session rather than only the one they thought to
+//! attach the interface directory to; [`builtin_sessions_skill`] gives it the
+//! knowledge of how to read and message the other sessions.
 //!
 //! Delivery reuses the ordinary extension machinery whole: the embedded assets
 //! are materialized into a stable local dir, then [`install_extension`]
@@ -20,6 +21,7 @@
 //!
 //! [`builtin_hooks`]: super::builtin_hooks
 //! [`builtin_ui_skill`]: super::builtin_ui_skill
+//! [`builtin_sessions_skill`]: super::builtin_sessions_skill
 
 use std::path::PathBuf;
 
@@ -53,6 +55,7 @@ pub struct Builtin {
 pub const BUILTINS: &[&Builtin] = &[
     &super::builtin_hooks::HOOKS,
     &super::builtin_ui_skill::UI_SKILL,
+    &super::builtin_sessions_skill::SESSIONS_SKILL,
 ];
 
 /// The built-in named `name`, if it is one. This is the test the CLI applies
@@ -218,6 +221,7 @@ mod tests {
     fn builtin_extension_looks_up_by_name() {
         assert!(builtin_extension("hooks").is_some());
         assert!(builtin_extension("ui-skill").is_some());
+        assert!(builtin_extension("sessions-skill").is_some());
         assert!(builtin_extension("not-a-builtin").is_none());
     }
 
@@ -232,6 +236,106 @@ mod tests {
                 "'{}' home {home} escapes the config dir",
                 b.name
             );
+        }
+    }
+
+    /// The built-ins whose payload is an agent skill, with that skill.
+    fn skill_builtins() -> Vec<(&'static Builtin, &'static str)> {
+        BUILTINS
+            .iter()
+            .filter_map(|b| {
+                b.assets
+                    .iter()
+                    .find(|(n, _)| *n == "SKILL.md")
+                    .map(|(_, skill)| (*b, *skill))
+            })
+            .collect()
+    }
+
+    /// The frontmatter is what makes the file a skill rather than a document:
+    /// a CLI with no `name`/`description` to match against never loads it, and
+    /// the failure is silent — the skill simply never triggers. The name must
+    /// also be the directory every destination installs it under.
+    #[test]
+    fn every_skill_payload_opens_with_usable_frontmatter() {
+        let skills = skill_builtins();
+        assert_eq!(skills.len(), 2, "ui-skill and sessions-skill");
+        for (b, skill) in skills {
+            let mut lines = skill.lines();
+            assert_eq!(lines.next(), Some("---"), "{}: no frontmatter", b.name);
+            let front: Vec<&str> = lines.take_while(|l| *l != "---").collect();
+            let name = front
+                .iter()
+                .find_map(|l| l.strip_prefix("name: "))
+                .unwrap_or_else(|| panic!("{}: frontmatter declares no name", b.name));
+            let desc = front
+                .iter()
+                .find_map(|l| l.strip_prefix("description: "))
+                .unwrap_or_else(|| panic!("{}: frontmatter declares no description", b.name));
+            // A plain YAML scalar cannot carry ": " — the frontmatter fails to
+            // parse and the skill is skipped, with nothing said about why.
+            assert!(
+                !desc.contains(": "),
+                "{}: description needs quoting",
+                b.name
+            );
+            let def: crate::session::ExtensionDef = toml::from_str(
+                b.assets
+                    .iter()
+                    .find(|(n, _)| *n == "extension.toml")
+                    .unwrap()
+                    .1,
+            )
+            .unwrap();
+            for f in &def.external_files {
+                assert!(
+                    f.path.ends_with(&format!("/skills/{name}/SKILL.md")),
+                    "{} installs skill {name} at {}",
+                    b.name,
+                    f.path
+                );
+            }
+        }
+    }
+
+    /// The installer only overwrites a file still carrying its managed marker,
+    /// so a payload without one is written once and then never updated again.
+    #[test]
+    fn every_skill_payload_carries_the_managed_marker() {
+        for (b, skill) in skill_builtins() {
+            assert!(
+                skill.contains(super::super::extensions::MANAGED_MARKER),
+                "{}: SKILL.md must carry the managed marker or updates silently stop",
+                b.name
+            );
+        }
+    }
+
+    /// Every destination is an agent's own config dir, so each must be guarded:
+    /// an unguarded entry creates `~/.codex` for someone who does not run codex.
+    #[test]
+    fn every_skill_destination_is_guarded_on_the_cli_being_installed() {
+        for (b, _) in skill_builtins() {
+            let manifest = b
+                .assets
+                .iter()
+                .find(|(n, _)| *n == "extension.toml")
+                .unwrap()
+                .1;
+            let def: crate::session::ExtensionDef = toml::from_str(manifest).unwrap();
+            assert!(
+                !def.external_files.is_empty(),
+                "{} delivers external files",
+                b.name
+            );
+            for f in &def.external_files {
+                assert!(
+                    f.requires_dir.is_some(),
+                    "{}: {} would be written for a CLI the user may not have",
+                    b.name,
+                    f.path
+                );
+            }
         }
     }
 }

@@ -112,7 +112,7 @@ try {
         $mux = "server " + ((& $old -V) -join ' ') + ", client $mux"
         Write-Output "running: $mux"
     }
-    foreach ($extension in @('hooks','ui-skill')) {
+    foreach ($extension in @('hooks','ui-skill','sessions-skill')) {
         Invoke-Tbx @('extension','deactivate',$extension) | Out-Null
     }
     $ps=(Get-Command powershell.exe).Source

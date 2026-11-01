@@ -836,7 +836,7 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
     let dir = tempfile::tempdir().expect("tempdir");
     let _guard = isolated_config(dir.path());
     let db = Database::open_in_memory().expect("db");
-    for name in ["hooks", "ui-skill"] {
+    for name in ["hooks", "ui-skill", "sessions-skill"] {
         db.set_builtin_extension_optout(name, true)
             .expect("opt out");
     }

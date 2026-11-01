@@ -1776,7 +1776,7 @@ A bare name installs from the official source
 fetched via curl/wget) — `<ref>` is the running binary's release tag
 (`main` for dev builds), so a fetched extension matches your binary.
 **No extension ships under a bare name today**: `extensions/` holds only the
-two built-ins (`hooks`, `ui-skill`), which are embedded in the binary and
+three built-ins (`hooks`, `ui-skill`, `sessions-skill`), which are embedded in the binary and
 activate themselves, so `extension available` lists nothing and every install
 is a path, an `http(s)://` URL, or a repository (`git+https://…`, or a URL
 ending in `.git`, or the scp-like `git@host:path` — recognised explicitly, so a

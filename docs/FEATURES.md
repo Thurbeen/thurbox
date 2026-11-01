@@ -1981,7 +1981,7 @@ self-heal contract are in `docs/CONFIG.md` → `extensions/`.
 
 ### What ships in the repo
 
-`extensions/` holds the **two built-ins**, and only those. Both are
+`extensions/` holds the **three built-ins**, and only those. All are
 embedded in the binary and auto-activated, because what they wire up has
 to be there before a user knows to ask for it:
 
@@ -1999,8 +1999,20 @@ to be there before a user knows to ask for it:
   session as an extra repo: a skill loads only when the request is about
   the TUI. Someone who does not already know the interface is editable
   will not go looking for the extension that says so.
+- **`sessions-skill`** — `ui-skill`'s twin, installed the same way to the
+  same guarded destinations. Its skill, `thurbox-sessions`, teaches an
+  agent to work with the **other** sessions using only commands
+  `thurbox-cli` already has: find them and itself (`session list`,
+  `THURBOX_SESSION`), read one without disturbing it (`session get`,
+  `capture`, read-only `exec`, and what each state means for busy versus
+  idle), and reach it — the mailbox (`message send`/`inbox`/`reply`) first,
+  which never types into a pane, and `session send` only when the user asked,
+  after confirming the target, that it is idle, and that it is not the
+  session open in the user's TUI (`ui state` → `selected_session`). Keys
+  that interrupt a turn, `--force`, `session focus` and every lifecycle verb
+  on someone else's session are off-limits unless the user asks.
 
-Turn either off with `thurbox-cli extension deactivate <name>`.
+Turn any of them off with `thurbox-cli extension deactivate <name>`.
 
 Nothing else installs by **bare name**. The bare-name registry
 (`OFFICIAL_EXTENSIONS`) is empty and the resolver stays as it is, so

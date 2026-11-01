@@ -122,7 +122,8 @@ For the same walkthrough with screenshots, see the
   A tmux heartbeat fires them whether or not thurbox is open.
 - **[Inter-session messages](https://thurbox.thurbeen.eu/docs/features.html#inter-session-messages)**
   — an agent-neutral mailbox so one agent hands another a payload instead of
-  scraping its terminal.
+  scraping its terminal. A built-in `thurbox-sessions` skill teaches whichever
+  CLI you run to find the other sessions, read them, and message them safely.
 - **[Extensions](https://thurbox.thurbeen.eu/docs/extensions.html)** — opt-in
   add-ons that are data, not code: a manifest declares the agents, files,
   sessions and automations it wants, and one command installs and self-heals

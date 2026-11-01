@@ -2097,7 +2097,7 @@ name resolves to `examples/panes/<name>` in the thurbox repository at **this bin
 release tag**, the same rule `extension install <name>` follows against
 `extensions/<name>` — a pane reads `thurbox.*`, which is a contract that moves, so
 what a bare name fetches matches the binary asking for it. (For extensions the
-rule currently resolves to nothing: `extensions/` holds only the two built-ins,
+rule currently resolves to nothing: `extensions/` holds only the built-ins,
 which install themselves. Panes are where bare names still have something to
 reach.) Bare names reach the *examples*; anything you
 actually depend on is better named by a URL, a path, or a repository you control.

@@ -1014,6 +1014,14 @@ without double-processing.
 **Full flag list, the body/kind limits, backpressure cap, and retention/pruning
 are in the Inter-Session Messages section of `docs/FEATURES.md`.**
 
+The agent-facing summary of this surface — `session list`/`get`/`capture`/
+`exec`/`send`/`wait`, `message send`/`inbox`/`reply`, `ui state`'s
+`selected_session` — is the `thurbox-sessions` skill the built-in
+`sessions-skill` extension installs (`extensions/sessions-skill/SKILL.md`).
+Renaming or removing a verb or flag it names updates that file in the same PR;
+`tests/sessions_skill_e2e.rs` fails on a `thurbox-cli <group> <verb>` it names
+that no longer exists.
+
 An automation's `AutomationAction` is one of: **Send** (paste a prompt into a
 running session), **Spawn** (start a fresh session and prompt it), or **Exec**
 (run a shell command headlessly — `sh -c`, or `cmd /C` on Windows — with no
