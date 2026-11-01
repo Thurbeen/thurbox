@@ -68,6 +68,12 @@ fn repo() -> tempfile::TempDir {
     dir
 }
 
+/// An interactive bash with Readline, pinned rather than `sh`: `session send`
+/// pastes bracketed, which bash consumes and dash (`/bin/sh` on Debian and
+/// Ubuntu) types into its line as literal escape codes.
+const SHELL_AGENT: &str = "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\n\
+    command = \"env\"\nargs = [\"INPUTRC=/dev/null\", \"PS1=$ \", \"bash\", \"--norc\", \"--noprofile\", \"-i\"]\n";
+
 /// A `HOME` of its own holding `~/.claude` and `~/.codex` (so those two skill
 /// destinations are live and the others are not), with thurbox's config and
 /// data pointed into it and a `shell` agent as the default — a real coding
@@ -95,11 +101,7 @@ fn sandbox() -> (tempfile::TempDir, PathBuf) {
         .expect("config dir")
         .to_path_buf();
     std::fs::create_dir_all(&config).unwrap();
-    std::fs::write(
-        config.join("agents.toml"),
-        "default = \"shell\"\n\n[[agents]]\nname = \"shell\"\ncommand = \"sh\"\nargs = []\n",
-    )
-    .unwrap();
+    std::fs::write(config.join("agents.toml"), SHELL_AGENT).unwrap();
     let home_path = home.path().to_path_buf();
     (home, home_path)
 }
