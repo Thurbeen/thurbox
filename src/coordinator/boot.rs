@@ -366,6 +366,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         trust_stale: true,
         layout_error: None,
         floor: None,
+        floor_cause: None,
         memory_rebuilt: None,
         status: None,
         startup_notices: startup_notices.into(),

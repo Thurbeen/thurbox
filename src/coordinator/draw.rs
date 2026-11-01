@@ -462,12 +462,19 @@ impl App {
         //    bundled copy and reports no error of its own, so without it the
         //    interface would silently be something other than what the user
         //    edited.
+        //
+        //    Not over a system modal: the settings modal's Interface tab is how a
+        //    broken interface is fixed, and it names the failing file and prints
+        //    this same error itself. Painted over it, the panel hid the recovery
+        //    tool behind the fault it was opened to fix. Closing the modal brings
+        //    the panel back.
         if let Some(error) = self
             .host
             .error
             .clone()
             .or_else(|| self.layout_error.clone())
             .or_else(|| self.floor.clone())
+            .filter(|_| !self.modals.is_open())
         {
             paint::render_error(frame, error_area(area), "reload failed", &error);
         }

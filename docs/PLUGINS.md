@@ -1444,7 +1444,8 @@ its own `ttl`: without it every frame after the answer went stale would start
 another copy. `refresh = true` overrides freshness; that is what a "reload" key
 does.
 
-**Trusting a plugin** is settings (`Ctrl+,`) → `]` → select it → `t`. The
+**Trusting a plugin** is settings (`Ctrl+,`) → `]` → select it → `t`, then `t`
+again to confirm what the footer says it will hold. The
 Interface tab shows which files ask for a capability, which are trusted, and
 whether a trusted file has changed since you trusted it. Revoking takes effect on
 the next frame.
@@ -1790,20 +1791,28 @@ is the first thing every user of your plugin will see.
 
 `Ctrl+,` (or `F6`), then `]`. It is **chrome, not a pane** — a recovery tool that
 was itself a plugin could be the thing that is broken, so nothing you do to the
-directory can take it away. It lists every file the interface is made of, what
-state that file is in and where it came from; the header line is the directory in
-force, which is the answer to "my edits did nothing" — they are usually edits to a
-file that is not the one loaded.
+directory can take it away. It lists the plugins the interface is made of, what
+state each is in and what it asks for. The header line counts what needs you —
+`failed`, `not granted`, `off` — and ends with the directory in force (under your
+home as `~/…`), which is the answer to "my edits did nothing": they are usually
+edits to a file that is not the one loaded.
 
-Rows are **grouped** — `PANES`, then `LAYOUT` (`layout.lua`, `plugins.toml`),
-`MODULES` and `DOCS` — and **trouble sorts to the top** of each group, so a failure
-never sits below thirty healthy rows. Each row carries one word of state, then where
-its trust stands, then where it came from when that is not "shipped, unchanged"
-(`edited`, `yours`, `from <package>`):
+Rows are **grouped by where they came from**, because that decides what you can do
+with them: `YOURS` (files you wrote), one `PACKAGE · <name>` group per installed
+package, then `SHIPPED`. **Trouble sorts to the top** of each group, so a failure
+never sits below thirty healthy rows. A row names the file (the full path is in the
+details), then one word of state, then — for a file that declares capabilities —
+what it asks for and whether it holds it (`run not granted`, `run+program granted`,
+`run granted, changed`), then `edited` for a shipped or installed file changed here.
+
+The modules, docs, `layout.lua` and `plugins.toml` are **support files**: listed
+under `SUPPORT FILES` when you press `a` (again to fold them), and always when one
+needs attention — failed, deleted, or edited and so restorable.
 
 | | State | Means |
 |---|---|---|
-| `✗` | `failed` | on disk, did not load. Select the row and the **error is under the list** |
+| `✗` | `failed` | on disk, did not load, and the load error names it. Select the row and the **error is under the list** |
+| `◇` | `not loaded` | a reload is all or nothing, so another file's failure held this one back. The details name that file |
 | `⊘` | `deleted` | thurbox ships it, you deleted it, delivery has stopped writing it |
 | `◌` | `not placed` | it loaded, and `layout.lua` places nothing in its slot — so it never draws |
 | `◍` | `off` | present and intact, deliberately not loaded |
@@ -1813,23 +1822,25 @@ its trust stands, then where it came from when that is not "shipped, unchanged"
 | `·` | `on require`, `in use`, `guide`, `decorates` | not a pane with a slot of its own: a `lib/` module, the layout or manifest, a doc, a decorator |
 
 Under the list, four lines explain the **selected** row: what it is (and the slot a
-pane wants) with its full source; why it is in that state; the one thing that
+pane wants) with its full source and path; why it is in that state — a load error
+wraps over the next lines rather than being cut; the one thing that
 changes it — for a pane that is not placed, the exact `{ slot = "…" }` line to add to
 `layout.lua`; and, for a file that declares capabilities, what it asks to do and
 whether that is granted.
 
 Four keys act on the selected row, and the footer lists only the ones that do
-something there:
+something there (on a narrow screen it drops `a` and `[/]` first):
 
 | Key | Does |
 |---|---|
 | `r` | **restore** — write the copy thurbox ships back over the file. On an edited file it asks first and says what is lost: nothing keeps a pane's edits, and an edited `layout.lua` is moved to `layout.lua.bak`. A deleted file comes back on the first press |
 | `space` | **turn off / turn on** — the file is untouched, simply not loaded |
 | `d` | **delete** — asked twice, and the confirmation says whether it can be undone |
-| `t` | **trust** / **revoke** — grant or withdraw the capabilities the file declares |
+| `t` | **grant** / **revoke** the capabilities the file declares. Granting asks first — the footer names the file and what it would hold, `t` again grants, any other key cancels; revoking risks nothing and takes one press |
 
-Each of the four reloads the interface, so the result is on screen immediately
-rather than at the next start, and each says what it did.
+`a` lists the support files too, and `[`/`]` switch tabs. Each of the four reloads
+the interface, so the result is on screen immediately rather than at the next
+start, and each says what it did.
 
 ### What `r` can put back, and what it cannot
 
@@ -1837,15 +1848,15 @@ rather than at the next start, and each says what it did.
 which is why it covers both undo cases for a shipped pane — an edit and a
 deletion. It has **nothing to put back for a file thurbox never shipped**, and it
 says so rather than doing something. So which recovery you have depends on where
-the file came from, and the row's own tail is what tells you:
+the file came from, and the row's group and tail are what tell you:
 
 | The row shows | The file is | The way back |
 |---|---|---|
-| no tail at all | a bundled pane, as shipped | `r`, though there is nothing to undo |
-| `edited` | a bundled pane you changed | `r` — the shipped copy is in the binary |
-| `removed` | a bundled pane you deleted | `r` |
-| `yours` | one you wrote | **`space`**, then fix the file. `r` reports that thurbox ships no version of it |
-| `from <src>` | an installed pane | `thurbox-cli plugin sync` — the manager that put it there puts it back. `r` says so and refuses |
+| `SHIPPED`, no tail | a bundled pane, as shipped | `r`, though there is nothing to undo |
+| `SHIPPED`, `edited` | a bundled pane you changed | `r` — the shipped copy is in the binary |
+| `SHIPPED`, `deleted` | a bundled pane you deleted | `r` |
+| `YOURS` | one you wrote | **`space`**, then fix the file. `r` reports that thurbox ships no version of it |
+| `PACKAGE · <name>` | an installed pane | `thurbox-cli plugin sync` — the manager that put it there puts it back. `r` says so and refuses |
 
 A pane you wrote yourself is therefore the one case with no restore, and `space`
 is what you reach for: turning it off is enough to get a working interface back

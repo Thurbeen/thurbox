@@ -193,8 +193,8 @@ whose call took the time.
 - **No granting yourself a capability.** A pane that wants to run a program, type
   into or create a session (`sessions`) or read a session's files (`files`) says so
   with `capabilities = { … }`, and the *user* grants it in settings
-  (`Ctrl+,` → `]` → `t`). You cannot do that step for them, and you should not
-  edit `ui.json` to fake it. Draw the untrusted state honestly instead.
+  (`Ctrl+,` → `]` → `t`, confirmed with a second `t`). You cannot do that step
+  for them, and you should not edit `ui.json` to fake it. Draw the untrusted state honestly instead.
 
 ## What `lib/` promises a file that calls it
 

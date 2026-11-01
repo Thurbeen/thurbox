@@ -520,6 +520,10 @@ struct App {
     /// there was wiped before it could ever be painted. The floor is a state that
     /// lasts until the user's copy loads again, so it is recorded as one.
     floor: Option<String>,
+    /// The user's own load error behind [`Self::floor`], unprefixed, so the
+    /// inventory can still name the file that caused it: the bundled host that
+    /// replaced the user's reports no error of its own.
+    floor_cause: Option<String>,
     /// When the plugin VM was last replaced for memory, so a rebuild that did
     /// not help is not repeated on every loop iteration
     /// (`App::rebuild_full_vm`).

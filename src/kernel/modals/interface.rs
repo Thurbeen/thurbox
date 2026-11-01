@@ -70,38 +70,68 @@ pub enum Edit {
 
 /// What a file is listed under.
 ///
-/// Panes first, because they are what an operator is looking for when a pane
-/// is missing; the files that only support them follow in the order an edit
-/// usually reaches them. Grouping by kind rather than by package: a package's
-/// files are all panes and modules, so its name is on each row instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// By where a plugin came from, because that is what decides what can be done
+/// with it: yours are edited by hand, a package's are put back and advanced by
+/// `thurbox-cli plugin`, the shipped ones are restored from the binary. Yours
+/// and the packages first — they are what an operator manages; the shipped
+/// panes follow, and everything that is not a pane last.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Group {
-    Panes,
-    /// `layout.lua` and `plugins.toml`: what decides which panes exist and where.
-    /// A layout-preset picker would land here, on the arrangement's row.
-    Layout,
-    Modules,
-    Docs,
+    Yours,
+    /// An installed package: its name, then its source, so two packages whose
+    /// sources end in the same name are still two groups.
+    Package(String, String),
+    Shipped,
+    /// Modules, docs, `layout.lua` and `plugins.toml`: what the panes are built
+    /// from and arranged by. Listed only on `a`, or when one needs attention.
+    Support,
 }
 
 impl Group {
-    fn of(kind: Kind) -> Self {
-        match kind {
-            Kind::Pane => Group::Panes,
-            Kind::Arrangement | Kind::Manifest => Group::Layout,
-            Kind::Module => Group::Modules,
-            Kind::Doc => Group::Docs,
+    fn of(row: &Row) -> Self {
+        if row.kind != Kind::Pane {
+            return Group::Support;
+        }
+        match &row.source {
+            Source::User => Group::Yours,
+            Source::Installed { src } | Source::InstalledEdited { src } => {
+                Group::Package(package(src).to_string(), src.clone())
+            }
+            Source::Bundled | Source::Edited | Source::Removed => Group::Shipped,
         }
     }
 
-    fn title(self) -> &'static str {
+    fn title(&self) -> String {
         match self {
-            Group::Panes => "PANES",
-            Group::Layout => "LAYOUT",
-            Group::Modules => "MODULES",
-            Group::Docs => "DOCS",
+            Group::Yours => "YOURS".to_string(),
+            Group::Package(name, _) => format!("PACKAGE · {name}"),
+            Group::Shipped => "SHIPPED".to_string(),
+            Group::Support => "SUPPORT FILES".to_string(),
         }
     }
+}
+
+/// Whether a support file is listed while support files are folded away: it
+/// is the one a recovery needs — broken, deleted, or edited and restorable.
+fn needs_attention(row: &Row) -> bool {
+    row.error.is_some()
+        || matches!(row.state, FileState::Failed | FileState::Removed)
+        || matches!(row.source, Source::Edited | Source::InstalledEdited { .. })
+}
+
+/// The file whose load error stopped the last reload, when one is named.
+///
+/// A reload is all-or-nothing, so every other pane that is not loaded is held
+/// back by this one rather than broken itself.
+fn culprit(inventory: &[Row]) -> Option<&Row> {
+    inventory.iter().find(|row| row.error.is_some())
+}
+
+/// Whether `row` is a pane left unloaded by another file's failure.
+fn held_back(row: &Row, culprit: Option<&Row>) -> bool {
+    row.state == FileState::Failed
+        && row.error.is_none()
+        && culprit.is_some_and(|culprit| culprit.path != row.path)
 }
 
 /// How a file's state reads, and how loudly.
@@ -118,8 +148,13 @@ struct Reading {
     fault: bool,
 }
 
-fn state_of(row: &Row) -> Reading {
+fn state_of(row: &Row, culprit: Option<&Row>) -> Reading {
     let (rank, glyph, word, fault) = match row.state {
+        // Its own load error outranks the state: the inventory calls a broken
+        // `layout.lua` or module present, since only a pane is expected to load.
+        _ if row.error.is_some() => (1, "✗", "failed", true),
+        // Not its own fault: drawn plainly, so the one red row is the file to fix.
+        FileState::Failed if held_back(row, culprit) => (2, "◇", "not loaded", false),
         FileState::Failed => (1, "✗", "failed", true),
         FileState::Removed => (2, "⊘", "deleted", true),
         FileState::Unplaced => (3, "◌", "not placed", false),
@@ -161,16 +196,24 @@ fn package(src: &str) -> &str {
     last.strip_suffix(".git").unwrap_or(last)
 }
 
-/// Where a file came from, as the row says it. Silent for the shipped,
-/// untouched default: saying `shipped` on every bundled row would bury the one
-/// row that differs.
-fn origin(source: &Source) -> Option<String> {
+/// What a row calls its file. The group header already says where it came
+/// from, so a plugin is listed by the part of its path that tells it from its
+/// neighbours; a support file keeps its whole path, which is what tells
+/// `lib/ui.lua` from `ui.lua`. The full path is in the details.
+fn label(row: &Row) -> &str {
+    match Group::of(row) {
+        Group::Package(..) => row.path.rsplit('/').next().unwrap_or(&row.path),
+        Group::Yours | Group::Shipped => row.path.strip_prefix("plugins/").unwrap_or(&row.path),
+        Group::Support => &row.path,
+    }
+}
+
+/// Where a file came from, as the row says it — only where the group header
+/// does not already: an edit, made here to a shipped or installed file.
+fn origin(source: &Source) -> Option<&'static str> {
     match source {
-        Source::Edited => Some("edited".to_string()),
-        Source::User => Some("yours".to_string()),
-        Source::Installed { src } => Some(format!("from {}", package(src))),
-        Source::InstalledEdited { src } => Some(format!("from {}, edited", package(src))),
-        Source::Bundled | Source::Removed => None,
+        Source::Edited | Source::InstalledEdited { .. } => Some("edited"),
+        Source::User | Source::Installed { .. } | Source::Bundled | Source::Removed => None,
     }
 }
 
@@ -186,28 +229,60 @@ fn provenance(source: &Source) -> String {
     }
 }
 
-/// Where a file stands on what it asks for, as the row says it.
-fn trust_word(trust: FileTrust) -> Option<&'static str> {
-    match trust {
-        FileTrust::NotAsked => None,
-        FileTrust::Untrusted => Some("untrusted"),
-        FileTrust::Trusted => Some("trusted"),
-        FileTrust::Drifted => Some("trusted, changed"),
-        FileTrust::Replaced => Some("untrusted, changed"),
-        FileTrust::Shipped => Some("shipped"),
+/// What a file asks for and whether it holds it, as the row says it.
+///
+/// Read from [`FileTrust::grants`], the rule the enforced grant goes through, so
+/// the row cannot say "not granted" while the plugin holds `run` (#1467). Silent
+/// for a shipped file, which holds what it asks for without being asked.
+fn grant_word(row: &Row) -> Option<(String, bool)> {
+    if row.capabilities.is_empty() || matches!(row.trust, FileTrust::NotAsked | FileTrust::Shipped)
+    {
+        return None;
     }
+    let caps = capability_names(row);
+    let changed = matches!(row.trust, FileTrust::Drifted | FileTrust::Replaced);
+    let granted = row.trust.grants();
+    let word = match (granted, changed) {
+        (true, false) => format!("{caps} granted"),
+        (true, true) => format!("{caps} granted, changed"),
+        (false, false) => format!("{caps} not granted"),
+        (false, true) => format!("{caps} not granted, changed"),
+    };
+    Some((word, granted))
+}
+
+fn capability_names(row: &Row) -> String {
+    row.capabilities
+        .iter()
+        .map(|capability| capability.as_str())
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// Why the selected file is in the state it is, and — when that is probably
 /// not what the operator wants — the one thing that changes it, as its own line.
-fn reason(row: &Row) -> (String, Option<String>) {
+fn reason(row: &Row, culprit: Option<&Row>) -> (String, Option<String>) {
     let why = |text: &str| text.to_string();
     match row.state {
+        FileState::Failed if held_back(row, culprit) => {
+            let culprit = culprit.map_or("another file", |culprit| culprit.path.as_str());
+            (
+                format!("not loaded: {culprit} failed to load, and a reload is all or nothing"),
+                Some(format!(
+                    "select {culprit} for its error; fixed, F10 reloads both"
+                )),
+            )
+        }
         FileState::Failed => (
             row.error.clone().unwrap_or_else(|| why("did not load")),
             Some(why(
                 "fix the file and press F10 to reload, or space turns it off",
             )),
+        ),
+        // A support file has no `space` to offer, so its fix line is the reload.
+        _ if row.error.is_some() => (
+            row.error.clone().unwrap_or_default(),
+            Some(why("fix the file and press F10 to reload")),
         ),
         FileState::Removed => (
             why("you deleted this shipped file"),
@@ -291,8 +366,60 @@ fn restorable(row: &Row) -> bool {
     matches!(row.source, Source::Edited | Source::Removed)
 }
 
-/// The least of a path a narrow row keeps before it starts cutting the words
-/// after it: enough to tell `plugins/85_top.lua` from its neighbours.
+/// The interface directory as the header shows it: under the home directory,
+/// as `~/…`, so the line spends its width on the part that differs.
+fn tilde(dir: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && dir.starts_with(&home) => {
+            format!("~{}", &dir[home.len()..])
+        }
+        _ => dir.to_string(),
+    }
+}
+
+/// `text` cut to its last `width` characters, the cut marked at the front: a
+/// directory is told apart by its end.
+fn truncate_front(text: &str, width: usize) -> String {
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let tail: String = text.chars().skip(count - (width - 1)).collect();
+    format!("…{tail}")
+}
+
+/// `text` broken at spaces into lines of at most `width` characters, a word
+/// longer than that cut. At most `max` lines; the last one marks a cut.
+fn wrap(text: &str, width: usize, max: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ') {
+        let len = line.chars().count();
+        if len > 0 && len + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    lines.push(line);
+    if lines.len() > max {
+        let rest = lines.split_off(max.saturating_sub(1)).join(" ");
+        lines.push(rest);
+    }
+    lines
+        .into_iter()
+        .map(|line| chrome::truncate(&line, width))
+        .collect()
+}
+
+/// The least of a name a narrow row keeps before it starts dropping the words
+/// after it: enough to tell `85_top.lua` from its neighbours.
 const PATH_FLOOR: usize = 20;
 
 /// Lines the selected row's details take under the list.
@@ -306,9 +433,14 @@ enum Armed {
     Remove { ours: bool },
     /// `r` on an edited file: the shipped copy replaces the edit.
     Restore { layout: bool },
+    /// `t` on a file that does not hold what it asks for: granting hands a
+    /// plugin programs or sessions, which is the one act here that gives
+    /// something away rather than costing a file.
+    Grant,
 }
 
-/// The Interface tab's own state: a cursor, and an armed confirmation.
+/// The Interface tab's own state: a cursor, an armed confirmation, and whether
+/// the support files are listed.
 #[derive(Default)]
 pub struct InterfaceTab {
     selected: usize,
@@ -320,19 +452,27 @@ pub struct InterfaceTab {
     /// turned off sorts above the healthy ones — so an index alone would leave
     /// the cursor on whichever file slid into its place.
     following: Option<String>,
+    /// `a`: list every file, not just the plugins and the files needing
+    /// attention.
+    all: bool,
 }
 
 impl InterfaceTab {
-    /// The rows, ordered: by group, trouble first within one, then by path.
+    /// The rows listed, ordered: by group, trouble first within one, then by
+    /// path.
     ///
     /// Sorted per call rather than cached, because the whole point of the view is
     /// that it is current — a reload changes every one of these answers.
-    fn ordered(inventory: &[Row]) -> Vec<&Row> {
-        let mut rows: Vec<&Row> = inventory.iter().collect();
+    fn ordered<'a>(&self, inventory: &'a [Row]) -> Vec<&'a Row> {
+        let culprit = culprit(inventory);
+        let mut rows: Vec<&Row> = inventory
+            .iter()
+            .filter(|row| self.all || row.kind == Kind::Pane || needs_attention(row))
+            .collect();
         rows.sort_by(|a, b| {
-            Group::of(a.kind)
-                .cmp(&Group::of(b.kind))
-                .then_with(|| state_of(a).rank.cmp(&state_of(b).rank))
+            Group::of(a)
+                .cmp(&Group::of(b))
+                .then_with(|| state_of(a, culprit).rank.cmp(&state_of(b, culprit).rank))
                 .then_with(|| a.path.cmp(&b.path))
         });
         rows
@@ -353,7 +493,7 @@ impl InterfaceTab {
     }
 
     fn current<'a>(&self, inventory: &'a [Row]) -> Option<&'a Row> {
-        let rows = Self::ordered(inventory);
+        let rows = self.ordered(inventory);
         rows.get(self.selected.min(rows.len().saturating_sub(1)))
             .copied()
     }
@@ -367,6 +507,13 @@ impl InterfaceTab {
         self.armed.as_ref().map(|(path, _)| path.as_str())
     }
 
+    /// Withdraw the armed question. For keys the settings modal takes before
+    /// this tab sees them — a tab switch — since the question promises that
+    /// any other key cancels it.
+    pub fn disarm(&mut self) {
+        self.armed = None;
+    }
+
     /// Take a key. Returns a message to report, and an edit for the loop.
     pub fn on_key(
         &mut self,
@@ -374,7 +521,16 @@ impl InterfaceTab {
         inventory: &[Row],
         hits: &Hits,
     ) -> (Option<String>, Option<Edit>) {
-        let ordered = Self::ordered(inventory);
+        if key.code == KeyCode::Char('a') {
+            // Before the empty-list return: with nothing but untouched support
+            // files, `a` is the only key that lists anything. The cursor stays
+            // on its file — `following` — when that file is still listed;
+            // otherwise `follow` clamps it.
+            self.all = !self.all;
+            self.armed = None;
+            return (None, None);
+        }
+        let ordered = self.ordered(inventory);
         let total = ordered.len();
         if total == 0 {
             return (None, None);
@@ -410,7 +566,8 @@ impl InterfaceTab {
             KeyCode::Char('d') => return self.remove(inventory),
             KeyCode::Char('t') => return self.trust(inventory),
             KeyCode::Char(' ') => return self.switch(inventory),
-            _ => {}
+            // The armed question says any other key cancels it.
+            _ => self.armed = None,
         }
         self.following = ordered.get(self.selected).map(|row| row.path.clone());
         (None, None)
@@ -482,18 +639,23 @@ impl InterfaceTab {
     /// that asks for nothing says so rather than silently recording a decision
     /// about a capability it never wanted — a trust list full of files that
     /// need no trust is a list nobody can read.
+    ///
+    /// Granting asks first, on the footer, naming what is handed over; revoking
+    /// does not, because taking a capability away risks nothing.
     fn trust(&mut self, inventory: &[Row]) -> (Option<String>, Option<Edit>) {
-        self.armed = None;
         let Some(row) = self.current(inventory) else {
+            self.armed = None;
             return (None, None);
         };
         if row.trust == FileTrust::NotAsked {
+            self.armed = None;
             return (
                 Some(format!("{} asks for nothing to trust it with", row.path)),
                 None,
             );
         }
         if row.trust == FileTrust::Shipped {
+            self.armed = None;
             return (
                 Some(format!(
                     "{} is shipped with thurbox and holds what it asks for; space turns it off",
@@ -503,10 +665,16 @@ impl InterfaceTab {
             );
         }
         let granting = !row.trust.grants();
+        let path = row.path.clone();
+        if granting && !self.is_armed(&path, |what| what == Armed::Grant) {
+            self.armed = Some((path, Armed::Grant));
+            return (None, None);
+        }
+        self.armed = None;
         (
             None,
             Some(Edit::Trust {
-                file: row.path.clone(),
+                file: path,
                 trusted: granting,
             }),
         )
@@ -568,116 +736,241 @@ impl InterfaceTab {
         }
     }
 
-    /// One row: pointer, state glyph, path, and the words — where it came from,
-    /// its state, and where its trust stands.
+    /// One row: pointer, state glyph, name, and the words — its state, what it
+    /// asks for and whether it holds it, and an edit.
     ///
-    /// The words are what the row is for, so at a narrow width the path is what
-    /// gives way, never them.
-    fn line<'a>(row: &Row, width: usize, chrome: Chrome<'a>, selected: bool) -> Line<'a> {
-        let state = state_of(row);
+    /// The words are what the row is for, so at a narrow width the name gives
+    /// way first; past its floor the words are dropped whole from the end,
+    /// never the state.
+    fn line<'a>(
+        row: &Row,
+        culprit: Option<&Row>,
+        width: usize,
+        chrome: Chrome<'a>,
+        selected: bool,
+    ) -> Line<'a> {
+        let state = state_of(row, culprit);
         let (pointer, body) = if selected {
             ("▸ ", chrome.selected_item())
         } else {
             ("  ", chrome.normal_item())
         };
-        let glyph = if state.fault {
-            Style::default().fg(chrome.palette.danger)
-        } else {
-            Style::default()
-        };
+        let fault = Style::default().fg(chrome.palette.danger);
+        let glyph = if state.fault { fault } else { Style::default() };
+        let quiet = if state.fault { fault } else { chrome.muted() };
 
-        // State first: it is the word the row is for. Where it came from goes
-        // last, so it is what a narrow row cuts.
-        let mut words: Vec<String> = vec![state.word.to_string()];
-        words.extend(trust_word(row.trust).map(str::to_string));
-        words.extend(origin(&row.source));
-        let tail = words.join(" · ");
+        let mut words: Vec<(String, Style)> = vec![(state.word.to_string(), quiet)];
+        if let Some((word, granted)) = grant_word(row) {
+            let role = if granted {
+                chrome.palette.tool_allowed
+            } else {
+                chrome.palette.tool_disallowed
+            };
+            words.push((word, Style::default().fg(role)));
+        }
+        if let Some(edited) = origin(&row.source) {
+            words.push((edited.to_string(), quiet));
+        }
 
-        // 2 pointer + glyph + 1 space, then the path, a gap of at least 2, the
-        // tail. The path gives way first, down to enough of it to recognise;
-        // past that the tail is cut from its end.
+        // 2 pointer + glyph + 1 space, then the name, a gap of at least 2, the
+        // words. The name keeps at least its floor; the words that do not fit
+        // beside that are dropped from the end, the state cut only as a last
+        // resort.
+        let name = label(row);
         let lead = 2 + state.glyph.chars().count() + 1;
-        let floor = row.path.chars().count().min(PATH_FLOOR);
-        let room = width
-            .saturating_sub(lead + 2 + tail.chars().count())
-            .max(floor);
-        let path = chrome::truncate(&row.path, room);
-        let tail = chrome::truncate(&tail, width.saturating_sub(lead + path.chars().count() + 2));
+        let floor = name.chars().count().min(PATH_FLOOR);
+        let room = width.saturating_sub(lead + 2 + floor);
+        let mut tail: Vec<Span<'a>> = Vec::new();
+        let mut used = 0;
+        for (nth, (word, style)) in words.into_iter().enumerate() {
+            let sep = if nth == 0 { 0 } else { 3 };
+            let len = word.chars().count();
+            if nth == 0 {
+                let word = chrome::truncate(&word, room);
+                used = word.chars().count();
+                tail.push(Span::styled(word, style));
+            } else if used + sep + len <= room {
+                tail.push(Span::styled(" · ", quiet));
+                tail.push(Span::styled(word, style));
+                used += sep + len;
+            } else {
+                break;
+            }
+        }
+        let name = chrome::truncate(name, width.saturating_sub(lead + 2 + used).max(1));
         let gap = width
-            .saturating_sub(lead + path.chars().count() + tail.chars().count())
+            .saturating_sub(lead + name.chars().count() + used)
             .max(1);
-        let tail_style = if state.fault {
-            Style::default().fg(chrome.palette.danger)
-        } else {
-            chrome.muted()
-        };
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(pointer, body),
             Span::styled(format!("{} ", state.glyph), glyph),
-            Span::styled(path, body),
+            Span::styled(name, body),
             Span::raw(" ".repeat(gap)),
-            Span::styled(tail, tail_style),
-        ])
+        ];
+        spans.extend(tail);
+        Line::from(spans)
     }
 
-    /// The selected row, explained: what it is and where it came from, why it
-    /// is in the state it is, the fix, and what it asks for.
+    /// The selected row, explained: what it is, where it came from and its
+    /// path, why it is in the state it is, the fix, and what it asks for.
     ///
     /// Always [`DETAILS`] lines, so the modal does not change height as the
-    /// cursor moves.
-    fn details<'a>(row: Option<&Row>, chrome: Chrome<'a>) -> Vec<Line<'a>> {
+    /// cursor moves. A load error is the one line that wraps, into the room the
+    /// lines under it leave, because it is the line a broken file is fixed from.
+    fn details<'a>(
+        row: Option<&Row>,
+        culprit: Option<&Row>,
+        width: usize,
+        chrome: Chrome<'a>,
+    ) -> Vec<Line<'a>> {
         let Some(row) = row else {
             return vec![Line::default(); DETAILS as usize];
         };
-        let state = state_of(row);
+        let state = state_of(row, culprit);
         let reason_style = if state.fault {
             Style::default().fg(chrome.palette.danger)
         } else {
             chrome.normal_item()
         };
-        let (why, fix) = reason(row);
-        let optional = |text: Option<String>| match text {
-            Some(text) => Line::from(Span::styled(format!(" {text}"), chrome.normal_item())),
-            None => Line::default(),
+        let (why, fix) = reason(row, culprit);
+        let asks = asks(row);
+        // A load error may take the fix's line too: the error is what a broken
+        // file is fixed from, and the fix only says to fix it.
+        let spare = DETAILS as usize - 1 - usize::from(asks.is_some());
+        let text = width.saturating_sub(1);
+        let mut lines = vec![Line::from(Span::styled(
+            format!(
+                " {} · {} · {}",
+                what(row),
+                provenance(&row.source),
+                row.path
+            ),
+            chrome.muted(),
+        ))];
+        let why_lines = if row.error.is_some() {
+            wrap(&why, text, spare)
+        } else {
+            vec![why]
         };
-        vec![
-            Line::from(Span::styled(
-                format!(" {} · {}", what(row), provenance(&row.source)),
-                chrome.muted(),
-            )),
-            Line::from(Span::styled(format!(" {why}"), reason_style)),
-            optional(fix),
-            optional(asks(row)),
-        ]
+        lines.extend(
+            why_lines
+                .into_iter()
+                .map(|why| Line::from(Span::styled(format!(" {why}"), reason_style))),
+        );
+        let fix = fix.filter(|_| lines.len() < 1 + spare);
+        for text in [fix, asks].into_iter().flatten() {
+            lines.push(Line::from(Span::styled(
+                format!(" {text}"),
+                chrome.normal_item(),
+            )));
+        }
+        lines.resize(DETAILS as usize, Line::default());
+        lines
+    }
+
+    /// The top line: what needs attention, counted, and where the files are.
+    ///
+    /// The counts are the answer to "is anything wrong" before any row is read;
+    /// the directory to "why did my edit do nothing", since `THURBOX_UI_DIR` and
+    /// a dev build each move the live one.
+    fn summary<'a>(inventory: &[Row], dir: &str, width: usize, chrome: Chrome<'a>) -> Line<'a> {
+        let culprit = culprit(inventory);
+        let panes = inventory
+            .iter()
+            .filter(|row| row.kind == Kind::Pane && row.state != FileState::Removed)
+            .count();
+        let count = |pick: &dyn Fn(&Row) -> bool| inventory.iter().filter(|row| pick(row)).count();
+        // Failed, not merely drawn as a fault: a deleted shipped file is red too,
+        // and counting it would send the reader looking for an error.
+        let failed = count(&|row| state_of(row, culprit).word == "failed");
+        let ungranted = count(&|row| grant_word(row).is_some_and(|(_, granted)| !granted));
+        let off = count(&|row| row.state == FileState::Disabled);
+
+        let noun = if panes == 1 { "plugin" } else { "plugins" };
+        let mut spans = vec![Span::styled(
+            format!(" {panes} {noun}"),
+            chrome.normal_item(),
+        )];
+        let mut used = spans[0].content.chars().count();
+        for (n, word, style) in [
+            (failed, "failed", Style::default().fg(chrome.palette.danger)),
+            (
+                ungranted,
+                "not granted",
+                Style::default().fg(chrome.palette.tool_disallowed),
+            ),
+            (off, "off", chrome.muted()),
+        ] {
+            if n > 0 {
+                let text = format!("{n} {word}");
+                used += 3 + text.chars().count();
+                spans.push(Span::styled(" · ", chrome.muted()));
+                spans.push(Span::styled(text, style));
+            }
+        }
+        let dir = tilde(dir);
+        let room = width.saturating_sub(used + 3);
+        if room >= 8 {
+            let dir = truncate_front(&dir, room - 1);
+            let gap = width.saturating_sub(used + dir.chars().count() + 1);
+            spans.push(Span::raw(" ".repeat(gap.max(2))));
+            spans.push(Span::styled(dir, chrome.muted()));
+        }
+        Line::from(spans)
     }
 
     /// The bottom line: the armed question, or the keys the selected row
     /// answers to — only those, so a key on screen is a key that does something.
-    pub fn footer<'a>(&self, inventory: &[Row], chrome: Chrome<'a>) -> Line<'a> {
+    ///
+    /// Within `width`: on a narrow screen the hints are dropped from the end,
+    /// where the ones that act on no file are, rather than run into the pills.
+    pub fn footer<'a>(&self, inventory: &[Row], width: usize, chrome: Chrome<'a>) -> Line<'a> {
         if let Some((path, armed)) = &self.armed {
             // The two removals are different acts and must not be worded alike:
             // one can be undone from the binary, the other cannot be undone at
             // all. A reflex learned on the first must not carry to the second.
+            let name = path.rsplit('/').next().unwrap_or(path);
             let (question, consequence) = match armed {
                 Armed::Remove { ours: true } => (
-                    "delete",
-                    " thurbox has no copy — this cannot be undone. d again to confirm",
+                    format!("delete {path}?"),
+                    " thurbox has no copy — this cannot be undone. d again to confirm".to_string(),
                 ),
-                Armed::Remove { ours: false } => {
-                    ("delete", " restorable afterwards. d again to confirm")
-                }
+                Armed::Remove { ours: false } => (
+                    format!("delete {path}?"),
+                    " restorable afterwards. d again to confirm".to_string(),
+                ),
                 Armed::Restore { layout: true } => (
-                    "restore",
-                    " your layout.lua is moved to layout.lua.bak. r again to confirm",
+                    format!("restore {path}?"),
+                    " your layout.lua is moved to layout.lua.bak. r again to confirm".to_string(),
                 ),
                 Armed::Restore { layout: false } => (
-                    "restore",
-                    " your edits are lost — nothing keeps a copy. r again to confirm",
+                    format!("restore {path}?"),
+                    " your edits are lost — nothing keeps a copy. r again to confirm".to_string(),
                 ),
+                Armed::Grant => {
+                    let caps = inventory
+                        .iter()
+                        .find(|row| row.path == *path)
+                        .map(capability_names)
+                        .unwrap_or_default();
+                    // Gives way in order: the aside, then the file name — never
+                    // what is granted or the key that grants it. The question is
+                    // drawn padded by a space each side.
+                    let fixed = format!("grant : {caps}?").chars().count() + 2;
+                    let mut consequence = " t again to grant · any other key cancels";
+                    if fixed + name.chars().count() + consequence.chars().count() > width {
+                        consequence = " t again to grant";
+                    }
+                    let room = width.saturating_sub(fixed + consequence.chars().count());
+                    (
+                        format!("grant {}: {caps}?", chrome::truncate(name, room.max(1))),
+                        consequence.to_string(),
+                    )
+                }
             };
             return Line::from(vec![
                 Span::styled(
-                    format!(" {question} {path}? "),
+                    format!(" {question} "),
                     chrome
                         .button(true)
                         .add_modifier(ratatui::style::Modifier::BOLD),
@@ -696,19 +989,33 @@ impl InterfaceTab {
                     ("space", " turn off  ")
                 });
             }
+            match row.trust {
+                FileTrust::Untrusted | FileTrust::Replaced => hints.push(("t", " grant  ")),
+                FileTrust::Trusted | FileTrust::Drifted => hints.push(("t", " revoke  ")),
+                FileTrust::NotAsked | FileTrust::Shipped => {}
+            }
             if restorable(row) {
                 hints.push(("r", " restore  "));
             }
             if row.state != FileState::Removed {
                 hints.push(("d", " delete  "));
             }
-            match row.trust {
-                FileTrust::Untrusted | FileTrust::Replaced => hints.push(("t", " trust  ")),
-                FileTrust::Trusted | FileTrust::Drifted => hints.push(("t", " revoke  ")),
-                FileTrust::NotAsked | FileTrust::Shipped => {}
-            }
         }
+        hints.push(if self.all {
+            ("a", " plugins only  ")
+        } else {
+            ("a", " all files  ")
+        });
         hints.push(("[/]", " tab"));
+        let len = |hints: &[(&str, &str)]| -> usize {
+            hints
+                .iter()
+                .map(|(key, desc)| key.chars().count() + desc.chars().count())
+                .sum()
+        };
+        while hints.len() > 1 && len(&hints) > width {
+            hints.pop();
+        }
         chrome::hint_line(&hints, chrome)
     }
 
@@ -726,33 +1033,37 @@ impl InterfaceTab {
         if area.height == 0 || area.width == 0 {
             return;
         }
-        // Where the files are, and — said out loud — that adding one is putting a
-        // file there. Both answer confusions nothing else can: `THURBOX_UI_DIR`
-        // and a dev build each move the live directory, so edits that "did
-        // nothing" are usually edits to a file that is not the one running; and
-        // "how do I add a pane" otherwise lives only in the guide.
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!(" {ui_dir}"), chrome.muted()),
-                Span::styled("  ·  add a pane: a .lua file in plugins/", chrome.muted()),
-            ])),
+            Paragraph::new(Self::summary(
+                inventory,
+                ui_dir,
+                area.width as usize,
+                chrome,
+            )),
             Rect::new(area.x, area.y, area.width, 1),
         );
 
-        let rows = Self::ordered(inventory);
+        let rows = self.ordered(inventory);
         if rows.is_empty() {
             if area.height > 1 {
                 frame.render_widget(
-                    Paragraph::new(Span::styled(
-                        " no interface files here yet — thurbox writes the shipped ones when it starts",
-                        chrome.muted(),
-                    )),
-                    Rect::new(area.x, area.y + 1, area.width, 1),
+                    Paragraph::new(vec![
+                        Line::from(Span::styled(
+                            " no plugins here yet — thurbox writes the shipped ones when it starts",
+                            chrome.muted(),
+                        )),
+                        Line::from(Span::styled(
+                            " add one: a .lua file in plugins/, or `thurbox-cli plugin install <source>`",
+                            chrome.muted(),
+                        )),
+                    ]),
+                    Rect::new(area.x, area.y + 1, area.width, area.height - 1),
                 );
             }
             return;
         }
         self.follow(&rows);
+        let culprit = culprit(inventory);
 
         // The details are pinned under the list; on a screen too short for both,
         // the list keeps its rows and the details give way.
@@ -766,7 +1077,12 @@ impl InterfaceTab {
         if details > 0 {
             let below = Rect::new(area.x, list.y + list.height, area.width, details);
             frame.render_widget(
-                Paragraph::new(Self::details(rows.get(self.selected).copied(), chrome)),
+                Paragraph::new(Self::details(
+                    rows.get(self.selected).copied(),
+                    culprit,
+                    area.width as usize,
+                    chrome,
+                )),
                 below,
             );
         }
@@ -779,8 +1095,8 @@ impl InterfaceTab {
         let mut lines: Vec<Option<usize>> = Vec::with_capacity(rows.len() + 4);
         let mut group = None;
         for (index, row) in rows.iter().enumerate() {
-            let this = Group::of(row.kind);
-            if group != Some(this) {
+            let this = Group::of(row);
+            if group.as_ref() != Some(&this) {
                 lines.push(None);
                 group = Some(this);
             }
@@ -809,8 +1125,13 @@ impl InterfaceTab {
             match line {
                 Some(index) => {
                     let row = rows[*index];
-                    let drawn =
-                        Self::line(row, body.width as usize, chrome, *index == self.selected);
+                    let drawn = Self::line(
+                        row,
+                        culprit,
+                        body.width as usize,
+                        chrome,
+                        *index == self.selected,
+                    );
                     frame.render_widget(Paragraph::new(drawn), rect);
                     hits.rows.push((rect, *index));
                 }
@@ -820,7 +1141,7 @@ impl InterfaceTab {
                         .iter()
                         .flatten()
                         .next()
-                        .map(|index| Group::of(rows[*index].kind));
+                        .map(|index| Group::of(rows[*index]));
                     if let Some(next) = next {
                         frame.render_widget(
                             Paragraph::new(Span::styled(
@@ -838,12 +1159,12 @@ impl InterfaceTab {
         }
     }
 
-    /// Lines the list needs: a row per file and a header per group present.
-    pub fn listed(inventory: &[Row]) -> usize {
-        let mut groups: Vec<Group> = inventory.iter().map(|row| Group::of(row.kind)).collect();
-        groups.sort();
+    /// Lines the list needs: a row per listed file and a header per group.
+    pub fn listed(&self, inventory: &[Row]) -> usize {
+        let rows = self.ordered(inventory);
+        let mut groups: Vec<Group> = rows.iter().map(|row| Group::of(row)).collect();
         groups.dedup();
-        inventory.len() + groups.len()
+        rows.len() + groups.len()
     }
 }
 
@@ -921,7 +1242,7 @@ mod tests {
                     &mut hits,
                 );
                 frame.render_widget(
-                    Paragraph::new(tab.footer(rows, chrome)),
+                    Paragraph::new(tab.footer(rows, width as usize, chrome)),
                     Rect::new(0, area.height - 1, area.width, 1),
                 );
             })
@@ -970,11 +1291,14 @@ mod tests {
         // programs could not show that it was untrusted, nor why it drew nothing.
         let rows = [installed_top()];
         let lines = paint(&mut InterfaceTab::default(), &rows, 72, 12);
+        assert!(
+            lines.iter().any(|line| line.contains("PACKAGE · top")),
+            "names the package: {lines:#?}"
+        );
         let line = row_of(&lines, "85_top.lua");
-        assert!(line.contains("from top"), "names the package: {line}");
         assert!(!line.contains("/home/user"), "not its path: {line}");
         assert!(line.contains("not placed"), "keeps its state: {line}");
-        assert!(line.contains("untrusted"), "keeps its trust: {line}");
+        assert!(line.contains("run not granted"), "keeps its grant: {line}");
     }
 
     #[test]
@@ -989,11 +1313,10 @@ mod tests {
             "10_sessions.lua",
         );
         assert!(edited.contains("edited"), "{edited}");
-        let mine = row_of(
-            &lines(row("plugins/90_mine.lua", Source::User, FileState::Visible)),
-            "90_mine.lua",
-        );
-        assert!(mine.contains("yours"), "{mine}");
+        // Your own file says so once, in its group's header, not on each row.
+        let mine = lines(row("plugins/90_mine.lua", Source::User, FileState::Visible));
+        assert!(mine.iter().any(|line| line.trim() == "YOURS"), "{mine:#?}");
+        assert!(!row_of(&mine, "90_mine.lua").contains("yours"));
 
         // A trusted file that changed since says both halves.
         let mut drifted = installed_top();
@@ -1001,9 +1324,16 @@ mod tests {
             src: "git+https://github.com/someone/thurbox-top.git".into(),
         };
         drifted.trust = FileTrust::Drifted;
-        let line = row_of(&lines(drifted), "85_top.lua");
-        assert!(line.contains("from thurbox-top, edited"), "{line}");
-        assert!(line.contains("trusted, changed"), "{line}");
+        let drawn = lines(drifted);
+        assert!(
+            drawn
+                .iter()
+                .any(|line| line.contains("PACKAGE · thurbox-top")),
+            "{drawn:#?}"
+        );
+        let line = row_of(&drawn, "85_top.lua");
+        assert!(line.contains("edited"), "{line}");
+        assert!(line.contains("run granted, changed"), "{line}");
 
         // Silence is the right answer for the shipped, unmodified default: a
         // word on every bundled row would bury the one row that differs.
@@ -1027,9 +1357,9 @@ mod tests {
             FileState::Disabled,
         )];
         let lines = paint(&mut InterfaceTab::default(), &rows, 56, 12);
-        let line = row_of(&lines, "plugins/85_a_pane");
+        let line = row_of(&lines, "85_a_pane");
         assert!(line.contains("off"), "{line}");
-        assert!(line.contains('…'), "the path is what gives way: {line}");
+        assert!(line.contains('…'), "the name is what gives way: {line}");
     }
 
     #[test]
@@ -1071,7 +1401,9 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_are_grouped_by_what_they_are_with_the_panes_first() {
+    fn the_plugins_are_grouped_by_where_they_came_from_and_support_files_last() {
+        let mut top = installed_top();
+        top.state = FileState::Visible;
         let rows = [
             file("AGENTS.md", Kind::Doc),
             file("layout.lua", Kind::Arrangement),
@@ -1082,22 +1414,236 @@ mod tests {
                 FileState::Visible,
             ),
             row("plugins/90_notes.lua", Source::User, FileState::Unplaced),
+            row("plugins/91_ok.lua", Source::User, FileState::Visible),
+            top,
         ];
-        let lines = paint(&mut InterfaceTab::default(), &rows, 72, 20);
+        let mut tab = InterfaceTab {
+            all: true,
+            ..InterfaceTab::default()
+        };
+        let lines = paint(&mut tab, &rows, 72, 24);
         let at = |needle: &str| {
             lines
                 .iter()
                 .position(|line| line.contains(needle))
                 .unwrap_or_else(|| panic!("no `{needle}`:\n{}", lines.join("\n")))
         };
-        assert!(at("PANES") < at("90_notes.lua"));
-        assert!(at("90_notes.lua") < at("10_sessions.lua"), "trouble first");
-        assert!(at("10_sessions.lua") < at("LAYOUT"));
-        assert!(at("LAYOUT") < at("layout.lua"));
-        assert!(at("layout.lua") < at("MODULES"));
-        assert!(at("MODULES") < at("lib/chrome.lua"));
-        assert!(at("lib/chrome.lua") < at("DOCS"));
-        assert!(at("DOCS") < at("AGENTS.md"));
+        assert!(at("YOURS") < at("90_notes.lua"));
+        assert!(at("90_notes.lua") < at("91_ok.lua"), "trouble first");
+        assert!(at("91_ok.lua") < at("PACKAGE · top"));
+        assert!(at("PACKAGE · top") < at("85_top.lua"));
+        assert!(at("85_top.lua") < at("SHIPPED"));
+        assert!(at("SHIPPED") < at("10_sessions.lua"));
+        assert!(at("10_sessions.lua") < at("SUPPORT FILES"));
+        assert!(at("SUPPORT FILES") < at("AGENTS.md"));
+        assert!(at("AGENTS.md") < at("lib/chrome.lua"));
+    }
+
+    #[test]
+    fn support_files_are_listed_on_a_or_when_one_needs_attention() {
+        let mut layout = file("layout.lua", Kind::Arrangement);
+        layout.source = Source::Edited;
+        let rows = [
+            file("lib/chrome.lua", Kind::Module),
+            layout,
+            row("plugins/90_mine.lua", Source::User, FileState::Visible),
+        ];
+        let mut tab = InterfaceTab::default();
+        let text = screen(&mut tab, &rows);
+        assert!(text.contains("layout.lua"), "edited, so restorable: {text}");
+        assert!(!text.contains("lib/chrome.lua"), "{text}");
+        assert_eq!(tab.listed(&rows), 4, "two rows under two headers");
+
+        tab.on_key(&press(KeyCode::Char('a')), &rows, &Hits::default());
+        let text = screen(&mut tab, &rows);
+        assert!(text.contains("lib/chrome.lua"), "{text}");
+        assert!(footer(&tab, &rows).contains("plugins only"));
+    }
+
+    #[test]
+    fn a_toggles_the_support_files_even_when_nothing_else_is_listed() {
+        // No plugins and nothing needing attention lists nothing at all, and
+        // the footer still offers `a`; it has to answer.
+        let rows = [file("lib/chrome.lua", Kind::Module)];
+        let mut tab = InterfaceTab::default();
+        assert_eq!(tab.listed(&rows), 0);
+        tab.on_key(&press(KeyCode::Char('a')), &rows, &Hits::default());
+        let text = screen(&mut tab, &rows);
+        assert!(text.contains("lib/chrome.lua"), "{text}");
+    }
+
+    #[test]
+    fn a_support_file_that_fails_to_load_reads_failed_and_is_counted() {
+        // The inventory calls `layout.lua` present whether it loaded or not;
+        // its error is what says it did not.
+        let mut layout = file("layout.lua", Kind::Arrangement);
+        layout.error = Some("layout.lua: unexpected symbol near <eof>".into());
+        let rows = [layout];
+        let reading = state_of(&rows[0], culprit(&rows));
+        assert_eq!((reading.word, reading.fault), ("failed", true));
+        let (why, fix) = reason(&rows[0], culprit(&rows));
+        assert!(why.contains("unexpected symbol"), "{why}");
+        assert!(fix.is_some());
+        let mut tab = InterfaceTab::default();
+        let text = screen(&mut tab, &rows);
+        assert!(text.contains("1 failed"), "{text}");
+    }
+
+    #[test]
+    fn the_grant_question_shortens_the_file_name_to_fit() {
+        let mut long = row(
+            "plugins/94_a_pane_with_a_name_long_enough_to_need_cutting.lua",
+            Source::User,
+            FileState::Unplaced,
+        );
+        long.capabilities = vec![Capability::Run];
+        long.trust = FileTrust::Untrusted;
+        let rows = [long];
+        let mut tab = InterfaceTab::default();
+        tab.on_key(&press(KeyCode::Char('t')), &rows, &Hits::default());
+        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let text: String = tab
+            .footer(&rows, 48, Chrome::new(&palette))
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(text.chars().count() <= 48, "{text}");
+        assert!(text.contains("run?"), "{text}");
+        assert!(text.contains("t again"), "{text}");
+        assert!(text.contains('…'), "{text}");
+    }
+
+    #[test]
+    fn panes_held_back_by_a_failed_reload_are_not_called_failed() {
+        // A reload is all-or-nothing: one broken file leaves every other one
+        // unloaded. Only the file the error names is the fault.
+        let mut broken = row("plugins/93_broken.lua", Source::User, FileState::Failed);
+        broken.error = Some("93_broken: syntax error near <eof>".into());
+        let rows = [
+            row("plugins/92_fine.lua", Source::User, FileState::Failed),
+            broken,
+        ];
+        let mut tab = InterfaceTab::default();
+        let lines = paint(&mut tab, &rows, 90, 14);
+        let culprit = row_of(&lines, "93_broken.lua");
+        assert!(
+            culprit.contains("failed") && culprit.contains('▸'),
+            "{culprit}"
+        );
+        let held = row_of(&lines, "92_fine.lua");
+        assert!(
+            held.contains("not loaded") && !held.contains("failed"),
+            "{held}"
+        );
+        assert!(lines[0].contains("1 failed"), "{}", lines[0]);
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("syntax error near <eof>")));
+
+        select(&mut tab, &rows, "plugins/92_fine.lua");
+        let text = paint(&mut tab, &rows, 90, 14).join("\n");
+        assert!(
+            text.contains("plugins/93_broken.lua failed to load"),
+            "{text}"
+        );
+
+        // With nothing named, a pane that did not load is still its own fault.
+        let alone = [row("plugins/92_fine.lua", Source::User, FileState::Failed)];
+        let line = row_of(
+            &paint(&mut InterfaceTab::default(), &alone, 90, 12),
+            "92_fine",
+        );
+        assert!(line.contains("failed"), "{line}");
+    }
+
+    #[test]
+    fn a_long_load_error_wraps_into_the_room_under_it() {
+        let mut broken = row("plugins/93_broken.lua", Source::User, FileState::Failed);
+        broken.error = Some(format!("93_broken: {}tail-of-error", "word ".repeat(20)));
+        let text = paint(&mut InterfaceTab::default(), &[broken], 60, 12).join("\n");
+        assert!(text.contains("tail-of-error"), "{text}");
+    }
+
+    #[test]
+    fn granting_asks_first_and_names_what_is_granted_while_revoking_does_not() {
+        let rows = [installed_top()];
+        let mut tab = InterfaceTab::default();
+        let (_, edit) = tab.on_key(&press(KeyCode::Char('t')), &rows, &Hits::default());
+        assert_eq!(edit, None, "the first press only asks");
+        let asked = footer(&tab, &rows);
+        assert!(asked.contains("grant 85_top.lua: run?"), "{asked}");
+        assert!(asked.contains("t again to grant"), "{asked}");
+
+        // Any other key withdraws the question.
+        tab.on_key(&press(KeyCode::Char('x')), &rows, &Hits::default());
+        assert!(tab.armed().is_none());
+        tab.on_key(&press(KeyCode::Char('t')), &rows, &Hits::default());
+        let (_, edit) = tab.on_key(&press(KeyCode::Char('t')), &rows, &Hits::default());
+        assert_eq!(
+            edit,
+            Some(Edit::Trust {
+                file: "plugins/85_top.lua".into(),
+                trusted: true,
+            })
+        );
+
+        let mut trusted = installed_top();
+        trusted.trust = FileTrust::Trusted;
+        let (_, edit) = InterfaceTab::default().on_key(
+            &press(KeyCode::Char('t')),
+            &[trusted],
+            &Hits::default(),
+        );
+        assert_eq!(
+            edit,
+            Some(Edit::Trust {
+                file: "plugins/85_top.lua".into(),
+                trusted: false,
+            }),
+            "revoking risks nothing, so it does not ask"
+        );
+    }
+
+    #[test]
+    fn the_summary_counts_what_needs_attention_and_shortens_the_directory() {
+        let mut off = row("plugins/90_mine.lua", Source::User, FileState::Disabled);
+        off.capabilities = vec![Capability::Run];
+        off.trust = FileTrust::Untrusted;
+        let rows = [off, installed_top()];
+        let lines = paint(&mut InterfaceTab::default(), &rows, 90, 12);
+        assert!(lines[0].contains("2 plugins"), "{}", lines[0]);
+        assert!(lines[0].contains("2 not granted"), "{}", lines[0]);
+        assert!(lines[0].contains("1 off"), "{}", lines[0]);
+        assert!(!lines[0].contains("failed"), "{}", lines[0]);
+        assert_eq!(truncate_front("/a/long/dir/ui", 8), "…/dir/ui");
+
+        // A shipped pane you deleted is drawn as a fault, but it did not fail:
+        // counting it would send the reader looking for an error that is not there.
+        let gone = [row(
+            "plugins/20_agent.lua",
+            Source::Removed,
+            FileState::Removed,
+        )];
+        let lines = paint(&mut InterfaceTab::default(), &gone, 90, 12);
+        assert!(!lines[0].contains("failed"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn two_packages_sharing_a_name_stay_in_groups_of_their_own() {
+        let mut ours = installed_top();
+        ours.path = "plugins/85_top.lua".into();
+        let mut theirs = installed_top();
+        theirs.path = "other/plugins/86_top.lua".into();
+        theirs.source = Source::Installed {
+            src: "git+https://github.com/someone/top".into(),
+        };
+        let lines = paint(&mut InterfaceTab::default(), &[ours, theirs], 90, 14);
+        let headers = lines
+            .iter()
+            .filter(|line| line.contains("PACKAGE · top"))
+            .count();
+        assert_eq!(headers, 2, "{lines:#?}");
     }
 
     #[test]
@@ -1120,7 +1666,8 @@ mod tests {
     #[test]
     fn an_empty_interface_says_so() {
         let text = screen(&mut InterfaceTab::default(), &[]);
-        assert!(text.contains("no interface files"), "{text}");
+        assert!(text.contains("no plugins here yet"), "{text}");
+        assert!(text.contains("thurbox-cli plugin install"), "{text}");
     }
 
     // ── what the selected row explains ──────────────────────────────────────
@@ -1201,7 +1748,7 @@ mod tests {
     /// The footer of a tab whose cursor is on `rows[0]`.
     fn footer(tab: &InterfaceTab, rows: &[Row]) -> String {
         let palette = crate::session::theme_config::ThemePreset::Default.palette();
-        tab.footer(rows, Chrome::new(&palette))
+        tab.footer(rows, 200, Chrome::new(&palette))
             .spans
             .iter()
             .map(|span| span.content.as_ref())
@@ -1231,7 +1778,7 @@ mod tests {
         assert!(keys.contains("restore"), "{keys}");
 
         let keys = footer(&tab, &[installed_top()]);
-        assert!(keys.contains("t") && keys.contains("trust"), "{keys}");
+        assert!(keys.contains("t") && keys.contains("grant"), "{keys}");
         let mut trusted = installed_top();
         trusted.trust = FileTrust::Trusted;
         let keys = footer(&tab, &[trusted]);
@@ -1241,9 +1788,15 @@ mod tests {
         let mut replaced = installed_top();
         replaced.trust = FileTrust::Replaced;
         let keys = footer(&tab, std::slice::from_ref(&replaced));
-        assert!(keys.contains("trust") && !keys.contains("revoke"), "{keys}");
+        assert!(keys.contains("grant") && !keys.contains("revoke"), "{keys}");
+        let mut tab = InterfaceTab::default();
         assert_eq!(
-            InterfaceTab::default().trust(&[replaced]).1,
+            tab.trust(std::slice::from_ref(&replaced)).1,
+            None,
+            "asks first"
+        );
+        assert_eq!(
+            tab.trust(&[replaced]).1,
             Some(Edit::Trust {
                 file: installed_top().path,
                 trusted: true,
@@ -1261,7 +1814,7 @@ mod tests {
         shipped.trust = FileTrust::Shipped;
         let keys = footer(&tab, std::slice::from_ref(&shipped));
         assert!(
-            !keys.contains("trust") && !keys.contains("revoke"),
+            !keys.contains("grant") && !keys.contains("revoke"),
             "{keys}"
         );
         let (said, edit) = InterfaceTab::default().trust(&[shipped]);
