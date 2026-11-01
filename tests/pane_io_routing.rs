@@ -952,6 +952,162 @@ fn task_dispatches_to_one_session_never_interleave() {
     }
 }
 
+/// A send that confirms its submission types, reads the line back and only
+/// then presses Enter. Another delivery to the same session — a task dispatch
+/// on another worker — must not land in that gap, or the agent receives the
+/// two prompts as one.
+#[test]
+fn a_confirmed_send_and_a_dispatch_never_interleave() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let probe = &reg.probe;
+    probe.read_cursor();
+    let repo = instance.repo();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    let id = SessionId::default();
+    let uuid = id.to_string();
+    let pane = probe.open("tb-gap", &uuid, WindowRole::Agent);
+    seed_row(&db, id, "gap", "local:rmux", &pane, &repo);
+
+    let dispatched = Arc::new(std::sync::Mutex::new(None));
+    {
+        let dispatched = Arc::clone(&dispatched);
+        let backends = Arc::clone(&reg.kernel);
+        probe.on_cursor_showing("typed first", move || {
+            let worker = std::thread::spawn(move || {
+                let db = Database::open(&thurbox::paths::database_file().expect("db path"))
+                    .expect("open db");
+                let session = db.get_session_by_id(id).unwrap().expect("the row");
+                thurbox::session_ops::send_text_with_status(
+                    &db,
+                    &backends,
+                    &session,
+                    "dispatched",
+                    true,
+                )
+                .expect("dispatch send");
+            });
+            // Long enough for an unguarded paste and Enter to land here.
+            std::thread::sleep(Duration::from_millis(300));
+            *dispatched.lock().unwrap() = Some(worker);
+        });
+    }
+    kernel(
+        &mut bus,
+        KernelCommand::Send {
+            session: uuid.clone(),
+            text: "typed first".into(),
+        },
+    )
+    .expect("kernel send");
+    dispatched
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the gap was reached")
+        .join()
+        .expect("dispatch thread");
+
+    let screen = probe.screen(&pane);
+    assert!(
+        screen.contains("typed first\n") && screen.contains("dispatched\n"),
+        "the two prompts merged; the pane shows {screen:?}"
+    );
+}
+
+/// The interface's `send` and `thurbox-cli session send` are one verb (#1468):
+/// the same text to the same session is refused, typed or left in the mailbox
+/// the same way whichever of the two sends it.
+#[test]
+fn a_send_does_the_same_through_the_kernel_and_the_cli() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let (backends, probe) = (&reg.cli, &reg.probe);
+    probe.read_cursor();
+    let repo = instance.repo();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    for via in ["kernel", "cli"] {
+        let mut send = |session: &str, text: &str| -> Result<(), String> {
+            if via == "kernel" {
+                kernel(
+                    &mut bus,
+                    KernelCommand::Send {
+                        session: session.to_string(),
+                        text: text.to_string(),
+                    },
+                )
+            } else {
+                cli(&db, backends, &["session", "send", session, text]).map(|_| ())
+            }
+        };
+
+        let id = SessionId::default();
+        let uuid = id.to_string();
+        let name = format!("idle-{via}");
+        let pane = probe.open(&format!("tb-{name}"), &uuid, WindowRole::Agent);
+        seed_row(&db, id, &name, "local:rmux", &pane, &repo);
+
+        // Nothing to say is refused before the pane is touched.
+        assert_eq!(
+            send(&uuid, "  "),
+            Err("text must not be empty".to_string()),
+            "via {via}"
+        );
+        assert_eq!(probe.screen(&pane), "", "via {via}: an empty send typed");
+
+        // An empty composer takes the text and submits it.
+        send(&uuid, "hello").unwrap_or_else(|e| panic!("send via {via}: {e}"));
+        assert_eq!(probe.screen(&pane), "hello\n", "via {via}");
+
+        // Someone's half-typed line is not typed onto: the text goes to the
+        // session's mailbox, and the send says so.
+        SessionBackend::send_text(&**probe, &pane, "half a dra", false).expect("draft");
+        let busy = send(&uuid, "from elsewhere").expect_err("a busy composer");
+        assert!(
+            busy.contains("has text in its composer") && busy.contains("only in its mailbox"),
+            "via {via}: {busy}"
+        );
+        assert_eq!(probe.screen(&pane), "hello\nhalf a dra", "via {via}");
+        let bodies: Vec<_> = db
+            .list_messages(id, true, None)
+            .expect("inbox")
+            .into_iter()
+            .map(|m| (m.kind, m.body))
+            .collect();
+        assert_eq!(
+            bodies,
+            vec![("session-send".to_string(), "from elsewhere".to_string())],
+            "via {via}"
+        );
+
+        // A stopped session has no pane, and is refused by name.
+        let stopped = SessionId::default();
+        let stopped_name = format!("stopped-{via}");
+        seed_row(&db, stopped, &stopped_name, "local:rmux", "%404", &repo);
+        db.set_session_stopped(stopped, true).expect("stop");
+        assert_eq!(
+            send(&stopped.to_string(), "anyone there"),
+            Err(format!(
+                "session '{stopped_name}' is stopped: it has no pane. `thurbox-cli session start \
+                 {stopped_name}` puts one back"
+            )),
+            "via {via}"
+        );
+    }
+}
+
 /// A row whose host is not in `hosts.toml` names no machine to reach, and is
 /// still refused rather than driven.
 #[test]

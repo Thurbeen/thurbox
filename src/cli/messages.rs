@@ -5,16 +5,16 @@
 //! scraping its rendered terminal. See [`crate::storage::messages`].
 //!
 //! `send` and `reply` also hand the body to the recipient agent's own inbox
-//! (`cli/delivery.rs`); the mailbox row is the durable copy either way.
+//! (`session_ops/delivery.rs`); the mailbox row is the durable copy either way.
 
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::cli::delivery::{self, DeliveredVia};
 use crate::cli::identity::{caller, calling_session};
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
 use crate::session::{SessionId, SessionMessage};
+use crate::session_ops::delivery::{self, DeliveredVia, Handed};
 use crate::storage::messages::{NewMessage, DEFAULT_RETENTION_DAYS};
 use crate::storage::Database;
 use crate::sync::{current_time_millis, SharedSession};
@@ -309,35 +309,33 @@ fn first_line(body: &str) -> String {
 /// Enqueue a message, deliver it natively unless `no_wake`, then build the
 /// command output. Shared by `send` and `reply`; `new.to_session_id` must be
 /// `recipient.id`.
-pub(crate) fn enqueue_and_deliver(
+fn enqueue_and_deliver(
     db: &Database,
     recipient: &SharedSession,
     new: NewMessage,
     no_wake: bool,
 ) -> Result<CommandOutput, CommandError> {
-    let id = db
-        .enqueue_message(&new)
-        .map_err(|e| format!("enqueue_message: {e}"))?;
+    let handed = delivery::enqueue_and_deliver(db, recipient, new, no_wake)?;
+    let human = handed_human(recipient, &handed);
+    Ok(CommandOutput::new(handed_json(recipient, &handed), human))
+}
 
-    let outcome = if no_wake {
-        delivery::Outcome {
-            via: DeliveredVia::Mailbox,
-            note: Some("--no-wake: enqueued only".into()),
-        }
-    } else {
-        let message = db
-            .get_message(id)
-            .map_err(|e| format!("get_message: {e}"))?
-            .ok_or_else(|| format!("message #{id} vanished after enqueue"))?;
-        let sender = new
-            .from_session_id
-            .and_then(|from| db.get_session_by_id(from).ok().flatten())
-            .map(|s| s.name);
-        let text = delivery::delivery_text(&message, sender.as_deref());
-        let evidence = delivery::gather(db, recipient);
-        delivery::deliver(db, &message, &text, &evidence, &delivery::Native)
-    };
+/// The document a message left for `recipient` is reported as.
+pub(crate) fn handed_json(recipient: &SharedSession, handed: &Handed) -> Value {
+    let outcome = &handed.outcome;
+    json!({
+        "enqueued": true,
+        "message_id": handed.id,
+        "to_session_id": recipient.id.to_string(),
+        "to_session_name": recipient.name,
+        "delivered_via": outcome.via.as_str(),
+        "delivery_note": outcome.note,
+        "may_hold": outcome.via.may_hold(),
+    })
+}
 
+fn handed_human(recipient: &SharedSession, handed: &Handed) -> String {
+    let (id, outcome) = (handed.id, &handed.outcome);
     let human = match (&outcome.via, &outcome.note) {
         (DeliveredVia::Mailbox, Some(why)) => format!(
             "Enqueued message #{id} to '{}' in the mailbox only; nothing was typed into \
@@ -350,26 +348,14 @@ pub(crate) fn enqueue_and_deliver(
             via.as_str()
         ),
     };
-    let human = if outcome.via.may_hold() {
+    if outcome.via.may_hold() {
         format!(
             "{human} The recipient may hold it behind an approval prompt unless its \
              Claude Code settings set crossSessionInbound to accept."
         )
     } else {
         human
-    };
-    Ok(CommandOutput::new(
-        json!({
-            "enqueued": true,
-            "message_id": id,
-            "to_session_id": recipient.id.to_string(),
-            "to_session_name": recipient.name,
-            "delivered_via": outcome.via.as_str(),
-            "delivery_note": outcome.note,
-            "may_hold": outcome.via.may_hold(),
-        }),
-        human,
-    ))
+    }
 }
 
 /// The calling session's id from `THURBOX_SESSION` (used for provenance).
@@ -378,7 +364,7 @@ fn calling_session_id(db: &Database) -> Option<SessionId> {
 }
 
 /// The calling session's originating task id from the injected `THURBOX_TASK`.
-fn calling_task_id() -> Option<i64> {
+pub(crate) fn calling_task_id() -> Option<i64> {
     std::env::var("THURBOX_TASK").ok()?.parse().ok()
 }
 

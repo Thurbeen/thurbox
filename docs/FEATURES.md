@@ -2958,6 +2958,13 @@ prompt of any other shape (one with a space before its glyph) reads as typed
 text and needs `--force`, and where the row cannot be read the send reports
 `submitted: null` rather than a guess.
 
+The interface's `send` command is the same verb, `session_ops::send` (#1468):
+it used to type straight into the pane, onto whatever the operator had half
+typed, through this machine's connection to a host's server. It now refuses an
+empty text or a stopped session, hands a busy line to the agent's inbox, and
+asks a host that takes delegation to do the send, exactly as `session send`
+does.
+
 ### Finding the recipient's inbox
 
 The agent is **detected from what it announced**, not from the row's agent

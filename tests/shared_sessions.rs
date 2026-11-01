@@ -923,7 +923,7 @@ mod delegated_create {
                     "export TMUX_TMPDIR='{tmpdir}' THURBOX_SOCKET='{socket}'\n\
                      unset THURBOX_SOCKET_FOR THURBOX_SESSION THURBOX_SESSION_ID\n\
                      case \"$*\" in\n\
-                     \x20 *' session revision '*)\n\
+                     \x20 *' session revision'*)\n\
                      \x20   if [ -e '{race_arm}' ]; then\n\
                      \x20     printf started > '{race_started}'; race_wait=0\n\
                      \x20     while [ ! -e '{race_go}' ] && [ $race_wait -lt 400 ]; do sleep 0.05; race_wait=$((race_wait + 1)); done\n\
@@ -1036,6 +1036,96 @@ mod delegated_create {
         let doc = answer(out);
         assert!(out.status.success(), "create failed: {doc}");
         doc["id"].as_str().expect("an id").parse().expect("a uuid")
+    }
+
+    /// The interface's `send` reaches a session on a host that takes
+    /// delegation the way `thurbox-cli session send` does: the host's own CLI
+    /// does the send (#1468), so the host's composer guard and records apply
+    /// whichever of the two sent it.
+    #[test]
+    fn a_send_to_a_shared_session_goes_through_the_hosts_cli_from_the_kernel_and_the_cli() {
+        use std::sync::Arc;
+        use thurbox::kernel::command::{Command as KernelCommand, CommandBus, Phase};
+
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let id = created_id(&pair.create(&["--name", "send-target", "--agent", "shell"]));
+        let pane = pair
+            .host_db()
+            .get_session_by_id(id)
+            .unwrap()
+            .unwrap()
+            .backend_id;
+
+        // The kernel runs in this process, as the caller.
+        let path = format!(
+            "{}:{}",
+            pair.path("bin").display(),
+            std::env::var("PATH").unwrap()
+        );
+        std::env::set_var("PATH", path);
+        for (var, dir) in [
+            ("HOME", "home"),
+            ("USERPROFILE", "home"),
+            ("THURBOX_CONFIG_DIR", "config"),
+            ("THURBOX_DATA_DIR", "data"),
+        ] {
+            std::env::set_var(var, pair.path(dir));
+        }
+        // Process-wide, which nextest's process per test keeps to this test;
+        // the CLI below inherits the same caller.
+        let _caller = TmuxServer::pin("tbx-dc-send");
+        for var in ["THURBOX_SESSION", "THURBOX_SESSION_ID"] {
+            std::env::remove_var(var);
+        }
+        let (backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+        let mut bus = CommandBus::new(Arc::new(backends));
+
+        let sends = |log: &str| {
+            log.lines()
+                .filter(|line| {
+                    let line = line.replace('\'', "");
+                    line.contains(" session send ") && line.contains(&id.to_string())
+                })
+                .count()
+        };
+        for via in ["kernel", "cli"] {
+            // Leading dashes: text, not an option, on the host's command line.
+            let text = format!("--typed-via-the-{via}");
+            let before = sends(&pair.ssh_log());
+            if via == "kernel" {
+                let accepted = bus.dispatch(KernelCommand::Send {
+                    session: id.to_string(),
+                    text: text.clone(),
+                });
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while let Some(entry) = bus.inflight().into_iter().find(|e| e.id == accepted) {
+                    assert_ne!(entry.phase, Phase::Failed, "kernel send: {:?}", entry.error);
+                    assert!(Instant::now() < deadline, "the kernel send never finished");
+                    bus.poll();
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            } else {
+                let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+                cmd.args(["session", "send", "--json", &id.to_string(), "--", &text]);
+                let out = cmd.output().unwrap();
+                assert!(out.status.success(), "cli send: {}", answer(&out));
+            }
+            assert_eq!(
+                sends(&pair.ssh_log()),
+                before + 1,
+                "via {via}: the host's CLI was not asked to send; the link carried:\n{}",
+                pair.ssh_log()
+            );
+            let screen = pair.host_server.tmux(&["capture-pane", "-p", "-t", &pane]);
+            assert!(
+                String::from_utf8_lossy(&screen.stdout).contains(&text),
+                "via {via}: the host's pane shows {:?}",
+                String::from_utf8_lossy(&screen.stdout)
+            );
+        }
     }
 
     #[test]

@@ -337,7 +337,7 @@ session), never on the loop, ADR-P12).
   re-listed; and a host reporting `deleted_changes_since` has its deleted history
   read whole initially and hourly, and otherwise only the rows deleted or updated
   since the newest timestamp held (`session list --deleted --since`). This includes
-  force-delete promotions of older rows. Older hosts are read whole), and performs create/delete/restart/restore/fork by
+  force-delete promotions of older rows. Older hosts are read whole), and performs create/delete/restart/restore/fork/send by
   running `thurbox-cli session …` **on the host** (`session_ops::host_cli`,
   branched inside the shared pipelines so every caller delegates; the choice
   per verb on a live session is `session_ops::Executor`, #1471 — the
