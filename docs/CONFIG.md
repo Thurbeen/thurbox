@@ -795,7 +795,7 @@ timeout_secs = 120
 | `command` | yes | — | run through `sh -c` (`cmd /C` on Windows) |
 | `timeout_secs` | no | `30` | the hook is killed after this long — with everything it started (its process group; the process tree on Windows) |
 | `agents` | no | `[]` | exact agent names; empty matches all |
-| `to` | no | `[]` | destination states for `session.state_changed`: `working`, `blocked`, `done`, `idle`, `stopped`, `lost`, `exited`; empty matches all; any other word fails validation |
+| `to` | no | `[]` | destination states for `session.state_changed`: `working`, `blocked`, `done`, `idle`, `background`, `stopped`, `lost`, `exited`; empty matches all; any other word fails validation |
 
 **Events** — a `pre_*` fires before the operation has any side effect, a
 `post_*` after it has fully succeeded (never after a failure):
