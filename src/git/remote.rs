@@ -48,6 +48,15 @@ pub(super) fn remote_home_cache() -> &'static Mutex<HashMap<String, String>> {
 /// a literal `$HOME/…`. Such a host is routed to
 /// [`remote_home_windows`] (`%USERPROFILE%`) instead — the same cache, since a
 /// host is one platform or the other and never both.
+/// Answer [`remote_home`] for `host` from the cache, without asking it.
+#[cfg(test)]
+pub(crate) fn seed_remote_home(host: &HostDef, home: &str) {
+    remote_home_cache()
+        .lock()
+        .unwrap()
+        .insert(host.backend_name(), home.to_string());
+}
+
 pub(crate) fn remote_home(host: &HostDef) -> Result<String> {
     if host.is_windows() {
         return remote_home_windows(host);

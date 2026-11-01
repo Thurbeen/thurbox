@@ -447,8 +447,9 @@ session), never on the loop, ADR-P12).
   config — JSON on a content marker, TOML (kimi) on the same ownership comment
   used locally, see `thurbox-extensions`), managed-marker guard for standalone
   files, compare-before-write; cached per `(backend, hook file path)` — the
-  path is resolved against the session's saved env, so a codex account's
-  `CODEX_HOME` is its own file — best-effort,
+  path is resolved against the session's saved env and `~`-expanded on the
+  host, so a codex account's `CODEX_HOME` is its own file and two spellings of
+  one file share an entry — best-effort,
   never fails the spawn; remote **cleanup** is a documented leave-behind;
   Windows hosts are skipped there because the payloads run through `sh`).
   **Live**: a tmux-protocol connection subscribes once per connection

@@ -1704,7 +1704,8 @@ home (added for the built-in hooks extension): `[[external_files]]` places
 a file into an agent's own config dir (absolute / `~` / `{home}` path,
 guarded by `requires_dir` so it's skipped when that agent isn't installed;
 either location may name `{env:NAME:-default}`, read from thurbox's own
-environment at install and from a session's saved env when the built-in hooks
+environment at install (and saved resolved in the installed manifest, so the
+uninstall reverts that same file) and from a session's saved env when the built-in hooks
 are provisioned at launch, which is how an account selected by an agent `env`
 gets its own hooks file, #1526);
 `[[agent_patches]]` appends args to an **existing** agent in

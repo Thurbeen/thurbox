@@ -2172,3 +2172,120 @@ fn a_delete_of_a_session_already_gone_counts_as_cleaned_up() {
 
     assert!(!delete_unless_gone(&db, &crate::backend::registry::inert(), id, true).unwrap());
 }
+
+/// A hook file is merged by the installer's tick and by every launch whose
+/// account it is (#1526), possibly at once. A merge reads the file first, and
+/// an empty one reads as `{}` — so a write that truncates before it fills lets
+/// a concurrent merge drop every hook the user wrote there. A reader must only
+/// ever see a whole file.
+#[test]
+fn a_concurrent_reader_never_sees_a_hook_file_half_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hooks.json");
+    let a = format!("{{\"hooks\":{{\"Stop\":\"{}\"}}}}", "a".repeat(64 * 1024));
+    let b = format!("{{\"hooks\":{{\"Stop\":\"{}\"}}}}", "b".repeat(64 * 1024));
+    super::install::write_if_changed(&path, &a).unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let (path, stop) = (path.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let mut torn = 0;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                if serde_json::from_str::<serde_json::Value>(&text).is_err() {
+                    torn += 1;
+                }
+            }
+            torn
+        })
+    };
+    for i in 0..400 {
+        super::install::write_if_changed(&path, if i % 2 == 0 { &b } else { &a }).unwrap();
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        reader.join().unwrap(),
+        0,
+        "a reader saw a truncated hook file"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_atomic_hook_write_keeps_a_symlinked_file_linked() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("dotfiles-hooks.json");
+    std::fs::write(&real, "{}").unwrap();
+    let link = dir.path().join("hooks.json");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    super::install::write_if_changed(&link, "{\"hooks\":{}}").unwrap();
+    assert!(std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "{\"hooks\":{}}");
+}
+
+/// The install resolves `{env:NAME:-default}` against its own environment, so
+/// the uninstall must undo that same file, whatever its own environment says:
+/// installed under `CODEX_HOME=/accounts/work` and uninstalled without it, it
+/// used to prune the default account and leave the installed copy behind.
+#[test]
+fn uninstall_reverts_the_file_the_install_resolved_its_env_token_to() {
+    const VAR: &str = "THURBOX_TEST_UNINSTALL_ACCOUNT_DIR";
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+    let account = temp.path().join("account");
+    let default = temp.path().join("default");
+    let user_hook = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}"#;
+    for dir in [&account, &default] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("hooks.json"), user_hook).unwrap();
+    }
+    let src = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        src.path().join("extension.toml"),
+        format!(
+            "name = \"hooks\"\nhome = '{home}'\n\n[[config_merges]]\n\
+             path = '{{env:{VAR}:-{default}}}/hooks.json'\nsource = \"codex-hooks.json\"\n\
+             requires_dir = '{{env:{VAR}:-{default}}}'\n",
+            home = temp.path().join("hookshome").display(),
+            default = default.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        src.path().join("codex-hooks.json"),
+        crate::session_ops::builtin_hooks::CODEX_HOOKS,
+    )
+    .unwrap();
+
+    std::env::set_var(VAR, &account);
+    let target = src.path().to_string_lossy().to_string();
+    install_extension(
+        &db,
+        &crate::backend::registry::inert(),
+        &target,
+        None,
+        false,
+    )
+    .unwrap();
+    std::env::remove_var(VAR);
+    let ours = |dir: &Path| {
+        std::fs::read_to_string(dir.join("hooks.json"))
+            .unwrap()
+            .contains(MANAGED_MARKER)
+    };
+    assert!(ours(&account) && !ours(&default));
+
+    uninstall_extension(&db, &crate::backend::registry::inert(), "hooks", false).unwrap();
+    assert!(!ours(&account), "the installed copy was left behind");
+    let untouched: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(default.join("hooks.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        untouched,
+        serde_json::from_str::<serde_json::Value>(user_hook).unwrap()
+    );
+}

@@ -240,9 +240,19 @@ fn install(
     //    which binary installed it + where from) to the discovery dir, then
     //    activate. `target` is recorded verbatim so `update` re-fetches the same
     //    source (a bare name re-resolves against the *current* binary's tag).
-    let resolved = def
+    let mut resolved = def
         .resolved_for_home(&home_str, crate::paths::home_dir().as_deref())
         .with_provenance(current, target);
+    // The saved copy names the files this install wrote, so the uninstall
+    // reverts them whatever its own environment says.
+    for f in &mut resolved.external_files {
+        f.path = process_env(&f.path);
+        f.requires_dir = f.requires_dir.as_deref().map(process_env);
+    }
+    for m in &mut resolved.config_merges {
+        m.path = process_env(&m.path);
+        m.requires_dir = m.requires_dir.as_deref().map(process_env);
+    }
     crate::agent::extension_config::write_manifest(&resolved)?;
     report.ensure = match healing {
         None => activate_extension(db, backends, &resolved)?,
@@ -485,15 +495,48 @@ fn read_toml_or_empty(path: &Path) -> Result<toml_edit::DocumentMut, crate::sess
 /// Write `content` to `path` only when it differs from the current contents (the
 /// merge runs every startup + heartbeat tick, so a no-op write would be churn).
 /// Returns whether it wrote.
-fn write_if_changed(path: &Path, content: &str) -> Result<bool, crate::session_ops::OpError> {
+pub(super) fn write_if_changed(
+    path: &Path,
+    content: &str,
+) -> Result<bool, crate::session_ops::OpError> {
     if file_has_content(path, content) {
         return Ok(false);
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    std::fs::write(path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
+    replace_atomically(path, content)?;
     Ok(true)
+}
+
+/// Write `content` to a sibling temp file and rename it over `path`, so a
+/// reader sees the old file or the new one and never an empty one. A hook file
+/// is merged by the install tick and by each launch of its account, and a
+/// merge that read a half-written file as `{}` would write the user's own
+/// hooks away. A symlinked `path` (a dotfiles checkout) keeps its link: the
+/// rename lands on the file it points at, with that file's permissions.
+fn replace_atomically(path: &Path, content: &str) -> Result<(), crate::session_ops::OpError> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = target.with_file_name(format!(
+        ".{name}.thurbox-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let written = std::fs::write(&tmp, content)
+        .and_then(|()| match std::fs::metadata(&target) {
+            Ok(meta) => std::fs::set_permissions(&tmp, meta.permissions()),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| std::fs::rename(&tmp, &target));
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("write {}: {e}", path.display()).into()
+    })
 }
 
 /// How one hook payload lands in a config dir: merged into a shared file in
@@ -950,7 +993,10 @@ pub fn uninstall_extension(
 /// session whose saved env moves the dir is provisioned at launch instead
 /// (`remote_hooks::provision_account_hooks_locally`).
 fn local_path(path: &str) -> std::path::PathBuf {
-    crate::paths::expand_tilde(&crate::paths::resolve_env_default(path, |name| {
-        std::env::var(name).ok()
-    }))
+    crate::paths::expand_tilde(&process_env(path))
+}
+
+/// `path`'s `{env:NAME:-default}` tokens read from this process's environment.
+fn process_env(path: &str) -> String {
+    crate::paths::resolve_env_default(path, |name| std::env::var(name).ok())
 }
