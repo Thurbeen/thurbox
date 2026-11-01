@@ -310,9 +310,9 @@ falling back to the agent's default directory. Other families and remote rows
 have null transcripts; a coincident local path is never a remote transcript.
 Thurbox does not parse agent transcripts to infer state.
 
-These fields are supervision evidence. A `background` state remains deferred
-until a reproduction demonstrates both start and end hooks in the parent
-session; a state with no observable end could remain stuck forever.
+These fields are supervision evidence. Sub-work a turn outlives is reported
+as the `background` state; see
+[AGENTS.md](AGENTS.md#background-sub-work).
 
 ### The status field is not a completion signal
 

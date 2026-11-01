@@ -125,13 +125,16 @@ pub struct LifecycleHook {
     pub to: Vec<String>,
 }
 
+/// The terminal lifecycle reasons a `to` filter may name besides a hook word.
+const LIFECYCLE_DESTINATIONS: [&str; 3] = ["stopped", "lost", "exited"];
+
 fn state_filter<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
     let states = Vec::<String>::deserialize(d)?;
     for state in &states {
         // What an edge can carry: a hook word, or a terminal lifecycle reason.
         // A derived state such as `running` is never an edge's destination.
         if !super::HOOK_STATES.contains(&state.as_str())
-            && !["stopped", "lost", "exited"].contains(&state.as_str())
+            && !LIFECYCLE_DESTINATIONS.contains(&state.as_str())
         {
             return Err(serde::de::Error::custom(format!(
                 "unknown destination state '{state}'"
@@ -318,6 +321,38 @@ mod tests {
             assert!(event.name().starts_with("session."));
             assert_eq!(event.is_pre(), event.name().contains(".pre_"));
         }
+    }
+
+    #[test]
+    fn the_documented_to_states_are_exactly_the_accepted_ones() {
+        // A Windows checkout may carry the doc with CRLF line endings.
+        let doc = include_str!("../../docs/CONFIG.md").replace("\r\n", "\n");
+        let row = doc
+            .lines()
+            .find(|line| line.starts_with("| `to` |"))
+            .expect("CONFIG.md documents the `to` field");
+        let listed = row
+            .split_once("`session.state_changed`:")
+            .and_then(|(_, rest)| rest.split_once(';'))
+            .expect("the `to` row lists its states before a `;`")
+            .0;
+        let mut documented: Vec<&str> = listed
+            .split(',')
+            .map(|word| word.trim().trim_matches('`'))
+            .collect();
+        let mut accepted: Vec<&str> = crate::session::HOOK_STATES
+            .into_iter()
+            .chain(LIFECYCLE_DESTINATIONS)
+            .collect();
+        for state in &documented {
+            let toml = format!(
+                "event = \"session.state_changed\"\ncommand = \"true\"\nto = [\"{state}\"]\n"
+            );
+            toml::from_str::<LifecycleHook>(&toml).unwrap_or_else(|e| panic!("{state}: {e}"));
+        }
+        documented.sort_unstable();
+        accepted.sort_unstable();
+        assert_eq!(documented, accepted);
     }
 
     #[test]
