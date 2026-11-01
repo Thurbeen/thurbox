@@ -288,8 +288,10 @@ breadcrumb: 'Agent hooks'
               &mdash; codex's claude-shaped
               <code>hooks.json</code>
               is JSON-merged into
-              <code>~/.codex/hooks.json</code>
-              (reversibly; uninstall prunes exactly our entries).
+              <code>$CODEX_HOME/hooks.json</code>
+              (<code>~/.codex/hooks.json</code> by default; reversibly, uninstall
+              prunes exactly our entries). An agent whose <code>env</code> selects another
+              <code>CODEX_HOME</code> gets the same entries in that directory at launch.
               <code>SessionStart</code>
               &rarr; idle,
               <code>UserPromptSubmit</code>
@@ -493,7 +495,7 @@ breadcrumb: 'Agent hooks'
               </tr>
               <tr>
                 <td>codex</td>
-                <td><code>~/.codex/hooks.json</code></td>
+                <td><code>$CODEX_HOME/hooks.json</code> (<code>~/.codex</code> by default)</td>
                 <td>reversible JSON-merge of our entries</td>
               </tr>
               <tr>

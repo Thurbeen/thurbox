@@ -147,7 +147,17 @@ Remote sessions are provisioned by
 `session_ops::remote_hooks::provision_agent_hooks_on_host`, rewritten to the
 command the row's backend reports through; a route whose backend has no status
 channel (psmux today) or a Windows host is provisioned nothing and shows
-`Hooks: degraded`. Opt out of either with `thurbox-cli extension deactivate <name>` (records a
+`Hooks: degraded`. An `external_files`/`config_merges` path or `requires_dir`
+may name `{env:NAME:-default}` (`paths::resolve_env_default`): the installer
+reads this process's env; a launch whose saved env sets NAME elsewhere — an
+account, #1526 — gets the payload there via
+`remote_hooks::provision_account_hooks_locally` (through
+`extensions::land_payload`, the installer's own merge rules) or the host pass.
+The installed manifest saves the env-resolved paths, so uninstall reverts the
+file the install wrote whatever its own env; it reverts only the installer's
+copy. Merged hook files are replaced atomically (temp file + rename, through a
+symlink to its target), since the tick and each account launch may merge one
+at once. Opt out of either with `thurbox-cli extension deactivate <name>` (records a
 `builtin_<name>_optout` metadata flag so self-heal won't resurrect it — the key
 format is chosen so `hooks` keeps producing the `builtin_hooks_optout` row it
 wrote before there was more than one built-in); `activate`/`install <name>`

@@ -87,6 +87,7 @@ pub fn run(
             hooks_active,
             cli_on_path.as_deref(),
             Some(backends.get()),
+            &db.load_launch_env(session.id).unwrap_or_default(),
         ));
     }
 
@@ -206,6 +207,7 @@ fn diagnose(
     hooks_active: bool,
     cli_on_path: Option<&str>,
     backends: Option<&crate::backend::BackendRegistry>,
+    launch_env: &std::collections::BTreeMap<String, String>,
 ) -> Report {
     let agent = &hook.agent;
     let mut findings = Vec::new();
@@ -305,7 +307,7 @@ fn diagnose(
         },
     });
 
-    if let Some(finding) = payload_finding(hook, remote) {
+    if let Some(finding) = payload_finding(hook, remote, launch_env) {
         findings.push(finding);
     }
 
@@ -512,8 +514,12 @@ fn pane_finding(hook: &Assessment) -> Option<Finding> {
 /// for a remote session: the payload lives on the host, where it is either the
 /// host's own hooks extension's business (a shared host) or was shipped at
 /// spawn time — neither readable from here.
-fn payload_finding(hook: &Assessment, remote: bool) -> Option<Finding> {
-    let path = hook_file_path(hook)?;
+fn payload_finding(
+    hook: &Assessment,
+    remote: bool,
+    launch_env: &std::collections::BTreeMap<String, String>,
+) -> Option<Finding> {
+    let path = hook_file_path(hook, launch_env)?;
     if remote {
         return Some(Finding {
             key: "payload",
@@ -559,7 +565,12 @@ fn payload_finding(hook: &Assessment, remote: bool) -> Option<Finding> {
 /// `~`-anchored against the user's home, while claude's travels by
 /// `--settings` and so lives inside the hooks extension's own install home —
 /// which is this build's config dir, keeping a dev build off the release copy.
-fn hook_file_path(hook: &Assessment) -> Option<std::path::PathBuf> {
+/// A config dir an account moves (`{env:CODEX_HOME:-~/.codex}`) is read from the
+/// session's saved env, then this process's, as its launch provisioned it.
+fn hook_file_path(
+    hook: &Assessment,
+    launch_env: &std::collections::BTreeMap<String, String>,
+) -> Option<std::path::PathBuf> {
     let file = hook.hook_file()?;
     if hook.delivery() == Some(HookDelivery::Args) {
         let home = crate::session_ops::builtin::builtin_extension(
@@ -568,7 +579,15 @@ fn hook_file_path(hook: &Assessment) -> Option<std::path::PathBuf> {
         .home()?;
         return Some(std::path::PathBuf::from(home).join(file));
     }
-    Some(crate::paths::expand_tilde(file))
+    Some(crate::paths::expand_tilde(
+        &crate::paths::resolve_env_default(file, |name| {
+            launch_env
+                .get(name)
+                .filter(|value| !value.is_empty())
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+        }),
+    ))
 }
 
 /// What a hook running in this session's pane would resolve `thurbox-cli` to.
@@ -714,7 +733,30 @@ mod tests {
         hooks_active: bool,
         cli_on_path: Option<&str>,
     ) -> Report {
-        diagnose(row, true, hook, hooks_active, cli_on_path, None)
+        diagnose(
+            row,
+            true,
+            hook,
+            hooks_active,
+            cli_on_path,
+            None,
+            &Default::default(),
+        )
+    }
+
+    /// An account moves codex's hook file (#1526); the doctor looks where
+    /// that session's launch put it, not at the default account.
+    #[test]
+    fn the_payload_check_follows_the_sessions_account() {
+        let hook = Assessment::from_hooks(&registry(), "codex", None, None, None, 0);
+        let env = std::collections::BTreeMap::from([(
+            "CODEX_HOME".to_string(),
+            "/accounts/work".to_string(),
+        )]);
+        assert_eq!(
+            hook_file_path(&hook, &env),
+            Some(std::path::PathBuf::from("/accounts/work/hooks.json"))
+        );
     }
 
     fn level_of(report: &Report, key: &str) -> Level {
@@ -851,6 +893,7 @@ mod tests {
             true,
             Some("/bin/x"),
             None,
+            &Default::default(),
         );
         assert_eq!(level_of(&report, "coverage"), Level::Ok);
         assert_ne!(report.verdict, Level::Fail);
@@ -877,6 +920,7 @@ mod tests {
             true,
             Some("/bin/x"),
             None,
+            &Default::default(),
         );
         assert_eq!(level_of(&report, "coverage"), Level::Ok);
         assert!(hook.blocked_is_heuristic());
@@ -927,6 +971,7 @@ mod tests {
             true,
             None,
             None,
+            &Default::default(),
         );
         assert_eq!(level_of(&report, "cli"), Level::Warn);
         assert_ne!(report.verdict, Level::Fail);
@@ -999,6 +1044,7 @@ mod tests {
             true,
             Some("/x"),
             None,
+            &Default::default(),
         );
         assert_eq!(level_of(&report, "coverage"), Level::Ok);
         let detail = &report

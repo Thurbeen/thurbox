@@ -28,11 +28,11 @@ mod lifecycle;
 mod tests;
 
 pub(crate) use fs::MANAGED_MARKER;
-pub(crate) use install::HOOK_SIGNAL_MARKER;
 pub use install::{
     install_extension, reinstall_extension, uninstall_extension, update_all_extensions,
     update_extension, InstallReport, ReinstallReport, UninstallReport, UpdateReport,
 };
+pub(crate) use install::{land_payload, Landing, HOOK_SIGNAL_MARKER};
 pub use lifecycle::{
     activate_extension, deactivate_extension, ensure_extension, extension_health,
     heal_active_extensions, DeactivateReport, EnsureReport, ExtensionHealth,

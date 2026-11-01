@@ -5551,3 +5551,110 @@ fn a_saved_fork_recovers_its_checkout_after_parent_teardown() {
     assert!(restored.respawn_error.is_none(), "{restored:?}");
     assert!(parent.cwd.is_dir());
 }
+
+/// Issue #1526: an account is a config dir, so a codex agent whose `env` names
+/// another `CODEX_HOME` reads its hooks there. The status hooks, and the
+/// `SessionStart` that binds the conversation a restart resumes, must be in
+/// that dir before the agent boots, beside the user's own hooks, and stay one
+/// copy however often the session launches.
+#[test]
+#[cfg(unix)]
+fn a_codex_account_gets_its_status_hooks_in_its_own_config_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    use thurbox::session_ops::restart_session_headless;
+    use thurbox::session_ops::spawn::{spawn_session_headless, SpawnRequest};
+    if !have_tmux() {
+        return;
+    }
+    let _server = TmuxServer::pin(SOCKET);
+    let (home, config) = isolated_config();
+    std::env::set_var("HOME", home.path());
+    std::env::remove_var("CODEX_HOME");
+    let repo = repo();
+    let account = home.path().join(".codex-work");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+    let user_hook = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}"#;
+    std::fs::write(account.join("hooks.json"), user_hook).unwrap();
+    let capture = home.path().join("codex-capture");
+    let agent = home.path().join("codex-agent");
+    std::fs::write(
+        &agent,
+        "#!/bin/sh\ncat \"$CODEX_HOME/hooks.json\" > \"$CAPTURE.tmp\" 2>/dev/null || echo missing > \"$CAPTURE.tmp\"\nmv \"$CAPTURE.tmp\" \"$CAPTURE\"\nexec sleep 60\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        config.join("agents.toml"),
+        format!(
+            r#"
+default = "codex-work"
+[[agents]]
+name = "codex-work"
+hook_schema = "codex"
+command = {:?}
+resume_args = ["resume", "{{id}}"]
+env = {{ CODEX_HOME = "{{home}}/.codex-work", CAPTURE = {:?} }}
+"#,
+            agent.display().to_string(),
+            capture.display().to_string()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        config.join("settings.toml"),
+        "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
+    )
+    .unwrap();
+    let db = on_disk_db();
+    let backends = thurbox::backend::wiring::configured().0;
+    let spawned = spawn_session_headless(
+        &db,
+        &backends,
+        SpawnRequest {
+            name: "work".into(),
+            repo_path: repo.path().into(),
+            agent: Some("codex-work".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let booted_with = |label: &str| -> serde_json::Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let text = loop {
+            if let Ok(text) = std::fs::read_to_string(&capture) {
+                break text;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{label}: agent did not boot"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        serde_json::from_str(&text)
+            .unwrap_or_else(|_| panic!("{label}: the account had no hooks file at boot: {text}"))
+    };
+    let count_ours = |doc: &serde_json::Value| -> usize {
+        doc.to_string().matches("session bind-codex").count()
+    };
+    let at_create = booted_with("create");
+    assert_eq!(
+        count_ours(&at_create),
+        1,
+        "the account's SessionStart must bind the conversation: {at_create}"
+    );
+    assert!(
+        at_create.to_string().contains("echo mine"),
+        "the user's own hook must survive: {at_create}"
+    );
+    assert!(
+        !home.path().join(".codex/hooks.json").exists(),
+        "the default account was written for a session that does not use it"
+    );
+
+    std::fs::remove_file(&capture).unwrap();
+    restart_session_headless(&db, &backends, spawned.session_id).unwrap();
+    let at_restart = booted_with("restart");
+    assert_eq!(count_ours(&at_restart), 1, "{at_restart}");
+    assert!(at_restart.to_string().contains("echo mine"));
+}

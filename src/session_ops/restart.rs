@@ -96,7 +96,9 @@ pub(crate) fn build_restart_plan(
     // (omp's `--session-dir {home}/…` must reopen the same directory) and hook configs
     // shipped to the host rather than pointing at local paths that do not exist
     // there. Identity for a local restart.
-    let (def, degraded) = super::spawn::adapt_def_for_launch(def, host, signal, hooks_enabled);
+    let env = config.env.clone().into_iter().collect();
+    let (def, degraded) =
+        super::spawn::adapt_def_for_launch(def, host, signal, &env, hooks_enabled);
     if let Some(note) = degraded {
         tracing::warn!("restart of '{}': {note}", session.name);
     }

@@ -25,11 +25,19 @@
 //! the backend's hook command post-rewrite), so a future remote prune needs no
 //! schema knowledge.
 //!
+//! **Accounts.** An agent whose config dir follows a variable (codex's
+//! `CODEX_HOME`) names it in its asset path as `{env:CODEX_HOME:-~/.codex}`,
+//! the token the manifest spells the same way. A launch resolves it against the
+//! session's saved env, so an account selected by an agent's `env` (issue
+//! #1526) gets its hooks in its own dir: on a host through the pass above, and
+//! on this machine through `provision_account_hooks_locally`, which lands the
+//! payload under the installer's own rules. Neither is ever uninstalled.
+//!
 //! Besides provisioning (the write side), this module also owns the
 //! **headless status poll** (`poll_hook_states`) — the read side that keeps
 //! every route's hook states flowing while no interface is attached.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use crate::session::{HostDef, SessionId};
@@ -52,11 +60,30 @@ enum RemoteAssetKind {
 /// One agent's hook payload and where it lives on a POSIX host.
 struct RemoteHookAsset {
     kind: RemoteAssetKind,
-    /// Destination, `~`-anchored (expanded against the *remote* home).
+    /// Destination, `~`-anchored (expanded against the *remote* home), and
+    /// maybe carrying an `{env:NAME:-default}` token for the session's env.
     remote_path: &'static str,
     /// Agent-installed guard: skip silently when this dir is absent.
     requires_dir: &'static str,
     payload: &'static str,
+}
+
+/// An asset's two locations with their `{env:…}` tokens read from `env`.
+struct Placed<'a> {
+    asset: &'a RemoteHookAsset,
+    path: String,
+    requires_dir: String,
+}
+
+impl RemoteHookAsset {
+    fn placed(&self, env: &BTreeMap<String, String>) -> Placed<'_> {
+        let resolve = |p: &str| crate::paths::resolve_env_default(p, |name| env.get(name).cloned());
+        Placed {
+            asset: self,
+            path: resolve(self.remote_path),
+            requires_dir: resolve(self.requires_dir),
+        }
+    }
 }
 
 /// The config-dir hook asset for `agent`, or `None` when the agent has no
@@ -68,8 +95,8 @@ fn remote_asset_for(agent: &str) -> Option<RemoteHookAsset> {
     match agent {
         "codex" => Some(RemoteHookAsset {
             kind: RemoteAssetKind::MergeJson,
-            remote_path: "~/.codex/hooks.json",
-            requires_dir: "~/.codex",
+            remote_path: "{env:CODEX_HOME:-~/.codex}/hooks.json",
+            requires_dir: "{env:CODEX_HOME:-~/.codex}",
             payload: builtin_hooks::CODEX_HOOKS,
         }),
         "antigravity" => Some(RemoteHookAsset {
@@ -191,19 +218,21 @@ fn cache_lock() -> std::sync::MutexGuard<'static, ProvisionCache> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `(host, agent, hook command)`: what was shipped carries one backend's
-/// command, so a launch on another route of the same host is not done yet.
+/// `(host, hook file path, hook command)`: what was shipped carries one
+/// backend's command, so a launch on another route of the same host is not
+/// done yet. The path, not the agent, because two accounts of one agent are
+/// two files.
 type ProvisionKey = (String, String, String);
 
-fn provision_key(host: &HostDef, agent: &str, signal: &str) -> ProvisionKey {
-    (host.backend_name(), agent.to_string(), signal.to_string())
+fn provision_key(host: &HostDef, path: &str, signal: &str) -> ProvisionKey {
+    (host.backend_name(), path.to_string(), signal.to_string())
 }
 
-/// `(host, agent)`: the one hook file a key's launch rewrites on the host.
+/// `(host, hook file path)`: the one hook file a key's launch rewrites.
 type HookFile = (String, String);
 
-fn hook_file((host, agent, _): &ProvisionKey) -> HookFile {
-    (host.clone(), agent.clone())
+fn hook_file((host, path, _): &ProvisionKey) -> HookFile {
+    (host.clone(), path.clone())
 }
 
 /// Removes its key from `in_flight` on drop — **including on unwind**, so a
@@ -233,12 +262,14 @@ pub(crate) fn provision_agent_hooks_on_host(
     host: &HostDef,
     signal: Option<&str>,
     agent: &str,
+    env: &BTreeMap<String, String>,
     hooks_enabled: bool,
 ) -> HookDegradation {
     if !hooks_enabled {
         return None;
     }
     let asset = remote_asset_for(agent)?;
+    let placed = asset.placed(env);
     // Status is the backend's to carry. One with no channel gets no hooks:
     // they would have nothing to report through, and the session reads as
     // reporting nothing rather than as idle.
@@ -258,7 +289,19 @@ pub(crate) fn provision_agent_hooks_on_host(
         ));
     }
 
-    let key = provision_key(host, agent, signal);
+    // Keyed on the expanded file, so `~/.codex` and an account spelled
+    // `/home/u/.codex` share one entry and one in-flight guard. The home is
+    // already cached by the launch that resolved `{home}`.
+    let dest = match crate::git::expand_remote_tilde(host, &placed.path) {
+        Ok(dest) => dest,
+        Err(e) => {
+            return Some(format!(
+                "{agent} hooks not provisioned on host '{}': cannot resolve {}: {e:#}",
+                host.name, placed.path
+            ))
+        }
+    };
+    let key = provision_key(host, &dest, signal);
     // Claim the key, or wait for the concurrent spawn that holds it: skipping
     // would report this session healthy while its agent may boot before the
     // holder's file lands (or after the holder *fails*). Waiting is bounded —
@@ -288,7 +331,7 @@ pub(crate) fn provision_agent_hooks_on_host(
         std::thread::sleep(IN_FLIGHT_WAIT_STEP);
         waited += IN_FLIGHT_WAIT_STEP;
     };
-    let outcome = provision_uncached(host, signal, &asset);
+    let outcome = provision_uncached(host, signal, &placed, &dest);
     if matches!(outcome, ProvisionOutcome::Provisioned) {
         cache_lock().shipped(&key);
     }
@@ -311,10 +354,16 @@ pub(crate) fn provision_agent_hooks_on_host(
 /// ([`crate::git::probe_remote_dir_and_file`]): made separately they were two
 /// serial connections per `(host, agent)` before the copy even started, on the
 /// spawn path.
-fn provision_uncached(host: &HostDef, signal: &str, asset: &RemoteHookAsset) -> ProvisionOutcome {
+fn provision_uncached(
+    host: &HostDef,
+    signal: &str,
+    placed: &Placed<'_>,
+    dest: &str,
+) -> ProvisionOutcome {
     use ProvisionOutcome::{Degraded, NotInstalled, Provisioned};
 
-    let probed = crate::git::probe_remote_dir_and_file(host, asset.requires_dir, asset.remote_path);
+    let asset = placed.asset;
+    let probed = crate::git::probe_remote_dir_and_file(host, &placed.requires_dir, &placed.path);
     let existing = match probed {
         // Agent not installed on the host — nothing to wire, not a degradation
         // (the pane would have no hooks locally either).
@@ -324,13 +373,13 @@ fn provision_uncached(host: &HostDef, signal: &str, asset: &RemoteHookAsset) -> 
         Ok(crate::git::DirFileProbe::NotFile) => {
             return Degraded(format!(
                 "{} on host exists but is not a regular file",
-                asset.remote_path
+                placed.path
             ))
         }
         Err(e) => {
             return Degraded(format!(
                 "cannot probe {} on host: {e:#}",
-                asset.requires_dir
+                placed.requires_dir
             ))
         }
     };
@@ -349,10 +398,7 @@ fn provision_uncached(host: &HostDef, signal: &str, asset: &RemoteHookAsset) -> 
                 // Already up to date — record success without a write.
                 Ok(None) => return Provisioned,
                 Err(e) => {
-                    return Degraded(format!(
-                        "cannot merge into {} on host: {e}",
-                        asset.remote_path
-                    ))
+                    return Degraded(format!("cannot merge into {} on host: {e}", placed.path))
                 }
             }
         }
@@ -364,25 +410,71 @@ fn provision_uncached(host: &HostDef, signal: &str, asset: &RemoteHookAsset) -> 
             Some(content) if !content.contains(MANAGED_MARKER) => {
                 return Degraded(format!(
                     "{} on host is user-owned (no managed marker)",
-                    asset.remote_path
+                    placed.path
                 ))
             }
             _ => rewritten,
         },
     };
 
-    let dest = match crate::git::expand_remote_tilde(host, asset.remote_path) {
-        Ok(dest) => dest,
-        Err(e) => {
-            return Degraded(format!(
-                "cannot resolve {} on host: {e:#}",
-                asset.remote_path
-            ))
-        }
-    };
-    match crate::git::copy_bytes_to_remote(host, to_write.as_bytes(), &dest) {
+    match crate::git::copy_bytes_to_remote(host, to_write.as_bytes(), dest) {
         Ok(()) => Provisioned,
         Err(e) => Degraded(format!("cannot write {dest} on host: {e:#}")),
+    }
+}
+
+/// Land `agent`'s hook payload in the config dir a local session's saved
+/// `env` moves it to — an account (issue #1526). `None` when the env moves
+/// nothing, or moves it where the installer already serves (this process's own
+/// env): the extension install owns that copy, and removes it on uninstall.
+/// Same best-effort contract as the remote pass: a failure is a note, never a
+/// failed launch.
+pub(crate) fn provision_account_hooks_locally(
+    agent: &str,
+    env: &BTreeMap<String, String>,
+    hooks_enabled: bool,
+) -> HookDegradation {
+    if !hooks_enabled {
+        return None;
+    }
+    let asset = remote_asset_for(agent)?;
+    let names = crate::paths::env_token_names(asset.remote_path);
+    if !names
+        .iter()
+        .any(|name| env.get(*name).is_some_and(|v| !v.is_empty()))
+    {
+        return None;
+    }
+    let placed = asset.placed(env);
+    let dest = crate::paths::expand_tilde(&placed.path);
+    let installed = crate::paths::expand_tilde(&crate::paths::resolve_env_default(
+        asset.remote_path,
+        |name| std::env::var(name).ok(),
+    ));
+    if dest == installed {
+        return None;
+    }
+    let landing = match asset.kind {
+        RemoteAssetKind::MergeJson => {
+            super::extensions::Landing::Merge(crate::session::ConfigMergeFormat::Json)
+        }
+        RemoteAssetKind::MergeToml => {
+            super::extensions::Landing::Merge(crate::session::ConfigMergeFormat::Toml)
+        }
+        RemoteAssetKind::WriteFile => super::extensions::Landing::File,
+    };
+    match super::extensions::land_payload(
+        landing,
+        &crate::paths::expand_tilde(&placed.requires_dir),
+        &dest,
+        asset.payload,
+    ) {
+        Ok(_) => None,
+        Err(e) => {
+            let reason = format!("{agent} hooks not provisioned in {}: {e}", dest.display());
+            tracing::warn!("{reason}");
+            Some(reason)
+        }
     }
 }
 
@@ -578,6 +670,41 @@ mod tests {
 
     /// A tmux-protocol backend's hook command, as one answers it.
     const SIGNAL: &str = "tmux set-option -p @thurbox_state ";
+    const OPENCODE_PATH: &str = "/home/u/.config/opencode/plugin/thurbox-status.js";
+
+    fn no_env() -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
+    /// An account moves a host's hook file, and the cache keys on the file:
+    /// the default account's shipped copy says nothing about another's.
+    #[test]
+    fn an_accounts_hook_file_is_its_own_on_a_host() {
+        let host = HostDef {
+            name: "account-host".into(),
+            destination: "user@account-host.invalid".into(),
+            ..Default::default()
+        };
+        crate::git::seed_remote_home(&host, "/home/u");
+        let asset = remote_asset_for("codex").unwrap();
+        let work = BTreeMap::from([("CODEX_HOME".to_string(), "/home/u/.codex-work".to_string())]);
+        assert_eq!(asset.placed(&work).path, "/home/u/.codex-work/hooks.json");
+        assert_eq!(asset.placed(&work).requires_dir, "/home/u/.codex-work");
+        assert_eq!(asset.placed(&no_env()).path, "~/.codex/hooks.json");
+        cache_lock().shipped(&provision_key(&host, "/home/u/.codex/hooks.json", SIGNAL));
+        assert!(
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", &no_env(), true).is_none()
+        );
+        assert!(
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", &work, true).is_some(),
+            "the account's file was taken as provisioned because the default one was"
+        );
+        let same = BTreeMap::from([("CODEX_HOME".to_string(), "/home/u/.codex".to_string())]);
+        assert!(
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", &same, true).is_none(),
+            "two spellings of the default account's file were provisioned as two files"
+        );
+    }
 
     #[test]
     fn in_flight_guard_releases_on_unwind() {
@@ -803,7 +930,7 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        let degraded = provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", true);
+        let degraded = provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", &no_env(), true);
         assert!(degraded.is_some_and(|d| d.contains("Windows host")));
     }
 
@@ -816,14 +943,21 @@ mod tests {
             destination: "user@cache-key-host.invalid".into(),
             ..Default::default()
         };
-        cache_lock().shipped(&provision_key(&host, "codex", SIGNAL));
+        crate::git::seed_remote_home(&host, "/home/u");
+        cache_lock().shipped(&provision_key(&host, "/home/u/.codex/hooks.json", SIGNAL));
         assert!(
-            provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", true).is_none(),
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", &no_env(), true).is_none(),
             "the command it shipped is cached"
         );
         assert!(
-            provision_agent_hooks_on_host(&host, Some("other-mux signal "), "codex", true)
-                .is_some(),
+            provision_agent_hooks_on_host(
+                &host,
+                Some("other-mux signal "),
+                "codex",
+                &no_env(),
+                true
+            )
+            .is_some(),
             "another route's command was taken as already shipped"
         );
     }
@@ -839,11 +973,13 @@ mod tests {
             destination: "user@cache-replaced-host.invalid".into(),
             ..Default::default()
         };
+        crate::git::seed_remote_home(&host, "/home/u");
         for signal in [SIGNAL, "other-mux signal "] {
-            cache_lock().shipped(&provision_key(&host, "opencode", signal));
+            cache_lock().shipped(&provision_key(&host, OPENCODE_PATH, signal));
         }
         assert!(
-            provision_agent_hooks_on_host(&host, Some(SIGNAL), "opencode", true).is_some(),
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "opencode", &no_env(), true)
+                .is_some(),
             "the file now carries the other route's command, and was taken as this one's"
         );
     }
@@ -858,13 +994,20 @@ mod tests {
             destination: "user@exclusive-file-host.invalid".into(),
             ..Default::default()
         };
-        let held = hook_file(&provision_key(&host, "opencode", SIGNAL));
+        crate::git::seed_remote_home(&host, "/home/u");
+        let held = hook_file(&provision_key(&host, OPENCODE_PATH, SIGNAL));
         assert!(cache_lock().in_flight.insert(held.clone()));
         let guard = InFlightGuard { key: held };
         let other = {
             let host = host.clone();
             std::thread::spawn(move || {
-                provision_agent_hooks_on_host(&host, Some("other-mux signal "), "opencode", true)
+                provision_agent_hooks_on_host(
+                    &host,
+                    Some("other-mux signal "),
+                    "opencode",
+                    &no_env(),
+                    true,
+                )
             })
         };
         std::thread::sleep(IN_FLIGHT_WAIT_STEP * 3);
@@ -883,7 +1026,7 @@ mod tests {
             destination: "user@devbox.invalid".into(),
             ..Default::default()
         };
-        let degraded = provision_agent_hooks_on_host(&host, None, "codex", true);
+        let degraded = provision_agent_hooks_on_host(&host, None, "codex", &no_env(), true);
         assert!(degraded.is_some_and(|d| d.contains("reports no hook status")));
     }
 
@@ -896,8 +1039,12 @@ mod tests {
         };
         // Hooks opted out → no-op even for a covered agent (no ssh attempted;
         // the host doesn't exist).
-        assert!(provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", false).is_none());
+        assert!(
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "codex", &no_env(), false).is_none()
+        );
         // claude/aider are arg-handled → no-op.
-        assert!(provision_agent_hooks_on_host(&host, Some(SIGNAL), "claude", true).is_none());
+        assert!(
+            provision_agent_hooks_on_host(&host, Some(SIGNAL), "claude", &no_env(), true).is_none()
+        );
     }
 }

@@ -485,7 +485,10 @@ mod tests {
             .find(|m| m.path.contains(".codex"))
             .expect("codex config merge present");
         assert_eq!(codex.source_path(), "codex-hooks.json");
-        assert_eq!(codex.requires_dir.as_deref(), Some("~/.codex"));
+        assert_eq!(
+            codex.requires_dir.as_deref(),
+            Some("{env:CODEX_HOME:-~/.codex}")
+        );
         assert!(
             def.agent_patches.iter().all(|p| p.name != "codex"),
             "codex should no longer be wired via an agent patch"

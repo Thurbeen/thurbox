@@ -728,6 +728,48 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// The marker that opens an `{env:NAME:-default}` token.
+pub const ENV_TOKEN_OPEN: &str = "{env:";
+
+/// `path` with each `{env:NAME:-default}` replaced by `lookup(NAME)`, or by
+/// `default` when that is unset or empty — the shell's `${NAME:-default}`.
+///
+/// An agent can move its config dir with a variable (`CODEX_HOME`), and an
+/// account is exactly such a dir (issue #1526), so a hook file's location is
+/// only known against the environment the agent runs in. The caller says which:
+/// the installer asks this process, a launch asks the session's saved env.
+/// Text that is not a complete token is left as written.
+pub fn resolve_env_default(path: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut rest = path;
+    while let Some(start) = rest.find(ENV_TOKEN_OPEN) {
+        let body = &rest[start + ENV_TOKEN_OPEN.len()..];
+        let Some(end) = body.find('}') else { break };
+        let Some((name, default)) = body[..end].split_once(":-") else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        match lookup(name).filter(|value| !value.is_empty()) {
+            Some(value) => out.push_str(&value),
+            None => out.push_str(default),
+        }
+        rest = &body[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The variable each `{env:NAME:-…}` token in `path` reads, in order.
+pub fn env_token_names(path: &str) -> Vec<&str> {
+    path.match_indices(ENV_TOKEN_OPEN)
+        .filter_map(|(start, _)| {
+            let body = &path[start + ENV_TOKEN_OPEN.len()..];
+            let token = &body[..body.find('}')?];
+            Some(token.split_once(":-")?.0)
+        })
+        .collect()
+}
+
 /// `path` respelled with this platform's own separator. On Windows both `/` and
 /// `\` separate, so `C:\Users\me\Documents/thurbox` (a `~/…` path expanded onto
 /// a Windows home) names the same directory as its all-`\` spelling but stores

@@ -193,6 +193,11 @@ creation reads the host's registry; a direct remote launch reads the caller's
 and expands the remote home. `session show --json` on the owning instance shows
 saved `env` (a caller's mirror reports `null`); `agent launch-args` without a
 session shows current defaults.
+An `env` that moves an agent's config dir moves its hooks with it: codex's asset
+path is `{env:CODEX_HOME:-~/.codex}/hooks.json`, resolved against the saved
+launch env by `adapt_def_for_launch` on every spawn, restart and launch plan —
+`provision_account_hooks_locally` here, `provision_agent_hooks_on_host` on a
+host — so an account reports status and binds the conversation restart resumes.
 See `docs/AGENTS.md` → Several Claude accounts for hooks and UI-skill setup.
 
 **Agent-native telemetry (`telemetry_env` / `telemetry_args`).** Applied only

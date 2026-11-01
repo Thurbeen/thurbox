@@ -124,7 +124,7 @@ fn install(
                 def.name
             )
         })?;
-    let mut home = crate::agent::extension_config::expand_tilde(&home_raw);
+    let mut home = local_path(&home_raw);
     if home.is_relative() {
         home = std::env::current_dir()
             .map_err(|e| format!("resolve extension home '{home_raw}': {e}"))?
@@ -147,9 +147,7 @@ fn install(
         .map(|f| &f.path)
         .chain(def.config_merges.iter().map(|m| &m.path))
     {
-        protect_user_hooks(&crate::agent::extension_config::expand_tilde(
-            &path.replace(HOME_TOKEN, &home_str),
-        ))?;
+        protect_user_hooks(&local_path(&path.replace(HOME_TOKEN, &home_str)))?;
     }
     for file in &def.files {
         protect_user_hooks(&safe_join(&home, &file.path)?)?;
@@ -242,9 +240,19 @@ fn install(
     //    which binary installed it + where from) to the discovery dir, then
     //    activate. `target` is recorded verbatim so `update` re-fetches the same
     //    source (a bare name re-resolves against the *current* binary's tag).
-    let resolved = def
+    let mut resolved = def
         .resolved_for_home(&home_str, crate::paths::home_dir().as_deref())
         .with_provenance(current, target);
+    // The saved copy names the files this install wrote, so the uninstall
+    // reverts them whatever its own environment says.
+    for f in &mut resolved.external_files {
+        f.path = process_env(&f.path);
+        f.requires_dir = f.requires_dir.as_deref().map(process_env);
+    }
+    for m in &mut resolved.config_merges {
+        m.path = process_env(&m.path);
+        m.requires_dir = m.requires_dir.as_deref().map(process_env);
+    }
     crate::agent::extension_config::write_manifest(&resolved)?;
     report.ensure = match healing {
         None => activate_extension(db, backends, &resolved)?,
@@ -400,12 +408,12 @@ fn install_external_file(
     report: &mut InstallReport,
 ) -> Result<(), crate::session_ops::OpError> {
     if let Some(req) = &f.requires_dir {
-        if !crate::agent::extension_config::expand_tilde(req).is_dir() {
+        if !local_path(req).is_dir() {
             report.external_files_skipped.push(f.path.clone());
             return Ok(());
         }
     }
-    let dest = crate::agent::extension_config::expand_tilde(&f.path);
+    let dest = local_path(&f.path);
     protect_user_hooks(&dest)?;
     if f.if_absent && dest.exists() && !force {
         report.external_files_skipped.push(f.path.clone());
@@ -487,15 +495,103 @@ fn read_toml_or_empty(path: &Path) -> Result<toml_edit::DocumentMut, crate::sess
 /// Write `content` to `path` only when it differs from the current contents (the
 /// merge runs every startup + heartbeat tick, so a no-op write would be churn).
 /// Returns whether it wrote.
-fn write_if_changed(path: &Path, content: &str) -> Result<bool, crate::session_ops::OpError> {
+pub(super) fn write_if_changed(
+    path: &Path,
+    content: &str,
+) -> Result<bool, crate::session_ops::OpError> {
     if file_has_content(path, content) {
         return Ok(false);
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    std::fs::write(path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
+    replace_atomically(path, content)?;
     Ok(true)
+}
+
+/// Write `content` to a sibling temp file and rename it over `path`, so a
+/// reader sees the old file or the new one and never an empty one. A hook file
+/// is merged by the install tick and by each launch of its account, and a
+/// merge that read a half-written file as `{}` would write the user's own
+/// hooks away. A symlinked `path` (a dotfiles checkout) keeps its link: the
+/// rename lands on the file it points at, with that file's permissions, or
+/// creates that file when the link dangles.
+fn replace_atomically(path: &Path, content: &str) -> Result<(), crate::session_ops::OpError> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let target = link_target(path);
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = target.with_file_name(format!(
+        ".{name}.thurbox-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let written = std::fs::write(&tmp, content)
+        .and_then(|()| match std::fs::metadata(&target) {
+            Ok(meta) => std::fs::set_permissions(&tmp, meta.permissions()),
+            Err(_) => Ok(()),
+        })
+        .and_then(|()| std::fs::rename(&tmp, &target));
+    written.map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("write {}: {e}", path.display()).into()
+    })
+}
+
+/// The file `path`'s symlink chain ends at, whether or not it exists yet —
+/// `canonicalize` gives up on a dangling link, and renaming over the link
+/// would cut the user's dotfiles out. A loop longer than the OS allows stops
+/// where it is, as the write through it would fail anyway.
+fn link_target(path: &Path) -> std::path::PathBuf {
+    let mut target = path.to_path_buf();
+    for _ in 0..40 {
+        let Ok(next) = std::fs::read_link(&target) else {
+            break;
+        };
+        target = match target.parent() {
+            Some(parent) if next.is_relative() => parent.join(next),
+            _ => next,
+        };
+    }
+    target
+}
+
+/// How one hook payload lands in a config dir: merged into a shared file in
+/// the given format, or written as a standalone file thurbox owns.
+#[derive(Clone, Copy)]
+pub(crate) enum Landing {
+    Merge(crate::session::ConfigMergeFormat),
+    File,
+}
+
+/// Land `payload` at `dest` on this machine under the installer's own rules —
+/// the prune-then-merge and ownership stamps of a config merge, the managed
+/// marker of an external file — for a session whose saved env moves its
+/// agent's config dir away from the one the installer serves. `Ok(None)` when
+/// `requires_dir` is absent (the agent's account dir does not exist), else
+/// whether it wrote. A user-owned standalone file is refused with an error.
+pub(crate) fn land_payload(
+    landing: Landing,
+    requires_dir: &Path,
+    dest: &Path,
+    payload: &str,
+) -> Result<Option<bool>, crate::session_ops::OpError> {
+    if !requires_dir.is_dir() {
+        return Ok(None);
+    }
+    protect_user_hooks(dest)?;
+    let content = match landing {
+        Landing::Merge(format) => merged_config(format, dest, payload, &dest.to_string_lossy())?,
+        Landing::File => {
+            if dest.exists() && is_user_modified(dest) {
+                return Err(format!("{} is user-owned (no managed marker)", dest.display()).into());
+            }
+            payload.to_string()
+        }
+    };
+    write_if_changed(dest, &content).map(Some)
 }
 
 /// Deep-merge an extension's shipped JSON into an agent's *own* config file
@@ -508,12 +604,12 @@ fn install_config_merge(
     report: &mut InstallReport,
 ) -> Result<(), crate::session_ops::OpError> {
     if let Some(req) = &m.requires_dir {
-        if !crate::agent::extension_config::expand_tilde(req).is_dir() {
+        if !local_path(req).is_dir() {
             report.config_merges_skipped.push(m.path.clone());
             return Ok(());
         }
     }
-    let dest = crate::agent::extension_config::expand_tilde(&m.path);
+    let dest = local_path(&m.path);
     protect_user_hooks(&dest)?;
     let source_text = crate::agent::extension_config::fetch_file(source, m.source_path())?;
     // A user's malformed target must NOT abort the whole install: this runs every
@@ -620,7 +716,7 @@ fn merged_config(
 fn revert_config_merge(
     m: &crate::session::ConfigMerge,
 ) -> Result<bool, crate::session_ops::OpError> {
-    let dest = crate::agent::extension_config::expand_tilde(&m.path);
+    let dest = local_path(&m.path);
     if !dest.exists() {
         return Ok(false);
     }
@@ -878,7 +974,7 @@ pub fn uninstall_extension(
 
     // Remove external hook files we still own (those carrying our managed marker).
     for f in &def.external_files {
-        let dest = crate::agent::extension_config::expand_tilde(&f.path);
+        let dest = local_path(&f.path);
         if dest.is_file() && !is_user_modified(&dest) && std::fs::remove_file(&dest).is_ok() {
             report.external_files_removed.push(f.path.clone());
         }
@@ -895,7 +991,7 @@ pub fn uninstall_extension(
     // Optionally delete the install home (payload + user data).
     if purge_home {
         if let Some(home) = &def.home {
-            let path = crate::agent::extension_config::expand_tilde(home);
+            let path = local_path(home);
             guard_removable_dir(&path)?;
             if path.is_dir() {
                 remove_dir_all_resilient(&path)
@@ -909,4 +1005,17 @@ pub fn uninstall_extension(
     report.manifest_removed = crate::agent::extension_config::remove_manifest_file(name)?;
 
     Ok(report)
+}
+
+/// Where a manifest path lands on this machine: its `{env:NAME:-default}`
+/// tokens read against this process's environment, then `~` expanded. A
+/// session whose saved env moves the dir is provisioned at launch instead
+/// (`remote_hooks::provision_account_hooks_locally`).
+fn local_path(path: &str) -> std::path::PathBuf {
+    crate::paths::expand_tilde(&process_env(path))
+}
+
+/// `path`'s `{env:NAME:-default}` tokens read from this process's environment.
+fn process_env(path: &str) -> String {
+    crate::paths::resolve_env_default(path, |name| std::env::var(name).ok())
 }

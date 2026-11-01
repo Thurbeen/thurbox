@@ -212,7 +212,10 @@ Session `--env` overrides agent `env`, which overrides `telemetry_env`.
 Thurbox's own identity and instance variables take precedence over these layers.
 The merged agent and session values are persisted together: restart, resume and
 fork keep that snapshot, so changing `agents.toml` cannot move an existing
-session to another account. Existing sessions created before this feature keep
+session to another account. When that snapshot moves an agent's config
+directory (`CODEX_HOME`), each launch merges Thurbox's status hooks into the
+selected directory too; see
+[Several Claude accounts](AGENTS.md#several-claude-accounts). Existing sessions created before this feature keep
 their saved environment; create a new session to select an agent's new defaults.
 
 With shared-host delegation, the host's own registry supplies its agent defaults;
@@ -1714,6 +1717,9 @@ path = "~/.gemini/settings.json"  #   SHARED config file (never clobbered)
 source = "antigravity-hooks.json"  # objects recurse, arrays union; uninstall prunes
 requires_dir = "~/.gemini"      #   exactly our entries (by marker). no-op write
                                 #   when unchanged; malformed target soft-skipped
+# `path`/`requires_dir` of either may name {env:NAME:-default}: the install reads
+#   NAME from thurbox's own environment, and the built-in hooks re-resolve it
+#   against a session's saved env at launch (codex's CODEX_HOME, issue #1526)
 # format = "toml"                # OPTIONAL; JSON by default. Set for a TOML
                                 #   shared config (agent::toml_merge via toml_edit).
                                 #   TOML owns its entries by a comment on each, so

@@ -104,6 +104,21 @@ Repeat the entry and link for another account directory. On a shared host, defin
 the agent and skill link on that host. Tokens remain in the agent's own account
 configuration, outside `agents.toml`.
 
+A Codex account works the same way, with `CODEX_HOME` as the directory:
+
+```toml
+[[agents]]
+name = "codex-work"
+extends = "codex"
+env = { CODEX_HOME = "{home}/.codex-work" }
+```
+
+Codex reads its hooks from `$CODEX_HOME/hooks.json`, so each launch merges
+Thurbox's status hooks into the session's own account directory, on this
+machine or on the session's host, when that directory exists. The hooks also
+report the conversation ID that restart resumes. Uninstalling the hooks
+extension removes them from the default directory only.
+
 ### Multi-repo directory scope
 
 The built-in Claude definition sets
@@ -326,7 +341,8 @@ embedded hook assets live in
   is explicit and one-shot, and must leave nothing of ours orphaned whatever
   shape the payload had when it wrote it. It still takes a user hook that calls
   `session signal` with it, in JSON; the TOML one passes over it.
-  - `codex`: merged into `~/.codex/hooks.json` (SessionStart→idle,
+  - `codex`: merged into `$CODEX_HOME/hooks.json`, `~/.codex/hooks.json` by
+    default (SessionStart→idle,
     UserPromptSubmit/PostToolUse→working, PermissionRequest and
     PreToolUse matching `request_user_input`→blocked, Stop→done). It has **two**
     block edges and both are **structured**, like kimi's: a real approval event,
