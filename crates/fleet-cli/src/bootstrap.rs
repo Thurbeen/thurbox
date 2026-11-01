@@ -48,6 +48,64 @@ fn checked(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Codex reads project skills from `.agents/skills`, Claude Code only from
+/// `.claude/skills`. This one relative link is the single managed symlink:
+/// both harnesses then load the one canonical copy of each skill.
+fn claude_skills_target() -> PathBuf {
+    Path::new("..").join(".agents").join("skills")
+}
+
+fn link_claude_skills(workspace: &Path) -> Option<String> {
+    let dir = workspace.join(".claude");
+    let link = dir.join("skills");
+    let target = claude_skills_target();
+    let preserved = |path: &Path| {
+        Some(format!(
+            "preserved {}; Claude Code does not load VEGA's skills from {}",
+            path.display(),
+            workspace.join(".agents/skills").display()
+        ))
+    };
+    // A `.claude` init cannot read leaves Claude Code without VEGA's skills
+    // but never fails init.
+    let unreadable = |path: &Path, e: std::io::Error| {
+        Some(format!(
+            "could not inspect {}: {e}; Claude Code does not find VEGA's skills",
+            path.display()
+        ))
+    };
+    // A user-owned `.claude` that is a link or a file is kept as it is.
+    match fs::symlink_metadata(&dir) {
+        Ok(meta) if !meta.is_dir() => return preserved(&dir),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return unreadable(&dir, e),
+    }
+    match fs::symlink_metadata(&link) {
+        Ok(meta) => {
+            let ours = meta.file_type().is_symlink()
+                && fs::read_link(&link).is_ok_and(|found| found == target);
+            return if ours { None } else { preserved(&link) };
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return unreadable(&link, e),
+    }
+    // A filesystem without symlinks, or a `.claude` the user cannot write,
+    // leaves Claude Code without VEGA's skills but never fails init.
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink as link_dir;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir as link_dir;
+    if let Err(e) = fs::create_dir_all(&dir).and_then(|()| link_dir(&target, &link)) {
+        return Some(format!(
+            "could not link {} to {}: {e}; Claude Code does not find VEGA's skills until it exists",
+            link.display(),
+            target.display()
+        ));
+    }
+    None
+}
+
 fn bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
     fs::read(path).map(Some).or_else(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -324,6 +382,7 @@ pub fn init(
         )
         .map_err(|e| e.to_string())?;
     }
+    notices.extend(link_claude_skills(&workspace));
     for (name, content) in [("starter.toml", MANIFEST), ("provenance.json", PROVENANCE)] {
         let path = meta.join(name);
         checked(&path)?;

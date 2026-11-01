@@ -204,6 +204,84 @@ fn installed_first_run_creates_runnable_config_and_editable_workspace_without_gi
         .stderr_has("thurbox");
 }
 
+#[cfg(unix)]
+#[test]
+fn installed_workspace_exposes_each_skill_to_codex_and_claude_code() {
+    // Codex discovers project skills under .agents/skills, Claude Code only
+    // under .claude/skills: a VEGA session on either harness must find them.
+    let env = Env::without_tools("installed-skills");
+    wait(installed(&env, &["init"]).spawn().unwrap()).ok();
+    let workspace = env.root.join("local-data/fleet/vega");
+    let canonical = workspace.join(".agents/skills");
+    let mut names: Vec<_> = fs::read_dir(&canonical)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    names.sort();
+    assert!(
+        names.iter().any(|n| n == "status-digest"),
+        "the bundle ships Mission Control's skills: {names:?}"
+    );
+    for name in names {
+        let skill = std::path::Path::new(&name).join("SKILL.md");
+        let claude = workspace.join(".claude/skills").join(&skill);
+        assert_eq!(
+            fs::read_to_string(&claude).ok(),
+            Some(fs::read_to_string(canonical.join(&skill)).unwrap()),
+            "Claude Code finds no {} under .claude/skills",
+            skill.display()
+        );
+    }
+    let link = workspace.join(".claude/skills");
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        std::path::Path::new("..").join(".agents").join("skills"),
+        "one canonical copy, linked relatively so the workspace can move"
+    );
+
+    // A workspace installed before the link existed gains it on update.
+    fs::remove_file(&link).unwrap();
+    wait(installed(&env, &["init", "--update"]).spawn().unwrap()).ok();
+    assert!(link.join("status-digest/SKILL.md").is_file());
+
+    // A user's own skills directory is never replaced.
+    fs::remove_file(&link).unwrap();
+    fs::create_dir_all(link.join("mine")).unwrap();
+    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
+        .ok()
+        .stdout_has("preserved");
+    assert!(link.join("mine").is_dir() && !link.is_symlink());
+
+    // Nor is a user's own `.claude` link: init keeps it and still succeeds.
+    let elsewhere = env.root.join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::remove_dir_all(workspace.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, workspace.join(".claude")).unwrap();
+    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
+        .ok()
+        .stdout_has("preserved");
+    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+    // A link that cannot be made is reported; init still completes.
+    use std::os::unix::fs::PermissionsExt;
+    fs::remove_file(workspace.join(".claude")).unwrap();
+    fs::create_dir(workspace.join(".claude")).unwrap();
+    fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o555)).unwrap();
+    fs::remove_file(workspace.join(".fleet/provenance.json")).unwrap();
+    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
+        .ok()
+        .stdout_has("could not link");
+    assert!(workspace.join(".fleet/provenance.json").is_file());
+    // Nor does a `.claude` init cannot read.
+    fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o000)).unwrap();
+    fs::remove_file(workspace.join(".fleet/provenance.json")).unwrap();
+    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
+        .ok()
+        .stdout_has("could not inspect");
+    assert!(workspace.join(".fleet/provenance.json").is_file());
+    fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 #[test]
 fn concurrent_init_preserves_identity_config_and_private_files_and_updates_safely() {
     let env = Env::without_tools("concurrent-init");

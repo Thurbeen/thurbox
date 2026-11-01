@@ -254,9 +254,9 @@ from the VEGA workspace that `fleet init` writes.
 
 - The VEGA starter uses the `codex` harness. Install and log in to it, or
   change the harness in the workspace's `task.json`.
-- VEGA's skills are `task-intake` and `task-status`. They create and inspect
-  v2 Tasks. V1's skills, such as `fleet-intake` and `fleet-queue`, use v1
-  commands and do not work with v2.
+- VEGA's skills are `task-intake`, `task-status` and `status-digest`. They
+  create, inspect and summarize v2 Tasks. V1's skills, such as
+  `fleet-intake` and `fleet-queue`, use v1 commands and do not work with v2.
 - Run `fleet init --update` after each binary update. It keeps your edits and
   writes conflicting bundled files under `vega/.fleet/conflicts/`.
 
