@@ -44,8 +44,10 @@ commands with it. `transcript_path`, when set, is the agent's own conversation
 log, readable as a file.
 
 **State** (`session get`'s `state`): `working` — mid-turn, busy; `blocked` —
-waiting on a person (a permission prompt, a question); `idle`/`done` — between
-turns; `stopped` — parked, refuses input; `unreachable` — its host is down;
+waiting on a person (a permission prompt, a question); `background` — the turn
+is at rest but sub-work it started is still running, so it is busy even with an
+empty prompt; `idle`/`done` — between turns; `stopped` — parked, refuses input;
+`failed` — the agent never started or exited; `unreachable` — its host is down;
 `running`/`uncovered`/`unreported` — no status hooks, so busy and idle cannot
 be told apart: read the screen with `capture`.
 
@@ -69,10 +71,11 @@ that session. Before it:
 
 1. Confirm the target: `session get <id>` — the name, cwd and branch you expect,
    not yourself, not `stopped`.
-2. Check it is not busy: state `idle`/`done`, or a `capture` showing an empty
-   prompt. Do not send into `working` or `blocked` — a `blocked` session is
-   waiting for a person's answer, not yours. To wait: `thurbox-cli session wait
-   <id> --state idle,done --timeout 600`.
+2. Check it is not busy: state `idle`/`done`. Only for a session with no hooks
+   (`running`/`uncovered`/`unreported`) does a `capture` showing an empty prompt
+   stand in for that. Never send into `working`, `background` or `blocked` — a
+   `blocked` session is waiting for a person's answer, not yours. To wait:
+   `thurbox-cli session wait <id> --state idle,done --timeout 600`.
 3. Check the user is not looking at it: `thurbox-cli ui state --json` →
    `selected_session` is the session open in their TUI. If it is your target,
    send a message instead, or ask.
@@ -86,8 +89,9 @@ thurbox-cli session send <id> "…" --wait-turn --timeout 600   # and wait for i
 not overwrite them: it waits briefly, then hands the text over as a message —
 `sent: false`, `delivered_via` names the route, and the exit is non-zero when it
 only reached the mailbox. Never add `--force` to get past that — the
-text in the box is a person's. `submitted: false` means the text is still
-sitting unsent in the box.
+text in the box is a person's. When `sent: true`, `submitted: false` means the
+text is still sitting unsent in the box. When `sent: false`, nothing was typed:
+check `delivered_via` for where it went before retrying.
 
 ## Never, unless the user explicitly asks
 
