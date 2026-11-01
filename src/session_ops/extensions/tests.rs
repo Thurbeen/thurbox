@@ -2289,3 +2289,21 @@ fn uninstall_reverts_the_file_the_install_resolved_its_env_token_to() {
         serde_json::from_str::<serde_json::Value>(user_hook).unwrap()
     );
 }
+
+/// A dotfiles link whose file does not exist yet is still the user's link: the
+/// write creates the file it names, as a plain `fs::write` through it did.
+#[cfg(unix)]
+#[test]
+fn an_atomic_hook_write_creates_a_dangling_links_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("dotfiles").join("hooks.json");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    let link = dir.path().join("hooks.json");
+    std::os::unix::fs::symlink("dotfiles/hooks.json", &link).unwrap();
+    super::install::write_if_changed(&link, "{\"hooks\":{}}").unwrap();
+    assert!(std::fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "{\"hooks\":{}}");
+}
