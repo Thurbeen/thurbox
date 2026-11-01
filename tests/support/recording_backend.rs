@@ -84,6 +84,9 @@ pub struct RecordingBackend {
     on_discover: Mutex<Option<DiscoveryHook>>,
     on_locate: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     on_pane_state: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// The pause between a submitting send's paste and its Enter — see
+    /// [`RecordingBackend::delay_enter`].
+    enter_delay: Mutex<std::time::Duration>,
 }
 
 impl RecordingBackend {
@@ -95,6 +98,7 @@ impl RecordingBackend {
             on_discover: Mutex::new(None),
             on_locate: Mutex::new(None),
             on_pane_state: Mutex::new(None),
+            enter_delay: Mutex::new(std::time::Duration::ZERO),
         })
     }
 
@@ -166,6 +170,13 @@ impl RecordingBackend {
 
     pub fn on_next_locate(&self, callback: impl FnOnce() + Send + 'static) {
         *self.on_locate.lock().unwrap() = Some(Box::new(callback));
+    }
+
+    /// Pause between a submitting send's paste and its Enter, as the tmux
+    /// adapter does, so two sends to one pane can interleave unless something
+    /// above the backend serializes them.
+    pub fn delay_enter(&self, delay: std::time::Duration) {
+        *self.enter_delay.lock().unwrap() = delay;
     }
 
     pub fn on_next_pane_state(&self, callback: impl FnOnce() + Send + 'static) {
@@ -575,11 +586,18 @@ impl SessionBackend for RecordingBackend {
         text: &str,
         submit: bool,
     ) -> thurbox::backend::contract::BackendResult<()> {
-        let mut state = self.lock(format!("send_text {pane} {text}"))?;
-        let window = state.input(pane)?;
-        window.screen.push_str(text);
+        // The paste and the Enter are two calls, as they are on a real
+        // multiplexer: nothing holds the pane between them.
+        self.lock(format!("send_text {pane} {text}"))?
+            .input(pane)?
+            .screen
+            .push_str(text);
         if submit {
-            window.screen.push('\n');
+            std::thread::sleep(*self.enter_delay.lock().unwrap());
+            self.lock(format!("send_text {pane} <Enter>"))?
+                .input(pane)?
+                .screen
+                .push('\n');
         }
         Ok(())
     }

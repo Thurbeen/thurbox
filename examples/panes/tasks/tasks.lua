@@ -229,8 +229,8 @@ return {
     end
     if action == "tasks.dispatch" then
       state.armed = nil
-      -- `dispatch` sends the task to a session; with none named the kernel picks
-      -- the selected one, which is what a reader means by "hand it to the agent".
+      -- `dispatch` follows the task's own action, as `thurbox-cli task run` does.
+      -- A plain todo has none, and the refusal arrives as `command.failed`.
       command("dispatch", { number = task.id })
       return true
     end

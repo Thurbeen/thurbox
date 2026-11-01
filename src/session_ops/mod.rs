@@ -64,6 +64,7 @@ pub mod set_key;
 mod shared_tests;
 pub mod spawn;
 pub mod state_hooks;
+pub mod tasks;
 pub(crate) mod telemetry;
 pub mod wait;
 pub mod windows;
@@ -129,15 +130,43 @@ pub fn send_text_with_status(
     } else {
         None
     };
-    backend
-        .send_text(&pane, text, submit)
-        .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))?;
+    {
+        let lock = delivery_lock(session.id);
+        let _held = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        backend
+            .send_text(&pane, text, submit)
+            .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))?;
+    }
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after input: {e}");
         }
     }
     Ok(())
+}
+
+/// The lock one session's deliveries take in turn.
+///
+/// A submitting send is a paste and then an Enter, two calls with nothing
+/// holding the pane between them, so two sends running side by side paste both
+/// texts before either is submitted. The command bus queues commands that name
+/// a session, but a task dispatch only learns its session on the worker (#1468),
+/// so delivery itself is serialized per session, for every caller in this
+/// process.
+fn delivery_lock(id: crate::session::SessionId) -> std::sync::Arc<std::sync::Mutex<()>> {
+    type Locks =
+        std::collections::HashMap<crate::session::SessionId, std::sync::Arc<std::sync::Mutex<()>>>;
+    static LOCKS: std::sync::LazyLock<std::sync::Mutex<Locks>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut locks = LOCKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Drop the locks no delivery holds, so the map stays as small as the
+    // sends in flight.
+    locks.retain(|_, lock| std::sync::Arc::strong_count(lock) > 1);
+    std::sync::Arc::clone(locks.entry(id).or_default())
 }
 
 /// How long `session send` waits for an operator's half-typed line to clear

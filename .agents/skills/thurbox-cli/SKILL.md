@@ -1131,6 +1131,9 @@ A task can be **acted on by a coding agent**: `Task::agent_prompt()` builds an
 `id + # title + markdown description` block plus self-service hints (`thurbox-cli
 task show <id>` to read the record, `thurbox-cli task edit <id> --status done` to
 close it), and `task run` sends or spawns. Triggering advances `Todo → InProgress`.
+`session_ops::tasks::dispatch` is the one implementation (#1468): `task run` and the
+interface's `dispatch` command both call it, so they name, reuse and refuse alike; the
+command additionally takes a session to send to instead of the task's action.
 
 - **Data** (`session/task.rs`): `Task` (`id`, `title`, `description:
   Option<String>`, `status: TaskStatus` {`Todo`/`InProgress`/`Done`}, `action:

@@ -969,9 +969,12 @@ function require(name) end
 ---@field status? string
 ---@field reset? boolean Delete it.
 
+--- Hand a task to an agent, as `thurbox-cli task run` does: its Send action
+--- types into its session, its Spawn action reuses or spawns the task's own
+--- session, and a task with neither is refused as `command.failed`.
 ---@class (exact) thurbox.cmd.Dispatch
 ---@field number integer The task to dispatch.
----@field session? string
+---@field session? string A session to type it into instead of the task's own action.
 
 --- Without `action`: enable, disable, run or delete automation `number`. With
 --- `action = "create"` or `"edit"` (which needs `number`): the fields below,
