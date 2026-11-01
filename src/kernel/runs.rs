@@ -1056,7 +1056,9 @@ mod tests {
             .decode(args.last().expect("encoded script").as_bytes())
             .expect("base64");
         let units: Vec<_> = decoded
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         let script = String::from_utf16(&units).expect("UTF16");

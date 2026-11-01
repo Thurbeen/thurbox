@@ -263,7 +263,7 @@ impl App {
                     request
                         .sessions
                         .as_ref()
-                        .map_or(true, |only| only.contains(id))
+                        .is_none_or(|only| only.contains(id))
                 })
                 .cloned()
                 .collect();
@@ -386,11 +386,8 @@ impl App {
 /// rebuilt every published group and dropped every pure pane's cached tree,
 /// undoing ADR-P16's gating for anyone whose agent prints a URL. Nothing about
 /// the rendered frame looks wrong while that happens; only the CPU does.
-///
-/// `map_or(true, ..)` rather than `is_none_or`: the latter is stable since 1.82
-/// and this crate's MSRV is 1.75.
 fn link_scan_due(last_scan: Option<Instant>, now: Instant) -> bool {
-    last_scan.map_or(true, |at| now.duration_since(at) >= LINK_SCAN_INTERVAL)
+    last_scan.is_none_or(|at| now.duration_since(at) >= LINK_SCAN_INTERVAL)
 }
 
 /// What a publish owes the links of one surface that is on screen.

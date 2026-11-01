@@ -160,7 +160,7 @@ pub fn run(
             }
         }
         if let Some(pattern) = &conditions.pane {
-            if captured.map_or(true, |at| at.elapsed() >= CAPTURE_INTERVAL) {
+            if captured.is_none_or(|at| at.elapsed() >= CAPTURE_INTERVAL) {
                 captured = Some(Instant::now());
                 let row = db
                     .get_session_by_id(session.id)

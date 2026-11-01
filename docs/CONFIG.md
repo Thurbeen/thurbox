@@ -1643,7 +1643,7 @@ Maps `Action` names to one or more chord strings:
   **never** forwarded — they're how you leave the terminal.
 - Action names and defaults: see the
   [Keybindings page](https://thurbox.thurbeen.eu/docs/keybindings.html), the
-  live `F1` registry, or `src/session/keybindings.rs`.
+  live `F1` registry, or `src/kernel/registry.rs`.
 
 ## extensions/
 

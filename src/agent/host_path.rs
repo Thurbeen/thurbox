@@ -295,7 +295,7 @@ pub fn multiplexers_found(host: &HostDef, start: bool) -> MuxProbe {
     }
     let key = host.backend_name();
     let hit = mux_cache().lock().ok().and_then(|c| c.get(&key).cloned());
-    let stale = hit.as_ref().map_or(true, |(at, _)| at.elapsed() >= MUX_TTL);
+    let stale = hit.as_ref().is_none_or(|(at, _)| at.elapsed() >= MUX_TTL);
     if stale && start && !cfg!(test) {
         reprobe(host, key);
     }

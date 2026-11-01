@@ -386,7 +386,7 @@ impl<'a> Pane<'a> {
     /// has nothing to hold, which is the same as holding it.
     fn is_resident(&self) -> bool {
         self.wired()
-            .map_or(true, crate::backend::pane::WiredPane::is_resident)
+            .is_none_or(crate::backend::pane::WiredPane::is_resident)
     }
 
     /// How much output this pane's parser has taken — see

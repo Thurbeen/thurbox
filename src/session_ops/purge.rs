@@ -114,7 +114,7 @@ fn purge_selected_limited(
     let mut silent = std::collections::HashSet::new();
     for row in rows
         .into_iter()
-        .filter(|row| selected_id.map_or(true, |id| id == row.id))
+        .filter(|row| selected_id.is_none_or(|id| id == row.id))
         .filter(selected)
     {
         let _lease = if !dry_run {

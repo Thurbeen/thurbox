@@ -9,9 +9,12 @@ Each principle has an automated enforcement mechanism
 ### 1. Crash-free operation
 
 Errors are displayed in the UI (status bar / footer), never via panics.
-The only panic path is the emergency terminal-restore hook in `main.rs`,
-which exists to leave the user's terminal in a usable state
-if something truly unexpected happens.
+A panic is a bug. The panic hook installed by `coordinator::boot` restores
+the terminal first, so the user's terminal stays usable if one happens.
+
+Code review enforces this, not a lint: `clippy::unwrap_used` is not denied,
+and start-up still calls `expect` on resources it cannot run without, such as
+the log file in the data directory.
 
 ### 2. Module isolation
 
@@ -26,7 +29,7 @@ agent::agent_config  → session, paths
 agent::extension_config → session, paths, agent::agent_config
 agent::generic       → session, agent::provider
 agent::hooks_config  → session, paths, agent::agent_config
-agent::host_config   → session, paths, agent::agent_config
+agent::host_config   → session, paths, shell, agent::agent_config
 agent::host_path     → session, shell
 agent::input         (no crate-internal references)
 agent::json_merge    (no crate-internal references)
@@ -74,8 +77,8 @@ session_ops          → session, storage, git, sync, paths, workspace, shell
 kernel               → session, storage, sync, paths, session_ops, git,
                        notifications, shell
                        [path-only: agent::{agent_config, extension_config,
-                        host_config, preflight, self_update, settings_config,
-                        themes_config, version_check},
+                        host_config, host_path, preflight, self_update,
+                        settings_config, themes_config, version_check},
                         backend::{contract, identity, pane, registry}]
 cli                  → session, storage, session_ops, sync, paths,
                        notifications, ui_control, telemetry
@@ -199,7 +202,13 @@ runs over a transport, local, SSH or WSL, so a session can live on another
 host with no adapter of its own for that (ADR-13). The multiplexer provides
 truly persistent sessions that survive crashes/restarts.
 We never mock, emulate, or screen-scrape a fake terminal.
-The backend is the source of truth for session lifecycle.
+
+The multiplexer is the source of truth for what is running: a pane, its
+process and its output. The database is the source of truth for which sessions
+should exist. A lifecycle change records its intent in a row before it touches
+a pane or a worktree, and self-heal, the sweeps and the repairs read the rows
+to decide what to recreate, reap or repair (ADR-26). A host's own database owns
+its sessions; another instance is a client of it (ADR-24).
 
 ### 9. Logging never touches stdout
 
@@ -256,7 +265,7 @@ binaries have correct versions while keeping the source tree clean.
 
 | Principle | Enforced by | Config file |
 |---|---|---|
-| Crash-free operation | Code review + `#[deny(clippy::unwrap_used)]` (planned) | `clippy.toml` |
+| Crash-free operation | Code review | — |
 | Module isolation | `tests/architecture_rules.rs` | — |
 | Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit |
 | Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` |

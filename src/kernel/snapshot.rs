@@ -712,12 +712,10 @@ impl PaneProbe {
         let mut moved = false;
         while let Ok((session, corroboration)) = rx.try_recv() {
             self.inflight.remove(&session);
-            // `Option::is_none_or` would read better but is stable only from
-            // 1.82; this crate's MSRV is 1.75.
             let changed = self
                 .known
                 .get(&session)
-                .map_or(true, |probe| probe.corroboration != corroboration);
+                .is_none_or(|probe| probe.corroboration != corroboration);
             self.known.insert(
                 session,
                 Probe {
@@ -1084,11 +1082,9 @@ impl SnapshotStore {
     /// retain their own timestamps; this instant controls only the poll cadence.
     pub fn refresh_if_due_at(&mut self, now: Instant) -> bool {
         let applied = self.drain_replies();
-        // `Option::is_none_or` would read better but is stable only from 1.82;
-        // this crate's MSRV is 1.75.
-        let due = self.last_refresh.map_or(true, |at| {
-            now.saturating_duration_since(at) >= REFRESH_INTERVAL
-        });
+        let due = self
+            .last_refresh
+            .is_none_or(|at| now.saturating_duration_since(at) >= REFRESH_INTERVAL);
         if !due {
             return applied;
         }
@@ -1273,7 +1269,7 @@ impl SnapshotStore {
         if self.current.sessions.iter().any(|row| {
             parse_id(&row.id)
                 .and_then(|id| hooks.get(&id))
-                .map_or(true, |hook| hook.state != row.hook_state)
+                .is_none_or(|hook| hook.state != row.hook_state)
         }) {
             return false;
         }
@@ -3225,7 +3221,7 @@ mod tests {
         assert!(hook.state_at > first);
         assert!(
             hook.seen_at
-                .map_or(true, |seen| seen < hook.state_at.unwrap()),
+                .is_none_or(|seen| seen < hook.state_at.unwrap()),
             "a turn that finished after the user left was marked seen"
         );
     }

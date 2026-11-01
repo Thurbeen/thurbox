@@ -339,7 +339,7 @@ sweep's backoff keys, each of which rebuilt the whole snapshot.
 `Database::open_for_signal`, which skips migrations and retention for a current
 schema and falls back to the full open for a new or older database.
 
-Alongside this, `Database::initialize` (`src/storage/schema.rs`) sets the
+Alongside this, `Database::initialize` (`src/storage/schema/mod.rs`) sets the
 WAL-friendly performance pragmas `synchronous = NORMAL`, `cache_size = -8000`
 (8 MB), `mmap_size = 64 MB`, and `temp_store = MEMORY`.
 
@@ -631,9 +631,9 @@ only** and never CI-asserted (the counters remain the sole regression gate):
   **deltas** for the window (`PerfCounters::delta`), frame/tick p50/p95/max,
   and the window's slow ops — then resets the per-window timing state. The
   one-shot `startup` line is unchanged.
-- **The perf HUD** (`src/ui/perf_hud.rs`, F12, `[features] perf_hud`): a
-  floating, non-modal overlay with the same counters/percentiles/slow-ops,
-  refreshed by the existing 250 ms forced-redraw floor.
+- **The perf HUD** (`render_hud` in `src/coordinator/chrome.rs`, F12,
+  `[features] perf_hud`): a floating, non-modal overlay with the same
+  counters/percentiles/slow-ops, refreshed by the existing 250 ms forced-redraw floor.
 - **External inspection**: while timing is active the TUI also publishes a
   JSON snapshot (counters + percentiles + slow ops + the startup phases) into
   the SQLite `metadata` table (`perf_snapshot` key, ~every 5–10 s), read by
@@ -1362,8 +1362,10 @@ were enough:
 the one pane whose surface moved — the terminal grid conversion ADR-P17 names
 is the remaining line item. The rules this doc states are finally uniform:
 every group is change-gated, and there is no cache without an age (the one
-deliberate exemption, `REPO_NAME_CACHE`, keys on a repository's origin URL,
-which does not move within a process's lifetime). The failure mode to guard in
+deliberate exemption, `REPO_NAME_CACHE`, keys on a repository's path and
+keeps the display name its origin URL gave on first read: a remote changed
+while the process runs shows its old name until restart, which a label can
+afford). The failure mode to guard in
 review is unchanged from ADR-P16: a store that mutates without moving its
 signal — which is why kernel-side `store` writes now bump the state version
 exactly as the Lua path does, the bug the focus request used to hit.

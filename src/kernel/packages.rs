@@ -845,11 +845,10 @@ fn install_repository(
     crate::git::clone_plugin(url, &root, pin).map_err(|e| format!("{e:#}"))?;
     let commit = crate::git::head_commit(&root).map_err(|e| format!("{e:#}"))?;
 
-    let file = pane_in_working_copy(&root, &name, as_file).map_err(|e| {
+    let file = pane_in_working_copy(&root, &name, as_file).inspect_err(|_| {
         // A clone whose pane cannot be identified is not an install: take it back so
         // a second attempt with `--as` starts clean.
         let _ = std::fs::remove_dir_all(&root);
-        e
     })?;
 
     let entry = PluginEntry {

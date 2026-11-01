@@ -431,11 +431,9 @@ impl App {
 
         // The snapshot, on its own slower cadence: it is a database write, not
         // a log line.
-        // `map_or(true, ..)` rather than `is_none_or`: the latter is stable
-        // since 1.82 and this crate's MSRV is 1.75.
         let due = self
             .perf_published_at
-            .map_or(true, |at| at.elapsed() >= PERF_PUBLISH_INTERVAL);
+            .is_none_or(|at| at.elapsed() >= PERF_PUBLISH_INTERVAL);
         if !due {
             return;
         }

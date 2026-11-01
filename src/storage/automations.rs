@@ -209,7 +209,7 @@ impl Database {
         let tx = self.write_transaction()?;
         if self
             .get_automation(auto.id)?
-            .map_or(true, |held| held.owner_session_id != auto.owner_session_id)
+            .is_none_or(|held| held.owner_session_id != auto.owner_session_id)
         {
             self.validate_automation_owner(auto.owner_session_id)?;
         }
@@ -310,7 +310,7 @@ impl Database {
         let tx = self.write_transaction()?;
         if self
             .get_automation(auto.id)?
-            .map_or(true, |held| held.owner_session_id != auto.owner_session_id)
+            .is_none_or(|held| held.owner_session_id != auto.owner_session_id)
         {
             self.validate_automation_owner(auto.owner_session_id)?;
         }

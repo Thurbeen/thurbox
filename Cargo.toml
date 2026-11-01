@@ -3,6 +3,10 @@ name = "thurbox"
 # Development version marker: real version injected at build time from git tags
 version = "0.0.0-dev"
 edition = "2021"
+# The oldest Rust the locked dependencies build on (sysinfo needs 1.95).
+# Clippy reads its `msrv` from here, and tests/doc_references.rs holds every
+# stated version to it.
+rust-version = "1.95"
 # Build script injects version from THURBOX_RELEASE_VERSION env variable (set by CI)
 # Fallback to version above for local development builds
 build = "build.rs"

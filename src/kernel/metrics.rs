@@ -132,7 +132,7 @@ impl Metrics {
     /// refuses one function away.
     pub fn wants_sample(&self) -> bool {
         self.last_sample
-            .map_or(true, |at| at.elapsed() >= SAMPLE_INTERVAL)
+            .is_none_or(|at| at.elapsed() >= SAMPLE_INTERVAL)
     }
 
     /// Start a sample if one is due and none is running.
@@ -164,7 +164,7 @@ impl Metrics {
     fn sample_machine(&mut self, subjects: &[Subject]) {
         let due = self
             .last_sample
-            .map_or(true, |at| at.elapsed() >= SAMPLE_INTERVAL);
+            .is_none_or(|at| at.elapsed() >= SAMPLE_INTERVAL);
         if !due {
             return;
         }

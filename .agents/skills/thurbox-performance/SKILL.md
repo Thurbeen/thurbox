@@ -96,8 +96,9 @@ a failed branch fetch stuck for the process lifetime, a backend surveyed once
 was treated as surveyed since, and a session's diff held its first computation
 for the life of the process. Each is now a TTL, an in-flight marker, or a
 generation counter — if you add a cache here, give it one (ADR-P13/P18; the one
-exemption, the repo-name cache, keys on an origin URL that cannot move within a
-process). When the age is a **generation key** rather than a clock, which key you
+exemption, the repo-name cache, keys on the repository's path and keeps the name
+its origin URL gave, so a remote changed mid-process shows its old name until
+restart — a display label, accepted). When the age is a **generation key** rather than a clock, which key you
 pick is the whole of the correctness: `GitStats::known` caches `merged` against
 the **commit** it was computed for, because keyed on the session it latched — a
 landed branch that keeps working is unmerged again on its next commit, and the

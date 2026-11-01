@@ -400,8 +400,8 @@ were found by running it, not by reading the spec.
 ## Where the boundary sits
 
 `kernel` may reference `session`, `storage`, `sync`, `paths`, `session_ops`,
-`git`, `notifications`, `clipboard` and `shell`, plus `agent` and the backend
-contract by fully-qualified path only — enforced by
+`git`, `notifications` and `shell`, plus `agent` and the backend contract by
+fully-qualified path only — enforced by
 `tests/architecture_rules.rs`. It may never reference `ui` or `app`: it is their
 replacement, not their peer.
 

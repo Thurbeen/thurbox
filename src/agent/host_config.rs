@@ -616,12 +616,14 @@ pub(crate) fn parse_wsl_distros(bytes: &[u8]) -> Vec<String> {
 /// the characteristic interleaved NUL high-bytes of ASCII text; any other
 /// producer is decoded as UTF-8. The BOM and stray NULs are stripped.
 fn decode_wsl_output(bytes: &[u8]) -> String {
-    let sample = bytes.chunks_exact(2).take(8);
+    let sample = bytes.as_chunks::<2>().0.iter().take(8);
     let sampled = sample.clone().count();
     let utf16_like = sampled > 0 && sample.filter(|c| c[1] == 0).count() * 2 > sampled;
     let decoded = if utf16_like {
         let units: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .collect();
         String::from_utf16_lossy(&units)

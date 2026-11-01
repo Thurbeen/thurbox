@@ -33,7 +33,7 @@ No Nix? `scripts/install-dev-tools.sh` installs the dev tools (including
 the website linters), `git`, and the three Lua gates `just lint` runs (`selene`,
 `stylua`, `lua-language-server`).
 
-MSRV is Rust 1.75, Edition 2021. The full walkthrough — including the runtime
+MSRV is Rust 1.95, Edition 2021. The full walkthrough — including the runtime
 sandbox for trying thurbox in isolation — is in
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
