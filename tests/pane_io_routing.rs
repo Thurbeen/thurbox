@@ -881,6 +881,77 @@ fn a_task_dispatches_the_same_through_the_kernel_and_the_cli() {
     instance.assert_tmux_untouched("task dispatch");
 }
 
+/// A task dispatched to its saved session queues behind every other command
+/// for that session, so each prompt is submitted whole: a dispatch names no
+/// session to the bus, and two that ran side by side pasted both prompts before
+/// either pressed Enter.
+#[test]
+fn task_dispatches_to_one_session_never_interleave() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let (backends, probe) = (&reg.cli, &reg.probe);
+    let repo = instance.repo();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    let id = SessionId::default();
+    let uuid = id.to_string();
+    let pane = probe.open("tb-busy", &uuid, WindowRole::Agent);
+    seed_row(&db, id, "busy", "local:rmux", &pane, &repo);
+    probe.delay_enter(Duration::from_millis(200));
+
+    let mut prompts = Vec::new();
+    let mut accepted = Vec::new();
+    for title in ["first", "second"] {
+        let task = cli(
+            &db,
+            backends,
+            &["task", "create", "--title", title, "--session", &uuid],
+        )
+        .expect("task create");
+        let task_id = task["id"].as_i64().expect("task id");
+        prompts.push(db.get_task(task_id).unwrap().unwrap().agent_prompt());
+        accepted.push(bus.dispatch(KernelCommand::DispatchTask {
+            task: task_id,
+            session: None,
+        }));
+    }
+    accepted.push(bus.dispatch(KernelCommand::Send {
+        session: uuid.clone(),
+        text: "typed by hand".into(),
+    }));
+    prompts.push("typed by hand".into());
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while bus
+        .inflight()
+        .iter()
+        .any(|entry| accepted.contains(&entry.id) && entry.phase != Phase::Failed)
+    {
+        assert!(Instant::now() < deadline, "the sends never finished");
+        bus.poll();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let failed: Vec<_> = bus
+        .inflight()
+        .into_iter()
+        .filter(|entry| accepted.contains(&entry.id))
+        .collect();
+    assert!(failed.is_empty(), "a send failed: {failed:?}");
+
+    let screen = probe.screen(&pane);
+    for prompt in &prompts {
+        assert!(
+            screen.contains(&format!("{prompt}\n")),
+            "{prompt:?} was not submitted on its own; the pane shows {screen:?}"
+        );
+    }
+}
+
 /// A row whose host is not in `hosts.toml` names no machine to reach, and is
 /// still refused rather than driven.
 #[test]
