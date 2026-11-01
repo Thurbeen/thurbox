@@ -148,7 +148,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         agent: "codex",
         states: &["working", "blocked", "done", "idle"],
         delivery: HookDelivery::ConfigMerge,
-        hook_file: Some("~/.codex/hooks.json"),
+        hook_file: Some("{env:CODEX_HOME:-~/.codex}/hooks.json"),
         // Both of codex's block edges are structured: a real
         // `PermissionRequest` event, and a `PreToolUse` matched on the
         // `request_user_input` tool (the questions plan mode asks, which fire

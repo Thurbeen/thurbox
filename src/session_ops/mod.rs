@@ -655,7 +655,6 @@ pub fn agent_launch_plan(
             .and_then(|backend| backend.hook_signal_command()),
         _ => None,
     };
-    let (def, degraded) = spawn::adapt_def_for_launch(def, host.as_ref(), signal.as_deref(), hooks);
     if session.is_none() {
         let env = spawn::agent_environment(&def, host.as_ref())?;
         for (key, value) in env {
@@ -671,6 +670,9 @@ pub fn agent_launch_plan(
             config.env.remove(key);
         }
     }
+    let env = config.env.clone().into_iter().collect();
+    let (def, degraded) =
+        spawn::adapt_def_for_launch(def, host.as_ref(), signal.as_deref(), &env, hooks);
     let telemetry_args = telemetry::apply(
         &mut config,
         &def,

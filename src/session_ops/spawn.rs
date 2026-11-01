@@ -463,18 +463,23 @@ fn spawn(
     let signal = backends
         .get(&choice.route)
         .and_then(|backend| backend.hook_signal_command());
-    let (adapted, hook_degraded) =
-        adapt_def_for_launch(agent_def, host.as_ref(), signal.as_deref(), hooks_enabled);
-    agent_def = adapted;
-    if let Some(reason) = hook_degraded {
-        tracing::warn!("remote hook wiring degraded for '{}': {reason}", req.name);
-    }
     let mut launch_env = if inherited_env {
         BTreeMap::new()
     } else {
         agent_environment(&agent_def, host.as_ref())?
     };
     launch_env.extend(req.env.clone());
+    let (adapted, hook_degraded) = adapt_def_for_launch(
+        agent_def,
+        host.as_ref(),
+        signal.as_deref(),
+        &launch_env,
+        hooks_enabled,
+    );
+    agent_def = adapted;
+    if let Some(reason) = hook_degraded {
+        tracing::warn!("hook wiring degraded for '{}': {reason}", req.name);
+    }
     let session_lease = super::lock::lock(db, super::lock::Subject::Session(session_id), "create")?
         .ok_or_else(|| {
             super::OpError::Conflict("session creation is already in progress".into())
@@ -1930,7 +1935,10 @@ pub(crate) fn platform_of(host: Option<&HostDef>) -> Platform {
 /// Adapt an agent def for launch on an optional remote host: rewrite/ship its
 /// args ([`adapt_agent_args_for_remote_with_report`]) and provision the
 /// agent's config-dir hook files there
-/// ([`super::remote_hooks::provision_agent_hooks_on_host`]). Returns the
+/// ([`super::remote_hooks::provision_agent_hooks_on_host`]), or, locally, into
+/// the account dir the session's `env` selects
+/// ([`super::remote_hooks::provision_account_hooks_locally`]). `env` is the
+/// session's saved launch env, which decides where that config dir is. Returns the
 /// adapted def plus a human-readable note when remote hooks-driven status
 /// will be degraded/absent. Performs ssh round-trips for a remote host — call
 /// on a worker, never the UI thread (ADR-P12). Identity for a local launch.
@@ -1938,11 +1946,13 @@ pub(crate) fn adapt_def_for_launch(
     mut def: crate::session::AgentDef,
     host: Option<&HostDef>,
     signal: Option<&str>,
+    env: &BTreeMap<String, String>,
     hooks_enabled: bool,
 ) -> (
     crate::session::AgentDef,
     super::remote_hooks::HookDegradation,
 ) {
+    let family = def.hook_schema.clone().unwrap_or_else(|| def.name.clone());
     // Expand `{home}` in every arg group before anything else so a session-path
     // agent (omp) launches against a concrete, quote-safe absolute path — the
     // local home for a local launch, the resolved remote home for an SSH/WSL
@@ -1951,7 +1961,9 @@ pub(crate) fn adapt_def_for_launch(
         if let Some(home) = crate::paths::home_dir() {
             super::expand_home_in_def(&mut def, &home.to_string_lossy());
         }
-        return (def, None);
+        let degraded =
+            super::remote_hooks::provision_account_hooks_locally(&family, env, hooks_enabled);
+        return (def, degraded);
     };
     if let Some(home) = resolve_launch_home(h) {
         super::expand_home_in_def(&mut def, &home);
@@ -1970,12 +1982,7 @@ pub(crate) fn adapt_def_for_launch(
     // A stripped config path outranks a provisioning note: it means the
     // agent's own hooks file never reached the host at all.
     let degraded = if stripped.is_empty() {
-        super::remote_hooks::provision_agent_hooks_on_host(
-            h,
-            signal,
-            def.hook_schema.as_deref().unwrap_or(&def.name),
-            hooks_enabled,
-        )
+        super::remote_hooks::provision_agent_hooks_on_host(h, signal, &family, env, hooks_enabled)
     } else {
         Some(format!(
             "hooks config stripped for host '{}' (no status): {}",

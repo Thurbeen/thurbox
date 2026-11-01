@@ -780,3 +780,22 @@ fn resolve_cli_binary_uses_platform_exe_suffix() {
     let name = p.file_name().unwrap().to_string_lossy();
     assert_eq!(name, format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX));
 }
+
+#[test]
+fn env_default_tokens_follow_the_given_environment() {
+    let path = "{env:CODEX_HOME:-~/.codex}/hooks.json";
+    let env = |value: &'static str| move |name: &str| (name == "CODEX_HOME").then(|| value.into());
+    assert_eq!(resolve_env_default(path, |_| None), "~/.codex/hooks.json");
+    assert_eq!(resolve_env_default(path, env("")), "~/.codex/hooks.json");
+    assert_eq!(resolve_env_default(path, env("/w")), "/w/hooks.json");
+    assert_eq!(
+        resolve_env_default("~/.gemini/settings.json", env("/w")),
+        "~/.gemini/settings.json"
+    );
+    assert_eq!(
+        resolve_env_default("{env:BROKEN/x", env("/w")),
+        "{env:BROKEN/x"
+    );
+    assert_eq!(env_token_names(path), ["CODEX_HOME"]);
+    assert!(env_token_names("~/.codex/hooks.json").is_empty());
+}
