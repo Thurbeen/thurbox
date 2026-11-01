@@ -1021,7 +1021,7 @@ mod windows {
             .collect();
         for entry in entries {
             let path = entry.path();
-            if path.extension().map_or(true, |ext| ext != "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
             let Ok(bytes) = fs::read(&path) else {
