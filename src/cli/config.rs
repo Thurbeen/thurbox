@@ -109,7 +109,7 @@ fn validate_file(
 }
 
 /// Validate `ui.json` — the file the interface actually reads for rebindings,
-/// band order, trust and the disabled set.
+/// settings and band order.
 fn validate_ui_json() -> (Value, bool) {
     let path = crate::kernel::registry::overrides_file();
     let problems = crate::kernel::registry::validate_overrides();
@@ -122,6 +122,15 @@ fn validate_ui_json() -> (Value, bool) {
         }),
         ok,
     )
+}
+
+/// Validate `plugin-state.json` — trust grants and the disabled set.
+fn validate_plugin_state() -> (Value, bool) {
+    let path = crate::kernel::registry::decisions_file();
+    let exists = path.as_ref().is_some_and(|p| p.exists());
+    let problems = crate::kernel::registry::validate_decisions();
+    let ok = problems.is_empty();
+    (file_report(path, problems, exists), ok)
 }
 
 fn validate_keybindings() -> (Value, bool) {
@@ -164,6 +173,7 @@ fn validate() -> (Value, Vec<String>) {
         "hooks.toml",
     );
     let (ui_json, ui_ok) = validate_ui_json();
+    let (plugin_state, plugin_state_ok) = validate_plugin_state();
     // Parsed only to report where it is and whether it is well-formed; its
     // verdict is not in the failure list, because nothing reads it.
     let (keybindings, _kb_ok) = validate_keybindings();
@@ -175,6 +185,7 @@ fn validate() -> (Value, Vec<String>) {
         ("themes.toml", themes_ok),
         ("hooks.toml", hooks_ok),
         ("ui.json", ui_ok),
+        ("plugin-state.json", plugin_state_ok),
         // Deliberately NOT in the failure list: nothing reads it, so a malformed
         // one cannot break anything and calling it invalid would send an upgrader
         // to fix a file that no longer matters.
@@ -193,6 +204,7 @@ fn validate() -> (Value, Vec<String>) {
         "themes_toml": themes,
         "hooks_toml": hooks,
         "ui_json": ui_json,
+        "plugin_state_json": plugin_state,
         "keybindings_json_legacy": keybindings,
     });
     (report, failed)
@@ -207,6 +219,7 @@ fn render_validate(report: &Value, failed: &[String]) -> String {
         ("themes.toml", "themes_toml"),
         ("hooks.toml", "hooks_toml"),
         ("ui.json", "ui_json"),
+        ("plugin-state.json", "plugin_state_json"),
         ("keybindings.json (v1, ignored)", "keybindings_json_legacy"),
     ];
     let mut lines = Vec::new();
@@ -352,10 +365,11 @@ fn show(db: &Database) -> Result<Value, String> {
                 .map(|p| p.display().to_string()),
             "ui_json": crate::kernel::registry::overrides_file()
                 .map(|p| p.display().to_string()),
+            "plugin_state_json": crate::kernel::registry::decisions_file()
+                .map(|p| p.display().to_string()),
             // v1's file. Reported so an upgrader can see where their old
             // rebindings went, and flagged because nothing reads it now: the
-            // interface keeps rebindings in `ui.json` beside trust and the
-            // disabled set, since all three are user decisions.
+            // interface keeps rebindings in `ui.json`.
             "keybindings_json_legacy": crate::paths::keybindings_file()
                 .map(|p| p.display().to_string()),
             "database": crate::paths::database_file().map(|p| p.display().to_string()),
@@ -468,10 +482,9 @@ mod tests {
     #[test]
     fn a_broken_v1_keybindings_file_does_not_fail_validation() {
         // It used to, and must not: nothing reads `keybindings.json` any more —
-        // the interface keeps rebindings in `ui.json` beside trust and the disabled
-        // set. Failing validation over it would send an upgrader to fix a file that
-        // cannot affect anything. It is still *reported*, so they can see where the
-        // old rebindings went.
+        // the interface keeps rebindings in `ui.json`. Failing validation over it
+        // would send an upgrader to fix a file that cannot affect anything. It is
+        // still *reported*, so they can see where the old rebindings went.
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
         crate::storage::keybindings::save_keybindings_json(
@@ -512,6 +525,24 @@ mod tests {
                 .is_empty(),
             "and it says what is wrong: {report}"
         );
+    }
+
+    #[test]
+    fn validate_checks_the_plugin_state_store() {
+        // Trust is granted from this file, so a broken one is reported rather
+        // than read as "nothing trusted" in silence.
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = TestPathGuard::new(tmp.path());
+        let path = crate::kernel::registry::decisions_file().expect("a store path");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ this is not json").unwrap();
+
+        let (report, failed) = validate();
+        assert!(
+            failed.iter().any(|f| f == "plugin-state.json"),
+            "{failed:?}"
+        );
+        assert_eq!(report["plugin_state_json"]["exists"], true, "{report}");
     }
 
     /// `serde_ignored` reports nested unknown keys, so a typo inside
