@@ -171,7 +171,7 @@ fn on_host(
 ) -> Result<SendReport, OpError> {
     let id = session.id.to_string();
     let timeout = policy.timeout.map(|t| t.as_secs().to_string());
-    let mut args = vec!["session", "send", &id, text];
+    let mut args = vec!["session", "send"];
     for (flag, on) in [
         ("--no-enter", !policy.submit),
         ("--force", policy.force),
@@ -185,6 +185,8 @@ fn on_host(
     if let Some(timeout) = &timeout {
         args.extend(["--timeout", timeout]);
     }
+    // `--` so text that starts with a dash reaches the host as text.
+    args.extend(["--", id.as_str(), text]);
     let (answer, failure) = match super::host_cli::run_classified(host, cli, &args) {
         Ok(answer) => (answer, None),
         Err(failure) => match failure.answer {

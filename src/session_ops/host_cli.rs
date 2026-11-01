@@ -1058,20 +1058,22 @@ pub fn run(host: &HostDef, cli: &CliInfo, args: &[&str]) -> Result<Value, super:
 
 /// The `sh` line for one CLI invocation. Every argument is POSIX-quoted, and
 /// `--json` is forced so the answer is parseable whether or not stdout is a
-/// pipe on the host.
+/// pipe on the host. It goes first — it is a global flag — so an invocation
+/// whose arguments end in `--` and free text keeps that text as text.
 pub(crate) fn cli_script_posix(cli: &str, args: &[&str]) -> String {
-    let mut words = vec![crate::shell::posix_quote(cli)];
+    let mut words = vec![crate::shell::posix_quote(cli), "--json".to_string()];
     words.extend(args.iter().map(|a| crate::shell::posix_quote(a)));
-    words.push("--json".to_string());
     words.join(" ")
 }
 
-/// The PowerShell line for one CLI invocation: `& 'cli' 'arg' … --json`, then
+/// The PowerShell line for one CLI invocation: `& 'cli' --json 'arg' …`, then
 /// the CLI's exit code handed back — PowerShell's own would be 0 regardless.
 pub(crate) fn cli_script_windows(cli: &str, args: &[&str]) -> String {
-    let mut words = vec![format!("& {}", crate::shell::powershell_quote(cli))];
+    let mut words = vec![
+        format!("& {}", crate::shell::powershell_quote(cli)),
+        "--json".to_string(),
+    ];
     words.extend(args.iter().map(|a| crate::shell::powershell_quote(a)));
-    words.push("--json".to_string());
     format!("{}; exit $LASTEXITCODE", words.join(" "))
 }
 
@@ -1879,8 +1881,8 @@ mod tests {
         );
         assert_eq!(
             script,
-            "/home/me/.local/share/thurbox/bin/thurbox-cli session create --name 'my session' \
-             --repo-path '/srv/it'\\''s' --json"
+            "/home/me/.local/share/thurbox/bin/thurbox-cli --json session create --name \
+             'my session' --repo-path '/srv/it'\\''s'"
         );
     }
 
@@ -1892,8 +1894,8 @@ mod tests {
         );
         assert_eq!(
             script,
-            "& 'C:/Users/me/AppData/Local/thurbox/bin/thurbox-cli.exe' 'session' 'list' \
-             '--parent' '$x''y' --json; exit $LASTEXITCODE"
+            "& 'C:/Users/me/AppData/Local/thurbox/bin/thurbox-cli.exe' --json 'session' 'list' \
+             '--parent' '$x''y'; exit $LASTEXITCODE"
         );
     }
 

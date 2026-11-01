@@ -121,6 +121,23 @@ pub fn send_text_with_status(
     submit: bool,
 ) -> Result<(), OpError> {
     let (backend, pane) = windows::require_agent_pane(backends, session)?;
+    let lock = delivery_lock(session.id);
+    let _held = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    type_into(db, backend.as_ref(), &pane, session, text, submit)
+}
+
+/// [`send_text_with_status`]'s delivery, for a caller already holding the
+/// session's [`delivery_lock`].
+fn type_into(
+    db: &Database,
+    backend: &dyn crate::backend::SessionBackend,
+    pane: &str,
+    session: &SharedSession,
+    text: &str,
+    submit: bool,
+) -> Result<(), OpError> {
     let prior = if submit && agent_family_is(&session.agent, "codex") {
         match db.load_hook_state(session.id) {
             Ok(row) => row,
@@ -132,15 +149,9 @@ pub fn send_text_with_status(
     } else {
         None
     };
-    {
-        let lock = delivery_lock(session.id);
-        let _held = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        backend
-            .send_text(&pane, text, submit)
-            .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))?;
-    }
+    backend
+        .send_text(pane, text, submit)
+        .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after input: {e}");
@@ -151,7 +162,8 @@ pub fn send_text_with_status(
 
 /// The lock one session's deliveries take in turn.
 ///
-/// A submitting send is a paste and then an Enter, two calls with nothing
+/// A submitting send is a paste and then an Enter (a confirmed one reads the
+/// line back in between), calls with nothing
 /// holding the pane between them, so two sends running side by side paste both
 /// texts before either is submitted. The command bus queues commands that name
 /// a session, but a task dispatch only learns its session on the worker (#1468),
@@ -211,6 +223,12 @@ pub fn send_text_confirmed(
     use composer::Composer;
     let (backend, pane) = windows::require_agent_pane(backends, session)?;
     let backend = backend.as_ref();
+    // Held from the first look at the line to the last Enter: another delivery
+    // pasted between this paste and its Enter would be submitted with it.
+    let lock = delivery_lock(session.id);
+    let _held = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let wait = if force {
         std::time::Duration::ZERO
     } else {
@@ -222,13 +240,13 @@ pub fn send_text_confirmed(
         return Ok(SendOutcome::ComposerBusy);
     }
     if !submit || before == Composer::Unknown {
-        send_text_with_status(db, backends, session, text, submit)?;
+        type_into(db, backend, &pane, session, text, submit)?;
         return Ok(SendOutcome::Typed {
             submitted: if submit { None } else { Some(false) },
             enter_retried: false,
         });
     }
-    send_text_with_status(db, backends, session, text, false)?;
+    type_into(db, backend, &pane, session, text, false)?;
     let typed = composer::wait_for_sent(backend, &pane, text, SUBMIT_WAIT);
     press_enter(db, backend, &pane, session)?;
     let after = composer::wait_while(backend, &pane, shell, Composer::Holding, SUBMIT_WAIT);

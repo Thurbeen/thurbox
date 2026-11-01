@@ -923,7 +923,7 @@ mod delegated_create {
                     "export TMUX_TMPDIR='{tmpdir}' THURBOX_SOCKET='{socket}'\n\
                      unset THURBOX_SOCKET_FOR THURBOX_SESSION THURBOX_SESSION_ID\n\
                      case \"$*\" in\n\
-                     \x20 *' session revision '*)\n\
+                     \x20 *' session revision'*)\n\
                      \x20   if [ -e '{race_arm}' ]; then\n\
                      \x20     printf started > '{race_started}'; race_wait=0\n\
                      \x20     while [ ! -e '{race_go}' ] && [ $race_wait -lt 400 ]; do sleep 0.05; race_wait=$((race_wait + 1)); done\n\
@@ -1092,7 +1092,8 @@ mod delegated_create {
                 .count()
         };
         for via in ["kernel", "cli"] {
-            let text = format!("typed via the {via}");
+            // Leading dashes: text, not an option, on the host's command line.
+            let text = format!("--typed-via-the-{via}");
             let before = sends(&pair.ssh_log());
             if via == "kernel" {
                 let accepted = bus.dispatch(KernelCommand::Send {
@@ -1108,7 +1109,7 @@ mod delegated_create {
                 }
             } else {
                 let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-                cmd.args(["session", "send", &id.to_string(), &text, "--json"]);
+                cmd.args(["session", "send", "--json", &id.to_string(), "--", &text]);
                 let out = cmd.output().unwrap();
                 assert!(out.status.success(), "cli send: {}", answer(&out));
             }

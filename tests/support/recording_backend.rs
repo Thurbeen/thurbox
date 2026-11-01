@@ -90,7 +90,12 @@ pub struct RecordingBackend {
     /// Whether it answers `text_before_cursor` — see
     /// [`RecordingBackend::read_cursor`].
     reads_cursor: std::sync::atomic::AtomicBool,
+    /// Fired once by the first cursor read whose row ends with the text — see
+    /// [`RecordingBackend::on_cursor_showing`].
+    on_cursor_showing: Mutex<Option<CursorHook>>,
 }
+
+type CursorHook = (String, Box<dyn FnOnce() + Send>);
 
 impl RecordingBackend {
     /// A fake serving `route`, named by it as every registered backend is.
@@ -103,6 +108,7 @@ impl RecordingBackend {
             on_pane_state: Mutex::new(None),
             enter_delay: Mutex::new(std::time::Duration::ZERO),
             reads_cursor: std::sync::atomic::AtomicBool::new(false),
+            on_cursor_showing: Mutex::new(None),
         })
     }
 
@@ -189,6 +195,13 @@ impl RecordingBackend {
     pub fn read_cursor(&self) {
         self.reads_cursor
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Run `callback` once, at the first cursor read that finds `text` typed
+    /// and not yet submitted — the gap between a confirmed send's paste and
+    /// its Enter.
+    pub fn on_cursor_showing(&self, text: &str, callback: impl FnOnce() + Send + 'static) {
+        *self.on_cursor_showing.lock().unwrap() = Some((text.to_string(), Box::new(callback)));
     }
 
     pub fn on_next_pane_state(&self, callback: impl FnOnce() + Send + 'static) {
@@ -662,11 +675,22 @@ impl SessionBackend for RecordingBackend {
         if !self.reads_cursor.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok(None);
         }
-        let state = self.lock(format!("text_before_cursor {pane}"))?;
-        let screen = &state.find(pane)?.screen;
-        Ok(Some(
-            screen.rsplit('\n').next().unwrap_or_default().to_string(),
-        ))
+        let row = {
+            let state = self.lock(format!("text_before_cursor {pane}"))?;
+            let screen = &state.find(pane)?.screen;
+            screen.rsplit('\n').next().unwrap_or_default().to_string()
+        };
+        let hook = {
+            let mut armed = self.on_cursor_showing.lock().unwrap();
+            match armed.as_ref() {
+                Some((text, _)) if row.ends_with(text.as_str()) => armed.take(),
+                _ => None,
+            }
+        };
+        if let Some((_, callback)) = hook {
+            callback();
+        }
+        Ok(Some(row))
     }
 
     fn pane_state(&self, pane: &str) -> thurbox::backend::contract::BackendResult<PaneState> {
