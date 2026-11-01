@@ -80,7 +80,7 @@ fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
 fleet-runtime      adapter        thurbox-cli, fake      -> api, exec
 fleet-forge        adapter        az, curl, gh, glab, fake -> api, exec
-fleet-gateway      adapter        the fake chat platform -> api, exec
+fleet-gateway      adapter        curl (Slack, Discord), fake -> api, exec
 fleet-plugin       adapter        bounded plugin stdio   -> api, exec
 fleet-telemetry    adapter        OTLP export, off by default
 fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
@@ -858,9 +858,17 @@ Adapters live in `fleet-gateway`, one per `[gateway.accounts]` entry:
   and settable `capabilities`: history on or off, a `metadata`, `nonce` or
   `none` marker, `unmentioned` and `threads`. It runs no process and
   records every post it landed, in order.
+- **slack:** the Web API through one bounded `curl` per call, with the
+  operator's curl config named and never read. Posts carry the intent key
+  as message metadata, so the marker is `metadata`.
+- **discord:** the REST API through one bounded `curl` per call, the same
+  way. Posts carry a nonce derived from the intent key with
+  `enforce_nonce`, so the marker is `nonce`, and a post with an Unknown
+  outcome is resent under the same key inside the window.
 
 `listener_account` is what a listener starts from, with its digest over the
-account's name, platform, team, bot and inbound method.
+account's name, platform, team, bot and inbound method, and a Discord
+account's Gateway intents.
 
 ## The command line
 

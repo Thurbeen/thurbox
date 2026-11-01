@@ -5,8 +5,9 @@
 //! calls, in its JSON shapes. Copied to a file named `gh` or `glab` it
 //! answers `api …` in that forge's shapes, GraphQL for GitHub and REST for
 //! GitLab, rendered from one forge-neutral model under `changes` in its
-//! state. As `curl` it answers Bitbucket Cloud's API, and Slack's Web API
-//! from the model under `slack`.
+//! state. As `curl` it answers Bitbucket Cloud's API, Slack's Web API from
+//! the model under `slack`, and Discord's REST API from the model under
+//! `discord`.
 //!
 //! Its whole state is one JSON file in `$FLEET_STUB_DIR`, guarded by a lock
 //! file so concurrent fleet processes see one host. Every call is appended to
@@ -686,6 +687,9 @@ mod forge {
         let url = super::opt(args, "--url").unwrap_or_default();
         if url.starts_with(super::slack::API) {
             return super::slack::curl(args, &url);
+        }
+        if url.starts_with(super::discord::API) {
+            return super::discord::curl(args, &url);
         }
         let lock = Lock::take();
         let mut state = load();
@@ -1774,6 +1778,252 @@ mod slack {
         answer(
             HEAD,
             &json!({"ok": true, "channel": channel, "ts": ts, "message": message}),
+        )
+    }
+}
+
+/// The Discord role of `curl`: the REST API behind the Discord gateway
+/// adapter, from the model under `discord` in the state: `{guild, botUser,
+/// botName, appFlags, clock, channels: {"<id>": {parent, messages: [message,
+/// …]}}, loseNextPost, posts, threads, calls}`. Each message is in
+/// Discord's own shape (`id`, `channel_id`, `author`, `content`,
+/// `timestamp`, `type`, `mentions`, `nonce`). A channel with a `parent` is a
+/// thread. `GET …/messages` answers newest first, at most `limit`, after
+/// `after` or before `before`; `POST …/messages` appends a message at the clock, which advances
+/// one second per post, and returns the bot's earlier message with the same
+/// nonce when `enforce_nonce` is set. `loseNextPost` lets one post land and
+/// then hangs, a lost answer. `POST …/messages/{id}/threads` starts a
+/// thread whose id is the message's, once: a second start answers 160004.
+/// Errors are Discord's JSON errors with their HTTP status. Every call is
+/// recorded under `calls` with its method, path and JSON body.
+mod discord {
+    use std::io::Read;
+    use std::process::ExitCode;
+
+    use serde_json::{Value, json};
+
+    use super::{Lock, fail, hang, load, opt, save, take_fault};
+
+    pub const API: &str = "https://discord.com/api/v10/";
+    const EPOCH: u64 = 1_420_070_400_000;
+
+    fn answer(status: u16, body: &Value) -> ExitCode {
+        print!("HTTP/2 {status} \r\ncontent-type: application/json\r\n\r\n{body}");
+        ExitCode::SUCCESS
+    }
+
+    fn error(status: u16, code: u64, message: &str) -> ExitCode {
+        answer(status, &json!({"code": code, "message": message}))
+    }
+
+    fn id_of(v: &Value) -> u64 {
+        v.as_str().and_then(|s| s.parse().ok()).unwrap_or(0)
+    }
+
+    /// A UTC ISO 8601 time for Unix milliseconds, as Discord writes it.
+    fn iso(ms: u64) -> String {
+        let secs = ms / 1000;
+        let (days, rem) = (secs / 86_400, secs % 86_400);
+        // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+        let z = days as i64 + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}000+00:00",
+            rem / 3600,
+            rem % 3600 / 60,
+            rem % 60,
+            ms % 1000
+        )
+    }
+
+    pub fn curl(args: &[String], url: &str) -> ExitCode {
+        let method = opt(args, "--request").unwrap_or_else(|| "GET".into());
+        let rest = url.trim_start_matches(API);
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let path = path.to_string();
+        let param = |k: &str| {
+            query
+                .split('&')
+                .find_map(|kv| kv.strip_prefix(&format!("{k}=")))
+                .map(str::to_string)
+        };
+        let mut text = String::new();
+        if args.iter().any(|a| a == "@-") {
+            std::io::stdin().read_to_string(&mut text).expect("stdin");
+        }
+        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let lock = Lock::take();
+        let mut state = load();
+        if !state["discord"]["calls"].is_array() {
+            state["discord"]["calls"] = json!([]);
+        }
+        state["discord"]["calls"]
+            .as_array_mut()
+            .expect("calls")
+            .push(json!({"method": method, "path": path, "query": query, "body": body}));
+        if let Some(mode) = take_fault(&mut state, "curl") {
+            save(&state);
+            drop(lock);
+            let retry = state["retryAfter"].as_f64().unwrap_or(1.5);
+            return match mode.as_str() {
+                "hang" => hang(),
+                "auth" => error(401, 0, "401: Unauthorized"),
+                "rate-limit" => answer(
+                    429,
+                    &json!({"message": "You are being rate limited.", "retry_after": retry, "global": false}),
+                ),
+                "malformed" => {
+                    print!("HTTP/2 502 \r\n\r\n<html>bad gateway");
+                    ExitCode::SUCCESS
+                }
+                _ => fail("curl: (7) stub: curl refused"),
+            };
+        }
+        save(&state);
+        let d = &state["discord"];
+        let guild = d["guild"].as_str().unwrap_or("").to_string();
+        let bot = d["botUser"].as_str().unwrap_or("").to_string();
+        let parts: Vec<&str> = path.split('/').collect();
+        match (method.as_str(), parts.as_slice()) {
+            ("GET", ["users", "@me"]) => answer(
+                200,
+                &json!({"id": bot, "username": d["botName"].as_str().unwrap_or("fleet"), "bot": true}),
+            ),
+            ("GET", ["applications", "@me"]) => answer(
+                200,
+                &json!({"id": "1100000000000000000", "name": "Fleet", "flags": d["appFlags"].as_u64().unwrap_or(0)}),
+            ),
+            ("GET", ["guilds", g]) if *g == guild => {
+                answer(200, &json!({"id": guild, "name": "Example"}))
+            }
+            ("GET", ["guilds", _]) => error(404, 10004, "Unknown Guild"),
+            ("GET", ["channels", c, "messages"]) => {
+                let Some(all) = d["channels"][*c]["messages"].as_array() else {
+                    return error(404, 10003, "Unknown Channel");
+                };
+                let after = param("after").and_then(|a| a.parse::<u64>().ok());
+                let before = param("before").and_then(|b| b.parse::<u64>().ok());
+                let limit = param("limit").map_or(50, |l| l.parse().unwrap_or(50));
+                let mut page: Vec<Value> = all
+                    .iter()
+                    .filter(|m| after.is_none_or(|a| id_of(&m["id"]) > a))
+                    .filter(|m| before.is_none_or(|b| id_of(&m["id"]) < b))
+                    .cloned()
+                    .collect();
+                page.sort_by_key(|m| id_of(&m["id"]));
+                // After a message: the ones right after it. Otherwise the
+                // newest. Either way newest first, as Discord answers.
+                if after.is_some() {
+                    page.truncate(limit);
+                } else {
+                    page.drain(..page.len().saturating_sub(limit));
+                }
+                page.reverse();
+                answer(200, &json!(page))
+            }
+            ("GET", ["channels", c, "messages", m]) => {
+                match d["channels"][*c]["messages"]
+                    .as_array()
+                    .and_then(|a| a.iter().find(|x| x["id"] == *m))
+                {
+                    Some(found) => answer(200, found),
+                    None => error(404, 10008, "Unknown Message"),
+                }
+            }
+            ("POST", ["channels", c, "messages"]) => {
+                let channel = c.to_string();
+                post(&mut state, &channel, &body, &bot, lock)
+            }
+            ("POST", ["channels", c, "messages", m, "threads"]) => {
+                start_thread(&mut state, c, m, &body)
+            }
+            _ => error(404, 0, "404: Not Found"),
+        }
+    }
+
+    fn post(state: &mut Value, channel: &str, body: &Value, bot: &str, lock: Lock) -> ExitCode {
+        let Some(messages) = state["discord"]["channels"][channel]["messages"].as_array() else {
+            return error(404, 10003, "Unknown Channel");
+        };
+        if body["enforce_nonce"] == true
+            && let Some(same) = messages
+                .iter()
+                .find(|m| m["author"]["id"] == bot && m["nonce"] == body["nonce"])
+        {
+            return answer(200, same);
+        }
+        let clock = state["discord"]["clock"]
+            .as_u64()
+            .unwrap_or(1_730_000_500_000);
+        state["discord"]["clock"] = json!(clock + 1000);
+        let id = ((clock - EPOCH) << 22).to_string();
+        let message = json!({
+            "id": id, "channel_id": channel, "type": 0,
+            "author": {"id": bot, "username": "fleet", "bot": true},
+            "content": body["content"], "timestamp": iso(clock), "edited_timestamp": null,
+            "mentions": [], "nonce": body["nonce"],
+        });
+        state["discord"]["channels"][channel]["messages"]
+            .as_array_mut()
+            .expect("messages")
+            .push(message.clone());
+        if !state["discord"]["posts"].is_array() {
+            state["discord"]["posts"] = json!([]);
+        }
+        state["discord"]["posts"]
+            .as_array_mut()
+            .expect("posts")
+            .push(json!({"channel": channel, "id": id, "body": body}));
+        let lose = state["discord"]["loseNextPost"] == true;
+        state["discord"]["loseNextPost"] = json!(false);
+        save(state);
+        if lose {
+            // The post landed; its answer never comes.
+            drop(lock);
+            hang();
+        }
+        answer(200, &message)
+    }
+
+    fn start_thread(state: &mut Value, channel: &str, message: &str, body: &Value) -> ExitCode {
+        if !state["discord"]["channels"][message].is_null() {
+            return error(
+                400,
+                160_004,
+                "A thread has already been created for this message",
+            );
+        }
+        let found = state["discord"]["channels"][channel]["messages"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|m| m["id"] == message));
+        if !found {
+            return error(404, 10008, "Unknown Message");
+        }
+        let starter = json!({
+            "id": (id_of(&json!(message)) + 1).to_string(), "channel_id": message, "type": 21, "content": "",
+            "author": {"id": "0", "username": "system"}, "mentions": [],
+            "timestamp": iso((id_of(&json!(message)) >> 22) + EPOCH),
+            "message_reference": {"message_id": message, "channel_id": channel},
+        });
+        state["discord"]["channels"][message] = json!({"parent": channel, "messages": [starter]});
+        if !state["discord"]["threads"].is_array() {
+            state["discord"]["threads"] = json!([]);
+        }
+        state["discord"]["threads"]
+            .as_array_mut()
+            .expect("threads")
+            .push(json!({"parent": channel, "id": message, "name": body["name"]}));
+        save(state);
+        answer(
+            201,
+            &json!({"id": message, "parent_id": channel, "type": 11, "name": body["name"]}),
         )
     }
 }

@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use fleet_api::gateway::{
     AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
@@ -37,6 +37,10 @@ use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 use fleet_exec::{Outcome, Spec, run};
 use serde_json::{Map, Value, json};
+
+pub use crate::curl::Reply;
+use crate::curl::{Budget, landed, send_failure};
+use crate::text::split;
 
 pub const KIND: &str = "slack";
 /// Every call is `POST https://slack.com/api/<method>` with a JSON body.
@@ -111,15 +115,6 @@ impl SlackGateway {
 
     pub fn account(&self) -> &str {
         &self.account
-    }
-
-    fn other_account(&self, account: &str) -> Option<String> {
-        (account != self.account).then(|| {
-            format!(
-                "account {account} is not this Slack gateway, which serves {}",
-                self.account
-            )
-        })
     }
 
     /// One bounded call: `curl --include … --config <file> --data-binary @-
@@ -233,7 +228,7 @@ impl SlackGateway {
     }
 
     fn thread_history(&self, chat: &str, thread: &str, query: &HistoryQuery) -> HistoryObservation {
-        let mut budget = Budget::new(self.call_timeout);
+        let mut budget = Budget::new(self.call_timeout, MAX_CALLS_PER_OPERATION);
         let mut base = json!({
             "channel": chat,
             "ts": thread,
@@ -281,7 +276,7 @@ impl SlackGateway {
     }
 
     fn channel_history(&self, chat: &str, query: &HistoryQuery) -> HistoryObservation {
-        let mut budget = Budget::new(self.call_timeout);
+        let mut budget = Budget::new(self.call_timeout, MAX_CALLS_PER_OPERATION);
         let mut base = json!({"channel": chat, "limit": PAGE, "include_all_metadata": true});
         match query {
             HistoryQuery::After { id: Some(id), .. } => base["oldest"] = json!(id),
@@ -348,7 +343,7 @@ impl SlackGateway {
         text: &str,
         key: &str,
     ) -> Observation<EffectOutcome> {
-        let chunks = split_mrkdwn(&to_mrkdwn(text), POST_LIMIT);
+        let chunks = split(&to_mrkdwn(text), POST_LIMIT);
         if chunks.len() > MAX_CHUNKS {
             return Observation::Known(EffectOutcome::Failed {
                 why: format!(
@@ -358,7 +353,7 @@ impl SlackGateway {
             });
         }
         let derived = chunks.len() > 1;
-        let mut budget = Budget::new(self.call_timeout);
+        let mut budget = Budget::new(self.call_timeout, MAX_CALLS_PER_OPERATION);
         let mut first: Option<(String, Millis)> = None;
         for (i, chunk) in chunks.iter().enumerate() {
             let chunk_key = if derived {
@@ -372,63 +367,23 @@ impl SlackGateway {
                     first.get_or_insert(landed);
                 }
                 Err(e) => {
-                    return if i > 0 {
-                        // Something landed: the outcome is for a recovery
-                        // read to settle, whatever Slack said last.
-                        Observation::unknown(format!(
-                            "{i} of {} posts landed under {key}, then: {}",
-                            chunks.len(),
-                            e.why()
-                        ))
-                    } else if e.certain_failure() {
-                        // Nothing landed and Slack said no: a Known refusal.
-                        Observation::Known(EffectOutcome::Failed { why: e.why() })
-                    } else {
-                        Observation::unknown(e.why())
-                    };
+                    // Something landed: the outcome is for a recovery read
+                    // to settle, whatever Slack said last.
+                    let partly = (i > 0)
+                        .then(|| format!("{i} of {} posts landed under {key}", chunks.len()));
+                    return send_failure(partly, e.why(), e.certain_failure());
                 }
             }
         }
         let (message, at) = first.expect("at least one chunk");
-        Observation::Known(match thread {
-            Some(_) => EffectOutcome::Posted { message, at },
-            None => EffectOutcome::Opened {
-                conversation: ConversationRef {
-                    platform: KIND.into(),
-                    chat: chat.into(),
-                    thread: Some(message.clone()),
-                },
-                message,
-                at,
-            },
-        })
+        Observation::Known(landed(KIND, chat, thread, message, at))
     }
 }
 
-impl Gateway for SlackGateway {
-    fn operation_bound(&self) -> Millis {
-        let one = fleet_exec::worst_case(self.call_timeout) * MAX_CALLS_PER_OPERATION;
-        u64::try_from(one.as_millis()).unwrap_or(u64::MAX)
-    }
+crate::curl::curl_gateway!(SlackGateway, "Slack");
 
-    fn parse(&self, account: &str, address: &str) -> Observation<ConversationRef> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::unknown(why);
-        }
-        match parse_address(address) {
-            Ok(r) => Observation::Known(r),
-            Err(why) => Observation::unknown(why),
-        }
-    }
-
-    fn event(&self, account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
-        read_event(account, envelope)
-    }
-
-    fn whoami(&self, account: &str) -> Observation<Identity> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::unknown(why);
-        }
+impl SlackGateway {
+    fn identity(&self) -> Observation<Identity> {
         let v = match self.call("auth.test", &json!({}), self.call_timeout) {
             Ok(v) => v,
             Err(e) => return Observation::unknown(e.why()),
@@ -453,77 +408,11 @@ impl Gateway for SlackGateway {
 
     /// Slack's capabilities are the platform's, the same on every account;
     /// `auth.test` proves the account answers before they are claimed.
-    fn capabilities(&self, account: &str) -> Observation<Capabilities> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::unknown(why);
-        }
+    fn offers(&self) -> Observation<Capabilities> {
         match self.call("auth.test", &json!({}), self.call_timeout) {
             Ok(_) => Observation::Known(CAPABILITIES),
             Err(e) => Observation::unknown(e.why()),
         }
-    }
-
-    fn history(
-        &self,
-        account: &str,
-        conversation: &ConversationRef,
-        query: &HistoryQuery,
-    ) -> HistoryObservation {
-        if let Some(why) = self.other_account(account) {
-            return HistoryObservation::unknown(Uncertainty::Unavailable, why);
-        }
-        if let Err(why) = check_ref(conversation) {
-            return HistoryObservation::unknown(Uncertainty::Unreadable, why);
-        }
-        match &conversation.thread {
-            Some(thread) => self.thread_history(&conversation.chat, thread, query),
-            None => self.channel_history(&conversation.chat, query),
-        }
-    }
-
-    fn open(
-        &self,
-        account: &str,
-        channel: &ConversationRef,
-        text: &str,
-        intent_key: &str,
-    ) -> Observation<EffectOutcome> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::Known(EffectOutcome::Failed { why });
-        }
-        if let Err(why) = check_ref(channel) {
-            return Observation::Known(EffectOutcome::Failed { why });
-        }
-        if channel.thread.is_some() {
-            return Observation::Known(EffectOutcome::Failed {
-                why: format!("{} is a thread, not a channel", channel.address()),
-            });
-        }
-        self.post_chunks(&channel.chat, None, text, intent_key)
-    }
-
-    fn post(
-        &self,
-        account: &str,
-        conversation: &ConversationRef,
-        text: &str,
-        intent_key: &str,
-    ) -> Observation<EffectOutcome> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::Known(EffectOutcome::Failed { why });
-        }
-        if let Err(why) = check_ref(conversation) {
-            return Observation::Known(EffectOutcome::Failed { why });
-        }
-        let Some(thread) = &conversation.thread else {
-            return Observation::Known(EffectOutcome::Failed {
-                why: format!(
-                    "{} is a channel, not a thread; a Slack conversation is a thread",
-                    conversation.address()
-                ),
-            });
-        };
-        self.post_chunks(&conversation.chat, Some(thread), text, intent_key)
     }
 }
 
@@ -936,63 +825,7 @@ impl CallError {
     }
 }
 
-/// One HTTP answer as `curl --include` prints it: the status line and
-/// headers, then the body.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Reply {
-    /// 0 when no status line was printed.
-    pub status: u16,
-    /// Lowercased names.
-    pub headers: Vec<(String, String)>,
-    pub body: String,
-    pub exit: Option<i32>,
-    /// The first non-empty line of stderr, at most 200 characters.
-    pub stderr: String,
-}
-
 impl Reply {
-    /// Split `--include` output into its last head and the body: an
-    /// informational head (`100 Continue`) before the final one is skipped.
-    pub fn parse(stdout: &str, exit: Option<i32>, stderr: &[u8]) -> Reply {
-        let mut rest = stdout;
-        let mut status = 0;
-        let mut headers = Vec::new();
-        while rest.starts_with("HTTP/") {
-            let (head, body) = match rest.find("\r\n\r\n") {
-                Some(i) => (&rest[..i], &rest[i + 4..]),
-                None => match rest.find("\n\n") {
-                    Some(i) => (&rest[..i], &rest[i + 2..]),
-                    None => (rest, ""),
-                },
-            };
-            let mut lines = head.lines();
-            status = lines
-                .next()
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            headers = lines
-                .filter_map(|l| l.split_once(':'))
-                .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
-                .collect();
-            rest = body;
-        }
-        Reply {
-            status,
-            headers,
-            body: rest.to_string(),
-            exit,
-            stderr: first_line(stderr),
-        }
-    }
-
-    pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.as_str())
-    }
-
     /// `Retry-After` in seconds, as milliseconds, at least one second.
     pub fn retry_after(&self) -> Option<Millis> {
         self.header("retry-after")
@@ -1043,49 +876,6 @@ impl Reply {
         Err(CallError::Unreadable(format!(
             "{method}: the answer has no ok field"
         )))
-    }
-}
-
-fn first_line(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .chars()
-        .take(200)
-        .collect()
-}
-
-/// The time and calls one operation may spend: `call_timeout` times
-/// [`MAX_CALLS_PER_OPERATION`], and no more calls than that either.
-#[derive(Debug)]
-struct Budget {
-    deadline: Instant,
-    calls_left: u32,
-    call_timeout: Duration,
-}
-
-impl Budget {
-    fn new(call_timeout: Duration) -> Budget {
-        Budget {
-            deadline: Instant::now() + call_timeout * MAX_CALLS_PER_OPERATION,
-            calls_left: MAX_CALLS_PER_OPERATION,
-            call_timeout,
-        }
-    }
-
-    /// The timeout of the next call, or `None` when the budget is spent.
-    fn next_timeout(&mut self) -> Option<Duration> {
-        if self.calls_left == 0 {
-            return None;
-        }
-        let left = self.deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return None;
-        }
-        self.calls_left -= 1;
-        Some(left.min(self.call_timeout))
     }
 }
 
@@ -1291,82 +1081,10 @@ fn is_link_url(url: &str) -> bool {
         && !url.contains(char::is_whitespace)
 }
 
-/// mrkdwn text as consecutive posts of at most `limit` characters each,
-/// split at line breaks where possible and inside a line otherwise. A
-/// fenced code block cut by a split is closed at the end of one chunk and
-/// reopened at the start of the next, so each chunk renders on its own.
-pub fn split_mrkdwn(text: &str, limit: usize) -> Vec<String> {
-    const FENCE: &str = "```";
-    if text.chars().count() <= limit {
-        return vec![text.to_string()];
-    }
-    let mut chunks: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut current_len = 0usize;
-    let mut in_fence = false;
-    // The chunk holds only a reopened fence, which the next line follows
-    // without a separator.
-    let mut reopened = false;
-    // Close the chunk, and reopen the fence in the next one when inside one.
-    let mut flush = |current: &mut String, current_len: &mut usize, in_fence: bool| -> bool {
-        if current.is_empty() {
-            return false;
-        }
-        let mut chunk = std::mem::take(current);
-        chunk.truncate(chunk.trim_end_matches('\n').len());
-        if in_fence {
-            chunk.push('\n');
-            chunk.push_str(FENCE);
-        }
-        chunks.push(chunk);
-        *current_len = 0;
-        if in_fence {
-            current.push_str(FENCE);
-            current.push('\n');
-            *current_len = FENCE.len() + 1;
-        }
-        in_fence
-    };
-    for line in text.split('\n') {
-        // Inside a fence, keep room to close it.
-        let room = if in_fence {
-            limit.saturating_sub(FENCE.len() + 1).max(1)
-        } else {
-            limit.max(1)
-        };
-        let count = line.chars().count();
-        let pieces: Vec<String> = if count > room {
-            let chars: Vec<char> = line.chars().collect();
-            chars.chunks(room).map(|c| c.iter().collect()).collect()
-        } else {
-            vec![line.to_string()]
-        };
-        for piece in pieces {
-            let piece_len = piece.chars().count();
-            let separator = usize::from(!current.is_empty() && !reopened);
-            if !current.is_empty() && current_len + separator + piece_len > room {
-                reopened = flush(&mut current, &mut current_len, in_fence);
-            }
-            if !current.is_empty() && !reopened {
-                current.push('\n');
-                current_len += 1;
-            }
-            reopened = false;
-            current.push_str(&piece);
-            current_len += piece_len;
-        }
-        if line.trim_start().starts_with(FENCE) {
-            in_fence = !in_fence;
-        }
-    }
-    let _ = flush(&mut current, &mut current_len, false);
-    chunks
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fleet_api::gateway::Verified;
+    use fleet_api::gateway::{Gateway, Verified};
 
     const BOT: &str = "U0BOT0001";
 
@@ -1376,6 +1094,7 @@ mod tests {
             team: team.map(str::to_string),
             bot: BOT.into(),
             inbound: Inbound::SocketMode,
+            message_content: None,
             cli: Some("curl".into()),
             curl_config: Some("/etc/fleet/slack-curl.conf".into()),
             dir: None,
@@ -1881,31 +1600,28 @@ mod tests {
 
     #[test]
     fn long_text_is_split_at_lines_under_the_limit_and_fences_are_kept_whole() {
-        assert_eq!(split_mrkdwn("short", 10), ["short"]);
+        assert_eq!(split("short", 10), ["short"]);
         let text = "aaaa\nbbbb\ncccc\ndddd";
-        assert_eq!(split_mrkdwn(text, 9), ["aaaa\nbbbb", "cccc\ndddd"]);
-        for chunk in split_mrkdwn(text, 9) {
+        assert_eq!(split(text, 9), ["aaaa\nbbbb", "cccc\ndddd"]);
+        for chunk in split(text, 9) {
             assert!(chunk.chars().count() <= 9);
         }
         // A line longer than the limit is cut inside.
         let long = "x".repeat(25);
-        let chunks = split_mrkdwn(&long, 10);
+        let chunks = split(&long, 10);
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks.concat(), long);
         for chunk in &chunks {
             assert!(chunk.chars().count() <= 10);
         }
         // Paragraph breaks at a split are dropped, not carried.
-        assert_eq!(
-            split_mrkdwn("one\n\ntwo\n\nthree", 8),
-            ["one\n\ntwo", "three"]
-        );
+        assert_eq!(split("one\n\ntwo\n\nthree", 8), ["one\n\ntwo", "three"]);
         // Characters, not bytes.
         let wide = "é".repeat(12);
-        assert_eq!(split_mrkdwn(&wide, 10).len(), 2);
+        assert_eq!(split(&wide, 10).len(), 2);
         // A fence cut by a split is closed and reopened.
         let fenced = "```\nline one\nline two\nline three\n```\nafter";
-        let chunks = split_mrkdwn(fenced, 22);
+        let chunks = split(fenced, 22);
         assert!(chunks.len() >= 2, "{chunks:?}");
         for chunk in &chunks {
             assert!(chunk.chars().count() <= 22, "{chunk:?}");

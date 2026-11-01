@@ -760,6 +760,7 @@ mod tests {
             team: None,
             bot: DEFAULT_BOT.into(),
             inbound: Inbound::Connection,
+            message_content: None,
             cli: None,
             curl_config: None,
             dir: None,

@@ -28,6 +28,7 @@ fn account(routed: bool) -> ListenerAccount {
             team: None,
             bot: BOT.into(),
             inbound: Inbound::Connection,
+            message_content: None,
             cli: None,
             curl_config: None,
             dir: Some("gateway".into()),

@@ -2,6 +2,7 @@
 //!
 //! - [`SlackGateway`]: Slack's Web API through an externally authenticated
 //!   `curl`, one bounded process per call.
+//! - [`DiscordGateway`]: Discord's REST API the same way.
 //! - [`FakeGateway`]: a file-backed chat platform for tests and trials. It
 //!   runs no process and reaches no network, and it models every
 //!   `capabilities` combination a real platform can present.
@@ -17,12 +18,16 @@
 //! connection. Credentials stay with the external client's own
 //! configuration: Fleet passes none and stores none.
 
+pub mod curl;
+pub mod discord;
 pub mod fake;
 pub mod slack;
+pub mod text;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+pub use discord::DiscordGateway;
 pub use fake::{FakeConversation, FakeGateway, FakeGatewayState, GatewayFault, PostRecord};
 use fleet_api::gateway::{
     AccountConfig, Capabilities, ConversationRef, Delivery, Envelope, Gateway, HistoryObservation,
@@ -37,6 +42,7 @@ pub use slack::SlackGateway;
 /// Which adapter serves a platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
+    Discord,
     Fake,
     Slack,
 }
@@ -44,6 +50,7 @@ pub enum Platform {
 impl Platform {
     pub fn parse(name: &str) -> Option<Platform> {
         match name {
+            discord::KIND => Some(Platform::Discord),
             fake::KIND => Some(Platform::Fake),
             slack::KIND => Some(Platform::Slack),
             _ => None,
@@ -52,13 +59,14 @@ impl Platform {
 
     pub fn name(self) -> &'static str {
         match self {
+            Platform::Discord => discord::KIND,
             Platform::Fake => fake::KIND,
             Platform::Slack => slack::KIND,
         }
     }
 
     /// The platforms this build has, in the words `fleet version` prints.
-    pub const ALL: &[&str] = &[fake::KIND, slack::KIND];
+    pub const ALL: &[&str] = &[discord::KIND, fake::KIND, slack::KIND];
 }
 
 /// The configured accounts, one adapter each.
@@ -96,6 +104,12 @@ impl GatewayAccounts {
                     Platform::ALL.join(", ")
                 )
             })?;
+            if cfg.message_content.is_some() && platform != Platform::Discord {
+                return Err(format!(
+                    "{at}: messageContent is a Discord account's key, not {:?}'s",
+                    cfg.platform
+                ));
+            }
             let adapter: Box<dyn Gateway> = match platform {
                 Platform::Fake => {
                     if cfg.inbound != Inbound::Connection {
@@ -113,6 +127,10 @@ impl GatewayAccounts {
                             .map_err(|e| format!("{at}: fake gateway {}: {e}", dir.display()))?,
                     )
                 }
+                Platform::Discord => Box::new(
+                    DiscordGateway::new(&name, &cfg, call_timeout)
+                        .map_err(|e| format!("{at}: {e}"))?,
+                ),
                 Platform::Slack => Box::new(
                     SlackGateway::new(&name, &cfg, call_timeout)
                         .map_err(|e| format!("{at}: {e}"))?,
@@ -246,7 +264,8 @@ impl Gateway for GatewayAccounts {
 
 /// What a listener starts from, as `fleet gateway account NAME --json` will
 /// print it: the account's name, platform, workspace, bot and inbound
-/// method, and the digest of exactly those, which the listener's heartbeats
+/// method, the Gateway intents of a Discord account, and the digest of
+/// exactly those, which the listener's heartbeats
 /// carry so Fleet can tell a listener on an old configuration. The client
 /// and credential keys are Fleet's side and do not move the digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +277,9 @@ pub struct ListenerAccount {
     pub team: Option<String>,
     pub bot: String,
     pub inbound: Inbound,
+    /// Discord only: the Gateway intents the listener identifies with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intents: Option<u64>,
     /// `sha256:<64 hex>` over the other fields.
     pub digest: String,
 }
@@ -273,13 +295,18 @@ pub fn listener_account(name: &str, account: &AccountConfig) -> ListenerAccount 
         team: Option<&'a str>,
         bot: &'a str,
         inbound: Inbound,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        intents: Option<u64>,
     }
+    let intents = (account.platform == discord::KIND)
+        .then(|| discord::intents(account.message_content.unwrap_or(false)));
     let identity = Identity {
         name,
         platform: &account.platform,
         team: account.team.as_deref(),
         bot: &account.bot,
         inbound: account.inbound,
+        intents,
     };
     let bytes = serde_json::to_vec(&identity).expect("a struct of strings serialises");
     let hex: String = Sha256::digest(&bytes)
@@ -292,6 +319,7 @@ pub fn listener_account(name: &str, account: &AccountConfig) -> ListenerAccount 
         team: account.team.clone(),
         bot: account.bot.clone(),
         inbound: account.inbound,
+        intents,
         digest: format!("sha256:{hex}"),
     }
 }
@@ -311,6 +339,7 @@ mod tests {
             team: Some("T0123ABCD".into()),
             bot: "U0BOT0001".into(),
             inbound: Inbound::Connection,
+            message_content: None,
             cli: Some("curl".into()),
             curl_config: Some("/etc/fleet/slack-curl.conf".into()),
             dir: None,
@@ -379,7 +408,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             err,
-            "gateway.accounts.tg-main: unknown platform \"telegram\"; this build has fake, slack"
+            "gateway.accounts.tg-main: unknown platform \"telegram\"; this build has discord, fake, slack"
         );
         let accounts = GatewayAccounts::new(
             BTreeMap::from([(
@@ -447,6 +476,7 @@ mod tests {
         assert_eq!(Platform::parse("fake"), Some(Platform::Fake));
         assert_eq!(Platform::parse("slack"), Some(Platform::Slack));
         assert_eq!(Platform::parse("telegram"), None);
-        assert_eq!(Platform::ALL, ["fake", "slack"]);
+        assert_eq!(Platform::ALL, ["discord", "fake", "slack"]);
+        assert_eq!(Platform::parse("discord"), Some(Platform::Discord));
     }
 }

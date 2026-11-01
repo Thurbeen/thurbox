@@ -26,7 +26,7 @@ same sweep as the Task controller, through the Forge port.
 | [fleet-store](../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
 | [fleet-runtime](../crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
 | [fleet-forge](../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab`, `az`, externally authenticated `curl`, or the file-backed fake forge, and taking a supported draft out of draft after a fresh read | One bounded observation is complete or Unknown; a write either preserves the head/state guard or fails closed; the only crate that knows a forge CLI's name. |
-| [fleet-gateway](../crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through Slack's Web API by `curl`, or through the file-backed fake platform | Every answer is Known or Unknown; a refused write fails closed; the only crate that knows a chat client's name. |
+| [fleet-gateway](../crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through Slack's Web API or Discord's REST API by `curl`, or through the file-backed fake platform | Every answer is Known or Unknown; a refused write fails closed; the only crate that knows a chat client's name. |
 | [fleet-exec](../crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
 | [fleet-telemetry](../crates/fleet-telemetry/src/lib.rs) | The OpenTelemetry SDK and its OTLP/HTTP exporter, installed when the `OTEL_*` variables ask | The only crate that names the SDK or the exporter; export never changes a command's outcome, and shutdown is bounded. |
 
@@ -212,13 +212,13 @@ the route's admission rules and creates one Task per thread; GatewayController,
 a third controller over the Task, owns `status.gateway`, relays new messages
 into the inbox under a cursor through `record_relay`, and posts what the
 Task declares as keyed effects through a `Gateway` port, with adapters in
-the `fleet-gateway` crate, Slack first. The port, the crate with its fake
-adapter, the `[gateway]` section, the two kinds, the receive verb,
-ConversationController, ListenerController, and GatewayController's tie,
-join and relay, with `status.answered` and the parent labels, are built;
-GatewayController's posting is not. ListenerController
-reports each account's inbound health from the listener's own beats, on a
-[Listener](resources/listener.md). The purity and process rules
+the `fleet-gateway` crate, for Slack and Discord. The port, the crate with its
+fake, Slack and Discord adapters, the `[gateway]` section, the two kinds, the
+receive verb, ConversationController, ListenerController, and
+GatewayController's tie, join and relay, with `status.answered` and the
+parent labels, are built; GatewayController's posting is not.
+ListenerController reports each account's inbound health from the listener's
+own beats, on a [Listener](resources/listener.md). The purity and process rules
 above are unchanged: the Gateway runs no model, every adapter call is
 bounded, and no platform name appears above the port.
 

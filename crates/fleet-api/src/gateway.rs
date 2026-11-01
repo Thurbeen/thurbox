@@ -7,7 +7,7 @@
 //! conversation everywhere above it, `<platform>:<chat>[:<thread>]`, and
 //! only the adapter reads its parts. The
 //! [interface](../../../docs/controllers/gateway/interface.md) defines the
-//! port, the [adapters page](../../../docs/controllers/gateway/adapters.md)
+//! port, the [adapters page](../../../docs/controllers/gateway/adapters/README.md)
 //! maps each platform onto it, and the
 //! [config page](../../../docs/configuration/fleet-toml.md#the-gateway-section)
 //! defines the section.
@@ -468,13 +468,18 @@ pub enum Inbound {
     EventsApi,
     /// The fake's listener: an authenticated connection.
     Connection,
+    /// Discord's Gateway WebSocket, held by the listener: an authenticated
+    /// connection.
+    DiscordGateway,
 }
 
 impl Inbound {
     /// The one `verified` an envelope on this account may claim.
     pub fn verified(self) -> Verified {
         match self {
-            Inbound::SocketMode | Inbound::Connection => Verified::Connection,
+            Inbound::SocketMode | Inbound::Connection | Inbound::DiscordGateway => {
+                Verified::Connection
+            }
             Inbound::EventsApi => Verified::Signature,
         }
     }
@@ -484,6 +489,7 @@ impl Inbound {
             Inbound::SocketMode => "socket-mode",
             Inbound::EventsApi => "events-api",
             Inbound::Connection => "connection",
+            Inbound::DiscordGateway => "discord-gateway",
         }
     }
 }
@@ -492,14 +498,20 @@ impl Inbound {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountConfig {
-    /// `slack`, or `fake` with a `dir`.
+    /// `slack`, `discord`, or `fake` with a `dir`.
     pub platform: String,
-    /// The platform's workspace identity: a Slack team or enterprise id.
+    /// The platform's workspace identity: a Slack team or enterprise id, a
+    /// Discord guild id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
     /// Fleet's bot id there, checked against the platform's `whoami`.
     pub bot: String,
     pub inbound: Inbound,
+    /// Discord only: the bot holds the privileged message content intent,
+    /// so its listener asks for it and unmentioned messages reach Fleet.
+    /// Absent means `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_content: Option<bool>,
     /// The client executable, a path or a name on PATH.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<String>,
@@ -945,6 +957,7 @@ mod tests {
             team: None,
             bot: "B0FLEET001".into(),
             inbound: Inbound::Connection,
+            message_content: None,
             cli: None,
             curl_config: None,
             dir: Some("gateway".into()),

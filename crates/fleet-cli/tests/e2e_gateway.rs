@@ -207,7 +207,7 @@ fn the_gateway_section_loads_and_the_fake_platform_is_wired() {
         .fleet(&["version", "--json"])
         .ok()
         .json();
-    assert_eq!(v["gateways"], json!(["fake", "slack"]));
+    assert_eq!(v["gateways"], json!(["discord", "fake", "slack"]));
 }
 
 #[test]
@@ -346,7 +346,7 @@ fn an_account_this_build_cannot_serve_is_refused_when_the_gateway_opens() {
     // The section is well formed, so every verb but the manager's runs.
     env.fleet(&["list", "tasks"]).ok();
     env.reconcile().code(1).stderr_has(
-        "accounts.fake-main: unknown platform \"telegram\"; this build has fake, slack",
+        "accounts.fake-main: unknown platform \"telegram\"; this build has discord, fake, slack",
     );
     env.set_gateway(&base.replace("dir = \"gateway\"\n", ""));
     env.reconcile()
@@ -1053,7 +1053,7 @@ fn a_slack_account_is_served_by_curl_and_refused_without_what_curl_needs() {
         .fleet(&["version", "--json"])
         .ok()
         .json();
-    assert_eq!(v["gateways"], json!(["fake", "slack"]));
+    assert_eq!(v["gateways"], json!(["discord", "fake", "slack"]));
     // Either Slack delivery method is a listener Slack has; the fake's is not.
     env.set_gateway(&slack_section(&env, &curl, &curl_config, "events-api"));
     env.reconcile().ok();
@@ -1130,6 +1130,7 @@ fn slack_adapter(curl: &Path, curl_config: &Path, timeout: Duration) -> SlackGat
             team: Some(SLACK_TEAM.into()),
             bot: SLACK_BOT.into(),
             inbound: Inbound::SocketMode,
+            message_content: None,
             cli: Some(curl.to_string_lossy().into_owned()),
             curl_config: Some(curl_config.to_path_buf()),
             dir: None,

@@ -21,7 +21,7 @@ One address format names a conversation everywhere above the port:
 slack:C0123ABCD:1730000000.000100      a Slack thread: channel, parent ts
 slack:C0123ABCD                        a channel, where a thread is opened
 telegram:-1001234567890:42             a forum topic: chat id, message_thread_id
-discord:1300000000000000001            a Discord thread, itself a channel
+discord:1300000000000000000:1300000000000000001   a Discord thread: parent channel, thread
 ```
 
 Only the adapter reads the parts of an address. A Conversation is named
@@ -67,7 +67,7 @@ and quotes. The adapter converts it to the platform's format, and splits a
 long text into consecutive posts under derived keys (`<key>/1`, `<key>/2`).
 
 There is no edit, delete or merge method. Fleet never changes a post that
-it made. The [adapters](adapters.md#what-the-platforms-changed) say why each
+it made. The [adapters](adapters/README.md#what-the-platforms-changed) say why each
 capability exists.
 
 ### Events
@@ -476,9 +476,11 @@ further refusal is sent. An unlisted bot gets none.
 ## Effect and recovery keys
 
 Every post and Task creation is a keyed effect. Fleet writes the intent
-before it acts and the receipt after. Fleet never repeats a key. It
+before it acts and the receipt after. Fleet never repeats a key blindly. It
 recovers an unknown outcome by looking for the key on the platform or in the
-store.
+store. On a platform with `marker = nonce { windowMs }`, it resends the post
+under the same key, so with the same nonce, inside the window. The
+[adapters](adapters/README.md#capabilities) define the rule.
 
 | Item | Key |
 | --- | --- |

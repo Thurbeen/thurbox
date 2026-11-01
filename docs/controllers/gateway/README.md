@@ -1,8 +1,8 @@
 # Gateway controller
 
-Design, not implemented in full. The installed binary has steps 1, 2, 3 and
-5 below: the `[gateway]` key, the Gateway port, the `fleet-gateway` crate
-with its fake and Slack adapters, the `Conversation` and `Listener` kinds,
+Design, not implemented in full. The installed binary has steps 1, 2, 3, 5
+and 6 below: the `[gateway]` key, the Gateway port, the `fleet-gateway` crate
+with its fake, Slack and Discord adapters, the `Conversation` and `Listener` kinds,
 ConversationController (the mirror, admission, Task creation under the
 workspace precondition, the busy notice and the refusal post),
 ListenerController, and the `fleet gateway receive`, `account` and `status`
@@ -25,8 +25,8 @@ The Gateway is the [Forge controller](../forge/README.md) applied to chat.
 A Task declares what it wants said. A mirror object follows the thread.
 Fleet relays new messages into the inbox under a cursor, and recognises its
 own posts by a marker. One adapter per platform sits behind one port. Slack
-is the first adapter. Telegram, Discord and Microsoft Teams are mapped on
-paper, to check the model.
+and Discord have adapters. Telegram and Microsoft Teams are mapped on paper,
+to check the model.
 
 | Read | Answers |
 | --- | --- |
@@ -35,8 +35,9 @@ paper, to check the model.
 | [Task gateway status](../../resources/task.md#talking-in-a-conversation) | What does a Task declare to talk? What do `status.gateway` and `status.answered` hold? |
 | [State machine](state-machine.md) | Which states does a thread and a tie go through? What is relayed or posted, and when? |
 | [Interface](interface.md) | What are the port, the CLI verbs, the declarations, the inbox entries and the keys? |
-| [Adapters](adapters.md) | How do Slack, Telegram, Discord and Teams map onto the port? |
-| [Discord adapter](discord.md) | How would a Discord adapter, its listener and its setup work? |
+| [Adapters](adapters/README.md) | Which rules does every adapter keep? How do the platforms compare? |
+| [Slack adapter](adapters/slack.md) | How is a Slack account set up, configured and mapped onto the port? |
+| [Discord adapter](adapters/discord.md) | How is a Discord account set up, configured and mapped onto the port? |
 | [Native config](../../configuration/fleet-toml.md#the-gateway-section) | Where do accounts, people, routes and admission come from? |
 | [Overall architecture](../../ARCHITECTURE.md#the-gateway-controller) | Where does this fit in Fleet? |
 
@@ -118,8 +119,10 @@ These rules hold across all flows:
 - **Fleet speaks only through declarations.** Every post is a keyed effect:
   Fleet writes the intent first and the receipt after.
 - **Fleet never posts twice.** A post whose outcome is unknown is looked
-  for by its marker, never sent again blindly. Where a platform cannot find
-  it, Fleet raises `NeedsAttention/PostUnconfirmed` and waits for a person.
+  for by its marker, never sent again blindly. On a platform with a nonce
+  marker, Fleet resends it under the same nonce inside the platform's window.
+  Where a platform cannot find it, Fleet raises
+  `NeedsAttention/PostUnconfirmed` and waits for a person.
 - **Posts in one thread go out in declaration order.** A post with an
   unknown outcome holds back the later posts to that thread only.
 - **Fleet never relays its own posts.**
@@ -213,7 +216,7 @@ In scope:
 - opening a thread for a Question from an untied Task, and recording
   answers,
 - routing a child Task's words to its parent,
-- the Slack adapter, the receive verb and the Listener.
+- the Slack and Discord adapters, the receive verb and the Listener.
 
 Out of scope, deliberately:
 
@@ -221,7 +224,7 @@ Out of scope, deliberately:
 - suspending and resuming idle sessions,
 - any judgement about the worth of a message: an intake model, a planner or
   a nudging heartbeat,
-- implementing the Telegram, Discord or Teams adapters,
+- implementing the Telegram or Teams adapters,
 - reactions, files, edits of Fleet's own posts, and interactive components,
 - the listener programs themselves.
 
@@ -254,3 +257,4 @@ and adds its crate edges, field managers and negative fixtures to
 | 3 | GatewayController: the tie, the join and the relay; `status.answered` and the `answers` inbox field; the parent labels | `fleet-controllers/src/gateway.rs`, `fleet-store` | `gateway_controller`, `e2e_gateway_controller`, `store_contract` |
 | 4 | Posting declarations, results and change news; opening a thread for a Question; children | `fleet-controllers/src/gateway.rs`, `fleet-manager` | `gateway_controller`, `e2e_gateway_post` |
 | 5 | The Slack adapter through `curl` | `crates/fleet-gateway/src/slack.rs` | Truth tables in the adapter's unit tests; recorded Socket Mode payloads; `e2e_gateway` against the stub `curl` |
+| 6 | The Discord adapter through `curl`; `inbound = "discord-gateway"`, `messageContent` and `intents`; nonce recovery in ConversationController | `crates/fleet-gateway/src/discord.rs`, `fleet-api/src/gateway.rs`, `fleet-controllers/src/conversation.rs` | Truth tables in the adapter's unit tests; synthetic dispatches; `conversation_controller`; `e2e_gateway_discord` against the stub `curl` |
