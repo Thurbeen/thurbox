@@ -1965,7 +1965,11 @@ tmux window name unique and lets the task relink to its session — adopted
 by the TUI on next startup; `Task::matches_spawn_session` recovers the
 owning task from that tag and also recognizes the legacy
 `task-<id>-<slug>` / bare `task-<id>` forms, so a since-edited title still
-relinks).
+relinks). The interface's `dispatch` command runs the same verb,
+`session_ops::tasks::dispatch`, so both reuse the running tagged session
+rather than spawning a second one. A plain todo is skipped by `run` and
+refused by `dispatch`: the command used to spawn `task-<id>` in the most
+recently used repository, a guess the CLI never made.
 
 ---
 

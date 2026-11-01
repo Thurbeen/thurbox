@@ -474,9 +474,14 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     .expect("task run");
     assert_screen_shows(probe, &pane, "cli task run", "task run");
 
-    // A task with no session creates one — on the probe, the settings'
-    // default — and hands it the prompt once it boots.
-    let task = cli(&db, backends, &["task", "create", "--title", "a fresh one"]).expect("task");
+    // A task that names a repository creates its session — on the probe, the
+    // settings' default — and hands it the prompt once it boots.
+    let task = cli(
+        &db,
+        backends,
+        &["task", "create", "--title", "a fresh one", "--repo", &repo],
+    )
+    .expect("task");
     let fresh_task = task["id"].as_i64().unwrap();
     kernel(
         &mut bus,
@@ -487,7 +492,7 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     )
     .expect("dispatch to a new session");
     let fresh = db
-        .get_session_by_name(&format!("task-{fresh_task}"))
+        .get_session_by_name(&format!("a fresh one · #{fresh_task}"))
         .expect("read")
         .expect("the task's session");
     assert_eq!(fresh.backend_type, "local:rmux");
@@ -759,6 +764,121 @@ fn pane_verbs_drive_a_window_on_a_host_with_sharing_off() {
     );
     assert_eq!(instance.ssh_log(), "", "no verb asked the host's own CLI");
     instance.assert_tmux_untouched("the host's verbs");
+}
+
+/// The interface's `dispatch` and `thurbox-cli task run` are one verb (#1468):
+/// the same task gets the same session, the same reuse and the same refusal
+/// whichever of the two hands it over.
+#[test]
+fn a_task_dispatches_the_same_through_the_kernel_and_the_cli() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let (backends, probe) = (&reg.cli, &reg.probe);
+    let repo = instance.repo();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    // A row with no window: its session is stopped.
+    let stopped = SessionId::default();
+    seed_row(&db, stopped, "stopped", "local:rmux", "%404", &repo);
+
+    for via in ["kernel", "cli"] {
+        let mut dispatch = |id: i64| -> Result<(), String> {
+            if via == "kernel" {
+                kernel(
+                    &mut bus,
+                    KernelCommand::DispatchTask {
+                        task: id,
+                        session: None,
+                    },
+                )
+            } else {
+                cli(&db, backends, &["task", "run", &id.to_string()]).map(|_| ())
+            }
+        };
+
+        // A task that names a repository spawns its own session, named after
+        // it, and a second dispatch reuses that session.
+        let title = format!("spawned via {via}");
+        let task = cli(
+            &db,
+            backends,
+            &["task", "create", "--title", &title, "--repo", &repo],
+        )
+        .expect("task create");
+        let id = task["id"].as_i64().expect("task id");
+        dispatch(id).unwrap_or_else(|e| panic!("first dispatch via {via}: {e}"));
+        dispatch(id).unwrap_or_else(|e| panic!("second dispatch via {via}: {e}"));
+        let tagged: Vec<_> = db
+            .list_active_sessions()
+            .expect("list")
+            .into_iter()
+            .filter(|s| s.name.ends_with(&format!(" · #{id}")) || s.name == format!("task-{id}"))
+            .collect();
+        let names: Vec<_> = tagged.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(
+            names,
+            vec![format!("{title} · #{id}")],
+            "via {via}: one session named after the task"
+        );
+        assert_screen_shows(
+            probe,
+            &agent_pane(probe, &tagged[0].id.to_string()),
+            &title,
+            &format!("dispatch via {via}"),
+        );
+        let task = db.get_task(id).expect("read").expect("the task");
+        assert_eq!(
+            task.status,
+            thurbox::session::TaskStatus::InProgress,
+            "via {via}"
+        );
+
+        // A task whose session is stopped is refused, not typed into nothing.
+        let task = cli(
+            &db,
+            backends,
+            &[
+                "task",
+                "create",
+                "--title",
+                "to a stopped one",
+                "--session",
+                &stopped.to_string(),
+            ],
+        )
+        .expect("task create");
+        assert_eq!(
+            dispatch(task["id"].as_i64().unwrap()),
+            Err("target session not running".to_string()),
+            "via {via}"
+        );
+
+        // A plain todo names no agent: nothing is spawned for it.
+        let task = cli(&db, backends, &["task", "create", "--title", "plain"]).expect("task");
+        let id = task["id"].as_i64().unwrap();
+        let before = db.list_active_sessions().expect("list").len();
+        let outcome = dispatch(id);
+        if via == "kernel" {
+            assert_eq!(
+                outcome,
+                Err("task is not connected to an agent".to_string()),
+                "the interface reports why nothing happened"
+            );
+        } else {
+            outcome.expect("the CLI reports a skip, not a failure");
+        }
+        assert_eq!(
+            db.list_active_sessions().expect("list").len(),
+            before,
+            "via {via}: a plain todo spawned a session"
+        );
+    }
+    instance.assert_tmux_untouched("task dispatch");
 }
 
 /// A row whose host is not in `hosts.toml` names no machine to reach, and is

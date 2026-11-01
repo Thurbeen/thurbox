@@ -666,70 +666,31 @@ fn task(
     Ok(())
 }
 
-/// Hand a task to an agent.
+/// Hand a task to an agent, through the verb `thurbox-cli task run` shares.
 ///
-/// The prompt is `Task::agent_prompt()` — the same one `thurbox-cli task run`
-/// builds — so an agent gets identical context however it was handed the work,
-/// and there is one place to change what it is told.
+/// A skip is a failure here: a command reports nothing else, and a reader who
+/// pressed a key needs to see why nothing happened.
 fn dispatch_task(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     task_id: i64,
     session: Option<&str>,
 ) -> Result<(), String> {
-    use crate::session::task::TaskStatus;
-
+    use crate::session_ops::tasks::{dispatch, Dispatched};
     let task = db
         .get_task(task_id)
         .map_err(|e| format!("get task: {e}"))?
         .ok_or_else(|| format!("no task #{task_id}"))?;
-    let prompt = task.agent_prompt();
-
-    match session {
-        Some(session) => {
-            let id: SessionId = session
-                .parse()
-                .map_err(|_| format!("not a session id: {session}"))?;
-            let target = db
-                .get_session_by_id(id)
-                .map_err(|e| format!("get session: {e}"))?
-                .ok_or_else(|| format!("session not found: {id}"))?;
-            crate::session_ops::send_text_with_status(db, backends, &target, &prompt, true)
-                .map_err(|e| format!("send: {e:#}"))?;
-        }
-        None => {
-            // Create a session for the task, then hand it the prompt once its
-            // pane is live. `spawn_session_headless` returns after the agent is
-            // launched, so the delivery is a follow-up rather than part of it.
-            let repo = task_repo(db)?;
-            let request = crate::session_ops::spawn::SpawnRequest {
-                name: format!("task-{task_id}"),
-                repo_path: repo,
-                task_id: Some(task_id),
-                ..Default::default()
-            };
-            let spawned = crate::session_ops::spawn::spawn_session_headless(db, backends, request)
-                .map_err(|e| e.to_string())?;
-            // The agent needs a moment to be ready for input; sending into a
-            // shell that has not drawn its prompt loses the text.
-            crate::session_ops::send_text_when_booted(
-                db,
-                backends,
-                spawned.session_id,
-                &prompt,
-                std::time::Duration::from_secs(3),
-            )
-            .map_err(|e| format!("send: {e}"))?;
-        }
+    let session = session
+        .map(|s| {
+            s.parse::<SessionId>()
+                .map_err(|_| format!("not a session id: {s}"))
+        })
+        .transpose()?;
+    match dispatch(db, backends, &task, session)? {
+        Dispatched::Skipped(reason) => Err(reason.to_string()),
+        _ => Ok(()),
     }
-
-    // Acting on a task moves it out of not-started, whichever way it was
-    // dispatched.
-    if task.status == TaskStatus::Todo {
-        db.set_task_status(task_id, TaskStatus::InProgress)
-            .map_err(|e| format!("advance task: {e}"))?;
-    }
-    Ok(())
 }
 
 /// Enable, disable, run or delete an automation — through the session
@@ -770,25 +731,6 @@ fn save_automation(
             .map(|_| ())
             .map_err(|e| e.to_string()),
     }
-}
-
-/// A repository to create a task's session in.
-///
-/// The most recently used one, because a task with no repo of its own belongs
-/// wherever you are working — and asking would mean blocking, which a command
-/// cannot do.
-fn task_repo(db: &Database) -> Result<std::path::PathBuf, String> {
-    db.list_active_sessions()
-        .map_err(|e| format!("list sessions: {e}"))?
-        .into_iter()
-        .find_map(|session| {
-            session
-                .worktrees
-                .first()
-                .map(|w| w.repo_path.clone())
-                .or(session.cwd)
-        })
-        .ok_or_else(|| "no repository to create a session in — start one session first".to_string())
 }
 
 /// Move a session `delta` places in the manual order and renumber densely.

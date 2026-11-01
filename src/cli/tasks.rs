@@ -11,8 +11,6 @@ use serde_json::{json, Value};
 use crate::cli::action;
 use crate::cli::output::{self, CommandOutput};
 use crate::session::{AutomationAction, Task, TaskStatus, SOURCE_LOCAL};
-use crate::session_ops::deliver::{spawn_and_deliver, SpawnDeliverError};
-use crate::session_ops::SpawnRequest;
 use crate::storage::tasks::NewTask;
 use crate::storage::Database;
 
@@ -326,120 +324,22 @@ fn status_glyph(status: TaskStatus) -> String {
     }
 }
 
-/// Execute a task's action without a TUI, returning a JSON outcome.
-///
+/// Execute a task's action without a TUI, through the verb the interface's
+/// `dispatch` shares, returning a JSON outcome.
 fn run_task(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     task: &Task,
 ) -> Result<Value, String> {
-    // Seed the agent with full task context (id + title + description + how to
-    // read more / mark done), not just the bare title — shared with the TUI
-    // dispatch path via `Task::agent_prompt`.
-    let prompt = task.agent_prompt();
-    match &task.action {
-        None => Ok(json!({ "skipped": "task is not connected to an agent", "id": task.id })),
-        Some(AutomationAction::Send { session_id }) => {
-            // The full row, not just the name: the row id is what the window
-            // is stamped with, and so what disambiguates a shared name.
-            let target = db
-                .get_session_by_id(*session_id)
-                .map_err(|e| format!("get_session_by_id: {e}"))?
-                .ok_or_else(|| format!("Target session not found: {session_id}"))?;
-            if crate::session_ops::windows::agent_pane(backends, &target)
-                .map_err(|e| e.to_string())?
-                .is_none()
-            {
-                return Err("target session not running".into());
-            }
-            crate::session_ops::send_text_with_status(db, backends, &target, &prompt, true)
-                .map_err(|e| format!("send: {e:#}"))?;
-            mark_in_progress(db, task)?;
-            Ok(json!({ "sent": true, "id": task.id, "session_id": session_id.to_string() }))
+    use crate::session_ops::tasks::{dispatch, Dispatched};
+    Ok(match dispatch(db, backends, task, None)? {
+        Dispatched::Sent { session_id } => {
+            json!({ "sent": true, "id": task.id, "session_id": session_id.to_string() })
         }
-        Some(AutomationAction::Spawn {
-            repo_path,
-            worktree_branch,
-            base_branch,
-            agent,
-            extra_repos,
-        }) => {
-            let name = task.spawn_session_name();
-            // Reuse an existing session window (re-trigger / restored session).
-            // Match by the `· #<id>` tag rather than the exact name so a
-            // since-edited title (and legacy `task-<id>` sessions) are found too.
-            let mut running = Vec::new();
-            for session in db
-                .list_active_sessions()
-                .map_err(|e| format!("list_active_sessions: {e}"))?
-                .into_iter()
-                .filter(|s| task.matches_spawn_session(&s.name))
-            {
-                // A task spawns on this machine, so a same-named row on a host
-                // is another machine's, and a row on a route nothing here
-                // serves is not one to reuse; not knowing whether a served one
-                // runs must not launch a second one.
-                if crate::session::Route::is_remote_key(&session.backend_type)
-                    || crate::session_ops::windows::backend_for(backends, &session.backend_type)
-                        .is_err()
-                {
-                    continue;
-                }
-                if crate::session_ops::windows::agent_pane(backends, &session)
-                    .map_err(|e| e.to_string())?
-                    .is_some()
-                {
-                    running.push(session);
-                }
-            }
-            if running.len() > 1 {
-                return Err(format!(
-                    "{} running sessions carry this task's tag, so there is no telling which \
-                     one it meant",
-                    running.len()
-                ));
-            }
-            if let Some(session) = running.pop() {
-                crate::session_ops::send_text_with_status(db, backends, &session, &prompt, true)
-                    .map_err(|e| format!("send: {e:#}"))?;
-                mark_in_progress(db, task)?;
-                return Ok(json!({ "reused": session.name, "id": task.id }));
-            }
-            let req = SpawnRequest {
-                name: name.clone(),
-                repo_path: repo_path.clone(),
-                worktree_branch: worktree_branch.clone(),
-                base_branch: base_branch.clone(),
-                agent: agent.clone(),
-                task_id: Some(task.id),
-                extra_repos: extra_repos.clone(),
-                ..Default::default()
-            };
-            spawn_and_deliver(db, backends, &name, req, &prompt).map_err(|e| match e {
-                SpawnDeliverError::Spawn(error) => error.to_string(),
-                SpawnDeliverError::Deliver { message, .. } => message,
-            })?;
-            mark_in_progress(db, task)?;
-            Ok(json!({ "spawned": name, "id": task.id }))
-        }
-        // Exec is an automation-only action; a task never carries one.
-        Some(AutomationAction::Exec { .. }) => Ok(json!({
-            "skipped": "exec action is not supported for tasks",
-            "id": task.id,
-        })),
-    }
-}
-
-/// Advance a freshly-triggered task `Todo → InProgress` (no-op for other
-/// states), mirroring what the kernel's task-run command does
-/// (`kernel::command`, `set_task_status`) so the headless `task run` path keeps
-/// status in sync too.
-fn mark_in_progress(db: &Database, task: &Task) -> Result<(), String> {
-    if task.status == TaskStatus::Todo {
-        db.set_task_status(task.id, TaskStatus::InProgress)
-            .map_err(|e| format!("set_task_status: {e}"))?;
-    }
-    Ok(())
+        Dispatched::Reused { name } => json!({ "reused": name, "id": task.id }),
+        Dispatched::Spawned { name } => json!({ "spawned": name, "id": task.id }),
+        Dispatched::Skipped(reason) => json!({ "skipped": reason, "id": task.id }),
+    })
 }
 
 fn load(db: &Database, id: i64) -> Result<Task, String> {

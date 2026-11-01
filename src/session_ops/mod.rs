@@ -64,6 +64,7 @@ pub mod set_key;
 mod shared_tests;
 pub mod spawn;
 pub mod state_hooks;
+pub mod tasks;
 pub(crate) mod telemetry;
 pub mod wait;
 pub mod windows;
