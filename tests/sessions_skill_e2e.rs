@@ -263,7 +263,8 @@ fn the_documented_commands_work_between_two_sessions() {
     assert_eq!(peer["id"], beta, "{peer}");
     assert!(peer.get("state").is_some(), "get reports a state: {peer}");
 
-    // A shell prompt that has not drawn yet reads as busy, so wait for it.
+    // Wait for the shell's prompt to draw. The pattern is a regex: a bare `$`
+    // would match the empty pane at once.
     json_as(
         me,
         &[
@@ -271,7 +272,7 @@ fn the_documented_commands_work_between_two_sessions() {
             "wait",
             "beta",
             "--pane-matches",
-            "$",
+            r"(?m)\$\s*$",
             "--timeout",
             "20",
         ],
