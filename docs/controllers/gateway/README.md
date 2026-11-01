@@ -36,6 +36,7 @@ paper, to check the model.
 | [State machine](state-machine.md) | Which states does a thread and a tie go through? What is relayed or posted, and when? |
 | [Interface](interface.md) | What are the port, the CLI verbs, the declarations, the inbox entries and the keys? |
 | [Adapters](adapters.md) | How do Slack, Telegram, Discord and Teams map onto the port? |
+| [Discord adapter](discord.md) | How would a Discord adapter, its listener and its setup work? |
 | [Native config](../../configuration/fleet-toml.md#the-gateway-section) | Where do accounts, people, routes and admission come from? |
 | [Overall architecture](../../ARCHITECTURE.md#the-gateway-controller) | Where does this fit in Fleet? |
 
