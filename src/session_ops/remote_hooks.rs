@@ -433,9 +433,12 @@ pub(crate) fn provision_account_hooks_locally(
         return None;
     }
     let placed = asset.placed(env);
-    let installed =
-        crate::paths::resolve_env_default(asset.remote_path, |name| std::env::var(name).ok());
-    if placed.path == installed {
+    let dest = crate::paths::expand_tilde(&placed.path);
+    let installed = crate::paths::expand_tilde(&crate::paths::resolve_env_default(
+        asset.remote_path,
+        |name| std::env::var(name).ok(),
+    ));
+    if dest == installed {
         return None;
     }
     let landing = match asset.kind {
@@ -447,7 +450,6 @@ pub(crate) fn provision_account_hooks_locally(
         }
         RemoteAssetKind::WriteFile => super::extensions::Landing::File,
     };
-    let dest = crate::paths::expand_tilde(&placed.path);
     match super::extensions::land_payload(
         landing,
         &crate::paths::expand_tilde(&placed.requires_dir),
