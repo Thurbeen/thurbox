@@ -3013,9 +3013,9 @@ fn granting_a_capability_asks_first_and_revoking_does_not() {
     });
     tui.wait_for("No sessions yet");
     open_interface_tab(&mut tui);
-    let ui_json = profile.path("config/ui.json");
+    let store = profile.path("config/plugin-state.json");
     let granted = || {
-        std::fs::read_to_string(&ui_json)
+        std::fs::read_to_string(&store)
             .unwrap_or_default()
             .contains("92_tbrun.lua")
     };

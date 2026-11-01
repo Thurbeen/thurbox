@@ -438,28 +438,36 @@ impl Registry {
         // reads them: the store is written before `ui.json` loses them, so an
         // interruption between the two leaves both copies, and the store wins.
         let legacy = !legacy_trusted.is_empty() || !legacy_disabled.is_empty();
-        let migrate = match read_decisions() {
+        let (create_store, clear_legacy) = match read_decisions() {
             Decisions::Absent => {
                 registry.trusted = legacy_trusted;
                 registry.disabled = legacy_disabled;
-                legacy
+                (legacy, legacy)
             }
+            // An interrupted migration or a restored `ui.json` leaves the
+            // tables behind. Only `ui.json` is cleaned: rewriting the store
+            // from this read could put back a grant another process revoked
+            // since.
             Decisions::Read(trusted, disabled, notes) => {
                 registry.trusted = trusted;
                 registry.disabled = disabled;
                 warnings.extend(notes);
-                legacy
+                (false, legacy)
             }
             // Migrating over a store that did not parse would replace it with
             // the legacy tables and leave nothing to repair.
             // `config validate` names the file instead.
             Decisions::Unreadable(note) => {
                 warnings.push(note);
-                false
+                (false, false)
             }
         };
-        if migrate {
-            let moved = registry.persist_decisions();
+        if clear_legacy {
+            let moved = if create_store {
+                registry.persist_decisions()
+            } else {
+                Ok(())
+            };
             registry.unmigrated = moved.is_err();
             if let Err(e) = moved.and_then(|()| registry.persist_overrides()) {
                 warnings.push(format!(

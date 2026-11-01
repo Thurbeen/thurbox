@@ -449,3 +449,40 @@ fn a_store_that_cannot_be_read_is_not_replaced_by_legacy_tables() {
 
     std::env::remove_var("THURBOX_CONFIG_DIR");
 }
+
+#[test]
+fn leftover_legacy_tables_do_not_rewrite_a_store_that_was_read() {
+    // Another process may revoke a grant between this load's read of the store
+    // and any write it makes, so a load that found the store must leave it as
+    // it was and only clear the leftover tables from `ui.json`.
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        home.path().join("ui.json"),
+        r#"{"disabled": ["/ui/plugins/legacy.lua"]}"#,
+    )
+    .expect("seed leftover legacy tables");
+    let store = home.path().join("plugin-state.json");
+    let written = br#"{ "disabled": ["/ui/plugins/off.lua"] }"#.to_vec();
+    std::fs::write(&store, &written).expect("seed the store");
+    std::env::set_var("THURBOX_CONFIG_DIR", home.path());
+
+    let registry = Registry::load();
+    assert!(registry.is_disabled("/ui/plugins/off.lua"));
+    assert!(
+        !registry.is_disabled("/ui/plugins/legacy.lua"),
+        "the store wins over the leftover tables"
+    );
+    assert_eq!(
+        std::fs::read(&store).expect("read the store"),
+        written,
+        "a load that read the store must not write it back"
+    );
+    assert!(
+        !std::fs::read_to_string(home.path().join("ui.json"))
+            .expect("read ui.json")
+            .contains("legacy.lua"),
+        "the leftover tables are cleared from ui.json"
+    );
+
+    std::env::remove_var("THURBOX_CONFIG_DIR");
+}
