@@ -548,6 +548,12 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         fn release(&self, _: &SessionRef) -> Observation<EffectOutcome> {
             panic!("must retain session")
         }
+        fn lost(&self, _: &SessionRef) -> Observation<bool> {
+            Observation::Known(false)
+        }
+        fn revive(&self, _: &SessionRef) -> Observation<EffectOutcome> {
+            panic!("the session is running")
+        }
     }
     let clock = Arc::new(TestClock(AtomicU64::new(100_000)));
     let store = FileStore::open_with_clock(&env.data, clock.clone()).unwrap();

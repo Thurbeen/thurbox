@@ -46,6 +46,10 @@ logic runs.
 | Spawned | Another send would exceed the 3-send bound | Stalled | Raise `Stalled/BriefAttemptsExhausted` and NeedsAttention. |
 | Briefed | No result; recorded session present or lookup unreadable | Briefed | Wait for result; Unknown does not mean WorkerGone. |
 | Briefed | No result; readable lookup lacks recorded identity | Briefed | Raise WorkerGone and NeedsAttention; never abandon or respawn. |
+| Spawned, Briefed, or Concluded with a delivery due | Session lost: the runtime holds the session, but its agent's window is gone | unchanged | Set `SessionLost=True/WindowGone`. Send nothing. With `dispatch: true`, persist a revive intent and plan `Revive` under `revive/<n>`. A held Task is not revived. |
+| Spawned, Briefed, or Concluded with a delivery due | Still lost after a revive | unchanged | Wait 30 seconds from the last revive, then revive again. From the third revive on, also raise `NeedsAttention/ReviveFailed`. |
+| Spawned, Briefed, or Concluded with a delivery due | Not lost while `SessionLost` is True | unchanged | Set `SessionLost=False/Revived`. When the brief has a receipt, owe a resume note under `resume/<n>`. In Spawned, the brief protocol continues. |
+| Briefed or Concluded | A resume note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief and its generation. |
 | Active phase | Accepted worker result is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
 | Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered before the brief was sent, or while a brief send is unconfirmed. |
 | Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
@@ -81,6 +85,8 @@ These are controller constants, not extra configuration resources.
 | Delivery journal unreadable | A later readable journal answer | After 3 failures raise NeedsAttention, but keep probing after each wait. Recovery clears BriefUnconfirmed attention. |
 | Release answer missing/Unknown or failed | Recorded session at rest, or key proven absent; adapter preserves exact identity | Wait once per failed attempt, then retry. After 3 attempts raise NeedsAttention but continue; success releases the finalizer. |
 | Session lookup unreadable | A later readable lookup | Unknown is not absence and does not by itself trigger WorkerGone or permit a blind spawn. |
+| Session lost | A Known lost answer; Unknown revives nothing | Revive at once, then wait before each further revive. From the third revive on raise NeedsAttention, and continue: a revive leaves a running session alone. |
+| Resume note send refused or answer missing/Unknown | As for an inbox entry, under the note's key | At most 3 sends, then `DeliveryFailed` naming the note; the inbox goes next. |
 | Inbox entry send refused or answer missing/Unknown | As for the brief, under the entry's key: a failure receipt, or the journal's answer | Wait before retry; every retry needs fresh readiness; at most 3 sends per entry, then `DeliveryFailed` and the next entry. Unknown journal reads continue after each wait; three raise `DeliveryUnconfirmed`. |
 
 A single brief key is reused so retrying a proven-undelivered brief does not
@@ -113,7 +119,8 @@ are last recorded observations; absence of a condition is not a True value.
 | Concluded | A worker result was accepted and observed (`ResultRecorded`). |
 | Released | A known release completed, or there was nothing to release. |
 | WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, InboxFull, RepositoryUnmapped, TrustUnmapped or WorkspaceUntrusted. |
+| SessionLost | The runtime holds the session, but its agent's window is gone (`WindowGone`). False after a lost session is back (`Revived`). |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, InboxFull, RepositoryUnmapped, TrustUnmapped, WorkspaceUntrusted or ReviveFailed. |
 
 WorkerGone clears when the exact recorded session is seen again.
 RepositoryUnmapped clears when a later spawn does not answer Unmapped.
@@ -121,11 +128,46 @@ TrustUnmapped clears when a later spawn does not answer TrustUnmapped. A success
 delivery recovery clears attention whose reason is BriefUnconfirmed or
 DeliveryUnconfirmed; an inbox drained back within its bound clears InboxFull.
 A Trusted answer clears WorkspaceUntrusted.
+ReviveFailed clears when the session is seen not lost.
 DeliveryFailed stays while the failed entry does. A
 successful release removes the Task; a worker result alone is not a general
 reset of previous conditions. NeedsAttention does not universally stop the
 controller: its reason and phase determine what continues. Delivering an
 inbox entry changes no phase and no condition other than those three.
+
+## After a host reboot
+
+A host reboot ends every agent process. The Thurbox runtime keeps each
+session's row, id, key, worktree and conversation. The Task keeps its
+session, brief record and counters. Fleet resumes the work in the same
+session:
+
+```text
+fleet up starts ──> sweep ──> Lost? ─yes─> Revive (same id, same worktree, conversation resumed)
+                                │                │
+                                no               v
+                                │          next pass: not lost ──> SessionLost=False/Revived
+                                v                                    │
+                       normal protocol                 Briefed: resume note + brief, generation unchanged
+                                                       Concluded: resume note, then the waiting inbox
+```
+
+- Spawned, Briefed and unconcluded Tasks are revived on the first sweep.
+- A Concluded Task is revived only when its inbox has an entry for it.
+  Change requests the worker declared are still followed. Their feedback
+  arrives as inbox entries.
+- A held Task (`dispatch: false`) is never revived.
+- A revive never creates a second session. The brief key is never sent
+  again. The resume note has its own key and journal entry.
+- The brief record keeps its generation. A result for another generation is
+  still refused.
+- A deleting Task is released, not revived. A session with no window is at
+  rest.
+- A Task whose session row was deleted is `WorkerGone`, as before. Fleet
+  does not respawn it.
+
+The manager must run again after the reboot. See
+[running `fleet up`](../../configuration/init.md#running-fleet-up).
 
 ## Deletion protocol
 

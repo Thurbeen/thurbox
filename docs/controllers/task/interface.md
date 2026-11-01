@@ -41,19 +41,20 @@ deleted or its session recheck is due. A session recheck is due when
 | Pending, `dispatch: false` | None. |
 | Pending, `dispatch: true` | `Host { host }`. |
 | Spawning | `Find { host, key }`. |
-| Spawned | `Find`; `WorkspaceTrust` and `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
-| Briefed, no worker result | `Find`; the inbox probes below. |
-| Concluded, an inbox entry to deliver | `Find`; the inbox probes below. |
+| Spawned | `Find`; `Lost`, `WorkspaceTrust` and `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
+| Briefed, no worker result | `Find`; `Lost`; the delivery probes below. |
+| Concluded, an inbox entry to deliver | `Find`; `Lost`; the delivery probes below. |
 | Concluded, session recheck due | `Find`. |
 | Concluded otherwise, or Stalled | None. |
 | Deleting, regardless of phase | `Find`; `AtRest` when a session is recorded. |
 
 The inbox probes, for the oldest entry not given up on: `Ready` for the
 recorded session, and `BriefDelivered` under the entry's key when it was
-sent without a known receipt.
+sent without a known receipt. The delivery probes are the same probes for
+the resume note while one is owed, and the inbox probes otherwise.
 
 `Observations` holds `host`, `find`, `ready`, `workspace_trust`,
-`brief_delivered` and `at_rest`.
+`brief_delivered`, `at_rest` and `lost`.
 Each is optional: `None` means no answer was supplied, not a negative answer.
 Each supplied answer is an [Observation](../../../crates/fleet-api/src/observation.rs):
 
@@ -82,9 +83,10 @@ pub struct Plan {
 | `remove_finalizer` | Request to remove `fleet.dev/release` after the status and effects; present only for a deleting Task whose release is established. |
 | `delivery` | An inbox entry proven delivered: `{key, at, recovered}`. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
 
-An action is `Spawn(SpawnSpec)`, `Brief { session, text }` or
-`Release { session }`. SpawnSpec carries `host`, `key`, `harness`, `dir`,
-optional `model`, the private environment map and `environmentFrozen`. The
+An action is `Spawn(SpawnSpec)`, `Brief { session, text }`,
+`Release { session }` or `Revive { session }`. SpawnSpec carries `host`,
+`key`, `harness`, `dir`, optional `model`, the private environment map and
+`environmentFrozen`. The
 manager injects frozen values and prevents model-variable remapping before
 performing a spawn; environment values are not persisted in effect intents.
 `SessionRef` carries `id`, `host` and `key`; a later session
@@ -151,12 +153,17 @@ return `Observation<T>`; a refused effect is
 | `brief_delivered` | Session and intent key | Whether that brief was delivered, or Unknown. |
 | `at_rest` | `SessionRef` | Whether it is safe to release that recorded session, or Unknown. |
 | `release` | `SessionRef` | `Released` if deleted or proven absent, or Failed/Unknown. Repeating a completed release is a no-op. |
+| `lost` | `SessionRef` | Known true only when the runtime holds the session and proves its agent's window gone, and nobody stopped it. Known false for a running or stopped session. |
+| `revive` | `SessionRef` | `Revived` after the runtime started the lost session's agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
 
 The thurbox adapter executes bounded `thurbox-cli` calls via `fleet-exec`.
 Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
 session metadata as pending before sending and delivered afterward. A pending
 journal entry is ambiguous, so it is never a license to resend. On release,
 a different id holding the key returns Unknown and is not deleted.
+`lost` reads `session get`: `hook_corroboration` `missing` is lost. Any
+window that is there, even a dead one, is not lost. `revive` runs
+`session restart --if-missing`. A session with no window is at rest.
 The fake adapter provides persisted sessions and faults without starting an
 agent. Explicit provider commands still run through the same bounded executor
 with either adapter; command resolution requires a lease above 20000 ms and

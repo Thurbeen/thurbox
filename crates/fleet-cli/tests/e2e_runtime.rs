@@ -719,3 +719,128 @@ fn a_repository_the_runtime_does_not_map_is_refused_at_spawn() {
     assert_condition(&full, "Spawned", "False", "RepositoryUnmapped");
     assert_condition(&full, "NeedsAttention", "True", "RepositoryUnmapped");
 }
+
+/// A host reboot as thurbox shows it: every session row survives with its
+/// id, key and last reported state, but its window is gone.
+fn reboot(env: &Env) {
+    env.edit_stub(|s| {
+        for sess in s["sessions"].as_array_mut().unwrap() {
+            sess["hook_corroboration"] = json!("missing");
+        }
+    });
+}
+
+fn sent(env: &Env, i: usize) -> Vec<String> {
+    env.stub_sessions()[i]["sent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_briefed_task_resumes_in_its_own_session_after_a_reboot() {
+    let env = setup("thurbox-reboot", vec![task("t1", true)]);
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    let id = env.stub_sessions()[0]["id"].clone();
+    // The worker was mid-turn when the host went down.
+    set_session_state(&env, &thurbox_key(&env, "t1"), "working");
+
+    reboot(&env);
+    env.reconcile().ok();
+
+    let restarts = argv_of(&env, "restart");
+    assert_eq!(restarts.len(), 1, "{restarts:?}");
+    assert_eq!(restarts[0][2], id.as_str().unwrap());
+    assert!(
+        restarts[0].iter().any(|a| a == "--if-missing"),
+        "{restarts:?}"
+    );
+    assert_eq!(argv_of(&env, "create").len(), 1, "never a second session");
+    let st = full_status(&env, "t1");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_eq!(st["session"]["id"], id, "{st:#}");
+    assert_eq!(st["brief"]["generation"], 1, "{st:#}");
+
+    // The resumed worker is told it was restarted, and given its brief again.
+    let texts = sent(&env, 0);
+    assert_eq!(texts.len(), 2, "{texts:#?}");
+    assert_eq!(texts[0], "Do the work for t1.");
+    assert!(texts[1].contains("restarted"), "{}", texts[1]);
+    assert!(texts[1].contains("Do the work for t1."), "{}", texts[1]);
+    assert!(texts[1].contains("generation 1"), "{}", texts[1]);
+
+    // Nothing repeats on the next pass.
+    set_session_state(&env, &thurbox_key(&env, "t1"), "working");
+    env.reconcile().ok();
+    assert_eq!(argv_of(&env, "restart").len(), 1);
+    assert_eq!(sent(&env, 0).len(), 2);
+
+    // The generation the worker was briefed for still fences its result.
+    env.fleet(&result_args("t1", "2"))
+        .code(1)
+        .stderr_has("stale generation 2");
+    env.fleet(&result_args("t1", "1")).ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Concluded");
+}
+
+#[test]
+fn a_reboot_revives_only_work_in_flight_or_feedback() {
+    let env = setup(
+        "thurbox-reboot-scope",
+        vec![task("done", true), task("held", false)],
+    );
+    env.reconcile().ok();
+    env.fleet(&result_args("done", "1")).ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("done")["phase"], "Concluded");
+    assert_eq!(env.status("held")["phase"], "Pending");
+
+    reboot(&env);
+    env.expire_session_check("done");
+    env.reconcile().ok();
+    assert!(
+        argv_of(&env, "restart").is_empty(),
+        "a concluded worker rests"
+    );
+    assert_eq!(env.status("held")["phase"], "Pending", "held stays held");
+    assert_eq!(argv_of(&env, "create").len(), 1);
+
+    // Feedback for the concluded worker brings its session back to read it.
+    env.fleet(&["send", "done", "Review: rename the flag."])
+        .ok();
+    env.reconcile().ok();
+    assert_eq!(argv_of(&env, "restart").len(), 1);
+    assert_eq!(argv_of(&env, "create").len(), 1);
+    // The note that it was restarted goes first; the feedback follows once
+    // the worker has read it.
+    let texts = sent(&env, 0);
+    assert_eq!(texts.len(), 2, "{texts:#?}");
+    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
+    set_session_state(&env, &thurbox_key(&env, "done"), "idle");
+    env.reconcile().ok();
+    let texts = sent(&env, 0);
+    assert_eq!(texts.len(), 3, "{texts:#?}");
+    assert_eq!(texts[2], "Review: rename the flag.");
+    assert_eq!(env.status("done")["phase"], "Concluded");
+}
+
+#[test]
+fn a_task_deleted_after_a_reboot_releases_its_lost_session() {
+    let env = setup("thurbox-reboot-delete", vec![task("t1", true)]);
+    env.reconcile().ok();
+    // Its last report before the host went down was `working`.
+    set_session_state(&env, &thurbox_key(&env, "t1"), "working");
+    reboot(&env);
+    env.fleet(&["delete", "task", "t1"]).ok();
+    env.reconcile().ok();
+    assert!(
+        argv_of(&env, "restart").is_empty(),
+        "a deleted Task is not revived"
+    );
+    assert!(env.stub_sessions().is_empty(), "{:#?}", env.stub_sessions());
+    env.fleet(&["get", "task", "t1"]).code(3);
+}

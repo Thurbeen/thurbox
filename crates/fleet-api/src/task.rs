@@ -186,6 +186,20 @@ pub struct TaskStatus {
     /// Consecutive unreadable delivery probes; three raise NeedsAttention.
     #[serde(default)]
     pub brief_probe_failures: u32,
+    /// Revive effects planned over the Task's life; the next one's key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub revivals: u32,
+    /// Revive effects since the session was last seen running; three raise
+    /// NeedsAttention.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub revive_attempts: u32,
+    /// Resume notes queued over the Task's life; the next one's key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub resumes: u32,
+    /// The key of the resume note owed to a revived session, until its
+    /// delivery is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
     /// After a failed or unknown attempt: the manager does not reconcile
     /// this Task again before then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -227,6 +241,10 @@ pub struct TaskStatus {
     /// only by an inbox append that carries `answers`, first writer wins.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub answered: BTreeMap<String, Answer>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl TaskStatus {

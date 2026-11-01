@@ -322,9 +322,11 @@ impl Env {
     }
 
     /// Every call the stub saw, as `{argv, envNames}`.
+    /// Only complete lines count: a running `fleet up` may be appending one.
     pub fn stub_calls(&self) -> Vec<Value> {
-        fs::read_to_string(self.stub_dir().join("calls.jsonl"))
-            .unwrap_or_default()
+        let log = fs::read_to_string(self.stub_dir().join("calls.jsonl")).unwrap_or_default();
+        let complete = log.rfind('\n').map_or("", |end| &log[..end]);
+        complete
             .lines()
             .map(|l| serde_json::from_str(l).expect("call line"))
             .collect()

@@ -85,7 +85,8 @@ fn log_call(args: &[String]) {
         .create(true)
         .open(dir().join("calls.jsonl"))
         .expect("calls log");
-    writeln!(f, "{line}").expect("log");
+    // One write per line, so a reader never sees half of one.
+    f.write_all(format!("{line}\n").as_bytes()).expect("log");
 }
 
 /// The fault armed for `call`, consumed once.
@@ -184,6 +185,17 @@ fn row(state: &Value, s: &Value) -> Value {
         r["state"] = json!("unreachable");
     }
     r
+}
+
+/// Whether thurbox would say the session has no window: `session get`
+/// reports `hook_corroboration: "missing"`.
+fn window_gone(s: &Value) -> bool {
+    s["hook_corroboration"] == "missing"
+}
+
+/// The state a relaunched session reports: `restartState`, idle by default.
+fn state_after_restart(state: &Value) -> String {
+    state["restartState"].as_str().unwrap_or("idle").to_string()
 }
 
 fn find_index(state: &Value, id: &str) -> Option<usize> {
@@ -1341,6 +1353,16 @@ fn answer(
             let Some(i) = find_index(state, &id) else {
                 return err(format!("no session {id}"));
             };
+            // As thurbox answers for a row whose window is gone (a reboot).
+            if window_gone(&state["sessions"][i]) {
+                let name = state["sessions"][i]["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                return err(format!(
+                    "send: session '{name}' has no window of its own here"
+                ));
+            }
             let s = &mut state["sessions"][i];
             s["sent"].as_array_mut().expect("sent").push(json!(text));
             s["state"] = json!("working");
@@ -1365,6 +1387,34 @@ fn answer(
                 state["sessions"][i]["meta"][&key] = json!(v);
                 (ExitCode::SUCCESS, None)
             }
+        }
+        "restart" => {
+            // As thurbox 2.81 does it: `--if-missing` relaunches only a row
+            // whose window is gone and that nobody stopped, resuming its
+            // conversation under the same id; anything else is left alone.
+            // The answer is the same either way.
+            let id = args.get(2).cloned().unwrap_or_default();
+            let Some(i) = find_index(state, &id) else {
+                return err(format!("Session not found: {id}"));
+            };
+            let if_missing = args.iter().any(|a| a == "--if-missing");
+            let s = &state["sessions"][i];
+            let stopped = s["stopped"] == true;
+            if !stopped && (!if_missing || window_gone(s)) {
+                // A relaunch clears the hook state; the resumed agent then
+                // reports itself waiting.
+                let after = state_after_restart(state);
+                let s = &mut state["sessions"][i];
+                s["hook_corroboration"] = json!("agent");
+                s["state"] = json!(after);
+                let s = state["sessions"][i].clone();
+                event(state, "state", &s);
+            }
+            let name = state["sessions"][i]["name"].clone();
+            ok(
+                json!({"held_back": false, "hook_failures": [], "restarted": true,
+                      "session_id": id, "session_name": name}),
+            )
         }
         "delete" | "stop" => {
             let id = args.get(2).cloned().unwrap_or_default();

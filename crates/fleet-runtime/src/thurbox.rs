@@ -578,9 +578,12 @@ impl ThurboxRuntime {
         )
     }
 
+    /// The session's state word. A session with no window runs nothing, so
+    /// its last report, kept across a reboot, is not its state: it is
+    /// `stopped`, as one parked on purpose.
     fn state_word(&self, session: &SessionRef) -> Observation<String> {
         self.get(session).map(|v| {
-            if v["stopped"] == true {
+            if v["stopped"] == true || v["hook_corroboration"] == "missing" {
                 "stopped".to_string()
             } else {
                 v["state"].as_str().unwrap_or("").to_string()
@@ -1069,6 +1072,44 @@ impl Runtime for ThurboxRuntime {
         };
         match self.call(&["session", "delete", &session.id, cleanup]) {
             Answer::Ok(_) => Observation::Known(EffectOutcome::Released),
+            Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
+            Answer::Unknown(why) => Observation::unknown(why),
+        }
+    }
+
+    /// thurbox keeps a session's row across a reboot and reports, on `get`,
+    /// what holds its window: `missing` when there is none, which is lost.
+    /// Any window that is there, even a dead one, is not: `restart
+    /// --if-missing` leaves it alone. A stopped session was parked on purpose
+    /// and is not lost either.
+    fn lost(&self, session: &SessionRef) -> Observation<bool> {
+        let row = match self.get(session) {
+            Observation::Known(row) => row,
+            Observation::Unknown { why } => return Observation::Unknown { why },
+        };
+        if row["id"] != session.id || row["key"] != self.thurbox_key(&session.key) {
+            return Observation::unknown("the session row is not this session's");
+        }
+        if row["stopped"] == true {
+            return Observation::Known(false);
+        }
+        match row["hook_corroboration"].as_str() {
+            Some("missing") => Observation::Known(true),
+            Some("agent" | "foreign-agent" | "shell" | "other" | "dead") => {
+                Observation::Known(false)
+            }
+            other => Observation::unknown(format!(
+                "thurbox cannot tell whether the session's window is there ({other:?})"
+            )),
+        }
+    }
+
+    /// `restart --if-missing`: thurbox relaunches the agent only when its
+    /// window is gone, resuming its conversation in the same row and
+    /// worktree, and leaves a running or stopped session alone.
+    fn revive(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        match self.call(&["session", "restart", &session.id, "--if-missing", "--json"]) {
+            Answer::Ok(_) => Observation::Known(EffectOutcome::Revived),
             Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
             Answer::Unknown(why) => Observation::unknown(why),
         }

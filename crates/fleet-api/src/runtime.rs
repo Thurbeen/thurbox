@@ -95,4 +95,12 @@ pub trait Runtime {
     fn at_rest(&self, session: &SessionRef) -> Observation<bool>;
     /// Delete the session once; repeating it is a no-op.
     fn release(&self, session: &SessionRef) -> Observation<EffectOutcome>;
+    /// Known(true) only when the runtime still holds the session but proves
+    /// that its agent's window is gone, as after a host reboot, and nobody
+    /// stopped it on purpose. A running or stopped session is Known(false).
+    fn lost(&self, session: &SessionRef) -> Observation<bool>;
+    /// Start a lost session's agent again in its own workspace, resuming its
+    /// conversation under the same identity. A running session is left
+    /// alone, so repeating it is harmless.
+    fn revive(&self, session: &SessionRef) -> Observation<EffectOutcome>;
 }

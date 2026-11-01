@@ -1643,6 +1643,11 @@ impl Manager<'_> {
                 note("atRest", o.why());
                 obs.at_rest = Some(o);
             }
+            Probe::Lost { session } => {
+                let o = rt.lost(session);
+                note("lost", o.why());
+                obs.lost = Some(o);
+            }
             // Not TaskController's probes: it never asks them.
             Probe::Change { .. }
             | Probe::Object { .. }
@@ -1659,6 +1664,7 @@ impl Manager<'_> {
             Action::Spawn(spec) => self.runtime.spawn(spec),
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
             Action::Release { session } => self.runtime.release(session),
+            Action::Revive { session } => self.runtime.revive(session),
             // The Forge and Conversation controllers' effects, performed by
             // their own sweeps; TaskController never plans them.
             Action::MarkReady { .. } | Action::Post { .. } => {

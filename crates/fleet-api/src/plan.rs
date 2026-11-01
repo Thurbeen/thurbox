@@ -83,6 +83,12 @@ pub enum Action {
     Release {
         session: SessionRef,
     },
+    /// Start the agent of a session whose window is gone again, in its own
+    /// workspace and conversation, under the same identity. A session that
+    /// is running is left alone.
+    Revive {
+        session: SessionRef,
+    },
     /// Take a draft change out of draft, through the Forge port: the only
     /// forge write Fleet performs. `expect` is the head and state the
     /// decision was made against; the adapter re-reads both immediately
@@ -108,6 +114,7 @@ impl Action {
             Action::Spawn(_) => "spawn",
             Action::Brief { .. } => "brief",
             Action::Release { .. } => "release",
+            Action::Revive { .. } => "revive",
             Action::MarkReady { .. } => "markReady",
             Action::Post { .. } => "post",
         }
@@ -166,6 +173,8 @@ pub enum EffectOutcome {
         already: bool,
     },
     Released,
+    /// The runtime started the session's agent again, or found it running.
+    Revived,
     /// The change is out of draft; `already` when the forge said it was no
     /// longer a draft by the time the mutation ran, inside the window
     /// between the adapter's fresh read and the mutation.
@@ -249,6 +258,10 @@ pub enum Probe {
     AtRest {
         session: SessionRef,
     },
+    /// Whether the session's row is there but its agent's window is gone.
+    Lost {
+        session: SessionRef,
+    },
     /// One complete observation of a change, through the Forge port.
     Change {
         change: ChangeRef,
@@ -302,6 +315,7 @@ pub struct Observations {
     pub workspace_trust: Option<Observation<crate::runtime::WorkspaceTrust>>,
     pub brief_delivered: Option<Observation<bool>>,
     pub at_rest: Option<Observation<bool>>,
+    pub lost: Option<Observation<bool>>,
 }
 
 /// `task/<name>/<uid>/<action>[/<attempt>]`: deterministic, so a repeat is

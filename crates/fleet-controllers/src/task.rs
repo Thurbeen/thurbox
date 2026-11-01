@@ -56,6 +56,9 @@ pub mod conditions {
     /// Whether the session's agent trusts its workspace; the brief waits
     /// until it does.
     pub const WORKSPACE_TRUSTED: &str = "WorkspaceTrusted";
+    /// The runtime holds the session but its agent's window is gone, as
+    /// after a host reboot.
+    pub const SESSION_LOST: &str = "SessionLost";
     /// Something only a person can decide: a stall, a vanished worker, a
     /// release that kept failing.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
@@ -71,6 +74,20 @@ const TRUST_UNMAPPED: &str = "TrustUnmapped";
 const WORKSPACE_UNTRUSTED: &str = "WorkspaceUntrusted";
 const BRIEF: &str = "brief";
 const RELEASE: &str = "release";
+const REVIVE: &str = "revive";
+const RESUME: &str = "resume";
+/// The NeedsAttention reason once revives keep leaving the session lost.
+const REVIVE_FAILED: &str = "ReviveFailed";
+
+/// What one keyed send came to on this pass.
+enum Sent {
+    /// On the session; `true` when the journal recovered it.
+    Delivered(bool),
+    /// Sent, waiting, or not sendable yet.
+    Pending,
+    /// Its sends ran out.
+    GivenUp,
+}
 
 impl TaskController {
     /// The kind this controller reconciles and the field manager it writes as.
@@ -101,6 +118,7 @@ impl TaskController {
             Phase::Spawned => {
                 let mut probes = vec![find];
                 if let Some(s) = &st.session {
+                    probes.push(Probe::Lost { session: s.clone() });
                     probes.push(Probe::WorkspaceTrust {
                         session: s.clone(),
                         workspace: spec.workspace.clone(),
@@ -122,19 +140,24 @@ impl TaskController {
             Phase::Briefed if st.result.is_none() => {
                 let mut probes = vec![find];
                 if let Some(s) = &st.session {
-                    inbox_probes(&st, s, &mut probes);
+                    probes.push(Probe::Lost { session: s.clone() });
+                    delivery_probes(&st, s, &mut probes);
                 }
                 probes
             }
             // A Concluded Task is due for delivery, and at rest once per
             // recheck interval; its session is looked up, so a vanished
-            // worker is reported, never respawned.
+            // worker is reported, never respawned. Only a delivery revives a
+            // lost session: a concluded worker at rest stays at rest.
             Phase::Concluded
                 if next_entry(&st).is_some() || session_recheck_due(&st, input.now) =>
             {
                 let mut probes = vec![find];
-                if let Some(s) = &st.session {
-                    inbox_probes(&st, s, &mut probes);
+                if let Some(s) = &st.session
+                    && (next_entry(&st).is_some() || st.resume.is_some())
+                {
+                    probes.push(Probe::Lost { session: s.clone() });
+                    delivery_probes(&st, s, &mut probes);
                 }
                 probes
             }
@@ -446,7 +469,7 @@ impl Pass<'_, '_> {
             self.st.phase = Phase::Pending;
             return;
         };
-        if self.worker_gone() {
+        if self.worker_gone() || self.lost(&session) {
             return;
         }
         if self.st.not_before.is_some_and(|t| t > self.now()) {
@@ -625,12 +648,13 @@ impl Pass<'_, '_> {
     }
 
     fn briefed(&mut self) {
-        if self.worker_gone() {
+        let Some(session) = self.st.session.clone() else {
+            return;
+        };
+        if self.worker_gone() || self.lost(&session) || self.resume(session.clone()) {
             return;
         }
-        if let Some(session) = self.st.session.clone() {
-            self.deliver(session);
-        }
+        self.deliver(session);
     }
 
     /// Concluded is terminal, and delivery goes on: a message for a worker
@@ -645,13 +669,16 @@ impl Pass<'_, '_> {
             }
             return;
         }
-        if self.worker_gone() {
+        let Some(session) = self.st.session.clone() else {
+            return;
+        };
+        if self.worker_gone() || self.lost(&session) {
             return;
         }
         if self.st.not_before.is_some_and(|t| t > self.now()) {
             return;
         }
-        if let Some(session) = self.st.session.clone() {
+        if !self.resume(session.clone()) {
             self.deliver(session);
         }
     }
@@ -683,94 +710,106 @@ impl Pass<'_, '_> {
         let Some(entry) = next_entry(&self.st).cloned() else {
             return;
         };
-        let key = entry.key.clone();
-        match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
+        let what = format!("inbox entry {} from {}", entry.key, entry.from);
+        if let Sent::Delivered(recovered) =
+            self.keyed_send(session, &entry.key, entry.text.clone(), &what)
+        {
+            self.record_delivery(&entry, recovered);
+        }
+    }
+
+    /// The brief protocol under one key, for an inbox entry or a resume
+    /// note: a Known receipt decides, else the session's journal does after
+    /// a send; a send needs the session observed ready on this pass, at most
+    /// [`MAX_ATTEMPTS`] times. `what` names it in attention messages.
+    fn keyed_send(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
+        match self.st.receipts.get(key).map(|r| r.outcome.clone()) {
             Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
-                return self.record_delivery(&entry, false);
+                return Sent::Delivered(false);
             }
             Some(Observation::Known(EffectOutcome::Failed { .. })) => {
                 let attempt = self
                     .st
                     .delivery_attempts
-                    .get(&key)
+                    .get(key)
                     .cloned()
                     .unwrap_or_default();
                 if attempt.sends < MAX_ATTEMPTS && self.st.not_before.is_none() {
-                    let at = self.st.receipts[&key].at;
+                    let at = self.st.receipts[key].at;
                     if self.wait_from(at) {
-                        return;
+                        return Sent::Pending;
                     }
                 }
-                return self.send_entry(session, &entry);
+                return self.send_keyed(session, key, text, what);
             }
             Some(Observation::Known(_)) => {
-                return self.send_entry(session, &entry);
+                return self.send_keyed(session, key, text, what);
             }
             _ => {}
         }
-        if self.st.intents.contains_key(&key) {
+        if self.st.intents.contains_key(key) {
             // Sent, but no Known receipt: the session's journal decides,
             // exactly as for the brief. Unknown is read again after a wait.
             match self.input.observations.brief_delivered.clone() {
-                Some(Observation::Known(true)) => self.record_delivery(&entry, true),
-                Some(Observation::Known(false)) => self.send_entry(session, &entry),
+                Some(Observation::Known(true)) => return Sent::Delivered(true),
+                Some(Observation::Known(false)) => {
+                    return self.send_keyed(session, key, text, what);
+                }
                 Some(Observation::Unknown { why }) => {
-                    let attempt = self.st.delivery_attempts.entry(key.clone()).or_default();
+                    let attempt = self
+                        .st
+                        .delivery_attempts
+                        .entry(key.to_string())
+                        .or_default();
                     attempt.probe_failures += 1;
                     let failures = attempt.probe_failures;
                     self.wait_from(self.now());
                     if failures >= MAX_ATTEMPTS {
                         self.needs_attention(
                             "DeliveryUnconfirmed",
-                            format!(
-                                "inbox entry {key} from {}: its delivery could not be read: {why}",
-                                entry.from
-                            ),
+                            format!("{what}: its delivery could not be read: {why}"),
                         );
                     }
                 }
                 None => {}
             }
-            return;
+            return Sent::Pending;
         }
-        self.send_entry(session, &entry);
+        self.send_keyed(session, key, text, what)
     }
 
-    /// Send an entry under its key, to a session observed ready on this
-    /// pass, at most [`MAX_ATTEMPTS`] times; past that the entry is given
-    /// up on and later entries go out past it.
-    fn send_entry(&mut self, session: SessionRef, entry: &InboxEntry) {
-        let key = entry.key.clone();
-        let sends = self.st.delivery_attempts.get(&key).map_or(0, |a| a.sends);
+    /// Send under `key`, to a session observed ready on this pass, at most
+    /// [`MAX_ATTEMPTS`] times; past that it is given up on, and whatever
+    /// comes next goes out past it.
+    fn send_keyed(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
+        let sends = self.st.delivery_attempts.get(key).map_or(0, |a| a.sends);
         if sends >= MAX_ATTEMPTS {
             self.st
                 .delivery_attempts
-                .entry(key.clone())
+                .entry(key.to_string())
                 .or_default()
                 .failed = true;
             self.st.not_before = None;
-            self.needs_attention(
-                "DeliveryFailed",
-                format!(
-                    "inbox entry {key} from {}: {sends} sends refused",
-                    entry.from
-                ),
-            );
-            return;
+            self.needs_attention("DeliveryFailed", format!("{what}: {sends} sends refused"));
+            return Sent::GivenUp;
         }
         if !matches!(
             self.input.observations.ready,
             Some(Observation::Known(true))
         ) {
-            return;
+            return Sent::Pending;
         }
-        let attempt = self.st.delivery_attempts.entry(key.clone()).or_default();
+        let attempt = self
+            .st
+            .delivery_attempts
+            .entry(key.to_string())
+            .or_default();
         attempt.sends += 1;
         attempt.probe_failures = 0;
         self.st.not_before = None;
-        self.st.receipts.remove(&key);
-        let text = entry.text.clone();
-        self.intend(key, Action::Brief { session, text });
+        self.st.receipts.remove(key);
+        self.intend(key.to_string(), Action::Brief { session, text });
+        Sent::Pending
     }
 
     /// The entry is on the session: its receipt goes to `status.deliveries`
@@ -821,6 +860,143 @@ impl Pass<'_, '_> {
         );
         self.needs_attention("WorkerGone", "the session list no longer shows the session");
         true
+    }
+
+    /// A session the runtime still holds but whose agent's window is gone,
+    /// as after a host reboot, is revived in its own workspace under the
+    /// same identity. Nothing is sent to it meanwhile. Revives wait
+    /// [`RETRY_DELAY_MS`] between attempts and raise NeedsAttention after
+    /// [`MAX_ATTEMPTS`], but go on: a revive of a running session does
+    /// nothing. A held Task (`dispatch: false`) is not revived. Returns true
+    /// while the session is lost.
+    fn lost(&mut self, session: &SessionRef) -> bool {
+        match self.input.observations.lost {
+            Some(Observation::Known(true)) => {}
+            Some(Observation::Known(false)) => {
+                self.found_again();
+                return false;
+            }
+            // Unknown proves nothing either way.
+            _ => return false,
+        }
+        self.cond(
+            SESSION_LOST,
+            ConditionStatus::True,
+            "WindowGone",
+            "the runtime holds the session, but its agent's window is gone",
+        );
+        if !self.spec.dispatch {
+            return true;
+        }
+        if self.st.revive_attempts > 0 {
+            let last = self.key(REVIVE, Some(self.st.revivals));
+            match self.st.not_before {
+                Some(t) if t > self.now() => return true,
+                Some(_) => self.st.not_before = None,
+                None => {
+                    let at = self
+                        .st
+                        .receipts
+                        .get(&last)
+                        .map(|r| r.at)
+                        .or_else(|| self.st.intents.get(&last).map(|i| i.at))
+                        .unwrap_or(0);
+                    if self.wait_from(at) {
+                        return true;
+                    }
+                }
+            }
+            if self.st.revive_attempts >= MAX_ATTEMPTS {
+                self.needs_attention(
+                    REVIVE_FAILED,
+                    format!(
+                        "{} revives left the session without a window",
+                        self.st.revive_attempts
+                    ),
+                );
+            }
+        }
+        self.st.revivals += 1;
+        self.st.revive_attempts += 1;
+        let key = self.key(REVIVE, Some(self.st.revivals));
+        self.intend(
+            key,
+            Action::Revive {
+                session: session.clone(),
+            },
+        );
+        true
+    }
+
+    /// The session's window is there. After it was lost, a briefed worker
+    /// is owed a resume note, sent before anything else.
+    fn found_again(&mut self) {
+        self.st.revive_attempts = 0;
+        let was_lost = condition(&self.st.conditions, SESSION_LOST)
+            .is_some_and(|c| c.status == ConditionStatus::True);
+        if !was_lost {
+            return;
+        }
+        self.st.not_before = None;
+        self.cond(
+            SESSION_LOST,
+            ConditionStatus::False,
+            "Revived",
+            "the session's window is back",
+        );
+        self.settle_attention(REVIVE_FAILED);
+        if self.st.brief.is_some() && self.st.resume.is_none() {
+            self.st.resumes += 1;
+            self.st.resume = Some(self.key(RESUME, Some(self.st.resumes)));
+        }
+    }
+
+    /// Send the resume note owed to a revived session, under its own key,
+    /// as an inbox entry is sent. Returns true while it is owed: nothing
+    /// else is delivered before it.
+    fn resume(&mut self, session: SessionRef) -> bool {
+        let Some(key) = self.st.resume.clone() else {
+            return false;
+        };
+        if !self.effects.is_empty() || self.st.not_before.is_some_and(|t| t > self.now()) {
+            return true;
+        }
+        let what = format!("resume note {key}");
+        match self.keyed_send(session, &key, self.resume_text(), &what) {
+            Sent::Pending => true,
+            Sent::Delivered(_) | Sent::GivenUp => {
+                self.st.resume = None;
+                self.st.intents.remove(&key);
+                self.st.receipts.remove(&key);
+                self.st.delivery_attempts.remove(&key);
+                false
+            }
+        }
+    }
+
+    /// What a revived worker is told. A worker still on its brief is given
+    /// the brief again, under the generation it was briefed for.
+    fn resume_text(&self) -> String {
+        let generation = self
+            .st
+            .brief
+            .as_ref()
+            .map_or(self.generation, |b| b.generation);
+        let head = "Fleet: your session was restarted after its host went down, and your \
+                    conversation was resumed. Work you did not commit, push or declare may \
+                    be lost. Re-read your worktree, the changes you declared and your inbox";
+        if self.st.phase == Phase::Concluded {
+            format!(
+                "{head}, then act on the messages that follow. Your result for generation \
+                 {generation} is already recorded."
+            )
+        } else {
+            format!(
+                "{head}, then continue your brief, generation {generation}, repeated \
+                 below.\n\n{}",
+                self.spec.brief
+            )
+        }
     }
 
     /// The finalizer: the session is deleted only once it is proven at rest
@@ -997,6 +1173,25 @@ fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
 pub fn session_recheck_due(st: &TaskStatus, now: Millis) -> bool {
     st.session_checked_at
         .is_none_or(|t| t.saturating_add(SESSION_RECHECK_MS) <= now)
+}
+
+/// What the next delivery needs observed: the resume note's, while one is
+/// owed, and the inbox's otherwise.
+fn delivery_probes(st: &TaskStatus, session: &SessionRef, probes: &mut Vec<Probe>) {
+    let Some(key) = &st.resume else {
+        return inbox_probes(st, session, probes);
+    };
+    if !probes.iter().any(|p| matches!(p, Probe::Ready { .. })) {
+        probes.push(Probe::Ready {
+            session: session.clone(),
+        });
+    }
+    if st.intents.contains_key(key) && !known_receipt(st, key) {
+        probes.push(Probe::BriefDelivered {
+            session: session.clone(),
+            key: key.clone(),
+        });
+    }
 }
 
 fn inbox_probes(st: &TaskStatus, session: &SessionRef, probes: &mut Vec<Probe>) {

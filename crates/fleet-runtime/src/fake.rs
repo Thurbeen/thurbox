@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Fault {
     /// `host`, `spawn`, `find`, `list`, `events`, `ready`, `workspaceTrust`,
-    /// `brief`, `briefDelivered`, `atRest`, `release`.
+    /// `brief`, `briefDelivered`, `atRest`, `release`, `lost`, `revive`.
     pub call: String,
     /// `unknown`, `fail` or `abort`.
     pub outcome: String,
@@ -97,6 +97,10 @@ pub struct FakeSession {
     pub texts: Vec<String>,
     /// Set when the session vanished or was deleted.
     pub gone: bool,
+    /// Set while its window is gone and the row is kept, as after a host
+    /// reboot; a revive clears it.
+    #[serde(default)]
+    pub lost: bool,
     /// Set once the Task released (deleted) it.
     #[serde(default)]
     pub released: bool,
@@ -205,6 +209,16 @@ impl FakeHost {
         self.update(|s| {
             if let Some(x) = s.sessions.get_mut(key) {
                 x.gone = true;
+            }
+        })
+    }
+
+    /// The host reboots: every session keeps its row and loses its window.
+    pub fn reboot(&self) -> io::Result<()> {
+        self.update(|s| {
+            for x in s.sessions.values_mut().filter(|x| !x.gone) {
+                x.lost = true;
+                x.ready = false;
             }
         })
     }
@@ -397,6 +411,7 @@ impl Runtime for FakeRuntime {
                 briefs: Vec::new(),
                 texts: Vec::new(),
                 gone: false,
+                lost: false,
                 released: false,
             };
             s.log.push(format!("spawn {}", spec.key));
@@ -456,6 +471,11 @@ impl Runtime for FakeRuntime {
                     why: "session gone".into(),
                 };
             };
+            if x.lost {
+                return EffectOutcome::Failed {
+                    why: "the session has no window".into(),
+                };
+            }
             if x.briefs.contains(&intent) {
                 return EffectOutcome::Delivered { already: true };
             }
@@ -494,6 +514,31 @@ impl Runtime for FakeRuntime {
             x.gone = true;
             s.log.push(format!("release {key}"));
             EffectOutcome::Released
+        })
+    }
+
+    fn lost(&self, session: &SessionRef) -> Observation<bool> {
+        self.probe("lost", |s| match live(s, &session.key) {
+            Some(x) => Observation::Known(x.lost),
+            None => Observation::unknown("no such session to look at"),
+        })
+    }
+
+    fn revive(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        let key = session.key.clone();
+        self.effect("revive", move |s| {
+            let ready = !s.spawn_not_ready;
+            let Some(x) = s.sessions.get_mut(&key).filter(|x| !x.gone) else {
+                return EffectOutcome::Failed {
+                    why: "session gone".into(),
+                };
+            };
+            if x.lost {
+                x.lost = false;
+                x.ready = ready;
+                s.log.push(format!("revive {key}"));
+            }
+            EffectOutcome::Revived
         })
     }
 }

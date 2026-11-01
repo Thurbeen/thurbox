@@ -998,3 +998,41 @@ fn exhausted_generation_refuses_apply_without_changing_the_record() {
         .stderr_has("generation exhausted");
     assert_eq!(fs::read(path).unwrap(), before);
 }
+
+#[test]
+fn a_reboot_revives_the_session_and_resumes_the_brief_once() {
+    let env = setup("reboot", true);
+    env.reconcile().ok();
+    let key = env.session_key("t1");
+    let id = env.host().session(&key).unwrap().unwrap().id;
+
+    env.host().reboot().unwrap();
+    env.reconcile().ok();
+
+    assert_eq!((env.calls("spawn"), env.calls("revive")), (1, 1));
+    let session = env.host().session(&key).unwrap().unwrap();
+    assert_eq!(session.id, id, "the same session, not a second one");
+    let uid = env.get("t1")["metadata"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        session.briefs,
+        vec![
+            format!("task/t1/{uid}/brief"),
+            format!("task/t1/{uid}/resume/1")
+        ],
+        "the brief once, then one resume note"
+    );
+    let st = env.status("t1");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_condition(&st, "SessionLost", "False", "Revived");
+
+    let again = env.reconcile().ok().json();
+    assert_eq!(again["effects"], 0, "{again:#}");
+    env.fleet(&result_args(
+        "1",
+        &["--output", "prUrl=\"https://example.test/pr/1\""],
+    ))
+    .ok();
+}

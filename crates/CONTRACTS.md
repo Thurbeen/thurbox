@@ -223,6 +223,16 @@ Guarantees, each with its test:
 - **WorkerGone.** A session a readable list no longer shows sets `WorkerGone`
   and `NeedsAttention`. An unreadable list is never read as gone. Nothing
   abandons the Task by itself.
+- **Lost session.** A session the runtime still holds without its agent's
+  window, as after a host reboot, sets `SessionLost` and gets nothing sent.
+  A dispatched Task plans `Revive` under `revive/<n>`, at once and then
+  after each `RETRY_DELAY_MS`; three revives raise
+  `NeedsAttention/ReviveFailed`, and revives continue. Back, a briefed
+  worker is owed one resume note under `resume/<n>`, sent before its inbox
+  as an entry is sent. In Briefed the note repeats the brief and its
+  generation. Only Spawned, Briefed and Concluded-with-delivery Tasks are
+  looked at, so a concluded worker at rest stays at rest. Unknown revives
+  nothing, and a revive never makes a second session.
 - **Release.** The `fleet.dev/release` finalizer holds a deleted Task until
   its session is deleted, only once the session is proven at rest or gone.
 - **Inbox.** `fleet send TASK TEXT` appends `{key, from, text, queuedAt}` to
@@ -249,7 +259,8 @@ Guarantees, each with its test:
   nothing and the manager goes idle.
 
 Conditions: `HostReachable`, `Spawned`, `WorkspaceTrusted`, `Briefed`,
-`Stalled`, `WorkerGone`, `Concluded`, `Released`, `NeedsAttention`.
+`Stalled`, `WorkerGone`, `SessionLost`, `Concluded`, `Released`,
+`NeedsAttention`.
 
 ## Following declared changes
 
@@ -651,8 +662,8 @@ refused.
 ## Runtime contract
 
 `fleet_api::runtime::Runtime`: `host`, `spawn`, `find`, `ready`,
-`workspace_trust`, `brief`, `brief_delivered`, `at_rest` and `release`, each
-answering Known or Unknown.
+`workspace_trust`, `brief`, `brief_delivered`, `at_rest`, `release`, `lost`
+and `revive`, each answering Known or Unknown.
 Each adapter reports its longest single operation (`operation_bound`), and
 `fleet reconcile` refuses a lease that could not outlast it.
 
@@ -668,6 +679,10 @@ Each adapter reports its longest single operation (`operation_bound`), and
   remains Unknown. This input-only proof never authorizes release; `at_rest`
   still requires idle, done or stopped. `e2e_runtime` covers initial delivery,
   reconnect, busy/dialog/cursor guards and unchanged deletion safety.
+  thurbox keeps a session's row across a reboot. `lost` is `session get`
+  reporting `hook_corroboration: "missing"`, and `revive` is `session
+  restart --if-missing`, which resumes the conversation in the same row and
+  worktree. A session with no window is at rest.
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process.
 

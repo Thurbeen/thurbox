@@ -55,9 +55,22 @@ deleting VEGA Tasks require inspection and deliberate recovery, not another
 automatic Task identity.
 
 Polling defaults to one bounded sweep per second; `up --poll-ms` accepts 100
-through 10000 ms. Each unfinished Briefed Task costs one bounded session lookup
-per sweep; unchanged Task status is not rewritten. A manual `fleet reconcile`
-remains available for bounded diagnostics while `up` is stopped.
+through 10000 ms. Each unfinished Briefed Task costs two bounded session
+lookups per sweep: one by key, and one that asks whether its window is gone.
+Unchanged Task status is not rewritten. A manual `fleet reconcile` remains
+available for bounded diagnostics while `up` is stopped.
+
+After a host reboot, `fleet up` revives the sessions of unfinished Tasks and
+resumes their briefs. See
+[after a host reboot](../controllers/task/state-machine.md#after-a-host-reboot).
+This works only when `fleet up` starts again after the reboot. A service
+supervisor must start it at boot, without a login. For a systemd user unit
+that has `WantedBy=default.target` in its `[Install]` section:
+
+```sh
+loginctl enable-linger "$USER"
+systemctl --user enable fleet-vega.service
+```
 
 ## Configuration and customization
 

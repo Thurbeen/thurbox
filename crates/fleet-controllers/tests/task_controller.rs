@@ -711,6 +711,7 @@ fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
                 host: "local".into(),
                 key: "t.u7".into()
             },
+            Probe::Lost { session: session() },
             Probe::Ready { session: session() }
         ]
     );
@@ -1024,6 +1025,7 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
                 host: "local".into(),
                 key: "t.u7".into()
             },
+            Probe::Lost { session: session() },
             Probe::Ready { session: session() }
         ]
     );
@@ -1269,4 +1271,157 @@ fn a_brief_held_for_trust_holds_the_inbox_with_it() {
             "nothing reaches an untrusted session before its brief: {trust:?}"
         );
     }
+}
+
+/// A Briefed Task whose session the runtime still holds, as after a reboot.
+fn lost_obs(lost: bool) -> Observations {
+    Observations {
+        find: live(),
+        lost: Some(Observation::Known(lost)),
+        ready: Some(Observation::Known(true)),
+        ..Default::default()
+    }
+}
+
+fn with_status(obj: &Object, st: &TaskStatus) -> Object {
+    let mut o = obj.clone();
+    o.status = serde_json::to_value(st).unwrap();
+    o
+}
+
+#[test]
+fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
+    let obj = briefed_with(&["task/t/u7/send/1"], |st| {
+        st.brief = Some(fleet_api::task::BriefRecord {
+            key: "task/t/u7/brief".into(),
+            generation: 1,
+            recovered: false,
+        });
+    });
+    assert!(probes(&obj).contains(&Probe::Lost { session: session() }));
+    let (plan, st) = run(&obj, lost_obs(true));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/revive/1");
+    assert_eq!(
+        plan.effects[0].action,
+        Action::Revive { session: session() }
+    );
+    assert_eq!(st.phase, Phase::Briefed, "never respawned");
+    assert_eq!(cond(&st, "SessionLost").status, ConditionStatus::True);
+    assert!(st.intents.contains_key("task/t/u7/revive/1"));
+
+    // Back: the resume note goes before the inbox, under its own key.
+    let mut st = st;
+    st.receipts.insert(
+        "task/t/u7/revive/1".into(),
+        receipt("revive", Observation::Known(EffectOutcome::Revived)),
+    );
+    let (plan, st) = run(&with_status(&obj, &st), lost_obs(false));
+    assert_eq!(cond(&st, "SessionLost").reason, "Revived");
+    assert_eq!(st.resume.as_deref(), Some("task/t/u7/resume/1"));
+    assert_eq!(st.revive_attempts, 0);
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/resume/1");
+    let Action::Brief { text, .. } = &plan.effects[0].action else {
+        panic!("{plan:#?}")
+    };
+    assert!(
+        text.contains("restarted") && text.contains("generation 1"),
+        "{text}"
+    );
+    assert!(text.ends_with("do it"), "the brief again: {text}");
+    assert!(st.inbox.len() == 1, "the inbox waits for the note");
+
+    // Delivered: the note is done and the inbox goes next.
+    let mut st = st;
+    st.receipts.insert(
+        "task/t/u7/resume/1".into(),
+        receipt(
+            "brief",
+            Observation::Known(EffectOutcome::Delivered { already: false }),
+        ),
+    );
+    let (plan, st) = run(&with_status(&obj, &st), lost_obs(false));
+    assert_eq!(st.resume, None);
+    assert!(!st.receipts.contains_key("task/t/u7/resume/1"));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/send/1");
+    assert_eq!(st.brief.as_ref().unwrap().generation, 1);
+}
+
+#[test]
+fn a_held_task_is_not_revived_and_unknown_is_not_lost() {
+    let obj = task(
+        false,
+        Some({
+            let mut st: TaskStatus =
+                serde_json::from_value(briefed_with(&[], |_| {}).status).unwrap();
+            st.phase = Phase::Briefed;
+            st
+        }),
+    );
+    let (plan, st) = run(&obj, lost_obs(true));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(cond(&st, "SessionLost").status, ConditionStatus::True);
+
+    let obj = briefed_with(&[], |_| {});
+    let (plan, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            lost: Some(Observation::unknown("cannot tell")),
+            ..Default::default()
+        },
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert!(st.conditions.iter().all(|c| c.type_ != "SessionLost"));
+}
+
+#[test]
+fn revives_wait_between_attempts_and_ask_for_attention_but_go_on() {
+    let mut obj = briefed_with(&[], |_| {});
+    let mut now = NOW;
+    for attempt in 1..=MAX_ATTEMPTS + 1 {
+        let (plan, st) = run_at(&obj, lost_obs(true), now);
+        assert_eq!(plan.effects.len(), 1, "attempt {attempt}: {plan:#?}");
+        assert_eq!(plan.effects[0].key, format!("task/t/u7/revive/{attempt}"));
+        let mut st = st;
+        st.receipts.insert(
+            plan.effects[0].key.clone(),
+            Receipt {
+                action: "revive".into(),
+                at: now,
+                outcome: Observation::Known(EffectOutcome::Revived),
+            },
+        );
+        obj = with_status(&obj, &st);
+        // Still lost: the next revive waits.
+        let (plan, st) = run_at(&obj, lost_obs(true), now + 1);
+        assert!(plan.effects.is_empty(), "{plan:#?}");
+        assert_eq!(st.not_before, Some(now + RETRY_DELAY_MS));
+        obj = with_status(&obj, &st);
+        now += RETRY_DELAY_MS;
+    }
+    let (_, st) = run_at(&obj, lost_obs(true), now);
+    assert_eq!(cond(&st, "NeedsAttention").reason, "ReviveFailed");
+    let (_, st) = run_at(&with_status(&obj, &st), lost_obs(false), now);
+    assert_eq!(cond(&st, "NeedsAttention").status, ConditionStatus::False);
+}
+
+#[test]
+fn a_session_lost_before_its_brief_is_revived_and_briefed_once() {
+    let obj = spawned(|_| {});
+    let (plan, st) = run(&obj, lost_obs(true));
+    assert_eq!(plan.effects.len(), 1);
+    assert!(matches!(plan.effects[0].action, Action::Revive { .. }));
+    let (plan, st) = run(
+        &with_status(&obj, &st),
+        Observations {
+            workspace_trust: trusted(),
+            ..lost_obs(false)
+        },
+    );
+    assert_eq!(st.resume, None, "no note: the brief itself is still owed");
+    assert_eq!(plan.effects.len(), 1);
+    assert_eq!(plan.effects[0].key, "task/t/u7/brief");
 }
