@@ -56,7 +56,7 @@ fn env(name: &str, extra_config: &str) -> Env {
 fn argv_of(env: &Env, sub: &str) -> Vec<Vec<String>> {
     env.stub_calls()
         .iter()
-        .filter(|c| c["argv"][0] == "session" && c["argv"][1] == sub)
+        .filter(|c| support::is_call(c, sub))
         .map(|c| {
             c["argv"]
                 .as_array()
@@ -168,7 +168,7 @@ fn codex_starts_with_session_scoped_trust_for_exactly_its_directory() {
     let st = env.status("c1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
     assert_condition(&st, "WorkspaceTrusted", "True", "Trusted");
-    assert_eq!(argv_of(&env, "send").len(), 1);
+    assert_eq!(argv_of(&env, "message send").len(), 1);
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn a_codex_session_without_fleets_trust_is_never_briefed_and_says_why() {
         env.reconcile().ok();
 
         let st = env.status("c1");
-        assert_eq!(argv_of(&env, "send").len(), 0, "{name}: {st:#}");
+        assert_eq!(argv_of(&env, "message send").len(), 0, "{name}: {st:#}");
         assert_eq!(st["phase"], "Spawned", "{name}");
         assert_condition(&st, "WorkspaceTrusted", "False", "Mismatch");
         assert_condition(&st, "NeedsAttention", "True", "WorkspaceUntrusted");
@@ -280,7 +280,7 @@ fn codex_showing_its_own_trust_dialog_is_never_trusted() {
     env.apply(task("t1", "codex")).ok();
     env.reconcile().ok();
     let st = env.status("t1");
-    assert_eq!(argv_of(&env, "send").len(), 0, "{st:#}");
+    assert_eq!(argv_of(&env, "message send").len(), 0, "{st:#}");
     assert_condition(&st, "WorkspaceTrusted", "False", "Mismatch");
     assert_condition(&st, "NeedsAttention", "True", "WorkspaceUntrusted");
     // Codex keeps only the last `-c projects=`: an agent entry or wrapper
@@ -304,7 +304,7 @@ fn a_codex_screen_that_cannot_be_read_is_unknown_not_trusted() {
         env.apply(task("t1", "codex")).ok();
         env.reconcile().ok();
         let st = env.status("t1");
-        assert_eq!(argv_of(&env, "send").len(), 0, "{name}: {st:#}");
+        assert_eq!(argv_of(&env, "message send").len(), 0, "{name}: {st:#}");
         assert_condition(&st, "WorkspaceTrusted", "Unknown", "TrustUnknown");
     }
 }
@@ -350,7 +350,7 @@ fn claude_at_its_trust_dialog_is_never_briefed_and_asks_for_one_time_trust() {
 
     let st = env.status("r1");
     assert_eq!(st["phase"], "Spawned", "{st:#}");
-    assert_eq!(argv_of(&env, "send").len(), 0);
+    assert_eq!(argv_of(&env, "message send").len(), 0);
     assert!(
         argv_of(&env, "key").is_empty(),
         "never a keystroke into a dialog"
@@ -373,7 +373,7 @@ fn claude_at_its_trust_dialog_is_never_briefed_and_asks_for_one_time_trust() {
     // Looked at again after the retry wait, not in a hot loop.
     assert!(env.get("r1")["status"]["notBefore"].is_u64());
     env.reconcile().ok();
-    assert_eq!(argv_of(&env, "send").len(), 0);
+    assert_eq!(argv_of(&env, "message send").len(), 0);
 
     // A person trusts the repository once; Claude passes its dialog and
     // reports. The same Task now gets its brief, without a respawn.
@@ -385,7 +385,7 @@ fn claude_at_its_trust_dialog_is_never_briefed_and_asks_for_one_time_trust() {
     assert_condition(&st, "WorkspaceTrusted", "True", "Trusted");
     assert_condition(&st, "NeedsAttention", "False", "Resolved");
     assert_eq!(argv_of(&env, "create").len(), 1);
-    assert_eq!(argv_of(&env, "send").len(), 1);
+    assert_eq!(argv_of(&env, "message send").len(), 1);
 }
 
 #[test]
@@ -396,7 +396,7 @@ fn trust_that_cannot_be_read_is_unknown_never_a_brief_and_recovers() {
     env.apply(task("u1", "claude")).ok();
     env.reconcile().ok();
     let st = env.status("u1");
-    assert_eq!(argv_of(&env, "send").len(), 0);
+    assert_eq!(argv_of(&env, "message send").len(), 0);
     assert_condition(&st, "WorkspaceTrusted", "Unknown", "TrustUnknown");
     assert!(
         env.get("u1")["status"]["notBefore"].is_null(),
@@ -462,8 +462,12 @@ fn a_harness_without_a_known_trust_interface_starts_nothing_until_configured() {
     std::fs::write(&env.config, cfg).expect("config");
     env.expire_wait("a1");
     env.reconcile().ok();
-    assert_eq!(env.status("a1")["phase"], "Briefed");
-    assert_condition(&env.status("a1"), "NeedsAttention", "False", "Resolved");
+    // Trusted now, the brief goes out once. thurbox knows no agent inbox
+    // for this harness and keeps it in its mailbox: not a delivery.
+    let st = env.status("a1");
+    assert_condition(&st, "WorkspaceTrusted", "True", "Trusted");
+    assert_condition(&st, "Briefed", "False", "BriefUndelivered");
+    assert_eq!(argv_of(&env, "message send").len(), 1, "{st:#}");
 
     let bad = Env::thurbox("trust-bad-config");
     let cfg = std::fs::read_to_string(&bad.config).expect("config");
@@ -516,7 +520,7 @@ fn a_home_or_filesystem_root_is_never_trusted_automatically() {
     env.apply(t).ok();
     env.reconcile().ok();
     assert!(argv_of(&env, "create").is_empty(), "{:?}", env.stub_calls());
-    assert_eq!(argv_of(&env, "send").len(), 0);
+    assert_eq!(argv_of(&env, "message send").len(), 0);
     assert!(
         env.get("root")["status"]
             .to_string()

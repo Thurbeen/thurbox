@@ -48,16 +48,15 @@ Omit empty lines. Never paste briefs, JSON, logs or digests; name the Task.
 
 Fleet is the source of truth and agent memory holds user preferences only, so
 your context is disposable. After a reply that dispatched or reported, record
-anything still open in Fleet (see status-digest), queue the clear, end the turn:
+anything still open in Fleet (see status-digest), queue the re-hydrate, end the
+turn:
 
 ```sh
-fleet send vega "/clear"
 fleet send vega "VEGA re-hydrate: read AGENTS.md and prompts/mission-control.md, then follow Re-hydrate."
 ```
 
-Fleet types each in order once the session is idle. `/clear` is the
-command in Codex and Claude Code; use your harness's equivalent, or skip the
-clear when it has none or the user asked to keep context.
+Fleet gives each message to your agent's own inbox, never to its composer, so
+a slash command sent this way is text, not a command. Do not send `/clear`.
 
 ## Mission Control stays up
 

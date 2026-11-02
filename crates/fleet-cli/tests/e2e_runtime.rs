@@ -66,7 +66,7 @@ fn set_session_state(env: &Env, key: &str, state: &str) {
 fn argv_of(env: &Env, sub: &str) -> Vec<Vec<String>> {
     env.stub_calls()
         .iter()
-        .filter(|c| c["argv"][0] == "session" && c["argv"][1] == sub)
+        .filter(|c| support::is_call(c, sub))
         .map(|c| {
             c["argv"]
                 .as_array()
@@ -138,7 +138,18 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     env.edit_stub(|s| s["hosts"] = json!({"remote": "up"}));
     env.apply(on_remote).ok();
     env.reconcile().ok();
-    assert_eq!(env.status("far")["phase"], "Briefed");
+    // thurbox 2.81 reaches no remote agent's inbox: it keeps the brief in its
+    // mailbox. That is no delivery, and the brief is never sent again.
+    let far = env.status("far");
+    assert_eq!(far["phase"], "Spawned", "{far:#}");
+    assert_condition(&far, "Briefed", "False", "BriefUndelivered");
+    assert_condition(&far, "NeedsAttention", "True", "BriefUndelivered");
+    for _ in 0..3 {
+        env.expire_wait("far");
+        env.reconcile().ok();
+    }
+    assert_eq!(argv_of(&env, "message send").len(), 1, "never sent again");
+    assert_eq!(env.stub_sessions()[0]["sent"], json!([]), "nothing typed");
     let create = &argv_of(&env, "create")[0];
     let at = create.iter().position(|a| a == "--host").expect("--host");
     assert_eq!(create[at + 1], "remote");
@@ -150,7 +161,7 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     let report = env.reconcile().ok().json();
     assert_eq!(env.status("near")["phase"], "Briefed");
     let far = env.status("far");
-    assert_eq!(far["phase"], "Briefed", "{far:#}");
+    assert_eq!(far["phase"], "Spawned", "{far:#}");
     assert!(
         far["conditions"]
             .as_array()
@@ -236,12 +247,12 @@ fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
     assert_condition(&st, "Briefed", "True", "ReceiptRecovered");
-    assert_eq!(argv_of(&env, "send").len(), 1);
+    assert_eq!(argv_of(&env, "message send").len(), 1);
 
     // Unconfirmed: the send itself never answered. Fleet cannot tell, so it
     // asks for a person rather than typing the brief again.
     let env = setup("thurbox-brief-unconfirmed", vec![]);
-    env.stub_fault("send", "hang-after", 1);
+    env.stub_fault("message-send", "hang-after", 1);
     env.apply(task("t1", true)).ok();
     env.reconcile().ok();
     for _ in 0..3 {
@@ -252,12 +263,16 @@ fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
     assert_eq!(st["phase"], "Spawned", "{st:#}");
     assert_condition(&st, "Briefed", "Unknown", "BriefUnconfirmed");
     assert_condition(&st, "NeedsAttention", "True", "BriefUnconfirmed");
-    assert_eq!(argv_of(&env, "send").len(), 1, "never a second brief");
+    assert_eq!(
+        argv_of(&env, "message send").len(),
+        1,
+        "never a second brief"
+    );
 
     // A send that fails may have typed part of the brief before failing:
     // thurbox-cli cannot say nothing arrived, so neither does fleet.
     let env = setup("thurbox-brief-failed-send", vec![]);
-    env.stub_fault("send", "fail", 1);
+    env.stub_fault("message-send", "fail", 1);
     env.apply(task("t1", true)).ok();
     env.reconcile().ok();
     env.expire_wait("t1");
@@ -265,7 +280,7 @@ fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
     let st = env.status("t1");
     assert_eq!(st["phase"], "Spawned", "{st:#}");
     assert_condition(&st, "Briefed", "Unknown", "BriefUnconfirmed");
-    assert_eq!(argv_of(&env, "send").len(), 1, "never typed twice");
+    assert_eq!(argv_of(&env, "message send").len(), 1, "never typed twice");
 }
 
 #[test]
@@ -290,7 +305,9 @@ fn an_inbox_entry_too_long_for_tmux_is_refused_and_never_blocks_the_inbox() {
         env.status("t1")["conditions"]
     );
     assert!(
-        !argv_of(&env, "send").iter().any(|a| a.contains(&long)),
+        !argv_of(&env, "message send")
+            .iter()
+            .any(|a| a.iter().any(|x| x.contains(&long))),
         "the long text never reached thurbox-cli"
     );
     let st = env.status("t1");
@@ -317,15 +334,18 @@ fn an_unconfirmed_inbox_entry_is_given_up_and_later_entries_go_past_it() {
     let key = thurbox_key(&env, "t1");
     env.fleet(&["send", "t1", "first"]).ok();
     env.fleet(&["send", "t1", "second"]).ok();
-    env.stub_fault("send", "fail", 1);
+    env.stub_fault("message-send", "fail", 1);
     for _ in 0..6 {
         set_session_state(&env, &key, "idle");
         env.expire_wait("t1");
         env.reconcile().ok();
     }
-    let sends = argv_of(&env, "send");
+    let sends = argv_of(&env, "message send");
     assert_eq!(
-        sends.iter().filter(|a| a.contains(&"first".into())).count(),
+        sends
+            .iter()
+            .filter(|a| a.contains(&"--body=first".into()))
+            .count(),
         1,
         "never typed twice: {sends:?}"
     );
@@ -433,7 +453,7 @@ fn a_different_session_reusing_the_key_does_not_hide_a_vanished_worker() {
     assert_condition(&st, "NeedsAttention", "True", "WorkerGone");
     assert_eq!(env.get("t1")["status"]["session"]["id"], original_id);
     assert_eq!(argv_of(&env, "create").len(), 1, "never respawned");
-    assert_eq!(argv_of(&env, "send").len(), 1, "never rebriefed");
+    assert_eq!(argv_of(&env, "message send").len(), 1, "never rebriefed");
 }
 
 #[test]
@@ -570,7 +590,7 @@ fn a_never_reported_codex_initial_composer_receives_its_brief_once() {
     env.edit_stub(|s| s["capture"]["cursor_row"] = json!(0));
     env.reconcile().ok();
     assert_eq!(env.status("first")["phase"], "Spawned");
-    assert_eq!(argv_of(&env, "send").len(), 0);
+    assert_eq!(argv_of(&env, "message send").len(), 0);
     let id = env.stub_sessions()[0]["id"].clone();
     env.edit_stub(|s| s["capture"]["cursor_row"] = json!(3));
     env.reconcile().ok();
@@ -578,7 +598,7 @@ fn a_never_reported_codex_initial_composer_receives_its_brief_once() {
     // Each reconcile is a new CLI process: reconnect keeps identity and receipt.
     env.reconcile().ok();
     assert_eq!(env.stub_sessions()[0]["id"], id);
-    assert_eq!(argv_of(&env, "send").len(), 1);
+    assert_eq!(argv_of(&env, "message send").len(), 1);
     assert_eq!(argv_of(&env, "create").len(), 1);
     assert!(
         argv_of(&env, "capture")[0]
@@ -595,8 +615,9 @@ fn a_never_reported_codex_initial_composer_receives_its_brief_once() {
 
 #[test]
 fn uncertain_or_occupied_codex_startup_never_receives_a_brief() {
+    // A Codex reporting `working` takes its brief on its own queue, which
+    // never types into the composer, so it is no case here.
     let cases = [
-        ("working", "spawnState", json!("working")),
         ("unknown", "spawnState", json!("unknown")),
         ("wrong-key", "key", json!("another-task")),
         ("hook-working", "hook_state", json!("working")),
@@ -636,14 +657,14 @@ fn uncertain_or_occupied_codex_startup_never_receives_a_brief() {
         t["spec"]["harness"] = json!("codex");
         env.apply(t).ok();
         env.reconcile().ok();
-        assert_eq!(argv_of(&env, "send").len(), 0, "{name}");
+        assert_eq!(argv_of(&env, "message send").len(), 0, "{name}");
     }
     let env = setup("codex-unreadable-capture", vec![]);
     initial_codex(&env);
     env.stub_fault("capture", "fail", 10);
     env.apply(task("guard", true)).ok();
     env.reconcile().ok();
-    assert_eq!(argv_of(&env, "send").len(), 0);
+    assert_eq!(argv_of(&env, "message send").len(), 0);
 }
 
 /// A Task that names repositories instead of a directory: the runtime config
@@ -889,15 +910,11 @@ fn a_reboot_revives_only_work_in_flight_or_feedback() {
     env.reconcile().ok();
     assert_eq!(argv_of(&env, "restart").len(), 1);
     assert_eq!(argv_of(&env, "create").len(), 1);
-    // The note that it was restarted goes first; the feedback follows once
-    // the worker has read it.
-    let texts = sent(&env, 0);
-    assert_eq!(texts.len(), 2, "{texts:#?}");
-    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
-    set_session_state(&env, &thurbox_key(&env, "done"), "idle");
-    env.reconcile().ok();
+    // The note that it was restarted goes first; the feedback follows it
+    // on the agent's own inbox, without waiting for the turn to end.
     let texts = sent(&env, 0);
     assert_eq!(texts.len(), 3, "{texts:#?}");
+    assert!(texts[1].contains("already recorded"), "{}", texts[1]);
     assert_eq!(texts[2], "Review: rename the flag.");
     assert_eq!(env.status("done")["phase"], "Concluded");
 }
@@ -917,4 +934,114 @@ fn a_task_deleted_after_a_reboot_releases_its_lost_session() {
     );
     assert!(env.stub_sessions().is_empty(), "{:#?}", env.stub_sessions());
     env.fleet(&["get", "task", "t1"]).code(3);
+}
+
+#[test]
+fn a_message_reaches_a_working_claude_session_through_its_native_inbox() {
+    // Mission Control's report: a `fleet send` to a worker mid-turn waited
+    // for the turn to end, so a running worker could not be steered. thurbox
+    // has a native route, `message send`, that reaches a Claude Code turn
+    // between tool calls without typing into the terminal composer.
+    let env = setup("thurbox-inbox-native", vec![task("t1", true)]);
+    env.reconcile().ok();
+    let key = thurbox_key(&env, "t1");
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    // The brief started a turn; the worker is busy.
+    set_session_state(&env, &key, "working");
+
+    env.fleet(&["send", "t1", "steer: prefer the smaller fix"])
+        .ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+
+    let full = full_status(&env, "t1");
+    let delivered = full["deliveries"]["receipts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        delivered.len(),
+        1,
+        "the message reached the working session, not after its turn: {full:#}"
+    );
+    assert_eq!(delivered[0]["deliveredVia"], "claude-socket", "{full:#}");
+    assert!(
+        argv_of(&env, "send").is_empty(),
+        "nothing was typed into the composer: {:?}",
+        argv_of(&env, "send")
+    );
+    let messages = argv_of(&env, "message send");
+    assert!(
+        messages
+            .iter()
+            .any(|a| a.contains(&"--body=steer: prefer the smaller fix".to_string())),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn a_route_that_may_hold_the_text_is_recorded_on_the_receipt_only() {
+    // thurbox says may_hold for every Claude Code socket delivery: a fact
+    // about the route, which no person can clear, so it raises nothing.
+    let env = setup("thurbox-inbox-may-hold", vec![task("t1", true)]);
+    env.reconcile().ok();
+    env.fleet(&["send", "t1", "are you there?"]).ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    let full = full_status(&env, "t1");
+    let receipt = &full["deliveries"]["receipts"][0];
+    assert_eq!(receipt["mayHold"], true, "{full:#}");
+    assert_eq!(receipt["deliveredVia"], "claude-socket", "{full:#}");
+    let held = env.status("t1")["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["type"] == "NeedsAttention" && c["status"] == "True");
+    assert!(!held, "{full:#}");
+}
+
+#[test]
+fn a_message_thurbox_only_queues_is_given_up_and_never_sent_again() {
+    // thurbox falls back to its mailbox when it cannot reach the agent, and
+    // still exits 0. The agent never reads it there.
+    let env = setup("thurbox-inbox-queued", vec![task("t1", true)]);
+    env.reconcile().ok();
+    env.edit_stub(|s| s["mailboxNote"] = json!("claude inbox socket refused"));
+    env.fleet(&["send", "t1", "first"]).ok();
+    for _ in 0..4 {
+        env.expire_wait("t1");
+        env.reconcile().ok();
+    }
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryQueued");
+    let attention = st["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "NeedsAttention")
+        .unwrap()["message"]
+        .to_string();
+    assert!(
+        attention.contains("claude inbox socket refused"),
+        "{attention}"
+    );
+    let firsts = argv_of(&env, "message send")
+        .iter()
+        .filter(|a| a.contains(&"--body=first".to_string()))
+        .count();
+    assert_eq!(firsts, 1, "never sent again");
+    let full = full_status(&env, "t1");
+    assert_eq!(full["inbox"].as_array().unwrap().len(), 1, "{full:#}");
+    assert!(full["deliveries"]["receipts"].is_null(), "{full:#}");
+
+    // A later entry goes past it once thurbox reaches the agent again.
+    env.edit_stub(|s| s["mailboxNote"] = Value::Null);
+    env.fleet(&["send", "t1", "second"]).ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    let sent = &env.stub_sessions()[0]["sent"];
+    assert!(
+        sent.as_array().unwrap().iter().any(|t| t == "second"),
+        "{sent:#}"
+    );
 }

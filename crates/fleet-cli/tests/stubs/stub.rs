@@ -238,7 +238,7 @@ fn main() -> ExitCode {
         ("glab", Some("api")) => forge::glab(&args),
         ("az", Some("devops" | "repos")) => forge::az(&args),
         ("curl", Some("--include")) => forge::curl(&args),
-        (_, Some("session") | Some("doctor")) => thurbox(&args),
+        (_, Some("session") | Some("message") | Some("doctor")) => thurbox(&args),
         _ => fail("stub: unknown role"),
     }
 }
@@ -1133,6 +1133,7 @@ fn thurbox(args: &[String]) -> ExitCode {
             format!("meta-{}", args.get(2).cloned().unwrap_or_default())
         }
         (Some("session"), Some(sub)) => sub.to_string(),
+        (Some("message"), Some(sub)) => format!("message-{sub}"),
         (Some(top), _) => top.to_string(),
         _ => return fail("stub: no command"),
     };
@@ -1388,6 +1389,78 @@ fn answer(
             let s = s.clone();
             event(state, "state", &s);
             ok(json!({"submitted": true}))
+        }
+        "message-send" => {
+            // As thurbox 2.81 routes it: the agent's own inbox, never the
+            // pane. Claude Code takes it on its socket and Codex on its
+            // queue, a working turn included; any other agent's message
+            // waits in the mailbox. `mayHold` is the Claude Code dialog.
+            let id = opt(args, "--to").unwrap_or_default();
+            // As clap parses it: `--body -x` is a flag, `--body=-x` text.
+            let body = match args.iter().find_map(|a| a.strip_prefix("--body=")) {
+                Some(b) => b.to_string(),
+                None => match opt(args, "--body") {
+                    Some(b) if b.starts_with('-') => {
+                        return (
+                            ExitCode::from(2),
+                            Some(format!("error: unexpected argument '{b}' found")),
+                        );
+                    }
+                    b => b.unwrap_or_default(),
+                },
+            };
+            let Some(i) = find_index(state, &id) else {
+                return err(format!("Session not found: {id}"));
+            };
+            if window_gone(&state["sessions"][i]) {
+                let name = state["sessions"][i]["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                return err(format!(
+                    "message send: session '{name}' has no window of its own here"
+                ));
+            }
+            // Every route it cannot take falls back to the mailbox, exit 0:
+            // a remote session, or a route the test breaks (`mailboxNote`).
+            let remote = state["sessions"][i]["host"]
+                .as_str()
+                .is_some_and(|h| h != "local");
+            let (via, note) = match state["sessions"][i]["agent"].as_str() {
+                _ if remote => (
+                    "mailbox",
+                    Some("the session runs on a remote host, whose agent inbox is not reachable from here".to_string()),
+                ),
+                _ if state["mailboxNote"].is_string() => {
+                    ("mailbox", state["mailboxNote"].as_str().map(str::to_string))
+                }
+                // thurbox detects a live Claude socket or a bound Codex
+                // thread; the stub takes the agent's name for that proof.
+                Some(a) if a.contains("claude") => ("claude-socket", None),
+                Some(a) if a.contains("codex") => ("codex-queue", None),
+                _ => (
+                    "mailbox",
+                    Some("no agent-native inbox is known for this session".to_string()),
+                ),
+            };
+            let s = &mut state["sessions"][i];
+            if via == "mailbox" {
+                if s["mailbox"].is_null() {
+                    s["mailbox"] = json!([]);
+                }
+                s["mailbox"].as_array_mut().unwrap().push(json!(body));
+            } else {
+                s["sent"].as_array_mut().expect("sent").push(json!(body));
+                s["state"] = json!("working");
+            }
+            let s = s.clone();
+            event(state, "state", &s);
+            // As thurbox: may_hold is a fact about the Claude Code route.
+            ok(
+                json!({"id": 1, "to_session_id": id, "kind": opt(args, "--kind"),
+                      "delivered_via": via, "delivery_note": note,
+                      "may_hold": via == "claude-socket"}),
+            )
         }
         "meta-get" | "meta-set" => {
             let id = args.get(3).cloned().unwrap_or_default();

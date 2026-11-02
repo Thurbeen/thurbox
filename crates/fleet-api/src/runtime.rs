@@ -71,7 +71,8 @@ pub trait Runtime {
     /// The session holding `key`, `Known(None)` when a readable list shows
     /// none, Unknown when the list cannot be read.
     fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>>;
-    /// Ready when the agent is running and waiting for input.
+    /// Ready when the agent can take a message now: a working turn can, a
+    /// dialog that holds the agent cannot.
     fn ready(&self, session: &SessionRef) -> Observation<bool>;
     /// Whether the agent in `session` trusts `workspace`, so a brief cannot
     /// land in a trust prompt. Unknown when the session cannot prove it.

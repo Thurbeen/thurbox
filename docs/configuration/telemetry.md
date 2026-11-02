@@ -79,7 +79,7 @@ fails has the error status.
 | Span | `fleet.outcome` values |
 | --- | --- |
 | `reconcile KIND` | `changed`, `unchanged`, `conflict`, `error`, `leaseLost` |
-| `effect …` | `spawned`, `adopted`, `delivered`, `already`, `released`, `markedReady`, `moved`, `failed`, `unknown` |
+| `effect …` | `spawned`, `adopted`, `delivered`, `queued`, `already`, `released`, `markedReady`, `moved`, `failed`, `unknown` |
 | `forge poll` | `known`, `absent`, `timeout`, `incomplete`, `throttled`, `unreadable`, `notLoggedIn`, `refused`, `unavailable` |
 
 The `fleet.controller` values are `TaskController`, `ForgeController`,

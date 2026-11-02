@@ -767,7 +767,11 @@ fn a_delivered_receipt_moves_the_entry_into_deliveries_in_one_write() {
             "task/t/u7/send/1".into(),
             receipt(
                 "brief",
-                Observation::Known(EffectOutcome::Delivered { already: false }),
+                Observation::Known(EffectOutcome::Delivered {
+                    already: false,
+                    via: None,
+                    may_hold: false,
+                }),
             ),
         );
         st.delivery_attempts.insert(
@@ -1343,7 +1347,11 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
         "task/t/u7/resume/1".into(),
         receipt(
             "brief",
-            Observation::Known(EffectOutcome::Delivered { already: false }),
+            Observation::Known(EffectOutcome::Delivered {
+                already: false,
+                via: None,
+                may_hold: false,
+            }),
         ),
     );
     let (plan, st) = run(&with_status(&obj, &st), lost_obs(false));

@@ -74,6 +74,8 @@ const TRUST_UNMAPPED: &str = "TrustUnmapped";
 /// The NeedsAttention reason while a known trust gap holds the brief.
 const WORKSPACE_UNTRUSTED: &str = "WorkspaceUntrusted";
 const BRIEF: &str = "brief";
+/// The runtime only queued the brief, where the agent does not read it.
+const BRIEF_UNDELIVERED: &str = "BriefUndelivered";
 const RELEASE: &str = "release";
 const REVIVE: &str = "revive";
 const RESUME: &str = "resume";
@@ -82,8 +84,14 @@ const REVIVE_FAILED: &str = "ReviveFailed";
 
 /// What one keyed send came to on this pass.
 enum Sent {
-    /// On the session; `true` when the journal recovered it.
-    Delivered(bool),
+    /// On the session: `recovered` when the journal recovered it, `via` the
+    /// runtime's route when the send named one, `may_hold` when that route
+    /// can hold it behind an approval dialog.
+    Delivered {
+        recovered: bool,
+        via: Option<String>,
+        may_hold: bool,
+    },
     /// Sent, waiting, or not sendable yet.
     Pending,
     /// Its sends ran out.
@@ -483,10 +491,25 @@ impl Pass<'_, '_> {
         // a pass that sent nothing and has no brief send unconfirmed. A brief
         // held for trust or readiness holds the inbox with it.
         let sent = self.st.intents.contains_key(&brief_key(self.input.task));
-        if matches!(self.st.phase, Phase::Spawned | Phase::Briefed) && sent && !self.brief_pending()
+        if matches!(self.st.phase, Phase::Spawned | Phase::Briefed)
+            && sent
+            && !self.brief_pending()
+            && !self.brief_queued()
         {
             self.deliver(session);
         }
+    }
+
+    /// Whether the runtime only queued the brief, where the agent does not
+    /// read it.
+    fn brief_queued(&self) -> bool {
+        matches!(
+            self.st
+                .receipts
+                .get(&brief_key(self.input.task))
+                .map(|r| &r.outcome),
+            Some(Observation::Known(EffectOutcome::Queued { .. }))
+        )
     }
 
     /// Whether the brief was sent and its receipt is not Known yet.
@@ -502,6 +525,18 @@ impl Pass<'_, '_> {
         match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
             Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
                 return self.briefed_now(key, false);
+            }
+            // The text waits where the agent does not read it. It is not
+            // sent again: a person moves it on, and the inbox waits too.
+            Some(Observation::Known(EffectOutcome::Queued { why })) => {
+                self.cond(
+                    BRIEFED,
+                    ConditionStatus::False,
+                    BRIEF_UNDELIVERED,
+                    why.clone(),
+                );
+                self.needs_attention(BRIEF_UNDELIVERED, why);
+                return;
             }
             Some(Observation::Known(EffectOutcome::Failed { why })) => {
                 self.cond(BRIEFED, ConditionStatus::False, "BriefRefused", why);
@@ -524,7 +559,11 @@ impl Pass<'_, '_> {
                     let receipt = Receipt {
                         action: BRIEF.into(),
                         at: self.now(),
-                        outcome: Observation::Known(EffectOutcome::Delivered { already: true }),
+                        outcome: Observation::Known(EffectOutcome::Delivered {
+                            already: true,
+                            via: None,
+                            may_hold: false,
+                        }),
                     };
                     self.st.receipts.insert(key.clone(), receipt);
                     self.briefed_now(key, true);
@@ -726,10 +765,13 @@ impl Pass<'_, '_> {
         };
         let what = format!("inbox entry {} from {}", entry.key, entry.from);
         let Some(generation) = entry.amends else {
-            if let Sent::Delivered(recovered) =
-                self.keyed_send(session, &entry.key, entry.text.clone(), &what)
+            if let Sent::Delivered {
+                recovered,
+                via,
+                may_hold,
+            } = self.keyed_send(session, &entry.key, entry.text.clone(), &what)
             {
-                self.record_delivery(&entry, recovered);
+                self.record_delivery(&entry, recovered, via, may_hold);
             }
             return;
         };
@@ -747,14 +789,19 @@ impl Pass<'_, '_> {
                     .is_some_and(|a| a.failed)
         });
         if generation <= given || (newer && !self.st.intents.contains_key(&entry.key)) {
-            self.record_delivery(&entry, false);
+            self.record_delivery(&entry, false, None, false);
             return;
         }
         let text = self
             .spec
             .amendment_message(&self.input.task.metadata.name, given, generation);
-        if let Sent::Delivered(recovered) = self.keyed_send(session, &entry.key, text, &what) {
-            self.record_delivery(&entry, recovered);
+        if let Sent::Delivered {
+            recovered,
+            via,
+            may_hold,
+        } = self.keyed_send(session, &entry.key, text, &what)
+        {
+            self.record_delivery(&entry, recovered, via, may_hold);
             self.amended(entry.key, generation, recovered);
         }
     }
@@ -785,8 +832,29 @@ impl Pass<'_, '_> {
     /// [`MAX_ATTEMPTS`] times. `what` names it in attention messages.
     fn keyed_send(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
         match self.st.receipts.get(key).map(|r| r.outcome.clone()) {
-            Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
-                return Sent::Delivered(false);
+            Some(Observation::Known(EffectOutcome::Delivered { via, may_hold, .. })) => {
+                return Sent::Delivered {
+                    recovered: false,
+                    via,
+                    may_hold,
+                };
+            }
+            // Queued where the agent does not read it: given up, never sent
+            // again, so that later entries go out past it.
+            Some(Observation::Known(EffectOutcome::Queued { why })) => {
+                self.st
+                    .delivery_attempts
+                    .entry(key.to_string())
+                    .or_default()
+                    .failed = true;
+                self.st.not_before = None;
+                self.needs_attention(
+                    "DeliveryQueued",
+                    format!(
+                        "{what}: {why}. It is not sent again; it stays in status.inbox and later entries are delivered past it"
+                    ),
+                );
+                return Sent::GivenUp;
             }
             Some(Observation::Known(EffectOutcome::Failed { .. })) => {
                 let attempt = self
@@ -812,7 +880,13 @@ impl Pass<'_, '_> {
             // Sent, but no Known receipt: the session's journal decides,
             // exactly as for the brief. Unknown is read again after a wait.
             match self.input.observations.brief_delivered.clone() {
-                Some(Observation::Known(true)) => return Sent::Delivered(true),
+                Some(Observation::Known(true)) => {
+                    return Sent::Delivered {
+                        recovered: true,
+                        via: None,
+                        may_hold: false,
+                    };
+                }
                 Some(Observation::Known(false)) => {
                     return self.send_keyed(session, key, text, what);
                 }
@@ -890,7 +964,13 @@ impl Pass<'_, '_> {
 
     /// The entry is on the session: its receipt goes to `status.deliveries`
     /// and the entry leaves the inbox, in one write the manager performs.
-    fn record_delivery(&mut self, entry: &InboxEntry, recovered: bool) {
+    fn record_delivery(
+        &mut self,
+        entry: &InboxEntry,
+        recovered: bool,
+        delivered_via: Option<String>,
+        may_hold: bool,
+    ) {
         let key = entry.key.clone();
         self.st.delivery_attempts.remove(&key);
         self.st.intents.remove(&key);
@@ -905,6 +985,8 @@ impl Pass<'_, '_> {
             from: entry.from.clone(),
             at: self.now(),
             recovered,
+            delivered_via,
+            may_hold,
         });
     }
 
@@ -1043,7 +1125,7 @@ impl Pass<'_, '_> {
         let what = format!("resume note {key}");
         match self.keyed_send(session, &key, self.resume_text(), &what) {
             Sent::Pending => true,
-            Sent::Delivered(_) | Sent::GivenUp => {
+            Sent::Delivered { .. } | Sent::GivenUp => {
                 self.st.resume = None;
                 self.st.intents.remove(&key);
                 self.st.receipts.remove(&key);

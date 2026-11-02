@@ -477,13 +477,21 @@ impl Runtime for FakeRuntime {
                 };
             }
             if x.briefs.contains(&intent) {
-                return EffectOutcome::Delivered { already: true };
+                return EffectOutcome::Delivered {
+                    already: true,
+                    via: None,
+                    may_hold: false,
+                };
             }
             x.briefs.push(intent.clone());
             x.texts.push(text);
             x.at_rest = false;
             s.log.push(format!("brief {key} {intent} ({len} bytes)"));
-            EffectOutcome::Delivered { already: false }
+            EffectOutcome::Delivered {
+                already: false,
+                via: None,
+                may_hold: false,
+            }
         })
     }
 

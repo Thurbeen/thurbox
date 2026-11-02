@@ -103,7 +103,7 @@ typed mutations described under [Inbox](#inbox).
 | `brief` | The key and generation of the newest brief or amendment the worker received, once it has a receipt. A result names this generation. |
 | `result` | The worker's claim: outcome, generation, summary, artifacts, outputs. |
 | `inbox` | Messages queued for the session, oldest first: `{key, from, text, about, amends, queuedAt}`. Appended by `fleet send` and `fleet amend`, removed by TaskController once delivered, each through a typed store mutation; never replaced as a list. |
-| `deliveries` | TaskController's: `receipts`, the newest 100 delivery receipts by inbox key (`{key, from, at, recovered}`), and `revisions`, per mirror (`about.uid`) the highest `about.revision` delivered, which keeps a duplicate out after its receipt has rotated. |
+| `deliveries` | TaskController's: `receipts`, the newest 100 delivery receipts by inbox key (`{key, from, at, recovered, deliveredVia, mayHold}`, where `deliveredVia` is the runtime's route and `mayHold` says that route can hold the text behind an approval dialog), and `revisions`, per mirror (`about.uid`) the highest `about.revision` delivered, which keeps a duplicate out after its receipt has rotated. |
 | `deliveryAttempts` | TaskController's bookkeeping per inbox entry being delivered: `sends` (bounded at 3), `probeFailures` and `failed`. Removed with the entry. |
 | `declared` | The worker's, through `fleet declare`: facts it declared, each a JSON object with a required string `kind` and nothing else validated. See [Following declared changes](#following-declared-changes). |
 | `forge` | The Forge controller's: one entry per declared change, keyed by ChangeRequest name, with its `uid`, `state`, `cursor`, `gaps`, mark-ready record and `notBefore`, plus that controller's conditions. Absent for a Task that declared nothing. |
@@ -195,8 +195,8 @@ TaskController delivers an amendment as an inbox entry:
 - An amendment written before the brief goes out is part of the brief's
   message. The brief is then sent for the newest generation. The amendment's
   entry is recorded without a send.
-- An amendment to a briefed worker is typed into the same session when the
-  session is next ready. Its message names the generation that the worker's
+- An amendment to a briefed worker goes to the same session's agent inbox
+  when the session is next ready. Its message names the generation that the worker's
   result must name.
 - When a newer amendment is queued behind one that was never sent, the newer
   message carries both. The older entry is recorded without a send.
@@ -222,7 +222,7 @@ prints the entry as appended.
 | --- | --- |
 | `key` | Deterministic and unique across `inbox` and `deliveries`; also the runtime intent key the delivery is journaled under. |
 | `from` | `cli/<user>` for `fleet send` and `fleet amend`; `forge/<change>` for a relay, the ChangeRequest's name. |
-| `text` | The message, delivered as typed. For an amendment, the amendment's text; TaskController composes the delivered message from the spec. |
+| `text` | The message. The runtime can put its own header before it. For an amendment, the amendment's text; TaskController composes the delivered message from the spec. |
 | `about` | For a relay: the mirror's `uid`, `revision` and `head`. Absent for `fleet send`. |
 | `amends` | For an amendment: the spec generation it created. Absent otherwise. |
 | `queuedAt` | Unix milliseconds. |

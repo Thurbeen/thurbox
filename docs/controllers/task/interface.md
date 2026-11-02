@@ -81,7 +81,7 @@ pub struct Plan {
 | `status` | Desired typed Task status serialized as JSON, including every new effect intent; `None` means unchanged. The worker-owned `result` and the unowned `inbox` are passed back as read. |
 | `effects` | Ordered effects, each with a deterministic key and `Action`. The controller does not execute them. |
 | `remove_finalizer` | Request to remove `fleet.dev/release` after the status and effects; present only for a deleting Task whose release is established. |
-| `delivery` | An inbox entry proven delivered: `{key, at, recovered}`. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
+| `delivery` | An inbox entry proven delivered: `{key, at, recovered, deliveredVia, mayHold}`. `deliveredVia` is the runtime's route, when the send named one. `mayHold` is true when that route can hold the text behind an approval dialog; it raises no attention. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
 
 An action is `Spawn(SpawnSpec)`, `Brief { session, text }`,
 `Release { session }` or `Revive { session }`. SpawnSpec carries `host`,
@@ -147,9 +147,9 @@ return `Observation<T>`; a refused effect is
 | `host` | Host name | Whether the runtime can reach it. |
 | `spawn` | `SpawnSpec` | `Spawned { session, adopted }`, `Unmapped { url }` for a repository the runtime has no source for, `TrustUnmapped { harness }` for a harness it knows no workspace-trust interface for, or Failed/Unknown. |
 | `find` | Host and session key | Optional session under that key, or Unknown. |
-| `ready` | `SessionRef` | Whether the session can receive input now. |
+| `ready` | `SessionRef` | Whether the session's agent can take a message now. A working turn can take one; a dialog that holds the agent cannot. |
 | `workspace_trust` | `SessionRef` and the Task's workspace | `Trusted { how }`, `Untrusted { gap, why }` with gap `Unsupported` or `Mismatch`, or Unknown. |
-| `brief` | Session, text and intent key | `Delivered { already }`, or Failed/Unknown. |
+| `brief` | Session, text and intent key | `Delivered { already, via, may_hold }`, `Queued { why }`, or Failed/Unknown. `via` names the runtime's route. `may_hold` is true when the route can hold the text behind an approval dialog. `Queued` means the runtime kept the text where its agent does not read it. |
 | `brief_delivered` | Session and intent key | Whether that brief was delivered, or Unknown. |
 | `at_rest` | `SessionRef` | Whether it is safe to release that recorded session, or Unknown. |
 | `release` | `SessionRef` | `Released` if deleted or proven absent, or Failed/Unknown. Repeating a completed release is a no-op. |
@@ -161,8 +161,22 @@ Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
 session metadata as pending before sending and delivered afterward. A pending
 journal entry is ambiguous, so it is never a license to resend. A text over
 16 000 bytes is a Known failure, refused before the journal and the send.
-Thurbox types the text as one tmux `send-keys` argument, and tmux refuses
-a command past its 16 KiB message. A refused call's reason is the first
+The adapter gives every text to the agent's own inbox with `thurbox-cli
+message send --kind fleet`. It never types into the terminal composer.
+Thurbox chooses the route and reports it as `delivered_via`:
+`claude-socket` and `codex-queue` reach a working turn. Thurbox answers
+`mailbox`, with exit 0 and a `delivery_note`, when it cannot reach the
+agent. Thurbox 2.81 answers `mailbox` for these sessions:
+
+- a session on a remote host,
+- a Codex session that no hook has bound to its conversation yet,
+- a Claude Code session whose inbox socket failed,
+- a session of any other harness.
+
+The adapter returns a `mailbox` answer as `Queued` with the note, and
+journals the key as queued. A queued key is never sent again. A failed
+`message send` can still have queued the text, so the adapter never
+repeats it. A refused call's reason is the first
 line of its stderr, else of its stdout, where `thurbox-cli` prints runtime
 errors. On release, a different id holding the key returns Unknown and is
 not deleted.

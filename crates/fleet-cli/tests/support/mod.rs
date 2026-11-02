@@ -332,11 +332,9 @@ impl Env {
             .collect()
     }
 
+    /// How many calls were `sub`: `"message send"`, or a `session` subcommand.
     pub fn stub_calls_of(&self, sub: &str) -> usize {
-        self.stub_calls()
-            .iter()
-            .filter(|c| c["argv"][0] == "session" && c["argv"][1] == sub)
-            .count()
+        self.stub_calls().iter().filter(|c| is_call(c, sub)).count()
     }
 
     pub fn stub_sessions(&self) -> Vec<Value> {
@@ -796,4 +794,10 @@ pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Whether a stub call is `sub`: `"message send"`, or a `session` subcommand.
+pub fn is_call(c: &serde_json::Value, sub: &str) -> bool {
+    let (top, sub) = sub.split_once(' ').unwrap_or(("session", sub));
+    c["argv"][0] == top && c["argv"][1] == sub
 }

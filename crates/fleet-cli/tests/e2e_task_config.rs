@@ -51,7 +51,7 @@ fn task_config_is_passive_and_launch_defaults_are_frozen_across_restart() {
     e.reconcile().ok();
     assert_eq!(e.status("inherited")["execution"], snapshot);
     assert_eq!(e.stub_calls_of("create"), 1);
-    assert_eq!(e.stub_calls_of("send"), 1);
+    assert_eq!(e.stub_calls_of("message send"), 1);
     let create = e
         .stub_calls()
         .into_iter()
@@ -173,7 +173,7 @@ fn providers_resolve_before_launch_and_keep_values_private_on_restart() {
     e.fleet(&["delete", "envprovider", "file"]).ok();
     e.reconcile().ok();
     assert_eq!(e.stub_calls_of("create"), 1);
-    assert_eq!(e.stub_calls_of("send"), 1);
+    assert_eq!(e.stub_calls_of("message send"), 1);
     assert_eq!(
         e.status("private")["execution"]["sources"]
             .as_array()
@@ -272,7 +272,7 @@ fn failed_spawn_restarts_from_private_snapshot_and_missing_snapshot_blocks() {
     e.reconcile().ok();
     assert_eq!(launch(&e)["env"]["TOKEN"], "first-value");
     assert_eq!(e.stub_sessions().len(), 1);
-    assert_eq!(e.stub_calls_of("send"), 1);
+    assert_eq!(e.stub_calls_of("message send"), 1);
     let launch_path = std::fs::read_dir(e.data.join("launches"))
         .unwrap()
         .flatten()

@@ -41,11 +41,19 @@ use fleet_api::task::{
 use fleet_exec::{Outcome, Spec, run};
 use serde_json::Value;
 
-/// The longest text sent as one argument, in bytes. Thurbox types it as one
-/// tmux `send-keys` argument, and tmux refuses a command past its 16 KiB
-/// client message before it types anything. Windows caps a whole command
-/// line near 32 767 characters.
+/// The longest text sent as one argument, in bytes. Windows caps a whole
+/// command line near 32 767 characters, and an agent with no native inbox
+/// can still be given the text by typing it.
 pub const MAX_BRIEF: usize = 16_000;
+
+/// The `message send --kind` of everything Fleet gives a session.
+const MESSAGE_KIND: &str = "fleet";
+
+/// The `delivered_via` of a message thurbox only queued.
+const MAILBOX: &str = "mailbox";
+
+/// The journal mark of a text thurbox only queued: never sent again.
+const QUEUED: &str = "queued";
 
 /// The most thurbox-cli calls one operation makes: a brief (meta get, meta
 /// set, send, meta set).
@@ -945,8 +953,10 @@ impl Runtime for ThurboxRuntime {
         match self.get(session) {
             Observation::Known(row) if row["stopped"] == true => Observation::Known(false),
             Observation::Known(row) => match row["state"].as_str() {
-                Some("idle" | "done") => Observation::Known(true),
-                Some("working" | "blocked" | "stopped") => Observation::Known(false),
+                // A working turn takes a message on the agent's own inbox.
+                Some("idle" | "done" | "working") => Observation::Known(true),
+                // A dialog holds the agent, and its answer is a person's.
+                Some("blocked" | "stopped") => Observation::Known(false),
                 _ => self.initial_codex_ready(session, &row),
             },
             Observation::Unknown { why } => Observation::Unknown { why },
@@ -998,7 +1008,16 @@ impl Runtime for ThurboxRuntime {
         };
         match journal.get(intent_key).map(String::as_str) {
             Some("delivered") => {
-                return Observation::Known(EffectOutcome::Delivered { already: true });
+                return Observation::Known(EffectOutcome::Delivered {
+                    already: true,
+                    via: None,
+                    may_hold: false,
+                });
+            }
+            Some(QUEUED) => {
+                return Observation::Known(EffectOutcome::Queued {
+                    why: "thurbox kept it in the mailbox, which the agent does not read".into(),
+                });
             }
             Some(_) => {
                 return Observation::unknown("prompt delivery is pending and cannot be repeated");
@@ -1008,7 +1027,7 @@ impl Runtime for ThurboxRuntime {
         if text.len() > MAX_BRIEF {
             return Observation::Known(EffectOutcome::Failed {
                 why: format!(
-                    "the text is {} bytes; thurbox-cli send takes at most {MAX_BRIEF}",
+                    "the text is {} bytes; Fleet sends at most {MAX_BRIEF}",
                     text.len()
                 ),
             });
@@ -1020,22 +1039,59 @@ impl Runtime for ThurboxRuntime {
             Answer::No(why) => return Observation::Known(EffectOutcome::Failed { why }),
             Answer::Unknown(why) => return Observation::unknown(why),
         }
-        // `--`: a brief that starts with `-` is text, never a flag.
-        match self.call(&["session", "send", &session.id, "--", text]) {
-            Answer::Ok(_) => {}
-            // `session send` can fail after it began typing, so a failure is
-            // not proof that nothing arrived: never typed again on it.
+        // The agent's own inbox, never the terminal composer: thurbox picks
+        // the route (a Claude Code socket, a Codex queue, else its mailbox),
+        // so a working turn takes it too. Fleet is no session, so no
+        // caller's session or task becomes the sender.
+        let mut spec = Spec::new(&self.cfg.cli, self.cfg.call_timeout).args([
+            "message",
+            "send",
+            "--to",
+            &session.id,
+            "--kind",
+            MESSAGE_KIND,
+            // `--body=`: a text that starts with `-` is text, never a flag.
+            &format!("--body={text}"),
+            "--json",
+        ]);
+        spec.env_remove
+            .extend(["THURBOX_SESSION".to_string(), "THURBOX_TASK".to_string()]);
+        let answer = match self.call_spec(spec) {
+            Answer::Ok(out) => out,
+            // A failed send may still have enqueued the message: never
+            // sent again on it.
             Answer::No(why) => {
                 return Observation::unknown(format!(
-                    "send failed and may have typed part of it: {why}"
+                    "send failed and may have enqueued it: {why}"
                 ));
             }
             Answer::Unknown(why) => return Observation::unknown(why),
-        }
-        journal.insert(intent_key.to_string(), "delivered".into());
-        let delivered = serde_json::to_string(&journal).expect("string map");
-        match self.set_meta(session, BRIEF_META, &delivered) {
-            Answer::Ok(_) => Observation::Known(EffectOutcome::Delivered { already: false }),
+        };
+        let row: Value = serde_json::from_str(answer.trim()).unwrap_or(Value::Null);
+        let via = row["delivered_via"].as_str().map(str::to_string);
+        // thurbox falls back to its mailbox when it cannot reach the agent:
+        // a remote session, an unbound Codex, a failed socket, any other
+        // harness. Nothing reads it there, so it is not a delivery.
+        let (mark, outcome) = if via.as_deref() == Some(MAILBOX) {
+            let note = row["delivery_note"]
+                .as_str()
+                .unwrap_or("thurbox gave no reason");
+            let why =
+                format!("thurbox kept it in the mailbox, which the agent does not read: {note}");
+            (QUEUED, EffectOutcome::Queued { why })
+        } else {
+            let may_hold = row["may_hold"] == true;
+            let outcome = EffectOutcome::Delivered {
+                already: false,
+                via,
+                may_hold,
+            };
+            ("delivered", outcome)
+        };
+        journal.insert(intent_key.to_string(), mark.into());
+        let marked = serde_json::to_string(&journal).expect("string map");
+        match self.set_meta(session, BRIEF_META, &marked) {
+            Answer::Ok(_) => Observation::Known(outcome),
             Answer::No(why) | Answer::Unknown(why) => {
                 Observation::unknown(format!("sent, but the receipt was not recorded: {why}"))
             }
@@ -1046,6 +1102,9 @@ impl Runtime for ThurboxRuntime {
         match self.delivery_journal(session) {
             Ok(journal) => match journal.get(intent_key).map(String::as_str) {
                 Some("delivered") => Observation::Known(true),
+                Some(QUEUED) => Observation::unknown(
+                    "thurbox kept it in the mailbox, which the agent does not read",
+                ),
                 Some(_) => Observation::unknown(
                     "the prompt was being sent and its delivery was never confirmed",
                 ),

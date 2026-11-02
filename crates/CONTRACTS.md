@@ -696,15 +696,22 @@ Each adapter reports its longest single operation (`operation_bound`), and
 - **thurbox:** every call is one bounded `thurbox-cli … --json`. A session's
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key. The brief's delivery
-  is journaled in the session's own metadata. `spec.model` reaches the
-  harness as the variable `runtime.modelEnv` names for it. Before Codex's first
+  is journaled in the session's own metadata. Every brief, amendment, resume
+  note and inbox entry goes to the agent's own inbox through `message send`,
+  never into the terminal composer, so a working turn takes it. Thurbox
+  picks the route and reports it; the receipt records it as `deliveredVia`.
+  A `mailbox` answer is no delivery: the controller raises `BriefUndelivered`
+  or `DeliveryQueued` and never sends that text again.
+  `spec.model` reaches the harness as the variable `runtime.modelEnv` names
+  for it. Before Codex's first
   lifecycle report, readiness additionally accepts its initial empty composer:
   a matching owned session, corroborated live Codex process, no reported or
   contradicted hook, and a visible-pane capture placing the cursor at the
   initial prompt under the welcome screen. Missing or different evidence
   remains Unknown. This input-only proof never authorizes release; `at_rest`
   still requires idle, done or stopped. `e2e_runtime` covers initial delivery,
-  reconnect, busy/dialog/cursor guards and unchanged deletion safety.
+  reconnect, dialog/cursor guards, delivery to a working session and
+  unchanged deletion safety.
   thurbox keeps a session's row across a reboot. `lost` is `session get`
   reporting `hook_corroboration: "missing"`, and `revive` is `session
   restart --if-missing`, which resumes the conversation in the same row and
