@@ -18,6 +18,7 @@ use fleet_api::gateway::{
 use fleet_api::inbox::{CLI_SOURCE_PREFIX, InboxEntry, amend_key, send_key};
 use fleet_api::listener::{self, Beat, Heartbeat, listener_name};
 use fleet_api::meta::API_VERSION;
+use fleet_api::plan::EffectOutcome;
 use fleet_api::result::{OutputDecl, TaskResult, validate_outputs};
 use fleet_api::task::{self, Amendment, Phase, TaskSpec, TaskStatus};
 use fleet_api::validate::typed;
@@ -1140,6 +1141,75 @@ pub fn receive(
         "{}/{name}: kept conflicting with other writers",
         conversation::KIND
     )))
+}
+
+/// The Gateway controller's `Receive` action: add Fleet's opening post in a
+/// thread it opened to the thread's Conversation, as the receive verb would,
+/// creating the Conversation under the name its account and address derive.
+/// Written as `by`, the Gateway controller, under the lease; a delivery already
+/// spooled or numbered is a duplicate. The store's doubt is Unknown, never
+/// a refusal.
+pub fn receive_opened(
+    store: &dyn Store,
+    account: &str,
+    route: &str,
+    delivery: fleet_api::gateway::Delivery,
+    by: FieldManager,
+    lease: &fleet_api::LeaseToken,
+) -> Observation<EffectOutcome> {
+    let reference = delivery.event.conversation().clone();
+    let name = conversation_name(account, &reference);
+    for _ in 0..CAS_TRIES {
+        let current = match store.get(conversation::KIND, &name) {
+            Observation::Known(Some(o)) => o,
+            Observation::Known(None) => {
+                let manifest = Object {
+                    api_version: API_VERSION.to_string(),
+                    kind: conversation::KIND.to_string(),
+                    metadata: fleet_api::ObjectMeta {
+                        name: name.clone(),
+                        ..fleet_api::ObjectMeta::default()
+                    },
+                    spec: json!({
+                        "account": account,
+                        "address": reference.address(),
+                        "route": route,
+                    }),
+                    status: Value::Null,
+                };
+                match store.create_fenced(manifest, by.clone(), lease) {
+                    Ok(o) => o,
+                    Err(StoreError::AlreadyExists(_)) => continue,
+                    Err(StoreError::Unknown(why)) => return Observation::unknown(why),
+                    Err(e) => {
+                        return Observation::Known(EffectOutcome::Failed { why: e.to_string() });
+                    }
+                }
+            }
+            Observation::Unknown { why } => return Observation::unknown(why),
+        };
+        let uid = current.metadata.uid.clone();
+        match store.receive_event(
+            &name,
+            delivery.clone(),
+            current.metadata.resource_version,
+            by.clone(),
+        ) {
+            Ok(_) => {
+                return Observation::Known(EffectOutcome::Received {
+                    conversation: name,
+                    uid,
+                });
+            }
+            Err(StoreError::Conflict { .. }) => continue,
+            Err(StoreError::Unknown(why)) => return Observation::unknown(why),
+            Err(e) => return Observation::Known(EffectOutcome::Failed { why: e.to_string() }),
+        }
+    }
+    Observation::unknown(format!(
+        "{}/{name}: kept conflicting with other writers",
+        conversation::KIND
+    ))
 }
 
 /// Whether an event in a thread Fleet does not mirror yet is worth a

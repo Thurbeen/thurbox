@@ -183,6 +183,7 @@ fn effect_outcome(outcome: &Observation<EffectOutcome>) -> &'static str {
             EffectOutcome::Moved { .. } => "moved",
             EffectOutcome::Opened { .. } => "opened",
             EffectOutcome::Posted { .. } => "posted",
+            EffectOutcome::Received { .. } => "received",
             EffectOutcome::Created { adopted: true, .. } => "adopted",
             EffectOutcome::Created { .. } => "created",
             EffectOutcome::WorkspaceBusy { .. } => "workspaceBusy",

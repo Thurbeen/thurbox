@@ -10,7 +10,7 @@ lifecycle, interface and state-machine diagram together.
 | [ChangeRequest](change-request/README.md) | [ChangeRequest](../resources/change-request.md) | Mirrors one forge change and retains its numbered snapshot. |
 | [Forge](forge/README.md) | [Task forge status](../resources/task.md#following-declared-changes) | Follows declared changes, relays feedback and plans mark-ready. |
 | [Plugin](plugin/README.md) | [Plugin-defined kinds](../resources/plugin-kinds.md) | Hosts external controllers behind the same probe, plan and effect boundaries. |
-| [Gateway](gateway/README.md) (partly implemented) | [Conversation](../resources/conversation.md), [Listener](../resources/listener.md), [Task gateway status](../resources/task.md#talking-in-a-conversation) | Mirrors chat threads, ties each to one Task and relays messages in. Posting declarations out is design. |
+| [Gateway](gateway/README.md) | [Conversation](../resources/conversation.md), [Listener](../resources/listener.md), [Task gateway status](../resources/task.md#talking-in-a-conversation) | Mirrors chat threads, ties each to one Task, relays messages in and posts declarations out. |
 
 A controller with platform adapters documents them under
 `<controller>/adapters/`. The directory holds a `README.md` with the shared

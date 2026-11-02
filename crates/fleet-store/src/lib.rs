@@ -1171,7 +1171,14 @@ impl Store for FileStore {
     ) -> Result<(Object, Spooled), StoreError> {
         let _guard = self.lock()?;
         let mut obj = self.read_existing(conversation::KIND, name)?;
-        self.check_listener_of(&obj, &by)?;
+        let account = obj.spec["account"].as_str().unwrap_or_default();
+        if !kinds::may_spool(&by, account, delivery.verified) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not write {}; only listener/{account} does",
+                by.name(),
+                obj.key()
+            )));
+        }
         expect_rv(&obj, expected)?;
         if obj.is_deleting() {
             return Err(StoreError::Forbidden(format!(

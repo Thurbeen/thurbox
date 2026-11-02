@@ -5,9 +5,8 @@ which ConversationController owns, and the tie on each Task, which
 GatewayController keeps under `status.gateway`. TaskController still owns
 the Task's own `status.phase`. The Conversation phases, the transitions
 that create a Task, orphaning and retention are implemented, and so are
-the `waiting` and `tied` states of the tie on a Task, its
-`ConversationGone`, the join and the relay. The `opening`, `opened`,
-`abandoned` and `child` states, and posting are design, not implemented.
+every state of the tie on a Task, its `ConversationGone`, the join, the
+relay and posting.
 
 ![A Conversation starts Untied. The receive verb creates it, or Fleet creates it when it opens a thread for a Task's Question. A thread that Fleet opened is tied at once to the Task that its opening post's marker names. An admitted mention in an Untied thread creates a Task and ties it. When a tied Task is readably gone, the Conversation becomes Orphaned. The next admitted message there creates a new Task with the thread's history. When an Untied or Orphaned Conversation has no message for its retention, its own controller deletes it. While the Conversation is Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares.](state-machine.svg)
 

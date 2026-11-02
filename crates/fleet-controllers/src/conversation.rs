@@ -122,6 +122,7 @@ impl ConversationController {
         !st.received.is_empty()
             || st.not_before.is_none_or(|t| t <= now)
             || create_receipt_waiting(&object.metadata.uid, &st)
+            || opened_unjudged(&st)
     }
 
     /// What the next `reconcile` needs observed and does not have yet: the
@@ -342,6 +343,13 @@ fn opener_of(st: &ConversationStatus) -> Option<&str> {
         return None;
     }
     task_of_key(starter.key.as_deref()?).map(|(name, _)| name)
+}
+
+/// A thread Fleet opened whose messages wait to be judged: the pass that
+/// numbered its opening post could not yet ask for the Task its marker
+/// names, so the next pass ties it.
+fn opened_unjudged(st: &ConversationStatus) -> bool {
+    st.task.is_none() && opener_of(st).is_some() && !unjudged(st).is_empty()
 }
 
 /// The messages numbered since the last judgement, oldest first.

@@ -631,6 +631,12 @@ pub struct GatewayDefaults {
     /// For a Task: every route by name, so the controller finds the one
     /// its Conversation's spec names.
     pub routes: BTreeMap<String, RouteConfig>,
+    /// For a Task: the route whose first channel takes a Question from an
+    /// untied Task without the route label.
+    pub questions: Option<String>,
+    /// For a Task: every account's platform by account name, so the
+    /// controller names the channel a Question opens a thread in.
+    pub platforms: BTreeMap<String, String>,
 }
 
 /// The account a Listener reports on, as the loaded config has it.
@@ -657,6 +663,8 @@ impl Default for GatewayDefaults {
             people: BTreeMap::new(),
             account: None,
             routes: BTreeMap::new(),
+            questions: None,
+            platforms: BTreeMap::new(),
         }
     }
 }
@@ -699,6 +707,12 @@ impl GatewayConfig {
             people: self.people.clone(),
             account: None,
             routes: self.routes.clone(),
+            questions: self.questions.clone(),
+            platforms: self
+                .accounts
+                .iter()
+                .map(|(name, a)| (name.clone(), a.platform.clone()))
+                .collect(),
         }
     }
 

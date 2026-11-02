@@ -291,12 +291,11 @@ lists the resulting writers.
 
 ## Talking in a conversation
 
-Partly implemented. The [Gateway controller](../controllers/gateway/README.md)
-ties a Task to a chat thread and relays the thread into its inbox, as the
-Forge controller does for a change. Posting what the Task declares, and
-opening a thread for a Question, are design, not implemented. A worker
-never posts in a chat and holds no platform credential: it declares, and
-Fleet relays.
+The [Gateway controller](../controllers/gateway/README.md) ties a Task to a
+chat thread and relays the thread into its inbox, as the Forge controller
+does for a change. It posts what the Task declares in that thread, and it
+opens a thread for a Question. A worker never posts in a chat and holds no
+platform credential: it declares, and Fleet relays.
 
 | Field, label or verb | Owner | Meaning |
 | --- | --- | --- |

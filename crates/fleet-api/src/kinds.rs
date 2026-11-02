@@ -56,13 +56,15 @@ pub fn status_owner(kind: &str, field: &str) -> Option<FieldManager> {
 /// Who may create an object of a kind (`Store::create`, and
 /// `Store::create_fenced` under the lease): `apply` for any kind; an
 /// account's listener, through the receive verb, for the Conversation of a
-/// thread it delivers for and for its own Listener; and the Conversation's
-/// controller for the Task a thread starts.
+/// thread it delivers for and for its own Listener; the Conversation's
+/// controller for the Task a thread starts; and the Gateway controller for
+/// the Conversation of a thread Fleet opened.
 pub fn may_create(kind: &str, by: &FieldManager) -> bool {
     match by {
         FieldManager::Apply => true,
         FieldManager::Listener(_) => matches!(kind, conversation::KIND | listener::KIND),
         FieldManager::ConversationController => kind == task::KIND,
+        FieldManager::GatewayController => kind == conversation::KIND,
         _ => false,
     }
 }
@@ -80,6 +82,14 @@ pub fn may_set_conversation_labels(by: &FieldManager) -> bool {
 /// names, and nobody else.
 pub fn is_listener_of(by: &FieldManager, account: &str) -> bool {
     matches!(by, FieldManager::Listener(a) if a == account)
+}
+
+/// Who may spool a delivery on a Conversation (`Store::receive_event`): the
+/// listener of the account its spec names, and the Gateway controller for
+/// Fleet's own opening post (`verified = fleet`) in a thread Fleet opened.
+pub fn may_spool(by: &FieldManager, account: &str, verified: crate::gateway::Verified) -> bool {
+    is_listener_of(by, account)
+        || (*by == FieldManager::GatewayController && verified == crate::gateway::Verified::Fleet)
 }
 
 /// Who may write a Conversation's status and drain its spool in one write

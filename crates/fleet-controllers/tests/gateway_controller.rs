@@ -205,6 +205,7 @@ fn observed(conv: Observation<Option<Object>>) -> GatewayObservations {
     GatewayObservations {
         conversation: Some(conv),
         children: Some(Observation::Known(Vec::new())),
+        ..GatewayObservations::default()
     }
 }
 
@@ -914,6 +915,7 @@ fn with_children(children: Vec<Object>) -> GatewayObservations {
     GatewayObservations {
         conversation: None,
         children: Some(Observation::Known(children)),
+        ..GatewayObservations::default()
     }
 }
 
@@ -1062,6 +1064,7 @@ fn a_child_tied_to_its_own_thread_is_left_alone_and_unknown_children_change_noth
         GatewayObservations {
             conversation: None,
             children: Some(Observation::unknown("list failed")),
+            ..GatewayObservations::default()
         },
     );
     assert_eq!(plan, Plan::default());
@@ -1172,6 +1175,7 @@ fn more_unread_items_than_the_inbox_holds_go_out_in_batches_the_store_accepts() 
     let obs = || GatewayObservations {
         conversation: Some(Observation::Known(Some(conversation(2, messages.clone())))),
         children: Some(Observation::Known(vec![c.clone()])),
+        ..GatewayObservations::default()
     };
     // Every planned append passes the store's own check in turn.
     let accepted = |inbox: &[InboxEntry], plan: &Plan| {
@@ -1229,33 +1233,38 @@ fn due_follows_the_tie_the_conversations_revision_and_the_children() {
         &t,
         NOW,
         &Observation::Known(Some(&quiet)),
-        &[]
+        &[],
+        &BTreeMap::new(),
     ));
     let moved = conversation(3, thread());
     assert!(GatewayController::due_with(
         &t,
         NOW,
         &Observation::Known(Some(&moved)),
-        &[]
+        &[],
+        &BTreeMap::new(),
     ));
     let recreated = conversation_with("c8", None, 2, thread(), 0);
     assert!(GatewayController::due_with(
         &t,
         NOW,
         &Observation::Known(Some(&recreated)),
-        &[]
+        &[],
+        &BTreeMap::new(),
     ));
     assert!(GatewayController::due_with(
         &t,
         NOW,
         &Observation::Known(None),
-        &[]
+        &[],
+        &BTreeMap::new(),
     ));
     assert!(GatewayController::due_with(
         &t,
         NOW,
         &Observation::unknown("list failed"),
-        &[]
+        &[],
+        &BTreeMap::new(),
     ));
     let c = child("c", "k1", 12, TaskStatus::default());
     let p = parent(None);
@@ -1264,7 +1273,8 @@ fn due_follows_the_tie_the_conversations_revision_and_the_children() {
         &p,
         NOW,
         &Observation::Known(None),
-        &[&c]
+        &[&c],
+        &BTreeMap::new(),
     ));
     let read = parent(Some(GatewayStatus {
         children: BTreeMap::from([(
@@ -1282,7 +1292,8 @@ fn due_follows_the_tie_the_conversations_revision_and_the_children() {
         &read,
         NOW,
         &Observation::Known(None),
-        &[&c]
+        &[&c],
+        &BTreeMap::new(),
     ));
     let mut deleting = t.clone();
     deleting.metadata.deletion_timestamp = Some(NOW);
@@ -1290,7 +1301,8 @@ fn due_follows_the_tie_the_conversations_revision_and_the_children() {
         &deleting,
         NOW,
         &Observation::Known(None),
-        &[&c]
+        &[&c],
+        &BTreeMap::new(),
     ));
     assert!(probes(&deleting, GatewayObservations::default()).is_empty());
     let input = GatewayInput {
@@ -1303,4 +1315,491 @@ fn due_follows_the_tie_the_conversations_revision_and_the_children() {
         GatewayController.reconcile(&input).unwrap(),
         Plan::default()
     );
+}
+
+// ----------------------------------------------------------------------
+// Posting: one keyed post at a time, refusals retried, unknown outcomes
+// recovered or held, change news, and the open of a thread.
+// ----------------------------------------------------------------------
+
+mod posting {
+    use super::*;
+    use fleet_api::conversation::EffectRecord;
+    use fleet_api::forge::ChangeState;
+    use fleet_api::gateway::{Capabilities, ConversationRef, Marker};
+    use fleet_api::plan::{Action, EffectOutcome, Intent, Receipt};
+
+    fn key(item: &str) -> String {
+        format!("task/{TASK}/{TASK_UID}/gateway/{item}")
+    }
+
+    /// The tied Conversation, with its parsed address, as the manager reads
+    /// it.
+    fn thread_conv() -> Object {
+        let mut c = conversation(1, vec![person(T0, 1, ALEX, "hi")]);
+        c.status["ref"] = serde_json::to_value(ConversationRef::split(ADDRESS).unwrap()).unwrap();
+        c
+    }
+
+    fn caps(marker: Marker) -> Option<Observation<Capabilities>> {
+        Some(Observation::Known(Capabilities {
+            history: true,
+            marker,
+            unmentioned: true,
+            threads: true,
+        }))
+    }
+
+    fn record(
+        attempts: u32,
+        intent_at: u64,
+        outcome: Option<Observation<EffectOutcome>>,
+    ) -> EffectRecord {
+        EffectRecord {
+            intent: Intent {
+                action: "post".into(),
+                at: intent_at,
+                generation: 1,
+            },
+            receipt: outcome.map(|o| Receipt {
+                action: "post".into(),
+                at: intent_at + 10,
+                outcome: o,
+            }),
+            attempts,
+            recovery: 0,
+        }
+    }
+
+    fn comments(ids: &[&str]) -> Vec<Value> {
+        ids.iter()
+            .map(|id| json!({"kind": "Comment", "id": id, "text": format!("text {id}")}))
+            .collect()
+    }
+
+    /// A tied Task that read through `declared` and carries `posts`.
+    fn speaking(
+        declared: Vec<Value>,
+        read: u64,
+        posts: Vec<(String, EffectRecord)>,
+        posted: &[&str],
+    ) -> Object {
+        let gw = tied_at(1).map(|g| GatewayStatus {
+            declared: read,
+            posts: posts.into_iter().collect(),
+            posted: posted.iter().map(|s| s.to_string()).collect(),
+            ..g
+        });
+        task(
+            gw,
+            TaskStatus {
+                declared,
+                ..TaskStatus::default()
+            },
+        )
+    }
+
+    fn obs_with(capabilities: Option<Observation<Capabilities>>) -> GatewayObservations {
+        GatewayObservations {
+            capabilities,
+            ..observed(Observation::Known(Some(thread_conv())))
+        }
+    }
+
+    fn post_keys(plan: &Plan) -> Vec<String> {
+        plan.effects.iter().map(|e| e.key.clone()).collect()
+    }
+
+    #[test]
+    fn a_tied_task_posts_one_declaration_per_pass_in_order() {
+        let t = speaking(comments(&["c1", "c2"]), 0, vec![], &[]);
+        let (plan, gw) = run(&t, obs_with(None));
+        assert_eq!(post_keys(&plan), vec![key("comment/c1")]);
+        let Action::Post {
+            text, conversation, ..
+        } = &plan.effects[0].action
+        else {
+            panic!("{plan:?}")
+        };
+        assert_eq!(text, "text c1");
+        assert_eq!(conversation.address(), ADDRESS);
+        assert_eq!(gw.declared, 1);
+        assert_eq!(gw.posted, vec!["c1".to_string()]);
+        assert_eq!(gw.posts[&key("comment/c1")].attempts, 1);
+        assert!(
+            gw.posts[&key("comment/c1")].receipt.is_none(),
+            "intent first"
+        );
+    }
+
+    #[test]
+    fn a_refused_post_is_retried_after_the_delay_then_fails_without_holding_the_rest() {
+        let failed = || {
+            Some(Observation::Known(EffectOutcome::Failed {
+                why: "429".into(),
+            }))
+        };
+        // Inside the delay: held, and nothing later goes out.
+        let t = speaking(
+            comments(&["c1", "c2"]),
+            1,
+            vec![(key("comment/c1"), record(1, NOW - 1_000, failed()))],
+            &["c1"],
+        );
+        let (plan, _) = run(&t, obs_with(caps(Marker::Metadata)));
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        // Past the delay: sent again under the same key.
+        let t = speaking(
+            comments(&["c1", "c2"]),
+            1,
+            vec![(key("comment/c1"), record(1, NOW - 60_000, failed()))],
+            &["c1"],
+        );
+        let (plan, gw) = run(&t, obs_with(caps(Marker::Metadata)));
+        assert_eq!(post_keys(&plan), vec![key("comment/c1")]);
+        assert_eq!(gw.posts[&key("comment/c1")].attempts, 2);
+        // Three refusals: PostFailed, and the next declaration goes out.
+        let t = speaking(
+            comments(&["c1", "c2"]),
+            1,
+            vec![(key("comment/c1"), record(3, NOW - 60_000, failed()))],
+            &["c1"],
+        );
+        let (plan, gw) = run(&t, obs_with(caps(Marker::Metadata)));
+        assert_eq!(post_keys(&plan), vec![key("comment/c2")]);
+        let na = gw
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "NeedsAttention")
+            .unwrap();
+        assert_eq!(na.reason, "PostFailed", "{na:?}");
+    }
+
+    #[test]
+    fn an_unknown_post_on_a_nonce_platform_is_resent_inside_the_window_and_held_after() {
+        let lost = || Some(Observation::unknown("timeout"));
+        let nonce = caps(Marker::Nonce { window_ms: 60_000 });
+        let t = speaking(
+            comments(&["c1", "c2"]),
+            1,
+            vec![(key("comment/c1"), record(1, NOW - 1_000, lost()))],
+            &["c1"],
+        );
+        let (plan, gw) = run(&t, obs_with(nonce.clone()));
+        assert_eq!(
+            post_keys(&plan),
+            vec![key("comment/c1")],
+            "the same key, so the same nonce"
+        );
+        let r = &gw.posts[&key("comment/c1")];
+        assert_eq!(
+            r.intent.at,
+            NOW - 1_000,
+            "the window counts from the first send"
+        );
+        assert_eq!(r.attempts, 2);
+        let t = speaking(
+            comments(&["c1", "c2"]),
+            1,
+            vec![(key("comment/c1"), record(1, NOW - 120_000, lost()))],
+            &["c1"],
+        );
+        let (plan, gw) = run(&t, obs_with(nonce));
+        assert!(plan.effects.is_empty(), "past the window: {plan:?}");
+        let na = gw
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "NeedsAttention")
+            .unwrap();
+        assert_eq!(na.reason, "PostUnconfirmed");
+        assert_eq!(gw.declared, 1, "c2 waits");
+    }
+
+    #[test]
+    fn an_unknown_post_is_found_by_a_recovery_read_since_its_intent() {
+        let t = speaking(
+            comments(&["c1"]),
+            1,
+            vec![(key("comment/c1"), record(1, NOW - 1_000, None))],
+            &["c1"],
+        );
+        let asked = probes(&t, obs_with(caps(Marker::Metadata)));
+        assert!(
+            asked.iter().any(|p| matches!(p, Probe::History { query: fleet_api::gateway::HistoryQuery::Since { at }, .. } if *at == NOW - 1_000)),
+            "{asked:?}"
+        );
+        let mut found = fleet_api::gateway::Message {
+            id: "m9".into(),
+            author: Author {
+                id: BOT.into(),
+                name: String::new(),
+                kind: AuthorKind::Fleet,
+            },
+            mentions_fleet: false,
+            at: NOW - 900,
+            text: "text c1".into(),
+            key: Some(key("comment/c1")),
+            starts_thread: false,
+        };
+        let history = |messages| {
+            fleet_api::gateway::HistoryObservation::Known(fleet_api::gateway::History {
+                messages,
+                left_out: 0,
+                starter: None,
+            })
+        };
+        let obs = GatewayObservations {
+            history: Some(history(vec![found.clone()])),
+            ..obs_with(caps(Marker::Metadata))
+        };
+        let (plan, gw) = run(&t, obs);
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        assert_eq!(
+            gw.posts[&key("comment/c1")]
+                .receipt
+                .as_ref()
+                .unwrap()
+                .outcome,
+            Observation::Known(EffectOutcome::Posted {
+                message: "m9".into(),
+                at: NOW - 900
+            })
+        );
+        // A complete read without the marker: it never landed.
+        found.key = Some("someone else's".into());
+        let obs = GatewayObservations {
+            history: Some(history(vec![found])),
+            ..obs_with(caps(Marker::Metadata))
+        };
+        let (plan, gw) = run(&t, obs);
+        assert_eq!(post_keys(&plan), vec![key("comment/c1")]);
+        assert_eq!(gw.posts[&key("comment/c1")].attempts, 2);
+    }
+
+    #[test]
+    fn a_followed_change_is_news_once_per_state() {
+        let mut st = TaskStatus::default();
+        let mut forge = fleet_api::follow::ForgeStatus::default();
+        forge.changes.insert(
+            "cr-7".into(),
+            fleet_api::follow::ChangeEntry::joined("k7", 1),
+        );
+        st.forge = Some(forge);
+        let t = task(tied_at(1), st.clone());
+        let cr = |seq: u64| -> Object {
+            serde_json::from_value(json!({
+                "apiVersion": "fleet/v1alpha1", "kind": "ChangeRequest",
+                "metadata": {"name": "cr-7", "uid": "k7", "generation": 1, "resourceVersion": 3},
+                "spec": {"url": "https://forge.test/o/r/pull/7"},
+                "status": {"state": {"value": "open", "seq": seq}}
+            }))
+            .unwrap()
+        };
+        assert!(probes(&t, obs_with(None)).iter().any(|p| matches!(p, Probe::Object { kind, name } if kind == "ChangeRequest" && name == "cr-7")));
+        let obs = GatewayObservations {
+            changes: BTreeMap::from([("cr-7".to_string(), Observation::Known(Some(cr(2))))]),
+            ..obs_with(None)
+        };
+        let (plan, gw) = run(&t, obs);
+        assert_eq!(post_keys(&plan), vec![key("change/k7/2")]);
+        let Action::Post { text, .. } = &plan.effects[0].action else {
+            panic!()
+        };
+        assert!(
+            text.contains("open") && text.contains("https://forge.test/o/r/pull/7"),
+            "{text}"
+        );
+        assert_eq!(gw.changes["cr-7"], 2);
+        let _ = ChangeState::Open;
+        let listing = BTreeMap::from([("cr-7".to_string(), cr(2))]);
+        let mut settled = gw.clone();
+        settled.posts.get_mut(&key("change/k7/2")).unwrap().receipt = Some(Receipt {
+            action: "post".into(),
+            at: NOW,
+            outcome: Observation::Known(EffectOutcome::Posted {
+                message: "m1".into(),
+                at: NOW,
+            }),
+        });
+        let quiet = task(Some(settled), st);
+        assert!(!GatewayController::due_with(
+            &quiet,
+            NOW,
+            &Observation::Known(Some(&thread_conv())),
+            &[],
+            &listing
+        ));
+        let listing = BTreeMap::from([("cr-7".to_string(), cr(5))]);
+        assert!(GatewayController::due_with(
+            &quiet,
+            NOW,
+            &Observation::Known(Some(&thread_conv())),
+            &[],
+            &listing
+        ));
+    }
+
+    fn asker(gw: Option<GatewayStatus>, declared: Vec<Value>) -> Object {
+        plain(
+            "asker",
+            "ua",
+            json!({}),
+            TaskStatus {
+                gateway: gw,
+                declared,
+                ..TaskStatus::default()
+            },
+        )
+    }
+
+    fn questions_defaults() -> GatewayDefaults {
+        GatewayDefaults {
+            questions: Some(ROUTE.into()),
+            platforms: BTreeMap::from([(ACCOUNT.to_string(), "fake".to_string())]),
+            ..defaults()
+        }
+    }
+
+    #[test]
+    fn an_untied_question_opens_a_thread_and_skips_what_came_before() {
+        let declared = vec![
+            json!({"kind": "Comment", "id": "c0", "text": "early"}),
+            json!({"kind": "Question", "id": "q1", "text": "May I?"}),
+        ];
+        let t = asker(None, declared);
+        assert!(GatewayController::due(&t, NOW));
+        let obs = GatewayObservations {
+            children: Some(Observation::Known(vec![])),
+            ..GatewayObservations::default()
+        };
+        let (plan, gw) = run_with(&t, obs.clone(), questions_defaults());
+        let qkey = "task/asker/ua/gateway/question/q1";
+        assert_eq!(post_keys(&plan), vec![qkey.to_string()]);
+        let Action::Open {
+            channel,
+            account,
+            route,
+            text,
+        } = &plan.effects[0].action
+        else {
+            panic!("{plan:?}")
+        };
+        assert_eq!(
+            (channel.address().as_str(), account.as_str(), route.as_str()),
+            ("fake:C0123ABCD", ACCOUNT, ROUTE)
+        );
+        assert!(text.contains("May I?"));
+        assert_eq!(gw.declared, 2, "the Comment before it is skipped");
+        assert_eq!(gw.conversation.as_ref().unwrap().state, TieState::Opening);
+        // Without a questions route nothing opens and nothing is written.
+        let (plan, _) = run_with(&t, obs, defaults());
+        assert!(plan.effects.is_empty() && plan.status.is_none(), "{plan:?}");
+    }
+
+    #[test]
+    fn an_open_refused_three_times_leaves_the_task_untied_and_a_failed_receive_abandons() {
+        let qkey = "task/asker/ua/gateway/question/q1".to_string();
+        let declared = vec![json!({"kind": "Question", "id": "q1", "text": "May I?"})];
+        let opening = |posts: Vec<(String, EffectRecord)>, state| GatewayStatus {
+            conversation: Some(ConversationTie {
+                name: String::new(),
+                uid: String::new(),
+                state,
+            }),
+            declared: 1,
+            posted: vec!["q1".into()],
+            posts: posts.into_iter().collect(),
+            ..GatewayStatus::default()
+        };
+        let mut refused = record(
+            3,
+            NOW - 60_000,
+            Some(Observation::Known(EffectOutcome::Failed {
+                why: "no".into(),
+            })),
+        );
+        refused.intent.action = "open".into();
+        let t = asker(
+            Some(opening(vec![(qkey.clone(), refused)], TieState::Opening)),
+            declared.clone(),
+        );
+        let obs = GatewayObservations {
+            children: Some(Observation::Known(vec![])),
+            capabilities: caps(Marker::Metadata),
+            ..GatewayObservations::default()
+        };
+        let (plan, gw) = run_with(&t, obs.clone(), questions_defaults());
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        assert!(gw.conversation.is_none(), "{gw:?}");
+        assert!(
+            gw.conditions.iter().any(|c| c.reason == "PostFailed"),
+            "{gw:?}"
+        );
+        // Opened, then three receives failed: abandoned, ReceiveFailed.
+        let mut opened = record(
+            1,
+            NOW - 60_000,
+            Some(Observation::Known(EffectOutcome::Opened {
+                conversation: ConversationRef::split("fake:C0123ABCD:99").unwrap(),
+                message: "99".into(),
+                at: NOW - 59_000,
+            })),
+        );
+        opened.intent.action = "open".into();
+        let mut receive = record(
+            3,
+            NOW - 50_000,
+            Some(Observation::unknown("store unreadable")),
+        );
+        receive.intent.action = "receive".into();
+        let t = asker(
+            Some(opening(
+                vec![
+                    (qkey.clone(), opened.clone()),
+                    (format!("{qkey}/receive"), receive),
+                ],
+                TieState::Opened,
+            )),
+            declared.clone(),
+        );
+        let (plan, gw) = run_with(&t, obs.clone(), questions_defaults());
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        assert_eq!(gw.conversation.as_ref().unwrap().state, TieState::Abandoned);
+        assert!(
+            gw.conditions
+                .iter()
+                .any(|c| c.message.contains("ReceiveFailed")),
+            "{gw:?}"
+        );
+        // Opened, the receive landed: waiting for the Conversation to name it.
+        let mut received = record(
+            1,
+            NOW - 50_000,
+            Some(Observation::Known(EffectOutcome::Received {
+                conversation: "conv-x".into(),
+                uid: "cx".into(),
+            })),
+        );
+        received.intent.action = "receive".into();
+        let t = asker(
+            Some(opening(
+                vec![
+                    (qkey.clone(), opened),
+                    (format!("{qkey}/receive"), received),
+                ],
+                TieState::Opened,
+            )),
+            declared,
+        );
+        let (_, gw) = run_with(&t, obs, questions_defaults());
+        assert_eq!(
+            gw.conversation,
+            Some(ConversationTie {
+                name: "conv-x".into(),
+                uid: "cx".into(),
+                state: TieState::Waiting
+            })
+        );
+        assert_eq!(gw.questions["q1"].at, NOW - 59_000);
+    }
 }

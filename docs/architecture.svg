@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 910" role="img" aria-labelledby="title desc">
 <title id="title">Fleet execution architecture</title>
-<desc id="desc">The CLI constructs store, runtime and forge adapters and calls manager verbs. The manager leases and reconciles Tasks and ChangeRequests through three built-in pure controllers. The Task controller drives sessions through the Runtime port. The ChangeRequest controller mirrors changes through the Forge port. The Forge controller follows declared changes, relays feedback and may request mark-ready. The PluginController host runs registered external controllers: pure plugin decisions pass through a gate before manager-owned writes, while the fleet-plugin adapter runs bounded observe and perform calls through fleet-exec. Runtime and Forge also use fleet-exec for bounded external processes. All layers share fleet-api contracts. Drawn dashed, a planned GatewayController, ConversationController and ListenerController, a design that is not implemented, would be called by the manager and reach chat platforms through a Gateway port and a planned fleet-gateway adapter, while a separate listener hands platform events to the fleet gateway receive verb, through which it also reports its own health.</desc>
+<desc id="desc">The CLI constructs store, runtime and forge adapters and calls manager verbs. The manager leases and reconciles Tasks and ChangeRequests through three built-in pure controllers. The Task controller drives sessions through the Runtime port. The ChangeRequest controller mirrors changes through the Forge port. The Forge controller follows declared changes, relays feedback and may request mark-ready. The PluginController host runs registered external controllers: pure plugin decisions pass through a gate before manager-owned writes, while the fleet-plugin adapter runs bounded observe and perform calls through fleet-exec. Runtime and Forge also use fleet-exec for bounded external processes. All layers share fleet-api contracts. The manager also calls the GatewayController, ConversationController and ListenerController, which reach chat platforms through a Gateway port and the fleet-gateway adapters, while a separate listener hands platform events to the fleet gateway receive verb, through which it also reports its own health.</desc>
 <style>
   svg { color-scheme:light dark } .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
   .box{stroke:#7890a6;stroke-width:1.5} .pure{fill:#e9f5ef} .orchestration{fill:#edf3f8} .adapter{fill:#f3f4f5} .process{fill:#fff2de}
@@ -22,7 +22,7 @@
     <rect class="adapter" x="418" y="626" width="245" height="78" rx="8"/>
     <rect class="adapter" x="805" y="626" width="245" height="78" rx="8"/>
     <rect class="process" x="418" y="762" width="632" height="42" rx="8"/>
-    <rect class="adapter" x="30" y="830" width="1020" height="62" rx="8" stroke-dasharray="6 5"/>
+    <rect class="adapter" x="30" y="830" width="1020" height="62" rx="8"/>
   </g>
   <g text-anchor="middle">
     <g font-size="17" font-weight="650">
@@ -47,9 +47,9 @@
     <path d="M700 237 H1040 V525 H992"/><path d="M300 564 V592 H152 V624"/><path d="M780 564 V736 H734 V760"/>
     <path d="M540 704 V760"/><path d="M928 704 V736 H734 V760"/>
   </g>
-  <text x="540" y="856" font-size="15" font-weight="650" text-anchor="middle">ConversationController · ListenerController · planned GatewayController (design, not implemented)</text>
-  <text x="540" y="878" font-size="13" text-anchor="middle">Gateway port → fleet-gateway (fake today, Slack first) · a listener hands events to fleet gateway receive</text>
-  <path class="arrow" d="M380 250 H14 V861 H28" stroke-dasharray="6 5"/>
+  <text x="540" y="856" font-size="15" font-weight="650" text-anchor="middle">ConversationController · ListenerController · GatewayController</text>
+  <text x="540" y="878" font-size="13" text-anchor="middle">Gateway port → fleet-gateway (fake, Slack, Discord) · a listener hands events to fleet gateway receive</text>
+  <path class="arrow" d="M380 250 H14 V861 H28"/>
   <g class="muted" font-size="12">
     <text x="553" y="181">manager verbs</text><text x="553" y="315">pure probes and plans</text>
     <text x="35" y="600">Store port</text><text x="485" y="600">Runtime port</text><text x="873" y="600">Forge port</text>

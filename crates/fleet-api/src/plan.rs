@@ -106,6 +106,24 @@ pub enum Action {
         conversation: crate::gateway::ConversationRef,
         text: String,
     },
+    /// Open a thread in `channel` on `account`, through the Gateway port,
+    /// whose first post is `text` and carries the effect's key as its
+    /// marker. GatewayController asks, for a Question from an untied Task;
+    /// `route` is the route whose channel it is.
+    Open {
+        account: String,
+        route: String,
+        channel: crate::gateway::ConversationRef,
+        text: String,
+    },
+    /// Add Fleet's opening post to the opened thread's Conversation, as the
+    /// receive verb would, creating the Conversation under the name its
+    /// account and address derive: through the store, never a platform.
+    Receive {
+        account: String,
+        route: String,
+        delivery: crate::gateway::Delivery,
+    },
 }
 
 impl Action {
@@ -117,6 +135,8 @@ impl Action {
             Action::Revive { .. } => "revive",
             Action::MarkReady { .. } => "markReady",
             Action::Post { .. } => "post",
+            Action::Open { .. } => "open",
+            Action::Receive { .. } => "receive",
         }
     }
 }
@@ -201,6 +221,12 @@ pub enum EffectOutcome {
     Posted {
         message: String,
         at: Millis,
+    },
+    /// Fleet's opening post is on the opened thread's Conversation, now or
+    /// before (a duplicate delivery): its name and `uid`.
+    Received {
+        conversation: String,
+        uid: String,
     },
     /// The object exists under the create's name with this `uid`; `adopted`
     /// when it was there already, created by an earlier attempt whose

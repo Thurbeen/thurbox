@@ -674,7 +674,10 @@ refused.
   update may not change them. `create_fenced`, under the lease, takes the
   Conversation's controller for the Task a thread starts, the one create
   that may carry the `gateway.fleet.dev/conversation` labels, which no
-  other create or spec update sets or changes.
+  other create or spec update sets or changes. It also takes the Gateway
+  controller for the Conversation of a thread Fleet opened, and
+  `receive_event` takes the Gateway controller for Fleet's own opening post
+  there, a delivery whose `verified` is `fleet`, and nothing else.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the

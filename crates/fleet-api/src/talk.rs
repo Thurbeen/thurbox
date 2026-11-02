@@ -196,6 +196,17 @@ pub fn child_key(name: &str, uid: &str, child_uid: &str, item: &str) -> String {
     format!("{base}/child/{child_uid}/{item}")
 }
 
+/// The key of one of the Task's posts in its thread:
+/// `task/<name>/<uid>/gateway/<item>`, `item` being `question/<id>`,
+/// `comment/<id>`, `draft/<id>`, `result/<generation>` or
+/// `change/<cr uid>/<state.seq>`. A Question's open of a thread carries the
+/// Question's key; adding its opening post to the Conversation carries
+/// `<key>/receive`.
+pub fn post_key(name: &str, uid: &str, item: &str) -> String {
+    let base = effect_key(crate::task::KIND, name, uid, "gateway", None);
+    format!("{base}/{item}")
+}
+
 /// The `id` of a declared Question, Comment or Draft: a non-empty string.
 pub fn declared_id(item: &Value) -> Option<&str> {
     item.get("id")
@@ -307,6 +318,10 @@ mod tests {
         assert_eq!(
             child_key("t", "u7", "k1", "0"),
             "task/t/u7/gateway/child/k1/0"
+        );
+        assert_eq!(
+            post_key("t", "u7", "change/cr1/4"),
+            "task/t/u7/gateway/change/cr1/4"
         );
     }
 

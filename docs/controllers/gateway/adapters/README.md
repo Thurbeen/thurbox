@@ -15,8 +15,9 @@ its own page:
 `slack`. Telegram and Microsoft Teams are mapped on paper only, under the
 [cross-platform check](#cross-platform-check).
 
-GatewayController's posting is design, not implemented. Today an adapter's
-`post` carries ConversationController's refusals and busy notices. The
+An adapter's `post` carries ConversationController's refusals and busy
+notices, and GatewayController's posts for a tied Task. An adapter's `open`
+carries a Question that opens a thread. The
 [Gateway controller](../README.md) lists what is built.
 
 ## Common rules

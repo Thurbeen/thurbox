@@ -233,7 +233,8 @@ A Discord answer maps onto the port as follows:
 `enforce_nonce` makes Discord return the existing message for a repeated nonce
 "in the past few minutes"
 ([create message](https://docs.discord.com/developers/resources/message#create-message-json/form-params)).
-ConversationController settles an Unknown post as follows:
+ConversationController and GatewayController settle an Unknown post as
+follows:
 
 1. It looks for the key in the mirror.
 2. It resends the post under the same key while both conditions hold:

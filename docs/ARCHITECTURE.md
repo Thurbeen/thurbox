@@ -204,7 +204,7 @@ and every plugin process is one bounded call through `fleet-exec`.
 
 ### The Gateway controller
 
-Partly implemented. The [Gateway controller](controllers/gateway/README.md)
+The [Gateway controller](controllers/gateway/README.md)
 is the Forge controller's pattern applied to chat. A listener outside
 the manager holds a chat platform's connection and hands each raw event to
 `fleet gateway receive`, a bounded manager verb that reads it through the
@@ -218,7 +218,7 @@ the `fleet-gateway` crate, for Slack and Discord. The port, the crate with its
 fake, Slack and Discord adapters, the `[gateway]` section, the two kinds, the
 receive verb, ConversationController, ListenerController, and
 GatewayController's tie, join and relay, with `status.answered` and the
-parent labels, are built; GatewayController's posting is not.
+parent labels, and GatewayController's posting, are built.
 ListenerController reports each account's inbound health from the listener's
 own beats, on a [Listener](resources/listener.md). The purity and process rules
 above are unchanged: the Gateway runs no model, every adapter call is

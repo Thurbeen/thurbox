@@ -3095,3 +3095,47 @@ fn an_amendment_lands_in_spec_and_inbox_together_and_only_through_amend() {
         Err(StoreError::Forbidden(_))
     ));
 }
+
+#[test]
+fn the_gateway_controller_creates_an_opened_threads_conversation_and_spools_only_fleets_post() {
+    let dir = Dir::new("gateway-opened");
+    let store = FileStore::open(&dir.0).unwrap();
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+    let by = FieldManager::GatewayController;
+    assert!(
+        matches!(
+            store.create(conversation("conv-1"), by.clone()),
+            Err(StoreError::Forbidden(_))
+        ),
+        "a controller creates under the lease only"
+    );
+    assert!(matches!(
+        store.create_fenced(task("t"), by.clone(), &lease),
+        Err(StoreError::Forbidden(_))
+    ));
+    let c = store
+        .create_fenced(conversation("conv-1"), by.clone(), &lease)
+        .unwrap();
+    let rv = c.metadata.resource_version;
+    // A person's message is the listener's to spool, never the controller's.
+    assert!(matches!(
+        store.receive_event("conv-1", delivery("Ev1", "m1"), rv, by.clone()),
+        Err(StoreError::Forbidden(_))
+    ));
+    let mut own = delivery("fleet/task/t/u1/gateway/question/q1", "m0");
+    own.verified = fleet_api::gateway::Verified::Fleet;
+    let (_, spooled) = store
+        .receive_event("conv-1", own.clone(), rv, by.clone())
+        .unwrap();
+    assert_eq!(spooled, fleet_api::conversation::Spooled::Written);
+    let rv = store
+        .get("Conversation", "conv-1")
+        .known()
+        .cloned()
+        .flatten()
+        .unwrap()
+        .metadata
+        .resource_version;
+    let (_, again) = store.receive_event("conv-1", own, rv, by).unwrap();
+    assert_eq!(again, fleet_api::conversation::Spooled::Duplicate);
+}

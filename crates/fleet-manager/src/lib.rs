@@ -65,7 +65,7 @@ use fleet_api::plan::{
     Action, CREATE_ACTION, Create, Effect, EffectOutcome, Observations, Plan, Probe, Receipt,
 };
 use fleet_api::runtime::Runtime;
-use fleet_api::talk::{PARENT_LABEL, PARENT_UID_LABEL};
+use fleet_api::talk::{GatewayStatus, PARENT_LABEL, PARENT_UID_LABEL};
 use fleet_api::task;
 use fleet_api::{Clock, LeaseToken, Millis, Object, Observation, Store, StoreError};
 use fleet_controllers::{
@@ -304,6 +304,28 @@ impl Manager<'_> {
             if let Some(why) = conversations.why() {
                 report.unknowns.push(format!("list Conversation: {why}"));
             }
+            // What a tied Task's change news is judged against, listed only
+            // when some tied Task follows a change.
+            let follows = tasks.iter().any(|t| {
+                t.status["gateway"]["conversation"]["state"] == "tied"
+                    && t.status["forge"]["changes"]
+                        .as_object()
+                        .is_some_and(|c| !c.is_empty())
+            });
+            let change_requests: BTreeMap<String, Object> = if !follows {
+                BTreeMap::new()
+            } else {
+                match self.store.list(change_request::KIND) {
+                    Observation::Known(list) => list
+                        .into_iter()
+                        .map(|c| (c.metadata.name.clone(), c))
+                        .collect(),
+                    Observation::Unknown { why } => {
+                        report.unknowns.push(format!("list ChangeRequest: {why}"));
+                        BTreeMap::new()
+                    }
+                }
+            };
             let mut children_of: BTreeMap<&str, Vec<&Object>> = BTreeMap::new();
             for t in &tasks {
                 if let (Some(parent), Some(_)) = (
@@ -320,10 +342,7 @@ impl Manager<'_> {
                 let gateway_due = {
                     let conversation = match &conversations {
                         Observation::Known(map) => Observation::Known(
-                            obj.metadata
-                                .labels
-                                .get(conversation::CONVERSATION_LABEL)
-                                .and_then(|name| map.get(name)),
+                            GatewayController::conversation_of(obj).and_then(|name| map.get(&name)),
                         ),
                         Observation::Unknown { why } => Observation::Unknown { why: why.clone() },
                     };
@@ -331,7 +350,7 @@ impl Manager<'_> {
                         .get(obj.metadata.name.as_str())
                         .map(Vec::as_slice)
                         .unwrap_or_default();
-                    GatewayController::due_with(obj, now, &conversation, children)
+                    GatewayController::due_with(obj, now, &conversation, children, &change_requests)
                 };
                 if !(task_due || forge_due || gateway_due) {
                     continue;
@@ -1229,8 +1248,8 @@ impl Manager<'_> {
         report: &mut RunReport,
         tasks: &[Object],
     ) -> Result<Step, StoreError> {
-        let _ = ttl;
         let ctl = GatewayController;
+        let mut cache = GatewayCache::default();
         let mut input = GatewayInput {
             task: obj,
             observations: GatewayObservations::default(),
@@ -1256,6 +1275,55 @@ impl Manager<'_> {
                                 .push(format!("{} object {kind}/{name}: {why}", obj.key()));
                         }
                         input.observations.conversation = Some(o);
+                    }
+                    Probe::Object { kind, name } => {
+                        let o = self.store.get(&kind, &name);
+                        if let Some(why) = o.why() {
+                            report
+                                .unknowns
+                                .push(format!("{} object {kind}/{name}: {why}", obj.key()));
+                        }
+                        if kind == task::KIND {
+                            input.observations.parent = Some(o);
+                        } else {
+                            input.observations.changes.insert(name, o);
+                        }
+                    }
+                    Probe::Capabilities { account } => {
+                        let answer = match &self.gateway {
+                            Some(gateway) => {
+                                self.capabilities(gateway, &account, lease, ttl, &mut cache)?
+                            }
+                            None => Observation::unknown("no [gateway] section is configured"),
+                        };
+                        if let Some(why) = answer.why() {
+                            report
+                                .unknowns
+                                .push(format!("{} capabilities {account}: {why}", obj.key()));
+                        }
+                        input.observations.capabilities = Some(answer);
+                    }
+                    Probe::History {
+                        account,
+                        conversation,
+                        query,
+                    } => {
+                        let answer = match &self.gateway {
+                            Some(gateway) => {
+                                *lease = self.store.renew_lease(lease, ttl)?;
+                                gateway.port.history(&account, &conversation, &query)
+                            }
+                            None => HistoryObservation::unknown(
+                                fleet_api::gateway::Uncertainty::Refused,
+                                "no [gateway] section is configured",
+                            ),
+                        };
+                        if let HistoryObservation::Unknown { why, .. } = &answer {
+                            report
+                                .unknowns
+                                .push(format!("{} history: {why}", obj.key()));
+                        }
+                        input.observations.history = Some(answer);
                     }
                     Probe::List { kind, labels } => {
                         let selected = |list: &[Object]| -> Vec<Object> {
@@ -1283,8 +1351,7 @@ impl Manager<'_> {
                         };
                         input.observations.children = Some(answer);
                     }
-                    // Not this step's: the next step performs the platform
-                    // reads and the posts.
+                    // Not this controller's.
                     _ => {}
                 }
             }
@@ -1294,6 +1361,7 @@ impl Manager<'_> {
         if plan.status.is_none() && plan.appends.is_empty() {
             return Ok(step);
         }
+        let mut current;
         let gateway = plan
             .status
             .unwrap_or_else(|| obj.status.get("gateway").cloned().unwrap_or(Value::Null));
@@ -1306,15 +1374,132 @@ impl Manager<'_> {
             GatewayController::MANAGER,
             lease,
         ) {
-            Ok(_) => step.wrote += 1,
+            Ok(o) => {
+                current = o;
+                step.wrote += 1;
+            }
             // Someone wrote first, or the key already landed: decide again
-            // from fresh state on the next pass.
+            // from fresh state on the next pass, the intents unwritten and
+            // so nothing performed.
             Err(StoreError::Conflict { .. }) | Err(StoreError::AlreadyExists(_)) => {
                 step.conflict = true;
+                return Ok(step);
             }
             Err(e) => return Err(e),
         }
+        // Intent first (written above), each effect under a fresh lease,
+        // receipt after, under the effect's key.
+        for effect in &plan.effects {
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let outcome = self.perform_gateway(effect, lease);
+            if let Observation::Unknown { why } = &outcome {
+                report
+                    .unknowns
+                    .push(format!("{} {}: {why}", obj.key(), effect.action.name()));
+            }
+            step.effects += 1;
+            current = self.write_gateway_receipt(&current, effect, outcome, lease)?;
+            step.wrote += 1;
+        }
         Ok(step)
+    }
+
+    /// One of GatewayController's effects: a post or an open through the
+    /// Gateway port, or Fleet's opening post added to its thread's
+    /// Conversation through the store.
+    fn perform_gateway(&self, effect: &Effect, lease: &LeaseToken) -> Observation<EffectOutcome> {
+        let Some(gateway) = &self.gateway else {
+            return Observation::Known(EffectOutcome::Failed {
+                why: "no [gateway] section is configured".into(),
+            });
+        };
+        match &effect.action {
+            Action::Post {
+                account,
+                conversation: thread,
+                text,
+            } => gateway.port.post(account, thread, text, &effect.key),
+            Action::Open {
+                account,
+                channel,
+                text,
+                ..
+            } => gateway.port.open(account, channel, text, &effect.key),
+            Action::Receive {
+                account,
+                route,
+                delivery,
+            } => verbs::receive_opened(
+                self.store,
+                account,
+                route,
+                delivery.clone(),
+                GatewayController::MANAGER,
+                lease,
+            ),
+            other => Observation::Known(EffectOutcome::Failed {
+                why: format!("{} is not a Gateway controller effect", other.name()),
+            }),
+        }
+    }
+
+    /// The effect happened (or may have): its receipt lands on the record
+    /// that holds its intent under `status.gateway.posts`, even if the Task
+    /// moved meanwhile, so this re-reads and retries on a conflict.
+    fn write_gateway_receipt(
+        &self,
+        current: &Object,
+        effect: &Effect,
+        outcome: Observation<EffectOutcome>,
+        lease: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        let receipt = Receipt {
+            action: effect.action.name().to_string(),
+            at: self.clock.now(),
+            outcome,
+        };
+        let mut obj = current.clone();
+        for _ in 0..16 {
+            let mut gw: GatewayStatus = match obj.status.get("gateway") {
+                Some(v) if !v.is_null() => serde_json::from_value(v.clone()).map_err(|e| {
+                    StoreError::Invalid(format!("{}: status.gateway: {e}", obj.key()))
+                })?,
+                _ => GatewayStatus::default(),
+            };
+            let Some(record) = gw.posts.get_mut(&effect.key) else {
+                return Err(StoreError::Invalid(format!(
+                    "{}: no post record holds the intent {}",
+                    obj.key(),
+                    effect.key
+                )));
+            };
+            record.receipt = Some(receipt.clone());
+            let value =
+                serde_json::to_value(&gw).map_err(|e| StoreError::Invalid(e.to_string()))?;
+            match self.store.record_relay(
+                &obj.metadata.name,
+                value,
+                Vec::new(),
+                obj.metadata.resource_version,
+                GatewayController::MANAGER,
+                lease,
+            ) {
+                Ok(o) => return Ok(o),
+                Err(StoreError::Conflict { .. }) => {
+                    obj = match self.store.get(task::KIND, &obj.metadata.name) {
+                        Observation::Known(Some(o)) => o,
+                        Observation::Known(None) => return Err(StoreError::NotFound(obj.key())),
+                        Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+                    };
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(StoreError::Busy(format!(
+            "{}: receipt for {} kept conflicting",
+            obj.key(),
+            effect.key
+        )))
     }
 
     /// The mark-ready effect happened (or may have): its receipt must land
@@ -1666,13 +1851,14 @@ impl Manager<'_> {
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
             Action::Release { session } => self.runtime.release(session),
             Action::Revive { session } => self.runtime.revive(session),
-            // The Forge and Conversation controllers' effects, performed by
-            // their own sweeps; TaskController never plans them.
-            Action::MarkReady { .. } | Action::Post { .. } => {
-                Observation::Known(EffectOutcome::Failed {
-                    why: format!("{} is not a Task controller effect", effect.action.name()),
-                })
-            }
+            // The Forge, Conversation and Gateway controllers' effects,
+            // performed by their own steps; TaskController never plans them.
+            Action::MarkReady { .. }
+            | Action::Post { .. }
+            | Action::Open { .. }
+            | Action::Receive { .. } => Observation::Known(EffectOutcome::Failed {
+                why: format!("{} is not a Task controller effect", effect.action.name()),
+            }),
         }
     }
 
