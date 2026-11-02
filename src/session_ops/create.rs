@@ -91,12 +91,12 @@ fn default_name(req: &SpawnRequest) -> String {
 
 /// Refuse a request whose paths cannot work, before anything is resolved.
 ///
-/// Only a local target is checked. Statting a *remote* path on this machine
+/// Only a local target is checked — `local` as the resolved backend says, so
+/// an empty host is this machine. Statting a *remote* path on this machine
 /// refuses a perfectly good repository whenever the two filesystems disagree,
 /// which for a WSL distro or an ssh host is always; the spawn reports the
 /// truth there.
-fn check_paths(req: &SpawnRequest) -> Result<(), OpError> {
-    let local = req.host.is_none();
+fn check_paths(req: &SpawnRequest, local: bool) -> Result<(), OpError> {
     if local && !req.repo_path.is_dir() {
         return Err(OpError::Other(format!(
             "not a directory: {}",
@@ -147,6 +147,75 @@ pub fn check_reports_as(
     )))
 }
 
+/// The backend a creation lands on, and whether the host's own CLI carries it
+/// out. The host is read off the resolved backend, as the spawn reads it, so
+/// every spelling of a host (`box`, `ssh:box`, an empty one for this machine)
+/// reaches the same answer.
+fn route(
+    backends: &crate::backend::BackendRegistry,
+    host: Option<&str>,
+    multiplexer: Option<&str>,
+) -> Result<(String, bool), OpError> {
+    let backend = super::spawn::backend_type_for_choice(backends, host, multiplexer)?;
+    let delegated = super::resolve_host(&backend).flatten().is_some_and(|host| {
+        matches!(
+            super::host_cli::usable(&host),
+            super::host_cli::Usable::Yes(_)
+        )
+    });
+    Ok((backend, delegated))
+}
+
+/// The active session a retry under `session_id` already made, for a creation
+/// this machine carries out.
+///
+/// The id is the caller's, so a session under it is the one an earlier attempt
+/// made — whose answer the caller never saw. It is answered as it is, before
+/// anything only a new session needs: an `OnExisting` rule, a parent deleted
+/// since, a declaration. A caller that resolves such inputs itself asks this
+/// first ([`create_or_adopt`] asks it again, which is cheap). An id a deleted
+/// session holds is refused, before `replace` could tear anything down for a
+/// creation that cannot happen.
+pub fn retried(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    host: Option<&str>,
+    multiplexer: Option<&str>,
+    session_id: Option<SessionId>,
+) -> Result<Option<SharedSession>, OpError> {
+    if session_id.is_none() {
+        return Ok(None);
+    }
+    let (_, delegated) = route(backends, host, multiplexer)?;
+    retried_on(db, delegated, session_id)
+}
+
+fn retried_on(
+    db: &Database,
+    delegated: bool,
+    session_id: Option<SessionId>,
+) -> Result<Option<SharedSession>, OpError> {
+    let Some(id) = session_id.filter(|_| !delegated) else {
+        return Ok(None);
+    };
+    if let Some(existing) = db
+        .get_session_by_id(id)
+        .map_err(|e| format!("get_session_by_id: {e}"))?
+    {
+        return Ok(Some(existing));
+    }
+    if db
+        .get_deleted_session_by_id(id)
+        .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
+        .is_some()
+    {
+        return Err(OpError::Conflict(format!(
+            "session id {id} is already taken by a deleted session"
+        )));
+    }
+    Ok(None)
+}
+
 /// Create the session `req` describes, or answer with the one already there.
 ///
 /// A creation the host's own CLI carries out is the host's to arbitrate
@@ -163,49 +232,17 @@ pub fn create_or_adopt(
     if req.name.is_empty() {
         req.name = default_name(&req);
     }
-    let registry = crate::agent::agent_config::load_or_seed();
+    let (backend, delegated) = route(backends, req.host.as_deref(), req.multiplexer.as_deref())?;
+    if let Some(found) = retried_on(db, delegated, req.session_id)? {
+        return Ok(Created::Existing(Box::new(found)));
+    }
     // Checked before anything is spawned: a typo here is silent otherwise,
     // and the session it would have described is already running by the time
     // the caller could notice.
     if let Some(declared) = &req.reports_as {
-        check_reports_as(&registry, declared)?;
+        check_reports_as(&crate::agent::agent_config::load_or_seed(), declared)?;
     }
-    // The host is read off the resolved backend, as the spawn reads it, so
-    // every spelling of a host (`box`, `ssh:box`) reaches the same answer.
-    let backend = super::spawn::backend_type_for_choice(
-        backends,
-        req.host.as_deref(),
-        req.multiplexer.as_deref(),
-    )?;
-    let delegated = super::resolve_host(&backend).flatten().is_some_and(|host| {
-        matches!(
-            super::host_cli::usable(&host),
-            super::host_cli::Usable::Yes(_)
-        )
-    });
-    // A retry: the id is the caller's, so a session under it is the one an
-    // earlier attempt made — whose answer the caller never saw. Answered as it
-    // is, before any `OnExisting` rule could refuse or replace it. An id a
-    // deleted session holds is refused too, before `replace` could tear
-    // anything down for a creation that cannot happen.
-    if let Some(id) = req.session_id.filter(|_| !delegated) {
-        if let Some(existing) = db
-            .get_session_by_id(id)
-            .map_err(|e| format!("get_session_by_id: {e}"))?
-        {
-            return Ok(Created::Existing(Box::new(existing)));
-        }
-        if db
-            .get_deleted_session_by_id(id)
-            .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
-            .is_some()
-        {
-            return Err(OpError::Conflict(format!(
-                "session id {id} is already taken by a deleted session"
-            )));
-        }
-    }
-    check_paths(&req)?;
+    check_paths(&req, super::resolve_host(&backend) == Some(None))?;
     super::spawn::validate_request(db, &req)?;
     // `fail`, `adopt` and `replace` each promise the caller the only session
     // of that name, so the name is locked from the lookup to the row — the
@@ -688,10 +725,9 @@ mod tests {
 
     #[test]
     fn a_remote_path_is_not_checked_on_this_machine() {
-        let mut req = request("/no/such/path/anywhere");
-        assert!(check_paths(&req).is_err());
-        req.host = Some("box".into());
-        assert_eq!(check_paths(&req), Ok(()));
+        let req = request("/no/such/path/anywhere");
+        assert!(check_paths(&req, true).is_err());
+        assert_eq!(check_paths(&req, false), Ok(()));
     }
 
     #[test]
@@ -699,8 +735,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut req = request(&dir.path().display().to_string());
         req.existing_worktree = Some(dir.path().into());
-        assert!(matches!(check_paths(&req), Err(OpError::Usage(_))));
+        assert!(matches!(check_paths(&req, true), Err(OpError::Usage(_))));
         req.worktree_branch = Some("main".into());
-        assert_eq!(check_paths(&req), Ok(()));
+        assert_eq!(check_paths(&req, true), Ok(()));
     }
 }

@@ -1417,6 +1417,18 @@ fn run_create(
             })
         })
         .transpose()?;
+    // Answered before `--parent`, `--env-stdin` and `--reports-as` are read:
+    // they describe a new session, and a parent deleted since must not turn a
+    // retry of a creation that succeeded into a failure.
+    if let Some(found) = crate::session_ops::create::retried(
+        db,
+        backends,
+        host.as_deref(),
+        multiplexer.as_deref(),
+        session_id,
+    )? {
+        return Ok(existing_session_output(db, backends, &found));
+    }
     let parent_session_id = parent
         .as_deref()
         .map(|reference| resolve(db, reference).map(|s| s.id))

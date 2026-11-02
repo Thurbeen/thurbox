@@ -1847,3 +1847,97 @@ fn an_action_is_read_the_same_by_tasks_automations_and_the_interface() {
         );
     }
 }
+
+/// A retry under a known `--id` is answered with the session it made, before
+/// anything only a new session needs is read: a parent deleted since, or a
+/// declaration that no longer checks, does not turn the retry into a failure.
+#[test]
+fn a_create_retried_under_its_id_answers_after_its_parent_is_gone() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let backends = &reg.cli;
+    let repo = instance.repo();
+
+    let parent = cli(
+        &db,
+        backends,
+        &["session", "create", "--name", "lead", "--repo-path", &repo],
+    )
+    .expect("create the parent");
+    let parent = parent["id"].as_str().expect("parent id").to_string();
+    let id = SessionId::default().to_string();
+    let create = [
+        "session",
+        "create",
+        "--name",
+        "child",
+        "--repo-path",
+        &repo,
+        "--id",
+        &id,
+        "--parent",
+        &parent,
+    ];
+    let first = cli(&db, backends, &create).expect("first create");
+    assert_eq!(first["created"], true);
+    cli(&db, backends, &["session", "delete", "--force", &parent]).expect("delete the parent");
+
+    let retried = cli(&db, backends, &create).expect("the retry answers");
+    assert_eq!(retried["id"], id.as_str());
+    assert_eq!(retried["created"], false);
+}
+
+/// An empty host is this machine, as the backend resolves it, so a local path
+/// that is not there is refused under that spelling too — from the CLI and
+/// from the interface.
+#[test]
+fn an_empty_host_is_checked_as_this_machine() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let missing = instance.root.path().join("no-such-repo");
+    let missing = missing.display().to_string();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    let via_cli = cli(
+        &db,
+        &reg.cli,
+        &[
+            "session",
+            "create",
+            "--name",
+            "x",
+            "--repo-path",
+            &missing,
+            "--host",
+            "",
+        ],
+    )
+    .map(|_| ());
+    let via_kernel = kernel(
+        &mut bus,
+        KernelCommand::Create {
+            name: "x".into(),
+            repo: missing.clone(),
+            branch: None,
+            base: None,
+            worktree_path: None,
+            agent: None,
+            host: Some(String::new()),
+            multiplexer: None,
+            extras: Vec::new(),
+        },
+    );
+    let refused = Err(format!("not a directory: {missing}"));
+    assert_eq!(via_cli, refused, "the CLI");
+    assert_eq!(via_kernel, refused, "the interface");
+}
