@@ -163,6 +163,15 @@ match is **legacy**: pass `--key`.
 | `replace` | tear the old one down (`delete --force`) first |
 | `fail` | refuse, naming the id in the way; exit 5 |
 
+All of this is `session_ops::create::create_or_adopt` (#1468), which the
+interface's `create` command calls too (with `allow`): the `--id` retry, the
+name lock, `--on-existing` with `replace`'s rollback, the built-in hooks a first
+spawn needs, `--reports-as`, an unnamed create taking the worktree directory's,
+branch's or repository's name, and the local refusal of a repository or opened
+worktree that is not a directory. The CLI keeps only parsing, output and arming
+the heartbeat. A task's `--session`/`--repo` and an automation's target are read
+by one parser, `session_ops::action::parse`.
+
 `session create --id <uuid>` creates under the caller's id, and is the one
 answer that comes **before** `--on-existing`: an id already active is the
 session an earlier attempt made, answered as it is (`created: false`); a
@@ -596,8 +605,9 @@ literal: no shell sees it, a leading `-` cannot read as a `send-keys` flag, and 
 newline cannot submit the line before it. Locally the verbs go through the
 backend the row's route names (ADR-30); on an `ssh:`/`wsl:` backend
 `send`/`key`/`capture` are delegated to that host's own `thurbox-cli`
-(`session_ops::send` for `send`, `delegate_to_host` in `src/cli/sessions.rs` for
-the other two), which records their effects in the host's own database.
+(`session_ops::send`, `session_ops::press_key` and `session_ops::capture`, each
+routed by `session_ops::host_cli_for`), which records their effects in the
+host's own database.
 `session_ops::send::send` is the one send (#1468): `session send` and the
 interface's `send` command both call it, so the empty and parked refusals, the
 composer guard, the mailbox hand-over and the host delegation apply to both; the

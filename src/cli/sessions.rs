@@ -165,7 +165,9 @@ pub enum Action {
     },
     /// Create a new session (runs synchronously — its window is live on return).
     Create {
-        /// Session name (1-64 chars, no slashes or leading '.').
+        /// Session name (1-64 chars, no slashes or leading '.'). Empty takes
+        /// the opened worktree's directory name, else the branch, else the
+        /// repository's, as the interface names an unnamed session.
         #[arg(long)]
         name: String,
         /// Absolute path to the repository or working directory.
@@ -763,6 +765,18 @@ pub enum OnExisting {
     Replace,
     /// Refuse, naming the session in the way. Exit 1, nothing created.
     Fail,
+}
+
+impl From<OnExisting> for crate::session_ops::create::OnExisting {
+    fn from(value: OnExisting) -> Self {
+        use crate::session_ops::create::OnExisting as Op;
+        match value {
+            OnExisting::Allow => Op::Allow,
+            OnExisting::Adopt => Op::Adopt,
+            OnExisting::Replace => Op::Replace,
+            OnExisting::Fail => Op::Fail,
+        }
+    }
 }
 
 /// `session meta` — per-session key/value, namespaced by convention.
@@ -1392,11 +1406,6 @@ fn run_create(
         env_stdin,
     } = args;
     let telemetry_attrs = parse_telemetry_attrs(&telemetry_attr)?;
-    // A key that could not be stored is a usage error,
-    // and the `--on-existing` lookup below would otherwise run on it.
-    if let Some(key) = &key {
-        crate::session_ops::names::validate_key(key)?;
-    }
     let session_id = id
         .as_deref()
         .map(|id| {
@@ -1408,52 +1417,6 @@ fn run_create(
             })
         })
         .transpose()?;
-    // A creation the host's own CLI carries out is the host's to arbitrate
-    // (ADR-24): its rows are the record, and this machine's mirror of them
-    // can be a pass behind — a session deleted or renamed there since would
-    // be adopted, refused or torn down here on a picture that is no longer
-    // true. The id, the name and `--on-existing` all travel to the host
-    // instead, which applies them as it applies its own creations.
-    //
-    // The host is read off the resolved backend, as the spawn reads it, so
-    // every spelling `--host` takes (`box`, `ssh:box`) reaches the same
-    // answer here as it does there.
-    let backend = crate::session_ops::spawn::backend_type_for_choice(
-        backends,
-        host.as_deref(),
-        multiplexer.as_deref(),
-    )?;
-    let delegated = crate::session_ops::resolve_host(&backend)
-        .flatten()
-        .is_some_and(|host| {
-            matches!(
-                crate::session_ops::host_cli::usable(&host),
-                crate::session_ops::host_cli::Usable::Yes(_)
-            )
-        });
-    // A retry: the id is the caller's, so a session under it is the one an
-    // earlier attempt made — whose answer the caller never saw. Answered as
-    // it is, before any `--on-existing` rule could refuse or replace it. An
-    // id a deleted session holds is refused here too, before `replace` could
-    // tear anything down for a creation that cannot happen.
-    if let Some(id) = session_id.filter(|_| !delegated) {
-        if let Some(existing) = db
-            .get_session_by_id(id)
-            .map_err(|e| format!("get_session_by_id: {e}"))?
-        {
-            return Ok(existing_session_output(db, backends, &existing));
-        }
-        if db
-            .get_deleted_session_by_id(id)
-            .map_err(|e| format!("get_deleted_session_by_id: {e}"))?
-            .is_some()
-        {
-            return Err(crate::session_ops::OpError::Conflict(format!(
-                "session id {id} is already taken by a deleted session"
-            ))
-            .into());
-        }
-    }
     let parent_session_id = parent
         .as_deref()
         .map(|reference| resolve(db, reference).map(|s| s.id))
@@ -1466,52 +1429,6 @@ fn run_create(
     };
     env_all.extend(parse_env(&env)?);
     let env = env_all;
-    let registry = crate::agent::agent_config::load_or_seed();
-    // Checked before anything is spawned: a typo here is silent
-    // otherwise, and the session it would have described is already
-    // running by the time the caller could notice.
-    if let Some(declared) = &reports_as {
-        check_reports_as(&registry, declared)?;
-    }
-    // Names are not unique, so "already exists" is a decision the
-    // caller makes rather than something thurbox assumes — and it is a
-    // decision about *this* backend, since a mirrored host's rows share
-    // the namespace.
-    // `fail`, `adopt` and `replace` each promise the caller the only session
-    // of that name, so the name is locked from the lookup to the row — the
-    // lock self-heal and restore take. `allow` accepts a namesake, so it waits
-    // on nobody. A key is locked by the spawn itself, and a keyed lookup never
-    // asks about the name.
-    let name_held = match (&key, on_existing) {
-        _ if delegated => None,
-        (None, OnExisting::Fail | OnExisting::Adopt | OnExisting::Replace) => Some(
-            crate::session_ops::names::hold(db, &name, &backend, "create")?.ok_or_else(|| {
-                format!(
-                    "a session named '{name}' is being created on {backend} right now; try \
-                     again once that has finished"
-                )
-            })?,
-        ),
-        _ => None,
-    };
-    let existing = if delegated {
-        Existing::None
-    } else {
-        resolve_existing(
-            db,
-            backends,
-            match &key {
-                Some(key) => Match::Key(key),
-                None => Match::Name(&name),
-            },
-            on_existing,
-            &backend,
-            reports_as.as_deref(),
-        )?
-    };
-    if let Existing::Answered(output) = existing {
-        return Ok(*output);
-    }
     let req = crate::session_ops::SpawnRequest {
         name,
         repo_path,
@@ -1531,54 +1448,20 @@ fn run_create(
         resume_session_id: resume,
         key,
         session_id,
-        reports_as: reports_as.clone(),
-        on_existing: (on_existing != OnExisting::Allow).then(|| {
-            clap::ValueEnum::to_possible_value(&on_existing)
-                .expect("no variant is skipped")
-                .get_name()
-                .to_string()
-        }),
+        reports_as,
+        on_existing: on_existing.into(),
         ..Default::default()
     };
-    let spawned = crate::session_ops::deliver::ensure_hooks_wired_for(db, backends, &req)
-        .and_then(|()| crate::session_ops::spawn_session_headless(db, backends, req));
-    let res = match spawned {
-        Ok(res) => res,
-        // `replace` tore the old session down first, so a spawn that
-        // fails here would otherwise leave the caller with neither
-        // session. Put back what can be put back before reporting — with
-        // the name released, since the restore takes the same lock.
-        Err(e) => {
-            drop(name_held);
-            return Err(rollback_replace(db, backends, &existing, e).into());
-        }
-    };
-    // Here rather than in the spawn: the session exists by now, so a failed
-    // write is reported as exactly that and never rolls a `replace` back. A
-    // delegated session's row is the mirror of the host's, which carries no
-    // declaration; this machine's own reading needs it too.
-    // A session the host answered as already there keeps the declaration the
-    // host holds for it; this machine's mirror copies that one.
-    let reports_as = match &res.found {
-        Some(found) => {
-            if let Err(e) = db.set_reports_as(res.session_id, found.reports_as.as_deref()) {
-                tracing::warn!("'{}': mirroring reports-as failed: {e}", res.name);
+    let (res, reports_as) =
+        match crate::session_ops::create::create_or_adopt(db, backends, req, None)? {
+            crate::session_ops::create::Created::Existing(found) => {
+                return Ok(existing_session_output(db, backends, &found));
             }
-            None
-        }
-        None => reports_as,
-    };
-    if let Some(declared) = &reports_as {
-        if let Err(e) = db.set_reports_as(res.session_id, Some(declared)) {
-            return Err(format!(
-                "session '{}' ({}) was created, but declaring it as '{declared}' \
-                 failed: set_reports_as: {e}. Retry with `thurbox-cli session \
-                 reports-as {} {declared}`",
-                res.name, res.session_id, res.session_id
-            )
-            .into());
-        }
-    }
+            crate::session_ops::create::Created::Spawned { result, reports_as } => {
+                (*result, reports_as)
+            }
+        };
+    let registry = crate::agent::agent_config::load_or_seed();
     // Nothing has signalled yet, so this is `uncovered` or `unreported`
     // — read against whatever will actually report.
     let state = crate::session::Assessment::from_hooks(
@@ -2047,12 +1930,10 @@ fn run_key(
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, &uuid)?;
     let resolved = crate::backend::Key::parse(&key).ok_or_else(|| unknown_key(&key))?;
-    refuse_if_parked(db, &session)?;
-    let id = session.id.to_string();
-    if let Some(remote) = delegate_to_host(&session, &["session", "key", &id, resolved.name()])? {
-        return Ok(remote);
-    }
-    let spelled = crate::session_ops::press_key(db, backends, &session, &resolved)?;
+    let spelled = match crate::session_ops::press_key(db, backends, &session, &resolved)? {
+        crate::session_ops::Pressed::Local(spelled) => spelled,
+        crate::session_ops::Pressed::Host(answer) => return Ok(host_output(answer)),
+    };
     Ok(CommandOutput::new(
         json!({
             "sent": true,
@@ -2644,7 +2525,7 @@ fn codex_hook_owned_by_pane(target: &SharedSession) -> bool {
 /// only ever read `output` sees exactly what it always did.
 ///
 /// A session on a host is captured by that host's own CLI where it has one
-/// (see [`delegate_to_host`]), like every pane verb.
+/// (see [`crate::session_ops::host_cli_for`]), like every pane verb.
 fn capture_pane(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
@@ -2653,24 +2534,11 @@ fn capture_pane(
     ansi: bool,
 ) -> Result<CommandOutput, CommandError> {
     let session = resolve(db, uuid)?;
-    refuse_if_parked(db, &session)?;
-    let id = session.id.to_string();
-    let line_count = lines.to_string();
-    let mut args = vec!["session", "capture", &id, "--lines", &line_count];
-    if ansi {
-        args.push("--ansi");
-    }
-    if let Some(remote) = delegate_to_host(&session, &args)? {
-        return Ok(remote);
-    }
-    let (backend, pane) = crate::session_ops::windows::require_agent_pane(backends, &session)?;
-    let output = backend.capture(&pane, lines, ansi).map_err(|e| {
-        crate::session_ops::OpError::from(e).context(format!("capture: session '{}'", session.name))
-    })?;
-    // Read after the capture, so a pane that is simply not there fails as it
-    // always has rather than reporting a screenful of nothing with null state.
-    // The same pane, so the state describes the one just captured.
-    let state = backend.pane_state(&pane).unwrap_or_default();
+    let (output, state) =
+        match crate::session_ops::capture::capture(db, backends, &session, lines, ansi)? {
+            crate::session_ops::capture::Captured::Local { output, state } => (output, state),
+            crate::session_ops::capture::Captured::Host(answer) => return Ok(host_output(answer)),
+        };
     let human = output.clone();
     Ok(CommandOutput::new(
         json!({
@@ -2929,7 +2797,10 @@ fn set_reports_as(
     let session = resolve(db, reference)?;
     let declared = agent.filter(|_| !clear);
     if let Some(agent) = declared {
-        check_reports_as(&crate::agent::agent_config::load_or_seed(), agent)?;
+        crate::session_ops::create::check_reports_as(
+            &crate::agent::agent_config::load_or_seed(),
+            agent,
+        )?;
     }
     db.set_reports_as(session.id, declared)
         .map_err(|e| format!("set_reports_as: {e}"))?;
@@ -3411,195 +3282,6 @@ fn worktree_json(w: &crate::sync::SharedWorktree) -> Value {
     })
 }
 
-/// What `--on-existing` looks for: the session with the caller's key on the
-/// target host, or — for a caller that gives none — the legacy name match.
-#[derive(Clone, Copy)]
-enum Match<'a> {
-    Key(&'a str),
-    Name(&'a str),
-}
-
-/// What [`resolve_existing`] decided, and what the creation still owes it.
-#[derive(Debug)]
-enum Existing {
-    /// Nothing of that name on this backend — spawn.
-    None,
-    /// The answer is already a document (`adopt`); the creation must not run.
-    Answered(Box<CommandOutput>),
-    /// `replace` tore this session down. A spawn that now fails has to put it
-    /// back, or the caller is left with neither.
-    Replaced(SessionId),
-}
-
-/// Apply the caller's [`OnExisting`] answer before anything is spawned.
-///
-/// A refusal is an `Err`, which the entrypoint renders as a structured document
-/// on stdout and exits non-zero — what Gas City's `RPP-LIFECYCLE-002` requires
-/// of a duplicate start, and what firstmate was hand-rolling a `session list`
-/// pre-check to achieve.
-///
-/// `backend` scopes the match to the machine the new session will land on. The
-/// name namespace is *not* per-machine: a database mirroring a shareable host
-/// (ADR-24) holds that host's rows beside its own, and two machines may
-/// legitimately each have a session called `build`. Matching across all of them
-/// made `replace` force-delete a session on another host, `fail` refuse a local
-/// create because of a remote namesake, and `adopt` hand back an id whose pane
-/// is not on this machine. The lookup itself is
-/// [`session_ops::names::live_namesakes`](crate::session_ops::names::live_namesakes),
-/// shared with the two creators that reach no `OnExisting` at all — extension
-/// self-heal and `session restore`.
-///
-/// Ambiguity blocks `adopt` and `replace` but not `allow`: adopting one of two
-/// same-named sessions, or destroying one of them, is a guess about which was
-/// meant. It is the same rule [`super::session_ref`] follows, and it still
-/// applies within one backend — thurbox enforces no uniqueness there either.
-///
-/// `reports_as` is only consulted on the `adopt` arm: `replace` and `None`
-/// both flow back into the normal creation path, which already applies it to
-/// the freshly spawned session.
-///
-/// With a key ([`Match::Key`]) the question is the key's, on the target
-/// **host** (issue #1408): the session with that key, whatever it is called now
-/// — which is what lets `adopt` survive a rename. A namesake with another key or
-/// none is not "existing" for that call. Without one, the name match above is
-/// unchanged; a keyed session it finds is adopted with its key, replaced
-/// (key and all — the new session has none), or refused, like any other.
-fn resolve_existing(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    matching: Match<'_>,
-    mode: OnExisting,
-    backend: &str,
-    reports_as: Option<&str>,
-) -> Result<Existing, CommandError> {
-    if mode == OnExisting::Allow {
-        return Ok(Existing::None);
-    }
-    let (found, what): (Vec<SharedSession>, String) = match matching {
-        Match::Key(key) => (
-            crate::session_ops::names::live_key_holders(db, key, backend)?,
-            format!("a session with key '{key}'"),
-        ),
-        Match::Name(name) => (
-            crate::session_ops::names::live_namesakes(db, name, backend)?,
-            format!("a session named '{name}'"),
-        ),
-    };
-    let name = match matching {
-        Match::Key(key) => key,
-        Match::Name(name) => name,
-    };
-    match (mode, found.len()) {
-        (OnExisting::Allow, _) | (_, 0) => Ok(Existing::None),
-        (OnExisting::Fail, _) => Err(crate::session_ops::OpError::Conflict(format!(
-            "{what} is already active on {backend} ({}). Use \
-             `--on-existing adopt` to take it as it is, `--on-existing replace` \
-             to tear it down first, or pick another {}",
-            found
-                .iter()
-                .map(|s| s.id.to_string())
-                .collect::<Vec<_>>()
-                .join(", "),
-            match matching {
-                Match::Key(_) => "key",
-                Match::Name(_) => "name",
-            }
-        ))
-        .into()),
-        (OnExisting::Adopt, 1) => {
-            if let Some(declared) = reports_as {
-                db.set_reports_as(found[0].id, Some(declared))
-                    .map_err(|e| format!("set_reports_as: {e}"))?;
-            }
-            Ok(Existing::Answered(Box::new(existing_session_output(
-                db, backends, &found[0],
-            ))))
-        }
-        (OnExisting::Replace, 1) => {
-            crate::session_ops::delete::delete_session_headless(db, backends, found[0].id, true)?;
-            Ok(Existing::Replaced(found[0].id))
-        }
-        (OnExisting::Adopt | OnExisting::Replace, n) => Err(CommandError::with_code(
-            format!(
-                "'{name}' matches {n} active sessions on {backend}, so there is no single one \
-                 to {}. Address them by id, or pick another name:\n{}",
-                if mode == OnExisting::Adopt {
-                    "adopt"
-                } else {
-                    "replace"
-                },
-                found
-                    .iter()
-                    .map(|s| format!("  {}  {}", s.id, s.agent))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ),
-            super::EXIT_AMBIGUOUS,
-        )),
-    }
-}
-
-/// Put back what `replace` tore down when the replacement could not be spawned.
-///
-/// `replace` is a force delete followed by a create, and it cannot be the other
-/// way round: the new session wants the branch and the checkout the old one is
-/// holding. So the failure it has to answer for is the one in the middle —
-/// a spawn that fails after the teardown used to leave the caller with neither
-/// session. The undo is the same best-effort restore the interface runs, which
-/// brings back the row, the branch and the agent; uncommitted work went with
-/// the force delete and does not come back, and the message says so rather than
-/// implying the replace was free.
-fn rollback_replace(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    existing: &Existing,
-    spawn_error: crate::session_ops::OpError,
-) -> crate::session_ops::OpError {
-    let Existing::Replaced(id) = existing else {
-        return spawn_error;
-    };
-    // The rollback adds to the sentence; the kind stays the spawn's.
-    let message = match crate::session_ops::restore_session_headless(db, backends, *id, true) {
-        Ok(report) => format!(
-            "{spawn_error} — the replacement could not be spawned, so '{}' ({id}) was restored \
-             best-effort: committed branch state is back, uncommitted work went with the \
-             force delete",
-            report.name
-        ),
-        Err(e) => format!(
-            "{spawn_error} — the replacement could not be spawned and the session it replaced \
-             ({id}) could not be restored either ({e}). `thurbox-cli session restore {id} \
-             --best-effort` is the retry"
-        ),
-    };
-    crate::session_ops::OpError::from_kind(spawn_error.kind(), message)
-}
-
-/// Refuse a `--reports-as`/`reports-as` agent thurbox ships no hooks for.
-///
-/// The declaration exists for the coverage it unlocks, so one that unlocks
-/// nothing is a typo rather than a preference — and a silent one, since the
-/// only symptom is the coverage the caller was trying to fix staying `none`.
-fn check_reports_as(
-    registry: &crate::session::AgentRegistry,
-    agent: &str,
-) -> Result<(), CommandError> {
-    if crate::session::coverage_for(registry, agent).is_some() {
-        return Ok(());
-    }
-    Err(format!(
-        "thurbox ships no status hooks for agent '{agent}', so declaring it would change \
-         nothing. Covered agents: {}. A custom agent asserts a family with `hook_schema` in \
-         agents.toml.",
-        crate::session::AGENT_HOOK_COVERAGE
-            .iter()
-            .map(|c| c.agent)
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
-    .into())
-}
-
 /// The `-L` socket a row's pane is on, as a create document reports it: the
 /// host's for a remote row (ADR-12), this instance's own for a local one, and
 /// none for a row whose host `hosts.toml` no longer describes — this
@@ -3668,64 +3350,10 @@ fn existing_session_output(
     .help(["thurbox-cli session get <id>   what it is doing now"])
 }
 
-/// What every send checks here before it types or asks a host: one place, so
-/// a waiting send and a plain one cannot drift apart.
-/// Refuse a pane verb pointed at a **parked** session, naming the fix — the
-/// same refusal `session send` gives ([`crate::session_ops::send::refuse_if_parked`]).
-fn refuse_if_parked(db: &Database, session: &SharedSession) -> Result<(), CommandError> {
-    Ok(crate::session_ops::send::refuse_if_parked(db, session)?)
-}
-
 /// Resolve the session a command was pointed at — a name, a UUID or an id
 /// prefix, all equally. See [`super::session_ref`] for why one resolver.
 pub(crate) fn resolve(db: &Database, reference: &str) -> Result<SharedSession, CommandError> {
     super::session_ref::resolve(db, reference)
-}
-
-/// Run a pane command on the machine the session actually lives on.
-///
-/// A session on a host is driven by that host's own `thurbox-cli`, not through
-/// this machine's connection to the host's server: the host's CLI is the one
-/// that records a verb's effects in the host's own database (ADR-24), and the
-/// one that knows which socket its server really uses. thurbox already knows
-/// how to run its own CLI on a host — the mirror pass does it on every tick —
-/// so a pane verb means the same thing on every machine.
-///
-/// `Ok(None)` means "drive the pane from here": the session is local, or its
-/// host has no usable `thurbox-cli` — sharing is off, or none could be found
-/// or provisioned — so the caller reaches the window through the route's
-/// backend in the registry, as the kernel does (ADR-30). `Ok(Some(output))` is
-/// the host's own answer, already a document. Only a host with no `hosts.toml`
-/// entry is refused here: it names no machine to reach either way.
-fn delegate_to_host(
-    session: &SharedSession,
-    args: &[&str],
-) -> Result<Option<CommandOutput>, CommandError> {
-    let Some((host, cli)) = host_cli_for(session)? else {
-        return Ok(None);
-    };
-    let answer = crate::session_ops::host_cli::run(&host, &cli, args)?;
-    Ok(Some(host_output(answer)))
-}
-
-/// The host and its CLI a remote row's verbs are delegated to, or `None` for a
-/// local row or a host that cannot take delegation.
-fn host_cli_for(
-    session: &SharedSession,
-) -> Result<
-    Option<(
-        crate::session::HostDef,
-        crate::session_ops::host_cli::CliInfo,
-    )>,
-    CommandError,
-> {
-    if !crate::session::Route::is_remote_key(&session.backend_type) {
-        return Ok(None);
-    }
-    Ok(match crate::session_ops::Executor::for_session(session)? {
-        crate::session_ops::Executor::HostCli { host, cli } => Some((host, cli)),
-        crate::session_ops::Executor::Local => None,
-    })
 }
 
 fn host_output(answer: Value) -> CommandOutput {
@@ -4088,21 +3716,6 @@ mod tests {
         Database::open_in_memory().unwrap()
     }
 
-    /// A failed create reports the kind its spawn failed with, so a host's
-    /// conflict still exits 5 and an undetermined call still says so.
-    #[test]
-    fn a_failed_spawn_keeps_its_kind_through_the_rollback() {
-        let backends = crate::backend::registry::inert();
-        for error in [
-            crate::session_ops::OpError::Conflict("key taken on the host".into()),
-            crate::session_ops::OpError::Undetermined("host went quiet".into()),
-        ] {
-            let kind = error.kind();
-            let reported = rollback_replace(&db(), &backends, &Existing::None, error);
-            assert_eq!(reported.kind(), kind, "{reported}");
-        }
-    }
-
     /// A row on a host `hosts.toml` no longer describes has no known server,
     /// and naming this instance's would send a caller to the wrong machine.
     #[test]
@@ -4219,71 +3832,6 @@ mod tests {
             tombstone_at: None,
             key: None,
         }
-    }
-
-    /// The name namespace spans machines (ADR-24 mirrors a shareable host's
-    /// rows into this database), so `--on-existing` has to ask about the
-    /// backend the creation will land on. Matching across all of them let a
-    /// local `replace` force-delete a session on another host, `fail` refuse a
-    /// local create because of a remote namesake, and `adopt` hand back an id
-    /// whose pane is on a different machine.
-    #[test]
-    fn on_existing_never_sees_a_namesake_on_another_host() {
-        let db = db();
-        let mut remote = make_test_session("build");
-        remote.backend_type = "ssh:devbox".into();
-        db.upsert_session(&remote).unwrap();
-
-        for mode in [OnExisting::Fail, OnExisting::Adopt, OnExisting::Replace] {
-            assert!(
-                matches!(
-                    resolve_existing(
-                        &db,
-                        &crate::backend::registry::inert(),
-                        Match::Name("build"),
-                        mode,
-                        "local-tmux",
-                        None
-                    ),
-                    Ok(Existing::None)
-                ),
-                "{mode:?} must not act on a row belonging to another host"
-            );
-        }
-        // The row is untouched — nothing was replaced on the other machine.
-        assert!(db.get_session_by_id(remote.id).unwrap().is_some());
-
-        // A create *for that host* does see it, on the same terms.
-        assert!(resolve_existing(
-            &db,
-            &crate::backend::registry::inert(),
-            Match::Name("build"),
-            OnExisting::Fail,
-            "ssh:devbox",
-            None
-        )
-        .is_err());
-    }
-
-    /// Ambiguity here is the same failure the reference resolver reports, so it
-    /// earns the same exit code: a driver can act on "none" and only an
-    /// operator can settle "several".
-    #[test]
-    fn an_ambiguous_name_refuses_with_the_ambiguity_exit_code() {
-        let db = db();
-        db.upsert_session(&make_test_session("twin")).unwrap();
-        db.upsert_session(&make_test_session("twin")).unwrap();
-        let err = resolve_existing(
-            &db,
-            &crate::backend::registry::inert(),
-            Match::Name("twin"),
-            OnExisting::Adopt,
-            "local-tmux",
-            None,
-        )
-        .unwrap_err();
-        assert_eq!(err.exit_code, super::super::EXIT_AMBIGUOUS);
-        assert!(err.contains("matches 2"), "got {err}");
     }
 
     /// A driver that applied `agent launch-args claude` inside a `--command`
@@ -5142,139 +4690,6 @@ mod tests {
         let mut s = make_test_session(name);
         s.key = Some(key.into());
         s
-    }
-
-    fn answered(existing: Existing) -> Value {
-        match existing {
-            Existing::Answered(output) => output.json,
-            other => panic!("expected an answer, got {other:?}"),
-        }
-    }
-
-    /// `--on-existing` with `--key`: "existing" is the session with that key
-    /// on the target host, whatever it is called now — which is what lets
-    /// `adopt` survive a rename. A namesake with another key, or none, is not
-    /// it, and neither is the same key on another host.
-    #[test]
-    fn on_existing_with_a_key_matches_the_key_and_not_the_name() {
-        let db = db();
-        let backends = crate::backend::registry::inert();
-        let mine = keyed_test_session("renamed-by-the-user", "fleet.lead");
-        db.upsert_session(&mine).unwrap();
-        db.upsert_session(&make_test_session("worker")).unwrap();
-        db.upsert_session(&keyed_test_session("worker", "fleet.other"))
-            .unwrap();
-        let mut remote = keyed_test_session("lead", "fleet.remote");
-        remote.backend_type = "ssh:devbox".into();
-        db.upsert_session(&remote).unwrap();
-
-        let adopted = answered(
-            resolve_existing(
-                &db,
-                &backends,
-                Match::Key("fleet.lead"),
-                OnExisting::Adopt,
-                "local-tmux",
-                None,
-            )
-            .unwrap(),
-        );
-        assert_eq!(adopted["id"], mine.id.to_string());
-        assert_eq!(adopted["key"], "fleet.lead");
-        assert_eq!(adopted["created"], false);
-
-        let err = resolve_existing(
-            &db,
-            &backends,
-            Match::Key("fleet.lead"),
-            OnExisting::Fail,
-            "local-tmux",
-            None,
-        )
-        .unwrap_err();
-        assert!(err.message.contains("key 'fleet.lead'"), "{}", err.message);
-
-        // The name `worker` is taken twice over, by a keyless session and by
-        // one with another key; neither is the session this key names.
-        for mode in [OnExisting::Fail, OnExisting::Adopt, OnExisting::Replace] {
-            assert!(matches!(
-                resolve_existing(
-                    &db,
-                    &backends,
-                    Match::Key("fleet.worker"),
-                    mode,
-                    "local-tmux",
-                    None
-                ),
-                Ok(Existing::None)
-            ));
-            assert!(
-                matches!(
-                    resolve_existing(
-                        &db,
-                        &backends,
-                        Match::Key("fleet.remote"),
-                        mode,
-                        "local-tmux",
-                        None
-                    ),
-                    Ok(Existing::None)
-                ),
-                "{mode:?}: a key is per host"
-            );
-        }
-    }
-
-    /// Without `--key`, the legacy name match is unchanged, keyed sessions
-    /// included: `adopt` hands one back with its key showing (so the caller
-    /// sees whose it is), `fail` counts it as taken, and `replace` tears it
-    /// down, key and all.
-    #[test]
-    fn on_existing_without_a_key_still_matches_names_keyed_or_not() {
-        let db = db();
-        let backends = crate::backend::registry::inert();
-        let theirs = keyed_test_session("worker", "fleet.worker");
-        db.upsert_session(&theirs).unwrap();
-
-        let adopted = answered(
-            resolve_existing(
-                &db,
-                &backends,
-                Match::Name("worker"),
-                OnExisting::Adopt,
-                "local-tmux",
-                None,
-            )
-            .unwrap(),
-        );
-        assert_eq!(adopted["id"], theirs.id.to_string());
-        assert_eq!(adopted["key"], "fleet.worker", "the key stays and shows");
-        assert_eq!(
-            db.get_session_by_id(theirs.id).unwrap().unwrap().key,
-            theirs.key
-        );
-
-        assert!(resolve_existing(
-            &db,
-            &backends,
-            Match::Name("worker"),
-            OnExisting::Fail,
-            "local-tmux",
-            None
-        )
-        .is_err());
-
-        let replaced = resolve_existing(
-            &db,
-            &backends,
-            Match::Name("worker"),
-            OnExisting::Replace,
-            "local-tmux",
-            None,
-        )
-        .unwrap();
-        assert!(matches!(replaced, Existing::Replaced(id) if id == theirs.id));
-        assert!(db.find_sessions_by_key("fleet.worker").unwrap().is_empty());
     }
 
     #[test]

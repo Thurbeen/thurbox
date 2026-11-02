@@ -429,36 +429,23 @@ fn weekday(draft: &Draft) -> Result<Option<u32>, String> {
 }
 
 /// The action a new automation's draft names: exactly one of a session to
-/// send to, a repository to spawn in, or a command to run.
+/// send to, a repository to spawn in, or a command to run. Read by the parser
+/// a task's action shares.
 fn draft_action(db: &Database, draft: &Draft) -> Result<AutomationAction, String> {
-    match (&draft.session, &draft.repo, &draft.command) {
-        (Some(session), None, None) => {
-            let session_id: SessionId = session
-                .parse()
-                .map_err(|_| format!("not a session id: {session}"))?;
-            db.get_session_by_id(session_id)
-                .map_err(|e| format!("get session: {e}"))?
-                .ok_or_else(|| format!("no session {session} to send to"))?;
-            Ok(AutomationAction::Send { session_id })
-        }
-        (None, Some(repo), None) => Ok(AutomationAction::Spawn {
-            repo_path: repo.into(),
-            worktree_branch: draft.branch.clone(),
-            base_branch: draft.base.clone(),
+    crate::session_ops::action::parse(
+        db,
+        crate::session_ops::action::Target {
+            session: draft.session.clone(),
+            repo: draft.repo.clone(),
+            branch: draft.branch.clone(),
+            base: draft.base.clone(),
             agent: draft.agent.clone(),
             extra_repos: Vec::new(),
-        }),
-        (None, None, Some(command)) if command.trim().is_empty() => {
-            Err("the command must not be empty".into())
-        }
-        (None, None, Some(command)) => Ok(AutomationAction::Exec {
-            command: command.clone(),
-        }),
-        (None, None, None) => {
-            Err("an automation needs a target: a session, a repository or a command".into())
-        }
-        _ => Err("name only one target: a session, a repository or a command".into()),
-    }
+            command: draft.command.clone(),
+        },
+    )
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "an automation needs a target: a session, a repository or a command".into())
 }
 
 /// When an enabled automation fires next, or why it never will.

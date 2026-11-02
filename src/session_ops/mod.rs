@@ -30,13 +30,16 @@ impl From<anyhow::Error> for OpError {
     }
 }
 
+pub mod action;
 pub mod automations;
 pub mod bounded;
 pub mod builtin;
 pub mod builtin_hooks;
 pub mod builtin_sessions_skill;
 pub mod builtin_ui_skill;
+pub mod capture;
 pub mod composer;
+pub mod create;
 pub mod delete;
 pub mod deliver;
 pub mod delivery;
@@ -263,20 +266,57 @@ pub fn send_text_confirmed(
     })
 }
 
+/// What [`press_key`] did.
+#[derive(Debug, Clone)]
+pub enum Pressed {
+    /// Pressed from this machine; the key as the session's backend spelled it.
+    Local(String),
+    /// The session's host pressed it with its own CLI; its whole answer.
+    Host(serde_json::Value),
+}
+
 /// Press `key` in a session's agent pane, waiting for a delivery in flight to
-/// that session, and return the key as the backend spelled it.
+/// that session. A parked session has no pane and is refused; a session on a
+/// host that takes delegation has the host's own CLI press it, as a send does
+/// (#1468).
 pub fn press_key(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     session: &SharedSession,
     key: &crate::backend::Key,
-) -> Result<String, OpError> {
+) -> Result<Pressed, OpError> {
+    send::refuse_if_parked(db, session)?;
+    if let Some((host, cli)) = host_cli_for(session)? {
+        let id = session.id.to_string();
+        return host_cli::run(&host, &cli, &["session", "key", &id, key.name()]).map(Pressed::Host);
+    }
     let (backend, pane) = windows::require_agent_pane(backends, session)?;
     let lock = delivery_lock(session.id);
     let _held = lock
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    press(db, backend.as_ref(), &pane, session, key).map_err(|e| e.context("send_key"))
+    press(db, backend.as_ref(), &pane, session, key)
+        .map(Pressed::Local)
+        .map_err(|e| e.context("send_key"))
+}
+
+/// The host and its CLI a remote row's pane verbs are handed to, or `None`
+/// for a local row or a host that cannot take delegation.
+///
+/// A session on a host is driven by that host's own `thurbox-cli`, not through
+/// this machine's connection to the host's server: the host's CLI is the one
+/// that records a verb's effects in the host's own database (ADR-24), and the
+/// one that knows which socket its server really uses.
+pub fn host_cli_for(
+    session: &SharedSession,
+) -> Result<Option<(crate::session::HostDef, host_cli::CliInfo)>, OpError> {
+    if !crate::session::Route::is_remote_key(&session.backend_type) {
+        return Ok(None);
+    }
+    Ok(match Executor::for_session(session)? {
+        Executor::HostCli { host, cli } => Some((host, cli)),
+        Executor::Local => None,
+    })
 }
 
 fn press_enter(

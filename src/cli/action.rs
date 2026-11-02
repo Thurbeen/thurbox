@@ -1,6 +1,6 @@
-//! Shared helpers for the `task` and `automation` CLI surfaces, which both build
-//! an `AutomationAction` from `--session`/`--repo`/`--command` flags, and label
-//! and serialize it. Spawning and delivering a prompt is
+//! Shared helpers for the `task` and `automation` CLI surfaces, which both
+//! label and serialize an `AutomationAction`; `task` also reads one from its
+//! `--session`/`--repo` flags. Spawning and delivering a prompt is
 //! `session_ops::deliver`'s.
 //!
 //! tmux/spawn helpers are reached via fully-qualified `crate::agent::…` paths (no
@@ -9,75 +9,18 @@
 
 use serde_json::{json, Value};
 
-use crate::session::{AutomationAction, SessionId};
+use crate::session::AutomationAction;
 use crate::storage::Database;
 
-/// The send/spawn/exec flags both action-bearing commands accept, gathered so
-/// their resolution lives once. `task` passes no `--command` (Exec is
-/// automation-only) and accepts an action-less record; `automation` requires
-/// one — both differences sit at the call sites, not here.
-pub(crate) struct ActionFlags {
-    pub session: Option<String>,
-    pub repo: Option<String>,
-    pub worktree: Option<String>,
-    pub base: Option<String>,
-    pub agent: Option<String>,
-    pub extra_repos: Vec<crate::session::ExtraRepo>,
-    pub command: Option<String>,
-}
-
-/// Resolve an action from the flags: at most one of `--session` (send),
-/// `--repo` (spawn) or `--command` (exec); `--add-repo`/`--add-dir` only make
-/// sense for a spawn. `Ok(None)` when no action flag was given.
+/// Resolve a task's action from its flags: at most one of `--session` (send)
+/// or `--repo` (spawn); `--add-repo`/`--add-dir` only make sense for a spawn.
+/// `Ok(None)` when no action flag was given. The parsing is
+/// [`crate::session_ops::action::parse`], which an automation's target shares.
 pub(crate) fn resolve_action(
-    flags: ActionFlags,
+    target: crate::session_ops::action::Target,
     db: &Database,
 ) -> Result<Option<AutomationAction>, String> {
-    let ActionFlags {
-        session,
-        repo,
-        worktree,
-        base,
-        agent,
-        extra_repos,
-        command,
-    } = flags;
-    if let Some(cmd) = command {
-        if session.is_some() || repo.is_some() {
-            return Err("specify only one of --session, --repo, or --command".into());
-        }
-        if !extra_repos.is_empty() {
-            return Err("--add-repo/--add-dir require --repo (a spawn action)".into());
-        }
-        if cmd.trim().is_empty() {
-            return Err("--command must not be empty".into());
-        }
-        return Ok(Some(AutomationAction::Exec { command: cmd }));
-    }
-    match (session, repo) {
-        (Some(_), Some(_)) => {
-            Err("specify either --session (send) or --repo (spawn), not both".into())
-        }
-        (None, None) => {
-            if !extra_repos.is_empty() {
-                return Err("--add-repo/--add-dir require --repo (a spawn action)".into());
-            }
-            Ok(None)
-        }
-        (Some(_), None) if !extra_repos.is_empty() => {
-            Err("--add-repo/--add-dir apply to --repo (spawn), not --session (send)".into())
-        }
-        (Some(s), None) => Ok(Some(AutomationAction::Send {
-            session_id: resolve_send_target(db, &s)?,
-        })),
-        (None, Some(r)) => Ok(Some(AutomationAction::Spawn {
-            repo_path: r.into(),
-            worktree_branch: worktree,
-            base_branch: base,
-            agent,
-            extra_repos,
-        })),
-    }
+    crate::session_ops::action::parse(db, target).map_err(|e| e.to_string())
 }
 
 /// Human label for an action — `-` when there is none (a plain local todo).
@@ -117,16 +60,4 @@ pub(crate) fn action_to_json(action: Option<&AutomationAction>) -> Value {
             "command": command,
         }),
     }
-}
-
-/// Parse + validate a `--session` UUID for a Send action: the session must
-/// exist. Shared by the task/automation `resolve_action` wrappers.
-pub(crate) fn resolve_send_target(db: &Database, s: &str) -> Result<SessionId, String> {
-    let session_id: SessionId = s
-        .parse()
-        .map_err(|_| format!("invalid session UUID: {s}"))?;
-    db.get_session_by_id(session_id)
-        .map_err(|e| format!("get_session_by_id: {e}"))?
-        .ok_or_else(|| format!("Session not found: {s}"))?;
-    Ok(session_id)
 }

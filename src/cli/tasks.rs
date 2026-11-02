@@ -387,10 +387,10 @@ fn resolve_action(
     db: &Database,
 ) -> Result<Option<AutomationAction>, String> {
     action::resolve_action(
-        action::ActionFlags {
+        crate::session_ops::action::Target {
             session,
             repo,
-            worktree,
+            branch: worktree,
             base,
             agent,
             extra_repos,
