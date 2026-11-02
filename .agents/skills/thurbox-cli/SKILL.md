@@ -601,7 +601,13 @@ the other two), which records their effects in the host's own database.
 `session_ops::send::send` is the one send (#1468): `session send` and the
 interface's `send` command both call it, so the empty and parked refusals, the
 composer guard, the mailbox hand-over and the host delegation apply to both; the
-command sends with Enter and no turn wait. A host with no usable `thurbox-cli` (sharing off, or
+command sends with Enter and no turn wait. A task dispatch and a Send automation
+(and a Spawn automation reusing its session) deliver through the same verb, as
+`session_ops::send::prompt`: a prompt left only in the mailbox fails them, so the
+task stays `Todo` and the run is an error. `session key` presses its key through
+`session_ops::press_key`, which waits for a send in flight to the session
+(`delivery_lock`, per process: the interface and a `thurbox-cli` can still
+interleave). A host with no usable `thurbox-cli` (sharing off, or
 none reachable) falls through to the registry path, which drives its window
 over the transport; only a backend with no `hosts.toml` entry is refused.
 
@@ -1026,8 +1032,8 @@ Renaming or removing a verb or flag it names updates that file in the same PR;
 `tests/sessions_skill_e2e.rs` fails on a `thurbox-cli <group> <verb>` it names
 that no longer exists.
 
-An automation's `AutomationAction` is one of: **Send** (paste a prompt into a
-running session), **Spawn** (start a fresh session and prompt it), or **Exec**
+An automation's `AutomationAction` is one of: **Send** (hand a prompt to a
+running session, as `session send` does), **Spawn** (start a fresh session and prompt it), or **Exec**
 (run a shell command headlessly — `sh -c`, or `cmd /C` on Windows — with no
 agent/session). `Exec` is the deterministic-scheduled-job action (the
 task-integration sync extensions use it). Task.action shares the enum but tasks
@@ -1134,7 +1140,8 @@ extensions and scripts that used them still work.
 A task can be **acted on by a coding agent**: `Task::agent_prompt()` builds an
 `id + # title + markdown description` block plus self-service hints (`thurbox-cli
 task show <id>` to read the record, `thurbox-cli task edit <id> --status done` to
-close it), and `task run` sends or spawns. Triggering advances `Todo → InProgress`.
+close it), and `task run` sends or spawns. Triggering advances `Todo → InProgress`,
+once the agent was shown the prompt: one left only in the mailbox fails the dispatch.
 `session_ops::tasks::dispatch` is the one implementation (#1468): `task run` and the
 interface's `dispatch` command both call it, so they name, reuse and refuse alike; the
 command additionally takes a session to send to instead of the task's action.

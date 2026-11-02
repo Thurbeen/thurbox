@@ -2052,29 +2052,7 @@ fn run_key(
     if let Some(remote) = delegate_to_host(&session, &["session", "key", &id, resolved.name()])? {
         return Ok(remote);
     }
-    let (backend, pane) = crate::session_ops::windows::require_agent_pane(backends, &session)?;
-    let prior = if crate::session_ops::agent_family_is(&session.agent, "codex")
-        && resolved.name() == "enter"
-    {
-        match db.load_hook_state(session.id) {
-            Ok(row) => row,
-            Err(e) => {
-                tracing::warn!(session_id = %session.id, "could not read Codex status before Enter: {e}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let spelled = backend.send_key(&pane, &resolved).map_err(|e| {
-        crate::session_ops::OpError::from(e)
-            .context(format!("send_key: session '{}'", session.name))
-    })?;
-    if let Some(prior) = prior {
-        if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
-            tracing::warn!(session_id = %session.id, "could not retire Codex status after Enter: {e}");
-        }
-    }
+    let spelled = crate::session_ops::press_key(db, backends, &session, &resolved)?;
     Ok(CommandOutput::new(
         json!({
             "sent": true,

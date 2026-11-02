@@ -984,14 +984,8 @@ fn a_confirmed_send_and_a_dispatch_never_interleave() {
                 let db = Database::open(&thurbox::paths::database_file().expect("db path"))
                     .expect("open db");
                 let session = db.get_session_by_id(id).unwrap().expect("the row");
-                thurbox::session_ops::send_text_with_status(
-                    &db,
-                    &backends,
-                    &session,
-                    "dispatched",
-                    true,
-                )
-                .expect("dispatch send");
+                thurbox::session_ops::send::prompt(&db, &backends, &session, "dispatched", None)
+                    .expect("dispatch send");
             });
             // Long enough for an unguarded paste and Enter to land here.
             std::thread::sleep(Duration::from_millis(300));
@@ -1106,6 +1100,162 @@ fn a_send_does_the_same_through_the_kernel_and_the_cli() {
             "via {via}"
         );
     }
+}
+
+/// A task dispatch and a send automation hand a prompt over through the same
+/// send as `session send` (#1468): someone's half-typed line is not typed onto,
+/// the prompt goes to the session's mailbox, and the delivery fails saying so.
+#[test]
+fn every_prompt_delivery_leaves_a_half_typed_line_alone() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let (backends, probe) = (&reg.cli, &reg.probe);
+    probe.read_cursor();
+    let repo = instance.repo();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    for via in ["kernel dispatch", "cli dispatch", "send automation"] {
+        let id = SessionId::default();
+        let uuid = id.to_string();
+        let name = format!("drafting-{}", via.replace(' ', "-"));
+        let pane = probe.open(&format!("tb-{name}"), &uuid, WindowRole::Agent);
+        seed_row(&db, id, &name, "local:rmux", &pane, &repo);
+        SessionBackend::send_text(&**probe, &pane, "half a dra", false).expect("draft");
+
+        let (prompt, from_task, failure) = if via == "send automation" {
+            let prompt = format!("prompt via {via}");
+            let auto = cli(
+                &db,
+                backends,
+                &[
+                    "automation",
+                    "create",
+                    "--name",
+                    &name,
+                    "--trigger",
+                    "hourly",
+                    "--session",
+                    &uuid,
+                    "--prompt",
+                    &prompt,
+                ],
+            )
+            .expect("create a send automation");
+            let (status, detail) = run_status(&fire(&db, backends, auto["id"].as_i64().unwrap()));
+            assert_eq!(status, "error", "via {via}: {detail}");
+            (prompt, None, detail)
+        } else {
+            let task = cli(
+                &db,
+                backends,
+                &["task", "create", "--title", via, "--session", &uuid],
+            )
+            .expect("task create");
+            let task_id = task["id"].as_i64().expect("task id");
+            let outcome = if via == "kernel dispatch" {
+                kernel(
+                    &mut bus,
+                    KernelCommand::DispatchTask {
+                        task: task_id,
+                        session: None,
+                    },
+                )
+            } else {
+                cli(&db, backends, &["task", "run", &task_id.to_string()]).map(|_| ())
+            };
+            let task = db.get_task(task_id).expect("read").expect("the task");
+            assert_eq!(
+                task.status,
+                thurbox::session::TaskStatus::Todo,
+                "via {via}: a prompt nobody was shown did not start the task"
+            );
+            (
+                task.agent_prompt(),
+                Some(task_id),
+                outcome.expect_err("a busy composer"),
+            )
+        };
+
+        assert!(
+            failure.contains("has text in its composer") && failure.contains("only in its mailbox"),
+            "via {via}: {failure}"
+        );
+        assert_eq!(probe.screen(&pane), "half a dra", "via {via}");
+        let messages: Vec<_> = db
+            .list_messages(id, true, None)
+            .expect("inbox")
+            .into_iter()
+            .map(|m| (m.kind, m.body, m.from_task_id))
+            .collect();
+        assert_eq!(
+            messages,
+            vec![("session-send".to_string(), prompt, from_task)],
+            "via {via}"
+        );
+    }
+}
+
+/// `session key` waits for a send in flight to the same session, as every
+/// delivery does: a key pressed between a confirmed send's paste and its Enter
+/// would edit or submit the text the send is about to confirm.
+#[test]
+fn a_key_never_lands_inside_a_confirmed_send() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let probe = &reg.probe;
+    probe.read_cursor();
+    let repo = instance.repo();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    let id = SessionId::default();
+    let uuid = id.to_string();
+    let pane = probe.open("tb-keyed", &uuid, WindowRole::Agent);
+    seed_row(&db, id, "keyed", "local:rmux", &pane, &repo);
+
+    let pressed = Arc::new(std::sync::Mutex::new(None));
+    {
+        let pressed = Arc::clone(&pressed);
+        let uuid = uuid.clone();
+        let (local, far) = (Arc::clone(&reg.probe), Arc::clone(&reg.far));
+        probe.on_cursor_showing("typed first", move || {
+            let worker = std::thread::spawn(move || {
+                let db = Database::open(&thurbox::paths::database_file().expect("db path"))
+                    .expect("open db");
+                let backends = thurbox::cli::Backends::ready(configured_with(&local, &far));
+                cli(&db, &backends, &["session", "key", &uuid, "escape"]).expect("session key");
+            });
+            // Long enough for an unguarded key to land here.
+            std::thread::sleep(Duration::from_millis(300));
+            *pressed.lock().unwrap() = Some(worker);
+        });
+    }
+    kernel(
+        &mut bus,
+        KernelCommand::Send {
+            session: uuid.clone(),
+            text: "typed first".into(),
+        },
+    )
+    .expect("kernel send");
+    pressed
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the gap was reached")
+        .join()
+        .expect("key thread");
+
+    assert_eq!(probe.screen(&pane), "typed first\n<escape>");
 }
 
 /// A row whose host is not in `hosts.toml` names no machine to reach, and is

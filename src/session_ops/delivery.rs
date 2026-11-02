@@ -635,7 +635,7 @@ pub(crate) fn enqueue_and_deliver(
     recipient: &SharedSession,
     new: crate::storage::messages::NewMessage,
     no_wake: bool,
-) -> Result<Handed, String> {
+) -> Result<Handed, crate::session_ops::OpError> {
     let id = db
         .enqueue_message(&new)
         .map_err(|e| format!("enqueue_message: {e}"))?;

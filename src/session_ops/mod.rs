@@ -110,26 +110,9 @@ pub fn agent_family_is(agent: &str, family: &str) -> bool {
             .is_some_and(|def| def.is_family(family))
 }
 
-/// Deliver input to a session's agent through the backend its route names, and
-/// retire a Codex report made before that submission. A hook arriving while the
-/// backend delivers the prompt keeps its newer report.
-pub fn send_text_with_status(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    session: &SharedSession,
-    text: &str,
-    submit: bool,
-) -> Result<(), OpError> {
-    let (backend, pane) = windows::require_agent_pane(backends, session)?;
-    let lock = delivery_lock(session.id);
-    let _held = lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    type_into(db, backend.as_ref(), &pane, session, text, submit)
-}
-
-/// [`send_text_with_status`]'s delivery, for a caller already holding the
-/// session's [`delivery_lock`].
+/// Type `text` into a session's pane, and retire a Codex report made before a
+/// submission: a hook arriving while the backend delivers the prompt keeps its
+/// newer report. The caller holds the session's [`delivery_lock`].
 fn type_into(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
@@ -168,7 +151,13 @@ fn type_into(
 /// texts before either is submitted. The command bus queues commands that name
 /// a session, but a task dispatch only learns its session on the worker (#1468),
 /// so delivery itself is serialized per session, for every caller in this
-/// process.
+/// process — a key pressed with [`press_key`] included.
+///
+/// Only in this process: the interface and a `thurbox-cli`, or two
+/// `thurbox-cli`s, can still interleave on one session. The cross-process
+/// [`lock`] is not the answer, because it is a lease that outlives a holder
+/// killed mid-hold by minutes, and a delivery stuck behind it for that long is
+/// worse than the rare interleave it would prevent.
 fn delivery_lock(id: crate::session::SessionId) -> std::sync::Arc<std::sync::Mutex<()>> {
     type Locks =
         std::collections::HashMap<crate::session::SessionId, std::sync::Arc<std::sync::Mutex<()>>>;
@@ -204,8 +193,8 @@ pub enum SendOutcome {
     },
 }
 
-/// [`send_text_with_status`] that only types into an empty input line, unless
-/// `force`, and confirms a submission.
+/// Type `text` into a session's agent, only into an empty input line unless
+/// `force`, and confirm a submission.
 ///
 /// Enter is pressed once the typed text shows in the composer, not on a timer,
 /// and a line still sitting there afterwards gets one more Enter — only while
@@ -274,15 +263,43 @@ pub fn send_text_confirmed(
     })
 }
 
-/// Press Enter in a session's pane, retiring a Codex report made before it as
-/// [`send_text_with_status`] does for a submitting send.
+/// Press `key` in a session's agent pane, waiting for a delivery in flight to
+/// that session, and return the key as the backend spelled it.
+pub fn press_key(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: &SharedSession,
+    key: &crate::backend::Key,
+) -> Result<String, OpError> {
+    let (backend, pane) = windows::require_agent_pane(backends, session)?;
+    let lock = delivery_lock(session.id);
+    let _held = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    press(db, backend.as_ref(), &pane, session, key).map_err(|e| e.context("send_key"))
+}
+
 fn press_enter(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
     pane: &str,
     session: &SharedSession,
 ) -> Result<(), OpError> {
-    let prior = if agent_family_is(&session.agent, "codex") {
+    let enter = crate::backend::Key::parse("enter").expect("enter is a key");
+    press(db, backend, pane, session, &enter).map(drop)
+}
+
+/// Press `key`, retiring a Codex report made before an Enter as [`type_into`]
+/// does for a submitting send. The caller holds the session's
+/// [`delivery_lock`].
+fn press(
+    db: &Database,
+    backend: &dyn crate::backend::SessionBackend,
+    pane: &str,
+    session: &SharedSession,
+    key: &crate::backend::Key,
+) -> Result<String, OpError> {
+    let prior = if key.name() == "enter" && agent_family_is(&session.agent, "codex") {
         db.load_hook_state(session.id).unwrap_or_else(|e| {
             tracing::warn!(session_id = %session.id, "could not read Codex status before Enter: {e}");
             None
@@ -290,18 +307,15 @@ fn press_enter(
     } else {
         None
     };
-    backend
-        .send_key(
-            pane,
-            &crate::backend::Key::parse("enter").expect("enter is a key"),
-        )
+    let spelled = backend
+        .send_key(pane, key)
         .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))?;
     if let Some(prior) = prior {
         if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after Enter: {e}");
         }
     }
-    Ok(())
+    Ok(spelled)
 }
 
 /// Hand a session that was just launched its prompt once its agent has had
