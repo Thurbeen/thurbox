@@ -899,6 +899,7 @@ fn entry(key: &str) -> InboxEntry {
         text: format!("message {key}"),
         about: None,
         answers: Vec::new(),
+        amends: None,
         queued_at: 1,
     }
 }
@@ -2982,4 +2983,115 @@ fn the_parent_labels_are_accepted_only_at_creation_from_a_writer_with_scope_over
         matches!(err, StoreError::Forbidden(ref m) if m.contains("being deleted")),
         "{err}"
     );
+}
+
+// --- Amendments: one append-only mutation over spec and inbox. -------------
+
+fn amendment(generation: u64) -> fleet_api::task::Amendment {
+    fleet_api::task::Amendment {
+        text: format!("amendment {generation}"),
+        reason: None,
+        outputs: Default::default(),
+        from: "cli/tester".into(),
+        at: 1,
+        generation,
+    }
+}
+
+fn amends(t: &Object, generation: u64) -> InboxEntry {
+    InboxEntry {
+        amends: Some(generation),
+        ..entry(&fleet_api::inbox::amend_key(
+            "t",
+            &t.metadata.uid,
+            generation,
+        ))
+    }
+}
+
+#[test]
+fn an_amendment_lands_in_spec_and_inbox_together_and_only_through_amend() {
+    let dir = Dir::new("amend");
+    let store = FileStore::open(&dir.0).unwrap();
+    let t = store.create(task("t"), FieldManager::Apply).unwrap();
+    let rv = t.metadata.resource_version;
+    // A new Task carries none.
+    let mut born = task("u");
+    born.spec["amendments"] = serde_json::to_value(vec![amendment(2)]).unwrap();
+    assert!(matches!(
+        store.create(born, FieldManager::Apply),
+        Err(StoreError::Invalid(_))
+    ));
+    // No other caller queues an amendment, through any append.
+    assert!(matches!(
+        store.append_inbox("t", amends(&t, 2), rv, FieldManager::Cli, None),
+        Err(StoreError::Forbidden(_))
+    ));
+    for by in [
+        FieldManager::Apply,
+        FieldManager::Worker,
+        FieldManager::TaskController,
+    ] {
+        let err = store
+            .amend_task("t", amendment(2), amends(&t, 2), rv, by.clone())
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Forbidden(_)), "{by:?}: {err}");
+    }
+    // The generation, the key and the entry's `amends` name one generation.
+    for (a, e) in [(amendment(3), amends(&t, 2)), (amendment(2), amends(&t, 3))] {
+        assert!(matches!(
+            store.amend_task("t", a, e, rv, FieldManager::Cli),
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    assert!(matches!(
+        store.amend_task("t", amendment(2), amends(&t, 2), rv + 1, FieldManager::Cli),
+        Err(StoreError::Conflict { .. })
+    ));
+    let done = store
+        .amend_task("t", amendment(2), amends(&t, 2), rv, FieldManager::Cli)
+        .unwrap();
+    assert_eq!(done.metadata.generation, 2);
+    assert_eq!(done.spec["amendments"][0]["text"], "amendment 2");
+    assert!(
+        done.spec.get("host").is_none(),
+        "the spec is never re-encoded"
+    );
+    assert_eq!(inbox_status(&done).inbox[0].amends, Some(2));
+    // An update leaves them as they are, or is refused.
+    let mut dropped = done.spec.clone();
+    dropped.as_object_mut().unwrap().remove("amendments");
+    assert!(matches!(
+        store.update_spec(
+            "Task",
+            "t",
+            dropped,
+            None,
+            done.metadata.resource_version,
+            FieldManager::Apply
+        ),
+        Err(StoreError::Invalid(_))
+    ));
+    // A Stalled Task is refused.
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let stalled = store
+        .update_status(
+            "Task",
+            "t",
+            json!({"phase": "Stalled", "observedGeneration": 2, "inbox": done.status["inbox"]}),
+            done.metadata.resource_version,
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap();
+    assert!(matches!(
+        store.amend_task(
+            "t",
+            amendment(3),
+            amends(&t, 3),
+            stalled.metadata.resource_version,
+            FieldManager::Cli
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
 }

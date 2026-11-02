@@ -110,6 +110,10 @@ pub enum StoreError {
     LeaseHeld { holder: String, expires_at: Millis },
     #[error("store busy: {0}")]
     Busy(String),
+    /// A caller's own precondition did not hold, such as `fleet amend
+    /// --if-generation`; retrying the same call cannot succeed.
+    #[error("conflict: {0}")]
+    Precondition(String),
     /// The store could not tell: an unreadable or corrupt record. Never read
     /// as absence.
     #[error("could not tell: {0}")]
@@ -232,6 +236,23 @@ pub trait Store {
         by: FieldManager,
         lease: Option<&LeaseToken>,
     ) -> Result<Object, StoreError>;
+    /// `fleet amend`'s write, compare-and-swap on resourceVersion, as
+    /// `FieldManager::Cli` only: append `amendment` to `spec.amendments`,
+    /// bump `metadata.generation` to the amendment's generation, and queue
+    /// `entry` (whose `amends` names that generation, under
+    /// `inbox::amend_key`) as `append_inbox` checks an entry, in one write.
+    /// Refused on a deleting or Stalled Task, for an amendment the spec
+    /// refuses, and when the inbox refuses the entry. No other field changes.
+    fn amend_task(
+        &self,
+        _name: &str,
+        _amendment: crate::task::Amendment,
+        _entry: crate::inbox::InboxEntry,
+        _expected: u64,
+        _by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        Err(StoreError::Unsupported("amend_task".into()))
+    }
     /// TaskController's status write that also records one delivery: the
     /// receipt goes into `status.deliveries` and its entry leaves
     /// `status.inbox`, in the same compare-and-swap write as `status`, which

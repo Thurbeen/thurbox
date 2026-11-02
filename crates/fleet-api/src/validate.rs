@@ -128,6 +128,7 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
     }
     validate_workspace(&s.workspace)
         .map_err(|e| StoreError::Invalid(format!("spec.workspace{e}")))?;
+    validate_amendments(&s)?;
     // Both reach the runtime as arguments: never as a flag.
     for (field, value) in [("spec.harness", &s.harness), ("spec.host", &s.host)] {
         if value.starts_with('-') {
@@ -139,8 +140,41 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Amendments: each says something, names its sender, creates a later
+/// generation than the one before, and declares only outputs not declared
+/// before it.
+pub fn validate_amendments(s: &TaskSpec) -> Result<(), StoreError> {
+    let mut declared: BTreeSet<&str> = s.outputs.keys().map(String::as_str).collect();
+    let mut generation = 1;
+    for (i, a) in s.amendments.iter().enumerate() {
+        let at = format!("spec.amendments[{i}]");
+        if a.text.trim().is_empty() {
+            return Err(StoreError::Invalid(format!("{at}.text must not be empty")));
+        }
+        if a.from.trim().is_empty() {
+            return Err(StoreError::Invalid(format!("{at}.from must not be empty")));
+        }
+        if a.generation <= generation {
+            return Err(StoreError::Invalid(format!(
+                "{at}.generation {} must be above {generation}",
+                a.generation
+            )));
+        }
+        generation = a.generation;
+        for name in a.outputs.keys() {
+            if !declared.insert(name) {
+                return Err(StoreError::Invalid(format!(
+                    "{at}: output {name:?} is already declared; an output is never retyped or dropped"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A Task's spec is fixed once created, like a Pod's: only `dispatch` and
-/// `forge` may change. A different brief is a different Task. A
+/// `forge` may change, and `amendments` only through the store's amend
+/// mutation. A different brief is a different Task. A
 /// ChangeRequest, a Conversation and a Listener are fixed whole.
 pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), StoreError> {
     validate_spec(kind, new)?;
@@ -176,11 +210,17 @@ pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), 
             ));
         }
     }
+    if a.amendments != b.amendments {
+        return Err(StoreError::Invalid(
+            "Task spec.amendments only grows, through fleet amend; it never changes in a spec update"
+                .into(),
+        ));
+    }
     a.dispatch = b.dispatch;
     a.forge = b.forge.clone();
     if a != b {
         return Err(StoreError::Invalid(
-            "Task spec is immutable except spec.dispatch and spec.forge; create a new Task for a different brief"
+            "Task spec is immutable except spec.dispatch and spec.forge; fleet amend adds to the brief, and a different brief is a new Task"
                 .into(),
         ));
     }
@@ -434,5 +474,75 @@ mod tests {
             let err = validate_workspace(&workspace).unwrap_err();
             assert!(err.starts_with(want), "{workspace:?}: {err}");
         }
+    }
+
+    fn amended(amendments: serde_json::Value) -> Value {
+        serde_json::json!({
+            "harness": "claude-code", "brief": "b", "workspace": {"dir": "w"},
+            "outputs": {"prUrl": {"type": "string"}},
+            "amendments": amendments
+        })
+    }
+
+    #[test]
+    fn amendments_say_something_in_generation_order_with_new_outputs() {
+        let one = serde_json::json!({"text": "t", "from": "cli/a", "at": 1, "generation": 2});
+        assert!(validate_spec(task::KIND, &amended(serde_json::json!([one]))).is_ok());
+        for (bad, want) in [
+            (
+                serde_json::json!([{"text": " ", "from": "cli/a", "at": 1, "generation": 2}]),
+                "text",
+            ),
+            (
+                serde_json::json!([{"text": "t", "from": "", "at": 1, "generation": 2}]),
+                "from",
+            ),
+            (
+                serde_json::json!([{"text": "t", "from": "cli/a", "at": 1, "generation": 1}]),
+                "above 1",
+            ),
+            (
+                serde_json::json!([one, {"text": "t", "from": "cli/a", "at": 1, "generation": 2}]),
+                "above 2",
+            ),
+            (
+                serde_json::json!([{"text": "t", "from": "cli/a", "at": 1, "generation": 2,
+                "outputs": {"prUrl": {"type": "integer"}}}]),
+                "already declared",
+            ),
+            (
+                serde_json::json!([
+                    {"text": "t", "from": "cli/a", "at": 1, "generation": 2, "outputs": {"x": {"type": "string"}}},
+                    {"text": "t", "from": "cli/a", "at": 1, "generation": 3, "outputs": {"x": {"type": "string"}}}
+                ]),
+                "already declared",
+            ),
+        ] {
+            let err = validate_spec(task::KIND, &amended(bad.clone()))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(want), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_spec_update_never_changes_amendments() {
+        let one = serde_json::json!({"text": "t", "from": "cli/a", "at": 1, "generation": 2});
+        let two = serde_json::json!({"text": "u", "from": "cli/a", "at": 2, "generation": 3});
+        let old = amended(serde_json::json!([one]));
+        // Neither dropped, rewritten nor appended by apply or a plugin patch.
+        for new in [
+            amended(serde_json::json!([])),
+            amended(serde_json::json!([{"text": "x", "from": "cli/a", "at": 1, "generation": 2}])),
+            amended(serde_json::json!([one, two])),
+        ] {
+            let err = validate_spec_update(task::KIND, &old, &new)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("fleet amend"), "{err}");
+        }
+        let mut dispatched = old.clone();
+        dispatched["dispatch"] = serde_json::json!(true);
+        assert!(validate_spec_update(task::KIND, &old, &dispatched).is_ok());
     }
 }

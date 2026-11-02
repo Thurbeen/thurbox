@@ -244,11 +244,17 @@ impl ForgeController {
     }
 }
 
-/// The worker reported `shipped`: the `workerDone` predicate.
+/// The worker reported `shipped` for the generation it was last given:
+/// the `workerDone` predicate. A result an amendment has since superseded
+/// does not count.
 fn shipped(st: &TaskStatus) -> bool {
-    st.result
-        .as_ref()
-        .is_some_and(|r| r.outcome == Outcome::Shipped)
+    st.result.as_ref().is_some_and(|r| {
+        r.outcome == Outcome::Shipped
+            && st
+                .brief
+                .as_ref()
+                .is_none_or(|b| b.generation == r.generation)
+    })
 }
 
 /// A ChangeRequest's poll interval, from its spec.
@@ -1092,6 +1098,7 @@ impl Pass<'_, '_> {
                 head: ctx.cr.head.as_ref().map(|h| h.id.clone()),
             }),
             answers: Vec::new(),
+            amends: None,
             queued_at: self.input.now,
         });
     }

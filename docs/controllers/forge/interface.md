@@ -171,7 +171,7 @@ snapshot, the Task and the probes above:
 
 | Predicate | Holds when |
 | --- | --- |
-| `workerDone` | The Task has a `shipped` result. On in every policy and not configurable. |
+| `workerDone` | The Task has a `shipped` result for `status.brief.generation`. A result that a delivered amendment superseded does not count. On in every policy and not configurable. A change already marked ready stays ready. |
 | `workerIdle` | `AtRest` for the Task's session is Known true: the agent has finished its turn and is not mid-way through answering feedback. On in every policy and not configurable. |
 | `checksPassed` | `head.checks` is `passed`; or it is `none` and `forge.noCheckGraceMs` has passed since `head.firstSeenAt`, because a repository whose CI starts only once the change is ready would otherwise wait forever. `pending` and Unknown never pass. |
 | `botReviewsAddressed` | Every bot-authored inline note in the snapshot is resolved or has a later note from this Task's worker in its thread, and no bot review in `reviews` on the current head is `changes-requested`. |

@@ -628,6 +628,34 @@ fn a_child_relays_its_declarations_and_result_into_its_parents_inbox() {
     env.fleet(&["status", "task", "p"])
         .ok()
         .stdout_has("gateway children 1");
+    // Amended, the child re-opens, and its new result reaches the parent
+    // once more, under the new generation.
+    env.fleet(&["amend", "c", "--text", "Also restart the importer."])
+        .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("c")["phase"], "Briefed");
+    assert_eq!(receipts(&env, "p").len(), 3, "an amendment relays nothing");
+    env.fleet(&[
+        "result",
+        "c",
+        "--generation",
+        "2",
+        "--outcome",
+        "shipped",
+        "--summary",
+        "both restarted",
+        "--output",
+        "prUrl=\"https://example.test/pr/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    let got = receipts(&env, "p");
+    assert_eq!(got.len(), 4, "{got:#?}");
+    assert_eq!(
+        got[3]["key"],
+        format!("task/p/{p_uid}/gateway/child/{c_uid}/result/2")
+    );
+    assert!(texts(&env, "p")[4].contains("both restarted"));
     env.assert_no_temp();
 }
 

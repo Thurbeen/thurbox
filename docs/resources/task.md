@@ -30,7 +30,8 @@ session when the Task is deleted. The guarantees behind each step are in
 ## Spec
 
 Written by people and scripts through `fleet apply`. Fixed once created,
-except `dispatch` and `forge`.
+except `dispatch` and `forge`. `amendments` grows only through
+[`fleet amend`](#amendments).
 
 | Field | Required | Meaning |
 | --- | --- | --- |
@@ -39,10 +40,11 @@ except `dispatch` and `forge`.
 | `model` | no | The model the harness runs; it reaches the harness through the variable `runtime.modelEnv` names for it. |
 | `configRef` | no | `{"name":"config"}` references passive execution defaults. |
 | `env` | no | Explicit string environment map; overrides inherited values. |
-| `brief` | yes | The brief, sent once to the ready session. |
+| `brief` | yes | The brief, sent once to the ready session. It never changes. |
+| `amendments` | no | Additions to the brief, oldest first, each `{text, reason?, outputs?, from, at, generation}`. Only `fleet amend` appends one. See [Amendments](#amendments). |
 | `workspace` | yes | What the session works in: `{"dir": PATH}`, a directory that exists before the Task (the thurbox runtime needs an absolute path on the host), or `{"repositories": [{"name", "url", "ref"?}]}`, repositories the runtime materializes for this Task. The first repository is the primary, where the agent starts. Fleet never interprets `ref`; the runtime decides what it means. Deleting the session cleans the workspace up as the runtime is configured to. See [Workspaces](#workspaces). |
 | `dispatch` | no | Nothing spawns while `false` (the default). |
-| `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
+| `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. An amendment can add outputs. |
 | `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
 
 `harness` and `host` may not start with `-`. Any other field is refused.
@@ -98,9 +100,9 @@ typed mutations described under [Inbox](#inbox).
 | `resumes`, `resume` | Resume notes over the Task's life, which number their keys, and the key of the note owed to a revived session until its delivery is known. |
 | `notBefore` | Earliest next reconcile after a failed attempt, in Unix milliseconds. The fixed retry delay is 30 seconds and survives manager restarts. |
 | `sessionCheckedAt` | When a Concluded Task's session was last looked up, in Unix milliseconds. At rest, the next lookup is due 5 minutes later. |
-| `brief` | The brief's key and the generation it was sent for, once it has a receipt. |
+| `brief` | The key and generation of the newest brief or amendment the worker received, once it has a receipt. A result names this generation. |
 | `result` | The worker's claim: outcome, generation, summary, artifacts, outputs. |
-| `inbox` | Messages queued for the session, oldest first: `{key, from, text, about, queuedAt}`. Appended by `fleet send`, removed by TaskController once delivered, each through a typed store mutation; never replaced as a list. |
+| `inbox` | Messages queued for the session, oldest first: `{key, from, text, about, amends, queuedAt}`. Appended by `fleet send` and `fleet amend`, removed by TaskController once delivered, each through a typed store mutation; never replaced as a list. |
 | `deliveries` | TaskController's: `receipts`, the newest 100 delivery receipts by inbox key (`{key, from, at, recovered}`), and `revisions`, per mirror (`about.uid`) the highest `about.revision` delivered, which keeps a duplicate out after its receipt has rotated. |
 | `deliveryAttempts` | TaskController's bookkeeping per inbox entry being delivered: `sends` (bounded at 3), `probeFailures` and `failed`. Removed with the entry. |
 | `declared` | The worker's, through `fleet declare`: facts it declared, each a JSON object with a required string `kind` and nothing else validated. See [Following declared changes](#following-declared-changes). |
@@ -120,23 +122,93 @@ Nonempty `ownerReferences` are refused.
 `fleet apply` accepts desired spec and labels, and refuses supplied status.
 Only `dispatch` and `forge` can change in an existing spec. Setting
 `dispatch` false prevents a Pending Task from spawning; it does not stop a
-session already spawned.
+session already spawned. A manifest without `amendments` keeps the stored
+amendments. A manifest that changes them is refused, and the error names
+`fleet amend`.
 
 ## Worker result
 
 `fleet result` writes `status.result`: `outcome` is `shipped`, `stuck`,
-`failed` or `not-applicable`, and `generation` must match the delivered
-brief's generation. Optional `summary`, `artifacts` (strings) and `outputs`
-carry the answer. Required outputs must be present with their declared JSON
-types; undeclared outputs and top-level null output values are refused.
+`failed` or `not-applicable`, and `generation` must match
+`status.brief.generation`. Optional `summary`, `artifacts` (strings) and
+`outputs` carry the answer. The declared outputs are `spec.outputs` plus the
+outputs of each amendment at or below that generation. Required outputs must
+be present with their declared JSON types; undeclared outputs and top-level
+null output values are refused.
 Nested object and
 array contents have no additional schema validation.
 
 A result is accepted only after a brief receipt exists and before deletion.
-Repeating the same result is a no-op; replacing it with another result is
-refused. `shipped` is a worker's claim: Fleet does not verify a forge artifact.
-The next reconcile changes phase to `Concluded`; it does not release the
-session until the Task is deleted.
+A result is refused while an amendment waits to be delivered, unless its
+delivery was given up. Repeating the same result is a no-op. Within one
+generation, replacing a result is refused. A result for a newer generation
+replaces the result for an older one. `shipped` is a worker's claim: Fleet
+does not verify a forge artifact.
+A result for `status.brief.generation` changes the phase to `Concluded` on
+the next reconcile. It does not release the session until the Task is
+deleted.
+
+## Amendments
+
+`fleet amend TASK` adds to a Task's brief without a new Task. The worker keeps
+its session, its conversation, its worktree, its branch and the changes it
+declared. An amendment can give more context, add an ask, add a constraint or
+ask the worker a question. `spec.brief` stays exactly as written.
+
+```sh
+fleet amend design-305 --text "Also cover the migration notes." \
+  --reason "the requester asked for migration notes"
+# Task/design-305 amended: amendment 1 appended, generation 1 → 2
+fleet amend design-305 --file more.md --output notesUrl=string! --if-generation 2
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--text TEXT` or `--file PATH` | What the amendment adds. `--file -` reads stdin. Empty text is refused. |
+| `--reason TEXT` | Why, kept in the amendment. |
+| `--output NAME=TYPE[!]` | A new output that a result must carry. A trailing `!` makes it required. A name already declared in `spec.outputs` or an earlier amendment is refused. Repeatable. |
+| `--if-generation N` | A precondition: the amend is refused unless the Task is at generation N. Exit code 5, `Task/NAME is at generation M, not N`. |
+| `--json` | Prints `{task, amendment, previousGeneration, generation, key, from}`. |
+
+One compare-and-swap write does three things:
+
+1. It appends `{text, reason, outputs, from, at, generation}` to
+   `spec.amendments`. `from` is `cli/<user>`.
+2. It increments `metadata.generation` to the amendment's `generation`.
+3. It queues an inbox entry under `task/<name>/<uid>/amend/<generation>` with
+   `amends` set to that generation.
+
+The caller does not need to know a generation. Without `--if-generation`,
+the verb retries on a conflict, and two concurrent amends both land in order.
+Two identical amendments are both kept. A script that retries uses
+`--if-generation`, so that a retry cannot append twice.
+
+An amend is refused for a missing Task, a Stalled Task, a deleting Task and a
+full inbox. Nothing would deliver it. An amend is accepted while `WorkerGone`
+is True; it waits for the session, as `fleet send` does. Only the store's amend
+mutation can queue an entry with `amends`, or append to `spec.amendments`. A
+manifest that creates a Task with `amendments` is refused.
+
+The worker's assignment is the brief plus every amendment, in order.
+TaskController delivers an amendment as an inbox entry:
+
+- An amendment written before the brief goes out is part of the brief's
+  message. The brief is then sent for the newest generation. The amendment's
+  entry is recorded without a send.
+- An amendment to a briefed worker is typed into the same session when the
+  session is next ready. Its message names the generation that the worker's
+  result must name.
+- When a newer amendment is queued behind one that was never sent, the newer
+  message carries both. The older entry is recorded without a send.
+- Its receipt sets `status.brief` to the entry's key and generation.
+- A delivered amendment re-opens a Concluded Task: the phase goes back to
+  `Briefed` with `Concluded=False/Amended`. The old result stays until the
+  worker records a result for the new generation.
+
+`fleet send` is a conversational message. It changes no contract, leaves no
+trace in the spec and does not re-open a Concluded Task. A different
+deliverable, repository, harness or host, or a brief that is wrong, needs a
+new Task.
 
 ## Inbox
 
@@ -149,9 +221,10 @@ prints the entry as appended.
 | Field | Meaning |
 | --- | --- |
 | `key` | Deterministic and unique across `inbox` and `deliveries`; also the runtime intent key the delivery is journaled under. |
-| `from` | `cli/<user>` for `fleet send`; `forge/<change>` for a relay, the ChangeRequest's name. |
-| `text` | The message, delivered as typed. |
+| `from` | `cli/<user>` for `fleet send` and `fleet amend`; `forge/<change>` for a relay, the ChangeRequest's name. |
+| `text` | The message, delivered as typed. For an amendment, the amendment's text; TaskController composes the delivered message from the spec. |
 | `about` | For a relay: the mirror's `uid`, `revision` and `head`. Absent for `fleet send`. |
+| `amends` | For an amendment: the spec generation it created. Absent otherwise. |
 | `queuedAt` | Unix milliseconds. |
 
 `status.inbox` has no owner. The store reaches it through typed mutations,
@@ -249,6 +322,7 @@ them.
 fleet apply -f task.json             # create, or change dispatch
 fleet status task design-305 --json  # phase and conditions
 fleet send design-305 "Also update the docs."  # queue a message for the session
+fleet amend design-305 --text "Also cover the docs." --reason "asked by the requester"  # add to the brief
 fleet declare design-305 --change-request https://github.com/OWNER/app/pull/88  # follow the change the worker opened
 fleet declare design-305 --json '{"kind": "Note", "text": "docs need a pass"}'   # any fact with a kind
 fleet result design-305 --generation 1 --outcome shipped \
@@ -266,7 +340,7 @@ manager verbs, never through a status write:
 | Verb | On a Task | Carried by |
 | --- | --- | --- |
 | Create | A full Task manifest, exclusive by name; the store labels it `fleet.dev/plugin: <plugin>`, a label `apply` refuses to set | The plan's `creates` |
-| Patch | `dispatch` and `forge`, the two mutable spec fields | The plan's `patches` |
+| Patch | `dispatch` and `forge`, the two mutable spec fields; a patch never changes `amendments` | The plan's `patches` |
 | Send | An inbox entry from `plugin/<name>` under `task/<name>/<uid>/plugin/<plugin>/<key>`, with the inbox's own checks | The plan's `appends` |
 | Declare | `fleet declare TASK --change-request URL` on the Task's behalf, with that verb's preconditions | The plan's `declares` |
 | Delete | By name and `uid`; the release finalizer then runs as for any deletion | The plan's `deletes` |

@@ -106,10 +106,11 @@ fleet-dev          tooling        `cargo xtask`: gate and release
   `FieldManager::GatewayController`, `FieldManager::ConversationController`
   and `FieldManager::ListenerController`, only fleet-api and fleet-controllers
   name `FieldManager::Plugin`; only fleet-manager's `result` and `declare`
-  verbs name `FieldManager::Worker`, only fleet-manager's `send` verb (and
-  the store that checks it) names `FieldManager::Cli`, the caller of the
-  inbox append, and only fleet-manager's `receive` verb (and the store)
-  names `FieldManager::Listener`, the caller of the spool and beat
+  verbs name `FieldManager::Worker`, only fleet-manager's `send` and
+  `amend` verbs (and the store that checks them) name `FieldManager::Cli`,
+  the caller of the inbox append and of the amend mutation, and only
+  fleet-manager's `receive` verb (and the store) names
+  `FieldManager::Listener`, the caller of the spool and beat
   mutations.
 - The CLI calls no store write, no controller method, no runtime effect and
   no forge read: it parses, calls a fleet-manager verb, and prints.
@@ -146,7 +147,8 @@ spec.env            explicit environment overrides
 spec.harness        the agent harness, explicit or inherited
 spec.host           the runtime host (default "local")
 spec.model          optional; reaches the harness through its model variable
-spec.brief          the brief, sent once
+spec.brief          the brief, sent once, never changed
+spec.amendments     append-only additions to the brief, through fleet amend
 spec.workspace      {dir} or {repositories: [{name, url, ref?}]}
 spec.dispatch       nothing spawns while false
 spec.outputs        optional: the structured outputs a result must carry
@@ -154,7 +156,10 @@ spec.forge          optional: relay and draft overrides for declared changes
 ```
 
 The spec is immutable once created, except `dispatch` and `forge`; a
-different brief is a different Task. `harness` and `host` may not start
+different brief is a different Task. `amendments` only grows, through the
+store's `amend_task` mutation: `update_spec`, and so `apply` and a plugin
+patch, refuses any change to it, and `apply` keeps the stored amendments
+when a manifest omits them. `harness` and `host` may not start
 with `-`, since both reach the runtime as arguments.
 
 `spec.workspace` names what the session works in. It never says how the
@@ -216,10 +221,27 @@ Guarantees, each with its test:
   follows the same rules with reason `TrustUnmapped`. A later spawn that
   does not answer `TrustUnmapped` clears that `NeedsAttention`.
 - **Result.** `fleet result` writes `status.result` as field manager
-  `worker`, only once the brief has a receipt, only for the generation it
-  was briefed for, and only when its outputs match `spec.outputs`. The same
-  result again is a no-op; a different one is refused. A recorded result
-  concludes the Task.
+  `worker`, only once the brief has a receipt, only for
+  `status.brief.generation`, never while an amendment waits to be delivered
+  (unless its delivery was given up), and only when its outputs match
+  `spec.outputs` plus the outputs of each amendment at or below that
+  generation. The same result again is a no-op. Within one generation a
+  different result is refused; a result for a newer generation replaces the
+  older one. A result for `status.brief.generation` concludes the Task.
+- **Amend.** `fleet amend TASK` appends `{text, reason?, outputs?, from, at,
+  generation}` to `spec.amendments`, increments `metadata.generation` and
+  queues an inbox entry with `amends` under
+  `task/<name>/<uid>/amend/<generation>`, in one compare-and-swap write. It
+  needs no generation from the caller; `--if-generation N` is an optional
+  precondition, refused with exit 5. A Stalled or deleting Task, a full
+  inbox, empty text and an output name already declared are refused. The
+  brief's first send carries every amendment so far and records the
+  generation of its intent, so an amendment queued before it is recorded
+  without a send. A later amendment goes out as an inbox entry; a newer one
+  queued behind an unsent one carries both, and the older is recorded
+  without a send. Its receipt sets `status.brief` to its key and
+  generation. A delivered amendment re-opens a Concluded Task to Briefed,
+  with `Concluded=False/Amended`, and keeps the old result.
 - **WorkerGone.** A session a readable list no longer shows sets `WorkerGone`
   and `NeedsAttention`. An unreadable list is never read as gone. Nothing
   abandons the Task by itself.
@@ -315,8 +337,8 @@ ChangeRequest. Guarantees, each with its test in `forge_controller`,
 - **Mark ready once.** A following entry whose change is a draft that was
   never seen ready (`everReady` false), whose mirror is fresh (`Reachable`
   True, `observedAt` within `2 × pollMs`) and whose selected policy holds,
-  `workerDone` (a `shipped` result) and `workerIdle` (`AtRest` Known true)
-  always included, gets one intent under
+  `workerDone` (a `shipped` result for `status.brief.generation`) and
+  `workerIdle` (`AtRest` Known true) always included, gets one intent under
   `task/<name>/<uid>/ready/<change uid>/<head>` and one `MarkReady` effect
   through the Forge port, after the lease is renewed; the receipt lands on
   the entry. The session is asked only once every predicate the snapshot
@@ -873,7 +895,7 @@ account's Gateway intents.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|declare|result|delete|reconcile|gateway|version`.
+init|up|apply|get|list|status|send|amend|declare|result|delete|reconcile|gateway|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
@@ -974,7 +996,9 @@ The `e2e_*` suites drive the real `fleet` binary against an isolated store,
 the fake host or a stub `thurbox-cli`, and, for `e2e_forge`, the fake forge
 or the same stub copied as `az`, `curl`, `gh` and `glab`, across process
 restarts and injected faults; `e2e_inbox` covers `fleet send` and delivery on
-both the fake host and the stub; `e2e_forge_controller` covers `fleet declare`,
+both the fake host and the stub; `e2e_task_amend` covers `fleet amend`, its
+delivery to the same session, its refusals, `--if-generation` and the result
+rules on the fake host; `e2e_forge_controller` covers `fleet declare`,
 the join and the relay against the fake forge and the fake host.
 `e2e_mark_ready` covers the mark-ready effect against the fake forge and
 the fake host, and through the stub `az`, `curl`, `gh` and `glab`.

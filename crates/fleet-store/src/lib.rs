@@ -445,6 +445,18 @@ fn encode_listener(st: &ListenerStatus) -> Result<Value, StoreError> {
 /// Every append path lands through here, so `answers` is checked and
 /// recorded the same way for `fleet send`, a relay and a plugin.
 fn push_entry(obj: &Object, st: &mut TaskStatus, entry: InboxEntry) -> Result<(), StoreError> {
+    if entry.amends.is_some() {
+        return Err(StoreError::Forbidden(format!(
+            "{}: inbox entry {}: only fleet amend queues an amendment",
+            obj.key(),
+            entry.key
+        )));
+    }
+    push_checked(obj, st, entry)
+}
+
+/// [`push_entry`] without the amendment guard: the amend mutation's own.
+fn push_checked(obj: &Object, st: &mut TaskStatus, entry: InboxEntry) -> Result<(), StoreError> {
     fleet_api::inbox::check_append(&st.inbox, &st.deliveries, &entry)
         .map_err(|why| inbox_refusal(obj, why))?;
     talk::check_answers(&st.declared, &entry.answers)
@@ -485,6 +497,23 @@ fn inbox_refusal(obj: &Object, why: String) -> StoreError {
 enum RelayField {
     Forge(Option<ForgeStatus>),
     Gateway(Option<GatewayStatus>),
+}
+
+/// A Task is created with its brief alone: only the amend mutation adds an
+/// amendment, each creating a later generation.
+fn check_no_amendments(obj: &Object) -> Result<(), StoreError> {
+    let carries = obj
+        .spec
+        .get("amendments")
+        .and_then(Value::as_array)
+        .is_some_and(|a| !a.is_empty());
+    if obj.kind == task::KIND && carries {
+        return Err(StoreError::Invalid(format!(
+            "{}: a new Task carries no spec.amendments; fleet amend adds them once it exists",
+            obj.key()
+        )));
+    }
+    Ok(())
 }
 
 fn expect_rv(obj: &Object, expected: u64) -> Result<(), StoreError> {
@@ -693,6 +722,7 @@ impl Store for FileStore {
             )));
         }
         check_conversation_labels(&obj, &by)?;
+        check_no_amendments(&obj)?;
         let _guard = self.lock()?;
         self.check_parent(&obj, &by)?;
         self.insert(obj, None)
@@ -712,6 +742,7 @@ impl Store for FileStore {
             )));
         }
         check_conversation_labels(&obj, &by)?;
+        check_no_amendments(&obj)?;
         let _guard = self.lock()?;
         self.check_lease(lease)?;
         self.insert(obj, None)
@@ -890,6 +921,90 @@ impl Store for FileStore {
         }
         let mut st = task_status(&obj)?;
         push_entry(&obj, &mut st, entry)?;
+        obj.status = encode_status(&st)?;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok(obj)
+    }
+
+    fn amend_task(
+        &self,
+        name: &str,
+        amendment: task::Amendment,
+        entry: InboxEntry,
+        expected: u64,
+        by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        if by != FieldManager::Cli {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not amend Tasks; only fleet amend does",
+                by.name()
+            )));
+        }
+        check_source(by.clone(), &entry)?;
+        if amendment.from != entry.from {
+            return Err(StoreError::Invalid(
+                "an amendment and its inbox entry name one sender".into(),
+            ));
+        }
+        let _guard = self.lock()?;
+        let mut obj = self.read_existing(task::KIND, name)?;
+        expect_rv(&obj, expected)?;
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted; nothing would deliver the amendment",
+                obj.key()
+            )));
+        }
+        let mut st = task_status(&obj)?;
+        if st.phase == task::Phase::Stalled {
+            return Err(StoreError::Forbidden(format!(
+                "{} is Stalled; nothing would deliver the amendment, so create a new Task",
+                obj.key()
+            )));
+        }
+        let generation = obj
+            .metadata
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| StoreError::Invalid("generation exhausted".into()))?;
+        let key = fleet_api::inbox::amend_key(&obj.metadata.name, &obj.metadata.uid, generation);
+        if amendment.generation != generation
+            || entry.amends != Some(generation)
+            || entry.key != key
+        {
+            return Err(StoreError::Invalid(format!(
+                "{}: an amendment creates generation {generation} under {key}",
+                obj.key()
+            )));
+        }
+        // Appended to the stored JSON as is: which execution fields a spec
+        // sets is itself meaningful, so the spec is never re-encoded.
+        let amendment = serde_json::to_value(&amendment)
+            .map_err(|e| StoreError::Invalid(format!("Task amendment: {e}")))?;
+        let mut spec = obj.spec.clone();
+        let Some(fields) = spec.as_object_mut() else {
+            return Err(StoreError::Invalid(format!(
+                "{}: spec is not an object",
+                obj.key()
+            )));
+        };
+        match fields
+            .entry("amendments")
+            .or_insert_with(|| Value::Array(Vec::new()))
+        {
+            Value::Array(list) => list.push(amendment),
+            _ => {
+                return Err(StoreError::Invalid(format!(
+                    "{}: spec.amendments",
+                    obj.key()
+                )));
+            }
+        }
+        fleet_api::validate::validate_spec(task::KIND, &spec)?;
+        push_checked(&obj, &mut st, entry)?;
+        obj.spec = spec;
+        obj.metadata.generation = generation;
         obj.status = encode_status(&st)?;
         obj.metadata.resource_version = self.next_rv()?;
         self.write(&obj)?;

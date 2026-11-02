@@ -72,7 +72,9 @@ read Task + resourceVersion
 The controller owns Task status except `status.result`, written through the
 worker verb, and `status.inbox`, which nobody owns: `fleet send` appends to
 it and the controller's delivery write removes from it, each through a
-typed store mutation that changes nothing else. A status conflict before an
+typed store mutation that changes nothing else. `fleet amend` appends to
+`spec.amendments` and queues the amendment's inbox entry in one such
+mutation. A status conflict before an
 effect drops the plan and retries from fresh state. A receipt conflict
 rereads the object and retries the receipt write, preserving concurrent
 worker changes. Expired or superseded leases refuse controller writes. An

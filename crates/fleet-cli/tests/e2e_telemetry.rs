@@ -74,6 +74,17 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
     // One pass, so the gauge's last value is the queued message.
     env.fleet(&["reconcile", "--max-passes", "1"]).ok();
     env.reconcile().ok();
+    env.fleet(&["amend", "t1", "--text", MESSAGE_SECRET]).ok();
+    env.fleet(&[
+        "amend",
+        "t1",
+        "--text",
+        MESSAGE_SECRET,
+        "--if-generation",
+        "1",
+    ])
+    .code(5);
+    env.reconcile().ok();
     env.host()
         .set_at_rest(&env.session_key("t1"), true)
         .unwrap();
@@ -86,6 +97,7 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
         "fleet apply",
         "fleet reconcile",
         "fleet send",
+        "fleet amend",
         "fleet delete",
     ] {
         let roots = named(&spans, command);
@@ -94,6 +106,14 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
             "no `{command}` span in {:#?}",
             names(&spans)
         );
+        // The one refused amend (`--if-generation` past) exits 5.
+        let (refused, roots): (Vec<_>, Vec<_>) = roots
+            .into_iter()
+            .partition(|r| command == "fleet amend" && r.error);
+        assert_eq!(refused.len(), usize::from(command == "fleet amend"));
+        for root in refused {
+            assert_eq!(root.attrs["process.exit.code"], "5", "{root:#?}");
+        }
         for root in roots {
             assert!(root.parent.is_empty(), "{command} is a root: {root:#?}");
             assert_eq!(root.attrs["process.exit.code"], "0", "{root:#?}");
@@ -172,6 +192,15 @@ fn a_task_lifecycle_exports_its_spans_and_metrics_to_the_collector() {
                 && p.attrs.contains_key("fleet.outcome")
                 && p.value >= 1.0),
             "{kind} in {effects:#?}"
+        );
+    }
+    let amendments = points(&all, "fleet.task.amendments");
+    for outcome in ["appended", "precondition"] {
+        assert!(
+            amendments
+                .iter()
+                .any(|p| p.attrs["fleet.outcome"] == outcome && p.value >= 1.0),
+            "{outcome} in {amendments:#?}"
         );
     }
     let depth = points(&all, "fleet.inbox.depth");

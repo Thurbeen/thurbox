@@ -124,7 +124,7 @@ hold, in this order:
 - a policy is selected: `spec.forge.draft.policy`, else `forge.draftPolicy`;
   an explicit `null` selects none. A selected name the config does not
   define raises `NeedsAttention/PolicyUnknown` and selects nothing;
-- the worker has reported `shipped` (`workerDone`);
+- the worker has reported `shipped` for `status.brief.generation` (`workerDone`);
 - `cr.state.value` is `draft` and `cr.everReady` is `false`: Fleet marks ready only
   a change that has been a draft the whole time it has been watched, so a
   change a person put back into draft, or a worker opened ready, is never

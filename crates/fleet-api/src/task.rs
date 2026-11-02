@@ -22,8 +22,8 @@ pub const RELEASE_FINALIZER: &str = "fleet.dev/release";
 pub const LOCAL_HOST: &str = "local";
 
 /// What a Task asks for. Fixed once created, like a Pod's spec: only
-/// `dispatch` and `forge` may change, and a different brief is a different
-/// Task.
+/// `dispatch` and `forge` may change, `amendments` only grows through
+/// `fleet amend`, and a different brief is a different Task.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskSpec {
@@ -40,8 +40,13 @@ pub struct TaskSpec {
     pub config_ref: Option<crate::config::ConfigRef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
-    /// The brief, sent once.
+    /// The brief, sent once and never changed.
     pub brief: String,
+    /// Additions to the brief, oldest first; appended only by `fleet amend`,
+    /// never changed or reordered. The worker's assignment is the brief plus
+    /// every amendment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub amendments: Vec<Amendment>,
     pub workspace: Workspace,
     /// Set by whoever starts the work; nothing spawns while it is false.
     #[serde(default)]
@@ -57,6 +62,142 @@ pub struct TaskSpec {
 
 fn local_host() -> String {
     LOCAL_HOST.to_string()
+}
+
+/// One addition to a Task's brief, stamped by `fleet amend`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Amendment {
+    /// What it adds, delivered as typed after Fleet's header.
+    pub text: String,
+    /// Why, as the amending caller gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Outputs it adds to the ones a result must carry; never a name
+    /// already declared.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, OutputDecl>,
+    /// Who amended: `cli/<user>`.
+    pub from: String,
+    /// Unix milliseconds.
+    pub at: Millis,
+    /// The spec generation the amendment created.
+    pub generation: u64,
+}
+
+impl TaskSpec {
+    /// The outputs a result for `generation` must match: `spec.outputs`
+    /// and those of every amendment at or below it.
+    pub fn outputs_at(&self, generation: u64) -> BTreeMap<String, OutputDecl> {
+        let mut outputs = self.outputs.clone();
+        for a in self
+            .amendments
+            .iter()
+            .filter(|a| a.generation <= generation)
+        {
+            outputs.extend(a.outputs.clone());
+        }
+        outputs
+    }
+
+    /// The first message a worker gets: the brief, then every amendment so
+    /// far, with the generation a result names when there are any.
+    pub fn assignment(&self, task: &str, generation: u64) -> String {
+        let amendments: Vec<&Amendment> = self
+            .amendments
+            .iter()
+            .filter(|a| a.generation <= generation)
+            .collect();
+        if amendments.is_empty() {
+            return self.brief.clone();
+        }
+        let mut text = self.brief.clone();
+        text.push_str(&format!(
+            "\n\nFleet: your brief has {} amendment(s), below; they add to it. Record your \
+             result with `fleet result {task} --generation {generation}`.",
+            amendments.len()
+        ));
+        for a in amendments {
+            text.push_str("\n\n");
+            text.push_str(&amendment_block(a));
+        }
+        text
+    }
+
+    /// What a briefed worker is told about the amendments after generation
+    /// `after`, up to `upto`: one message, so an amendment queued behind a
+    /// newer one still reaches the worker.
+    pub fn amendment_message(&self, task: &str, after: u64, upto: u64) -> String {
+        let amendments: Vec<&Amendment> = self
+            .amendments
+            .iter()
+            .filter(|a| a.generation > after && a.generation <= upto)
+            .collect();
+        let (what, them) = match amendments.as_slice() {
+            [one] => (
+                format!(
+                    "an amendment to your brief (generation {}) from {}",
+                    one.generation, one.from
+                ),
+                "it",
+            ),
+            _ => (
+                format!(
+                    "{} amendments to your brief (up to generation {upto})",
+                    amendments.len()
+                ),
+                "them",
+            ),
+        };
+        let mut text = format!(
+            "Fleet: {what}.\n\
+             It adds to your brief: your brief and earlier amendments still apply.\n\
+             It may give more context, add an ask, or ask you a question.\n\
+             Address {them}, then record your result with\n\
+             `fleet result {task} --generation {upto}`; a result already recorded\n\
+             must be recorded again so it covers this amendment."
+        );
+        for a in amendments {
+            text.push_str("\n\n");
+            text.push_str(&amendment_block(a));
+        }
+        text
+    }
+}
+
+/// One amendment as the worker reads it.
+fn amendment_block(a: &Amendment) -> String {
+    let mut text = format!(
+        "--- Amendment, generation {}, from {}\n",
+        a.generation, a.from
+    );
+    if let Some(reason) = &a.reason {
+        text.push_str(&format!("Reason: {reason}\n"));
+    }
+    if !a.outputs.is_empty() {
+        let outputs: Vec<String> = a
+            .outputs
+            .iter()
+            .map(|(name, d)| {
+                let ty = serde_json::to_value(d.type_)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default();
+                if d.required {
+                    format!("{name}: {ty}, required")
+                } else {
+                    format!("{name}: {ty}")
+                }
+            })
+            .collect();
+        text.push_str(&format!(
+            "New outputs your result must carry: {}\n",
+            outputs.join("; ")
+        ));
+    }
+    text.push_str("---\n");
+    text.push_str(&a.text);
+    text
 }
 
 /// Where the session works. Fleet names it; the runtime makes it, and cleans

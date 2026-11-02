@@ -54,6 +54,11 @@ pub struct InboxEntry {
     /// answer wins, and refuses an id that names no declared Question.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<String>,
+    /// For an amendment: the spec generation it created. Only the store's
+    /// amend mutation queues such an entry; TaskController delivers it, or
+    /// records it without a send once the worker has it already.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amends: Option<u64>,
     /// Unix milliseconds.
     pub queued_at: Millis,
 }
@@ -191,6 +196,13 @@ pub fn send_key(name: &str, uid: &str, n: u64) -> String {
     format!("{base}/{n}")
 }
 
+/// The key of the amendment that created generation `generation`:
+/// `task/<name>/<uid>/amend/<generation>`.
+pub fn amend_key(name: &str, uid: &str, generation: u64) -> String {
+    let base = effect_key(crate::task::KIND, name, uid, "amend", None);
+    format!("{base}/{generation}")
+}
+
 /// The key of a join or relay: `task/<name>/<uid>/relay/<change uid>/<revision>`.
 /// The mirror's `uid` keeps a recreated mirror's keys apart from its
 /// predecessor's; the revision is the one the message covers.
@@ -214,6 +226,7 @@ mod tests {
                 head: None,
             }),
             answers: Vec::new(),
+            amends: None,
             queued_at: 1,
         }
     }
@@ -273,6 +286,11 @@ mod tests {
     #[test]
     fn a_relay_key_names_the_mirror_and_the_revision() {
         assert_eq!(relay_key("t", "u7", "c3", 9), "task/t/u7/relay/c3/9");
+    }
+
+    #[test]
+    fn an_amend_key_names_the_generation() {
+        assert_eq!(amend_key("t", "u7", 4), "task/t/u7/amend/4");
     }
 
     #[test]

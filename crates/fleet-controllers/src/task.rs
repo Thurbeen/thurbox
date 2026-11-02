@@ -1,6 +1,7 @@
 //! TaskController: spawns one agent session for one brief, briefs it once,
-//! delivers what is queued in the Task's inbox, records the worker's answer,
-//! and releases the session when the Task is deleted.
+//! delivers what is queued in the Task's inbox (amendments to the brief
+//! among it), records the worker's answer, and releases the session when
+//! the Task is deleted.
 //!
 //! Pure: it reads the Task and what the probes saw, and returns a Plan. The
 //! manager performs the plan.
@@ -137,7 +138,7 @@ impl TaskController {
                 }
                 probes
             }
-            Phase::Briefed if st.result.is_none() => {
+            Phase::Briefed if !result_current(&st) => {
                 let mut probes = vec![find];
                 if let Some(s) = &st.session {
                     probes.push(Probe::Lost { session: s.clone() });
@@ -277,9 +278,11 @@ impl Pass<'_, '_> {
             Phase::Concluded => return self.concluded(),
             _ => {}
         }
-        // A recorded result ends the run: a result is only accepted once the
-        // brief has a receipt, so this is Briefed in practice.
-        if let Some(result) = &self.st.result {
+        // A result for the generation the worker was last given ends the
+        // run: a result is only accepted once the brief has a receipt, so
+        // this is Briefed in practice. One for an older generation answers
+        // less than the worker now has, and the run goes on.
+        if let Some(result) = self.st.result.as_ref().filter(|_| result_current(&self.st)) {
             let outcome = format!("{:?}", result.outcome);
             self.st.phase = Phase::Concluded;
             self.cond(
@@ -589,7 +592,11 @@ impl Pass<'_, '_> {
         self.st.receipts.remove(&key);
         let msg = format!("send {}", self.st.brief_sends);
         self.cond(BRIEFED, ConditionStatus::Unknown, "Sending", msg);
-        let text = self.spec.brief.clone();
+        // The brief and every amendment so far, as one message: an
+        // amendment queued before the brief went out is then already given.
+        let text = self
+            .spec
+            .assignment(&self.input.task.metadata.name, self.generation);
         self.intend(key, Action::Brief { session, text });
     }
 
@@ -632,9 +639,16 @@ impl Pass<'_, '_> {
         self.st.brief_probe_failures = 0;
         self.st.not_before = None;
         self.settle_attention("BriefUnconfirmed");
+        // The generation the brief was composed for, which an amendment
+        // since may have moved past.
+        let generation = self
+            .st
+            .intents
+            .get(&key)
+            .map_or(self.generation, |i| i.generation);
         self.st.brief = Some(BriefRecord {
             key,
-            generation: self.generation,
+            generation,
             recovered,
         });
         self.st.phase = Phase::Briefed;
@@ -711,10 +725,57 @@ impl Pass<'_, '_> {
             return;
         };
         let what = format!("inbox entry {} from {}", entry.key, entry.from);
-        if let Sent::Delivered(recovered) =
-            self.keyed_send(session, &entry.key, entry.text.clone(), &what)
-        {
+        let Some(generation) = entry.amends else {
+            if let Sent::Delivered(recovered) =
+                self.keyed_send(session, &entry.key, entry.text.clone(), &what)
+            {
+                self.record_delivery(&entry, recovered);
+            }
+            return;
+        };
+        let Some(given) = self.st.brief.as_ref().map(|b| b.generation) else {
+            return;
+        };
+        // The worker has it already, or the newer amendment queued behind
+        // it, never sent yet, will carry it: recorded without a send.
+        let newer = self.st.inbox.iter().any(|e| {
+            e.amends.is_some_and(|g| g > generation)
+                && !self
+                    .st
+                    .delivery_attempts
+                    .get(&e.key)
+                    .is_some_and(|a| a.failed)
+        });
+        if generation <= given || (newer && !self.st.intents.contains_key(&entry.key)) {
+            self.record_delivery(&entry, false);
+            return;
+        }
+        let text = self
+            .spec
+            .amendment_message(&self.input.task.metadata.name, given, generation);
+        if let Sent::Delivered(recovered) = self.keyed_send(session, &entry.key, text, &what) {
             self.record_delivery(&entry, recovered);
+            self.amended(entry.key, generation, recovered);
+        }
+    }
+
+    /// The worker was given the amendment that created `generation`: a
+    /// result must now name it, and a Concluded Task is open again, its old
+    /// result kept until the worker replaces it.
+    fn amended(&mut self, key: String, generation: u64, recovered: bool) {
+        self.st.brief = Some(BriefRecord {
+            key,
+            generation,
+            recovered,
+        });
+        if self.st.phase == Phase::Concluded {
+            self.st.phase = Phase::Briefed;
+            self.cond(
+                CONCLUDED,
+                ConditionStatus::False,
+                "Amended",
+                format!("the amendment for generation {generation} was delivered; a result must cover it"),
+            );
         }
     }
 
@@ -1012,7 +1073,8 @@ impl Pass<'_, '_> {
             format!(
                 "{head}, then continue your brief, generation {generation}, repeated \
                  below.\n\n{}",
-                self.spec.brief
+                self.spec
+                    .assignment(&self.input.task.metadata.name, generation)
             )
         }
     }
@@ -1166,6 +1228,16 @@ fn session_key(obj: &Object) -> String {
 fn brief_key(obj: &Object) -> String {
     let m = &obj.metadata;
     effect_key(task::KIND, &m.name, &m.uid, BRIEF, None)
+}
+
+/// Whether the recorded result answers the generation the worker was last
+/// given.
+fn result_current(st: &TaskStatus) -> bool {
+    match (&st.result, &st.brief) {
+        (Some(r), Some(b)) => r.generation == b.generation,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
 }
 
 fn known_receipt(st: &TaskStatus, key: &str) -> bool {

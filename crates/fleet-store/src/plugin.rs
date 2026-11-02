@@ -101,6 +101,7 @@ impl FileStore {
                     text: a.text.clone(),
                     about: None,
                     answers: a.answers.clone(),
+                    amends: None,
                     queued_at: self.now(),
                 };
                 if status.inbox.iter().any(|e| e.key == entry.key)

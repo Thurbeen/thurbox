@@ -675,6 +675,7 @@ fn entry(key: &str) -> fleet_api::inbox::InboxEntry {
         text: format!("message {key}"),
         about: None,
         answers: Vec::new(),
+        amends: None,
         queued_at: NOW - 100,
     }
 }

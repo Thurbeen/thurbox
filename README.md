@@ -81,6 +81,7 @@ fleet list task                            # every Task and its phase
 fleet status task hello                    # conditions: Spawned, Briefed, Concluded
 fleet get task hello                       # the whole resource as JSON
 fleet send hello "Also list the open TODOs."   # message the running session
+fleet amend hello --text "Also cover the docs."  # add to the brief; same session
 fleet delete task hello                    # release the session, then remove the Task
 ```
 

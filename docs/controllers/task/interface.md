@@ -42,7 +42,7 @@ deleted or its session recheck is due. A session recheck is due when
 | Pending, `dispatch: true` | `Host { host }`. |
 | Spawning | `Find { host, key }`. |
 | Spawned | `Find`; `Lost`, `WorkspaceTrust` and `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
-| Briefed, no worker result | `Find`; `Lost`; the delivery probes below. |
+| Briefed, no worker result for `status.brief.generation` | `Find`; `Lost`; the delivery probes below. |
 | Concluded, an inbox entry to deliver | `Find`; `Lost`; the delivery probes below. |
 | Concluded, session recheck due | `Find`. |
 | Concluded otherwise, or Stalled | None. |
@@ -198,9 +198,9 @@ Source: [Store](../../../crates/fleet-api/src/store.rs) and
 
 | Writer | May change | Required fencing |
 | --- | --- | --- |
-| `apply` | New served resources, labels and permitted spec changes; request deletion | Store validation, exclusive creation or resourceVersion CAS for spec updates. |
-| `worker` | `status.result` through `record_result` | Current resourceVersion, delivered brief generation and declared output types. |
-| `cli` | Appends to `status.inbox` through `send` | Current resourceVersion. No lease: the CLI calls a manager verb. |
+| `apply` | New served resources, labels and permitted spec changes; request deletion. Never `spec.amendments`. | Store validation, exclusive creation or resourceVersion CAS for spec updates. |
+| `worker` | `status.result` through `record_result` | Current resourceVersion, `status.brief.generation`, no amendment waiting, and the output types declared up to that generation. |
+| `cli` | Appends to `status.inbox` through `send`. Appends to `spec.amendments` and `status.inbox` together through `amend_task`. | Current resourceVersion. No lease: the CLI calls a manager verb. |
 | `forge-controller` | `status.forge`; appends to `status.inbox`, both through `record_relay` | Current resourceVersion and live manager lease. |
 | `task-controller` | Other Task status, `status.deliveries` and the release finalizer; removes delivered `inbox` entries | Current resourceVersion and live manager lease. |
 
@@ -215,8 +215,16 @@ while more than 20 entries are undelivered or the Task is deleting, and no
 other field of the Task changed by any of them. A plain `update_status` that
 changes `inbox` is refused whoever writes it.
 
+`amend_task` is the only write to `spec.amendments` and the only write that
+queues an entry with `amends`. In one CAS write it appends the amendment,
+increments `metadata.generation` to the amendment's generation and queues the
+entry under `task/<name>/<uid>/amend/<generation>`, with the inbox's checks.
+It refuses a deleting or Stalled Task. `update_spec`, and so `apply` and a
+plugin patch, refuses any change to `spec.amendments`, and a create refuses a
+Task that carries any.
+
 `Store` supplies `get`, `list`, `create`, `update_spec`, `update_status`,
-`append_inbox`, `record_relay`, `record_delivery`, `delete`, `delete_fenced`,
+`append_inbox`, `amend_task`, `record_relay`, `record_delivery`, `delete`, `delete_fenced`,
 `remove_finalizer`, validation and lease acquire/renew/release.
 Private `launch`/`freeze_launch` methods recover or exclusively freeze launch
 data under Task UID, separately from resources. Freezing checks Task UID,
@@ -233,9 +241,9 @@ permit controller fields to change.
 | Session key | `<name>.<uid>`; the uid prevents a recreated Task adopting an earlier Task's session. |
 | Spawn effect | `task/<name>/<uid>/spawn/<attempt>`. |
 | Brief effect | `task/<name>/<uid>/brief`, reused for every permitted send of that one brief. |
-| Inbox entry | Its own `key`, reused for every permitted send of it: `task/<name>/<uid>/send/<n>` for `fleet send`, `n` the resourceVersion the append was made against. |
+| Inbox entry | Its own `key`, reused for every permitted send of it: `task/<name>/<uid>/send/<n>` for `fleet send`, `n` the resourceVersion the append was made against; `task/<name>/<uid>/amend/<generation>` for `fleet amend`. |
 | Release effect | `task/<name>/<uid>/release/<attempt>`. |
-| Intent | Action name, timestamp and generation, stored under the effect key. |
+| Intent | Action name, timestamp and generation, stored under the effect key. The brief's receipt records the generation of its intent. |
 | Receipt | Action name, timestamp and `Observation<EffectOutcome>`, stored under the effect key. |
 
 An intent without a receipt means the action may have happened. Spawn looks

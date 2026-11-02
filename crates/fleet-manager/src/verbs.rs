@@ -15,11 +15,11 @@ use fleet_api::gateway::{
     AuthorKind, ConversationRef, Envelope, Event, Gateway, GatewayConfig, admit, earns_refusal,
     starts_task,
 };
-use fleet_api::inbox::{CLI_SOURCE_PREFIX, InboxEntry, send_key};
+use fleet_api::inbox::{CLI_SOURCE_PREFIX, InboxEntry, amend_key, send_key};
 use fleet_api::listener::{self, Beat, Heartbeat, listener_name};
 use fleet_api::meta::API_VERSION;
-use fleet_api::result::{TaskResult, validate_outputs};
-use fleet_api::task::{self, TaskSpec, TaskStatus};
+use fleet_api::result::{OutputDecl, TaskResult, validate_outputs};
+use fleet_api::task::{self, Amendment, Phase, TaskSpec, TaskStatus};
 use fleet_api::validate::typed;
 use fleet_api::{Clock, DeleteOutcome, FieldManager, Object, Observation, Store, StoreError};
 use serde::{Deserialize, Serialize};
@@ -58,8 +58,9 @@ pub fn ensure_task(store: &dyn Store, obj: Object) -> Result<Object, StoreError>
     ))
 }
 
-/// Create the object, or replace its spec and labels when it exists.
-/// Status in an applied object is refused: status belongs to controllers. A
+/// Create the object, or replace its spec and labels when it exists; a Task
+/// manifest without `amendments` keeps the stored ones. Status in an
+/// applied object is refused: status belongs to controllers. A
 /// Task whose `spec.forge.draft.policy` names a policy not in
 /// `ready_policies`, the names under `[forge.readyPolicies]`, is refused:
 /// a policy the config does not define would never mark anything ready.
@@ -124,14 +125,16 @@ pub fn apply(
                 }
                 let rv = current.metadata.resource_version;
                 let labels = Some(obj.metadata.labels.clone());
-                match store.update_spec(
-                    &obj.kind,
-                    &name,
-                    obj.spec.clone(),
-                    labels,
-                    rv,
-                    FieldManager::Apply,
-                ) {
+                let mut spec = obj.spec.clone();
+                // A manifest carries no amendments: re-applying it keeps the
+                // stored ones, which only `fleet amend` writes.
+                if obj.kind == task::KIND
+                    && let (Some(fields), Some(kept)) =
+                        (spec.as_object_mut(), current.spec.get("amendments"))
+                {
+                    fields.entry("amendments").or_insert_with(|| kept.clone());
+                }
+                match store.update_spec(&obj.kind, &name, spec, labels, rv, FieldManager::Apply) {
                     Ok(o) if o.metadata.resource_version == rv => {
                         return Ok((ApplyOutcome::Unchanged, o));
                     }
@@ -497,6 +500,7 @@ pub fn send(
             text: text.to_string(),
             about: None,
             answers: answers.iter().map(|a| a.trim().to_string()).collect(),
+            amends: None,
             queued_at: clock.now(),
         };
         match store.append_inbox(
@@ -517,6 +521,169 @@ pub fn send(
     )))
 }
 
+/// What `fleet amend` asks for.
+#[derive(Debug, Clone, Default)]
+pub struct AmendRequest {
+    pub text: String,
+    pub reason: Option<String>,
+    pub outputs: std::collections::BTreeMap<String, OutputDecl>,
+    /// Refuse unless the Task is at this generation.
+    pub if_generation: Option<u64>,
+}
+
+/// What `fleet amend` did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Amended {
+    pub task: String,
+    /// 1 for the Task's first amendment.
+    pub amendment: usize,
+    pub previous_generation: u64,
+    pub generation: u64,
+    /// The inbox entry that delivers it.
+    pub key: String,
+    pub from: String,
+}
+
+/// Add to a Task's brief: append an amendment to `spec.amendments`, which
+/// bumps the generation, and queue its delivery to the same session, in one
+/// write. The caller never needs a generation; `if_generation` is an
+/// optional precondition for one that must not land after another write.
+pub fn amend(
+    store: &dyn Store,
+    clock: &dyn Clock,
+    name: &str,
+    user: &str,
+    request: &AmendRequest,
+) -> Result<Amended, StoreError> {
+    let outcome = amend_once(store, clock, name, user, request);
+    crate::telemetry::amendment(match &outcome {
+        Ok(_) => "appended",
+        Err(StoreError::Precondition(_)) => "precondition",
+        Err(StoreError::Conflict { .. } | StoreError::Busy(_)) => "conflict",
+        Err(StoreError::NotFound(_)) => "notFound",
+        Err(StoreError::Forbidden(_)) => "forbidden",
+        Err(StoreError::Invalid(_)) => "invalid",
+        Err(_) => "error",
+    });
+    outcome
+}
+
+fn amend_once(
+    store: &dyn Store,
+    clock: &dyn Clock,
+    name: &str,
+    user: &str,
+    request: &AmendRequest,
+) -> Result<Amended, StoreError> {
+    let user = user.trim();
+    if user.is_empty() || user.contains(['/', '\0']) {
+        return Err(StoreError::Invalid(format!(
+            "sender {user:?}: a user name without '/'"
+        )));
+    }
+    if request.text.trim().is_empty() {
+        return Err(StoreError::Invalid(
+            "nothing to amend: the text is empty".into(),
+        ));
+    }
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(str::to_string);
+    for _ in 0..CAS_TRIES {
+        let obj = match store.get(task::KIND, name) {
+            Observation::Known(Some(o)) => o,
+            Observation::Known(None) => {
+                return Err(StoreError::NotFound(format!("{}/{name}", task::KIND)));
+            }
+            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+        };
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted; nothing would deliver the amendment",
+                obj.key()
+            )));
+        }
+        let m = &obj.metadata;
+        if let Some(want) = request.if_generation
+            && want != m.generation
+        {
+            return Err(StoreError::Precondition(format!(
+                "{} is at generation {}, not {want}",
+                obj.key(),
+                m.generation
+            )));
+        }
+        let spec: TaskSpec = typed(task::KIND, &obj.spec)?;
+        let st: TaskStatus = if obj.status.is_null() {
+            TaskStatus::default()
+        } else {
+            typed(task::KIND, &obj.status)?
+        };
+        if st.phase == Phase::Stalled {
+            return Err(StoreError::Forbidden(format!(
+                "{} is Stalled; nothing would deliver the amendment, so create a new Task",
+                obj.key()
+            )));
+        }
+        let declared = spec.outputs_at(u64::MAX);
+        if let Some(name) = request.outputs.keys().find(|n| declared.contains_key(*n)) {
+            return Err(StoreError::Invalid(format!(
+                "{}: output {name:?} is already declared; an amendment only adds outputs",
+                obj.key()
+            )));
+        }
+        let generation = m.generation + 1;
+        let from = format!("{CLI_SOURCE_PREFIX}{user}");
+        let at = clock.now();
+        let amendment = Amendment {
+            text: request.text.clone(),
+            reason: reason.clone(),
+            outputs: request.outputs.clone(),
+            from: from.clone(),
+            at,
+            generation,
+        };
+        let key = amend_key(&m.name, &m.uid, generation);
+        let entry = InboxEntry {
+            key: key.clone(),
+            from: from.clone(),
+            text: request.text.clone(),
+            about: None,
+            answers: Vec::new(),
+            amends: Some(generation),
+            queued_at: at,
+        };
+        match store.amend_task(
+            name,
+            amendment,
+            entry,
+            m.resource_version,
+            FieldManager::Cli,
+        ) {
+            Ok(_) => {
+                return Ok(Amended {
+                    task: name.to_string(),
+                    amendment: spec.amendments.len() + 1,
+                    previous_generation: m.generation,
+                    generation,
+                    key,
+                    from,
+                });
+            }
+            Err(StoreError::Conflict { .. }) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(StoreError::Busy(format!(
+        "{}/{name}: kept conflicting with other writers",
+        task::KIND
+    )))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ResultOutcome {
@@ -526,7 +693,9 @@ pub enum ResultOutcome {
 }
 
 /// The worker's answer: written as field manager `worker` into
-/// `status.result`, and only once the brief it answers has a receipt.
+/// `status.result`, only once the brief it answers has a receipt, and never
+/// while an amendment waits to be delivered. It names `status.brief`'s
+/// generation and carries the outputs declared up to it.
 pub fn record_result(
     store: &dyn Store,
     name: &str,
@@ -558,6 +727,18 @@ pub fn record_result(
                 obj.key()
             )));
         };
+        // An amendment still to deliver is owed an answer first; one given
+        // up on never reached the worker, so it holds nothing.
+        if let Some(pending) = st.inbox.iter().find(|e| {
+            e.amends.is_some_and(|g| g > brief.generation)
+                && !st.delivery_attempts.get(&e.key).is_some_and(|a| a.failed)
+        }) {
+            return Err(StoreError::Forbidden(format!(
+                "{}: the amendment for generation {} is not delivered yet; record a result once it arrives, naming its generation",
+                obj.key(),
+                pending.amends.unwrap_or_default()
+            )));
+        }
         if result.generation != brief.generation {
             return Err(StoreError::Invalid(format!(
                 "{}: stale generation {}: the brief was delivered for generation {}",
@@ -566,7 +747,7 @@ pub fn record_result(
                 brief.generation
             )));
         }
-        let problems = validate_outputs(&spec.outputs, &result.outputs);
+        let problems = validate_outputs(&spec.outputs_at(brief.generation), &result.outputs);
         if !problems.is_empty() {
             return Err(StoreError::Invalid(format!(
                 "{}: result does not match spec.outputs: {}",
@@ -574,15 +755,18 @@ pub fn record_result(
                 problems.join("; ")
             )));
         }
+        // Write-once within a generation; a result for an amended brief
+        // replaces the one for an older generation.
         match &st.result {
             Some(existing) if *existing == result => return Ok(ResultOutcome::Unchanged),
-            Some(_) => {
+            Some(existing) if existing.generation == result.generation => {
                 return Err(StoreError::Forbidden(format!(
-                    "{}: a different result is already recorded",
-                    obj.key()
+                    "{}: a different result is already recorded for generation {}",
+                    obj.key(),
+                    result.generation
                 )));
             }
-            None => {}
+            Some(_) | None => {}
         }
         st.result = Some(result.clone());
         let status = serde_json::to_value(&st).map_err(|e| StoreError::Invalid(e.to_string()))?;
@@ -732,14 +916,16 @@ pub fn apply_conversation(
             Observation::Known(Some(current)) => {
                 let rv = current.metadata.resource_version;
                 let labels = Some(obj.metadata.labels.clone());
-                match store.update_spec(
-                    &obj.kind,
-                    &name,
-                    obj.spec.clone(),
-                    labels,
-                    rv,
-                    FieldManager::Apply,
-                ) {
+                let mut spec = obj.spec.clone();
+                // A manifest carries no amendments: re-applying it keeps the
+                // stored ones, which only `fleet amend` writes.
+                if obj.kind == task::KIND
+                    && let (Some(fields), Some(kept)) =
+                        (spec.as_object_mut(), current.spec.get("amendments"))
+                {
+                    fields.entry("amendments").or_insert_with(|| kept.clone());
+                }
+                match store.update_spec(&obj.kind, &name, spec, labels, rv, FieldManager::Apply) {
                     Ok(o) if o.metadata.resource_version == rv => {
                         return Ok((ApplyOutcome::Unchanged, o));
                     }

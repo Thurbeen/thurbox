@@ -22,9 +22,9 @@ use fleet_api::{API_VERSION, Object, Observation, Store, StoreError};
 use fleet_forge::{ForgeHosts, HostConfig, HostKind};
 use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account};
 use fleet_manager::{
-    DeclareOutcome, GatewaySide, Manager, RunOptions, apply, apply_change_request,
-    apply_conversation, beat, declare, declare_change_request, delete, receive, record_result,
-    send,
+    AmendRequest, DeclareOutcome, GatewaySide, Manager, RunOptions, amend, apply,
+    apply_change_request, apply_conversation, beat, declare, declare_change_request, delete,
+    receive, record_result, send,
 };
 use fleet_runtime::{
     Cleanup, FakeHost, FakeRuntime, Repositories, ThurboxConfig, ThurboxRuntime, TrustInterface,
@@ -140,6 +140,34 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Add to a Task's brief: the amendment is kept in its spec, delivered to the same session, and re-opens a Concluded Task.
+    Amend {
+        task: String,
+        /// What the amendment adds.
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            required_unless_present = "file",
+            conflicts_with = "file"
+        )]
+        text: Option<String>,
+        /// Read the amendment from a file, or from stdin with `-`.
+        #[arg(long, value_name = "PATH")]
+        file: Option<PathBuf>,
+        /// Why, for whoever reads the Task later.
+        #[arg(long)]
+        reason: Option<String>,
+        /// A new output a result must carry, as NAME=TYPE; a trailing `!`
+        /// makes it required. Repeatable.
+        #[arg(long = "output", value_name = "NAME=TYPE[!]")]
+        outputs: Vec<String>,
+        /// Refuse unless the Task is at this generation.
+        #[arg(long, value_name = "N")]
+        if_generation: Option<u64>,
+        /// Print what was appended as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Delete a resource; a Task is released by its controller first.
     Delete { kind: String, name: String },
     /// Run the Task controller under the manager lease until idle, or for at most --max-passes passes.
@@ -223,6 +251,10 @@ impl From<StoreError> for Failure {
                 exit::CONFLICT,
                 Some("another writer got there first; run the command again"),
             ),
+            StoreError::Precondition(_) => (
+                exit::CONFLICT,
+                Some("read the resource again and decide whether the command still applies"),
+            ),
             StoreError::LeaseHeld { .. } | StoreError::LeaseLost(_) => (
                 exit::LEASE,
                 Some("one manager runs at a time; wait for it or for its lease to expire"),
@@ -239,6 +271,30 @@ impl From<StoreError> for Failure {
             hint: hint.map(str::to_string),
         }
     }
+}
+
+/// `NAME=TYPE`, with a trailing `!` for a required output.
+fn parse_output_decl(text: &str) -> Result<(String, fleet_api::result::OutputDecl), Failure> {
+    let usage = || {
+        fail(format!(
+            "--output {text:?}: use NAME=TYPE[!], TYPE one of string, integer, number, boolean, object, array"
+        ))
+    };
+    let (name, ty) = text.split_once('=').ok_or_else(usage)?;
+    let (ty, required) = match ty.strip_suffix('!') {
+        Some(ty) => (ty, true),
+        None => (ty, false),
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(usage());
+    }
+    let type_ =
+        serde_json::from_value(Value::String(ty.trim().to_string())).map_err(|_| usage())?;
+    Ok((
+        name.to_string(),
+        fleet_api::result::OutputDecl { type_, required },
+    ))
 }
 
 fn fail(message: impl Into<String>) -> Failure {
@@ -456,6 +512,47 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 print_json(&serde_json::to_value(&entry).map_err(|e| fail(e.to_string()))?);
             } else {
                 println!("Task/{task} inbox {} queued from {}", entry.key, entry.from);
+            }
+            Ok(())
+        }
+        Command::Amend {
+            task,
+            text,
+            file,
+            reason,
+            outputs,
+            if_generation,
+            json,
+        } => {
+            let text = match (text, file) {
+                (Some(text), _) => text,
+                (None, Some(path)) if path.as_os_str() == "-" => {
+                    let mut text = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+                        .map_err(|e| fail(format!("stdin: {e}")))?;
+                    text
+                }
+                (None, Some(path)) => std::fs::read_to_string(&path)
+                    .map_err(|e| fail(format!("{}: {e}", path.display())))?,
+                (None, None) => return Err(fail("give --text or --file")),
+            };
+            let request = AmendRequest {
+                text,
+                reason,
+                outputs: outputs
+                    .iter()
+                    .map(|o| parse_output_decl(o))
+                    .collect::<Result<_, _>>()?,
+                if_generation,
+            };
+            let done = amend(store, &SystemClock, &task, &current_user(), &request)?;
+            if json {
+                print_json(&serde_json::to_value(&done).map_err(|e| fail(e.to_string()))?);
+            } else {
+                println!(
+                    "Task/{task} amended: amendment {} appended, generation {} → {}",
+                    done.amendment, done.previous_generation, done.generation
+                );
             }
             Ok(())
         }

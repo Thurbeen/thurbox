@@ -26,6 +26,7 @@ struct Instruments {
     effects: Counter<u64>,
     forge_calls: Counter<u64>,
     inbox: Gauge<u64>,
+    amendments: Counter<u64>,
 }
 
 /// Built on first use, after the CLI installed the providers.
@@ -53,6 +54,11 @@ fn instruments() -> &'static Instruments {
                 .u64_gauge("fleet.inbox.depth")
                 .with_unit("{entry}")
                 .with_description("Undelivered inbox entries over every Task, at a pass's start.")
+                .build(),
+            amendments: meter
+                .u64_counter("fleet.task.amendments")
+                .with_unit("{amendment}")
+                .with_description("fleet amend calls, by outcome.")
                 .build(),
         }
     })
@@ -95,6 +101,13 @@ fn identity(obj: &Object) -> Vec<KeyValue> {
         KeyValue::new("fleet.uid", m.uid.clone()),
         KeyValue::new("fleet.generation", m.generation as i64),
     ]
+}
+
+/// Count one `fleet amend` by outcome: `appended`, or why it was refused.
+pub(crate) fn amendment(outcome: &'static str) {
+    instruments()
+        .amendments
+        .add(1, &[KeyValue::new("fleet.outcome", outcome)]);
 }
 
 /// One pass over every kind; records the Tasks' inbox depth as it starts.

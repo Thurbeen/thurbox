@@ -998,3 +998,36 @@ fn bitbucket_cloud_drafts_fail_closed_without_an_atomic_head_and_state_precondit
         "mark-ready must not use a check-then-update race: {calls:#?}"
     );
 }
+
+#[test]
+fn a_shipped_result_an_amendment_superseded_never_marks_ready() {
+    let (env, forge, cr) = setup("amended", "checks", draft(Checks::Passed));
+    ship(&env, "t1");
+    env.fleet(&["amend", "t1", "--text", "Also cover the edge case."])
+        .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed", "re-opened");
+    rest(&env, "t1", true);
+    poll(&env, &cr);
+    assert!(
+        forge.marked_ready().unwrap().is_empty(),
+        "the shipped result answers generation 1; the worker now has 2"
+    );
+    assert_eq!(record(&env, "t1", &cr)["state"], "none");
+
+    env.fleet(&[
+        "result",
+        "t1",
+        "--generation",
+        "2",
+        "--outcome",
+        "shipped",
+        "--output",
+        "prUrl=\"https://example.test/pr/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    poll(&env, &cr);
+    assert_eq!(record(&env, "t1", &cr)["state"], "done");
+    assert_eq!(forge.marked_ready().unwrap().len(), 1);
+}

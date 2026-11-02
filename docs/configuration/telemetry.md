@@ -97,6 +97,7 @@ entry.
 | `fleet.effects` | counter | `{effect}` | `fleet.effect`, `fleet.outcome` |
 | `fleet.forge.calls` | counter | `{call}` | `fleet.forge.host`, `fleet.outcome` |
 | `fleet.inbox.depth` | gauge | `{entry}` | none |
+| `fleet.task.amendments` | counter | `{amendment}` | `fleet.outcome` |
 
 `fleet.forge.calls` counts the change polls that Fleet sent to a forge. A
 poll that the forge throttled has the outcome `throttled`. A poll that
@@ -104,6 +105,12 @@ Fleet deferred after a throttle on the same host is not a call.
 
 `fleet.inbox.depth` is the number of undelivered inbox entries over all
 Tasks, at the start of each pass.
+
+`fleet.task.amendments` counts `fleet amend` calls. The outcome is
+`appended`, or the refusal: `precondition`, `conflict`, `notFound`,
+`forbidden`, `invalid` or `error`. The delivery of an amendment is an
+effect, counted in `fleet.effects` as `deliver`, on a span that carries
+`fleet.generation`.
 
 ## What Fleet never exports
 

@@ -18,10 +18,12 @@ reconciles a Concluded Task only in these cases:
   minutes old.
 
 Deletion takes precedence over normal progress, including Stalled and
-Concluded. With no deletion, those two phases are terminal. A Concluded Task
-is due again for delivery and for the session recheck only.
-A recorded worker result concludes an active Task before its ordinary phase
-logic runs.
+Concluded. With no deletion, Stalled is terminal. Concluded is terminal
+until a delivered amendment re-opens it. A Concluded Task is due again for
+delivery and for the session recheck only.
+A recorded worker result for `status.brief.generation` concludes an active
+Task before its ordinary phase logic runs. A result for an older generation
+concludes nothing.
 
 | Current phase | Observation or input | Next phase | Decision |
 | --- | --- | --- | --- |
@@ -36,24 +38,27 @@ logic runs.
 | Spawning | Same failure with 3 spawn attempts spent | Stalled | Raise `Stalled/SpawnAttemptsExhausted` and NeedsAttention. |
 | Spawning | Missing/Unknown receipt; session list unreadable | Spawning | Report Unknown; never infer absence or respawn blindly. |
 | Spawned | Readable lookup lacks the recorded session identity | Spawned | Raise WorkerGone and NeedsAttention; do not send. |
-| Spawned | Known Delivered receipt, or journal proves delivered | Briefed | Record brief key and generation; recovered journal answers become receipts. |
+| Spawned | Known Delivered receipt, or journal proves delivered | Briefed | Record the brief key and the generation of the brief intent; recovered journal answers become receipts. |
 | Spawned | Workspace trust Known untrusted | Spawned | Set `WorkspaceTrusted=False` with the gap as reason, raise `NeedsAttention/WorkspaceUntrusted`, wait, then probe again. Do not send. |
 | Spawned | Workspace trust Unknown | Spawned | Set `WorkspaceTrusted=Unknown/TrustUnknown`. Do not send and raise no attention. Probe again on the next pass, without a wait. |
 | Spawned | Workspace trust unanswered | Spawned | Do not send. Change nothing. |
-| Spawned | No brief intent yet, or delivery proven absent; workspace trusted; fresh readiness true; fewer than 3 sends spent | Spawned | Set `WorkspaceTrusted=True/Trusted` and clear its attention. Persist brief intent and plan Brief. A later pass consumes its receipt. |
+| Spawned | No brief intent yet, or delivery proven absent; workspace trusted; fresh readiness true; fewer than 3 sends spent | Spawned | Set `WorkspaceTrusted=True/Trusted` and clear its attention. Persist brief intent and plan Brief, with the brief and every amendment so far as one message, for the current generation. A later pass consumes its receipt. |
 | Spawned | Session not ready or readiness Unknown | Spawned | Do not send, including on a retry. Receipt recovery may still proceed. |
 | Spawned | Delivery unreadable after an ambiguous send | Spawned | Wait, then probe again; after 3 unreadable probes raise NeedsAttention. |
 | Spawned | Another send would exceed the 3-send bound | Stalled | Raise `Stalled/BriefAttemptsExhausted` and NeedsAttention. |
-| Briefed | No result; recorded session present or lookup unreadable | Briefed | Wait for result; Unknown does not mean WorkerGone. |
-| Briefed | No result; readable lookup lacks recorded identity | Briefed | Raise WorkerGone and NeedsAttention; never abandon or respawn. |
+| Briefed | No result for `status.brief.generation`; recorded session present or lookup unreadable | Briefed | Wait for result; Unknown does not mean WorkerGone. |
+| Briefed | No result for `status.brief.generation`; readable lookup lacks recorded identity | Briefed | Raise WorkerGone and NeedsAttention; never abandon or respawn. |
 | Spawned, Briefed, or Concluded with a delivery due | Session lost: the runtime holds the session, but its agent's window is gone | unchanged | Set `SessionLost=True/WindowGone`. Send nothing. With `dispatch: true`, persist a revive intent and plan `Revive` under `revive/<n>`. A held Task is not revived. |
 | Spawned, Briefed, or Concluded with a delivery due | Still lost after a revive | unchanged | Wait 30 seconds from the last revive, then revive again. From the third revive on, also raise `NeedsAttention/ReviveFailed`. |
 | Spawned, Briefed, or Concluded with a delivery due | Not lost while `SessionLost` is True | unchanged | Set `SessionLost=False/Revived`. When the brief has a receipt, owe a resume note under `resume/<n>`. In Spawned, the brief protocol continues. |
-| Briefed or Concluded | A resume note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief and its generation. |
-| Active phase | Accepted worker result is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
+| Briefed or Concluded | A resume note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. |
+| Active phase | Accepted worker result for `status.brief.generation` is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
 | Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered before the brief was sent, or while a brief send is unconfirmed. |
 | Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
 | Spawned, Briefed or Concluded | Known Delivered receipt, or journal proves delivered | unchanged | Record the receipt in `status.deliveries` and remove the entry, in one write; its intent, receipt and attempt records go with it. |
+| Spawned, Briefed or Concluded | Oldest entry is an amendment at or below `status.brief.generation`, or one never sent with a newer amendment queued behind it | unchanged | Record its receipt without a send. The worker has it already, or the newer message carries it. |
+| Briefed | Amendment entry delivered | Briefed | Set `status.brief` to the entry's key and generation. |
+| Concluded | Amendment entry delivered | Briefed | Set `status.brief` to the entry's key and generation, and `Concluded=False/Amended`. Keep the old result. |
 | Spawned, Briefed or Concluded | Entry send refused (Known failure) | unchanged | Wait, then send again under the same key to a session observed ready; at most 3 sends. |
 | Spawned, Briefed or Concluded | Entry delivery unreadable after an ambiguous send | unchanged | Wait, then read the journal again. After 3 unreadable reads, raise `NeedsAttention/DeliveryUnconfirmed` naming the entry. The entry stays, marked failed, and is never sent again. Later entries are still delivered. |
 | Spawned, Briefed or Concluded | A fourth send of one entry would be needed | unchanged | `NeedsAttention/DeliveryFailed` naming the entry; the entry stays, marked failed, and later entries are still delivered. |
@@ -99,8 +104,10 @@ at-rest proof to that replacement.
 `fleet reconcile` exits at a fixed point; it does not wait for `notBefore`.
 Invoke it again after the deadline. Stalled Tasks do not retry automatically;
 unreadable-delivery and release recovery continue on later due invocations.
-A different brief or a fresh run requires a new Task. Changing `dispatch`
-does not clear attempt counters or revive a Stalled Task.
+A different brief or a fresh run requires a new Task. An addition to the
+brief is an amendment, through `fleet amend`; a Stalled or deleting Task
+refuses one. Changing `dispatch` does not clear attempt counters or revive a
+Stalled Task.
 
 ## Conditions
 
@@ -116,7 +123,7 @@ are last recorded observations; absence of a condition is not a True value.
 | Briefed | The brief has a `ReceiptWritten` or `ReceiptRecovered` record. |
 | Stalled | `SpawnAttemptsExhausted` or `BriefAttemptsExhausted`. |
 | WorkerGone | A readable lookup no longer shows the recorded identity under its key (`SessionGone`). |
-| Concluded | A worker result was accepted and observed (`ResultRecorded`). |
+| Concluded | A worker result for `status.brief.generation` was accepted and observed (`ResultRecorded`). False with `Amended` after a delivered amendment re-opened the Task. |
 | Released | A known release completed, or there was nothing to release. |
 | WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
 | SessionLost | The runtime holds the session, but its agent's window is gone (`WindowGone`). False after a lost session is back (`Revived`). |
@@ -134,7 +141,8 @@ DeliveryFailed and DeliveryUnconfirmed stay while a failed entry does. A
 successful release removes the Task; a worker result alone is not a general
 reset of previous conditions. NeedsAttention does not universally stop the
 controller: its reason and phase determine what continues. Delivering an
-inbox entry changes no phase and no condition other than those three.
+inbox entry changes no phase and no condition other than those three. A
+delivered amendment also re-opens a Concluded Task, with `Concluded=False/Amended`.
 
 ## After a host reboot
 
@@ -161,7 +169,7 @@ fleet up starts ──> sweep ──> Lost? ─yes─> Revive (same id, same wor
 - A revive never creates a second session. The brief key is never sent
   again. The resume note has its own key and journal entry.
 - The brief record keeps its generation. A result for another generation is
-  still refused.
+  still refused. An amendment that waits is delivered after the resume note.
 - A deleting Task is released, not revived. A session with no window is at
   rest.
 - A Task whose session row was deleted is `WorkerGone`, as before. Fleet
