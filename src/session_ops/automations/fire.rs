@@ -243,7 +243,7 @@ fn fire_send(
         }
         Err(e) => return (AutomationRunStatus::Error, e.to_string(), None),
     }
-    match super::super::send_text_with_status(db, backends, &target, &auto.prompt, true) {
+    match super::super::send::prompt(db, backends, &target, &auto.prompt, None) {
         Ok(()) => (
             AutomationRunStatus::Success,
             format!("sent to {session_id}"),
@@ -296,13 +296,7 @@ fn fire_spawn(
     match running.as_slice() {
         [] => {}
         [session] => {
-            return match super::super::send_text_with_status(
-                db,
-                backends,
-                session,
-                &auto.prompt,
-                true,
-            ) {
+            return match super::super::send::prompt(db, backends, session, &auto.prompt, None) {
                 Ok(()) => (
                     AutomationRunStatus::Success,
                     format!("reused {name}"),

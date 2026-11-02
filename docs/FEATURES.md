@@ -2963,7 +2963,9 @@ it used to type straight into the pane, onto whatever the operator had half
 typed, through this machine's connection to a host's server. It now refuses an
 empty text or a stopped session, hands a busy line to the agent's inbox, and
 asks a host that takes delegation to do the send, exactly as `session send`
-does.
+does. A task dispatch and a Send automation hand over their prompt through the
+same verb, so neither types onto a half-typed line either; a prompt left only in
+the mailbox fails them, and the task stays `Todo`.
 
 ### Finding the recipient's inbox
 
@@ -2971,7 +2973,7 @@ The agent is **detected from what it announced**, not from the row's agent
 name — `claude-coder` or `flow` may be a wrapper script around `claude`.
 
 A **Claude** socket is used only when it is **proven** to belong to the
-recipient (`cli::delivery::owned_sockets`). Claude Code's session registry,
+recipient (`session_ops::delivery::owned_sockets`). Claude Code's session registry,
 `~/.claude/sessions/<pid>.json` (or under `$CLAUDE_CONFIG_DIR`), names each
 process's `pid`, `kind` and `messagingSocketPath`; a socket counts when its
 entry is `kind: "interactive"`, the path is still a socket, **and that
@@ -3125,7 +3127,7 @@ surface. `AGENTS.md` keeps the identity contract and points here.
 - **CLI** (`thurbox-cli message`, alias `msg`) — identity-aware:
   - `send --to <uuid|name> --kind <k> [--task <id>] [--from <uuid|name>] --body
     <text> [--no-wake]` enqueues and, unless `--no-wake`, delivers the body to
-    the recipient agent's own inbox (`cli::delivery`). The output's
+    the recipient agent's own inbox (`session_ops::delivery`). The output's
     `delivered_via` is `claude-socket`, `codex-queue` or `mailbox`, with
     `delivery_note` saying why a message stayed in the mailbox. A failed
     native send is logged at `warn` and never fails the command.

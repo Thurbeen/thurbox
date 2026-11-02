@@ -142,6 +142,25 @@ pub fn send(
     })
 }
 
+/// Hand an agent a prompt the way the interface's `send`, a task dispatch and
+/// a send automation all do: submitted, guarded, and failed unless the agent
+/// was shown it — a prompt left only in the mailbox counts as not delivered.
+pub fn prompt(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session: &SharedSession,
+    text: &str,
+    from_task: Option<i64>,
+) -> Result<(), OpError> {
+    let policy = SendPolicy {
+        from_task,
+        ..SendPolicy::submit()
+    };
+    send(db, backends, session, text, &policy)?
+        .failure
+        .map_or(Ok(()), Err)
+}
+
 /// Refuse a send to a **parked** session, naming the fix. `session stop`
 /// killed the window on purpose; without this the multiplexer's "can't find
 /// window" would describe a crash rather than the state the caller asked for.
@@ -216,7 +235,7 @@ fn hand_over(
         kind: "session-send".into(),
         body: text.to_string(),
     };
-    super::delivery::enqueue_and_deliver(db, session, new, false).map_err(OpError::Other)
+    super::delivery::enqueue_and_deliver(db, session, new, false)
 }
 
 fn failure(delivery: &Delivery, session: &SharedSession, strict: bool) -> Option<OpError> {

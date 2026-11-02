@@ -57,8 +57,8 @@ pub fn dispatch(
             }),
         ) => {
             if let Some(running) = running_task_session(db, backends, task)? {
-                super::send_text_with_status(db, backends, &running, &task.agent_prompt(), true)
-                    .map_err(|e| format!("send: {e:#}"))?;
+                super::send::prompt(db, backends, &running, &task.agent_prompt(), Some(task.id))
+                    .map_err(|e| e.to_string())?;
                 Dispatched::Reused { name: running.name }
             } else {
                 let name = task.spawn_session_name();
@@ -113,8 +113,8 @@ fn send_to(
     {
         return Err("target session not running".into());
     }
-    super::send_text_with_status(db, backends, &target, &task.agent_prompt(), true)
-        .map_err(|e| format!("send: {e:#}"))?;
+    super::send::prompt(db, backends, &target, &task.agent_prompt(), Some(task.id))
+        .map_err(|e| e.to_string())?;
     Ok(Dispatched::Sent { session_id })
 }
 

@@ -210,10 +210,8 @@ pub(super) fn execute(
                 .get_session_by_id(id)
                 .map_err(|e| format!("get session: {e}"))?
                 .ok_or_else(|| format!("session not found: {id}"))?;
-            let policy = crate::session_ops::send::SendPolicy::submit();
-            let report = crate::session_ops::send::send(&db, backends, &session, text, &policy)
-                .map_err(|e| e.to_string())?;
-            report.failure.map_or(Ok(()), |e| Err(e.to_string()))
+            crate::session_ops::send::prompt(&db, backends, &session, text, None)
+                .map_err(|e| e.to_string())
         }
         Command::Reorder { delta, .. } => reorder(&db, id, *delta),
         // Handled above, before the session id is parsed.
