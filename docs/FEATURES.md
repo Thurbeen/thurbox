@@ -2965,7 +2965,9 @@ empty text or a stopped session, hands a busy line to the agent's inbox, and
 asks a host that takes delegation to do the send, exactly as `session send`
 does. A task dispatch and a Send automation hand over their prompt through the
 same verb, so neither types onto a half-typed line either; a prompt left only in
-the mailbox fails them, and the task stays `Todo`.
+the mailbox fails them, and the task stays `Todo`. `session key` and `session
+capture` take the same route: a session on a host that takes delegation has the
+host's own CLI press or read, decided in `session_ops`.
 
 ### Finding the recipient's inbox
 

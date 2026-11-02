@@ -1128,6 +1128,66 @@ mod delegated_create {
         }
     }
 
+    /// A key and a capture for a session on a host that takes delegation are
+    /// the host CLI's to do, decided inside `session_ops` (#1468) as a send's
+    /// route is, so no caller can reach the host's pane past its own CLI.
+    #[test]
+    fn key_and_capture_go_through_the_hosts_cli_from_session_ops() {
+        if !super::have_tmux() {
+            return;
+        }
+        let pair = Pair::new();
+        let id = created_id(&pair.create(&["--name", "pane-io", "--agent", "shell"]));
+        let path = format!(
+            "{}:{}",
+            pair.path("bin").display(),
+            std::env::var("PATH").unwrap()
+        );
+        std::env::set_var("PATH", path);
+        for (var, dir) in [
+            ("HOME", "home"),
+            ("USERPROFILE", "home"),
+            ("THURBOX_CONFIG_DIR", "config"),
+            ("THURBOX_DATA_DIR", "data"),
+        ] {
+            std::env::set_var(var, pair.path(dir));
+        }
+        let _caller = TmuxServer::pin("tbx-dc-pane-io");
+        for var in ["THURBOX_SESSION", "THURBOX_SESSION_ID"] {
+            std::env::remove_var(var);
+        }
+        let (backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+        let db = pair.caller_db();
+        let session = db.get_session_by_id(id).unwrap().expect("the mirror row");
+
+        let asked = |verb: &str| {
+            pair.ssh_log()
+                .lines()
+                .filter(|line| {
+                    let line = line.replace('\'', "");
+                    line.contains(&format!(" session {verb} ")) && line.contains(&id.to_string())
+                })
+                .count()
+        };
+        let enter = thurbox::backend::Key::parse("enter").expect("a key");
+        thurbox::session_ops::press_key(&db, &backends, &session, &enter)
+            .unwrap_or_else(|e| panic!("key: {e}"));
+        assert_eq!(
+            asked("key"),
+            1,
+            "the host's CLI was not asked to press the key; the link carried:\n{}",
+            pair.ssh_log()
+        );
+        thurbox::session_ops::capture::capture(&db, &backends, &session, 5, false)
+            .unwrap_or_else(|e| panic!("capture: {e}"));
+        assert_eq!(
+            asked("capture"),
+            1,
+            "the host's CLI was not asked to capture; the link carried:\n{}",
+            pair.ssh_log()
+        );
+    }
+
     #[test]
     fn remote_restore_mirrors_the_recreated_pane_before_returning() {
         if !super::have_tmux() {

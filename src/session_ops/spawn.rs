@@ -120,14 +120,14 @@ pub struct SpawnRequest {
     /// the `--on-existing replace` rollback, which a session that exists must
     /// never trigger.
     pub reports_as: Option<String>,
-    /// `session create --on-existing`, as its word, when it is not `allow`.
+    /// What to do when the session is already there.
     ///
-    /// The CLI applies it on this side before spawning, so a local spawn
-    /// ignores it. A delegated one forwards it: this side matched against a
-    /// mirror, and the host's own rows are the record a name or key is
-    /// arbitrated against (ADR-24). A retry under a known `session_id` is
-    /// answered before it, whatever it says.
-    pub on_existing: Option<String>,
+    /// [`super::create::create_or_adopt`] applies it on this side before
+    /// spawning, so a local spawn ignores it. A delegated one forwards it: this
+    /// side matched against a mirror, and the host's own rows are the record a
+    /// name or key is arbitrated against (ADR-24). A retry under a known
+    /// `session_id` is answered before it, whatever it says.
+    pub on_existing: super::create::OnExisting,
 }
 
 /// Result returned on successful headless spawn.
@@ -1062,8 +1062,8 @@ fn delegated_create_args(
     if let Some(declared) = reports_as {
         flag("--reports-as", declared);
     }
-    if let Some(mode) = on_existing {
-        flag("--on-existing", mode);
+    if *on_existing != super::create::OnExisting::Allow {
+        flag("--on-existing", on_existing.as_str());
     }
     for (key, value) in telemetry_attrs {
         flag("--telemetry-attr", &format!("{key}={value}"));
@@ -3362,7 +3362,7 @@ mod tests {
             parent_session_id: Some(parent),
             key: Some("k".into()),
             reports_as: Some("claude".into()),
-            on_existing: Some("adopt".into()),
+            on_existing: crate::session_ops::create::OnExisting::Adopt,
             extra_repos: vec![
                 ExtraRepo {
                     repo_path: PathBuf::from("/x"),

@@ -197,7 +197,7 @@ fn spawn(
             key: None,
             session_id: None,
             reports_as: None,
-            on_existing: None,
+            on_existing: Default::default(),
         },
     );
     match result {

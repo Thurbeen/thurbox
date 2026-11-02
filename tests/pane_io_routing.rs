@@ -1687,3 +1687,257 @@ fn held_command_bus_send(other_session: bool, panic_first: bool) {
     .expect("send after queue drains");
     assert_screen_shows(&reg.probe, &pane, "after drain", "queue drained");
 }
+
+/// The interface's `create` and `thurbox-cli session create` are one verb
+/// (#1468): the same request is refused, named and created the same way
+/// whichever of the two makes it.
+#[test]
+fn a_create_does_the_same_through_the_kernel_and_the_cli() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let backends = &reg.cli;
+    let repo = instance.repo();
+    let missing = instance.root.path().join("no-such-repo");
+    let missing = missing.display().to_string();
+    let gone = instance.root.path().join("no-such-worktree");
+    let gone = gone.display().to_string();
+    // A directory a name can be taken from: a tempdir's own starts with a dot.
+    let plain = instance.root.path().join("plain-repo");
+    std::fs::create_dir(&plain).expect("mkdir");
+    git(&plain, &["init", "-q", "-b", "main"]);
+    let plain = plain.display().to_string();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    let mut outcomes: Vec<Vec<Result<(), String>>> = Vec::new();
+    for via in ["kernel", "cli"] {
+        let mut create = |name: &str, repo: &str, opened: Option<&str>| -> Result<(), String> {
+            if via == "kernel" {
+                kernel(
+                    &mut bus,
+                    KernelCommand::Create {
+                        name: name.to_string(),
+                        repo: repo.to_string(),
+                        branch: opened.map(|_| "feat/opened".to_string()),
+                        base: None,
+                        worktree_path: opened.map(str::to_string),
+                        agent: None,
+                        host: None,
+                        multiplexer: None,
+                        extras: Vec::new(),
+                    },
+                )
+            } else {
+                let mut args = vec!["session", "create", "--name", name, "--repo-path", repo];
+                if let Some(opened) = opened {
+                    args.extend([
+                        "--worktree-branch",
+                        "feat/opened",
+                        "--existing-worktree",
+                        opened,
+                    ]);
+                }
+                cli(&db, backends, &args).map(|_| ())
+            }
+        };
+        let made = format!("made-via-{via}");
+        outcomes.push(vec![
+            create("lost", &missing, None),
+            create("opened", &repo, Some(&gone)),
+            create(&made, &repo, None),
+            // No name: the repository directory names it.
+            create("", &plain, None),
+        ]);
+        assert!(
+            db.list_active_sessions()
+                .expect("list")
+                .iter()
+                .any(|s| s.name == made && s.backend_type == "local:rmux"),
+            "via {via}: no session named {made} on local:rmux"
+        );
+    }
+    let (kernel_outcomes, cli_outcomes) = (&outcomes[0], &outcomes[1]);
+    assert_eq!(
+        kernel_outcomes, cli_outcomes,
+        "the kernel's create and the CLI's disagree"
+    );
+    assert_eq!(
+        kernel_outcomes[0],
+        Err(format!("not a directory: {missing}"))
+    );
+    let named_after_the_repo = db
+        .list_active_sessions()
+        .expect("list")
+        .into_iter()
+        .filter(|s| s.name == "plain-repo")
+        .count();
+    assert_eq!(
+        named_after_the_repo, 2,
+        "an unnamed create takes the repository's name"
+    );
+}
+
+/// A task's action and an automation's target are read by one parser (#1468):
+/// the same flags are refused with the same words by `task create`,
+/// `automation create` and the interface's automation editor.
+#[test]
+fn an_action_is_read_the_same_by_tasks_automations_and_the_interface() {
+    let instance = Instance::new(None);
+    let db = instance.db();
+    let reg = registries();
+    let backends = &reg.cli;
+    let repo = instance.repo();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    let cases: [(&str, Vec<&str>); 2] = [
+        ("an unknown session", vec!["--session", "not-a-uuid"]),
+        (
+            "two targets",
+            vec!["--session", "not-a-uuid", "--repo", repo.as_str()],
+        ),
+    ];
+    for (case, flags) in cases {
+        let mut task = vec!["task", "create", "--title", "t"];
+        task.extend(&flags);
+        let task = cli(&db, backends, &task).expect_err("task create refuses");
+
+        let mut auto = vec![
+            "automation",
+            "create",
+            "--name",
+            "a",
+            "--trigger",
+            "hourly",
+            "--prompt",
+            "p",
+        ];
+        auto.extend(&flags);
+        let auto = cli(&db, backends, &auto).expect_err("automation create refuses");
+
+        let flag = |name: &str| {
+            flags
+                .iter()
+                .position(|f| *f == name)
+                .map(|i| flags[i + 1].to_string())
+        };
+        let interface = kernel(
+            &mut bus,
+            KernelCommand::AutomationSave {
+                id: None,
+                draft: thurbox::kernel::command::AutomationDraft {
+                    name: Some("a".into()),
+                    trigger: Some("hourly".into()),
+                    prompt: Some("p".into()),
+                    session: flag("--session"),
+                    repo: flag("--repo"),
+                    ..Default::default()
+                },
+            },
+        )
+        .expect_err("the interface refuses");
+
+        assert_eq!(task, auto, "{case}: task and automation disagree");
+        assert_eq!(
+            task, interface,
+            "{case}: the CLI and the interface disagree"
+        );
+    }
+}
+
+/// A retry under a known `--id` is answered with the session it made, before
+/// anything only a new session needs is read: a parent deleted since, or a
+/// declaration that no longer checks, does not turn the retry into a failure.
+#[test]
+fn a_create_retried_under_its_id_answers_after_its_parent_is_gone() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let backends = &reg.cli;
+    let repo = instance.repo();
+
+    let parent = cli(
+        &db,
+        backends,
+        &["session", "create", "--name", "lead", "--repo-path", &repo],
+    )
+    .expect("create the parent");
+    let parent = parent["id"].as_str().expect("parent id").to_string();
+    let id = SessionId::default().to_string();
+    let create = [
+        "session",
+        "create",
+        "--name",
+        "child",
+        "--repo-path",
+        &repo,
+        "--id",
+        &id,
+        "--parent",
+        &parent,
+    ];
+    let first = cli(&db, backends, &create).expect("first create");
+    assert_eq!(first["created"], true);
+    cli(&db, backends, &["session", "delete", "--force", &parent]).expect("delete the parent");
+
+    let retried = cli(&db, backends, &create).expect("the retry answers");
+    assert_eq!(retried["id"], id.as_str());
+    assert_eq!(retried["created"], false);
+}
+
+/// An empty host is this machine, as the backend resolves it, so a local path
+/// that is not there is refused under that spelling too — from the CLI and
+/// from the interface.
+#[test]
+fn an_empty_host_is_checked_as_this_machine() {
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    let missing = instance.root.path().join("no-such-repo");
+    let missing = missing.display().to_string();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    let via_cli = cli(
+        &db,
+        &reg.cli,
+        &[
+            "session",
+            "create",
+            "--name",
+            "x",
+            "--repo-path",
+            &missing,
+            "--host",
+            "",
+        ],
+    )
+    .map(|_| ());
+    let via_kernel = kernel(
+        &mut bus,
+        KernelCommand::Create {
+            name: "x".into(),
+            repo: missing.clone(),
+            branch: None,
+            base: None,
+            worktree_path: None,
+            agent: None,
+            host: Some(String::new()),
+            multiplexer: None,
+            extras: Vec::new(),
+        },
+    );
+    let refused = Err(format!("not a directory: {missing}"));
+    assert_eq!(via_cli, refused, "the CLI");
+    assert_eq!(via_kernel, refused, "the interface");
+}

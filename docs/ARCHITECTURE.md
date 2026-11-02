@@ -1988,7 +1988,7 @@ thurbox database, whoever created it. A thurbox reaching the host from
 elsewhere *mirrors* that database (`session list --json` + `--deleted`) into
 local rows on `ssh:<name>` / `wsl:<name>` — same id, the host's facts and hook
 status — and performs lifecycle operations there through the host's own
-`thurbox-cli`: `session create|delete|restart|restore|fork|send`, inside the shared
+`thurbox-cli`: `session create|delete|restart|restore|fork|send|key|capture`, inside the shared
 `session_ops` pipelines, so every caller delegates without knowing it
 (`session_ops::host_cli`, `session_ops::mirror`). Which side carries out a
 verb on a live session is decided in one place,
@@ -2819,7 +2819,8 @@ calls a pane-keyed verb on the contract: `send_text`, `send_text_after`,
 `send_key`, `capture`, `pane_state`, `pane_path`. A key crosses the contract as
 `backend::Key`, thurbox's own closed set of spellings; the adapter says it in
 its grammar (`session key` still reports that spelling as `tmux_key`).
-Remote CLI pane verbs keep delegating to the host's own CLI first (ADR-24);
+Remote pane verbs keep delegating to the host's own CLI first (ADR-24), decided
+inside `session_ops` (`send::send`, `press_key`, `capture::capture`);
 `session send`/`key`/`capture` on a host with no usable CLI — `share_sessions =
 false`, or none found or provisioned — fall through to the registry, as the
 kernel does, and only a backend with no `hosts.toml` entry is refused.

@@ -1100,7 +1100,7 @@ fn creating_a_session_produces_a_worktree_a_row_and_a_window() {
             key: None,
             session_id: None,
             reports_as: None,
-            on_existing: None,
+            on_existing: Default::default(),
         },
     );
 
@@ -2808,7 +2808,7 @@ fn a_command_session_survives_restart_and_can_be_parked() {
             key: None,
             session_id: None,
             reports_as: None,
-            on_existing: None,
+            on_existing: Default::default(),
         },
     );
     let spawned = match result {
@@ -2964,7 +2964,7 @@ fn a_forked_registry_agent_session_keeps_its_recorded_env() {
             key: None,
             session_id: None,
             reports_as: None,
-            on_existing: None,
+            on_existing: Default::default(),
         },
     );
     let spawned = match result {
