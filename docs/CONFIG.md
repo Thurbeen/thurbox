@@ -353,7 +353,10 @@ telemetry and `--agent-arg` arguments still follow everything.
   PowerShell: one script, launched as `powershell.exe -EncodedCommand`, that
   runs each step in order and stops at the first that throws, leaves a
   non-zero `$LASTEXITCODE` or calls `exit`, then starts the agent with its
-  arguments passed exactly (empty ones and embedded `"` included). The same
+  arguments passed exactly (empty ones and embedded `"` included), in the
+  location the steps left — a `Set-Location` carries into the agent, as a `cd`
+  does on POSIX. A command that resolves to a `.ps1` script runs through
+  `powershell.exe -File`. The same
   `thurbox: setup step <n> failed (exit <status>)` line marks a failure. The
   whole launch is one command line, so a setup that makes it longer than
   Windows' 8191 characters is refused before anything starts.

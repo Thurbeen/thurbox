@@ -364,7 +364,7 @@ pub fn launch_on_windows(
     }
     let script = format!(
         "$ProgressPreference = 'SilentlyContinue'\n{}",
-        start_process_script(&powershell_quote(program), args)
+        start_process_script(&powershell_quote(program), args, "")
     );
     cmd.args(encoded_powershell("-NoLogo -NoProfile -NonInteractive", &script)?.split(' '));
     Ok(cmd)
@@ -376,7 +376,10 @@ pub fn launch_on_windows(
 /// handed to `&`: PowerShell 5.1's native-argument passing drops an empty
 /// argument and splits one at an embedded `"`. The child inherits stdin,
 /// stdout and stderr, so a console program keeps the console.
-fn start_process_script<S: AsRef<str>>(file_name: &str, args: &[S]) -> String {
+///
+/// `extra` runs after the start info is filled and before the program
+/// starts, for a caller that sets more of it (`$s`).
+fn start_process_script<S: AsRef<str>>(file_name: &str, args: &[S], extra: &str) -> String {
     let line = args
         .iter()
         .map(|a| windows_arg_quote(a.as_ref()))
@@ -387,6 +390,7 @@ fn start_process_script<S: AsRef<str>>(file_name: &str, args: &[S]) -> String {
          $s.FileName = {file_name}\n\
          $s.Arguments = {}\n\
          $s.UseShellExecute = $false\n\
+         {extra}\
          $p = [System.Diagnostics.Process]::Start($s)\n\
          $p.WaitForExit()\n\
          exit $p.ExitCode",
@@ -573,8 +577,12 @@ impl HostShell {
     /// caught by the `finally`, which PowerShell runs on an `exit` as well,
     /// and which reports only while a step is still running.
     ///
-    /// The agent is looked up as an application first: `ProcessStartInfo`
-    /// does not search `PATH` for an npm `.cmd` shim the way `&` does.
+    /// The agent is looked up first: `ProcessStartInfo` does not search
+    /// `PATH` for an npm `.cmd` shim the way `&` does, and a `.ps1` wrapper is
+    /// run through `powershell.exe -File`. It starts in PowerShell's current
+    /// location, so a `Set-Location` in a step carries into it the way a `cd`
+    /// does on POSIX; the process's own directory does not follow
+    /// `Set-Location`.
     pub fn wrap_setup(
         self,
         setup: &[String],
@@ -612,10 +620,21 @@ impl HostShell {
              [Console]::Error.WriteLine(\"`n{marker}$global:thurbox_step failed (exit $LASTEXITCODE)\") }}\n\
              }}\n\
              $ErrorActionPreference = 'Continue'\n\
-             $thurbox_agent = (Get-Command -Name {} -CommandType Application \
-             -ErrorAction Stop | Select-Object -First 1).Source\n{}",
+             $thurbox_cmd = Get-Command -Name {} -CommandType Application, ExternalScript \
+             -ErrorAction Stop | Select-Object -First 1\n\
+             $thurbox_agent = $thurbox_cmd.Source\n\
+             $thurbox_lead = ''\n\
+             if ($thurbox_cmd.CommandType -eq 'ExternalScript') {{ \
+             $thurbox_lead = '-NoLogo -File \"' + $thurbox_agent + '\" '; \
+             $thurbox_agent = (Get-Command -Name 'powershell.exe' -CommandType Application \
+             | Select-Object -First 1).Source }}\n{}",
             powershell_quote(command),
-            start_process_script("$thurbox_agent", args)
+            start_process_script(
+                "$thurbox_agent",
+                args,
+                "$s.Arguments = $thurbox_lead + $s.Arguments\n\
+                 $s.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath\n",
+            )
         ));
         let line = powershell_launcher(&script)?;
         let mut words = line.split(' ').map(str::to_string);
@@ -1264,6 +1283,29 @@ mod tests {
             .map(|(arguments, _)| arguments)
             .expect(&script);
         assert_eq!(crt_split(&powershell_unquote(arguments)), args, "{script}");
+    }
+
+    /// The agent starts where the steps left PowerShell: a `Set-Location` in
+    /// setup carries into it, as a `cd` does on POSIX. A `.ps1` wrapper is an
+    /// agent too, run through `powershell.exe -File`.
+    #[test]
+    fn a_windows_setup_keeps_the_location_and_runs_a_script_agent() {
+        let (_, words) = HostShell::PowerShell
+            .wrap_setup(&["Set-Location sub".into()], "agent", &[])
+            .unwrap();
+        let script = decode_powershell(words.last().unwrap());
+        assert!(
+            script.contains(
+                "$s.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath"
+            ),
+            "{script}"
+        );
+        assert!(
+            script.contains("-CommandType Application, ExternalScript"),
+            "{script}"
+        );
+        assert!(script.contains("'ExternalScript'"), "{script}");
+        assert!(script.contains("-NoLogo -File"), "{script}");
     }
 
     /// A step that leaves with its own `exit` still reports as the setup's
