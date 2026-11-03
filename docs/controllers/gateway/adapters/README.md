@@ -16,8 +16,9 @@ its own page:
 [cross-platform check](#cross-platform-check).
 
 An adapter's `post` carries ConversationController's refusals and busy
-notices, and GatewayController's posts for a tied Task. An adapter's `open`
-carries a Question that opens a thread. The
+notices, GatewayController's posts for a tied Task, and its top-level log
+posts in the `gateway.logs` channel. An adapter's `open` carries a Question
+that opens a thread. An adapter's `link` names a thread in a log post. The
 [Gateway controller](../README.md) lists what is built.
 
 ## Common rules
@@ -94,8 +95,10 @@ An address is `<platform>:<chat>[:<thread>]`. Only the adapter reads its parts.
 | `discord` | `discord:1300000000000000000:1300000000000000001` | `discord:1300000000000000000` | The parent channel's snowflake and the thread's snowflake. A thread started from a message has that message's id. |
 
 A thread address names a conversation. A channel address names where Fleet
-opens a new thread. The Slack and Discord adapters refuse a channel address in
-`post`, and a thread address in `open`.
+opens a new thread, or where it posts a top-level log post. A `post` to a
+channel address makes every part of its text a top-level post there and
+starts no thread. The Slack and Discord adapters refuse a thread address in
+`open`.
 
 ## Cross-platform check
 

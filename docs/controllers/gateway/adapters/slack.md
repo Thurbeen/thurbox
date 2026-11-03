@@ -115,6 +115,8 @@ first, so that a failing account answers Unknown.
 | `starter` | The parent message. A `tombstone` parent is `removed`. |
 | `post` | `chat.postMessage` with `thread_ts`, `mrkdwn`, and `unfurl_links` and `unfurl_media` off[^slack-post]. |
 | `open` | `chat.postMessage` without `thread_ts`. The new thread's address is the channel and the returned `ts`. Later chunks of a split text reply to it. |
+| `post` to a channel address | `chat.postMessage` without `thread_ts`, for every chunk: a log post starts no thread. A `since` read of the channel uses `conversations.history`. |
+| `link` | None. A Slack permalink needs the workspace's domain, which only a `chat.getPermalink` call gives, so a log post names a Slack thread by its address. |
 | Marker | `{"event_type": "fleet_post", "event_payload": {"key": "<intent key>"}}`[^slack-post]. History reads it back[^slack-metadata]. |
 | Idempotency | None on `chat.postMessage`: `client_msg_id` is not an argument[^slack-post]. Recovery uses the marker in a later `since` read. |
 | Identity | User ids, unique in their workspace[^slack-user]. In an Enterprise org, every user has one global id that starts with `U` or `W`[^slack-ent]. |

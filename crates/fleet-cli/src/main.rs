@@ -1166,16 +1166,20 @@ fn open_forge(config: &Config) -> Result<Option<ForgeHosts>, Failure> {
 /// The configured chat accounts, one adapter per `[gateway.accounts]`
 /// entry, or `None` when the config has no `[gateway]` section. The section's
 /// own rules ran at load; this is where a platform this build lacks, an
-/// `inbound` its listener cannot deliver by, or a fake without a dir is
-/// refused.
+/// `inbound` its listener cannot deliver by, a fake without a dir, or a
+/// `gateway.logs` channel id the account's adapter cannot read is refused.
 fn open_gateway(config: &Config) -> Result<Option<GatewayAccounts>, Failure> {
     let Some(cfg) = &config.gateway else {
         return Ok(None);
     };
     let timeout = std::time::Duration::from_millis(cfg.defaults().call_timeout_ms);
-    GatewayAccounts::new(cfg.accounts.clone(), timeout)
-        .map(Some)
-        .map_err(fail)
+    let accounts = GatewayAccounts::new(cfg.accounts.clone(), timeout).map_err(fail)?;
+    if let Some(logs) = &cfg.logs {
+        accounts
+            .check_channel(&logs.account, &logs.channel)
+            .map_err(|e| fail(format!("gateway.logs: channel {:?}: {e}", logs.channel)))?;
+    }
+    Ok(Some(accounts))
 }
 
 /// The retention defaults a ChangeRequest spec may override.

@@ -204,6 +204,8 @@ no Authorization header itself.
 | `starter` | Error 10008 Unknown Message on the starter read makes it `removed`. |
 | `post` | `POST /channels/{T}/messages` ([create message](https://docs.discord.com/developers/resources/message#create-message-json/form-params)). On error 10003 Unknown Channel, the thread is not started yet. The adapter starts it with `POST /channels/{C}/messages/{T}/threads`, then sends again. Error 160004 (a thread already exists) counts as started. |
 | `open` | Posts the first chunk in `C`, then starts a thread from that post. The other chunks go into the thread. The answer is `Opened { conversation: discord:C:M }`. |
+| `post` to a channel address | `POST /channels/{C}/messages` for every chunk. It starts no thread. |
+| `link` | `https://discord.com/channels/{guild}/{T}`, with the account's `team` as the guild: the link Discord copies for a channel or thread. |
 | Identity | User snowflakes. A `username` is "not unique across the platform" ([user object](https://docs.discord.com/developers/resources/user#user-object-user-structure)). |
 
 A post's body has these fields:

@@ -1341,13 +1341,17 @@ mod posting {
         c
     }
 
-    fn caps(marker: Marker) -> Option<Observation<Capabilities>> {
-        Some(Observation::Known(Capabilities {
-            history: true,
-            marker,
-            unmentioned: true,
-            threads: true,
-        }))
+    /// The account's capabilities, as the probe's answer by account.
+    fn caps(marker: Marker) -> BTreeMap<String, Observation<Capabilities>> {
+        BTreeMap::from([(
+            ACCOUNT.to_string(),
+            Observation::Known(Capabilities {
+                history: true,
+                marker,
+                unmentioned: true,
+                threads: true,
+            }),
+        )])
     }
 
     fn record(
@@ -1399,7 +1403,7 @@ mod posting {
         )
     }
 
-    fn obs_with(capabilities: Option<Observation<Capabilities>>) -> GatewayObservations {
+    fn obs_with(capabilities: BTreeMap<String, Observation<Capabilities>>) -> GatewayObservations {
         GatewayObservations {
             capabilities,
             ..observed(Observation::Known(Some(thread_conv())))
@@ -1413,7 +1417,7 @@ mod posting {
     #[test]
     fn a_tied_task_posts_one_declaration_per_pass_in_order() {
         let t = speaking(comments(&["c1", "c2"]), 0, vec![], &[]);
-        let (plan, gw) = run(&t, obs_with(None));
+        let (plan, gw) = run(&t, obs_with(BTreeMap::new()));
         assert_eq!(post_keys(&plan), vec![key("comment/c1")]);
         let Action::Post {
             text, conversation, ..
@@ -1576,8 +1580,19 @@ mod posting {
         assert_eq!(gw.posts[&key("comment/c1")].attempts, 2);
     }
 
+    /// `defaults()` with the log channel `fake:C0456EFGH` on the account.
+    pub(super) fn logs_defaults() -> GatewayDefaults {
+        GatewayDefaults {
+            logs: Some(fleet_api::gateway::LogDestination {
+                account: ACCOUNT.into(),
+                channel: ConversationRef::split("fake:C0456EFGH").unwrap(),
+            }),
+            ..defaults()
+        }
+    }
+
     #[test]
-    fn a_followed_change_is_news_once_per_state() {
+    fn a_followed_change_is_news_once_per_state_in_the_log_channel() {
         let mut st = TaskStatus::default();
         let mut forge = fleet_api::follow::ForgeStatus::default();
         forge.changes.insert(
@@ -1595,26 +1610,41 @@ mod posting {
             }))
             .unwrap()
         };
-        assert!(probes(&t, obs_with(None)).iter().any(|p| matches!(p, Probe::Object { kind, name } if kind == "ChangeRequest" && name == "cr-7")));
+        assert!(probes(&t, obs_with(BTreeMap::new())).iter().any(|p| matches!(p, Probe::Object { kind, name } if kind == "ChangeRequest" && name == "cr-7")));
         let obs = GatewayObservations {
             changes: BTreeMap::from([("cr-7".to_string(), Observation::Known(Some(cr(2))))]),
-            ..obs_with(None)
+            ..obs_with(BTreeMap::new())
         };
-        let (plan, gw) = run(&t, obs);
+        let (plan, gw) = run_with(&t, obs, logs_defaults());
         assert_eq!(post_keys(&plan), vec![key("change/k7/2")]);
-        let Action::Post { text, .. } = &plan.effects[0].action else {
-            panic!()
+        let Action::Log {
+            text,
+            channel,
+            thread,
+            ..
+        } = &plan.effects[0].action
+        else {
+            panic!("{plan:?}")
         };
+        assert_eq!(channel.address(), "fake:C0456EFGH");
+        assert_eq!(
+            thread.as_ref().map(|t| t.conversation.address()),
+            Some(ADDRESS.to_string()),
+            "a tied Task's log post names its thread"
+        );
         assert!(
-            text.contains("open") && text.contains("https://forge.test/o/r/pull/7"),
+            text.contains(TASK)
+                && text.contains("open")
+                && text.contains("https://forge.test/o/r/pull/7"),
             "{text}"
         );
         assert_eq!(gw.changes["cr-7"], 2);
+        assert_eq!(gw.posts[&key("change/k7/2")].intent.action, "log");
         let _ = ChangeState::Open;
         let listing = BTreeMap::from([("cr-7".to_string(), cr(2))]);
         let mut settled = gw.clone();
         settled.posts.get_mut(&key("change/k7/2")).unwrap().receipt = Some(Receipt {
-            action: "post".into(),
+            action: "log".into(),
             at: NOW,
             outcome: Observation::Known(EffectOutcome::Posted {
                 message: "m1".into(),
@@ -1997,5 +2027,352 @@ mod posting {
         let (plan, gw) = run(&t, obs);
         assert!(plan.effects.is_empty(), "{plan:?}");
         assert_eq!(attention(&gw).unwrap().reason, "PostUnconfirmed");
+    }
+}
+
+// ----------------------------------------------------------------------
+// Logging: results and change news leave the thread for the log channel,
+// for every Task, in a lane of their own.
+// ----------------------------------------------------------------------
+
+mod logging {
+    use super::posting::logs_defaults;
+    use super::*;
+    use fleet_api::conversation::EffectRecord;
+    use fleet_api::gateway::{Capabilities, ConversationRef, HistoryObservation, Marker, Message};
+    use fleet_api::plan::{Action, EffectOutcome, Intent, Receipt};
+
+    const LOGS: &str = "fake:C0456EFGH";
+
+    fn key(task: &str, uid: &str, item: &str) -> String {
+        format!("task/{task}/{uid}/gateway/{item}")
+    }
+
+    fn shipped() -> TaskResult {
+        TaskResult {
+            outcome: Outcome::Shipped,
+            generation: 1,
+            summary: "Answered 2+2 = 4.".into(),
+            artifacts: Vec::new(),
+            outputs: BTreeMap::new(),
+        }
+    }
+
+    fn caps() -> BTreeMap<String, Observation<Capabilities>> {
+        BTreeMap::from([(
+            ACCOUNT.to_string(),
+            Observation::Known(Capabilities {
+                history: true,
+                marker: Marker::Metadata,
+                unmentioned: true,
+                threads: true,
+            }),
+        )])
+    }
+
+    fn thread_conv() -> Object {
+        let mut c = conversation(1, vec![person(T0, 1, ALEX, "hi")]);
+        c.status["ref"] = serde_json::to_value(ConversationRef::split(ADDRESS).unwrap()).unwrap();
+        c
+    }
+
+    fn unknown(action: &str, at: u64) -> EffectRecord {
+        EffectRecord {
+            intent: Intent {
+                action: action.into(),
+                at,
+                generation: 1,
+            },
+            receipt: Some(Receipt {
+                action: action.into(),
+                at: at + 10,
+                outcome: Observation::unknown("the answer was lost"),
+            }),
+            attempts: 1,
+            recovery: 0,
+        }
+    }
+
+    /// A tied Task that declared one Comment and reported a result, with
+    /// `posts` already recorded.
+    fn tied_with(posts: Vec<(String, EffectRecord)>, read: u64, posted: &[&str]) -> Object {
+        let gw = tied_at(1).map(|g| GatewayStatus {
+            declared: read,
+            posts: posts.into_iter().collect(),
+            posted: posted.iter().map(|s| s.to_string()).collect(),
+            ..g
+        });
+        task(
+            gw,
+            TaskStatus {
+                declared: vec![json!({"kind": "Comment", "id": "c1", "text": "2+2 = 4"})],
+                result: Some(shipped()),
+                ..TaskStatus::default()
+            },
+        )
+    }
+
+    fn obs() -> GatewayObservations {
+        GatewayObservations {
+            capabilities: caps(),
+            ..observed(Observation::Known(Some(thread_conv())))
+        }
+    }
+
+    fn effects(plan: &Plan) -> Vec<(String, &'static str)> {
+        plan.effects
+            .iter()
+            .map(|e| (e.key.clone(), e.action.name()))
+            .collect()
+    }
+
+    #[test]
+    fn a_tied_task_posts_its_comment_in_the_thread_and_logs_its_result() {
+        let t = tied_with(Vec::new(), 0, &[]);
+        let (plan, gw) = run_with(&t, obs(), logs_defaults());
+        assert_eq!(
+            effects(&plan),
+            vec![
+                (key(TASK, TASK_UID, "comment/c1"), "post"),
+                (key(TASK, TASK_UID, "result/1"), "log"),
+            ]
+        );
+        let Action::Log { text, channel, .. } = &plan.effects[1].action else {
+            panic!()
+        };
+        assert_eq!(channel.address(), LOGS);
+        assert!(text.contains(TASK) && text.contains("shipped"), "{text}");
+        assert_eq!(gw.result, Some(1));
+    }
+
+    #[test]
+    fn a_held_log_post_holds_back_no_thread_post_and_the_reverse() {
+        // The log post's outcome is unknown and not yet found: the Comment
+        // still goes out in the thread.
+        let t = tied_with(
+            vec![(
+                key(TASK, TASK_UID, "result/1"),
+                unknown("log", NOW - 60_000),
+            )],
+            0,
+            &[],
+        );
+        let mut gw0 = serde_json::from_value::<TaskStatus>(t.status.clone())
+            .unwrap()
+            .gateway
+            .unwrap();
+        gw0.result = Some(1);
+        let t = task(
+            Some(gw0),
+            serde_json::from_value::<TaskStatus>(t.status.clone()).unwrap(),
+        );
+        let (plan, _) = run_with(&t, obs(), logs_defaults());
+        assert_eq!(
+            effects(&plan),
+            vec![(key(TASK, TASK_UID, "comment/c1"), "post")],
+            "{plan:?}"
+        );
+        // A thread post's outcome is unknown: the result is still logged.
+        let t = tied_with(
+            vec![(
+                key(TASK, TASK_UID, "comment/c1"),
+                unknown("post", NOW - 60_000),
+            )],
+            1,
+            &["c1"],
+        );
+        let (plan, _) = run_with(&t, obs(), logs_defaults());
+        assert_eq!(
+            effects(&plan),
+            vec![(key(TASK, TASK_UID, "result/1"), "log")],
+            "{plan:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_log_post_is_looked_for_in_the_log_channel() {
+        let k = key(TASK, TASK_UID, "result/1");
+        let mut gw = tied_at(1).unwrap();
+        gw.declared = 1;
+        gw.posted = vec!["c1".into()];
+        gw.result = Some(1);
+        gw.posts.insert(k.clone(), unknown("log", NOW - 60_000));
+        let t = task(
+            Some(gw),
+            TaskStatus {
+                declared: vec![json!({"kind": "Comment", "id": "c1", "text": "2+2 = 4"})],
+                result: Some(shipped()),
+                ..TaskStatus::default()
+            },
+        );
+        let input = GatewayInput {
+            task: &t,
+            observations: obs(),
+            now: NOW,
+            defaults: logs_defaults(),
+        };
+        let asked = GatewayController.probes(&input).unwrap();
+        assert!(
+            asked.iter().any(|p| matches!(
+                p,
+                Probe::History { account, conversation, .. }
+                    if account == ACCOUNT && conversation.address() == LOGS
+            )),
+            "{asked:?}"
+        );
+        let found = Message {
+            id: "m9".into(),
+            author: Author {
+                id: BOT.into(),
+                name: String::new(),
+                kind: AuthorKind::Fleet,
+            },
+            mentions_fleet: false,
+            at: NOW - 50_000,
+            text: "Task logged".into(),
+            key: Some(k.clone()),
+            starts_thread: false,
+        };
+        let o = GatewayObservations {
+            log_history: Some(HistoryObservation::Known(fleet_api::gateway::History {
+                messages: vec![found],
+                left_out: 0,
+                starter: None,
+            })),
+            ..obs()
+        };
+        let (plan, gw) = run_with(&t, o, logs_defaults());
+        assert!(plan.effects.is_empty(), "never sent again: {plan:?}");
+        let receipt = gw.posts[&k].receipt.as_ref().unwrap();
+        assert_eq!(receipt.action, "log");
+        assert_eq!(
+            receipt.outcome,
+            Observation::Known(EffectOutcome::Posted {
+                message: "m9".into(),
+                at: NOW - 50_000
+            })
+        );
+    }
+
+    #[test]
+    fn an_untied_task_and_a_child_log_their_result() {
+        let untied = plain(
+            "t1",
+            "u1",
+            json!({}),
+            TaskStatus {
+                result: Some(shipped()),
+                ..TaskStatus::default()
+            },
+        );
+        assert!(GatewayController::due(&untied, NOW));
+        let o = GatewayObservations {
+            children: Some(Observation::Known(Vec::new())),
+            ..GatewayObservations::default()
+        };
+        let (plan, gw) = run_with(&untied, o.clone(), logs_defaults());
+        assert_eq!(effects(&plan), vec![(key("t1", "u1", "result/1"), "log")]);
+        let Action::Log { text, thread, .. } = &plan.effects[0].action else {
+            panic!()
+        };
+        assert!(thread.is_none(), "an untied Task names no thread");
+        assert!(text.contains("t1"), "{text}");
+        assert_eq!(gw.result, Some(1));
+
+        let child = plain(
+            "c",
+            "k1",
+            json!({PARENT_LABEL: "p", PARENT_UID_LABEL: "p1"}),
+            TaskStatus {
+                result: Some(shipped()),
+                ..TaskStatus::default()
+            },
+        );
+        let parent = plain("p", "p1", json!({}), TaskStatus::default());
+        let o = GatewayObservations {
+            parent: Some(Observation::Known(Some(parent))),
+            ..o
+        };
+        let (plan, _) = run_with(&child, o, logs_defaults());
+        assert_eq!(effects(&plan), vec![(key("c", "k1", "result/1"), "log")]);
+    }
+
+    #[test]
+    fn a_draft_is_logged_and_a_ready_change_gets_one_notice_in_the_thread() {
+        let mut forge = fleet_api::follow::ForgeStatus::default();
+        forge.changes.insert(
+            "cr-7".into(),
+            fleet_api::follow::ChangeEntry::joined("k7", 1),
+        );
+        let st = TaskStatus {
+            declared: vec![
+                json!({"kind": "Draft", "id": "d1", "title": "Fix", "url": "https://forge.test/o/r/pull/7"}),
+            ],
+            forge: Some(forge),
+            ..TaskStatus::default()
+        };
+        let t = task(tied_at(1), st.clone());
+        assert!(GatewayController::due(&t, NOW), "an unlogged Draft is due");
+        let cr = |state: &str, ready: bool| -> Object {
+            serde_json::from_value(json!({
+                "apiVersion": "fleet/v1alpha1", "kind": "ChangeRequest",
+                "metadata": {"name": "cr-7", "uid": "k7", "generation": 1, "resourceVersion": 3},
+                "spec": {"url": "https://forge.test/o/r/pull/7"},
+                "status": {"state": {"value": state, "seq": 2}, "everReady": ready}
+            }))
+            .unwrap()
+        };
+        let with = |c: Object| GatewayObservations {
+            changes: BTreeMap::from([("cr-7".to_string(), Observation::Known(Some(c)))]),
+            ..obs()
+        };
+        // Still a draft: no notice in the thread; the Draft goes to the log.
+        let (plan, gw) = run_with(&t, with(cr("draft", false)), logs_defaults());
+        assert_eq!(
+            effects(&plan),
+            vec![(key(TASK, TASK_UID, "draft/d1"), "log")],
+            "{plan:?}"
+        );
+        assert_eq!(gw.logged, 1);
+        assert!(gw.ready.is_empty());
+        // Ready: one notice in the thread, with the URL, once.
+        let t = task(Some(gw), st);
+        let (plan, gw) = run_with(&t, with(cr("open", true)), logs_defaults());
+        let thread: Vec<_> = plan
+            .effects
+            .iter()
+            .filter(|e| matches!(e.action, Action::Post { .. }))
+            .collect();
+        assert_eq!(thread.len(), 1, "{plan:?}");
+        assert_eq!(thread[0].key, key(TASK, TASK_UID, "ready/k7"));
+        let Action::Post { text, .. } = &thread[0].action else {
+            panic!()
+        };
+        assert!(text.contains("https://forge.test/o/r/pull/7"), "{text}");
+        assert_eq!(gw.ready, vec!["k7".to_string()]);
+    }
+
+    #[test]
+    fn without_a_log_channel_a_result_is_read_and_posted_nowhere() {
+        let t = tied_with(
+            vec![(
+                key(TASK, TASK_UID, "change/k7/2"),
+                unknown("log", NOW - 60_000),
+            )],
+            1,
+            &["c1"],
+        );
+        let (plan, gw) = run(&t, obs());
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        assert_eq!(gw.result, Some(1), "read, so a later log channel skips it");
+        assert!(
+            !gw.posts.contains_key(&key(TASK, TASK_UID, "change/k7/2")),
+            "a log post not settled is dropped: {gw:?}"
+        );
+        let quiet = task(
+            Some(gw),
+            serde_json::from_value::<TaskStatus>(t.status.clone()).unwrap(),
+        );
+        assert!(!GatewayController::due(&quiet, NOW));
     }
 }

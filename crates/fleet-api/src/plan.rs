@@ -116,6 +116,19 @@ pub enum Action {
         channel: crate::gateway::ConversationRef,
         text: String,
     },
+    /// Post `text` at the top level of the log `channel` on `account`,
+    /// through the Gateway port's `post` to a channel address, carrying the
+    /// effect's key as its marker: no thread is opened and no Conversation
+    /// is created. `thread` is the tied thread the post names; the manager
+    /// adds it as a link where its adapter can make one, else by address.
+    /// GatewayController asks, for a Task's result and change news.
+    Log {
+        account: String,
+        channel: crate::gateway::ConversationRef,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread: Option<crate::gateway::LogThread>,
+    },
     /// Add Fleet's opening post to the opened thread's Conversation, as the
     /// receive verb would, creating the Conversation under the name its
     /// account and address derive: through the store, never a platform.
@@ -137,6 +150,7 @@ impl Action {
             Action::Post { .. } => "post",
             Action::Open { .. } => "open",
             Action::Receive { .. } => "receive",
+            Action::Log { .. } => "log",
         }
     }
 }

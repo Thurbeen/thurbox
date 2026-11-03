@@ -153,7 +153,7 @@ pub fn landed(
 /// fields `account` and `call_timeout`, the constant
 /// `MAX_CALLS_PER_OPERATION`, the functions `check_ref`, `parse_address` and
 /// `read_event`, and the methods `identity`, `offers`, `thread_history`,
-/// `channel_history` and `post_chunks`. A macro, since the port is another
+/// `channel_history`, `post_chunks`, `post_channel` and `thread_link`. A macro, since the port is another
 /// crate's trait.
 ///
 /// [`Gateway`]: fleet_api::gateway::Gateway
@@ -260,16 +260,20 @@ macro_rules! curl_gateway {
                 if let Err(why) = check_ref(conversation) {
                     return Observation::Known(EffectOutcome::Failed { why });
                 }
-                let Some(thread) = &conversation.thread else {
-                    return Observation::Known(EffectOutcome::Failed {
-                        why: format!(
-                            "{} is a channel, not a thread; a {} conversation is a thread",
-                            conversation.address(),
-                            $name
-                        ),
-                    });
-                };
-                self.post_chunks(&conversation.chat, Some(thread), text, intent_key)
+                match &conversation.thread {
+                    Some(thread) => {
+                        self.post_chunks(&conversation.chat, Some(thread), text, intent_key)
+                    }
+                    // A channel address: top-level posts, no thread.
+                    None => self.post_channel(&conversation.chat, text, intent_key),
+                }
+            }
+
+            fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
+                if self.other_account(account).is_some() || check_ref(thread).is_err() {
+                    return None;
+                }
+                self.thread_link(thread)
             }
         }
     };

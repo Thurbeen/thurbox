@@ -1,5 +1,6 @@
 //! The Gateway controller's fourth step end to end: what a tied Task
-//! declares is posted in its thread, in declaration order, as keyed
+//! declares for the person (a Question, a Comment) is posted in its
+//! thread, never a Draft or its result, in declaration order, as keyed
 //! effects that never post twice; a post with an unknown outcome is looked
 //! for by its marker, every part of a split included, resent under its
 //! nonce inside the window, and otherwise waits for a person under
@@ -115,7 +116,7 @@ fn reconcile_clean(env: &Env) -> Value {
 }
 
 #[test]
-fn a_tied_tasks_declarations_and_result_are_posted_in_order_and_never_twice() {
+fn a_tied_tasks_comments_and_questions_are_posted_in_order_and_never_twice() {
     let (env, task) = tied("in-order");
     let uid = uid_of(&env, "task", &task);
     let before = posts(&env).len();
@@ -155,35 +156,16 @@ fn a_tied_tasks_declarations_and_result_are_posted_in_order_and_never_twice() {
     let base = format!("task/{task}/{uid}/gateway");
     assert_eq!(
         keys(&got[before..]),
-        vec![
-            format!("{base}/comment/c1"),
-            format!("{base}/question/q1"),
-            format!("{base}/draft/d1"),
-            format!("{base}/result/1"),
-        ],
-        "{got:#?}"
+        vec![format!("{base}/comment/c1"), format!("{base}/question/q1"),],
+        "a Draft and the result are a log's, never the thread's: {got:#?}"
     );
     for p in &got[before..] {
         assert_eq!(p.conversation.address(), THREAD, "{p:?}");
     }
     assert_eq!(got[before].text, "Looking at the exporter now.");
     assert!(got[before + 1].text.contains("Which export"), "{got:#?}");
-    assert!(
-        got[before + 2].text.contains("Exporter fix")
-            && got[before + 2]
-                .text
-                .contains("https://forge.test/o/r/pull/7"),
-        "{:?}",
-        got[before + 2].text
-    );
-    assert!(
-        got[before + 3].text.contains("shipped")
-            && got[before + 3].text.contains("The exporter retries now."),
-        "{:?}",
-        got[before + 3].text
-    );
     let gw = gateway(&env, &task);
-    assert_eq!(gw["posted"], json!(["c1", "q1", "d1"]), "{gw:#}");
+    assert_eq!(gw["posted"], json!(["c1", "q1"]), "{gw:#}");
     assert_eq!(gw["result"], 1);
     assert_eq!(gw["declared"], 4);
     let conv = conversation_name(GATEWAY_ACCOUNT, THREAD);

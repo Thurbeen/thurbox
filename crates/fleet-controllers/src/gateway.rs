@@ -2,8 +2,9 @@
 //! between the Task and its chat thread, joins a newly tied Task with the
 //! whole retained thread, relays each later admitted message into the
 //! Task's inbox under a cursor kept on the Task, posts what a tied Task
-//! declares, opens a thread for an untied Task's Question, and routes a
-//! child Task's declarations and result into its parent's inbox. It owns
+//! declares, opens a thread for an untied Task's Question, routes a child
+//! Task's declarations and result into its parent's inbox, and logs every
+//! Task's result and change news in the `gateway.logs` channel. It owns
 //! `status.gateway` and appends to `status.inbox`; it writes nothing else
 //! of the Task, and reaches a Conversation only through the `Receive`
 //! action.
@@ -13,8 +14,9 @@
 //! ChangeRequests and, to recover a post, the platform's capabilities and
 //! history, and returns a Plan whose `status` is the desired
 //! `status.gateway`, whose `appends` are the inbox entries to land in the
-//! same write, and whose `effects` are the `Post`, `Open` and `Receive`
-//! actions whose intents that status carries. The relay is a status write,
+//! same write, and whose `effects` are the `Post`, `Open`, `Receive` and
+//! `Log` actions whose intents that status carries. Thread posts and log
+//! posts are two lanes: a held post in one never holds back the other. The relay is a status write,
 //! not an effect: no intent, no receipt, no platform call.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +30,8 @@ use fleet_api::conversation::{
 };
 use fleet_api::gateway::{
     Admission, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
-    HistoryObservation, HistoryQuery, Marker, Message, PostFound, Verified, admit, find_post,
+    HistoryObservation, HistoryQuery, LogThread, Marker, Message, PostFound, Verified, admit,
+    find_post,
 };
 use fleet_api::inbox::{InboxAbout, InboxEntry, MAX_INBOX};
 use fleet_api::meta::{Millis, Object};
@@ -73,12 +76,15 @@ pub struct GatewayObservations {
     /// The answers to `Probe::Object` for each followed ChangeRequest, by
     /// name.
     pub changes: BTreeMap<String, Observation<Option<Object>>>,
-    /// The answer to `Probe::Capabilities` for the account a post or an
-    /// open is on.
-    pub capabilities: Option<Observation<Capabilities>>,
-    /// The answer to `Probe::History`: a recovery read since the oldest
-    /// post whose outcome is unknown.
+    /// The answers to `Probe::Capabilities`, by account: the account a
+    /// thread post or an open is on, and the log channel's.
+    pub capabilities: BTreeMap<String, Observation<Capabilities>>,
+    /// The answer to `Probe::History` in the thread: a recovery read since
+    /// the oldest thread post whose outcome is unknown.
     pub history: Option<HistoryObservation>,
+    /// The answer to `Probe::History` in the log channel: a recovery read
+    /// since the oldest log post whose outcome is unknown.
+    pub log_history: Option<HistoryObservation>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -116,6 +122,15 @@ const RECEIVE_FAILED: &str = "ReceiveFailed";
 const POST: &str = "post";
 const OPEN: &str = "open";
 const RECEIVE: &str = "receive";
+const LOG: &str = "log";
+
+/// Which ordered lane a record is in: posts to the thread (and the open of
+/// one), or posts to the log channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lane {
+    Thread,
+    Log,
+}
 
 impl GatewayController {
     /// The kind this controller reconciles and the field manager it writes as.
@@ -153,12 +168,19 @@ impl GatewayController {
         if gw.posts.values().any(unsettled) {
             return true;
         }
+        // Every Task's result is logged, or read while nothing logs.
+        if st
+            .result
+            .as_ref()
+            .is_some_and(|r| gw.result != Some(r.generation))
+        {
+            return true;
+        }
+        if unlogged_draft(&st, &gw) {
+            return true;
+        }
         if gw.is_tied() {
-            return st.declared.len() as u64 > gw.declared
-                || st
-                    .result
-                    .as_ref()
-                    .is_some_and(|r| gw.result != Some(r.generation));
+            return st.declared.len() as u64 > gw.declared;
         }
         unread_question(&st, &gw).is_some()
     }
@@ -174,8 +196,9 @@ impl GatewayController {
     /// [`Self::due`], and besides: a tied Task whose Conversation moved past
     /// what it read, was recreated or is absent from the sweep's listing
     /// (`conversation` is the Conversation its labels name as the listing
-    /// has it), or a parent one of whose children changed since it was
-    /// read. A quiet tied Task is not due.
+    /// has it), a Task one of whose followed changes moved past what it
+    /// logged, or a parent one of whose children changed since it was read.
+    /// A quiet Task is not due.
     pub fn due_with(
         task: &Object,
         now: Millis,
@@ -206,11 +229,9 @@ impl GatewayController {
                 return true;
             }
         }
-        if gw.is_tied()
-            && let Some(forge) = &st.forge
-        {
+        if let Some(forge) = &st.forge {
             // News of a followed change: its state moved past what was
-            // posted.
+            // logged.
             let moved = forge.changes.iter().any(|(name, entry)| {
                 change_requests.get(name).is_some_and(|cr| {
                     cr.metadata.uid == entry.uid
@@ -275,9 +296,8 @@ impl GatewayController {
                 name: parent,
             });
         }
-        if gw.is_tied()
-            && let Some(forge) = &st.forge
-        {
+        // Change news is every Task's, tied or not.
+        if let Some(forge) = &st.forge {
             for name in forge.changes.keys() {
                 if !obs.changes.contains_key(name) {
                     probes.push(Probe::Object {
@@ -289,13 +309,43 @@ impl GatewayController {
         }
         // A post or an open to settle: whether the platform reads markers
         // back or honours a nonce decides how.
-        if gw.posts.values().any(unsettled)
-            && obs.capabilities.is_none()
+        let mut accounts = BTreeSet::new();
+        if gw
+            .posts
+            .values()
+            .any(|r| r.intent.action != LOG && unsettled(r))
             && let Some(account) = records_account(input)
         {
-            probes.push(Probe::Capabilities { account });
+            accounts.insert(account);
         }
-        if let Some(Observation::Known(caps)) = &obs.capabilities
+        if let Some(logs) = &input.defaults.logs
+            && gw
+                .posts
+                .values()
+                .any(|r| r.intent.action == LOG && unsettled(r))
+        {
+            accounts.insert(logs.account.clone());
+        }
+        for account in accounts {
+            if !obs.capabilities.contains_key(&account) {
+                probes.push(Probe::Capabilities { account });
+            }
+        }
+        if let Some(logs) = &input.defaults.logs
+            && let Some(Observation::Known(caps)) = obs.capabilities.get(&logs.account)
+            && caps.history
+            && caps.marker == Marker::Metadata
+            && obs.log_history.is_none()
+            && let Some(at) = log_recovery_since(&gw)
+        {
+            probes.push(Probe::History {
+                account: logs.account.clone(),
+                conversation: logs.channel.clone(),
+                query: HistoryQuery::Since { at },
+            });
+        }
+        if let Some(account) = records_account(input)
+            && let Some(Observation::Known(caps)) = obs.capabilities.get(&account)
             && caps.history
             && caps.marker == Marker::Metadata
             && obs.history.is_none()
@@ -333,6 +383,7 @@ impl GatewayController {
         }
         pass.children();
         pass.speak(conv.as_ref());
+        pass.log(conv.as_ref());
         pass.prune_posts();
         pass.conditions();
         settle_transitions(&mut pass.gw.conditions, &before.conditions);
@@ -983,6 +1034,19 @@ fn unread_question<'s>(st: &'s TaskStatus, gw: &GatewayStatus) -> Option<(usize,
         })
 }
 
+/// Whether a Draft past what the log lane read waits to be logged.
+fn unlogged_draft(st: &TaskStatus, gw: &GatewayStatus) -> bool {
+    st.declared
+        .iter()
+        .skip(gw.logged as usize)
+        .any(|item| item.get("kind").and_then(Value::as_str) == Some(DECLARED_DRAFT))
+}
+
+/// Whether a followed change is ready for review: `everReady`.
+fn ever_ready(cr: &Object) -> bool {
+    cr.status["everReady"].as_bool() == Some(true)
+}
+
 /// Whether the Task has words not yet read: declarations or a result.
 fn has_unread(st: &TaskStatus, gw: &GatewayStatus) -> bool {
     st.declared.len() as u64 > gw.declared
@@ -1041,6 +1105,22 @@ fn recovery_since(gw: &GatewayStatus, cs: &ConversationStatus) -> Option<Millis>
                 && !matches!(mirrored(cs, key), Some(PostFound::Whole { .. }))
         })
         .map(|(_, r)| r.intent.at)
+        .min()
+}
+
+/// The oldest intent among the log posts whose outcome is unknown: what a
+/// recovery read of the log channel starts from.
+fn log_recovery_since(gw: &GatewayStatus) -> Option<Millis> {
+    gw.posts
+        .values()
+        .filter(|r| {
+            r.intent.action == LOG
+                && matches!(
+                    r.receipt.as_ref().map(|r| &r.outcome),
+                    None | Some(Observation::Unknown { .. })
+                )
+        })
+        .map(|r| r.intent.at)
         .min()
 }
 
@@ -1106,12 +1186,10 @@ impl Pass<'_, '_> {
     }
 
     /// A child's words go to its parent's inbox, never to a thread: mark
-    /// them read, so a child whose parent is gone does not replay them.
+    /// them read, so a child whose parent is gone does not replay them. Its
+    /// result and change news are logged as every Task's are.
     fn hush(&mut self) {
         self.gw.declared = self.st.declared.len() as u64;
-        if let Some(r) = &self.st.result {
-            self.gw.result = Some(r.generation);
-        }
     }
 
     fn intent(&self, action: &str) -> Intent {
@@ -1169,8 +1247,17 @@ impl Pass<'_, '_> {
         }
     }
 
-    fn nonce_window(&self) -> Option<Millis> {
-        match &self.input.observations.capabilities {
+    /// The capabilities of the account a lane's records are on.
+    fn caps(&self, lane: Lane) -> Option<&Observation<Capabilities>> {
+        let account = match lane {
+            Lane::Thread => records_account(self.input)?,
+            Lane::Log => self.input.defaults.logs.as_ref()?.account.clone(),
+        };
+        self.input.observations.capabilities.get(&account)
+    }
+
+    fn nonce_window(&self, lane: Lane) -> Option<Millis> {
+        match self.caps(lane) {
             Some(Observation::Known(Capabilities {
                 marker: Marker::Nonce { window_ms },
                 ..
@@ -1186,16 +1273,23 @@ impl Pass<'_, '_> {
     /// recovery read where markers read back, resent under its nonce
     /// inside the window, and otherwise waits for a person.
     /// `mirror` is the thread's mirror, where there is one; `action`
-    /// rebuilds the effect for a retry.
-    fn settle(&mut self, key: &str, mirror: Option<&ConversationStatus>, action: Action) -> Settle {
+    /// rebuilds the effect for a retry; `lane` names whose capabilities and
+    /// recovery read apply.
+    fn settle(
+        &mut self,
+        key: &str,
+        mirror: Option<&ConversationStatus>,
+        action: Action,
+        lane: Lane,
+    ) -> Settle {
         let Some(record) = self.gw.posts.get(key).cloned() else {
             return Settle::Done;
         };
-        let readable = match &self.input.observations.capabilities {
+        let readable = match self.caps(lane) {
             Some(Observation::Known(caps)) => Some(caps.history && caps.marker == Marker::Metadata),
             _ => None,
         };
-        let window = self.nonce_window();
+        let window = self.nonce_window(lane);
         let now = self.input.now;
         match record.receipt.as_ref().map(|r| &r.outcome) {
             Some(Observation::Known(EffectOutcome::Failed { why })) => {
@@ -1259,18 +1353,27 @@ impl Pass<'_, '_> {
                     }
                     return Settle::Hold;
                 }
-                if readable != Some(true) || record.intent.action != POST {
+                let posted = matches!(record.intent.action.as_str(), POST | LOG);
+                if readable != Some(true) || !posted {
                     if readable.is_some() || record.intent.action == RECEIVE {
                         self.unconfirmed(key, in_mirror);
                     }
                     return Settle::Hold;
                 }
-                match &self.input.observations.history {
+                // The recovery read of the lane: the thread's, or the log
+                // channel's.
+                let obs = &self.input.observations;
+                let history = match lane {
+                    Lane::Thread => obs.history.as_ref(),
+                    Lane::Log => obs.log_history.as_ref(),
+                };
+                match history {
                     Some(HistoryObservation::Known(h)) => {
                         self.attention.clear(RECOVERY_INCOMPLETE, key);
                         match find_post(&h.messages, key) {
                             Some(PostFound::Whole { message, at }) => {
-                                self.recover(key, POST, EffectOutcome::Posted { message, at });
+                                let action = record.intent.action.clone();
+                                self.recover(key, &action, EffectOutcome::Posted { message, at });
                                 self.settled(key);
                                 Settle::Done
                             }
@@ -1388,7 +1491,7 @@ impl Pass<'_, '_> {
             .collect();
         for key in pending {
             let text = self.post_text(&key).unwrap_or_default();
-            if let Settle::Hold = self.settle(&key, Some(&cs), post(text)) {
+            if let Settle::Hold = self.settle(&key, Some(&cs), post(text), Lane::Thread) {
                 return;
             }
             self.record_question(&key, &conv.metadata.name);
@@ -1431,9 +1534,11 @@ impl Pass<'_, '_> {
         self.gw.questions.insert(id.to_string(), q);
     }
 
-    /// The next post, in order: the declarations past what was read, then
-    /// the result, then news of each followed change. What it reads past
-    /// is marked read in the same pass.
+    /// The next post in the thread: the first Question or Comment past what
+    /// was read, then the ready notice of each followed change the first
+    /// time it is ready for review. What it reads past is marked read in
+    /// the same pass. A Draft, a result and other change news are the log
+    /// lane's, never a thread's.
     fn next_post(&mut self) -> Option<(String, String)> {
         let (name, uid) = self.task_meta();
         let (name, uid) = (name.to_string(), uid.to_string());
@@ -1444,9 +1549,8 @@ impl Pass<'_, '_> {
             let slug = match kind {
                 DECLARED_QUESTION => "question",
                 DECLARED_COMMENT => "comment",
-                DECLARED_DRAFT => "draft",
-                // A ChangeRequest is news once the Forge follows it; the
-                // rest is not the Gateway's.
+                // A Draft is logged; a ChangeRequest is news once the Forge
+                // follows it; the rest is not the Gateway's.
                 _ => continue,
             };
             let Some(id) = declared_id(item) else {
@@ -1466,34 +1570,20 @@ impl Pass<'_, '_> {
                 render_item(item),
             ));
         }
-        if let Some(r) = &self.st.result
-            && self.gw.result != Some(r.generation)
-        {
-            self.gw.result = Some(r.generation);
-            return Some((
-                post_key(&name, &uid, &format!("result/{}", r.generation)),
-                render_result(r),
-            ));
-        }
         let forge = self.st.forge.clone().unwrap_or_default();
         for (cr_name, entry) in &forge.changes {
             let Some(Observation::Known(Some(cr))) = self.input.observations.changes.get(cr_name)
             else {
                 continue;
             };
-            if cr.metadata.uid != entry.uid {
+            if cr.metadata.uid != entry.uid || !ever_ready(cr) || self.gw.ready.contains(&entry.uid)
+            {
                 continue;
             }
-            let Some((state, seq)) = change_state(cr) else {
-                continue;
-            };
-            if seq <= self.gw.changes.get(cr_name).copied().unwrap_or(0) {
-                continue;
-            }
-            self.gw.changes.insert(cr_name.clone(), seq);
+            self.gw.ready.push(entry.uid.clone());
             return Some((
-                post_key(&name, &uid, &format!("change/{}/{seq}", entry.uid)),
-                render_change(cr_name, cr, state),
+                post_key(&name, &uid, &format!("ready/{}", entry.uid)),
+                render_ready(cr),
             ));
         }
         None
@@ -1505,7 +1595,7 @@ impl Pass<'_, '_> {
         let item = key.strip_prefix(&post_key(name, uid, ""))?;
         let (slug, rest) = item.split_once('/')?;
         match slug {
-            "question" | "comment" | "draft" => self
+            "question" | "comment" => self
                 .st
                 .declared
                 .iter()
@@ -1515,25 +1605,20 @@ impl Pass<'_, '_> {
                             == Some(slug.to_string())
                 })
                 .map(render_item),
-            "result" => self
-                .st
-                .result
-                .as_ref()
-                .filter(|r| r.generation.to_string() == rest)
-                .map(render_result),
-            "change" => {
-                let cr_uid = rest.split('/').next()?;
-                self.input
-                    .observations
-                    .changes
-                    .iter()
-                    .find_map(|(n, o)| match o {
-                        Observation::Known(Some(cr)) if cr.metadata.uid == cr_uid => {
-                            change_state(cr).map(|(state, _)| render_change(n, cr, state))
-                        }
-                        _ => None,
-                    })
-            }
+            "ready" => self
+                .input
+                .observations
+                .changes
+                .values()
+                .find_map(|o| match o {
+                    Observation::Known(Some(cr)) if cr.metadata.uid == rest => {
+                        Some(render_ready(cr))
+                    }
+                    _ => None,
+                }),
+            // A thread post of a Draft, a result or change news, planned
+            // before the log channel took them: retried as the log says it.
+            "draft" | "result" | "change" => self.log_text(key),
             _ => None,
         }
     }
@@ -1541,8 +1626,8 @@ impl Pass<'_, '_> {
     // -- Untied: a Question opens a thread ------------------------------
 
     /// The first unread Question opens a thread in the questions route's
-    /// first channel. Everything the Task said before it, and its result,
-    /// is skipped and never posted later.
+    /// first channel. Every Comment the Task declared before it is skipped
+    /// and never posted later.
     fn open_for_question(&mut self) {
         let Some((i, item)) = unread_question(self.st, &self.gw) else {
             return;
@@ -1568,9 +1653,6 @@ impl Pass<'_, '_> {
         let (name, uid) = self.task_meta();
         let key = post_key(name, uid, &format!("question/{id}"));
         self.gw.declared = i as u64 + 1;
-        if let Some(r) = &self.st.result {
-            self.gw.result = Some(r.generation);
-        }
         self.gw.posted.push(id);
         self.gw.conversation = Some(ConversationTie {
             name: String::new(),
@@ -1660,7 +1742,7 @@ impl Pass<'_, '_> {
             self.opened();
             return;
         }
-        if let Settle::Done = self.settle(&key, None, action) {
+        if let Settle::Done = self.settle(&key, None, action, Lane::Thread) {
             // Refused three times: the Task acts as untied.
             self.gw.conversation = None;
         }
@@ -1796,6 +1878,173 @@ impl Pass<'_, '_> {
         }
     }
 
+    // -- Every Task: results and change news go to the log channel -------
+
+    /// The log lane: a result once per generation, then news of each
+    /// followed change, one top-level post at a time in the `gateway.logs`
+    /// channel. A log post not settled holds back this Task's later log
+    /// posts and nothing else. Without a log channel, what would be logged
+    /// is marked read and posted nowhere, and log posts not settled are
+    /// dropped.
+    fn log(&mut self, conv: Option<&Object>) {
+        let Some(dest) = self.input.defaults.logs.clone() else {
+            self.gw
+                .posts
+                .retain(|_, r| r.intent.action != LOG || !unsettled(r));
+            while self.next_log().is_some() {}
+            return;
+        };
+        let thread = self.log_thread(conv);
+        let action = |text: String| Action::Log {
+            account: dest.account.clone(),
+            channel: dest.channel.clone(),
+            text,
+            thread: thread.clone(),
+        };
+        let pending: Vec<String> = self
+            .gw
+            .posts
+            .iter()
+            .filter(|(_, r)| {
+                r.intent.action == LOG
+                    && (unsettled(r)
+                        || matches!(
+                            r.receipt.as_ref().map(|r| &r.outcome),
+                            Some(Observation::Known(EffectOutcome::Failed { .. }))
+                        ))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in pending {
+            let text = self.log_text(&key).unwrap_or_default();
+            if let Settle::Hold = self.settle(&key, None, action(text), Lane::Log) {
+                return;
+            }
+        }
+        if let Some((key, text)) = self.next_log() {
+            self.plan(&key, action(text));
+        }
+    }
+
+    /// The thread a log post names: the verified tie's.
+    fn log_thread(&self, conv: Option<&Object>) -> Option<LogThread> {
+        let conv = conv?;
+        let (spec, cs) = decode_conversation(conv).ok()?;
+        Some(LogThread {
+            account: spec.account,
+            conversation: cs.reference?,
+        })
+    }
+
+    /// The next log post, in order: each Draft, then the result, then news
+    /// of each followed change. What it reads past is marked read in the
+    /// same pass.
+    fn next_log(&mut self) -> Option<(String, String)> {
+        let (name, uid) = self.task_meta();
+        let (name, uid) = (name.to_string(), uid.to_string());
+        // The cursor moves only when a Draft waits: other declarations are
+        // not the log lane's, and reading past them is no reason to write.
+        let start = if unlogged_draft(self.st, &self.gw) {
+            self.gw.logged as usize
+        } else {
+            self.st.declared.len()
+        };
+        for (i, item) in self.st.declared.iter().enumerate().skip(start) {
+            self.gw.logged = i as u64 + 1;
+            if item.get("kind").and_then(Value::as_str) != Some(DECLARED_DRAFT) {
+                continue;
+            }
+            let Some(id) = declared_id(item) else {
+                self.attention.raise(
+                    DECLARATION_INVALID,
+                    &format!("declared/{i}"),
+                    format!("the {DECLARED_DRAFT} at index {i} has no id; it is skipped"),
+                );
+                continue;
+            };
+            // Logged before, or posted in a thread before the log took it.
+            if self.gw.posted.iter().any(|p| p == id) {
+                continue;
+            }
+            if self.input.defaults.logs.is_some() {
+                self.gw.posted.push(id.to_string());
+            }
+            return Some((
+                post_key(&name, &uid, &format!("draft/{id}")),
+                render_draft(&name, item),
+            ));
+        }
+        if let Some(r) = &self.st.result
+            && self.gw.result != Some(r.generation)
+        {
+            self.gw.result = Some(r.generation);
+            return Some((
+                post_key(&name, &uid, &format!("result/{}", r.generation)),
+                render_result(&name, r),
+            ));
+        }
+        let forge = self.st.forge.clone().unwrap_or_default();
+        for (cr_name, entry) in &forge.changes {
+            let Some(Observation::Known(Some(cr))) = self.input.observations.changes.get(cr_name)
+            else {
+                continue;
+            };
+            if cr.metadata.uid != entry.uid {
+                continue;
+            }
+            let Some((state, seq)) = change_state(cr) else {
+                continue;
+            };
+            if seq <= self.gw.changes.get(cr_name).copied().unwrap_or(0) {
+                continue;
+            }
+            self.gw.changes.insert(cr_name.clone(), seq);
+            return Some((
+                post_key(&name, &uid, &format!("change/{}/{seq}", entry.uid)),
+                render_change(&name, cr_name, cr, state),
+            ));
+        }
+        None
+    }
+
+    /// What the log post under `key` says, derived again for a retry.
+    fn log_text(&self, key: &str) -> Option<String> {
+        let (name, uid) = self.task_meta();
+        let item = key.strip_prefix(&post_key(name, uid, ""))?;
+        let (slug, rest) = item.split_once('/')?;
+        match slug {
+            "draft" => self
+                .st
+                .declared
+                .iter()
+                .find(|d| {
+                    declared_id(d) == Some(rest)
+                        && d.get("kind").and_then(Value::as_str) == Some(DECLARED_DRAFT)
+                })
+                .map(|d| render_draft(name, d)),
+            "result" => self
+                .st
+                .result
+                .as_ref()
+                .filter(|r| r.generation.to_string() == rest)
+                .map(|r| render_result(name, r)),
+            "change" => {
+                let cr_uid = rest.split('/').next()?;
+                self.input
+                    .observations
+                    .changes
+                    .iter()
+                    .find_map(|(n, o)| match o {
+                        Observation::Known(Some(cr)) if cr.metadata.uid == cr_uid => {
+                            change_state(cr).map(|(state, _)| render_change(name, n, cr, state))
+                        }
+                        _ => None,
+                    })
+            }
+            _ => None,
+        }
+    }
+
     /// Keep every unsettled record and the newest settled ones.
     fn prune_posts(&mut self) {
         let mut settled: Vec<(Millis, String)> = self
@@ -1838,8 +2087,26 @@ fn render_item(item: &Value) -> String {
     }
 }
 
-fn render_result(r: &fleet_api::result::TaskResult) -> String {
-    let mut text = format!("Result: {}.", word(r.outcome));
+/// A Draft as its log post says it, naming the Task.
+fn render_draft(task: &str, item: &Value) -> String {
+    format!("Task {task}: {}", render_item(item))
+}
+
+/// The thread's one notice that a change is ready for review, with its URL.
+fn render_ready(cr: &Object) -> String {
+    let url = fleet_api::validate::typed::<ChangeRequestSpec>(change_request::KIND, &cr.spec)
+        .map(|s| s.url)
+        .unwrap_or_default();
+    format!("Ready for review: {url}")
+}
+
+/// A result as its log post says it, naming the Task.
+fn render_result(task: &str, r: &fleet_api::result::TaskResult) -> String {
+    let mut text = format!(
+        "Task {task} reported its result for generation {}: {}.",
+        r.generation,
+        word(r.outcome)
+    );
     if !r.summary.is_empty() {
         text.push_str("\n\n");
         text.push_str(&r.summary);
@@ -1850,11 +2117,22 @@ fn render_result(r: &fleet_api::result::TaskResult) -> String {
     text
 }
 
-fn render_change(name: &str, cr: &Object, state: fleet_api::forge::ChangeState) -> String {
+/// Change news as its log post says it, naming the Task.
+fn render_change(
+    task: &str,
+    name: &str,
+    cr: &Object,
+    state: fleet_api::forge::ChangeState,
+) -> String {
     let url = fleet_api::validate::typed::<ChangeRequestSpec>(change_request::KIND, &cr.spec)
         .map(|s| s.url)
         .unwrap_or_default();
-    format!("Change {name} is {}: {url}", word(state))
+    let what = match state {
+        // Out of draft: the change is ready for review.
+        fleet_api::forge::ChangeState::Open => "open and ready for review".to_string(),
+        other => word(other),
+    };
+    format!("Task {task}: change {name} is {what}: {url}")
 }
 
 /// A stored message as admission reads it.

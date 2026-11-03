@@ -6,7 +6,7 @@ GatewayController keeps under `status.gateway`. TaskController still owns
 the Task's own `status.phase`. The Conversation phases, the transitions
 that create a Task, orphaning and retention are implemented, and so are
 every state of the tie on a Task, its `ConversationGone`, the join, the
-relay and posting.
+relay, posting and logging.
 
 ![A Conversation starts Untied. The receive verb creates it, or Fleet creates it when it opens a thread for a Task's Question. A thread that Fleet opened is tied at once to the Task that its opening post's marker names. An admitted mention in an Untied thread creates a Task and ties it. When a tied Task is readably gone, the Conversation becomes Orphaned. The next admitted message there creates a new Task with the thread's history. When an Untied or Orphaned Conversation has no message for its retention, its own controller deletes it. While the Conversation is Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares.](state-machine.svg)
 
@@ -71,8 +71,9 @@ Behaviour in every phase:
 
 While the tie is `opening`, `opened` or `waiting`, the Task's later
 declarations wait. They are posted in order once the tie is verified. A
-Comment, Draft, change or result on an untied Task is skipped and never
-posted later.
+Comment on an untied Task is skipped and never posted later. The tie does
+not change [logging](#logging): a Task in any state of the tie logs its
+Drafts, result and change news.
 
 ## Joining
 
@@ -98,9 +99,16 @@ GatewayController relays when a tied thread has new admitted messages:
 
 ## Posting
 
-GatewayController posts, in this order, everything a tied Task added since
-the last pass: its declarations in declaration order, then its result, then
-news of each followed change.
+GatewayController posts in a tied thread, in this order:
+
+1. every `Question` and `Comment` the Task added since the last pass, in
+   declaration order;
+2. one ready notice per followed change, with its URL, the first time the
+   change is in a state other than `draft` (`everReady` is true).
+
+It posts nothing else in a thread. A `Draft`, a result and all other change
+news go to the [log channel](#logging). The ready notice is posted whether
+or not `gateway.logs` is set.
 
 - Each post is a keyed effect: intent, then the platform call, then the
   receipt.
@@ -108,10 +116,32 @@ news of each followed change.
   holds back later posts to that thread, and no other thread.
 - A full inbox does not hold back posting.
 
+## Logging
+
+GatewayController logs, for every Task, its `Draft` declarations, its
+result and the news of each followed change, in this order. A Task needs no
+tie and no route to log.
+
+- A `Draft` is logged once per `id`. A result is logged once per
+  generation. A change is logged each time its state moves: followed,
+  draft, open (ready for review), merged or closed.
+- Each log post is a keyed effect, as a thread post is. It is one
+  top-level post in the `gateway.logs` channel.
+- A Task's log posts go out one at a time. A log post with an unknown
+  outcome holds back that Task's later log posts. It holds back no thread
+  post, and no thread post holds it back.
+- An unknown outcome is recovered from the log channel's history, with the
+  thread posts' rules: a split is found only when every part is found, and
+  three reads that cannot complete raise `RecoveryIncomplete`.
+- Without `gateway.logs`, a Draft, a result or change news is marked read
+  and posted nowhere. A log post whose outcome is not settled when `gateway.logs`
+  leaves the config is dropped, never posted elsewhere.
+
 ## Children
 
 A child's Questions, Comments, Drafts, changes and result each become one
-entry in its parent's inbox, from `gateway/child/<child>`. The parent
+entry in its parent's inbox, from `gateway/child/<child>`. A child logs its
+Drafts, result and change news as every Task does. The parent
 answers with `fleet send CHILD --answers ID TEXT`, which records the child's
 `status.answered`. A summary or declaration text over 4 000 bytes is not
 quoted. The entry gives its size and `fleet get task CHILD` to read it, so

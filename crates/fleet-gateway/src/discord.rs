@@ -516,6 +516,50 @@ impl DiscordGateway {
         let (message, at) = first.expect("at least one chunk");
         Observation::Known(landed(KIND, chat, thread, message, at))
     }
+
+    /// Post `text` at the top level of `chat`: every chunk a message in the
+    /// channel, and no thread started. The first chunk's id and time come
+    /// back as `Posted`.
+    fn post_channel(&self, chat: &str, text: &str, key: &str) -> Observation<EffectOutcome> {
+        let chunks = split(text, POST_LIMIT);
+        if chunks.len() > MAX_CHUNKS {
+            return Observation::Known(EffectOutcome::Failed {
+                why: format!(
+                    "the text would take {} posts; the most one post takes is {MAX_CHUNKS} of {POST_LIMIT} characters",
+                    chunks.len()
+                ),
+            });
+        }
+        let mut budget = Budget::new(self.call_timeout, MAX_CALLS_PER_OPERATION);
+        let mut first: Option<(String, Millis)> = None;
+        for (i, chunk) in chunks.iter().enumerate() {
+            let chunk_key = if chunks.len() > 1 {
+                part_key(key, i + 1, chunks.len())
+            } else {
+                key.to_string()
+            };
+            match self.send(chat, chunk, &chunk_key, &mut budget) {
+                Ok(l) => {
+                    first.get_or_insert(l);
+                }
+                Err(e) => {
+                    let partly = first
+                        .is_some()
+                        .then(|| format!("posts under {key} landed in part"));
+                    return send_failure(partly, e.why(), e.certain_failure());
+                }
+            }
+        }
+        let (message, at) = first.expect("at least one chunk");
+        Observation::Known(EffectOutcome::Posted { message, at })
+    }
+
+    /// The link Discord copies for a thread: the guild, then the thread's
+    /// channel id.
+    fn thread_link(&self, thread: &ConversationRef) -> Option<String> {
+        let id = thread.thread.as_deref()?;
+        Some(format!("https://discord.com/channels/{}/{id}", self.guild))
+    }
 }
 
 crate::curl::curl_gateway!(DiscordGateway, "Discord");

@@ -513,7 +513,9 @@ pub trait Gateway {
         intent_key: &str,
     ) -> Observation<EffectOutcome>;
     /// Post `text` in the conversation, carrying `intent_key` as its marker:
-    /// `Posted { message, at }`, with `at` the platform's own time.
+    /// `Posted { message, at }`, with `at` the platform's own time. To a
+    /// channel address (no `thread`), every part is a top-level post in the
+    /// channel, and no thread is started.
     fn post(
         &self,
         account: &str,
@@ -521,6 +523,12 @@ pub trait Gateway {
         text: &str,
         intent_key: &str,
     ) -> Observation<EffectOutcome>;
+    /// A URL that opens the thread, or `None` where the adapter cannot make
+    /// one without a platform call. Pure: it calls no platform.
+    fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
+        let _ = (account, thread);
+        None
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -675,6 +683,36 @@ pub struct GatewayConfig {
     pub people: BTreeMap<String, Person>,
     #[serde(default)]
     pub routes: BTreeMap<String, RouteConfig>,
+    /// Where every Task's result and change news are posted, as top-level
+    /// posts. Absent: they are posted nowhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logs: Option<LogsConfig>,
+}
+
+/// `[gateway] logs = { account, channel }`: the log destination.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LogsConfig {
+    /// A name under `[gateway.accounts]`.
+    pub account: String,
+    /// One channel id on that account. No route covers it.
+    pub channel: String,
+}
+
+/// The log destination as the controllers read it: the account and the
+/// channel's address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogDestination {
+    pub account: String,
+    pub channel: ConversationRef,
+}
+
+/// The thread a log post names: the tied thread and the account it is on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LogThread {
+    pub account: String,
+    pub conversation: ConversationRef,
 }
 
 /// What the controllers decide over, as values: the `[gateway]` timings,
@@ -707,6 +745,9 @@ pub struct GatewayDefaults {
     /// For a Task: every account's platform by account name, so the
     /// controller names the channel a Question opens a thread in.
     pub platforms: BTreeMap<String, String>,
+    /// For a Task: where its result and change news are logged. `None`:
+    /// nowhere.
+    pub logs: Option<LogDestination>,
 }
 
 /// The account a Listener reports on, as the loaded config has it.
@@ -735,6 +776,7 @@ impl Default for GatewayDefaults {
             routes: BTreeMap::new(),
             questions: None,
             platforms: BTreeMap::new(),
+            logs: None,
         }
     }
 }
@@ -783,6 +825,17 @@ impl GatewayConfig {
                 .iter()
                 .map(|(name, a)| (name.clone(), a.platform.clone()))
                 .collect(),
+            logs: self.logs.as_ref().and_then(|l| {
+                let account = self.accounts.get(&l.account)?;
+                Some(LogDestination {
+                    account: l.account.clone(),
+                    channel: ConversationRef {
+                        platform: account.platform.clone(),
+                        chat: l.channel.clone(),
+                        thread: None,
+                    },
+                })
+            }),
         }
     }
 
@@ -938,6 +991,25 @@ impl GatewayConfig {
             return Err(format!(
                 "gateway.questions {q:?} is not under [gateway.routes]"
             ));
+        }
+        if let Some(logs) = &self.logs {
+            if !self.accounts.contains_key(&logs.account) {
+                return Err(format!(
+                    "gateway.logs: account {:?} is not under [gateway.accounts]",
+                    logs.account
+                ));
+            }
+            if logs.channel.trim().is_empty() {
+                return Err("gateway.logs: the channel id is empty".into());
+            }
+            // A reply under a log post must never be admitted: the receive
+            // verb ignores a channel that no route covers.
+            if let Some((route, _)) = self.route_of(&logs.account, &logs.channel) {
+                return Err(format!(
+                    "gateway.logs: channel {:?} belongs to route {route}; the log channel must be no route's channel",
+                    logs.channel
+                ));
+            }
         }
         Ok(())
     }

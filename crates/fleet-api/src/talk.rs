@@ -128,15 +128,24 @@ pub struct GatewayStatus {
     /// the first relay is the whole retained thread.
     #[serde(default)]
     pub cursor: u64,
-    /// How many items of `status.declared` were read for posting.
+    /// How many items of `status.declared` were read for posting in the
+    /// thread.
     #[serde(default)]
     pub declared: u64,
-    /// The result generation posted, if any.
+    /// How many items of `status.declared` the log lane read for Drafts.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub logged: u64,
+    /// The result generation logged, or read while nothing logs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<u64>,
-    /// Per ChangeRequest name, the `state.seq` posted through.
+    /// Per ChangeRequest name, the `state.seq` logged through, or read
+    /// while nothing logs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub changes: BTreeMap<String, u64>,
+    /// The `uid` of each ChangeRequest whose ready notice was posted in the
+    /// thread: once per change, the first time it is ready for review.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready: Vec<String>,
     /// Per child Task name, what was read of it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub children: BTreeMap<String, ChildEntry>,
@@ -144,7 +153,8 @@ pub struct GatewayStatus {
     /// recovery reads. The newest [`POSTS_CAP`] settled, every unsettled.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub posts: BTreeMap<String, EffectRecord>,
-    /// Every Question, Comment and Draft id posted, for the life of the Task.
+    /// Every Question and Comment id posted, and every Draft id logged, for
+    /// the life of the Task.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub posted: Vec<String>,
     /// Per Question id, where and when it was posted.
@@ -299,6 +309,10 @@ pub fn may_name_parent(
         },
         _ => false,
     }
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[cfg(test)]

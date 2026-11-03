@@ -168,6 +168,29 @@ impl GatewayAccounts {
     fn not_configured(account: &str) -> String {
         format!("account {account} is not configured under [gateway.accounts]")
     }
+
+    /// Whether the account's adapter reads `channel` as a channel id: the
+    /// platform's own address rules, with no platform call.
+    pub fn check_channel(&self, account: &str, channel: &str) -> Result<(), String> {
+        let (cfg, _) = self
+            .accounts
+            .get(account)
+            .ok_or_else(|| Self::not_configured(account))?;
+        let address = format!("{}:{channel}", cfg.platform);
+        let parsed = match Platform::parse(&cfg.platform) {
+            Some(Platform::Discord) => discord::parse_address(&address),
+            Some(Platform::Fake) => fake::parse_address(&address),
+            Some(Platform::Slack) => slack::parse_address(&address),
+            None => Err(format!("unknown platform {:?}", cfg.platform)),
+        }?;
+        if parsed.thread.is_some() || parsed.chat != channel {
+            return Err(format!(
+                "{address:?} is not one channel id on {}",
+                cfg.platform
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Gateway for GatewayAccounts {
@@ -259,6 +282,10 @@ impl Gateway for GatewayAccounts {
                 why: Self::not_configured(account),
             }),
         }
+    }
+
+    fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
+        self.adapter(account).and_then(|g| g.link(account, thread))
     }
 }
 
@@ -397,6 +424,55 @@ mod tests {
         assert_eq!(v["inbound"], "connection");
         assert_eq!(v["name"], "fake-main");
         assert!(v.get("cli").is_none() && v.get("curlConfig").is_none());
+    }
+
+    #[test]
+    fn a_log_channel_is_checked_by_the_accounts_own_address_rules() {
+        let accounts = GatewayAccounts::new(
+            BTreeMap::from([
+                (
+                    "slack-main".to_string(),
+                    AccountConfig {
+                        inbound: Inbound::SocketMode,
+                        ..account("slack")
+                    },
+                ),
+                (
+                    "discord-main".to_string(),
+                    AccountConfig {
+                        team: Some("1200000000000000000".into()),
+                        bot: "1210000000000000000".into(),
+                        inbound: Inbound::DiscordGateway,
+                        ..account("discord")
+                    },
+                ),
+            ]),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(accounts.check_channel("slack-main", "C0456EFGH"), Ok(()));
+        assert!(accounts.check_channel("slack-main", "general").is_err());
+        assert!(
+            accounts
+                .check_channel("slack-main", "C0456EFGH:1730000000.000100")
+                .is_err(),
+            "a thread is not a channel"
+        );
+        assert_eq!(
+            accounts.check_channel("discord-main", "1300000000000000000"),
+            Ok(())
+        );
+        assert!(accounts.check_channel("discord-main", "C0456EFGH").is_err());
+        assert!(accounts.check_channel("nobody", "C0456EFGH").is_err());
+        // Discord links a thread under its guild; Slack makes no link.
+        let thread =
+            ConversationRef::split("discord:1300000000000000000:1300000000000000001").unwrap();
+        assert_eq!(
+            accounts.link("discord-main", &thread).as_deref(),
+            Some("https://discord.com/channels/1200000000000000000/1300000000000000001")
+        );
+        let thread = ConversationRef::split("slack:C0123ABCD:1730000000.000100").unwrap();
+        assert_eq!(accounts.link("slack-main", &thread), None);
     }
 
     #[test]

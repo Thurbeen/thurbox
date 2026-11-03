@@ -1444,6 +1444,65 @@ fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
 }
 
 #[test]
+fn the_slack_adapter_posts_a_log_post_at_the_top_level_of_a_channel() {
+    let (env, curl, curl_config) = slack_env("slack-log-post");
+    seed_slack(&env);
+    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(30));
+    let channel = thread(PARENT_TS).channel();
+    let posted = g.post(
+        GATEWAY_ACCOUNT,
+        &channel,
+        "Task t reported its result for generation 1: shipped.",
+        "task/t/u7/gateway/result/1",
+    );
+    let Observation::Known(EffectOutcome::Posted { message, .. }) = posted else {
+        panic!("{posted:?}")
+    };
+    // A long one splits into top-level posts too: none replies to another.
+    let long: String = (1..=3)
+        .map(|i| format!("paragraph {i} {}", "x".repeat(POST_LIMIT * 2 / 3)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let split = g.post(
+        GATEWAY_ACCOUNT,
+        &channel,
+        &long,
+        "task/t/u7/gateway/change/k7/2",
+    );
+    assert!(
+        matches!(split, Observation::Known(EffectOutcome::Posted { .. })),
+        "{split:?}"
+    );
+    let posts = slack_posts(&env);
+    assert_eq!(posts.len(), 4, "{posts:#?}");
+    for post in &posts {
+        assert_eq!(post["channel"], GATEWAY_CHANNEL);
+        assert!(post["thread_ts"].is_null(), "a top-level post: {post}");
+    }
+    assert_eq!(
+        posts[0]["metadata"]["event_payload"]["key"],
+        "task/t/u7/gateway/result/1"
+    );
+    for (i, post) in posts[1..].iter().enumerate() {
+        assert_eq!(
+            post["metadata"]["event_payload"]["key"],
+            format!("task/t/u7/gateway/change/k7/2/{}/3", i + 1)
+        );
+    }
+    // A `since` read of the channel finds the post by its marker.
+    let h = g.history(GATEWAY_ACCOUNT, &channel, &HistoryQuery::Since { at: 0 });
+    let h = h.known().unwrap_or_else(|| panic!("{h:?}"));
+    assert!(
+        h.messages
+            .iter()
+            .any(|m| m.id == message && m.key.as_deref() == Some("task/t/u7/gateway/result/1")),
+        "{h:#?}"
+    );
+    // Slack gives no permalink without a call: the post names the address.
+    assert_eq!(g.link(GATEWAY_ACCOUNT, &thread(PARENT_TS)), None);
+}
+
+#[test]
 fn the_slack_adapters_unknowns_carry_slacks_reasons() {
     let (env, curl, curl_config) = slack_env("slack-faults");
     seed_slack(&env);

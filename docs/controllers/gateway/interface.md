@@ -5,10 +5,9 @@ CLI verbs that listeners and people run, what a Task declares and receives,
 and who may write what. The port, the addresses and admission are
 implemented in `fleet_api::gateway`; the three verbs, the Conversation and
 Listener kinds, ConversationController, ListenerController,
-GatewayController's tie, join, relay and posting, its `Open`, `Receive`
-and `Post` actions, `answers`, the parent labels and `Probe::List` are
-implemented. It
-follows the shape of the
+GatewayController's tie, join, relay, posting and logging, its `Open`,
+`Receive`, `Post` and `Log` actions, `answers`, the parent labels and
+`Probe::List` are implemented. It follows the shape of the
 [Forge controller interface](../forge/interface.md). The
 [state machine](state-machine.md) defines when each thing happens.
 
@@ -43,7 +42,8 @@ Unknown. A refused write is `Known(EffectOutcome::Failed { why })`.
 | `capabilities` | An account | What the platform offers there: `history`, `marker` (`metadata`, `nonce` or `none`), `unmentioned` (whether messages without a mention are delivered) and `threads`. |
 | `history` | A conversation, and an `after` message id or a `since` time | The messages after that point, oldest first, and the thread's first message as `starter`. Unknown, with `retryAfter` where the platform gives one, when the read fails. `Unsupported` where bots cannot read history. |
 | `open` | A channel, text and an intent key | `Opened { conversation, message, at }`: a new thread whose first post is the text, carrying the key as its marker. |
-| `post` | A conversation, text and an intent key | `Posted { message, at }`: a post carrying the key as its marker. |
+| `post` | A conversation, text and an intent key | `Posted { message, at }`: a post carrying the key as its marker. To a thread address, a reply in the thread. To a channel address, a top-level post in the channel. |
+| `link` | An account and a thread address | A URL that opens the thread, or none where the adapter cannot make one without a platform call. Pure: it calls no platform. |
 
 What an adapter must guarantee:
 
@@ -61,6 +61,9 @@ What an adapter must guarantee:
   key, and finishes a half-done open on retry.
 - **With `marker = nonce { windowMs }`,** a retry within the window resends
   the same nonce, and the platform returns the existing post.
+- **A `post` to a channel address opens no thread.** Every part of a split
+  text is a top-level post in the channel. A `since` read of the channel
+  address finds them.
 
 Text is Fleet's Markdown subset: paragraphs, emphasis, code, links, lists
 and quotes. The adapter converts it to the platform's format, and splits a
@@ -330,15 +333,17 @@ pub fn reconcile(&self, input: &GatewayInput<'_>) -> Result<Plan, StoreError>;
   being set up, or when a post's recovery read is due. A quiet tied Task
   costs nothing.
 - `probes` asks `Object` for the Conversation, each followed ChangeRequest
-  and the parent; `List` for the children, by the parent labels; and
-  `History` to recover a post or an open. The manager answers `List` from
-  one Task listing per sweep.
+  and the parent; `List` for the children, by the parent labels;
+  `Capabilities` per account; and `History` to recover a post or an open
+  in the thread, or a log post in the log channel. The manager answers
+  `List` from one Task listing per sweep.
 - `reconcile` returns:
   - `status`: `status.gateway`.
   - `appends`: the inbox entries, through `record_relay`, so the entry and
     the cursor land in one write.
-  - `effects`: the `Open`, `Receive` and `Post` actions whose intents the
-    status carries.
+  - `effects`: the `Open`, `Receive`, `Post` and `Log` actions whose
+    intents the status carries. One pass plans at most one thread effect
+    and one log effect.
   - `remove_finalizer`: always `None`.
 
 It is a second controller over each [Task](../../resources/task.md). It
@@ -346,7 +351,9 @@ owns `status.gateway` and:
 
 - joins a newly tied Task with the whole retained thread,
 - relays new messages into the inbox, under a cursor,
-- posts each declaration and the result in the thread,
+- posts each `Question` and `Comment` in the thread, and one ready notice
+  per followed change,
+- logs every Task's Drafts, result and change news in the log channel,
 - opens a thread for a Question from an untied Task,
 - records answers to Questions,
 - routes a child Task's words into its parent's inbox.
@@ -359,11 +366,13 @@ owns `status.gateway` and:
 | `seen` | The Conversation `revision` last read. |
 | `cursor` | The Conversation `revision` relayed through. It starts at `0`, so the first relay is the whole retained thread. |
 | `declared` | How many items of `status.declared` were read. |
-| `result` | The result generation posted, if any. |
-| `changes` | Per ChangeRequest name, the `state.seq` posted through. |
+| `result` | The result generation logged, or read while no log channel is configured. |
+| `changes` | Per ChangeRequest name, the `state.seq` logged through, or read while no log channel is configured. |
 | `children` | Per child Task name, `{uid, seen, declared, result}`. |
-| `posts` | Per intent key, `{intent, receipt, attempts, recovery}`. The newest 100 settled, and every unsettled. |
-| `posted` | Every Question, Comment and Draft id posted, for the life of the Task. |
+| `posts` | Per intent key, `{intent, receipt, attempts, recovery}`, for thread posts and log posts alike. `intent.action` tells them apart: `post`, `open`, `receive` or `log`. The newest 100 settled, and every unsettled. |
+| `posted` | Every Question and Comment id posted, and every Draft id logged, for the life of the Task. |
+| `logged` | How many items of `status.declared` the log lane read for Drafts. |
+| `ready` | The `uid` of each followed ChangeRequest whose ready notice was posted in the thread. |
 | `questions` | Per Question id, where and when it was posted. |
 | `gaps` | How many relays found messages dropped from the mirror. |
 | `conditions` | `Tied`, `NeedsAttention`. |
@@ -379,9 +388,11 @@ it.
 | `Open { account, route, channel, text, key }` | `Gateway::open` | `Opened { conversation, message, at }`, Failed, or Unknown |
 | `Receive { account, address, route, delivery }`, under `<question key>/receive` | The store, never a platform: it creates the opened thread's Conversation and adds Fleet's opening post, as the receive verb would | `Received` (written or a duplicate), Failed, or Unknown |
 | `Post { conversation, text, key }` | `Gateway::post` | `Posted { message, at }`, Failed, or Unknown |
+| `Log { account, channel, text, thread, key }` | `Gateway::post` to the channel address, a top-level post. The manager adds a line that names `thread`, the tied thread with its account, as `Gateway::link` gives it, else by its address. | `Posted { message, at }`, Failed, or Unknown |
 
 `Receive` is the one way a plan reaches a Conversation, and it changes
-nothing outside the store.
+nothing outside the store. `Log` has no `Receive`: a log post creates no
+Conversation.
 
 ### Changes to Plan and Probe
 
@@ -400,6 +411,10 @@ architecture rule:
   `Probe::GatewayWhoami { account }`, answered by the Gateway port. The
   existing `Whoami { host }` stays the Forge port's.
 - New actions: `Open`, `Post` and `Receive`, above.
+- A new action, `Log`, above. Only GatewayController plans it. The
+  architecture rule that keeps the Gateway port in the manager covers it:
+  the manager performs it through `Gateway::post`, after the intent and
+  under the lease, and no controller holds the port.
 
 The kind names `Conversation` and `Listener` are reserved. Once they are
 built in, a plugin manifest that claims either kind is refused.
@@ -413,9 +428,12 @@ A Task talks by declaring items in `status.declared` with
 | --- | --- | --- | --- | --- |
 | `Question` | `id`, `text` | Posted once. | Opens a thread, then is tied to it. | Sent to the parent's inbox. |
 | `Comment` | `id`, `text` | Posted once. | Skipped. | Sent to the parent's inbox. |
-| `Draft` | `id`, `title`, `text` or `url` | Posted once, as awaiting review. | Skipped. | Sent to the parent's inbox. |
-| `ChangeRequest` | `url`, `name`, as today | Posted when followed, and when it opens, merges or closes. | Skipped. | Sent to the parent's inbox. |
-| `status.result` | As today | Posted once per generation. | Skipped. | Sent to the parent's inbox. |
+| `Draft` | `id`, `title`, `text` or `url` | Logged once, as awaiting review. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
+| `ChangeRequest` | `url`, `name`, as today | Logged when followed, and each time its state moves. The thread gets one ready notice with the URL, the first time `everReady` is true, and no other news. | Logged the same way. | Sent to the parent's inbox, and logged. |
+| `status.result` | As today | Logged once per generation. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
+
+"Logged" means a top-level post in the `gateway.logs` channel. Without
+`gateway.logs`, nothing is logged.
 
 `id` is a string unique for the Task. An `id` already posted is never posted
 again. An item without an `id` is skipped and named in
@@ -487,9 +505,10 @@ under the same key, so with the same nonce, inside the window. The
 | --- | --- |
 | Question | `task/<name>/<uid>/gateway/question/<id>` |
 | Comment | `task/<name>/<uid>/gateway/comment/<id>` |
-| Draft | `task/<name>/<uid>/gateway/draft/<id>` |
-| Change news | `task/<name>/<uid>/gateway/change/<cr uid>/<state.seq>` |
-| Result | `task/<name>/<uid>/gateway/result/<generation>` |
+| Draft, in the log channel | `task/<name>/<uid>/gateway/draft/<id>` |
+| Ready notice, in the thread | `task/<name>/<uid>/gateway/ready/<cr uid>` |
+| Change news, in the log channel | `task/<name>/<uid>/gateway/change/<cr uid>/<state.seq>` |
+| Result, in the log channel | `task/<name>/<uid>/gateway/result/<generation>` |
 | Refusal | `conversation/<conv uid>/refuse/<author id>` |
 | Task creation | `conversation/<conv uid>/task/<n>` |
 | Busy notice | `conversation/<conv uid>/busy/<n>` |
@@ -503,6 +522,11 @@ repeated where markers read back: it raises `NeedsAttention/PostUnconfirmed`.
 Where the platform honours a nonce, a resend inside the window finishes it.
 Three recovery reads that cannot complete raise
 `NeedsAttention/RecoveryIncomplete`, until one does.
+
+A log post follows the same rules. Its recovery read is a `since` read of
+the log channel's address on the `gateway.logs` account. A log post that
+waits holds back only the Task's later log posts. A thread post that waits
+holds back no log post.
 
 ## Write ownership
 

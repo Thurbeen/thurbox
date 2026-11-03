@@ -12,6 +12,9 @@
 //!   under a budget of calls, and answers Unknown rather than a partial
 //!   list.
 //! - `open` and `post` are `chat.postMessage` without and with `thread_ts`.
+//!   A `post` to a channel address sends every chunk without `thread_ts`:
+//!   top-level posts that start no thread. `link` makes none: a permalink
+//!   needs the workspace's domain, which only `chat.getPermalink` gives.
 //!   Each post carries the intent key as message metadata; the text is
 //!   converted from Fleet's Markdown subset to mrkdwn with `&`, `<` and `>`
 //!   escaped, and split at [`POST_LIMIT`] characters under derived keys.
@@ -388,6 +391,47 @@ impl SlackGateway {
         }
         let (message, at) = first.expect("at least one chunk");
         Observation::Known(landed(KIND, chat, thread, message, at))
+    }
+
+    /// Post `text` at the top level of `chat`: every chunk without
+    /// `thread_ts`, so no thread starts. The first chunk's `ts` and time
+    /// come back as `Posted`.
+    fn post_channel(&self, chat: &str, text: &str, key: &str) -> Observation<EffectOutcome> {
+        let chunks = split(&to_mrkdwn(text), POST_LIMIT);
+        if chunks.len() > MAX_CHUNKS {
+            return Observation::Known(EffectOutcome::Failed {
+                why: format!(
+                    "the text would take {} posts; the most one post takes is {MAX_CHUNKS} of {POST_LIMIT} characters",
+                    chunks.len()
+                ),
+            });
+        }
+        let mut budget = Budget::new(self.call_timeout, MAX_CALLS_PER_OPERATION);
+        let mut first: Option<(String, Millis)> = None;
+        for (i, chunk) in chunks.iter().enumerate() {
+            let chunk_key = if chunks.len() > 1 {
+                part_key(key, i + 1, chunks.len())
+            } else {
+                key.to_string()
+            };
+            match self.post_once(chat, None, chunk, &chunk_key, &mut budget) {
+                Ok(landed) => {
+                    first.get_or_insert(landed);
+                }
+                Err(e) => {
+                    let partly = (i > 0)
+                        .then(|| format!("{i} of {} posts landed under {key}", chunks.len()));
+                    return send_failure(partly, e.why(), e.certain_failure());
+                }
+            }
+        }
+        let (message, at) = first.expect("at least one chunk");
+        Observation::Known(EffectOutcome::Posted { message, at })
+    }
+
+    /// No link: a Slack permalink needs the workspace's domain.
+    fn thread_link(&self, _thread: &ConversationRef) -> Option<String> {
+        None
     }
 }
 
@@ -1728,9 +1772,15 @@ mod tests {
             g.open("slack-main", &thread, "x", "k"),
             Observation::Known(EffectOutcome::Failed { why }) if why.contains("is a thread")
         ));
+        // A channel address is a top-level post, but only on a channel id.
+        let not_a_channel = ConversationRef {
+            platform: "slack".into(),
+            chat: "general".into(),
+            thread: None,
+        };
         assert!(matches!(
-            g.post("slack-main", &thread.channel(), "x", "k"),
-            Observation::Known(EffectOutcome::Failed { why }) if why.contains("is a channel")
+            g.post("slack-main", &not_a_channel, "x", "k"),
+            Observation::Known(EffectOutcome::Failed { why }) if why.contains("not a Slack channel id")
         ));
         assert!(matches!(
             g.post("other", &thread, "x", "k"),

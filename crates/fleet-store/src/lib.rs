@@ -496,7 +496,7 @@ fn inbox_refusal(obj: &Object, why: String) -> StoreError {
 /// The Task status field a relay write replaces, decoded for its writer.
 enum RelayField {
     Forge(Option<ForgeStatus>),
-    Gateway(Option<GatewayStatus>),
+    Gateway(Option<Box<GatewayStatus>>),
 }
 
 /// A Task is created with its brief alone: only the amend mutation adds an
@@ -1034,10 +1034,10 @@ impl Store for FileStore {
                     .map_err(|e| StoreError::Invalid(format!("Task status.forge: {e}")))?,
             )),
             _ if status.is_null() => RelayField::Gateway(None),
-            _ => RelayField::Gateway(Some(
+            _ => RelayField::Gateway(Some(Box::new(
                 serde_json::from_value(status)
                     .map_err(|e| StoreError::Invalid(format!("Task status.gateway: {e}")))?,
-            )),
+            ))),
         };
         for entry in &appends {
             check_source(by.clone(), entry)?;
@@ -1056,7 +1056,9 @@ impl Store for FileStore {
         let mut st = task_status(&obj)?;
         match own {
             RelayField::Forge(forge) => st.forge = forge.filter(|f| !f.is_empty()),
-            RelayField::Gateway(gateway) => st.gateway = gateway.filter(|g| !g.is_empty()),
+            RelayField::Gateway(gateway) => {
+                st.gateway = gateway.map(|g| *g).filter(|g| !g.is_empty())
+            }
         }
         for entry in appends {
             push_entry(&obj, &mut st, entry)?;

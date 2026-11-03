@@ -304,13 +304,12 @@ impl Manager<'_> {
             if let Some(why) = conversations.why() {
                 report.unknowns.push(format!("list Conversation: {why}"));
             }
-            // What a tied Task's change news is judged against, listed only
-            // when some tied Task follows a change.
+            // What a Task's change news is judged against, listed only when
+            // some Task follows a change.
             let follows = tasks.iter().any(|t| {
-                t.status["gateway"]["conversation"]["state"] == "tied"
-                    && t.status["forge"]["changes"]
-                        .as_object()
-                        .is_some_and(|c| !c.is_empty())
+                t.status["forge"]["changes"]
+                    .as_object()
+                    .is_some_and(|c| !c.is_empty())
             });
             let change_requests: BTreeMap<String, Object> = if !follows {
                 BTreeMap::new()
@@ -1238,8 +1237,8 @@ impl Manager<'_> {
     /// from the sweep's Task listing (neither renews the lease: no adapter
     /// is asked), asking again until the controller wants nothing more;
     /// decide; write `status.gateway` and the relay's entries in one typed
-    /// compare-and-swap write. This step plans no effect; an `Open`,
-    /// `Receive` or `Post` action would be the next step's to perform.
+    /// compare-and-swap write, the intents of its `Open`, `Receive`, `Post`
+    /// and `Log` actions with them; then perform each, receipt after.
     fn reconcile_gateway(
         &self,
         obj: &Object,
@@ -1301,13 +1300,20 @@ impl Manager<'_> {
                                 .unknowns
                                 .push(format!("{} capabilities {account}: {why}", obj.key()));
                         }
-                        input.observations.capabilities = Some(answer);
+                        input.observations.capabilities.insert(account, answer);
                     }
                     Probe::History {
                         account,
                         conversation,
                         query,
                     } => {
+                        // A read of the log channel recovers a log post; any
+                        // other, a post in the thread.
+                        let logs = input
+                            .defaults
+                            .logs
+                            .as_ref()
+                            .is_some_and(|l| l.account == account && l.channel == conversation);
                         let answer = match &self.gateway {
                             Some(gateway) => {
                                 *lease = self.store.renew_lease(lease, ttl)?;
@@ -1323,7 +1329,11 @@ impl Manager<'_> {
                                 .unknowns
                                 .push(format!("{} history: {why}", obj.key()));
                         }
-                        input.observations.history = Some(answer);
+                        if logs {
+                            input.observations.log_history = Some(answer);
+                        } else {
+                            input.observations.history = Some(answer);
+                        }
                     }
                     Probe::List { kind, labels } => {
                         let selected = |list: &[Object]| -> Vec<Object> {
@@ -1425,6 +1435,24 @@ impl Manager<'_> {
                 text,
                 ..
             } => gateway.port.open(account, channel, text, &effect.key),
+            Action::Log {
+                account,
+                channel,
+                text,
+                thread,
+            } => {
+                let text = match thread {
+                    Some(t) => {
+                        let at = gateway
+                            .port
+                            .link(&t.account, &t.conversation)
+                            .unwrap_or_else(|| t.conversation.address());
+                        format!("{text}\nThread: {at}")
+                    }
+                    None => text.clone(),
+                };
+                gateway.port.post(account, channel, &text, &effect.key)
+            }
             Action::Receive {
                 account,
                 route,
@@ -1856,7 +1884,8 @@ impl Manager<'_> {
             Action::MarkReady { .. }
             | Action::Post { .. }
             | Action::Open { .. }
-            | Action::Receive { .. } => Observation::Known(EffectOutcome::Failed {
+            | Action::Receive { .. }
+            | Action::Log { .. } => Observation::Known(EffectOutcome::Failed {
                 why: format!("{} is not a Task controller effect", effect.action.name()),
             }),
         }

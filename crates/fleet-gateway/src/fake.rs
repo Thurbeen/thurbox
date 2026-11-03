@@ -518,7 +518,7 @@ impl Drop for Lock {
 }
 
 /// The fake's address: `fake:<chat>[:<thread>]`, each part one token.
-fn parse_address(address: &str) -> Result<ConversationRef, String> {
+pub(crate) fn parse_address(address: &str) -> Result<ConversationRef, String> {
     let parsed = ConversationRef::split(address)
         .ok_or_else(|| format!("{address:?} is not <platform>:<chat>[:<thread>]"))?;
     if parsed.platform != KIND {
@@ -658,11 +658,17 @@ impl Gateway for FakeGateway {
         if let Some(f) = fault {
             return Self::read_fault(&f);
         }
-        let Some(c) = s.conversations.get(&conversation.address()) else {
-            return HistoryObservation::unknown(
-                Uncertainty::Refused,
-                format!("no such conversation {}", conversation.address()),
-            );
+        let empty = FakeConversation::default();
+        let c = match s.conversations.get(&conversation.address()) {
+            Some(c) => c,
+            // A channel Fleet never posted in at the top level holds nothing.
+            None if conversation.thread.is_none() => &empty,
+            None => {
+                return HistoryObservation::unknown(
+                    Uncertainty::Refused,
+                    format!("no such conversation {}", conversation.address()),
+                );
+            }
         };
         let mut all = c.messages.clone();
         all.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
@@ -748,8 +754,12 @@ impl Gateway for FakeGateway {
         let conversation = conversation.clone();
         let text = text.to_string();
         let key = intent_key.to_string();
+        // A channel address takes top-level posts; a thread must exist.
         let exists = match self.state() {
-            Ok(s) => s.conversations.contains_key(&conversation.address()),
+            Ok(s) => {
+                conversation.thread.is_none()
+                    || s.conversations.contains_key(&conversation.address())
+            }
             Err(e) => return Observation::unknown(format!("fake gateway unreadable: {e}")),
         };
         if !exists {
@@ -761,6 +771,16 @@ impl Gateway for FakeGateway {
             let (message, at) = Self::land(s, &conversation, &text, &key, false, partly);
             EffectOutcome::Posted { message, at }
         })
+    }
+
+    /// `https://fake.invalid/<chat>/<thread>`: a link in a reserved domain,
+    /// so a test sees where a log post names its thread.
+    fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
+        if self.other_account(account).is_some() || thread.platform != KIND {
+            return None;
+        }
+        let id = thread.thread.as_deref()?;
+        Some(format!("https://fake.invalid/{}/{id}", thread.chat))
     }
 }
 
