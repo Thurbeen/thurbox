@@ -5658,3 +5658,212 @@ env = {{ CODEX_HOME = "{{home}}/.codex-work", CAPTURE = {:?} }}
     assert_eq!(count_ours(&at_restart), 1, "{at_restart}");
     assert!(at_restart.to_string().contains("echo mine"));
 }
+
+// A remote session's host-side steps (#1473): `session.pre_launch` runs on the
+// session's host, and an agent `setup` reaches a Windows host as PowerShell,
+// both through `shell::HostShell`. The host is this machine behind a stand-in
+// `ssh` that runs the remote line in `sh`, as a POSIX login shell does, and
+// its multiplexer is a recording backend.
+
+#[cfg(unix)]
+const HOST_SHELL_HOSTS_TOML: &str = "[[hosts]]\n\
+     name = \"posixhost\"\n\
+     destination = \"e2e@posixhost.invalid\"\n\
+     share_sessions = false\n\
+     [[hosts]]\n\
+     name = \"winhost\"\n\
+     destination = \"e2e@winhost.invalid\"\n\
+     multiplexer = \"psmux\"\n\
+     share_sessions = false\n";
+
+/// Drops the options and the destination, then hands the rest of the line to
+/// `sh -c`, which is what a POSIX login shell does with ssh's command.
+#[cfg(unix)]
+const LOCAL_SSH: &str = "#!/bin/sh\n\
+     while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2;; -*) shift;; *) break;; esac; done\n\
+     shift\n\
+     exec sh -c \"$*\"\n";
+
+#[cfg(unix)]
+struct HostShellEnv {
+    home: tempfile::TempDir,
+    config: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl HostShellEnv {
+    fn new(ssh: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let (home, config) = isolated_config();
+        std::fs::write(config.join("hosts.toml"), HOST_SHELL_HOSTS_TOML).unwrap();
+        let bin = home.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("ssh"), ssh).unwrap();
+        std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![bin];
+        dirs.extend(std::env::split_paths(&path));
+        std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+        for var in ["TMUX", "TMUX_PANE", "THURBOX_SESSION", "THURBOX_SESSION_ID"] {
+            std::env::remove_var(var);
+        }
+        let mut settings = thurbox::session::settings::Settings::default();
+        settings.features.automations = false;
+        thurbox::session::settings::init(settings);
+        Self { home, config }
+    }
+
+    fn write(&self, file: &str, body: &str) {
+        std::fs::write(self.config.join(file), body).unwrap();
+    }
+
+    /// Spawn `agent` on `host`, served by a recording backend for `mux`.
+    fn spawn(
+        &self,
+        host: &str,
+        mux: thurbox::session::Multiplexer,
+        agent: &str,
+        repo: &Path,
+    ) -> (
+        std::sync::Arc<recording_backend::RecordingBackend>,
+        thurbox::storage::Database,
+        Result<thurbox::session_ops::spawn::SpawnResult, thurbox::session_ops::OpError>,
+    ) {
+        use thurbox::session::{Route, Via};
+        let route = Route::remote(Via::Ssh, host, Some(mux));
+        let far = recording_backend::RecordingBackend::new(&route);
+        let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+        backends.register(route, far.clone());
+        let db = thurbox::storage::Database::open_in_memory().unwrap();
+        let spawned = thurbox::session_ops::spawn::spawn_session_headless(
+            &db,
+            &backends,
+            thurbox::session_ops::spawn::SpawnRequest {
+                name: "far".into(),
+                repo_path: repo.to_path_buf(),
+                agent: Some(agent.into()),
+                host: Some(host.into()),
+                ..Default::default()
+            },
+        );
+        (far, db, spawned)
+    }
+}
+
+#[cfg(unix)]
+const SH_AGENT: &str =
+    "default = \"probe\"\n\n[[agents]]\nname = \"probe\"\ncommand = \"sh\"\nargs = []\n";
+
+/// The hook runs on the host — through `ssh`, in the session's launch
+/// directory there, with the session's identity in its environment and the
+/// event JSON on stdin — before the window opens.
+#[test]
+#[cfg(unix)]
+fn a_remote_pre_launch_runs_on_the_host_in_the_launch_directory() {
+    let env = HostShellEnv::new(LOCAL_SSH);
+    env.write("agents.toml", SH_AGENT);
+    let seen = env.home.path().join("seen");
+    env.write(
+        "hooks.toml",
+        &format!(
+            "[[hooks]]\nevent = 'session.pre_launch'\ncommand = 'printf \"%s\\n%s\\n%s\\n\" \"$PWD\" \"$THURBOX_HOOK_EVENT\" \"$THURBOX_SESSION_NAME\" > {seen}; cat >> {seen}'\n",
+            seen = seen.display()
+        ),
+    );
+    let repo = repo();
+    let (far, _db, spawned) = env.spawn(
+        "posixhost",
+        thurbox::session::Multiplexer::Tmux,
+        "probe",
+        repo.path(),
+    );
+    let spawned = spawned.expect("spawn");
+    let out = std::fs::read_to_string(&seen).expect("the hook ran on the host");
+    let mut lines = out.lines();
+    let cwd = lines.next().unwrap();
+    let window = &far.windows_of(&spawned.session_id.to_string())[0];
+    assert_eq!(Some(cwd), window.cwd.as_deref(), "{out}");
+    assert_eq!(lines.next(), Some("session.pre_launch"), "{out}");
+    assert_eq!(lines.next(), Some("far"), "{out}");
+    let payload: serde_json::Value = serde_json::from_str(&lines.collect::<String>()).unwrap();
+    assert_eq!(payload["event"], "session.pre_launch", "{out}");
+}
+
+/// A failing host-side preparation refuses the launch, as a local one does:
+/// no window opens and the hook's stderr is the reason.
+#[test]
+#[cfg(unix)]
+fn a_failing_remote_pre_launch_refuses_the_launch() {
+    let env = HostShellEnv::new(LOCAL_SSH);
+    env.write("agents.toml", SH_AGENT);
+    env.write(
+        "hooks.toml",
+        "[[hooks]]\nevent = 'session.pre_launch'\ncommand = 'echo not-prepared-here >&2; exit 3'\n",
+    );
+    let repo = repo();
+    let (far, _db, spawned) = env.spawn(
+        "posixhost",
+        thurbox::session::Multiplexer::Tmux,
+        "probe",
+        repo.path(),
+    );
+    let err = spawned.expect_err("the launch is refused").to_string();
+    assert!(err.contains("not-prepared-here"), "{err}");
+    assert!(
+        far.windows().is_empty(),
+        "a window opened: {:?}",
+        far.windows()
+    );
+}
+
+/// An agent `setup` on a Windows host runs in PowerShell: the window is one
+/// encoded PowerShell launch whose script runs each step, stops at the first
+/// that fails with the marker a launch failure is classified by, and then
+/// starts the agent with its arguments.
+#[test]
+#[cfg(unix)]
+fn a_windows_host_runs_an_agent_setup_in_powershell() {
+    let env = HostShellEnv::new("#!/bin/sh\nexit 255\n");
+    env.write(
+        "agents.toml",
+        "default = \"probe\"\n\n[[agents]]\nname = \"probe\"\ncommand = \"probe.exe\"\nargs = [\"--flag\", \"two words\"]\nsetup = [\"$env:PROBE_READY = 'yes'\", \"prepare.exe --check\"]\n",
+    );
+    let repo = repo();
+    let (far, _db, spawned) = env.spawn(
+        "winhost",
+        thurbox::session::Multiplexer::Psmux,
+        "probe",
+        repo.path(),
+    );
+    let spawned = spawned.expect("a Windows setup launches");
+    let window = &far.windows_of(&spawned.session_id.to_string())[0];
+    let mut words = window.command.split(' ');
+    assert_eq!(words.next(), Some("powershell.exe"), "{}", window.command);
+    let encoded = window
+        .command
+        .split(' ')
+        .skip_while(|w| *w != "-EncodedCommand")
+        .nth(1)
+        .unwrap_or_else(|| panic!("not an encoded launch: {}", window.command));
+    let script = decode_powershell(encoded);
+    let ready = script.find("$env:PROBE_READY = 'yes'").expect(&script);
+    let check = script.find("prepare.exe --check").expect(&script);
+    let agent = script
+        .find("& 'probe.exe' '--flag' 'two words'")
+        .expect(&script);
+    assert!(ready < check && check < agent, "{script}");
+    assert!(script.contains("thurbox: setup step "), "{script}");
+}
+
+#[cfg(unix)]
+fn decode_powershell(encoded: &str) -> String {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .unwrap();
+    let units: Vec<u16> = bytes
+        .chunks(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16(&units).unwrap()
+}

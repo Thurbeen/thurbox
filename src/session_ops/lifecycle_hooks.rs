@@ -21,12 +21,34 @@ use crate::sync::SharedSession;
 /// failure. `Err` is the reason the operation must not proceed: the caller
 /// returns it before its first side effect.
 pub fn fire_pre(event: HookEvent, ctx: &HookContext) -> Result<(), super::OpError> {
+    fire_pre_on(event, ctx, None)
+}
+
+/// [`fire_pre`] for `session.pre_launch`, on the machine the session will
+/// run on: this one when `host` is `None`, else the host, in its own shell
+/// ([`crate::shell::HostShell::hook_script`]) and its launch directory there.
+/// Preparation belongs where the agent starts — a trust file, a checkout's
+/// dependencies — so a remote session's is not run here.
+pub fn fire_pre_launch(
+    ctx: &HookContext,
+    host: Option<&crate::session::HostDef>,
+) -> Result<(), super::OpError> {
+    fire_pre_on(HookEvent::PreLaunch, ctx, host)
+}
+
+fn fire_pre_on(
+    event: HookEvent,
+    ctx: &HookContext,
+    host: Option<&crate::session::HostDef>,
+) -> Result<(), super::OpError> {
     debug_assert!(event.is_pre(), "{event} is not a pre-event");
     for hook in crate::agent::hooks_config::hooks_for(event) {
         if !hook.matches_agent(&ctx.agent) {
             continue;
         }
-        if let Err(reason) = run_hook(&hook, event, ctx) {
+        if let Err(reason) =
+            run_payload_on(&hook, event, ctx, ctx.json(event), hook.timeout(), host)
+        {
             tracing::warn!("{reason}; refusing the operation");
             return Err(super::OpError::Refused(reason));
         }
@@ -127,40 +149,42 @@ pub(crate) fn run_payload(
     payload: String,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
+    run_payload_on(hook, event, ctx, payload, timeout, None)
+}
+
+/// [`run_payload`] on `host` when there is one. A host's shell is reached
+/// over a launcher that carries no environment and has no local working
+/// directory to inherit, so both travel inside the script; this machine's
+/// config and data-dir overrides do not, since they name paths here.
+fn run_payload_on(
+    hook: &LifecycleHook,
+    event: HookEvent,
+    ctx: &HookContext,
+    payload: String,
+    timeout: std::time::Duration,
+    host: Option<&crate::session::HostDef>,
+) -> Result<(), String> {
     use super::bounded::Exit;
 
-    let label = format!("hook `{}` for {event}", elide(&hook.command));
+    let label = match host {
+        Some(host) => format!(
+            "hook `{}` for {event} on host '{}'",
+            elide(&hook.command),
+            host.name
+        ),
+        None => format!("hook `{}` for {event}", elide(&hook.command)),
+    };
     tracing::debug!("{label}: running");
 
-    let mut cmd = super::platform_shell(&hook.command);
-    for (key, _) in
-        std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("THURBOX_"))
-    {
-        cmd.env_remove(key);
-    }
-    if event == HookEvent::StateChanged {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) {
-            for (field, key) in [
-                ("from_state", "THURBOX_FROM_STATE"),
-                ("to_state", "THURBOX_TO_STATE"),
-            ] {
-                if let Some(state) = value[field].as_str() {
-                    cmd.env(key, state);
-                }
-            }
-            cmd.env("THURBOX_EVENT_SEQ", value["seq"].to_string());
+    let cmd = match host {
+        Some(host) => {
+            let shell = crate::shell::HostShell::for_host(host);
+            let cwd = ctx.cwd.as_deref().map(|dir| dir.to_string_lossy());
+            let script = shell.hook_script(&hook.command, cwd.as_deref(), &ctx.env(event));
+            crate::shell::HostShell::run_on_host(host, &script)
         }
-    }
-    cmd.envs(ctx.env(event))
-        .envs(super::thurbox_env_overrides());
-    let cwd = if event == HookEvent::PreLaunch {
-        ctx.cwd.as_deref()
-    } else {
-        ctx.workdir()
+        None => local_hook_command(hook, event, ctx, &payload),
     };
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
     let done = super::bounded::run(cmd, Some(payload), timeout);
     let code = match done.exit {
         Exit::Code(0) => return Ok(()),
@@ -182,6 +206,46 @@ pub(crate) fn run_payload(
         true => format!("{label} exited {code}"),
         false => format!("{label} exited {code}: {detail}"),
     })
+}
+
+/// The hook as a process on this machine: the platform's shell, the inherited
+/// environment less any `THURBOX_*` of thurbox's own, plus the hook's facts.
+fn local_hook_command(
+    hook: &LifecycleHook,
+    event: HookEvent,
+    ctx: &HookContext,
+    payload: &str,
+) -> std::process::Command {
+    let mut cmd = super::platform_shell(&hook.command);
+    for (key, _) in
+        std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("THURBOX_"))
+    {
+        cmd.env_remove(key);
+    }
+    if event == HookEvent::StateChanged {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) {
+            for (field, key) in [
+                ("from_state", "THURBOX_FROM_STATE"),
+                ("to_state", "THURBOX_TO_STATE"),
+            ] {
+                if let Some(state) = value[field].as_str() {
+                    cmd.env(key, state);
+                }
+            }
+            cmd.env("THURBOX_EVENT_SEQ", value["seq"].to_string());
+        }
+    }
+    cmd.envs(ctx.env(event))
+        .envs(super::thurbox_env_overrides());
+    let cwd = if event == HookEvent::PreLaunch {
+        ctx.cwd.as_deref()
+    } else {
+        ctx.workdir()
+    };
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    cmd
 }
 
 /// The command as an error message names it: one line, at most 60 chars.

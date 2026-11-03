@@ -143,7 +143,7 @@ new_session_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"]
 "#;
 
 /// The `shell` built-in as seeded, around this machine's
-/// [`crate::shell::shell_agent_def`] — which a session on a host of the other
+/// [`crate::shell::HostShell::interactive_agent`] — which a session on a host of the other
 /// platform is given instead when its entry is still this stock one
 /// (`session_ops::resolve_agent_def`).
 ///
@@ -171,7 +171,7 @@ args = {args}
 /// A function rather than a `const` because one entry (`shell`) differs by
 /// platform.
 pub fn builtin_agents_toml() -> String {
-    let shell = crate::shell::shell_agent_def(crate::session::Platform::local());
+    let shell = crate::shell::HostShell::local().interactive_agent();
     let shell = SHELL_AGENT_TOML
         .replace("{command}", &shell.command)
         .replace("{args}", &format!("{:?}", shell.args));

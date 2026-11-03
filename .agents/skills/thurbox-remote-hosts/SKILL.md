@@ -120,7 +120,7 @@ launched as `powershell.exe -NoLogo -EncodedCommand …` (`psmux_window_program`
 through `$SHELL`, `cmd.exe` on a server started over Windows OpenSSH, and
 refused with `CommandLineTooLong` past `shell::WINDOWS_CMD_LINE_MAX` (8191) —
 quotes every one-shot command for a `cmd.exe` or PowerShell login shell rather
-than POSIX (`TmuxTransport::on_windows` → `shell::launch_on_windows`: plain
+than POSIX (`TmuxTransport::with_shell` → `shell::HostShell::launch`: plain
 words as they are, anything else as an encoded PowerShell script; #1460) —
 routes a bracketed paste out of band through the one-shot CLI
 `psmux send-paste` (`psmux::PsmuxPaste`) — `session send` in the same
@@ -179,7 +179,7 @@ closes pane readers on window deletion (tmux yes, psmux and RMUX no). Tests simu
 with `session::platform::simulate_local`. A Windows host has no POSIX shell. So
 each remote probe ships **two scripts emitting one line protocol** —
 `git::host_probe` picks `sh -c` or `powershell -EncodedCommand`
-(`host_powershell_c`; UTF-16LE base64, because ssh space-joins its args for a
+(`shell::HostShell::run_script`; UTF-16LE base64, because ssh space-joins its args for a
 default sshd shell that is commonly PowerShell and expands `$…` inside them) —
 and `git::remote_home` resolves `%USERPROFILE%` rather than `$HOME`, which under
 `cmd`/PowerShell prints the literal string and exits 0. Remote error *messages*

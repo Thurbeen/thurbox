@@ -23,7 +23,7 @@ interactive shell (`bash -i`, or `powershell -NoLogo` on native Windows, where
 the multiplexer is psmux). The platform is the session's host: while the entry (or its inherited variant)
 is still a stock command/args pair, `session_ops::resolve_agent_def` swaps in
 the host's own
-(`shell::shell_agent_def`); an edited `shell` is launched as written. It exists so a session can be *anything*, and it is
+(`shell::HostShell::interactive_agent`); an edited `shell` is launched as written. It exists so a session can be *anything*, and it is
 the ready-made form of `session create --command`. Because it declares no
 `resume_args`/`fork_args`, it also documents the rule by example: those groups
 are the **conversation address**, and an entry without them can be restarted but
@@ -95,7 +95,9 @@ to need a wrapper script as `command` is data now (full contract:
 - `setup` steps become `sh -c '<steps under set -e>; exec "$@"' thurbox-setup CMD
   ARGS…` (`agent_def::wrap_with_setup`), applied last by `session_ops::with_setup`
   in spawn, the restart plan (restart/start/restore) and `agent launch-args`, so
-  appended args still reach the agent. Refused on a native-Windows host (no `sh`).
+  appended args still reach the agent. On a native-Windows host the steps are
+  PowerShell, wrapped by `shell::HostShell::wrap_setup` into one encoded launch
+  (bounded by `WINDOWS_CMD_LINE_MAX`) that prints the same marker.
   A failing step prints `agent_def::SETUP_FAILURE_MARKER`, which is how
   `session::launch_failure` tells a `setup` failure from an `exited` one.
 

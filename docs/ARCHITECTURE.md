@@ -1024,8 +1024,8 @@ reference to read before touching that path.
   `posix_quote`d `'#{pane_id}|#{window_name}|…'` of a listing was a pipe into a
   command named `'#{window_name}'`: remote teardown could not list the host's
   windows and was left owed (#1460). A transport built for a Windows host
-  (`TmuxTransport::on_windows`, set by `Server::on_host`) builds its lines with
-  `shell::launch_on_windows`: a line of words every such shell passes through
+  (`TmuxTransport::with_shell`, set by `Server::on_host`) builds its lines with
+  `shell::HostShell::launch`: a line of words every such shell passes through
   unquoted (`[A-Za-z0-9-_./:=+%]`, at most one `%`) goes as it is — a
   control-mode attach and a `send-paste` with the default socket among them
   — and any other runs as `powershell.exe -NoLogo -NoProfile
@@ -1349,8 +1349,19 @@ fails with PowerShell's `CommandNotFoundException` — so the repo picker could
 not list a directory, classify a committed path, or import a folder of repos on
 a Windows host.
 
+- **`shell::HostShell` is the host's dialect, decided once (#1473).** Built
+  from the host's platform, it is what every caller asks instead of branching
+  on `is_windows()`: how a word is quoted, how a script runs (`sh -c` or an
+  encoded PowerShell), how a program is launched through a `cmd.exe` or
+  PowerShell login shell, the heartbeat loop, the bare-pane and built-in
+  `shell` agent, an agent `setup` wrapper, and a `session.pre_launch` hook's
+  script on the host. It lives in `shell`, beside `HostLauncher`, not in the
+  shared server: a Windows host served by psmux or tmux gets the same one, so
+  it is a host property rather than the multiplexer dialect ADR-31 rejects.
+  Filesystem-layout questions (`%USERPROFILE%`, `AppData`) stay on
+  `HostDef::platform`.
 - **One dispatch point, two dialects.** `git::host_probe(host, posix,
-  windows)` picks `host_shell_c` or `host_powershell_c`, and each pair of
+  windows)` asks the host's `shell::HostShell` to run one or the other, and each pair of
   scripts emits the **same line protocol** (`!missing`, `g <name>`/`d <name>`,
   `git`/`dir`/`missing`, one name per line) so every parser stays
   transport-neutral. A probe cannot become POSIX-only by omission.

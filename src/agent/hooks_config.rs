@@ -65,7 +65,8 @@ pub const SEED_HOOKS_TOML: &str = r#"# Thurbox session lifecycle hooks  —  ~/.
 #   THURBOX_BASE_BRANCH      the branch it was created from (create events)
 #   THURBOX_HOST             the remote host name; unset for a local session.
 #                            When set, THURBOX_REPO/THURBOX_CWD are paths on
-#                            that host — the hook itself still runs locally
+#                            that host — the hook itself runs locally, except
+#                            pre_launch, which runs on that host
 #   THURBOX_PARENT_SESSION   the parent session id (a fork, or --parent)
 #   THURBOX_TASK             the originating task id, for a task-spawned session
 #   THURBOX_CONFIG_DIR / THURBOX_DATA_DIR
@@ -94,9 +95,10 @@ pub const SEED_HOOKS_TOML: &str = r#"# Thurbox session lifecycle hooks  —  ~/.
 #   command        (string, required)   the shell command
 #   timeout_secs   (integer, optional, default: 30)
 #
-# pre_launch runs locally in the final cwd on create/fork, after worktrees
-# exist and before the agent starts. A failure refuses launch. Host-side
-# preparation is not supported yet; it never runs locally for a remote path.
+# pre_launch runs in the final cwd on create/fork, after worktrees exist and
+# before the agent starts, on the machine the agent runs on: locally, or for
+# a remote session on its host, in that host's shell (sh, or PowerShell on a
+# Windows host) with the THURBOX_* variables set. A failure refuses launch.
 #
 # state_changed is post-only, delivered by automation tick (normally every
 # 60s). Delivery is at-least-once: deduplicate external effects by seq. First

@@ -281,8 +281,9 @@ pub(crate) fn provision_agent_hooks_on_host(
     };
     // Windows hosts are deferred: these payloads' hook commands run through
     // `sh`, and each agent's Windows config dir / hook shell differs. A
-    // property of the payloads and the host's OS, whatever multiplexer it runs.
-    if host.is_windows() {
+    // property of the payloads and the host's shell, whatever multiplexer it
+    // runs.
+    if crate::shell::HostShell::for_host(host) != crate::shell::HostShell::Posix {
         return Some(format!(
             "{agent} hooks not provisioned on Windows host '{}'",
             host.name

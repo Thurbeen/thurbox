@@ -655,20 +655,18 @@ fn spawn(
         .into_iter()
         .collect();
 
-    if host.is_none() {
-        hook_ctx.cwd = Some(launch_cwd.clone());
-        hook_ctx.worktrees = worktrees
-            .iter()
-            .map(super::lifecycle_hooks::worktree)
-            .collect();
-        hook_ctx.additional_dirs = additional_dirs.clone();
-        if let Err(reason) = super::fire_pre(crate::session::HookEvent::PreLaunch, &hook_ctx) {
-            creating.preserve_prepared()?;
-            return Err(crate::session_ops::OpError::Refused(format!(
-                "{reason}; launch refused, prepared directories remain at {}",
-                launch_cwd.display()
-            )));
-        }
+    hook_ctx.cwd = Some(launch_cwd.clone());
+    hook_ctx.worktrees = worktrees
+        .iter()
+        .map(super::lifecycle_hooks::worktree)
+        .collect();
+    hook_ctx.additional_dirs = additional_dirs.clone();
+    if let Err(reason) = super::fire_pre_launch(&hook_ctx, host.as_ref()) {
+        creating.preserve_prepared()?;
+        return Err(crate::session_ops::OpError::Refused(format!(
+            "{reason}; launch refused, prepared directories remain at {}",
+            launch_cwd.display()
+        )));
     }
 
     let (command, args) = super::with_setup(&agent_def, host.as_ref(), command, args)?;
@@ -998,7 +996,9 @@ fn delegated_create_args(
     // A Windows host's CLI runs under `powershell -EncodedCommand`, and that
     // a native child of it reads the stream ssh delivers is unverified; a
     // creation whose environment might not arrive is refused, not guessed.
-    if !env.is_empty() && host.is_windows() {
+    if !env.is_empty()
+        && crate::shell::HostShell::for_host(host) == crate::shell::HostShell::PowerShell
+    {
         return Err(format!(
             "--env cannot be handed to host '{}''s thurbox-cli yet: it is a Windows host; \
              create the session on that host itself, or set `share_sessions = false` for it",
@@ -1874,10 +1874,15 @@ pub(crate) fn adapt_agent_args_for_remote_with_report(
             let contents = super::builtin_hooks::rewrite_hook_signals(&contents, command);
             // A native Windows host has no `sh`/`cat` for the POSIX
             // stream copy, so the payload goes via the PowerShell variant.
-            let copied = if host.is_windows() {
-                crate::git::copy_bytes_to_remote_windows(host, contents.as_bytes(), &remote_path)
-            } else {
-                crate::git::copy_bytes_to_remote(host, contents.as_bytes(), &remote_path)
+            let copied = match crate::shell::HostShell::for_host(host) {
+                crate::shell::HostShell::PowerShell => crate::git::copy_bytes_to_remote_windows(
+                    host,
+                    contents.as_bytes(),
+                    &remote_path,
+                ),
+                crate::shell::HostShell::Posix => {
+                    crate::git::copy_bytes_to_remote(host, contents.as_bytes(), &remote_path)
+                }
             };
             match copied {
                 Ok(()) => Some(remote_path),
