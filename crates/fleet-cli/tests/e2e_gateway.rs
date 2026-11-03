@@ -1402,7 +1402,7 @@ fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
     for (i, post) in posts[2..].iter().enumerate() {
         assert_eq!(
             post["metadata"]["event_payload"]["key"],
-            format!("task/t/u7/gateway/result/1/{}", i + 1)
+            format!("task/t/u7/gateway/result/1/{}/3", i + 1)
         );
         assert_eq!(post["thread_ts"], message);
         let text = post["text"].as_str().unwrap();

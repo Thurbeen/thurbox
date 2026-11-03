@@ -36,9 +36,10 @@ Every adapter that reaches a real platform keeps these rules:
 - **Event reading is pure.** `event` makes no call. So the receive verb runs it
   without the lease.
 - **A long text is split.** The adapter splits a text into consecutive posts
-  under derived keys `<key>/1`, `<key>/2`, and so on. A split closes a code
-  fence that it cuts, and opens it again in the next post. A text that needs
-  more than 10 posts is a Known failure. A split that landed partly is Unknown.
+  under derived keys that name the part and the count: `<key>/1/3`,
+  `<key>/2/3`, `<key>/3/3`. A split closes a code fence that it cuts, and
+  opens it again in the next post. A text that needs more than 10 posts is a
+  Known failure. A split that landed partly is Unknown.
 - **Fleet's own posts are told by the bot id.** A message whose author is the
   account's `bot` is `fleet`. A Fleet post never mentions Fleet.
 - **A refusal is Known; anything unclear is Unknown.** A write that the

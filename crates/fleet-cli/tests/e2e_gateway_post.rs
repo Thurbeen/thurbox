@@ -1,10 +1,13 @@
 //! The Gateway controller's fourth step end to end: what a tied Task
 //! declares is posted in its thread, in declaration order, as keyed
 //! effects that never post twice; a post with an unknown outcome is looked
-//! for by its marker and otherwise waits for a person under
-//! `NeedsAttention/PostUnconfirmed`, holding later posts back; a Question
-//! from an untied Task opens a thread tied to it; an untied Task's other
-//! words and a child's words are never posted.
+//! for by its marker, every part of a split included, resent under its
+//! nonce inside the window, and otherwise waits for a person under
+//! `NeedsAttention/PostUnconfirmed`, holding later posts back; recovery
+//! reads that cannot complete are named; a Question from an untied Task
+//! opens a thread tied to it, or abandons it when its opening post cannot
+//! reach the Conversation; an untied Task's other words and a child's words
+//! are never posted, and a child's reach its parent.
 
 mod support;
 
@@ -478,4 +481,291 @@ fn a_child_and_an_untied_task_post_nothing() {
             .any(|t| t.contains("fleet send c --answers q1")),
         "{texts:#?}"
     );
+    let c_uid = uid_of(&env, "task", "c");
+    let gw = gateway(&env, "p");
+    assert_eq!(gw["children"]["c"]["uid"], c_uid, "{gw:#}");
+    assert_eq!(gw["children"]["c"]["declared"], 1, "read through: {gw:#}");
+}
+
+/// A Comment of twenty characters: three parts under a post limit of eight.
+const LONG: &str = "abcdefghijklmnopqrst";
+
+/// The derived keys of a post split into `total` parts.
+fn part_keys(key: &str, total: usize) -> Vec<String> {
+    (1..=total).map(|n| format!("{key}/{n}/{total}")).collect()
+}
+
+fn attention_open(gw: &Value) -> bool {
+    gw["conditions"].as_array().is_some_and(|cs| {
+        cs.iter()
+            .any(|c| c["type"] == "NeedsAttention" && c["status"] == "True")
+    })
+}
+
+fn nonce(env: &Env, window_ms: u64) {
+    env.fake_gateway()
+        .set_capabilities(Capabilities {
+            history: true,
+            marker: Marker::Nonce { window_ms },
+            unmentioned: true,
+            threads: true,
+        })
+        .unwrap();
+}
+
+#[test]
+fn a_split_post_is_recovered_only_when_every_part_is_found() {
+    let (env, task) = tied("split");
+    let uid = uid_of(&env, "task", &task);
+    let before = posts(&env).len();
+    let fake = env.fake_gateway();
+    fake.set_post_limit(Some(8)).unwrap();
+    // Every part landed and the answer was lost: found by its parts, once.
+    fake.add_fault(GatewayFault::new("post", "lost-applied"))
+        .unwrap();
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c1", "text": LONG}),
+    );
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let got = posts(&env);
+    let key = format!("task/{task}/{uid}/gateway/comment/c1");
+    assert_eq!(keys(&got[before..]), part_keys(&key, 3), "{got:#?}");
+    let gw = gateway(&env, &task);
+    assert_eq!(
+        gw["posts"][&key]["receipt"]["outcome"]["known"]["type"], "posted",
+        "recovered from its parts: {gw:#}"
+    );
+    assert_eq!(
+        gw["posts"][&key]["receipt"]["outcome"]["known"]["message"], got[before].message,
+        "the first part is the post"
+    );
+    assert!(!attention_open(&gw), "{gw:#}");
+    // One part of three landed: Fleet can neither finish nor repeat it, so
+    // a person decides, and the next post waits.
+    fake.add_fault(GatewayFault::new("post", "lost-partly"))
+        .unwrap();
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c2", "text": LONG}),
+    );
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c3", "text": "Third."}),
+    );
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let got = posts(&env);
+    let key2 = format!("task/{task}/{uid}/gateway/comment/c2");
+    assert_eq!(
+        keys(&got[before + 3..]),
+        vec![format!("{key2}/1/3")],
+        "{got:#?}"
+    );
+    let gw = gateway(&env, &task);
+    assert_condition(&gw, "NeedsAttention", "True", "PostUnconfirmed");
+    let message = support::condition(&gw, "NeedsAttention")["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("1 of 3"), "{gw:#}");
+    assert_eq!(gw["declared"], 2, "c3 waits behind c2: {gw:#}");
+}
+
+#[test]
+fn on_a_nonce_platform_an_unknown_post_is_resent_under_its_key_and_a_split_is_finished() {
+    let (env, task) = tied("nonce");
+    let uid = uid_of(&env, "task", &task);
+    let before = posts(&env).len();
+    nonce(&env, 60_000);
+    let fake = env.fake_gateway();
+    fake.add_fault(GatewayFault::new("post", "lost-applied"))
+        .unwrap();
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c1", "text": "On it."}),
+    );
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let got = posts(&env);
+    let key = format!("task/{task}/{uid}/gateway/comment/c1");
+    assert_eq!(
+        keys(&got[before..]),
+        vec![key.clone()],
+        "posted once: {got:#?}"
+    );
+    let gw = gateway(&env, &task);
+    assert_eq!(
+        gw["posts"][&key]["attempts"], 2,
+        "resent under its nonce: {gw:#}"
+    );
+    assert_eq!(
+        gw["posts"][&key]["receipt"]["outcome"]["known"]["type"],
+        "posted"
+    );
+    assert_eq!(
+        gw["posts"][&key]["receipt"]["outcome"]["known"]["message"], got[before].message,
+        "the platform returned the post that landed"
+    );
+    assert!(!attention_open(&gw), "{gw:#}");
+    // A split that landed in part is finished by the resend: each part once.
+    fake.set_post_limit(Some(8)).unwrap();
+    fake.add_fault(GatewayFault::new("post", "lost-partly"))
+        .unwrap();
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c2", "text": LONG}),
+    );
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let got = posts(&env);
+    let key2 = format!("task/{task}/{uid}/gateway/comment/c2");
+    assert_eq!(keys(&got[before + 1..]), part_keys(&key2, 3), "{got:#?}");
+    let gw = gateway(&env, &task);
+    assert_eq!(
+        gw["posts"][&key2]["receipt"]["outcome"]["known"]["message"],
+        got[before + 1].message,
+        "{gw:#}"
+    );
+    assert!(!attention_open(&gw), "{gw:#}");
+}
+
+#[test]
+fn past_the_nonce_window_an_unknown_post_waits_for_a_person() {
+    let (env, task) = tied("nonce-closed");
+    let before = posts(&env).len();
+    nonce(&env, 1);
+    env.fake_gateway()
+        .add_fault(GatewayFault::new("post", "lost"))
+        .unwrap();
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c1", "text": "First."}),
+    );
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c2", "text": "Second."}),
+    );
+    let posts_before = env.fake_gateway().calls("post").unwrap();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(
+        posts(&env).len(),
+        before,
+        "nothing landed and nothing is repeated"
+    );
+    assert_eq!(
+        env.fake_gateway().calls("post").unwrap(),
+        posts_before + 1,
+        "one send, never a blind repeat"
+    );
+    let gw = gateway(&env, &task);
+    assert_condition(&gw, "NeedsAttention", "True", "PostUnconfirmed");
+    assert_eq!(gw["declared"], 1, "c2 waits: {gw:#}");
+}
+
+#[test]
+fn recovery_reads_that_cannot_complete_are_named_until_one_does() {
+    let (env, task) = tied("incomplete");
+    let uid = uid_of(&env, "task", &task);
+    let before = posts(&env).len();
+    let fake = env.fake_gateway();
+    fake.add_fault(GatewayFault::new("post", "lost-applied"))
+        .unwrap();
+    // Every read fails to complete, for as long as the fault stands: one
+    // sweep runs several passes, each with its read.
+    fake.add_fault(GatewayFault::new("history", "incomplete").times(u32::MAX))
+        .unwrap();
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c1", "text": "On it."}),
+    );
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let key = format!("task/{task}/{uid}/gateway/comment/c1");
+    let gw = gateway(&env, &task);
+    assert_condition(&gw, "NeedsAttention", "True", "RecoveryIncomplete");
+    assert!(
+        gw["posts"][&key]["recovery"].as_u64().unwrap() >= 3,
+        "{gw:#}"
+    );
+    assert!(
+        gw["posts"][&key]["receipt"]["outcome"]["unknown"].is_object(),
+        "still unknown, never repeated: {gw:#}"
+    );
+    assert_eq!(posts(&env).len(), before + 1);
+    // A read that completes finds the post.
+    fake.update(|s| s.faults.clear()).unwrap();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let gw = gateway(&env, &task);
+    assert_eq!(
+        gw["posts"][&key]["receipt"]["outcome"]["known"]["type"], "posted",
+        "{gw:#}"
+    );
+    assert!(!attention_open(&gw), "{gw:#}");
+    assert_eq!(posts(&env).len(), before + 1);
+}
+
+#[test]
+fn a_failed_receive_abandons_the_opened_thread_and_a_later_question_opens_another() {
+    let mut env = Env::gateway("abandon");
+    env.set_var("USER", "tester");
+    let t_open = support::now_ms() + 60_000;
+    env.fake_gateway().set_clock(t_open).unwrap();
+    env.apply(support::task("asker", true)).ok();
+    env.reconcile().ok();
+    // The thread the open will make is the fake's next post: its record
+    // cannot be read, so Fleet's opening post cannot be added to it, three
+    // times.
+    let thread = format!("fake:C0123ABCD:{t_open}");
+    let conv = conversation_name(GATEWAY_ACCOUNT, &thread);
+    let path = env.object_path("Conversation", &conv);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{ not a record").unwrap();
+    declare(
+        &env,
+        "asker",
+        json!({"kind": "Question", "id": "q1", "text": "May I?"}),
+    );
+    for _ in 0..4 {
+        let _ = env.reconcile();
+    }
+    let got = posts(&env);
+    assert_eq!(got.len(), 1, "the thread is open: {got:#?}");
+    assert_eq!(got[0].conversation.address(), thread);
+    let gw = gateway(&env, "asker");
+    assert_eq!(gw["conversation"]["state"], "abandoned", "{gw:#}");
+    assert_condition(&gw, "NeedsAttention", "True", "ReceiveFailed");
+    assert_eq!(env.fake_gateway().calls("open").unwrap(), 1);
+    std::fs::remove_file(&path).unwrap();
+    // Abandoned, the Task acts as untied: a later Question opens another
+    // thread, which ties.
+    declare(
+        &env,
+        "asker",
+        json!({"kind": "Question", "id": "q2", "text": "And now?"}),
+    );
+    for _ in 0..4 {
+        reconcile_clean(&env);
+    }
+    assert_eq!(env.fake_gateway().calls("open").unwrap(), 2);
+    let gw = gateway(&env, "asker");
+    assert_eq!(gw["conversation"]["state"], "tied", "{gw:#}");
+    assert_ne!(gw["conversation"]["name"], conv);
+    assert!(gw["questions"]["q2"].is_object(), "{gw:#}");
 }

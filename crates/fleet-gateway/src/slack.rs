@@ -31,7 +31,7 @@ use std::time::Duration;
 use fleet_api::gateway::{
     AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
     Gateway, History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message,
-    Starter, Uncertainty,
+    Starter, Uncertainty, part_key,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -333,7 +333,7 @@ impl SlackGateway {
     }
 
     /// Post `text` as one or more chunks, the first under `key` alone when
-    /// it is the only one, else each under `<key>/<n>`. `thread` is the
+    /// it is the only one, else each under `<key>/<n>/<total>`. `thread` is the
     /// thread to reply in, or `None` to open one with the first chunk, which
     /// the rest then reply to. The first chunk's `ts` and time come back.
     fn post_chunks(
@@ -357,7 +357,7 @@ impl SlackGateway {
         let mut first: Option<(String, Millis)> = None;
         for (i, chunk) in chunks.iter().enumerate() {
             let chunk_key = if derived {
-                format!("{key}/{}", i + 1)
+                part_key(key, i + 1, chunks.len())
             } else {
                 key.to_string()
             };

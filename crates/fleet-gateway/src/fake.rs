@@ -18,8 +18,9 @@
 //! `{"id": "<delivery id>", "event": {…}}` in the port's own event shape;
 //! a payload without `event` is one the Gateway ignores. Faults are queued
 //! per call and consumed in order, as on the fake forge: `lost`, `timeout`,
-//! `throttle`, `incomplete` and `malformed` for reads; `failed`, `lost` and
-//! `lost-applied` for `open` and `post`.
+//! `throttle`, `incomplete` and `malformed` for reads; `failed`, `lost`,
+//! `lost-applied` and `lost-partly` (the first part of a split landed, the
+//! rest did not) for `open` and `post`.
 //!
 //! The platform's clock is the state's `clock`, which a test sets: every
 //! post takes the clock as its `at` and advances it one second, so `at`
@@ -33,7 +34,7 @@ use std::path::{Path, PathBuf};
 use fleet_api::gateway::{
     AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
     Gateway, History, HistoryObservation, HistoryQuery, Identity, Marker, Message, Starter,
-    Uncertainty,
+    Uncertainty, part_key,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -52,8 +53,8 @@ pub struct GatewayFault {
     /// `post`.
     pub call: String,
     /// For reads: `lost`, `timeout`, `throttle`, `incomplete` or
-    /// `malformed`. For `open` and `post`: `failed`, `lost` or
-    /// `lost-applied`.
+    /// `malformed`. For `open` and `post`: `failed`, `lost`, `lost-applied`
+    /// or `lost-partly`.
     pub mode: String,
     /// For `throttle`: what the platform says to wait, in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,7 +104,7 @@ pub struct FakeConversation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PostRecord {
     /// The key the post carries as its marker: the intent key, or a derived
-    /// `<key>/<n>` of a split text.
+    /// `<key>/<n>/<total>` of a split text.
     pub key: String,
     pub conversation: ConversationRef,
     pub message: String,
@@ -343,16 +344,9 @@ impl FakeGateway {
         }
     }
 
-    /// Append Fleet's post(s) of `text` under `key` to the thread at
-    /// `address`, splitting past `post_limit`, and return the first
-    /// message's id and time.
-    fn land(
-        s: &mut FakeGatewayState,
-        conversation: &ConversationRef,
-        text: &str,
-        key: &str,
-        starts_thread: bool,
-    ) -> (String, Millis) {
+    /// The parts `text` takes under `key`: one, or consecutive chunks past
+    /// `post_limit` under derived keys that name the part and the count.
+    fn parts(s: &FakeGatewayState, text: &str, key: &str) -> Vec<(String, String)> {
         let chunks: Vec<String> = match s.post_limit {
             Some(limit) if limit > 0 && text.chars().count() > limit => text
                 .chars()
@@ -362,17 +356,48 @@ impl FakeGateway {
                 .collect(),
             _ => vec![text.to_string()],
         };
-        let derived = chunks.len() > 1;
+        let total = chunks.len();
+        chunks
+            .into_iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                let key = if total > 1 {
+                    part_key(key, i + 1, total)
+                } else {
+                    key.to_string()
+                };
+                (key, chunk)
+            })
+            .collect()
+    }
+
+    /// Append Fleet's post(s) of `text` under `key` to the thread at
+    /// `address` and return the first message's id and time. With a nonce
+    /// marker, a part the platform already holds for its key inside the
+    /// window is returned, not made again, as Discord's `enforce_nonce`
+    /// does; so a resend finishes a split that landed in part. With
+    /// `partly`, only the first part lands.
+    fn land(
+        s: &mut FakeGatewayState,
+        conversation: &ConversationRef,
+        text: &str,
+        key: &str,
+        starts_thread: bool,
+        partly: bool,
+    ) -> (String, Millis) {
+        let parts = Self::parts(s, text, key);
         let mut first: Option<(String, Millis)> = None;
-        for (i, chunk) in chunks.into_iter().enumerate() {
+        for (i, (key, chunk)) in parts.into_iter().enumerate() {
+            if partly && i > 0 {
+                break;
+            }
+            if let Some(p) = Self::existing_within_window(s, &key) {
+                first.get_or_insert((p.message.clone(), p.at));
+                continue;
+            }
             let at = s.clock;
             s.clock += 1000;
             let id = at.to_string();
-            let key = if derived {
-                format!("{key}/{}", i + 1)
-            } else {
-                key.to_string()
-            };
             let message = Message {
                 id: id.clone(),
                 author: Author {
@@ -417,12 +442,13 @@ impl FakeGateway {
     }
 
     /// Perform a write under its fault, with `land` doing the mutation when
-    /// one is due. `apply` receives the state and answers the outcome.
+    /// one is due. `apply` receives the state, and whether only the first
+    /// part of a split is to land, and answers the outcome.
     fn write(
         &self,
         call: &str,
         account: &str,
-        apply: impl FnOnce(&mut FakeGatewayState) -> EffectOutcome,
+        apply: impl FnOnce(&mut FakeGatewayState, bool) -> EffectOutcome,
     ) -> Observation<EffectOutcome> {
         if let Some(why) = self.other_account(account) {
             return Observation::Known(EffectOutcome::Failed { why });
@@ -441,10 +467,18 @@ impl FakeGateway {
                 });
             }
             Some("lost-applied") => {
-                return match self.update(apply) {
+                return match self.update(|s| apply(s, false)) {
                     Ok(_) => {
                         Observation::unknown("injected: the answer was lost after the post landed")
                     }
+                    Err(e) => Observation::unknown(format!("fake gateway unreadable: {e}")),
+                };
+            }
+            Some("lost-partly") => {
+                return match self.update(|s| apply(s, true)) {
+                    Ok(_) => Observation::unknown(
+                        "injected: the answer was lost after the first part landed",
+                    ),
                     Err(e) => Observation::unknown(format!("fake gateway unreadable: {e}")),
                 };
             }
@@ -455,7 +489,7 @@ impl FakeGateway {
             }
             None => {}
         }
-        match self.update(apply) {
+        match self.update(|s| apply(s, false)) {
             Ok(outcome) => Observation::Known(outcome),
             Err(e) => Observation::unknown(format!("fake gateway unreadable: {e}")),
         }
@@ -679,21 +713,23 @@ impl Gateway for FakeGateway {
         let channel = channel.clone();
         let text = text.to_string();
         let key = intent_key.to_string();
-        self.write("open", account, move |s| {
-            if let Some(p) = Self::existing_within_window(s, &key) {
-                return EffectOutcome::Opened {
-                    conversation: p.conversation.clone(),
-                    message: p.message.clone(),
-                    at: p.at,
-                };
-            }
-            let at = s.clock;
-            let thread = ConversationRef {
-                platform: channel.platform.clone(),
-                chat: channel.chat.clone(),
-                thread: Some(at.to_string()),
+        self.write("open", account, move |s, partly| {
+            // The thread an earlier send under this key opened inside the
+            // nonce window, else a new one.
+            let first_key = Self::parts(s, &text, &key)
+                .into_iter()
+                .next()
+                .map(|(k, _)| k)
+                .unwrap_or_else(|| key.clone());
+            let thread = match Self::existing_within_window(s, &first_key) {
+                Some(p) => p.conversation.clone(),
+                None => ConversationRef {
+                    platform: channel.platform.clone(),
+                    chat: channel.chat.clone(),
+                    thread: Some(s.clock.to_string()),
+                },
             };
-            let (message, at) = Self::land(s, &thread, &text, &key, true);
+            let (message, at) = Self::land(s, &thread, &text, &key, true, partly);
             EffectOutcome::Opened {
                 conversation: thread,
                 message,
@@ -721,14 +757,8 @@ impl Gateway for FakeGateway {
                 why: format!("no such conversation {}", conversation.address()),
             });
         }
-        self.write("post", account, move |s| {
-            if let Some(p) = Self::existing_within_window(s, &key) {
-                return EffectOutcome::Posted {
-                    message: p.message.clone(),
-                    at: p.at,
-                };
-            }
-            let (message, at) = Self::land(s, &conversation, &text, &key, false);
+        self.write("post", account, move |s, partly| {
+            let (message, at) = Self::land(s, &conversation, &text, &key, false, partly);
             EffectOutcome::Posted { message, at }
         })
     }
@@ -1197,7 +1227,7 @@ mod tests {
                 .iter()
                 .map(|p| (p.key.as_str(), p.text.as_str()))
                 .collect::<Vec<_>>(),
-            [("k/1", "abcd"), ("k/2", "efgh"), ("k/3", "ij")]
+            [("k/1/3", "abcd"), ("k/2/3", "efgh"), ("k/3/3", "ij")]
         );
         assert_eq!(message, posts[0].message, "the first post is the answer");
         let short = g.post("fake-main", &t, "abc", "s");
@@ -1206,6 +1236,51 @@ mod tests {
             Observation::Known(EffectOutcome::Posted { .. })
         ));
         assert_eq!(g.posts().unwrap().last().unwrap().key, "s");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_split_that_landed_in_part_is_finished_by_a_resend_under_its_nonce() {
+        let (g, dir) = fake("partly");
+        let t = thread();
+        g.seed(&t, vec![]).unwrap();
+        g.set_post_limit(Some(4)).unwrap();
+        // The first part lands, the answer is lost.
+        g.add_fault(GatewayFault::new("post", "lost-partly"))
+            .unwrap();
+        assert!(matches!(
+            g.post("fake-main", &t, "abcdefghij", "k"),
+            Observation::Unknown { .. }
+        ));
+        let keys = |g: &FakeGateway| {
+            g.posts()
+                .unwrap()
+                .iter()
+                .map(|p| p.key.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(&g), ["k/1/3"]);
+        // Without a nonce, a resend makes every part again.
+        g.post("fake-main", &t, "abcdefghij", "k");
+        assert_eq!(keys(&g), ["k/1/3", "k/1/3", "k/2/3", "k/3/3"]);
+        // With one, the part that landed is returned and the rest made.
+        g.set_capabilities(Capabilities {
+            marker: Marker::Nonce { window_ms: 60_000 },
+            ..default_capabilities()
+        })
+        .unwrap();
+        g.add_fault(GatewayFault::new("post", "lost-partly"))
+            .unwrap();
+        g.post("fake-main", &t, "abcdefghij", "n");
+        assert_eq!(keys(&g)[4..], ["n/1/3"]);
+        let Observation::Known(EffectOutcome::Posted { message, .. }) =
+            g.post("fake-main", &t, "abcdefghij", "n")
+        else {
+            panic!()
+        };
+        let posts = g.posts().unwrap();
+        assert_eq!(keys(&g)[4..], ["n/1/3", "n/2/3", "n/3/3"]);
+        assert_eq!(message, posts[4].message, "the part that landed first");
         let _ = fs::remove_dir_all(dir);
     }
 

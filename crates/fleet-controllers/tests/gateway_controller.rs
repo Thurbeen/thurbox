@@ -1802,4 +1802,200 @@ mod posting {
         );
         assert_eq!(gw.questions["q1"].at, NOW - 59_000);
     }
+
+    /// Fleet's post under `key`, or part `n` of `total` of it, as a
+    /// history read or the mirror reports it.
+    fn fleet_message(id: &str, at: u64, marker: &str) -> fleet_api::gateway::Message {
+        fleet_api::gateway::Message {
+            id: id.into(),
+            author: Author {
+                id: BOT.into(),
+                name: String::new(),
+                kind: AuthorKind::Fleet,
+            },
+            mentions_fleet: false,
+            at,
+            text: "part".into(),
+            key: Some(marker.into()),
+            starts_thread: false,
+        }
+    }
+
+    fn history(
+        messages: Vec<fleet_api::gateway::Message>,
+    ) -> fleet_api::gateway::HistoryObservation {
+        fleet_api::gateway::HistoryObservation::Known(fleet_api::gateway::History {
+            messages,
+            left_out: 0,
+            starter: None,
+        })
+    }
+
+    fn attention(gw: &GatewayStatus) -> Option<&Condition> {
+        gw.conditions
+            .iter()
+            .find(|c| c.type_ == "NeedsAttention" && c.status == ConditionStatus::True)
+    }
+
+    #[test]
+    fn a_split_post_is_done_only_when_every_part_is_found() {
+        let k = key("comment/c1");
+        let part = |n: usize, at: u64| {
+            fleet_message(
+                &format!("m{n}"),
+                at,
+                &fleet_api::gateway::part_key(&k, n, 3),
+            )
+        };
+        let unsettled = || {
+            speaking(
+                comments(&["c1", "c2"]),
+                1,
+                vec![(k.clone(), record(1, NOW - 1_000, None))],
+                &["c1"],
+            )
+        };
+        // Every part in a complete read: posted, named by the first part.
+        let obs = GatewayObservations {
+            history: Some(history(vec![
+                part(1, NOW - 900),
+                part(2, NOW - 800),
+                part(3, NOW - 700),
+            ])),
+            ..obs_with(caps(Marker::Metadata))
+        };
+        let (plan, gw) = run(&unsettled(), obs);
+        assert_eq!(
+            gw.posts[&k].receipt.as_ref().unwrap().outcome,
+            Observation::Known(EffectOutcome::Posted {
+                message: "m1".into(),
+                at: NOW - 900
+            })
+        );
+        assert_eq!(
+            post_keys(&plan),
+            vec![key("comment/c2")],
+            "the thread moves on"
+        );
+        assert!(attention(&gw).is_none(), "{gw:?}");
+        // Two parts of three: never repeated, never finished, a person
+        // decides; the next post waits.
+        let obs = GatewayObservations {
+            history: Some(history(vec![part(1, NOW - 900), part(2, NOW - 800)])),
+            ..obs_with(caps(Marker::Metadata))
+        };
+        let (plan, gw) = run(&unsettled(), obs);
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        assert!(gw.posts[&k].receipt.is_none(), "{gw:?}");
+        let na = attention(&gw).expect("attention");
+        assert_eq!(na.reason, "PostUnconfirmed");
+        assert!(na.message.contains("2 of 3 parts landed (1, 2)"), "{na:?}");
+        assert_eq!(gw.declared, 1, "c2 waits");
+        // The mirror holds one part, on a nonce platform inside the window:
+        // a resend under the same key finishes it.
+        let mut conv = thread_conv();
+        let mut stored = person(T0 + 1, 2, ALEX, "x");
+        stored.author = Author {
+            id: BOT.into(),
+            name: String::new(),
+            kind: AuthorKind::Fleet,
+        };
+        stored.key = Some(fleet_api::gateway::part_key(&k, 1, 3));
+        conv.status["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(&stored).unwrap());
+        let obs = GatewayObservations {
+            capabilities: caps(Marker::Nonce { window_ms: 60_000 }),
+            ..observed(Observation::Known(Some(conv.clone())))
+        };
+        let (plan, gw) = run(&unsettled(), obs);
+        assert_eq!(post_keys(&plan), vec![k.clone()], "{plan:?}");
+        assert_eq!(gw.posts[&k].attempts, 2);
+        // Past the window, the part that landed is named.
+        let late = speaking(
+            comments(&["c1", "c2"]),
+            1,
+            vec![(k.clone(), record(1, NOW - 120_000, None))],
+            &["c1"],
+        );
+        let obs = GatewayObservations {
+            capabilities: caps(Marker::Nonce { window_ms: 60_000 }),
+            ..observed(Observation::Known(Some(conv)))
+        };
+        let (plan, gw) = run(&late, obs);
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        let na = attention(&gw).expect("attention");
+        assert!(na.message.contains("1 of 3 parts landed (1)"), "{na:?}");
+    }
+
+    #[test]
+    fn recovery_reads_that_cannot_complete_raise_recovery_incomplete_until_one_does() {
+        let k = key("comment/c1");
+        let mut r = record(1, NOW - 1_000, Some(Observation::unknown("timeout")));
+        r.recovery = 2;
+        let t = speaking(comments(&["c1"]), 1, vec![(k.clone(), r)], &["c1"]);
+        let incomplete = || {
+            Some(fleet_api::gateway::HistoryObservation::unknown(
+                fleet_api::gateway::Uncertainty::Incomplete,
+                "the bound ran out",
+            ))
+        };
+        // Two reads could not complete: the third is counted and named.
+        let obs = GatewayObservations {
+            history: incomplete(),
+            ..obs_with(caps(Marker::Metadata))
+        };
+        let (plan, gw) = run(&t, obs);
+        assert!(plan.effects.is_empty(), "never repeated: {plan:?}");
+        assert_eq!(gw.posts[&k].recovery, 3);
+        let na = attention(&gw).expect("attention");
+        assert_eq!(na.reason, "RecoveryIncomplete");
+        assert!(na.message.contains("3 recovery reads"), "{na:?}");
+        // One read short of it, nothing is raised yet.
+        let mut r = record(1, NOW - 1_000, Some(Observation::unknown("timeout")));
+        r.recovery = 1;
+        let early = speaking(comments(&["c1"]), 1, vec![(k.clone(), r)], &["c1"]);
+        let obs = GatewayObservations {
+            history: incomplete(),
+            ..obs_with(caps(Marker::Metadata))
+        };
+        let (_, gw) = run(&early, obs);
+        assert_eq!(gw.posts[&k].recovery, 2);
+        assert!(attention(&gw).is_none(), "{gw:?}");
+        // A read that completes settles the post and clears the condition.
+        let (_, named) = run(
+            &t,
+            GatewayObservations {
+                history: incomplete(),
+                ..obs_with(caps(Marker::Metadata))
+            },
+        );
+        let mut st: TaskStatus = serde_json::from_value(t.status.clone()).unwrap();
+        st.gateway = Some(named);
+        let mut t2 = t.clone();
+        t2.status = serde_json::to_value(&st).unwrap();
+        let obs = GatewayObservations {
+            history: Some(history(vec![fleet_message("m9", NOW - 900, &k)])),
+            ..obs_with(caps(Marker::Metadata))
+        };
+        let (plan, gw) = run(&t2, obs);
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        assert_eq!(
+            gw.posts[&k].receipt.as_ref().unwrap().outcome,
+            Observation::Known(EffectOutcome::Posted {
+                message: "m9".into(),
+                at: NOW - 900
+            })
+        );
+        assert!(attention(&gw).is_none(), "{gw:?}");
+        // A platform that reads no history after all: a person decides.
+        let obs = GatewayObservations {
+            history: Some(fleet_api::gateway::HistoryObservation::Unsupported),
+            ..obs_with(caps(Marker::Metadata))
+        };
+        let (plan, gw) = run(&t, obs);
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        assert_eq!(attention(&gw).unwrap().reason, "PostUnconfirmed");
+    }
 }

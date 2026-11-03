@@ -37,7 +37,7 @@ use std::time::Duration;
 use fleet_api::gateway::{
     AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
     Gateway, History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message,
-    Starter, Uncertainty,
+    Starter, Uncertainty, part_key,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -452,7 +452,7 @@ impl DiscordGateway {
     }
 
     /// Post `text` as one or more chunks, the first under `key` alone when
-    /// it is the only one, else each under `<key>/<n>`. With a `thread`,
+    /// it is the only one, else each under `<key>/<n>/<total>`. With a `thread`,
     /// every chunk goes there, and the thread is started from its message
     /// first when Discord does not know it yet. Without one, the first chunk
     /// goes to the channel and starts a thread the rest go to.
@@ -478,7 +478,7 @@ impl DiscordGateway {
         let mut first: Option<(String, Millis)> = None;
         for (i, chunk) in chunks.iter().enumerate() {
             let chunk_key = if derived {
-                format!("{key}/{}", i + 1)
+                part_key(key, i + 1, chunks.len())
             } else {
                 key.to_string()
             };

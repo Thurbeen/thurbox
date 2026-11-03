@@ -402,9 +402,79 @@ impl HistoryObservation {
     }
 }
 
+/// The derived key of part `n` of `total` of a post an adapter split:
+/// `<key>/<n>/<total>`. Every part names the count, so a read that finds
+/// the parts tells a whole post from one that landed in part.
+pub fn part_key(key: &str, n: usize, total: usize) -> String {
+    format!("{key}/{n}/{total}")
+}
+
+/// Which part of the post under `key` a marker names: `(n, total)`, with
+/// `(1, 1)` for a post that was not split, or `None` for the marker of
+/// some other post.
+pub fn part_of(marker: &str, key: &str) -> Option<(usize, usize)> {
+    if marker == key {
+        return Some((1, 1));
+    }
+    let rest = marker.strip_prefix(key)?.strip_prefix('/')?;
+    let (n, total) = rest.split_once('/')?;
+    let (n, total): (usize, usize) = (n.parse().ok()?, total.parse().ok()?);
+    (n >= 1 && n <= total).then_some((n, total))
+}
+
+/// What a read of a thread holds of Fleet's post under one key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostFound {
+    /// The post, or the first part of a split whose every part is there:
+    /// what the post's receipt names.
+    Whole { message: String, at: Millis },
+    /// A split with parts missing: the parts found, of the total.
+    Partial { found: Vec<usize>, total: usize },
+}
+
+/// Fleet's own post under `key` among `messages`: the post itself, every
+/// part of a split, or the parts of it that are there. A post is found
+/// whole only when every part is.
+pub fn find_post<'m>(
+    messages: impl IntoIterator<Item = &'m Message>,
+    key: &str,
+) -> Option<PostFound> {
+    let mut parts: BTreeMap<usize, &Message> = BTreeMap::new();
+    let mut total = 0;
+    for m in messages {
+        if m.author.kind != AuthorKind::Fleet {
+            continue;
+        }
+        let Some((n, of)) = m.key.as_deref().and_then(|k| part_of(k, key)) else {
+            continue;
+        };
+        if of == 1 {
+            return Some(PostFound::Whole {
+                message: m.id.clone(),
+                at: m.at,
+            });
+        }
+        total = total.max(of);
+        parts.entry(n).or_insert(m);
+    }
+    if total == 0 {
+        return None;
+    }
+    let found: Vec<usize> = parts.keys().copied().collect();
+    if found.len() == total && found.iter().zip(1..).all(|(n, i)| *n == i) {
+        let first = parts[&1];
+        return Some(PostFound::Whole {
+            message: first.id.clone(),
+            at: first.at,
+        });
+    }
+    Some(PostFound::Partial { found, total })
+}
+
 /// The port. Text is Fleet's Markdown subset: paragraphs, emphasis, code,
 /// links, lists and quotes. The adapter converts it and splits a long text
-/// into consecutive posts under derived keys (`<key>/1`, `<key>/2`). There
+/// into consecutive posts under derived keys that name the part and the
+/// count (`<key>/1/3`, `<key>/2/3`, `<key>/3/3`, see [`part_key`]). There
 /// is no edit, delete or merge method: Fleet never changes a post it made.
 pub trait Gateway {
     /// The longest one call of this trait can take, every bound and grace

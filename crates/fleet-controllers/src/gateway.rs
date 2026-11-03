@@ -28,7 +28,7 @@ use fleet_api::conversation::{
 };
 use fleet_api::gateway::{
     Admission, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
-    HistoryObservation, HistoryQuery, Marker, Message, Verified, admit,
+    HistoryObservation, HistoryQuery, Marker, Message, PostFound, Verified, admit, find_post,
 };
 use fleet_api::inbox::{InboxAbout, InboxEntry, MAX_INBOX};
 use fleet_api::meta::{Millis, Object};
@@ -90,7 +90,7 @@ pub mod conditions {
     pub const TIED: &str = "Tied";
     /// `RelayGap`, `ConversationGone`, `TooManyChildren`, `RouteUnknown`,
     /// `PostFailed`, `PostUnconfirmed`, `DeclarationInvalid`,
-    /// `ReceiveFailed`.
+    /// `ReceiveFailed`, `RecoveryIncomplete`.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
 }
 use conditions::*;
@@ -101,8 +101,12 @@ const TOO_MANY_CHILDREN: &str = "TooManyChildren";
 const ROUTE_UNKNOWN: &str = "RouteUnknown";
 /// Three attempts at one post or open were refused.
 const POST_FAILED: &str = "PostFailed";
-/// A post's outcome is unknown, and the platform cannot find it again.
+/// A post's outcome is unknown, and the platform cannot find it again; or
+/// a split landed in part, which Fleet can neither finish nor repeat.
 const POST_UNCONFIRMED: &str = "PostUnconfirmed";
+/// Three recovery reads for a post with an unknown outcome could not
+/// complete, so Fleet cannot yet tell whether it landed.
+const RECOVERY_INCOMPLETE: &str = "RecoveryIncomplete";
 /// A Question, Comment or Draft without an `id`: skipped.
 const DECLARATION_INVALID: &str = "DeclarationInvalid";
 /// Three attempts to add an opened thread's first post to its
@@ -1016,29 +1020,15 @@ fn records_account(input: &GatewayInput<'_>) -> Option<String> {
     input.defaults.routes.get(&route).map(|r| r.account.clone())
 }
 
-/// Fleet's own post carrying `key` as its marker, or a split of it, among
-/// `messages`.
-fn find_marker<'m>(
-    messages: impl IntoIterator<Item = &'m Message>,
-    key: &str,
-) -> Option<&'m Message> {
-    let split = format!("{key}/");
-    messages.into_iter().find(|m| {
-        m.author.kind == AuthorKind::Fleet
-            && m.key
-                .as_deref()
-                .is_some_and(|k| k == key || k.starts_with(&split))
-    })
-}
-
-/// The mirror's copy of Fleet's post under `key`, as the port's message.
-fn mirrored(cs: &ConversationStatus, key: &str) -> Option<Message> {
+/// What the mirror holds of Fleet's post under `key`: the post, or the
+/// parts of a split that are there.
+fn mirrored(cs: &ConversationStatus, key: &str) -> Option<PostFound> {
     let messages: Vec<Message> = cs.messages.iter().map(as_message).collect();
-    find_marker(&messages, key).cloned()
+    find_post(&messages, key)
 }
 
-/// The oldest intent among the posts whose outcome is unknown and whose
-/// marker the mirror does not hold: what a recovery read starts from.
+/// The oldest intent among the posts whose outcome is unknown and that the
+/// mirror does not hold whole: what a recovery read starts from.
 fn recovery_since(gw: &GatewayStatus, cs: &ConversationStatus) -> Option<Millis> {
     gw.posts
         .iter()
@@ -1048,7 +1038,7 @@ fn recovery_since(gw: &GatewayStatus, cs: &ConversationStatus) -> Option<Millis>
                     r.receipt.as_ref().map(|r| &r.outcome),
                     None | Some(Observation::Unknown { .. })
                 )
-                && mirrored(cs, key).is_none()
+                && !matches!(mirrored(cs, key), Some(PostFound::Whole { .. }))
         })
         .map(|(_, r)| r.intent.at)
         .min()
@@ -1209,7 +1199,7 @@ impl Pass<'_, '_> {
         let now = self.input.now;
         match record.receipt.as_ref().map(|r| &r.outcome) {
             Some(Observation::Known(EffectOutcome::Failed { why })) => {
-                self.attention.clear(POST_UNCONFIRMED, key);
+                self.settled(key);
                 if record.attempts >= MAX_ATTEMPTS {
                     self.attention.raise(
                         POST_FAILED,
@@ -1245,63 +1235,90 @@ impl Pass<'_, '_> {
                 }
             }
             Some(Observation::Known(_)) => {
-                self.attention.clear(POST_UNCONFIRMED, key);
+                self.settled(key);
                 Settle::Done
             }
             Some(Observation::Unknown { .. }) | None => {
-                if let Some(found) = mirror.and_then(|cs| mirrored(cs, key)) {
+                let in_mirror = mirror.and_then(|cs| mirrored(cs, key));
+                if let Some(PostFound::Whole { message, at }) = in_mirror.clone() {
                     self.recover(
                         key,
                         &record.intent.action,
-                        EffectOutcome::Posted {
-                            message: found.id.clone(),
-                            at: found.at,
-                        },
+                        EffectOutcome::Posted { message, at },
                     );
-                    self.attention.clear(POST_UNCONFIRMED, key);
+                    self.settled(key);
                     return Settle::Done;
                 }
                 if let Some(w) = window {
+                    // Under the same nonce, a resend inside the window
+                    // returns what landed and makes the parts that did not.
                     if now < record.intent.at.saturating_add(w) && record.attempts < MAX_ATTEMPTS {
                         self.resend(key, action);
                     } else {
-                        self.unconfirmed(key);
+                        self.unconfirmed(key, in_mirror);
                     }
                     return Settle::Hold;
                 }
                 if readable != Some(true) || record.intent.action != POST {
                     if readable.is_some() || record.intent.action == RECEIVE {
-                        self.unconfirmed(key);
+                        self.unconfirmed(key, in_mirror);
                     }
                     return Settle::Hold;
                 }
                 match &self.input.observations.history {
                     Some(HistoryObservation::Known(h)) => {
-                        if let Some(found) = find_marker(&h.messages, key) {
-                            let outcome = EffectOutcome::Posted {
-                                message: found.id.clone(),
-                                at: found.at,
-                            };
-                            self.recover(key, POST, outcome);
-                            self.attention.clear(POST_UNCONFIRMED, key);
-                            return Settle::Done;
+                        self.attention.clear(RECOVERY_INCOMPLETE, key);
+                        match find_post(&h.messages, key) {
+                            Some(PostFound::Whole { message, at }) => {
+                                self.recover(key, POST, EffectOutcome::Posted { message, at });
+                                self.settled(key);
+                                Settle::Done
+                            }
+                            // Where markers read back, a part that landed
+                            // is never repeated, and the rest cannot be
+                            // sent alone.
+                            found @ Some(PostFound::Partial { .. }) => {
+                                self.unconfirmed(key, found);
+                                Settle::Hold
+                            }
+                            None => {
+                                // A complete read since the intent lacks
+                                // the marker: the post never landed.
+                                if record.attempts >= MAX_ATTEMPTS {
+                                    self.attention.raise(
+                                        POST_FAILED,
+                                        key,
+                                        format!("{} attempts left no post behind", record.attempts),
+                                    );
+                                    return Settle::Done;
+                                }
+                                self.plan(key, action);
+                                Settle::Hold
+                            }
                         }
-                        // A complete read since the intent lacks the
-                        // marker: the post never landed.
-                        if record.attempts >= MAX_ATTEMPTS {
-                            self.attention.raise(
-                                POST_FAILED,
-                                key,
-                                format!("{} attempts left no post behind", record.attempts),
-                            );
-                            return Settle::Done;
-                        }
-                        self.plan(key, action);
+                    }
+                    // The platform reads no history after all.
+                    Some(HistoryObservation::Unsupported) => {
+                        self.unconfirmed(key, in_mirror);
                         Settle::Hold
                     }
-                    Some(_) => {
-                        if let Some(r) = self.gw.posts.get_mut(key) {
-                            r.recovery += 1;
+                    Some(HistoryObservation::Unknown { why, .. }) => {
+                        let why = why.clone();
+                        let reads = match self.gw.posts.get_mut(key) {
+                            Some(r) => {
+                                r.recovery += 1;
+                                r.recovery
+                            }
+                            None => 0,
+                        };
+                        if reads >= MAX_ATTEMPTS {
+                            self.attention.raise(
+                                RECOVERY_INCOMPLETE,
+                                key,
+                                format!(
+                                    "{reads} recovery reads could not complete, so whether the post landed is not known: {why}"
+                                ),
+                            );
                         }
                         Settle::Hold
                     }
@@ -1312,12 +1329,30 @@ impl Pass<'_, '_> {
         }
     }
 
-    fn unconfirmed(&mut self, key: &str) {
-        self.attention.raise(
-            POST_UNCONFIRMED,
-            key,
-            "the outcome is unknown and the platform cannot find it again; a person decides",
-        );
+    /// The record under `key` is settled: nothing about it needs a person.
+    fn settled(&mut self, key: &str) {
+        self.attention.clear(POST_UNCONFIRMED, key);
+        self.attention.clear(RECOVERY_INCOMPLETE, key);
+    }
+
+    /// The post under `key` waits for a person: its outcome is unknown and
+    /// the platform cannot find it again, or `found` says that a split
+    /// landed in part, which Fleet can neither finish nor repeat.
+    fn unconfirmed(&mut self, key: &str, found: Option<PostFound>) {
+        let why = match found {
+            Some(PostFound::Partial { found, total }) => format!(
+                "{} of {total} parts landed ({}); Fleet can neither finish nor repeat them; a person decides",
+                found.len(),
+                found
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            _ => "the outcome is unknown and the platform cannot find it again; a person decides"
+                .to_string(),
+        };
+        self.attention.raise(POST_UNCONFIRMED, key, why);
     }
 
     // -- Tied: post the next thing the Task said ------------------------
@@ -1621,7 +1656,7 @@ impl Pass<'_, '_> {
             if let Some(t) = self.gw.conversation.as_mut() {
                 t.state = TieState::Opened;
             }
-            self.attention.clear(POST_UNCONFIRMED, &key);
+            self.settled(&key);
             self.opened();
             return;
         }

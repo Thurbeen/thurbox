@@ -64,7 +64,8 @@ What an adapter must guarantee:
 
 Text is Fleet's Markdown subset: paragraphs, emphasis, code, links, lists
 and quotes. The adapter converts it to the platform's format, and splits a
-long text into consecutive posts under derived keys (`<key>/1`, `<key>/2`).
+long text into consecutive posts under derived keys that name the part and
+the count (`<key>/1/3`, `<key>/2/3`, `<key>/3/3`).
 
 There is no edit, delete or merge method. Fleet never changes a post that
 it made. The [adapters](adapters/README.md#what-the-platforms-changed) say why each
@@ -496,7 +497,12 @@ under the same key, so with the same nonce, inside the window. The
 A failed post is retried under the same key at most three times, then raises
 `NeedsAttention/PostFailed`. A post whose outcome stays unknown, on a
 platform where Fleet cannot find it again, raises
-`NeedsAttention/PostUnconfirmed` and waits for a person.
+`NeedsAttention/PostUnconfirmed` and waits for a person. A split post is
+found only when every part is found. A split that landed in part is never
+repeated where markers read back: it raises `NeedsAttention/PostUnconfirmed`.
+Where the platform honours a nonce, a resend inside the window finishes it.
+Three recovery reads that cannot complete raise
+`NeedsAttention/RecoveryIncomplete`, until one does.
 
 ## Write ownership
 
