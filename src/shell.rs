@@ -362,25 +362,36 @@ pub fn launch_on_windows(
         cmd.args(words());
         return Ok(cmd);
     }
+    let script = format!(
+        "$ProgressPreference = 'SilentlyContinue'\n{}",
+        start_process_script(&powershell_quote(program), args)
+    );
+    cmd.args(encoded_powershell("-NoLogo -NoProfile -NonInteractive", &script)?.split(' '));
+    Ok(cmd)
+}
+
+/// PowerShell that starts the program `file_name` (a PowerShell expression)
+/// with `args`, waits for it and exits with its status. The arguments are one
+/// command line quoted for the C runtime ([`windows_arg_quote`]) rather than
+/// handed to `&`: PowerShell 5.1's native-argument passing drops an empty
+/// argument and splits one at an embedded `"`. The child inherits stdin,
+/// stdout and stderr, so a console program keeps the console.
+fn start_process_script<S: AsRef<str>>(file_name: &str, args: &[S]) -> String {
     let line = args
         .iter()
-        .map(|a| windows_arg_quote(a))
+        .map(|a| windows_arg_quote(a.as_ref()))
         .collect::<Vec<_>>()
         .join(" ");
-    let script = format!(
-        "$ProgressPreference = 'SilentlyContinue'\n\
-         $s = New-Object System.Diagnostics.ProcessStartInfo\n\
-         $s.FileName = {}\n\
+    format!(
+        "$s = New-Object System.Diagnostics.ProcessStartInfo\n\
+         $s.FileName = {file_name}\n\
          $s.Arguments = {}\n\
          $s.UseShellExecute = $false\n\
          $p = [System.Diagnostics.Process]::Start($s)\n\
          $p.WaitForExit()\n\
          exit $p.ExitCode",
-        powershell_quote(program),
         powershell_quote(&line)
-    );
-    cmd.args(encoded_powershell("-NoLogo -NoProfile -NonInteractive", &script)?.split(' '));
-    Ok(cmd)
+    )
 }
 
 /// The shell a host runs thurbox's own scripts in, decided once from the
@@ -553,11 +564,17 @@ impl HostShell {
     /// `sh -c` under `set -e`. PowerShell: one encoded script
     /// ([`powershell_launcher`], so bounded by [`WINDOWS_CMD_LINE_MAX`]) that
     /// runs each step — a native step's non-zero exit and a terminating error
-    /// both stop it — then calls the agent with its arguments and exits with
-    /// its status. A failed step writes the same
+    /// both stop it — then starts the agent (`start_process_script`, so its
+    /// arguments arrive exactly) and exits with its status. A failed step
+    /// writes the same
     /// [`SETUP_FAILURE_MARKER`](crate::session::agent_def::SETUP_FAILURE_MARKER)
     /// line the POSIX wrapper does, which is what classifies the launch
-    /// failure as the setup's.
+    /// failure as the setup's. A step that leaves through its own `exit` is
+    /// caught by the `finally`, which PowerShell runs on an `exit` as well,
+    /// and which reports only while a step is still running.
+    ///
+    /// The agent is looked up as an application first: `ProcessStartInfo`
+    /// does not search `PATH` for an npm `.cmd` shim the way `&` does.
     pub fn wrap_setup(
         self,
         setup: &[String],
@@ -572,26 +589,34 @@ impl HostShell {
         let marker = crate::session::agent_def::SETUP_FAILURE_MARKER;
         let mut script = format!(
             "$ErrorActionPreference = 'Stop'\n\
-             function thurbox_fail($step, $code) {{ \
-             [Console]::Error.WriteLine(\"`n{marker}$step failed (exit $code)\"); exit $code }}\n"
+             $global:thurbox_step = 0\n\
+             $global:thurbox_reported = $false\n\
+             function thurbox_fail($code) {{ $global:thurbox_reported = $true; \
+             [Console]::Error.WriteLine(\"`n{marker}$global:thurbox_step failed (exit $code)\"); \
+             exit $code }}\n\
+             try {{\n"
         );
         for (i, step) in setup.iter().enumerate() {
             let n = i + 1;
             script.push_str(&format!(
-                "$global:LASTEXITCODE = 0\n\
-                 try {{\n{step}\n}} catch {{ [Console]::Error.WriteLine($_); thurbox_fail {n} 1 }}\n\
-                 if ($LASTEXITCODE) {{ thurbox_fail {n} $LASTEXITCODE }}\n"
+                "$global:thurbox_step = {n}\n\
+                 $global:LASTEXITCODE = 0\n\
+                 try {{\n{step}\n}} catch {{ [Console]::Error.WriteLine($_); thurbox_fail 1 }}\n\
+                 if ($LASTEXITCODE) {{ thurbox_fail $LASTEXITCODE }}\n"
             ));
         }
-        script.push_str("$ErrorActionPreference = 'Continue'\n& ");
-        script.push_str(
-            &std::iter::once(command)
-                .chain(args.iter().map(String::as_str))
-                .map(powershell_quote)
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
-        script.push_str("\nexit $LASTEXITCODE");
+        script.push_str(&format!(
+            "$global:thurbox_step = 0\n\
+             }} finally {{\n\
+             if ($global:thurbox_step -and -not $global:thurbox_reported) {{ \
+             [Console]::Error.WriteLine(\"`n{marker}$global:thurbox_step failed (exit $LASTEXITCODE)\") }}\n\
+             }}\n\
+             $ErrorActionPreference = 'Continue'\n\
+             $thurbox_agent = (Get-Command -Name {} -CommandType Application \
+             -ErrorAction Stop | Select-Object -First 1).Source\n{}",
+            powershell_quote(command),
+            start_process_script("$thurbox_agent", args)
+        ));
         let line = powershell_launcher(&script)?;
         let mut words = line.split(' ').map(str::to_string);
         let program = words.next().unwrap_or_default();
@@ -1218,6 +1243,47 @@ mod tests {
             .wrap_setup(&[step], "agent", &[])
             .unwrap_err();
         assert!(err.len > err.max, "{err}");
+    }
+
+    /// The agent behind a Windows setup gets its arguments exactly: an empty
+    /// one and one holding `"` survive, as PowerShell 5.1's `&` would not
+    /// let them.
+    #[test]
+    fn a_windows_setup_hands_the_agent_its_exact_arguments() {
+        let args: Vec<String> = ["", "say \"hi\"", "two words", "C:\\dir\\"]
+            .map(String::from)
+            .to_vec();
+        let (program, words) = HostShell::PowerShell
+            .wrap_setup(&["prepare.exe".into()], "agent.exe", &args)
+            .unwrap();
+        assert_eq!(program, "powershell.exe");
+        let script = decode_powershell(words.last().unwrap());
+        let arguments = script
+            .split_once("$s.Arguments = ")
+            .and_then(|(_, rest)| rest.split_once("\n$s.UseShellExecute"))
+            .map(|(arguments, _)| arguments)
+            .expect(&script);
+        assert_eq!(crt_split(&powershell_unquote(arguments)), args, "{script}");
+    }
+
+    /// A step that leaves with its own `exit` still reports as the setup's
+    /// failure: the marker is written on the way out by a `finally`, which
+    /// PowerShell runs for an `exit` too, and only while a step is running.
+    #[test]
+    fn a_windows_setup_marks_a_step_that_exits_on_its_own() {
+        let (_, words) = HostShell::PowerShell
+            .wrap_setup(&["exit 3".into()], "agent.exe", &[])
+            .unwrap();
+        let script = decode_powershell(words.last().unwrap());
+        let body = script.find("exit 3").expect(&script);
+        let finally = script.find("} finally {").expect(&script);
+        let agent = script.find("ProcessStartInfo").expect(&script);
+        assert!(body < finally && finally < agent, "{script}");
+        let tail = &script[finally..agent];
+        assert!(
+            tail.contains(crate::session::agent_def::SETUP_FAILURE_MARKER),
+            "{script}"
+        );
     }
 
     fn decode_powershell(encoded: &str) -> String {

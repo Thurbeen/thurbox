@@ -351,8 +351,9 @@ telemetry and `--agent-arg` arguments still follow everything.
   WSL host it runs on that host, where the agent runs.
 - **Windows.** A native-Windows machine has no `sh`, so there the steps are
   PowerShell: one script, launched as `powershell.exe -EncodedCommand`, that
-  runs each step in order and stops at the first that throws or leaves a
-  non-zero `$LASTEXITCODE`, then calls the agent with its arguments. The same
+  runs each step in order and stops at the first that throws, leaves a
+  non-zero `$LASTEXITCODE` or calls `exit`, then starts the agent with its
+  arguments passed exactly (empty ones and embedded `"` included). The same
   `thurbox: setup step <n> failed (exit <status>)` line marks a failure. The
   whole launch is one command line, so a setup that makes it longer than
   Windows' 8191 characters is refused before anything starts.
@@ -835,7 +836,9 @@ is the final launch directory and its stdin includes all worktrees and
 additional directories. For a remote session that is the host: the command runs
 over the host's launcher (ssh or `wsl.exe`) in the host's shell — `sh`, or
 PowerShell on a native-Windows host — in the launch directory there, with the
-`THURBOX_*` variables set inside the script, since ssh carries no environment.
+`THURBOX_*` variables set inside the script, since ssh carries no environment,
+and on a POSIX host with the host's `path_prepend` and login `PATH` first, as
+the agent gets them.
 This machine's `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` are not passed: they name
 paths here. A session on a host that shares its sessions is created by the
 host's own `thurbox-cli`, so the host's `hooks.toml` applies there. `agents = ["claude"]`

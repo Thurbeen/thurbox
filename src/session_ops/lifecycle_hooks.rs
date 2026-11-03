@@ -181,6 +181,13 @@ fn run_payload_on(
             let shell = crate::shell::HostShell::for_host(host);
             let cwd = ctx.cwd.as_deref().map(|dir| dir.to_string_lossy());
             let script = shell.hook_script(&hook.command, cwd.as_deref(), &ctx.env(event));
+            // The launcher's shell is a non-login one, so the host's login
+            // `PATH` and `path_prepend` go first, as for the agent itself
+            // (see `agent::host_path`): a hook must find what the agent finds.
+            let script = match crate::agent::host_path::assignment_for(host) {
+                Some(path) => format!("{path}{script}"),
+                None => script,
+            };
             crate::shell::HostShell::run_on_host(host, &script)
         }
         None => local_hook_command(hook, event, ctx, &payload),

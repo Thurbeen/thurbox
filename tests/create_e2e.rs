@@ -5789,6 +5789,49 @@ fn a_remote_pre_launch_runs_on_the_host_in_the_launch_directory() {
     assert_eq!(payload["event"], "session.pre_launch", "{out}");
 }
 
+/// The hook finds what the agent would: the host's `path_prepend` and login
+/// `PATH` come first, as for every other script thurbox runs there.
+#[test]
+#[cfg(unix)]
+fn a_remote_pre_launch_sees_the_hosts_configured_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = HostShellEnv::new(LOCAL_SSH);
+    env.write("agents.toml", SH_AGENT);
+    let tools = env.home.path().join("host-tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    let seen = env.home.path().join("seen");
+    std::fs::write(
+        tools.join("prep-tool"),
+        format!("#!/bin/sh\necho prepared > {}\n", seen.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        tools.join("prep-tool"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    env.write(
+        "hosts.toml",
+        &format!(
+            "[[hosts]]\nname = \"posixhost\"\ndestination = \"e2e@posixhost.invalid\"\nshare_sessions = false\npath_prepend = [\"{}\"]\n",
+            tools.display()
+        ),
+    );
+    env.write(
+        "hooks.toml",
+        "[[hooks]]\nevent = 'session.pre_launch'\ncommand = 'prep-tool'\n",
+    );
+    let repo = repo();
+    let (_far, _db, spawned) = env.spawn(
+        "posixhost",
+        thurbox::session::Multiplexer::Tmux,
+        "probe",
+        repo.path(),
+    );
+    spawned.expect("the hook found prep-tool on the host's PATH");
+    assert_eq!(std::fs::read_to_string(&seen).unwrap(), "prepared\n");
+}
+
 /// A failing host-side preparation refuses the launch, as a local one does:
 /// no window opens and the hook's stderr is the reason.
 #[test]
@@ -5848,9 +5891,11 @@ fn a_windows_host_runs_an_agent_setup_in_powershell() {
     let script = decode_powershell(encoded);
     let ready = script.find("$env:PROBE_READY = 'yes'").expect(&script);
     let check = script.find("prepare.exe --check").expect(&script);
-    let agent = script
-        .find("& 'probe.exe' '--flag' 'two words'")
-        .expect(&script);
+    let agent = script.find("Get-Command -Name 'probe.exe'").expect(&script);
+    assert!(
+        script.contains("$s.Arguments = '--flag \"two words\"'"),
+        "the agent's arguments go to the C runtime as one quoted line: {script}"
+    );
     assert!(ready < check && check < agent, "{script}");
     assert!(script.contains("thurbox: setup step "), "{script}");
 }

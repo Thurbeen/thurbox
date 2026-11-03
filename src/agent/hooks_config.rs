@@ -98,7 +98,8 @@ pub const SEED_HOOKS_TOML: &str = r#"# Thurbox session lifecycle hooks  —  ~/.
 # pre_launch runs in the final cwd on create/fork, after worktrees exist and
 # before the agent starts, on the machine the agent runs on: locally, or for
 # a remote session on its host, in that host's shell (sh, or PowerShell on a
-# Windows host) with the THURBOX_* variables set. A failure refuses launch.
+# Windows host) with the THURBOX_* variables and the host's PATH (its
+# path_prepend first) set. A failure refuses launch.
 #
 # state_changed is post-only, delivered by automation tick (normally every
 # 60s). Delivery is at-least-once: deduplicate external effects by seq. First
