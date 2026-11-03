@@ -118,9 +118,22 @@ impl SlackGateway {
     }
 
     /// One bounded call: `curl --include … --config <file> --data-binary @-
-    /// --url <API>/<method>` with the JSON body on stdin, so neither the
-    /// text nor anything from the config file is on a command line.
+    /// --url <API>/<method>` with the body on stdin, so neither the text nor
+    /// anything from the config file is on a command line. Only Slack's write
+    /// methods read a JSON body; the read methods take form arguments and
+    /// answer a JSON body with `invalid_arguments`.
     fn call(&self, method: &str, body: &Value, timeout: Duration) -> Result<Value, CallError> {
+        let (content_type, payload) = if method.starts_with("chat.") {
+            (
+                "Content-Type: application/json; charset=utf-8",
+                serde_json::to_vec(body).expect("a JSON value serialises"),
+            )
+        } else {
+            (
+                "Content-Type: application/x-www-form-urlencoded",
+                form(body),
+            )
+        };
         let args: Vec<OsString> = [
             "--include",
             "--silent",
@@ -138,7 +151,7 @@ impl SlackGateway {
                 "--request",
                 "POST",
                 "--header",
-                "Content-Type: application/json; charset=utf-8",
+                content_type,
                 // No `100 Continue` round trip: the whole answer is one head.
                 "--header",
                 "Expect:",
@@ -151,9 +164,7 @@ impl SlackGateway {
         )
         .chain([OsString::from(format!("{API}/{method}"))])
         .collect();
-        let spec = Spec::new(&self.cli, timeout)
-            .args(args)
-            .stdin(serde_json::to_vec(body).expect("a JSON value serialises"));
+        let spec = Spec::new(&self.cli, timeout).args(args).stdin(payload);
         match run(&spec) {
             Outcome::Exited {
                 code,
@@ -422,6 +433,33 @@ impl SlackGateway {
 
 /// `slack:<channel>[:<ts>]`: a channel id (`C…`, `G…` or `D…`, uppercase
 /// letters and digits) and a Slack timestamp (`<seconds>.<fraction>`).
+/// A body as Slack's form arguments: strings as they are, numbers and
+/// booleans as written, anything else as its JSON text.
+fn form(body: &Value) -> Vec<u8> {
+    fn encode(out: &mut String, s: &str) {
+        for b in s.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                out.push(char::from(b));
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+    }
+    let mut out = String::new();
+    for (k, v) in body.as_object().into_iter().flatten() {
+        if !out.is_empty() {
+            out.push('&');
+        }
+        encode(&mut out, k);
+        out.push('=');
+        match v {
+            Value::String(s) => encode(&mut out, s),
+            other => encode(&mut out, &other.to_string()),
+        }
+    }
+    out.into_bytes()
+}
+
 pub fn parse_address(address: &str) -> Result<ConversationRef, String> {
     let parsed = ConversationRef::split(address)
         .ok_or_else(|| format!("{address:?} is not <platform>:<chat>[:<thread>]"))?;

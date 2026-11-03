@@ -1665,13 +1665,70 @@ mod slack {
         v.as_str().unwrap_or("").to_string()
     }
 
+    /// A form body as an object: `true`, `false` and digits typed, the
+    /// rest strings, so a model reads either encoding the same way.
+    fn form(text: &str) -> Value {
+        fn decode(s: &str) -> String {
+            let b = s.as_bytes();
+            let mut out = Vec::with_capacity(b.len());
+            let mut i = 0;
+            while i < b.len() {
+                match b[i] {
+                    b'+' => out.push(b' '),
+                    b'%' if i + 2 < b.len() => {
+                        let hex = std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("");
+                        out.push(u8::from_str_radix(hex, 16).unwrap_or(b'?'));
+                        i += 2;
+                    }
+                    c => out.push(c),
+                }
+                i += 1;
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        }
+        let mut o = serde_json::Map::new();
+        for pair in text.split('&').filter(|p| !p.is_empty()) {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            let v = decode(v);
+            let typed = match v.as_str() {
+                "true" => json!(true),
+                "false" => json!(false),
+                d if !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit()) => {
+                    json!(d.parse::<u64>().unwrap_or(0))
+                }
+                _ => json!(v),
+            };
+            o.insert(decode(k), typed);
+        }
+        Value::Object(o)
+    }
+
     pub fn curl(args: &[String], url: &str) -> ExitCode {
         let method = url.trim_start_matches(API).to_string();
         let mut text = String::new();
         if args.iter().any(|a| a == "@-") {
             std::io::stdin().read_to_string(&mut text).expect("stdin");
         }
-        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        // Slack's read methods take form arguments only: a JSON body reaches
+        // them as no arguments at all, as the real API answers.
+        let json_body = args
+            .iter()
+            .any(|a| a.starts_with("Content-Type: application/json"));
+        let body: Value = if json_body {
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        } else {
+            form(&text)
+        };
+        if json_body
+            && !method.starts_with("chat.")
+            && body.as_object().is_some_and(|o| !o.is_empty())
+        {
+            return answer(
+                HEAD,
+                &json!({"ok": false, "error": "invalid_arguments",
+                        "response_metadata": {"messages": ["[ERROR] missing required field: channel"]}}),
+            );
+        }
         let lock = Lock::take();
         let mut state = load();
         if !state["slack"]["calls"].is_array() {
