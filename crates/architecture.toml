@@ -79,10 +79,10 @@ deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-for
 forbidden_methods = [
   "create", "create_fenced", "update_spec", "update_status", "append_inbox", "record_delivery",
   "record_relay", "remove_finalizer", "delete", "delete_fenced", "acquire_lease",
-  "renew_lease", "release_lease", "reconcile", "probes", "spawn", "release",
+  "renew_lease", "release_lease", "reconcile", "probes", "create_dir", "remove_dir", "spawn", "release",
   "change", "mark_ready", "whoami", "call", "admit", "plugin_mutate",
   "history", "capabilities", "post",
-  "receive_event", "record_received", "record_beat", "record_refusal",
+  "receive_event", "record_received", "record_beat", "record_refusal", "retire_conversation_task",
 ]
 
 [crates.fleet-arch]

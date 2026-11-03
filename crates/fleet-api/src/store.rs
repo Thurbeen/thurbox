@@ -186,6 +186,20 @@ pub trait Store {
     ) -> Result<Object, StoreError> {
         Err(StoreError::Unsupported("create_fenced".into()))
     }
+    /// Delete the conversation Task a retiring thread created: fenced on
+    /// the Task's `uid` and the lease, and refused unless the Task carries
+    /// `conversation_uid` as its conversation uid label and is Concluded.
+    /// Only ConversationController calls it. `NotFound` when it is gone.
+    fn retire_conversation_task(
+        &self,
+        _name: &str,
+        _uid: &str,
+        _conversation_uid: &str,
+        _by: FieldManager,
+        _lease: &LeaseToken,
+    ) -> Result<DeleteOutcome, StoreError> {
+        Err(StoreError::Unsupported("retire_conversation_task".into()))
+    }
     /// Replace spec (and labels); bumps generation when spec changed.
     fn update_spec(
         &self,

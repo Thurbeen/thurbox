@@ -1,10 +1,11 @@
 # Gateway controller
 
-Implemented. The installed binary has steps 1 to 7 below: the `[gateway]`
+Implemented. The installed binary has steps 1 to 8 below: the `[gateway]`
 key, the Gateway port, the `fleet-gateway` crate with its fake, Slack and
 Discord adapters, the `Conversation` and `Listener` kinds,
-ConversationController (the mirror, admission, Task creation under the
-workspace precondition, the busy notice and the refusal post),
+ConversationController (the mirror, admission, Task creation in each
+thread's own directory under the workspace precondition, the busy notice
+and the refusal post),
 ListenerController, and the `fleet gateway receive`, `account` and `status`
 verbs. It has GatewayController's tie, the join and the relay,
 `status.answered` with the `answers` inbox field, the parent labels and a
@@ -71,8 +72,10 @@ to check the model.
 3. ConversationController reads the thread's history, so a mention partway
    through a thread brings everything before it.
 4. The mention passes the route's admission rules. ConversationController
-   creates one Task from the route, with the route's TaskConfig, brief and
-   workspace, and records the tie.
+   creates one Task from the route, with the route's TaskConfig and brief
+   and the thread's own workspace, and records the tie. On a route with a
+   `dir` workspace, the thread's directory is `<dir>/<conversation name>`.
+   The manager creates it when it creates the Task.
 5. GatewayController sends the whole retained thread to the Task as its
    first inbox entry, after the brief.
 6. Each later message from an allowlisted person reaches the inbox and is a
@@ -90,10 +93,45 @@ to check the model.
     receives the thread, so a later message reaches the same Task.
 11. If someone deletes the Task, the thread becomes Orphaned. The next
     admitted message, with or without a mention, starts a new Task with the
-    thread's history.
-12. An Orphaned or Untied thread with no message for its retention period is
-    forgotten. Nothing on the platform changes. A later message there is
-    treated as a new thread, and the mention rule applies again.
+    thread's history, in the same directory.
+12. A thread with no message for its retention period retires, if its Task
+    is Concluded or it has no live Task. See
+    [Flow: a thread's end of life](#flow-a-threads-end-of-life).
+
+## Flow: a thread's end of life
+
+A thread retires when both of these conditions are true:
+
+- No message arrived for `gateway.retainMs`, seven days by default. The
+  period counts from the later of the last message, the orphaning and the
+  creation of the Conversation.
+- The thread is Untied or Orphaned, or its Task is Concluded.
+
+A retiring thread goes through these steps, in this order:
+
+1. ConversationController deletes the Task that the thread created. The
+   delete is fenced on the Task's `uid`. The Task's finalizer then releases
+   its session, and the thread becomes Orphaned.
+2. The manager removes the thread's directory, if the manager created it.
+   It waits while another Task names the directory.
+3. ConversationController deletes the Conversation.
+
+Rules:
+
+- A thread whose Task is not Concluded never retires.
+- A message that arrives during the retirement stops it. The thread keeps
+  its directory, and the next admitted message starts a new Task there.
+  While the thread's Task is being deleted, Fleet judges no new message.
+  It judges them once the thread is Orphaned, so no message is lost.
+- Each step is a keyed effect. After a crash, the retirement continues at
+  the first step that has no settled receipt.
+- An Unknown read never counts as absence. The retirement waits.
+- Fleet removes only a directory that it created for the thread. It never
+  removes a directory that existed before, a route's base directory or a
+  `repositories` workspace.
+- Nothing on the platform changes. A later message there is treated as a
+  new thread: a new Conversation, the mention rule again, the thread's
+  history, and an empty directory.
 
 ## Flow: a Question opens a thread
 
@@ -182,11 +220,20 @@ These rules hold across all flows:
 - **A thread Fleet opened belongs to its Question's Task.** While that Task
   exists, a mention there starts no other Task. If Fleet cannot tell which
   Task opened the thread, the thread ignores mentions rather than guess.
-- **A route with a directory workspace runs one conversation Task at a
-  time.** The route's workspace is a shared directory, so a second thread
-  waits, says so once, and starts when the workspace is free. A route with a
-  `repositories` workspace gives each Task its own workspace, so no thread
-  waits for another.
+- **A route with a directory workspace gives each thread its own
+  directory.** The route's `dir` is a base directory. Every Task of one
+  thread gets `<dir>/<conversation name>`, so a later Task finds what an
+  earlier one left. A route with a `repositories` workspace gives each Task
+  its own workspace.
+- **Threads never wait for each other.** A thread waits only while another
+  Task already holds its own directory. Examples are the previous Task of
+  an Orphaned thread that is still being deleted, or a Task that someone
+  applied there. The thread then says so once and starts when the
+  directory is free.
+- **A thread ends once, as a whole.** A thread idle for its retention,
+  with a Concluded Task or no live Task, retires: its Task, the directory
+  that Fleet created for it, and its Conversation are deleted. Fleet
+  deletes no other directory.
 - **Every problem is a visible condition.** The Conversation, the Task and
   the Listener each report `NeedsAttention` with a reason. Nothing fails
   silently.
@@ -281,9 +328,10 @@ Out of scope, deliberately:
 | --- | --- |
 | Where does the earlier history go when a mention lands partway through a thread? | In the first inbox entry, not in the brief. The brief stays the route's brief, the same for every conversation Task. |
 | What brief and workspace does a conversation Task get? | The route's. TaskConfig holds execution defaults only. So a route names a TaskConfig, and carries the brief and the workspace itself. |
-| How can a route run several conversations at once? | With a `repositories` workspace. The runtime materializes it for each Task, for example as thurbox worktrees, and cleans it up when the session is deleted. A `dir` route runs one conversation Task at a time. |
-| Who deletes a conversation Task? | A person or a conductor, as for any Task. A later change can add a route policy that deletes a Concluded Task after it is idle. |
-| How long is a Conversation kept? | While its Task exists. When Untied or Orphaned, `gateway.retainMs` after the later of its last message and its orphaning, thirty days by default. A thread waiting for a busy workspace is kept. |
+| How can a route run several conversations at once? | Every route can. A `dir` route gives each thread its own directory below the route's base directory. A `repositories` route has the runtime materialize a workspace for each Task, for example as thurbox worktrees, and the runtime cleans it up when the session is deleted. |
+| Who deletes a thread's directory? | Fleet, when the thread retires, and only a directory that the manager created. The Conversation records that the manager created it. A directory that existed before stays, as do a route's base directory and anything else in it. |
+| Who deletes a conversation Task? | ConversationController, when its thread retires: only a Concluded Task, idle for `gateway.retainMs`. A person or a conductor can also delete it at any time, as for any Task. The thread then becomes Orphaned. |
+| How long is a Conversation kept? | Until its thread retires: `gateway.retainMs`, seven days by default, after the later of its last message and its orphaning, once its Task is Concluded or gone. A thread with a running Task, or one that waits for its own directory, is kept. |
 | How large can a conversation Task's declarations grow? | `status.declared` has no cap today. Recommendation: a store cap per Task, past which the store refuses with `NeedsAttention/DeclaredFull`. |
 | Why does a Comment carry an `id`? | `fleet declare` treats an identical object as a no-op. So two Comments that say "Done." need two ids to be two posts. |
 | How is the questions route chosen per Task? | By the label `gateway.fleet.dev/route`, else the `[gateway]` default. Plugins already mark Tasks with labels. |
@@ -308,3 +356,4 @@ and adds its crate edges, field managers and negative fixtures to
 | 5 | The Slack adapter through `curl` | `crates/fleet-gateway/src/slack.rs` | Truth tables in the adapter's unit tests; recorded Socket Mode payloads; `e2e_gateway` against the stub `curl` |
 | 6 | The Discord adapter through `curl`; `inbound = "discord-gateway"`, `messageContent` and `intents`; nonce recovery in ConversationController | `crates/fleet-gateway/src/discord.rs`, `fleet-api/src/gateway.rs`, `fleet-controllers/src/conversation.rs` | Truth tables in the adapter's unit tests; synthetic dispatches; `conversation_controller`; `e2e_gateway_discord` against the stub `curl` |
 | 7 | The log channel: `gateway.logs`; the `Log` action; a top-level `post` to a channel address; the port's `link`; Drafts, results and change news of every Task leave the thread, which keeps one ready notice per change | `fleet-api/src/gateway.rs`, `fleet-api/src/plan.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_logs`, `e2e_gateway_post` |
+| 8 | One directory per thread, and one end of life: a route's `dir` is a base directory; each thread's Tasks get `<dir>/<conversation name>`, which the manager creates through the runtime's `create_dir` and records; `WorkspaceBusy` only for a Task that holds the thread's own directory; an idle thread with a Concluded Task or none retires its Task, its recorded directory and its Conversation; `gateway.retainMs` defaults to seven days | `fleet-api/src/conversation.rs`, `fleet-api/src/runtime.rs`, `fleet-api/src/store.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-runtime`, `fleet-store` | `conversation_controller`, `store_contract`, `e2e_gateway` |

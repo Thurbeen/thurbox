@@ -3141,3 +3141,69 @@ fn the_gateway_controller_creates_an_opened_threads_conversation_and_spools_only
     let (_, again) = store.receive_event("conv-1", own, rv, by).unwrap();
     assert_eq!(again, fleet_api::conversation::Spooled::Duplicate);
 }
+
+#[test]
+fn only_a_concluded_conversation_task_is_retired_and_only_by_its_conversation() {
+    use fleet_api::conversation::{CONVERSATION_LABEL, CONVERSATION_UID_LABEL};
+    let dir = Dir::new("retire-task");
+    let store = FileStore::open(&dir.0).unwrap();
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+    let by = FieldManager::ConversationController;
+    let mut labelled = task("conv-1");
+    labelled
+        .metadata
+        .labels
+        .insert(CONVERSATION_LABEL.into(), "conv".into());
+    labelled
+        .metadata
+        .labels
+        .insert(CONVERSATION_UID_LABEL.into(), "c7".into());
+    let created = store.create_fenced(labelled, by.clone(), &lease).unwrap();
+    let uid = created.metadata.uid.clone();
+    let retire = |uid: &str, conv: &str, by: FieldManager| {
+        store.retire_conversation_task("conv-1", uid, conv, by, &lease)
+    };
+    // Running: never retired.
+    assert!(matches!(
+        retire(&uid, "c7", by.clone()),
+        Err(StoreError::Forbidden(ref m)) if m.contains("not Concluded")
+    ));
+    store
+        .update_status(
+            "Task",
+            "conv-1",
+            status("Concluded"),
+            created.metadata.resource_version,
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap();
+    // Another writer, another thread, another Task under the name: refused.
+    assert!(matches!(
+        retire(&uid, "c7", FieldManager::TaskController),
+        Err(StoreError::Forbidden(_))
+    ));
+    assert!(matches!(
+        retire(&uid, "c8", by.clone()),
+        Err(StoreError::Forbidden(ref m)) if m.contains("not created for this thread")
+    ));
+    assert!(matches!(
+        retire("u-other", "c7", by.clone()),
+        Err(StoreError::Conflict { .. })
+    ));
+    // Concluded and this thread's: marked, its finalizer releasing it; a
+    // second call is the same answer.
+    assert_eq!(
+        retire(&uid, "c7", by.clone()).unwrap(),
+        DeleteOutcome::Marked
+    );
+    assert!(known(store.get("Task", "conv-1")).unwrap().is_deleting());
+    assert_eq!(
+        retire(&uid, "c7", by.clone()).unwrap(),
+        DeleteOutcome::Marked
+    );
+    assert!(matches!(
+        store.retire_conversation_task("absent", &uid, "c7", by, &lease),
+        Err(StoreError::NotFound(_))
+    ));
+}

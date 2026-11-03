@@ -129,6 +129,22 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thread: Option<crate::gateway::LogThread>,
     },
+    /// Delete the conversation Task a retiring thread created, through the
+    /// store, fenced on its `uid`: only a Task carrying the Conversation's
+    /// uid label, and only while it is Concluded. Its finalizer then
+    /// releases its session. ConversationController asks.
+    DeleteTask {
+        name: String,
+        uid: String,
+    },
+    /// Remove the thread's directory `path` on `host`, through the runtime
+    /// port: only the directory the manager recorded making for the thread,
+    /// and only while no Task names it. ConversationController asks, as a
+    /// thread retires.
+    RemoveDir {
+        host: String,
+        path: String,
+    },
     /// Add Fleet's opening post to the opened thread's Conversation, as the
     /// receive verb would, creating the Conversation under the name its
     /// account and address derive: through the store, never a platform.
@@ -151,6 +167,8 @@ impl Action {
             Action::Open { .. } => "open",
             Action::Receive { .. } => "receive",
             Action::Log { .. } => "log",
+            Action::DeleteTask { .. } => "deleteTask",
+            Action::RemoveDir { .. } => "removeDir",
         }
     }
 }
@@ -263,8 +281,11 @@ pub enum EffectOutcome {
         uid: String,
         adopted: bool,
     },
-    /// The create's `exclusive: {workspace}` precondition did not hold:
-    /// `task` has the directory. Nothing was created, and this is not an
+    /// The Task is deleted or being deleted, or the directory is gone: now
+    /// or before.
+    Deleted,
+    /// The create's `exclusive: {workspace}` precondition did not hold, or a
+    /// directory to remove is still named: `task` has the directory. Nothing was created, and this is not an
     /// attempt against the key.
     WorkspaceBusy {
         task: String,

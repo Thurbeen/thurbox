@@ -517,6 +517,12 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         fn host(&self, _: &str) -> Observation<bool> {
             Observation::Known(true)
         }
+        fn create_dir(&self, _: &str, _: &str) -> Observation<Result<bool, String>> {
+            panic!("no Task is created")
+        }
+        fn remove_dir(&self, _: &str, _: &str) -> Observation<Result<(), String>> {
+            panic!("no thread retires")
+        }
         fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>> {
             assert_eq!(host, self.session.host);
             assert_eq!(key, self.session.key);

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 470" role="img" aria-labelledby="title desc">
 <title id="title">Gateway controller state machine (design)</title>
-<desc id="desc">Design, not implemented. A Conversation mirrors one chat thread. The receive verb, or Fleet opening a thread for a Task's Question, creates it Untied; a thread Fleet opened is tied at once to the Task its opening post's marker names. An admitted mention in an Untied thread creates a Task and ties it. When the tied Task is readably gone the Conversation is Orphaned, and the next admitted message creates a new Task joined with the thread's history. While Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares. An Untied or Orphaned Conversation with no message for its retention is deleted by its own controller; nothing on the platform changes.</desc>
+<desc id="desc">Design, not implemented. A Conversation mirrors one chat thread. The receive verb, or Fleet opening a thread for a Task's Question, creates it Untied; a thread Fleet opened is tied at once to the Task its opening post's marker names. An admitted mention in an Untied thread creates a Task and ties it. When the tied Task is readably gone the Conversation is Orphaned, and the next admitted message creates a new Task joined with the thread's history. While Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares. A Conversation with no message for its retention that is Untied, Orphaned, or tied to a Concluded Task retires: its controller deletes the Task, the manager removes the thread directory it created, and the controller deletes the Conversation; nothing on the platform changes.</desc>
 <style>
   svg { color-scheme:light dark }
   @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
@@ -43,13 +43,13 @@
 <text x="625" y="100" text-anchor="middle">opened for a Question, tied by its marker</text>
 <text x="494" y="134" text-anchor="middle">admitted mention</text>
 <text x="494" y="148" text-anchor="middle">creates a Task</text>
-<text x="759" y="172" text-anchor="middle">Task gone</text>
+<text x="759" y="172" text-anchor="middle">Task gone, or retired once Concluded</text>
 <text x="760" y="244" text-anchor="middle">admitted message:</text>
 <text x="760" y="258" text-anchor="middle">new Task, whole history</text>
 <text x="590" y="292" text-anchor="end">relay into the inbox</text>
 <text x="660" y="292">post what it declares</text>
 <text x="910" y="270">retention</text>
-<text x="380" y="402">retention, no message for gateway.retainMs</text>
+<text x="380" y="402">retirement: no message for gateway.retainMs; the thread directory goes too</text>
 </g>
 <path d="M25 428 H1015" stroke="#c9d3dd"/>
 <text x="25" y="452" font-size="14">The Gateway never runs a model. Admission, the tie and moving messages are all it decides; every admitted message is a worker turn.</text>

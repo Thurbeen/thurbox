@@ -635,8 +635,9 @@ pub struct RouteConfig {
     /// An absolute path the manager reads when it loads the config and
     /// copies into each Task it creates.
     pub brief: PathBuf,
-    /// Every Task of the route shares this directory, so the route runs one
-    /// conversation Task at a time.
+    /// The Task's workspace. A `dir` is a base directory: each thread's
+    /// Tasks get `<dir>/<conversation>`, so no thread waits for another.
+    /// `repositories` are materialized for each Task.
     pub workspace: Workspace,
     /// The one polite refusal; `DEFAULT_REFUSAL` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -767,7 +768,7 @@ impl Default for GatewayDefaults {
             call_timeout_ms: 15_000,
             poll_ms: 300_000,
             active_ms: 86_400_000,
-            retain_ms: 2_592_000_000,
+            retain_ms: 604_800_000,
             beat_ms: 60_000,
             route: None,
             brief: None,
@@ -960,7 +961,7 @@ impl GatewayConfig {
             }
             crate::validate::validate_workspace(&route.workspace)
                 .map_err(|e| format!("{at}: workspace{e}"))?;
-            // A shared directory needs its own route; repositories are
+            // A base directory needs its own route; repositories are
             // materialized per Task, so nothing is shared between routes.
             let dir = route.workspace.dir().map(Path::new);
             if let Some(d) = route.workspace.dir()
@@ -1262,7 +1263,7 @@ mod tests {
         assert_eq!(cfg.validate(), Ok(()));
         let d = cfg.defaults();
         assert_eq!(d.poll_ms, 1000);
-        assert_eq!(d.retain_ms, 2_592_000_000);
+        assert_eq!(d.retain_ms, 604_800_000);
         assert_eq!(d.beat_ms, 60_000);
         assert_eq!(cfg.routes["eng"].mention, Mention::Required);
         assert_eq!(cfg.routes["eng"].refusal(), DEFAULT_REFUSAL);

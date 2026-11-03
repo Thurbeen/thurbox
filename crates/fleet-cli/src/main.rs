@@ -1498,6 +1498,8 @@ fn status_summary(obj: &Object) -> Value {
             "observedAt",
             "lastMessageAt",
             "notBefore",
+            "dir",
+            "retiring",
         ] {
             own.insert(k.to_string(), field(k));
         }

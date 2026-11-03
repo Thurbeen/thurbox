@@ -277,7 +277,7 @@ accounts, people and routes from here, as the Forge controller reads
 callTimeoutMs = 15000
 pollMs = 300000               # history backstop for tied threads
 activeMs = 86400000           # ... while the thread had a message this recently
-retainMs = 2592000000         # thirty days: an Untied or Orphaned Conversation's retention
+retainMs = 604800000          # seven days: an idle thread's retention, then it retires
 beatMs = 60000                # a listener beats at least this often; stale after three
 questions = "eng"             # the route whose channel takes Questions from untied Tasks
 logs = { account = "slack-main", channel = "C0456EFGH" }   # every Task's Drafts, result and change news
@@ -312,7 +312,7 @@ mention = "required"          # a new thread needs a mention of Fleet's bot
 allow = ["alex", "sam"]       # names under [gateway.people]
 taskConfig = "conversation"   # a TaskConfig resource: harness, host, model, env
 brief = "/etc/fleet/briefs/conversation.md"
-workspace = { dir = "/work/conversations" }   # shared: one conversation Task at a time
+workspace = { dir = "/work/conversations" }   # a base: each thread gets /work/conversations/<conversation name>
 refusal = "Sorry, I only take requests from people on this channel's list."
 
 [gateway.routes.alerts]
@@ -323,21 +323,21 @@ allow = ["alex", "sam"]
 allowBots = ["B0123ABCD"]     # the alerting app whose posts are requests
 taskConfig = "conversation"
 brief = "/etc/fleet/briefs/triage.md"
-workspace = { dir = "/work/triage" }   # shared: each alert waits for the last Task's deletion
+workspace = { dir = "/work/triage" }   # a base: each alert's thread gets its own directory
 ```
 
 | Field | Required/default | Meaning |
 | --- | --- | --- |
 | `gateway.callTimeoutMs` | `15000` | Bound for each adapter call; the manager lease is raised to outlast the port's reported worst case. |
-| `gateway.pollMs` | `300000` | How often a Tied Conversation reads its history as a backstop for events a listener missed, where the account has history. A Conversation's `spec.pollMs` overrides it for that thread. It is also the interval at which a create waiting under `WorkspaceBusy` is planned again, the cap on the recovery-read backoff, and how often a Listener asks `whoami` and `capabilities`. |
+| `gateway.pollMs` | `300000` | How often a Tied Conversation reads its history as a backstop for events a listener missed, where the account has history. A Conversation's `spec.pollMs` overrides it for that thread. It is also the interval at which a create waiting under `WorkspaceBusy`, for a thread's directory that another Task holds, is planned again, the cap on the recovery-read backoff, and how often a Listener asks `whoami` and `capabilities`. |
 | `gateway.activeMs` | `86400000` | How long after a Tied thread's last message its history backstop keeps polling. |
-| `gateway.retainMs` | `2592000000` | How long an Untied or Orphaned Conversation is kept after the later of its last message and its orphaning. |
+| `gateway.retainMs` | `604800000` | How long a thread is kept with no message, counted from the later of its last message and its orphaning. Past it, a thread that is Untied, Orphaned or tied to a Concluded Task retires: Fleet deletes its Task, the thread directory that the manager created, and its Conversation. A thread with a running Task is kept. |
 | `gateway.beatMs` | `60000` | The longest a listener goes between beats. An account's `InboundReady` turns False when three are missed. |
 | `gateway.questions` | Absent | The route whose first channel takes a new thread for a Question declared by a Task with no tie and no parent. A Task's `gateway.fleet.dev/route` label overrides it. Absent and unlabelled: such a Question is not posted. |
 | `gateway.logs` | Absent | The log destination: `account`, a name under `[gateway.accounts]`, and `channel`, one channel id on it. Fleet posts every Task's Drafts, result and change news there, as top-level posts. Absent: Fleet posts them nowhere; a tied thread's ready notice is posted either way. Refused when the account is not configured, when the account's adapter cannot read the channel id, or when a route of that account covers the channel. |
 | `gateway.accounts.<name>` | One per chat account | `platform` is `slack`, `discord`, or `fake` with a `dir`, in this build, and later `telegram` or `teams`; a platform the build lacks is refused when the manager runs; `team` the platform's workspace identity (Slack: the team or enterprise id, optional; Discord: the guild id, required); `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart (Discord: a snowflake, as is `team`); `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; Discord: `discord-gateway`, an authenticated connection; `fake`: `connection`), and an envelope claiming another is refused; `messageContent`, Discord only, default `false`, whether the application holds the privileged message content intent, which sets the `intents` that `fleet gateway account` prints; `cli`, default `curl`, and the platform's credential reference, here `curlConfig`, required for Slack and Discord, an absolute path Fleet passes to `curl -K` and never reads. The [Slack](../controllers/gateway/adapters/slack.md#configuration) and [Discord](../controllers/gateway/adapters/discord.md#configuration) adapter pages list each platform's keys and errors. |
 | `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
-| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids; `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir` every Task of the route shares, so the route starts a Task only while no other Task uses that directory, and no two routes' directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel belongs to at most one route. |
+| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids; `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir`, an absolute base directory, below which each thread's Tasks get `<dir>/<conversation name>`, created by the manager with the Task on the TaskConfig's host (the thurbox runtime creates it on the local host only), recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel belongs to at most one route. |
 
 Credentials stay with the external client: Fleet passes the curl config's
 path and never constructs an Authorization header. The listener holds the

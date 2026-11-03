@@ -98,6 +98,12 @@ pub fn may_record_received(by: &FieldManager) -> bool {
     *by == FieldManager::ConversationController
 }
 
+/// Who may delete the conversation Task a retiring thread created
+/// (`Store::retire_conversation_task`): the Conversation's controller only.
+pub fn may_retire_conversation_task(by: &FieldManager) -> bool {
+    *by == FieldManager::ConversationController
+}
+
 /// Who may append to `Task.status.inbox` (`Store::append_inbox`), each
 /// naming itself: `fleet send` as `cli`, and the Forge and Gateway
 /// controllers, whose relays land through `Store::record_relay`.

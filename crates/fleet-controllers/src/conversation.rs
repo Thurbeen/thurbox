@@ -8,12 +8,12 @@
 //! Pure: it reads the Conversation and what the probes saw, and returns a
 //! Plan whose `status` is the whole Conversation status with the spool
 //! drained of what was numbered and the intent of every effect it asks
-//! for, whose `creates` is the Task a thread starts under the route's
-//! `exclusive: {workspace}` precondition, whose `effects` are the refusal
-//! and busy-notice posts, and whose `delete` retires the object. The
-//! manager performs the plan through `record_received`, the fenced create,
-//! the Gateway port and the fenced delete, and writes each receipt back
-//! under its key. A key that has a receipt is never performed again; a
+//! for, whose `creates` is the Task a thread starts in the thread's own
+//! directory under the `exclusive: {workspace}` precondition, whose
+//! `effects` are the refusal and busy-notice posts, and whose `delete`
+//! retires the object. The manager performs the plan through
+//! `record_received`, the fenced create, the Gateway port and the fenced
+//! delete, and writes each receipt back under its key. A key that has a receipt is never performed again; a
 //! missing or Unknown receipt is answered by looking for the Task, or for
 //! the post in the mirror, never by repeating the effect blindly.
 
@@ -22,8 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_transitions};
 use fleet_api::conversation::{
     self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus,
-    EFFECTS_CAP, EffectRecord, MESSAGE_CAP, Phase, REFUSALS_CAP, ROUTE_LABEL, SEEN_EVENTS_CAP,
-    StoredMessage, Tie, TieState, Via, busy_key, busy_notice, refusal_key, task_key, task_name,
+    EFFECTS_CAP, EffectRecord, MESSAGE_CAP, Phase, REFUSALS_CAP, ROUTE_LABEL, Retiring,
+    SEEN_EVENTS_CAP, StoredMessage, Tie, TieState, Via, busy_key, busy_notice, refusal_key,
+    retire_dir_key, retire_task_key, task_key, task_name, thread_dir,
 };
 use fleet_api::gateway::{
     Admission, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
@@ -83,7 +84,7 @@ pub mod conditions {
     /// A live Task is tied.
     pub const TIED: &str = "Tied";
     /// `TaskCreateFailed`, `WorkspaceBusy`, `RouteUnknown`, `MentionsOnly`,
-    /// `PostFailed`, `PostUnconfirmed`.
+    /// `PostFailed`, `PostUnconfirmed`, `RetireFailed`.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
 }
 use conditions::*;
@@ -98,6 +99,8 @@ const TASK_CREATE_FAILED: &str = "TaskCreateFailed";
 const WORKSPACE_BUSY: &str = "WorkspaceBusy";
 /// Three attempts at one post were refused.
 const POST_FAILED: &str = "PostFailed";
+/// Three attempts at one step of the thread's retirement were refused.
+const RETIRE_FAILED: &str = "RetireFailed";
 /// A post's outcome stays unknown on a platform where Fleet cannot find it
 /// again; it waits for a person.
 const POST_UNCONFIRMED: &str = "PostUnconfirmed";
@@ -510,7 +513,62 @@ impl Pass<'_, '_> {
         self.admit();
         self.trim_effects();
         self.phase();
+        self.retirement();
         self.conditions();
+    }
+
+    /// Whether the tied Task is observed being deleted.
+    fn tied_task_deleting(&self) -> bool {
+        let Some(tie) = &self.st.task else {
+            return false;
+        };
+        tie.state == TieState::Created
+            && matches!(
+                &self.input.observations.task,
+                Some(Observation::Known(Some(t))) if t.metadata.uid == tie.uid && t.is_deleting()
+            )
+    }
+
+    /// When the thread's retention runs out: `gateway.retainMs` after the
+    /// later of its last message, its orphaning and its creation.
+    fn retained_until(&self) -> Millis {
+        let now = self.now();
+        let orphaned_at = (self.st.phase == Phase::Orphaned).then(|| {
+            match condition(&self.st.conditions, TIED) {
+                // Orphaned on this pass: the condition moves below.
+                Some(c) if c.status == ConditionStatus::True => now,
+                Some(c) => c.last_transition_time,
+                None => now,
+            }
+        });
+        let since = [
+            self.st.last_message_at,
+            orphaned_at,
+            self.input.object.metadata.creation_timestamp,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(now);
+        since.saturating_add(self.input.defaults.retain_ms)
+    }
+
+    /// The thread's end of life, decided before the conditions are, so a
+    /// condition it raises is written: never while a create is pending or
+    /// waits for the thread's directory.
+    fn retirement(&mut self) {
+        let waiting = self
+            .st
+            .task
+            .as_ref()
+            .is_some_and(|t| matches!(t.state, TieState::Busy | TieState::Pending));
+        if waiting {
+            return;
+        }
+        let idle = self.retained_until() <= self.now();
+        if self.st.retiring.is_some() || idle {
+            self.retire(idle);
+        }
     }
 
     /// The tie, as the Task's observation leaves it: a readably absent
@@ -930,6 +988,16 @@ impl Pass<'_, '_> {
         self.st.task.as_ref().map_or(0, |t| t.n).max(recorded) + 1
     }
 
+    /// The thread's own workspace: on a `dir` route, the route's base
+    /// directory and this Conversation's name, the same for every Task the
+    /// thread starts; a `repositories` workspace as the route gives it.
+    fn workspace(&self, route: &RouteConfig) -> task::Workspace {
+        match route.workspace.dir() {
+            Some(base) => task::Workspace::at(thread_dir(base, &self.input.object.metadata.name)),
+            None => route.workspace.clone(),
+        }
+    }
+
     /// The Task the thread starts, as the interface page gives it.
     fn task_object(&self, name: &str, route: &RouteConfig, brief: &str) -> Object {
         Object {
@@ -950,7 +1018,7 @@ impl Pass<'_, '_> {
             spec: json!({
                 "configRef": {"name": route.task_config},
                 "brief": brief,
-                "workspace": route.workspace,
+                "workspace": self.workspace(route),
                 "dispatch": true,
             }),
             status: serde_json::Value::Null,
@@ -958,8 +1026,9 @@ impl Pass<'_, '_> {
     }
 
     /// Ask the manager to create the tie's Task under its key, intent
-    /// first, with a `dir` route's workspace as the precondition. A
-    /// `repositories` route shares no directory, so its create has none.
+    /// first, with the thread's own directory as the precondition on a
+    /// `dir` route. A `repositories` route shares no directory, so its
+    /// create has none.
     fn plan_create(&mut self, counted: bool) {
         let (Some(route), Some(brief)) = (
             self.input.defaults.route.clone(),
@@ -980,7 +1049,7 @@ impl Pass<'_, '_> {
         self.creates.push(Create {
             key,
             object,
-            exclusive: route.workspace.dir().map(|dir| Exclusive {
+            exclusive: self.workspace(&route).dir().map(|dir| Exclusive {
                 workspace: dir.to_string(),
             }),
         });
@@ -1035,12 +1104,12 @@ impl Pass<'_, '_> {
                     .defaults
                     .route
                     .as_ref()
-                    .and_then(|r| r.workspace.dir().map(str::to_string))
+                    .and_then(|r| self.workspace(r).dir().map(str::to_string))
                     .unwrap_or_default();
                 self.attention.raise(
                     WORKSPACE_BUSY,
                     format!(
-                        "Task/{holder} has the route's workspace {dir}; the request waits for it"
+                        "Task/{holder} has the thread's directory {dir}; the request waits for it"
                     ),
                 );
                 let notice = busy_key(self.uid(), tie.n);
@@ -1450,6 +1519,13 @@ impl Pass<'_, '_> {
             // never guess whose it is.
             return;
         }
+        if self.tied_task_deleting() {
+            // The thread orphans once the Task is gone, and an Orphaned
+            // thread starts a Task on any admitted message: judge then, so
+            // a message written meanwhile is not judged in a Tied thread
+            // and lost.
+            return;
+        }
         self.tie_by_marker();
         let people = self.input.defaults.people.clone();
         let starter = self.st.starter.clone();
@@ -1592,7 +1668,14 @@ impl Pass<'_, '_> {
         };
         let at_latest = |t: Millis| wake.map_or(t, |w| w.min(t));
         if self.st.phase == Phase::Tied {
-            self.st.not_before = Some(at_latest(next_read));
+            // A retirement's next step, else the next read; an idle thread
+            // whose Task runs is looked at again then, never sooner.
+            let next = if self.st.retiring.is_some() && self.post_wake {
+                now
+            } else {
+                next_read
+            };
+            self.st.not_before = Some(at_latest(next));
             return;
         }
         let orphaned_at = (self.st.phase == Phase::Orphaned)
@@ -1608,14 +1691,198 @@ impl Pass<'_, '_> {
         .max()
         .unwrap_or(now);
         let until = since.saturating_add(self.input.defaults.retain_ms);
-        if until <= now {
-            self.delete = self.creates.is_empty() && self.effects.is_empty();
-            self.st.not_before = Some(at_latest(until));
+        if self.st.retiring.is_some() || until <= now {
+            // The retirement's next step, decided in `retirement`.
+            let next = if self.post_wake {
+                now
+            } else {
+                now.saturating_add(poll)
+            };
+            self.st.not_before = Some(at_latest(next));
         } else if unknown_read {
             self.st.not_before = Some(at_latest(until.min(next_read)));
         } else {
             self.st.not_before = Some(at_latest(until));
         }
+    }
+}
+
+impl Pass<'_, '_> {
+    /// A thread's one end of life, once it had no message for its
+    /// retention. Started only for an Untied or Orphaned thread, or one
+    /// whose Task is Concluded; a message numbered since ends it, and so
+    /// does a Task that is no longer Concluded. Each step is a keyed effect
+    /// under the retirement's start, so a crash between two steps resumes
+    /// at the first one without a settled receipt:
+    ///
+    /// 1. the Task the thread created is deleted, fenced on its uid; the
+    ///    thread then orphans as it does for any Task readably gone;
+    /// 2. the directory the manager recorded making is removed, while no
+    ///    Task names it;
+    /// 3. the Conversation is deleted, fenced, as retention always did.
+    ///
+    /// An Unknown read waits; it never counts as absence.
+    fn retire(&mut self, idle: bool) {
+        let now = self.now();
+        if let Some(r) = self.st.retiring {
+            let key = retire_dir_key(self.uid(), r.at);
+            let removed = self.st.effects.get(&key).is_some_and(|rec| {
+                matches!(
+                    rec.receipt.as_ref().map(|rc| &rc.outcome),
+                    Some(Observation::Known(EffectOutcome::Deleted))
+                )
+            });
+            if removed {
+                // Gone, whatever happens next: the record goes with it.
+                self.st.dir = None;
+            }
+        }
+        if self
+            .st
+            .retiring
+            .is_some_and(|r| r.revision != self.st.revision)
+        {
+            // A message since: the thread is in use again.
+            self.st.retiring = None;
+            self.attention.clear(RETIRE_FAILED);
+        }
+        let concluded = |t: &Object| t.status["phase"].as_str() == Some("Concluded");
+        let tied = self.st.phase == Phase::Tied;
+        let tie_uid = self
+            .st
+            .task
+            .as_ref()
+            .map(|t| t.uid.clone())
+            .unwrap_or_default();
+        let task = match &self.input.observations.task {
+            Some(Observation::Known(Some(t))) if t.metadata.uid == tie_uid => Some(Some(t.clone())),
+            Some(Observation::Known(_)) => Some(None),
+            _ => None,
+        };
+        if self.st.retiring.is_none() {
+            let eligible =
+                !tied || matches!(&task, Some(Some(t)) if concluded(t) && !t.is_deleting());
+            if !idle || !eligible {
+                return;
+            }
+            self.st.retiring = Some(Retiring {
+                at: now,
+                revision: self.st.revision,
+            });
+        }
+        let Some(retiring) = self.st.retiring else {
+            return;
+        };
+        if tied {
+            let Some(Some(t)) = task else {
+                // Unknown waits; a readably gone Task orphans the thread
+                // on this pass's tie check, next pass.
+                return;
+            };
+            if t.is_deleting() {
+                return;
+            }
+            if !concluded(&t) {
+                self.st.retiring = None;
+                self.attention.clear(RETIRE_FAILED);
+                return;
+            }
+            let key = retire_task_key(self.uid(), retiring.at);
+            let action = Action::DeleteTask {
+                name: t.metadata.name.clone(),
+                uid: t.metadata.uid.clone(),
+            };
+            self.retire_step(&key, action);
+            return;
+        }
+        if let Some(dir) = self.st.dir.clone() {
+            let key = retire_dir_key(self.uid(), retiring.at);
+            let removed = self.st.effects.get(&key).is_some_and(|r| {
+                matches!(
+                    r.receipt.as_ref().map(|rc| &rc.outcome),
+                    Some(Observation::Known(EffectOutcome::Deleted))
+                )
+            });
+            if !removed {
+                let action = Action::RemoveDir {
+                    host: dir.host,
+                    path: dir.path,
+                };
+                self.retire_step(&key, action);
+                return;
+            }
+            self.st.dir = None;
+        }
+        self.delete = self.creates.is_empty() && self.effects.is_empty();
+    }
+
+    /// One keyed step of a retirement: planned once; Deleted settles it; a
+    /// Task that still names the directory waits, uncounted; a refusal is
+    /// tried again after the delay, three times, then `RetireFailed` holds
+    /// the thread for a person; an Unknown outcome is performed again,
+    /// which is harmless: a deleted Task and a removed directory stay so.
+    fn retire_step(&mut self, key: &str, action: Action) {
+        let name = action.name();
+        let record = self.st.effects.get(key).cloned();
+        let outcome = record
+            .as_ref()
+            .and_then(|r| r.receipt.as_ref())
+            .map(|r| (r.outcome.clone(), r.at));
+        let counted = match outcome {
+            Some((Observation::Known(EffectOutcome::Deleted), _)) => {
+                self.attention.clear(RETIRE_FAILED);
+                self.attention.clear(WORKSPACE_BUSY);
+                return;
+            }
+            Some((Observation::Known(EffectOutcome::WorkspaceBusy { task }), at)) => {
+                self.attention.raise(
+                    WORKSPACE_BUSY,
+                    format!("Task/{task} names the thread's directory; it is removed once free"),
+                );
+                let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
+                if self.now() < at.saturating_add(poll) {
+                    self.wake_at(at.saturating_add(poll));
+                    return;
+                }
+                false
+            }
+            Some((Observation::Known(other), at)) => {
+                let attempts = record.as_ref().map_or(0, |r| r.attempts);
+                let why = match other {
+                    EffectOutcome::Failed { why } => why,
+                    o => format!("{o:?}"),
+                };
+                if attempts >= MAX_ATTEMPTS {
+                    self.attention.raise(
+                        RETIRE_FAILED,
+                        format!("{attempts} attempts to {name} were refused: {why}"),
+                    );
+                    return;
+                }
+                if self.now() < at.saturating_add(RETRY_DELAY_MS) {
+                    self.wake_at(at.saturating_add(RETRY_DELAY_MS));
+                    return;
+                }
+                true
+            }
+            // Its outcome is not known: again, one interval later.
+            Some((Observation::Unknown { .. }, at)) => {
+                let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
+                if self.now() < at.saturating_add(poll) {
+                    self.wake_at(at.saturating_add(poll));
+                    return;
+                }
+                true
+            }
+            // Not performed yet.
+            None => true,
+        };
+        self.renew_intent(key, name, counted);
+        self.effects.push(Effect {
+            key: key.to_string(),
+            action,
+        });
+        self.post_wake = true;
     }
 }
 

@@ -1164,6 +1164,56 @@ impl Store for FileStore {
         self.mark_deleted(obj)
     }
 
+    fn retire_conversation_task(
+        &self,
+        name: &str,
+        uid: &str,
+        conversation_uid: &str,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<DeleteOutcome, StoreError> {
+        if !kinds::may_retire_conversation_task(&by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not retire conversation Tasks",
+                by.name()
+            )));
+        }
+        let _guard = self.lock()?;
+        self.check_lease(lease)?;
+        let obj = self.read_existing(task::KIND, name)?;
+        // A recreated Task under the same name has a new uid: the plan that
+        // named the old one removes nothing.
+        if obj.metadata.uid != uid {
+            return Err(StoreError::Conflict {
+                key: obj.key(),
+                expected: 0,
+                actual: obj.metadata.resource_version,
+            });
+        }
+        if obj
+            .metadata
+            .labels
+            .get(conversation::CONVERSATION_UID_LABEL)
+            .map(String::as_str)
+            != Some(conversation_uid)
+        {
+            return Err(StoreError::Forbidden(format!(
+                "{} was not created for this thread",
+                obj.key()
+            )));
+        }
+        if obj.is_deleting() {
+            return Ok(DeleteOutcome::Marked);
+        }
+        if obj.status["phase"].as_str() != Some("Concluded") {
+            return Err(StoreError::Forbidden(format!(
+                "{} is not Concluded; a thread whose Task runs is not retired",
+                obj.key()
+            )));
+        }
+        self.mark_deleted(obj)
+    }
+
     fn receive_event(
         &self,
         name: &str,

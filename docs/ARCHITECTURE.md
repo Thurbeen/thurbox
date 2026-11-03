@@ -204,25 +204,26 @@ and every plugin process is one bounded call through `fleet-exec`.
 
 ### The Gateway controller
 
-The [Gateway controller](controllers/gateway/README.md)
-is the Forge controller's pattern applied to chat. A listener outside
-the manager holds a chat platform's connection and hands each raw event to
-`fleet gateway receive`, a bounded manager verb that reads it through the
-adapter and spools it on a [Conversation](resources/conversation.md), the
-mirror of one thread. ConversationController numbers its messages, applies
-the route's admission rules and creates one Task per thread; GatewayController,
-a third controller over the Task, owns `status.gateway`, relays new messages
-into the inbox under a cursor through `record_relay`, and posts what the
-Task declares as keyed effects through a `Gateway` port, with adapters in
-the `fleet-gateway` crate, for Slack and Discord. The port, the crate with its
+The [Gateway controller](controllers/gateway/README.md) is the Forge
+controller's pattern applied to chat. A listener outside the manager holds a
+chat platform's connection and hands each raw event to `fleet gateway
+receive`, a bounded manager verb that reads it through the adapter and spools
+it on a [Conversation](resources/conversation.md), the mirror of one thread.
+ConversationController numbers its messages, applies the route's admission
+rules, creates one Task per thread in the thread's own directory, and retires
+an idle thread with its Task and that directory; GatewayController, a third
+controller over the Task, owns `status.gateway`, relays new messages into the
+inbox under a cursor through `record_relay`, and posts what the Task declares
+as keyed effects through a `Gateway` port, with adapters in the
+`fleet-gateway` crate, for Slack and Discord. The port, the crate with its
 fake, Slack and Discord adapters, the `[gateway]` section, the two kinds, the
 receive verb, ConversationController, ListenerController, and
-GatewayController's tie, join and relay, with `status.answered` and the
-parent labels, and GatewayController's posting, are built.
-ListenerController reports each account's inbound health from the listener's
-own beats, on a [Listener](resources/listener.md). The purity and process rules
-above are unchanged: the Gateway runs no model, every adapter call is
-bounded, and no platform name appears above the port.
+GatewayController's tie, join and relay, with `status.answered` and the parent
+labels, and GatewayController's posting, are built. ListenerController reports
+each account's inbound health from the listener's own beats, on a
+[Listener](resources/listener.md). The purity and process rules above are
+unchanged: the Gateway runs no model, every adapter call is bounded, and no
+platform name appears above the port.
 
 ## Scope and compatibility
 

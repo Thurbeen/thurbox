@@ -24,6 +24,7 @@ use fleet_api::gateway::{
 use fleet_api::plan::EffectOutcome;
 use fleet_gateway::SlackGateway;
 use fleet_gateway::slack::POST_LIMIT;
+use fleet_runtime::fake::Fault;
 use serde_json::{Value, json};
 use support::{
     ALEX_ID, Env, GATEWAY_ACCOUNT, GATEWAY_CHANNEL, GATEWAY_ROUTE, SAM_ID, assert_condition,
@@ -893,7 +894,7 @@ fn an_orphaned_conversation_keeps_its_messages_and_is_retired_after_its_retentio
     let orphaned_at = support::condition(&st, "Tied")["lastTransitionTime"]
         .as_u64()
         .unwrap();
-    let retain = 2_592_000_000u64;
+    let retain = RETAIN_MS;
     assert_eq!(st["notBefore"], orphaned_at + retain, "{st:#}");
     env.expire_wait_of("Conversation", &conv);
     env.reconcile().ok();
@@ -1664,7 +1665,7 @@ fn an_admitted_mention_starts_one_task_tied_to_the_thread() {
         json!({
             "configRef": {"name": "conversation"},
             "brief": support::GATEWAY_BRIEF,
-            "workspace": {"dir": env.gateway_workspace()},
+            "workspace": {"dir": thread_dir(&env, &conv)},
             "dispatch": true,
         }),
         "the Task is the interface page's JSON: {task:#}"
@@ -1836,13 +1837,334 @@ fn an_orphaned_thread_starts_the_next_task_on_any_admitted_message() {
     env.assert_no_temp();
 }
 
+/// The directory a thread's Tasks get on the gateway route: the route's
+/// base directory and the thread's Conversation name.
+fn thread_dir(env: &Env, conv: &str) -> String {
+    format!("{}/{conv}", env.gateway_workspace())
+}
+
 #[test]
-fn a_busy_workspace_holds_the_thread_says_so_once_and_starts_when_free() {
+fn two_threads_on_one_route_each_start_a_task_in_their_own_directory() {
+    let (env, first_conv) = admitting("two-threads");
+    let second_thread = "fake:C0123ABCD:1730000900000";
+    env.fake_gateway()
+        .seed(
+            &ConversationRef::split(second_thread).unwrap(),
+            vec![person(SAM_ID, T0 + 900_000, "The import is slow too.")],
+        )
+        .unwrap();
+    // The first thread's Task runs, concludes and is kept.
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    env.reconcile().ok();
+    let first = format!("{first_conv}-1");
+    let task = env.get(&first);
+    assert_eq!(
+        task["spec"]["workspace"],
+        json!({"dir": thread_dir(&env, &first_conv)}),
+        "{task:#}"
+    );
+    assert!(
+        Path::new(&thread_dir(&env, &first_conv)).is_dir(),
+        "the manager made the thread's directory"
+    );
+    env.reconcile().ok();
+    env.fleet(&[
+        "result",
+        &first,
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+    ])
+    .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status(&first)["phase"], "Concluded");
+    // A mention in a second thread of the same route starts its Task at
+    // once, in its own directory, with no busy notice.
+    env.receive(
+        "Ev02",
+        message_event(
+            second_thread,
+            "1730000950000",
+            ALEX_ID,
+            T0 + 950_000,
+            &format!("<@{BOT}> can you look at this one?"),
+        ),
+    )
+    .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let second_conv = conversation_name(GATEWAY_ACCOUNT, second_thread);
+    let second = format!("{second_conv}-1");
+    let task = env.get(&second);
+    assert_eq!(
+        task["spec"]["workspace"],
+        json!({"dir": thread_dir(&env, &second_conv)}),
+        "{task:#}"
+    );
+    assert!(Path::new(&thread_dir(&env, &second_conv)).is_dir());
+    let st = env.conversation_status(&second_conv);
+    assert_eq!(st["phase"], "Tied", "{st:#}");
+    assert_eq!(st["task"]["state"], "created", "{st:#}");
+    assert!(
+        st["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["reason"] != "WorkspaceBusy"),
+        "{st:#}"
+    );
+    assert_eq!(
+        env.fake_gateway().posts().unwrap(),
+        vec![],
+        "no busy notice in either thread"
+    );
+    assert_eq!(env.status(&first)["phase"], "Concluded");
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_thread_directory_the_manager_cannot_make_is_a_refused_create_and_no_task() {
+    let (env, conv) = admitting("dir-refused");
+    // A file stands where the route's base directory should be, so the
+    // thread's directory cannot be made under it.
+    let base = PathBuf::from(env.gateway_workspace());
+    fs::create_dir_all(base.parent().unwrap()).unwrap();
+    fs::write(&base, "not a directory").unwrap();
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let task_name = format!("{conv}-1");
+    env.get_absent(&task_name);
+    let conv_uid = uid_of(&env, "conversation", &conv);
+    let key = format!("conversation/{conv_uid}/task/1");
+    let st = env.conversation_status(&conv);
+    let known = &st["effects"][&key]["receipt"]["outcome"]["known"];
+    assert_eq!(known["type"], "failed", "{st:#}");
+    assert!(
+        known["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("the thread's directory")),
+        "{st:#}"
+    );
+    assert_eq!(st["phase"], "Untied", "{st:#}");
+    assert_eq!(
+        env.fake_gateway().posts().unwrap().len(),
+        0,
+        "no busy notice"
+    );
+    // The operator clears the way; the retry, under the same key, makes the
+    // directory and the Task.
+    fs::remove_file(&base).unwrap();
+    let path = env.object_path("Conversation", &conv);
+    let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    obj["status"]["effects"][&key]["receipt"]["at"] = json!(0);
+    obj["status"]["notBefore"] = json!(0);
+    fs::write(&path, obj.to_string()).unwrap();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let task = env.get(&task_name);
+    assert_eq!(
+        task["spec"]["workspace"],
+        json!({"dir": thread_dir(&env, &conv)})
+    );
+    assert!(Path::new(&thread_dir(&env, &conv)).is_dir());
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Tied", "{st:#}");
+    assert_eq!(st["effects"][&key]["attempts"], 2, "{st:#}");
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_thread_directory_whose_creation_is_unknown_is_recovered_by_a_lookup_and_a_retry() {
+    let (env, conv) = admitting("dir-unknown");
+    // The runtime made the directory, and its answer was lost.
+    env.fault(Fault::new("createDir", "unknown").performed());
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    assert!(
+        report["unknowns"]
+            .to_string()
+            .contains("the thread's directory"),
+        "{report:#}"
+    );
+    // A later pass of the same run looked for the Task, found none, and
+    // created it under the same key; making the directory again was
+    // harmless.
+    let task_name = format!("{conv}-1");
+    let conv_uid = uid_of(&env, "conversation", &conv);
+    let key = format!("conversation/{conv_uid}/task/1");
+    let task = env.get(&task_name);
+    assert_eq!(
+        task["spec"]["workspace"],
+        json!({"dir": thread_dir(&env, &conv)})
+    );
+    assert!(Path::new(&thread_dir(&env, &conv)).is_dir());
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Tied", "{st:#}");
+    assert_eq!(st["effects"][&key]["attempts"], 2, "{st:#}");
+    assert_eq!(env.calls("createDir"), 2);
+    env.assert_no_temp();
+}
+
+/// `gateway.retainMs` as the gateway environment leaves it: the default.
+const RETAIN_MS: u64 = 604_800_000;
+
+/// Let a thread's retention run out on its record, as time would: every
+/// clock it counts from moves back past `gateway.retainMs`.
+fn age_past_retention(env: &Env, conv: &str) {
+    let path = env.object_path("Conversation", conv);
+    let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let old = support::now_ms() - RETAIN_MS - 1;
+    obj["metadata"]["creationTimestamp"] = json!(old);
+    obj["status"]["lastMessageAt"] = json!(old);
+    for c in obj["status"]["conditions"].as_array_mut().unwrap() {
+        if c["type"] == "Tied" {
+            c["lastTransitionTime"] = json!(old);
+        }
+    }
+    obj["status"]["notBefore"] = json!(0);
+    fs::write(&path, obj.to_string()).unwrap();
+}
+
+/// Start a thread's first Task with a mention and return its Conversation.
+fn start_thread(env: &Env, thread: &str, delivery: &str, at: u64) -> String {
+    env.fake_gateway()
+        .seed(
+            &ConversationRef::split(thread).unwrap(),
+            vec![person(SAM_ID, at - 1_000, "Something is off.")],
+        )
+        .unwrap();
+    env.receive(
+        delivery,
+        message_event(
+            thread,
+            &at.to_string(),
+            ALEX_ID,
+            at,
+            &format!("<@{BOT}> can you look into it?"),
+        ),
+    )
+    .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let conv = conversation_name(GATEWAY_ACCOUNT, thread);
+    env.get(&format!("{conv}-1"));
+    conv
+}
+
+/// Conclude a thread's Task and let its agent rest.
+fn conclude(env: &Env, task: &str) {
+    env.reconcile().ok();
+    env.fleet(&["result", task, "--generation", "1", "--outcome", "shipped"])
+        .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status(task)["phase"], "Concluded");
+    env.host()
+        .set_at_rest(&env.session_key(task), true)
+        .unwrap();
+}
+
+#[test]
+fn a_concluded_thread_idle_past_its_retention_is_retired_as_a_whole() {
+    let env = Env::gateway("retire");
+    env.apply(task_config()).ok();
+    // Thread A concludes. Thread B's Task still runs. Thread C concludes,
+    // but its directory was there before Fleet made it.
+    let a = start_thread(&env, "fake:C0123ABCD:1730000100000", "Ev01", T0 + 100_000);
+    let b = start_thread(&env, "fake:C0123ABCD:1730000200000", "Ev02", T0 + 200_000);
+    let c_dir = thread_dir(
+        &env,
+        &conversation_name(GATEWAY_ACCOUNT, "fake:C0123ABCD:1730000300000"),
+    );
+    fs::create_dir_all(&c_dir).unwrap();
+    fs::write(Path::new(&c_dir).join("notes.md"), "kept by the operator").unwrap();
+    let c = start_thread(&env, "fake:C0123ABCD:1730000300000", "Ev03", T0 + 300_000);
+    let a_dir = thread_dir(&env, &a);
+    fs::write(Path::new(&a_dir).join("work.md"), "left by Task 1").unwrap();
+    let a_task = format!("{a}-1");
+    let b_task = format!("{b}-1");
+    let c_task = format!("{c}-1");
+    let a_key = env.session_key(&a_task);
+    conclude(&env, &a_task);
+    conclude(&env, &c_task);
+    assert_eq!(
+        env.conversation_status(&a)["dir"],
+        json!({"path": a_dir, "host": "local"}),
+        "the manager recorded the directory it made"
+    );
+    assert!(
+        env.conversation_status(&c)["dir"].is_null(),
+        "a directory that was there already is not Fleet's"
+    );
+    // Not idle yet: nothing is retired.
+    env.expire_wait_of("Conversation", &a);
+    env.reconcile().ok();
+    env.get(&a_task);
+    // Every thread is idle past its retention.
+    for conv in [&a, &b, &c] {
+        age_past_retention(&env, conv);
+    }
+    for _ in 0..6 {
+        let report = env.reconcile().ok().json();
+        assert_eq!(report["errors"], json!([]), "{report:#}");
+        for conv in [&a, &b, &c] {
+            if env.fleet(&["get", "conversation", conv]).code == Some(0) {
+                env.expire_wait_of("Conversation", conv);
+            }
+        }
+    }
+    // A: its Task, its session, its Conversation and its directory are gone.
+    env.get_absent(&a_task);
+    env.fleet(&["get", "conversation", &a]).code(3);
+    assert!(
+        !Path::new(&a_dir).exists(),
+        "the thread's directory is removed"
+    );
+    assert!(
+        env.host().session(&a_key).unwrap().unwrap().released,
+        "the session was released"
+    );
+    // B: a running Task holds its thread; nothing is retired.
+    env.get(&b_task);
+    assert_eq!(env.conversation_status(&b)["phase"], "Tied");
+    assert!(Path::new(&thread_dir(&env, &b)).is_dir());
+    // C: retired, but the directory Fleet did not make stays, as it was.
+    env.get_absent(&c_task);
+    env.fleet(&["get", "conversation", &c]).code(3);
+    assert_eq!(
+        fs::read_to_string(Path::new(&c_dir).join("notes.md")).unwrap(),
+        "kept by the operator"
+    );
+    // The base directory stays.
+    assert!(Path::new(&env.gateway_workspace()).is_dir());
+    // A later mention in thread A starts fresh: a new Conversation, the
+    // thread's history, and an empty directory.
+    let again = start_thread(&env, "fake:C0123ABCD:1730000100000", "Ev04", T0 + 900_000);
+    assert_eq!(again, a);
+    assert!(
+        fs::read_dir(&a_dir).unwrap().next().is_none(),
+        "the new Task starts in an empty directory"
+    );
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_busy_thread_directory_holds_the_thread_says_so_once_and_starts_when_free() {
     let (env, conv) = admitting("busy");
-    // Another Task already runs in the route's directory, spelled with a
-    // trailing slash: the same directory.
+    // A Task applied by hand into the route's base directory holds no
+    // thread's directory.
+    let mut bystander = support::task("bystander", false);
+    bystander["spec"]["workspace"]["dir"] = json!(env.gateway_workspace());
+    env.apply(bystander).ok();
+    // Another Task already runs in this thread's own directory, spelled
+    // with a trailing slash: the same directory.
     let mut holder = support::task("holder", false);
-    holder["spec"]["workspace"]["dir"] = json!(format!("{}/", env.gateway_workspace()));
+    holder["spec"]["workspace"]["dir"] = json!(format!("{}/", thread_dir(&env, &conv)));
     env.apply(holder).ok();
     env.receive("Ev01", mention("1730000300000", T0 + 300_000))
         .ok();

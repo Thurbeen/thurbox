@@ -8,7 +8,7 @@ that create a Task, orphaning and retention are implemented, and so are
 every state of the tie on a Task, its `ConversationGone`, the join, the
 relay, posting and logging.
 
-![A Conversation starts Untied. The receive verb creates it, or Fleet creates it when it opens a thread for a Task's Question. A thread that Fleet opened is tied at once to the Task that its opening post's marker names. An admitted mention in an Untied thread creates a Task and ties it. When a tied Task is readably gone, the Conversation becomes Orphaned. The next admitted message there creates a new Task with the thread's history. When an Untied or Orphaned Conversation has no message for its retention, its own controller deletes it. While the Conversation is Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares.](state-machine.svg)
+![A Conversation starts Untied. The receive verb creates it, or Fleet creates it when it opens a thread for a Task's Question. A thread that Fleet opened is tied at once to the Task that its opening post's marker names. An admitted mention in an Untied thread creates a Task and ties it. When a tied Task is readably gone, the Conversation becomes Orphaned. The next admitted message there creates a new Task with the thread's history. When a Conversation has no message for its retention and is Untied, Orphaned, or tied to a Concluded Task, it retires: its controller deletes the Task, the manager removes the thread directory that it created, and the controller deletes the Conversation. While the Conversation is Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares.](state-machine.svg)
 
 ## Conversation phases
 
@@ -25,16 +25,27 @@ relay, posting and logging.
 | Untied | An admitted message that meets the mention rule | Tied, to a new Task |
 | Tied | The Task is readably gone, or another Task holds its name | Orphaned |
 | Orphaned | Any admitted message, with or without a mention | Tied, to a new Task with the whole thread |
-| Untied or Orphaned | No message for `gateway.retainMs` since the later of the last message and the orphaning, and no Task waiting for the workspace | deleted |
+| Tied | No message for `gateway.retainMs`, and the Task is Concluded: the retirement deletes the Task | Orphaned, retiring |
+| Untied or Orphaned | No message for `gateway.retainMs` since the later of the last message and the orphaning, and no Task waiting for the thread's directory; or a retirement in progress | deleted, after the thread's directory is removed |
 
 Behaviour in every phase:
 
 - A Conversation never leaves Tied because its Task is Unknown. Only a
   readably absent Task orphans it.
 - A message seen twice, from the listener and from history, is one message.
-- When the route's `dir` workspace is busy, the thread stays where it is, says so
-  once, and starts its Task when the workspace is free. A waiting thread is
-  never deleted by retention.
+- On a route with a `dir` workspace, every Task of the thread gets the
+  thread's own directory, `<dir>/<conversation name>`. Threads never wait
+  for each other.
+- When another Task already holds the thread's own directory, the thread
+  stays where it is, says so once, and starts its Task when the directory
+  is free. A waiting thread never retires.
+- A thread whose Task is not Concluded never retires.
+- A retirement runs its steps in order: the Task, the directory, the
+  Conversation. Each step is a keyed effect under
+  `conversation/<uid>/retire/<at>/`, so a crash between two steps resumes
+  at the first step without a settled receipt.
+- A message numbered during a retirement stops it. The thread keeps its
+  directory.
 - A thread Fleet opened for a Question starts no Task from a mention while
   the Question's Task exists. The [interface](interface.md#conversationcontroller)
   gives the limits.
@@ -158,7 +169,7 @@ On a Conversation:
 | --- | --- |
 | `Reachable` | The platform's history answered. |
 | `Tied` | A live Task is tied. |
-| `NeedsAttention` | One of `TaskCreateFailed`, `SpoolFull` (the thread's queue of unread events is full), `RouteUnknown` (the route left the config), `MentionsOnly` (the platform delivers only mentions, so only mentions are relayed), `WorkspaceBusy`, `PostFailed` (three attempts at a refusal or busy notice were refused), `PostUnconfirmed` (a refusal or busy notice has an unknown outcome on a platform where Fleet cannot find it again). |
+| `NeedsAttention` | One of `TaskCreateFailed`, `SpoolFull` (the thread's queue of unread events is full), `RouteUnknown` (the route left the config), `MentionsOnly` (the platform delivers only mentions, so only mentions are relayed), `WorkspaceBusy` (another Task holds the thread's own directory), `PostFailed` (three attempts at a refusal or busy notice were refused), `PostUnconfirmed` (a refusal or busy notice has an unknown outcome on a platform where Fleet cannot find it again), `RetireFailed` (three attempts at one step of the thread's retirement were refused). |
 
 On a Task, under `status.gateway.conditions`:
 
@@ -176,6 +187,12 @@ held post in one thread holds back no other thread.
 ## Deletion
 
 Deleting a conversation Task deletes nothing else. Its Conversation becomes
-Orphaned and is kept. Deleting a Conversation, by retention or by a person,
-changes nothing on the platform. Its Task, if any, raises
-`ConversationGone` and keeps running. Neither controller adds a finalizer.
+Orphaned and is kept. Deleting a Conversation changes nothing on the
+platform. Its Task, if any, raises `ConversationGone` and keeps running.
+Neither controller adds a finalizer.
+
+A retirement deletes the thread's Task, its directory and its
+Conversation, in that order. A person who deletes a Task or a Conversation
+by hand deletes only that object. The thread's directory then stays until
+the thread retires. A Conversation that a person deletes takes its record
+of the directory with it, so Fleet does not remove that directory.

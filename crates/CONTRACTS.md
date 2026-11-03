@@ -475,10 +475,32 @@ the effect blindly. Guarantees, each with its test in
   created Task asks for that Task every pass; readable absence, or another
   Task under the name, makes it Orphaned with `Tied/TaskGone`, the messages
   kept. An Unknown Task changes nothing.
-- **Retention.** Untied or Orphaned, `gateway.retainMs` after the later of
-  its last message, its orphaning and its creation, the controller plans
-  `delete`; the manager performs it by `uid` and `resourceVersion` under
-  the lease. A thread whose Task waits for the workspace is never retired.
+- **End of life.** A thread retires once it had no message for
+  `gateway.retainMs` (seven days by default) since the later of its last
+  message, its orphaning and its creation, and is Untied, Orphaned, or
+  Tied to a Task that is Concluded. `status.retiring` records the start
+  (`at`, `revision`); a message numbered since, or a Task no longer
+  Concluded, ends it. Its steps, each a keyed effect under
+  `conversation/<uid>/retire/<at>/…`, run in order and resume after a
+  crash at the first without a settled receipt:
+  1. `DeleteTask` (`…/task`): the store's `retire_conversation_task`
+     deletes the Task fenced on its `uid` and the lease, only when it
+     carries this Conversation's uid label and is Concluded; its
+     finalizer then releases the session, and the thread orphans.
+  2. `RemoveDir` (`…/dir`): only when `status.dir` records the directory
+     the manager made; the manager lists the Tasks first and answers
+     `WorkspaceBusy`, uncounted and tried again one `pollMs` later, while
+     one names it, then removes it through the runtime's `remove_dir`.
+     Its `Deleted` receipt clears `status.dir`.
+  3. `delete`, by `uid` and `resourceVersion` under the lease.
+
+  A refused step is tried again after `RETRY_DELAY_MS`, three times, then
+  `NeedsAttention/RetireFailed` holds the thread; an Unknown one is
+  performed again one `pollMs` later, which is harmless. An Unknown Task
+  read waits. A thread whose Task waits for its directory never retires,
+  nor does one whose Task runs; it is looked at again every `pollMs`.
+  While the tied Task is being deleted, new messages wait to be judged
+  until the thread is Orphaned, so none is lost in a Tied thread.
 - **One write.** The status lands through `record_received`, which checks
   the controller's fields as `update_status` does and lets `received`,
   which nobody owns, only lose entries, never gain or alter one.
@@ -494,8 +516,8 @@ the effect blindly. Guarantees, each with its test in
 - **Start.** In an Untied thread, an admitted message that meets
   `route.mention` (`required`: it mentions Fleet; `top-level`: it is the
   thread's starter) starts the thread's next Task, `<conversation>-<n>`,
-  exactly the interface page's JSON (the route's `taskConfig`, brief and
-  workspace, `dispatch` true, the three labels), under
+  exactly the interface page's JSON (the route's `taskConfig` and brief,
+  the thread's workspace, `dispatch` true, the three labels), under
   `conversation/<uid>/task/<n>` with the tie `pending` and the trigger
   kept; in an Orphaned thread any admitted message does. One Task per
   pass, and never while a tie is pending, busy or created. A thread whose
@@ -503,15 +525,30 @@ the effect blindly. Guarantees, each with its test in
   to it (`n` 0) and starts nothing; one whose Task is readably gone, or
   whose starter was removed, may; one whose Task is Unknown, or whose
   starter is Fleet's without a readable marker, ignores mentions.
-- **Workspace.** The manager lists the store's Tasks under the lease
-  immediately before the fenced create and answers `WorkspaceBusy` naming
-  the Task whose `spec.workspace.dir` normalises to the route's, creating
-  nothing; the tie turns `busy`, `NeedsAttention/WorkspaceBusy` is raised,
-  one notice is posted under `conversation/<uid>/busy/<n>`, retention is
-  held, and the create is planned again under the same key every `pollMs`,
-  not counted as an attempt, until it lands. A busy tie whose trigger
-  message left the mirror is withdrawn, and the next Task takes the next
-  number.
+- **Workspace.** On a route whose workspace is a `dir`, that directory is a
+  base: every Task of one thread gets `<base>/<conversation name>`
+  (`conversation::thread_dir`, computed purely), and the create's
+  `exclusive` names that directory. A `repositories` workspace is the
+  route's, with no precondition. The manager lists the store's Tasks under
+  the lease immediately before the fenced create and answers `WorkspaceBusy`
+  naming the Task whose `spec.workspace.dir` normalises to the thread's,
+  creating nothing. Otherwise it makes the directory, with its missing
+  parents, through the runtime's `create_dir` on the Task's host (its
+  `host`, else its TaskConfig's, else `local`; an absent TaskConfig is a
+  `Failed` create), then creates the Task: a directory the runtime refuses
+  is a `Failed` create, and one it cannot tell about is Unknown, so no Task
+  names a missing directory. When `create_dir` answers that it made the
+  directory, the manager records it as `status.dir` (`path`, `host`) in the
+  same write as the create's receipt, whatever the create answered; a
+  directory that was there already is not recorded. A crash after the
+  runtime made the directory and before that write leaves it unrecorded, so
+  Fleet keeps it: the failure keeps a directory, never removes one. On
+  `WorkspaceBusy` the tie turns `busy`, `NeedsAttention/WorkspaceBusy` is
+  raised, one notice is posted under `conversation/<uid>/busy/<n>`,
+  retention is held, and the create is planned again under the same key
+  every `pollMs`, not counted as an attempt, until it lands. A busy tie
+  whose trigger message left the mirror is withdrawn, and the next Task
+  takes the next number.
 - **Adopt.** A create with no receipt, or an Unknown one, asks for the Task
   under the name: one carrying this Conversation's uid label is adopted
   (`Created { adopted }`), one with another label is a refusal, readable
@@ -687,9 +724,14 @@ refused.
 
 ## Runtime contract
 
-`fleet_api::runtime::Runtime`: `host`, `spawn`, `find`, `ready`,
-`workspace_trust`, `brief`, `brief_delivered`, `at_rest`, `release`, `lost`
-and `revive`, each answering Known or Unknown.
+`fleet_api::runtime::Runtime`: `host`, `create_dir`, `remove_dir`,
+`spawn`, `find`, `ready`, `workspace_trust`, `brief`, `brief_delivered`,
+`at_rest`, `release`, `lost` and `revive`, each answering Known or
+Unknown. `create_dir` makes a directory with its missing parents on a
+host and says whether it made it; `remove_dir` removes one and what it
+holds, a directory already gone included. The thurbox adapter does both
+on the local host and refuses any other, since thurbox has no verb that
+makes or removes a directory on a remote host.
 Each adapter reports its longest single operation (`operation_bound`), and
 `fleet reconcile` refuses a lease that could not outlast it.
 
@@ -729,7 +771,11 @@ and deletes the session; every adapter keeps these rules:
   completes its own partial state. Fleet acts on `find` alone.
 - **Cleanup.** `release` deletes the session. The runtime then cleans the
   workspace as it is configured to. Fleet never inspects or deletes a
-  workspace.
+  workspace, with one exception: a Gateway thread's directory that the
+  manager made, which it removes when the thread retires (see
+  [the Conversation mirror](#the-conversation-mirror)). Fleet
+  never removes a directory it did not make, a route's base directory or
+  a `repositories` workspace.
 - **Refusal.** A workspace the adapter cannot make, or may not make, is
   `Known(Failed)` at spawn, never Unknown. A repository the adapter has no
   source for is `Known(Unmapped { url })`. A harness the adapter knows no

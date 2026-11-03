@@ -5,7 +5,8 @@
 
 use fleet_api::condition::{Condition, ConditionStatus};
 use fleet_api::conversation::{
-    ConversationStatus, MESSAGE_CAP, Phase, SEEN_EVENTS_CAP, StoredMessage, Tie, TieState, Via,
+    ConversationStatus, MESSAGE_CAP, Phase, Retiring, SEEN_EVENTS_CAP, StoredMessage, ThreadDir,
+    Tie, TieState, Via, retire_dir_key, retire_task_key,
 };
 use fleet_api::gateway::{
     Author, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
@@ -763,7 +764,7 @@ fn an_orphaned_or_untied_thread_is_deleted_once_its_retention_passed() {
         CREATED_AT + 15_000,
     );
     assert!(plan.delete);
-    // A thread waiting for the route's workspace is never retired.
+    // A thread waiting for its own directory is never retired.
     let mut waiting = untied.clone();
     waiting.messages = vec![stored(person(ALEX, T0 + 300_000, "<@B0FLEET001> hi"), 1)];
     waiting.revision = 1;
@@ -1051,9 +1052,11 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
     assert_eq!(plan.creates.len(), 1, "{plan:#?}");
     let create = &plan.creates[0];
     assert_eq!(create.key, create_key());
+    // The route's directory is a base: the thread gets its own below it,
+    // and the precondition guards only that one.
     assert_eq!(
         create.exclusive.as_ref().map(|e| e.workspace.as_str()),
-        Some("/work/conversations")
+        Some("/work/conversations/conv-3f9a1c0d2b7e")
     );
     let expected: Object = serde_json::from_value(json!({
         "apiVersion": "fleet/v1alpha1",
@@ -1069,7 +1072,7 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
         "spec": {
             "configRef": {"name": "conversation"},
             "brief": BRIEF,
-            "workspace": {"dir": "/work/conversations"},
+            "workspace": {"dir": "/work/conversations/conv-3f9a1c0d2b7e"},
             "dispatch": true,
         }
     }))
@@ -1991,6 +1994,11 @@ fn an_orphaned_thread_starts_the_next_task_on_any_admitted_message() {
     assert_eq!(plan.creates[0].key, task_key(UID, 2));
     assert_eq!(plan.creates[0].object.metadata.name, format!("{NAME}-2"));
     assert_eq!(
+        plan.creates[0].object.spec["workspace"],
+        json!({"dir": format!("/work/conversations/{NAME}")}),
+        "the thread's next Task finds what the last one left"
+    );
+    assert_eq!(
         st3.task,
         Some(Tie {
             name: format!("{NAME}-2"),
@@ -2136,4 +2144,272 @@ fn nothing_starts_while_the_route_is_unknown_and_retention_waits_on_a_pending_cr
     );
     assert!(!plan.delete);
     assert_eq!(st.not_before, Some(CREATED_AT + 1_000_000 + 1_000));
+}
+
+fn concluded_task(uid: &str, phase: &str) -> Object {
+    let mut t = task_object(uid);
+    t.status = json!({"phase": phase});
+    t
+}
+
+fn thread_dir_record() -> ThreadDir {
+    ThreadDir {
+        path: format!("/work/conversations/{NAME}"),
+        host: "local".into(),
+    }
+}
+
+#[test]
+fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_then_itself() {
+    let idle = NOW + 10_000;
+    let mut st = tied();
+    st.dir = Some(thread_dir_record());
+    let obj = object(Some(&st));
+    // A running Task holds its thread: nothing retires.
+    let (plan, after) = run_with(
+        &obj,
+        ConversationObservations {
+            task: Some(Observation::Known(Some(concluded_task("t1", "Briefed")))),
+            ..ConversationObservations::default()
+        },
+        defaults(),
+        idle,
+    );
+    assert!(plan.effects.is_empty() && !plan.delete, "{plan:#?}");
+    assert_eq!(after.retiring, None);
+    assert_eq!(
+        after.not_before,
+        Some(idle + 1_000),
+        "looked at again one interval later, never at once"
+    );
+    // An Unknown Task decides nothing.
+    let (plan, after) = run_with(
+        &obj,
+        ConversationObservations {
+            task: Some(Observation::unknown("store unreadable")),
+            ..ConversationObservations::default()
+        },
+        defaults(),
+        idle,
+    );
+    assert!(plan.effects.is_empty() && !plan.delete, "{plan:#?}");
+    assert_eq!(after.retiring, None);
+    // Not idle yet: nothing retires.
+    let (plan, _) = run(
+        &obj,
+        ConversationObservations {
+            task: Some(Observation::Known(Some(concluded_task("t1", "Concluded")))),
+            ..ConversationObservations::default()
+        },
+    );
+    assert!(plan.effects.is_empty() && !plan.delete, "{plan:#?}");
+    // Idle and Concluded: step 1 deletes the Task, fenced on its uid.
+    let (plan, after) = run_with(
+        &obj,
+        ConversationObservations {
+            task: Some(Observation::Known(Some(concluded_task("t1", "Concluded")))),
+            ..ConversationObservations::default()
+        },
+        defaults(),
+        idle,
+    );
+    let retiring = after.retiring.expect("retiring");
+    assert_eq!(retiring.at, idle);
+    let task_key = retire_task_key(UID, idle);
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, task_key);
+    assert_eq!(
+        plan.effects[0].action,
+        Action::DeleteTask {
+            name: format!("{NAME}-1"),
+            uid: "t1".into()
+        }
+    );
+    assert!(!plan.delete);
+    // The Task is gone: the thread orphans, and step 2 removes the
+    // directory the manager recorded making, under the same retirement.
+    let mut gone = after.clone();
+    gone.effects.get_mut(&task_key).unwrap().receipt = Some(Receipt {
+        action: "deleteTask".into(),
+        at: idle,
+        outcome: Observation::Known(EffectOutcome::Deleted),
+    });
+    let (plan, after) = run_with(
+        &object(Some(&gone)),
+        ConversationObservations {
+            task: Some(Observation::Known(None)),
+            ..ConversationObservations::default()
+        },
+        defaults(),
+        idle + 2,
+    );
+    assert_eq!(after.phase, Phase::Orphaned);
+    assert_eq!(
+        after.retiring,
+        Some(retiring),
+        "the same retirement goes on"
+    );
+    let dir_key = retire_dir_key(UID, idle);
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, dir_key);
+    assert_eq!(
+        plan.effects[0].action,
+        Action::RemoveDir {
+            host: "local".into(),
+            path: format!("/work/conversations/{NAME}"),
+        }
+    );
+    assert!(
+        !plan.delete,
+        "the record goes with the Conversation, so it waits"
+    );
+    // Still named by a Task: it waits, and the attempt is not counted.
+    let mut busy = after.clone();
+    busy.effects.get_mut(&dir_key).unwrap().receipt = Some(Receipt {
+        action: "removeDir".into(),
+        at: idle + 2,
+        outcome: Observation::Known(EffectOutcome::WorkspaceBusy {
+            task: "by-hand".into(),
+        }),
+    });
+    let (plan, after) = run_with(
+        &object(Some(&busy)),
+        ConversationObservations::default(),
+        defaults(),
+        idle + 3,
+    );
+    assert!(plan.effects.is_empty(), "one interval first: {plan:#?}");
+    assert_eq!(after.not_before, Some(idle + 2 + 1_000));
+    assert_eq!(cond(&after, "NeedsAttention").reason, "WorkspaceBusy");
+    let (plan, after) = run_with(
+        &object(Some(&busy)),
+        ConversationObservations::default(),
+        defaults(),
+        idle + 2 + 1_000,
+    );
+    assert_eq!(plan.effects.len(), 1);
+    assert_eq!(after.effects[&dir_key].attempts, 1);
+    assert!(!plan.delete);
+    // Removed: step 3 deletes the Conversation.
+    let mut removed = after.clone();
+    removed.effects.get_mut(&dir_key).unwrap().receipt = Some(Receipt {
+        action: "removeDir".into(),
+        at: idle + 3,
+        outcome: Observation::Known(EffectOutcome::Deleted),
+    });
+    let (plan, _) = run_with(
+        &object(Some(&removed)),
+        ConversationObservations::default(),
+        defaults(),
+        idle + 2 + 1_001,
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert!(plan.delete);
+}
+
+#[test]
+fn a_thread_without_a_recorded_directory_retires_without_removing_one() {
+    let mut st = tied();
+    st.phase = Phase::Orphaned;
+    st.task.as_mut().unwrap().state = TieState::Gone;
+    fleet_api::condition::set_condition(
+        &mut st.conditions,
+        "Tied",
+        ConditionStatus::False,
+        "TaskGone",
+        "",
+        1,
+        NOW - 3_000,
+    );
+    let (plan, _) = run_with(
+        &object(Some(&st)),
+        ConversationObservations::default(),
+        defaults(),
+        NOW + 10_000,
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert!(plan.delete);
+}
+
+#[test]
+fn a_message_numbered_during_a_retirement_ends_it() {
+    let mut st = tied();
+    st.phase = Phase::Orphaned;
+    st.task.as_mut().unwrap().state = TieState::Gone;
+    st.dir = Some(thread_dir_record());
+    st.retiring = Some(Retiring {
+        at: NOW - 1_000,
+        revision: 1,
+    });
+    // A message numbered since moves the revision past the retirement's.
+    st.revision = 2;
+    st.last_message_at = Some(NOW - 10);
+    let (plan, after) = run(&object(Some(&st)), ConversationObservations::default());
+    assert_eq!(after.retiring, None, "{after:#?}");
+    assert!(plan.effects.is_empty(), "the directory stays: {plan:#?}");
+    assert!(!plan.delete);
+    assert_eq!(after.dir, Some(thread_dir_record()));
+}
+
+#[test]
+fn three_refused_steps_hold_the_retirement_with_a_written_condition() {
+    let mut st = tied();
+    st.phase = Phase::Orphaned;
+    st.task.as_mut().unwrap().state = TieState::Gone;
+    st.dir = Some(thread_dir_record());
+    st.retiring = Some(Retiring {
+        at: NOW - 100_000,
+        revision: 1,
+    });
+    fleet_api::condition::set_condition(
+        &mut st.conditions,
+        "Tied",
+        ConditionStatus::False,
+        "TaskGone",
+        "",
+        1,
+        NOW - 100_000,
+    );
+    let key = retire_dir_key(UID, NOW - 100_000);
+    st.effects.insert(
+        key.clone(),
+        serde_json::from_value(json!({
+            "intent": {"action": "removeDir", "at": NOW - 90_000, "generation": 1},
+            "receipt": {"action": "removeDir", "at": NOW - 90_000,
+                        "outcome": {"known": {"type": "failed", "why": "permission denied"}}},
+            "attempts": 3
+        }))
+        .unwrap(),
+    );
+    let (plan, after) = run(&object(Some(&st)), ConversationObservations::default());
+    assert!(plan.effects.is_empty() && !plan.delete, "{plan:#?}");
+    let c = cond(&after, "NeedsAttention");
+    assert_eq!(c.reason, "RetireFailed", "{after:#?}");
+    assert!(c.message.contains("permission denied"), "{c:#?}");
+    assert_eq!(
+        after.dir,
+        Some(thread_dir_record()),
+        "the directory is kept"
+    );
+}
+
+#[test]
+fn a_message_written_while_the_tied_task_is_deleted_waits_to_be_judged() {
+    let mut st = tied();
+    st.messages = vec![stored(person(ALEX, T0 + 300_000, "still broken"), 2)];
+    st.revision = 2;
+    st.judged = 1;
+    let mut deleting = concluded_task("t1", "Concluded");
+    deleting.metadata.deletion_timestamp = Some(NOW - 10);
+    let (_, after) = run(
+        &object(Some(&st)),
+        ConversationObservations {
+            task: Some(Observation::Known(Some(deleting))),
+            ..ConversationObservations::default()
+        },
+    );
+    assert_eq!(
+        after.judged, 1,
+        "judged once the thread is Orphaned: {after:#?}"
+    );
 }

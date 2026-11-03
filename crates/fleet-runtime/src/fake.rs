@@ -23,8 +23,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Fault {
-    /// `host`, `spawn`, `find`, `list`, `events`, `ready`, `workspaceTrust`,
-    /// `brief`, `briefDelivered`, `atRest`, `release`, `lost`, `revive`.
+    /// `host`, `createDir`, `removeDir`, `spawn`, `find`, `list`, `events`, `ready`,
+    /// `workspaceTrust`, `brief`, `briefDelivered`, `atRest`, `release`,
+    /// `lost`, `revive`.
     pub call: String,
     /// `unknown`, `fail` or `abort`.
     pub outcome: String,
@@ -386,6 +387,60 @@ impl Runtime for FakeRuntime {
             Some("down") => Observation::Known(false),
             Some(other) => Observation::unknown(format!("host {host} is {other}")),
         })
+    }
+
+    /// The fake host is this machine: the directory is made here, and the
+    /// effect is logged. `fail` refuses it, `unknown` loses the answer
+    /// (after making it when `perform`).
+    fn create_dir(&self, host: &str, dir: &str) -> Observation<Result<bool, String>> {
+        let made = |s: &mut FakeState| -> EffectOutcome {
+            let existed = Path::new(dir).is_dir();
+            match fs::create_dir_all(dir) {
+                Ok(()) => {
+                    if !existed {
+                        s.log.push(format!("createDir {host} {dir}"));
+                    }
+                    EffectOutcome::Created {
+                        uid: String::new(),
+                        adopted: existed,
+                    }
+                }
+                Err(e) => EffectOutcome::Failed {
+                    why: format!("cannot create {dir}: {e}"),
+                },
+            }
+        };
+        match self.effect("createDir", made) {
+            Observation::Known(EffectOutcome::Failed { why }) => Observation::Known(Err(why)),
+            Observation::Known(EffectOutcome::Created { adopted, .. }) => {
+                Observation::Known(Ok(!adopted))
+            }
+            Observation::Known(other) => Observation::unknown(format!("{other:?}")),
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
+    }
+
+    /// The fake host is this machine: the directory is removed here, and
+    /// the effect is logged. `fail` refuses it, `unknown` loses the answer
+    /// (after removing it when `perform`).
+    fn remove_dir(&self, host: &str, dir: &str) -> Observation<Result<(), String>> {
+        let removed = |s: &mut FakeState| -> EffectOutcome {
+            match fs::remove_dir_all(dir) {
+                Ok(()) => {
+                    s.log.push(format!("removeDir {host} {dir}"));
+                    EffectOutcome::Deleted
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => EffectOutcome::Deleted,
+                Err(e) => EffectOutcome::Failed {
+                    why: format!("cannot remove {dir}: {e}"),
+                },
+            }
+        };
+        match self.effect("removeDir", removed) {
+            Observation::Known(EffectOutcome::Failed { why }) => Observation::Known(Err(why)),
+            Observation::Known(_) => Observation::Known(Ok(())),
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
     }
 
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {

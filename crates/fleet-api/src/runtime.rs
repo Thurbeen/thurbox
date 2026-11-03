@@ -64,6 +64,16 @@ pub trait Runtime {
     }
     /// Whether the host answers. Unknown when the probe cannot tell.
     fn host(&self, host: &str) -> Observation<bool>;
+    /// Make the directory `dir` on `host`, with its missing parents, before
+    /// a Task names it: `Ok(true)` when this call made it, `Ok(false)` when
+    /// it was there already. `Err` says why the runtime cannot make it;
+    /// Unknown when it cannot tell whether it did. Repeating it is harmless.
+    fn create_dir(&self, host: &str, dir: &str) -> Observation<Result<bool, String>>;
+    /// Remove the directory `dir` on `host` and everything in it. A
+    /// directory that is gone already is `Ok`. `Err` says why the runtime
+    /// cannot remove it; Unknown when it cannot tell whether it did.
+    /// Repeating it is harmless.
+    fn remove_dir(&self, host: &str, dir: &str) -> Observation<Result<(), String>>;
     /// `Spawned`, or `Spawned { adopted: true }` when a live session already
     /// holds the key. Unknown on timeout: the next pass looks the key up with
     /// `find` and never retries blindly.

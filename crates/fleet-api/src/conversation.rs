@@ -53,6 +53,38 @@ pub fn task_key(conversation_uid: &str, n: u64) -> String {
     format!("conversation/{conversation_uid}/task/{n}")
 }
 
+/// `conversation/<conv uid>/retire/<started>/task`: the key of the delete
+/// of the thread's Task in the retirement that started at `started`.
+pub fn retire_task_key(conversation_uid: &str, started: Millis) -> String {
+    format!("conversation/{conversation_uid}/retire/{started}/task")
+}
+
+/// `conversation/<conv uid>/retire/<started>/dir`: the key of the removal of
+/// the thread's directory in the retirement that started at `started`.
+pub fn retire_dir_key(conversation_uid: &str, started: Millis) -> String {
+    format!("conversation/{conversation_uid}/retire/{started}/dir")
+}
+
+/// A retirement in progress: `at` when it started, which keys its effects,
+/// and the `revision` it started from. A message numbered since, which
+/// moves the revision, ends it: the thread is in use again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Retiring {
+    pub at: Millis,
+    pub revision: u64,
+}
+
+/// The directory the manager made for a thread's Tasks, recorded on the
+/// Conversation in the same write as the create's receipt, and only when
+/// the runtime answered that it made it. Fleet removes no other directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadDir {
+    pub path: String,
+    pub host: String,
+}
+
 /// `conversation/<conv uid>/busy/<n>`: the key of the one busy notice for
 /// the `n`th Task.
 pub fn busy_key(conversation_uid: &str, n: u64) -> String {
@@ -71,11 +103,21 @@ pub fn task_name(conversation: &str, n: u64) -> String {
     format!("{conversation}-{n}")
 }
 
-/// The text of the one busy notice: the request is queued behind `task`.
+/// The text of the one busy notice: the request is queued behind `task`,
+/// which holds the thread's own directory.
 pub fn busy_notice(task: &str) -> String {
     format!(
-        "Your request is queued: this channel's workspace is busy with Task/{task}. It starts when the workspace is free."
+        "Your request is queued: this thread's directory is in use by Task/{task}. It starts when the directory is free."
     )
+}
+
+/// The directory every Task of one thread gets on a route with a `dir`
+/// workspace: the route's base directory and the Conversation's name, as
+/// `<base>/<conversation>`. Computed from text alone; only the manager
+/// creates it, on the Task's host.
+pub fn thread_dir(base: &str, conversation: &str) -> String {
+    let base = base.trim_end_matches(['/', '\\']);
+    format!("{base}/{conversation}")
 }
 
 /// What a Conversation mirrors. Fixed once created: a different thread is a
@@ -244,6 +286,13 @@ pub struct ConversationStatus {
     /// Earliest next pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_before: Option<Millis>,
+    /// The thread's directory, when the manager made it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<ThreadDir>,
+    /// The thread's retirement, once it started. Absent while the thread
+    /// is not being retired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retiring: Option<Retiring>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
 }
@@ -290,6 +339,24 @@ mod tests {
     use super::*;
     use crate::gateway::{AuthorKind, Event, Message};
     use serde_json::json;
+
+    #[test]
+    fn a_threads_directory_is_the_base_and_the_conversation_name() {
+        for base in [
+            "/work/conversations",
+            "/work/conversations/",
+            "/work/conversations//",
+        ] {
+            assert_eq!(
+                thread_dir(base, "conv-3f9a1c0d2b7e"),
+                "/work/conversations/conv-3f9a1c0d2b7e"
+            );
+        }
+        assert_eq!(
+            thread_dir("C:\\work\\conversations\\", "conv-3f9a1c0d2b7e"),
+            "C:\\work\\conversations/conv-3f9a1c0d2b7e"
+        );
+    }
 
     fn delivery(id: &str) -> Delivery {
         Delivery {

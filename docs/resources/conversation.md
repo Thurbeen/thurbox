@@ -83,7 +83,7 @@ changes nothing else.
 | --- | --- |
 | `phase` | `Untied`, `Tied` or `Orphaned`, defined by the [state machine](../controllers/gateway/state-machine.md#conversation-phases). |
 | `ref` | What the adapter parsed the address into. |
-| `task` | The tie: `{name, uid, n, state, trigger}`. `n` counts the Tasks this thread has started; `state` is `pending` between the create intent and its receipt, `busy` while the create waits for the route's workspace, holding off retention, then `created`, then `gone` once the Task is readably absent. `trigger` is the id of the message that asked for the Task, kept while `pending` or `busy`. |
+| `task` | The tie: `{name, uid, n, state, trigger}`. `n` counts the Tasks this thread has started; `state` is `pending` between the create intent and its receipt, `busy` while the create waits for the thread's own directory, which another Task holds, holding off retention, then `created`, then `gone` once the Task is readably absent. `trigger` is the id of the message that asked for the Task, kept while `pending` or `busy`. |
 | `revision` | Incremented by every write that numbered anything below. |
 | `judged` | The `revision` through which the messages were judged for admission. A message numbered above it waits: for the thread's starter where the account has history, for the Task a Fleet-opened thread's marker names, or for the route while it left the config. |
 | `starter` | The thread's first message, `{id, kind, key}`, from the `starter` a history read answers, or on an account without history from a `Message` whose `startsThread` is true, kept when it rotates out of `messages`; a keyed copy numbered later sets `key`; `{removed: true}` when the platform reports it deleted. Absent until the starter is read, and for a chat without threads. It decides whether a mention may start a Task, as the [interface](../controllers/gateway/interface.md#conversationcontroller) says. |
@@ -92,8 +92,10 @@ changes nothing else.
 | `received` | Deliveries spooled by the receive verb or a `Receive` action and not yet numbered, each `{id, verified, receivedAt, event}` under its [delivery id](../controllers/gateway/interface.md#deliveries), never under a message id; at most 100. |
 | `seenEvents` | The newest 500 delivery ids numbered, so a redelivery after its spool entry was drained is still a no-op, while an edit or removal of a numbered message, a new delivery, is not. |
 | `refusals` | Every author id refused, at most 200; past that no further refusal is sent. The refusal post's intent and receipt live under `effects`. |
-| `effects` | Intents and receipts of this controller's effects, the Task creation and the refusals, each with its `attempts` and its `recovery` reads: every unsettled, newest 100 settled. |
+| `effects` | Intents and receipts of this controller's effects, the Task creation, the refusals and busy notices, and the retirement's steps, each with its `attempts` and its `recovery` reads: every unsettled, newest 100 settled. |
 | `observedAt` | When `history` last answered Known. |
+| `dir` | `{path, host}`: the thread's directory, recorded when the manager made it for the thread's Task, in the same write as the create's receipt. Absent when the directory was there before, or on a route without a `dir` workspace. Only a recorded directory is ever removed. |
+| `retiring` | `{at, revision}`: the thread's retirement, from when it started and the `revision` it started from. Its effects are keyed `conversation/<uid>/retire/<at>/task` and `…/dir`. A message numbered since, which moves `revision`, ends it. |
 | `lastMessageAt` | The newest message's time; retention counts from it. |
 | `notBefore` | Earliest next pass. |
 | `conditions` | `Reachable`, `Tied`, `NeedsAttention`, as the [state machine](../controllers/gateway/state-machine.md#conditions) defines them. Whether the account's listener is delivering is its [Listener's](listener.md). |
@@ -121,11 +123,27 @@ refused. There is no finalizer and `ownerReferences` is refused.
 A Conversation belongs to no Task. A Task it created carries the labels
 `gateway.fleet.dev/conversation` and `gateway.fleet.dev/conversation-uid`
 naming it, which only that create sets; deleting that Task leaves the
-Conversation Orphaned, kept for the next message. The controller deletes a
-Conversation `gateway.retainMs` after the later of its last message and its
-orphaning, once it is Untied or Orphaned, by `uid` and `resourceVersion`
-under the lease, as a ChangeRequest is retired. A person may delete one at
-any time; nothing on the platform changes.
+Conversation Orphaned, kept for the next message. A person may delete a
+Conversation at any time; nothing on the platform changes.
+
+On a route with a `dir` workspace, the Conversation's name also names its
+thread's directory: every Task the thread starts gets `<dir>/<name>`, which
+the manager creates with the Task. When the manager created it, the
+Conversation records it in `status.dir`.
+
+A thread retires `gateway.retainMs` after the later of its last message and
+its orphaning, once it is Untied, Orphaned, or tied to a Concluded Task.
+The retirement runs these steps in order, each a keyed effect:
+
+1. The controller deletes the Task the thread created, fenced on its `uid`.
+2. The manager removes the directory `status.dir` records, once no Task
+   names it.
+3. The controller deletes the Conversation by `uid` and `resourceVersion`
+   under the lease, as a ChangeRequest is retired.
+
+Fleet removes no directory that `status.dir` does not record. A
+Conversation deleted by hand takes that record with it, so its directory
+stays.
 
 ## Commands
 
