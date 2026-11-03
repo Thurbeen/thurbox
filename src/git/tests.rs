@@ -972,7 +972,7 @@ fn the_powershell_payload_is_utf16le_base64_so_no_shell_can_rewrite_it() {
     // double quotes: a probe reading `$PSVersionTable` came back with the
     // OUTER shell's expansion substituted in. Base64 has nothing to expand.
     let script = "$d='C:/a'; Write-Output \"$d & 'x'\"";
-    let cmd = host_powershell_c(&windows_host(), script);
+    let cmd = crate::shell::HostShell::run_on_host(&windows_host(), script);
     let (_, args) = program_and_args(&cmd);
     let encoded = args.last().expect("payload");
     assert!(

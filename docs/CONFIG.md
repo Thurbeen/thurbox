@@ -348,9 +348,18 @@ telemetry and `--agent-arg` arguments still follow everything.
   same env the agent gets, `THURBOX_*` included. `vars` and `{home}` are
   substituted first.
 - **Remote hosts.** The script runs in the agent's own pane, so on an SSH or
-  WSL host it runs on that host, where the agent runs. A native-Windows host
-  has no `sh`: an entry with a `setup` is refused there rather than launched
-  without it.
+  WSL host it runs on that host, where the agent runs.
+- **Windows.** A native-Windows machine has no `sh`, so there the steps are
+  PowerShell: one script, launched as `powershell.exe -EncodedCommand`, that
+  runs each step in order and stops at the first that throws, leaves a
+  non-zero `$LASTEXITCODE` or calls `exit`, then starts the agent with its
+  arguments passed exactly (empty ones and embedded `"` included), in the
+  location the steps left — a `Set-Location` carries into the agent, as a `cd`
+  does on POSIX. A command that resolves to a `.ps1` script runs through
+  `powershell.exe -File`. The same
+  `thurbox: setup step <n> failed (exit <status>)` line marks a failure. The
+  whole launch is one command line, so a setup that makes it longer than
+  Windows' 8191 characters is refused before anything starts.
 - **Output.** It stays on the pane, above the agent.
 - **Failure.** A step exiting non-zero aborts the launch; the agent never
   starts. The pane prints `thurbox: setup step <n> failed (exit <status>)` and
@@ -823,17 +832,25 @@ delivered to interface plugins as an event of the same name (`events = {
 "session.post_create" }` + `on_event`; `docs/PLUGINS.md` → Events) — the
 Lua side of the same vocabulary, informational for the same reason.
 
-**Preparation before launch.** `session.pre_launch` runs locally on create
+**Preparation before launch.** `session.pre_launch` runs on create
 (including fork), after worktrees and any multi-repo workspace exist, before
-opening the agent's pane. Its process cwd is the final launch directory and its
-stdin includes all worktrees and additional directories. `agents = ["claude"]`
+opening the agent's pane, on the machine the agent will run on. Its process cwd
+is the final launch directory and its stdin includes all worktrees and
+additional directories. For a remote session that is the host: the command runs
+over the host's launcher (ssh or `wsl.exe`) in the host's shell — `sh`, or
+PowerShell on a native-Windows host — in the launch directory there, with the
+`THURBOX_*` variables set inside the script, since ssh carries no environment,
+and on a POSIX host with the host's `path_prepend` and login `PATH` first, as
+the agent gets them.
+This machine's `THURBOX_CONFIG_DIR`/`THURBOX_DATA_DIR` are not passed: they name
+paths here. A session on a host that shares its sessions is created by the
+host's own `thurbox-cli`, so the host's `hooks.toml` applies there. `agents = ["claude"]`
 limits a preparation command to that agent definition. Non-zero exit, spawn
 failure or timeout refuses the launch. Prepared worktrees and any changes the
 user script made remain available for inspection; no pane or session row is
 created. Use an existing prepared checkout as `--repo-path` when retrying.
 It does not run on restart, start or
-restore, and is not run locally for a remote session; host-side preparation is
-tracked in #1473. It is a user hook, rather than an agent-definition field.
+restore. It is a user hook, rather than an agent-definition field.
 
 **State edges without an interface.** `session.state_changed` is a post-only
 notification from the session event log, consumed by `automation tick` after

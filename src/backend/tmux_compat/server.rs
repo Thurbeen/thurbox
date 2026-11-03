@@ -866,10 +866,8 @@ impl<M: TmuxCompatible> Server<M> {
             .session
             .clone()
             .unwrap_or_else(|| TMUX_SESSION.to_string());
-        let mut transport = TmuxTransport::remote(launcher, M::MULTIPLEXER.name());
-        if platform == Platform::Windows {
-            transport = transport.on_windows();
-        }
+        let mut transport = TmuxTransport::remote(launcher, M::MULTIPLEXER.name())
+            .with_shell(crate::shell::HostShell::for_platform(platform));
         if M::SOCKET_DIR && platform == Platform::Posix {
             transport = transport.with_socket_dir(SocketDir::HostData {
                 app: crate::paths::app_dir_name().to_string(),
@@ -3908,17 +3906,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     /// `remote_shell_pane_command` so the pane matches an `ssh <host>` login
     /// (rc files, prompt, aliases, `PATH`).
     fn default_shell(&self) -> String {
-        use crate::session::Platform;
-        match (self.transport.is_remote(), self.platform) {
-            (false, Platform::Windows) => {
-                std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
-            }
-            (false, Platform::Posix) => {
-                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
-            }
-            (true, Platform::Windows) => "powershell".to_string(),
-            (true, Platform::Posix) => "/bin/sh".to_string(),
-        }
+        crate::shell::HostShell::for_platform(self.platform)
+            .default_shell(self.transport.is_remote())
     }
 }
 
@@ -4345,44 +4334,17 @@ fn pane_answer_field(raw: &str, n: usize) -> Option<String> {
 /// infrastructure, not a session.
 const HEARTBEAT_WINDOW: &str = "automation-heartbeat";
 
-/// The keeper's loop, as the window command: `program args…` every `every`,
-/// in the shell of the machine the server runs on (`platform`) — a POSIX one,
-/// or on Windows a PowerShell script handed to `powershell.exe` explicitly
-/// ([`crate::shell::powershell_launcher`]), since psmux runs a window command
-/// in whichever shell it resolves, `cmd.exe` on a server started over ssh.
-/// Handed over as **one argv token** either way, which on psmux also dodges
-/// its trailing-token handling.
+/// The keeper's loop, as the window command, in the shell of the machine the
+/// server runs on ([`crate::shell::HostShell::heartbeat_loop`]).
 fn heartbeat_loop_command(
     platform: Platform,
     program: &Path,
     args: &[String],
     every: std::time::Duration,
 ) -> Result<String> {
-    let secs = every.as_secs().max(1);
-    let path = program.display().to_string();
-    match platform {
-        Platform::Posix => {
-            let argv: Vec<String> = std::iter::once(path)
-                .chain(args.iter().cloned())
-                .map(|a| shell_escape(&a))
-                .collect();
-            Ok(format!(
-                "while true; do {} >/dev/null 2>&1; sleep {secs}; done",
-                argv.join(" ")
-            ))
-        }
-        Platform::Windows => {
-            let argv: Vec<String> = std::iter::once(path)
-                .chain(args.iter().cloned())
-                .map(|a| crate::shell::powershell_quote(&a))
-                .collect();
-            crate::shell::powershell_launcher(&format!(
-                "while ($true) {{ & {} *> $null; Start-Sleep {secs} }}",
-                argv.join(" ")
-            ))
-            .context("the automation heartbeat")
-        }
-    }
+    crate::shell::HostShell::for_platform(platform)
+        .heartbeat_loop(&program.display().to_string(), args, every.as_secs())
+        .context("the automation heartbeat")
 }
 
 /// What [`Server::pane_state_seed`] asks `display-message` for: the six mouse

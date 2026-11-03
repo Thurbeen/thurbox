@@ -48,7 +48,7 @@ fn sanitize(name: &str) -> String {
 /// Whether uploads are supported for `host`: a POSIX host, since the copy and
 /// the cleanup are `sh` scripts.
 pub fn supported(host: &HostDef) -> bool {
-    !host.is_windows()
+    crate::shell::HostShell::for_host(host) == crate::shell::HostShell::Posix
 }
 
 /// The local image files `text` consists of, or `None` when it is anything else.

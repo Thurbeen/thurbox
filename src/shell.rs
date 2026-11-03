@@ -275,7 +275,7 @@ impl HostLauncher {
     ///   as a single `sh -c` argument.
     ///
     /// POSIX hosts only — a native-Windows host has no `sh`; see
-    /// `git::remote::host_powershell_c`.
+    /// [`HostShell::run_script`].
     pub fn shell_c(&self, script: &str) -> Command {
         let mut cmd = self.command();
         match self {
@@ -362,25 +362,333 @@ pub fn launch_on_windows(
         cmd.args(words());
         return Ok(cmd);
     }
-    let line = args
-        .iter()
-        .map(|a| windows_arg_quote(a))
-        .collect::<Vec<_>>()
-        .join(" ");
     let script = format!(
-        "$ProgressPreference = 'SilentlyContinue'\n\
-         $s = New-Object System.Diagnostics.ProcessStartInfo\n\
-         $s.FileName = {}\n\
-         $s.Arguments = {}\n\
-         $s.UseShellExecute = $false\n\
-         $p = [System.Diagnostics.Process]::Start($s)\n\
-         $p.WaitForExit()\n\
-         exit $p.ExitCode",
-        powershell_quote(program),
-        powershell_quote(&line)
+        "$ProgressPreference = 'SilentlyContinue'\n{}",
+        start_process_script(&powershell_quote(program), args, "")
     );
     cmd.args(encoded_powershell("-NoLogo -NoProfile -NonInteractive", &script)?.split(' '));
     Ok(cmd)
+}
+
+/// PowerShell that starts the program `file_name` (a PowerShell expression)
+/// with `args`, waits for it and exits with its status. The arguments are one
+/// command line quoted for the C runtime ([`windows_arg_quote`]) rather than
+/// handed to `&`: PowerShell 5.1's native-argument passing drops an empty
+/// argument and splits one at an embedded `"`. The child inherits stdin,
+/// stdout and stderr, so a console program keeps the console.
+///
+/// `extra` runs after the start info is filled and before the program
+/// starts, for a caller that sets more of it (`$s`).
+fn start_process_script<S: AsRef<str>>(file_name: &str, args: &[S], extra: &str) -> String {
+    let line = args
+        .iter()
+        .map(|a| windows_arg_quote(a.as_ref()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "$s = New-Object System.Diagnostics.ProcessStartInfo\n\
+         $s.FileName = {file_name}\n\
+         $s.Arguments = {}\n\
+         $s.UseShellExecute = $false\n\
+         {extra}\
+         $p = [System.Diagnostics.Process]::Start($s)\n\
+         $p.WaitForExit()\n\
+         exit $p.ExitCode",
+        powershell_quote(&line)
+    )
+}
+
+/// The shell a host runs thurbox's own scripts in, decided once from the
+/// host's [`Platform`](crate::session::Platform) (#1473).
+///
+/// Every place that writes a script for a host, quotes a word for one or
+/// starts a program on one asks this instead of branching on the platform
+/// itself, so a dialect rule — the quoting, the launcher, the
+/// command-line bound, the interactive shell — has one home. It is not a
+/// multiplexer dialect (ADR-31 rejects one): a psmux and a tmux server on the
+/// same Windows host get the same `HostShell`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostShell {
+    /// `sh`: Linux, macOS, a WSL distro.
+    Posix,
+    /// Windows PowerShell 5.1, which every native-Windows host has, whatever
+    /// login shell its OpenSSH server runs.
+    PowerShell,
+}
+
+impl HostShell {
+    pub fn for_platform(platform: crate::session::Platform) -> Self {
+        match platform {
+            crate::session::Platform::Posix => Self::Posix,
+            crate::session::Platform::Windows => Self::PowerShell,
+        }
+    }
+
+    /// The shell of `host` ([`HostDef::platform`](crate::session::HostDef::platform)).
+    pub fn for_host(host: &crate::session::HostDef) -> Self {
+        Self::for_platform(host.platform())
+    }
+
+    /// The shell of the machine thurbox runs on.
+    pub fn local() -> Self {
+        Self::for_platform(crate::session::Platform::local())
+    }
+
+    /// One word as this shell reads it back unchanged.
+    pub fn quote(self, word: &str) -> String {
+        match self {
+            Self::Posix => posix_quote(word),
+            Self::PowerShell => powershell_quote(word),
+        }
+    }
+
+    /// Run a multi-statement `script` in this shell on the host `launcher`
+    /// reaches: `sh -c` ([`HostLauncher::shell_c`]), or
+    /// `powershell -NoProfile -EncodedCommand <base64>`.
+    ///
+    /// Encoded rather than `-Command` because the script crosses two shells
+    /// that both rewrite it: ssh space-joins its trailing args into one string
+    /// the host's login shell parses — `cmd.exe` by Windows OpenSSH's default,
+    /// PowerShell when configured, which expands `$…` inside double quotes (a
+    /// probe reading `$PSVersionTable` once came back with the *outer* shell's
+    /// expansion substituted into it). Base64 of the UTF-16LE text is
+    /// `[A-Za-z0-9+/=]` only, so neither finds anything to interpret.
+    pub fn run_script(self, launcher: &HostLauncher, script: &str) -> Command {
+        match self {
+            Self::Posix => launcher.shell_c(script),
+            Self::PowerShell => {
+                use base64::Engine as _;
+                let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+                let mut cmd = launcher.command();
+                cmd.args(["powershell", "-NoProfile", "-EncodedCommand"])
+                    .arg(base64::engine::general_purpose::STANDARD.encode(utf16));
+                cmd
+            }
+        }
+    }
+
+    /// A script in `host`'s own shell, run on it: [`Self::run_script`] over
+    /// the host's [`HostLauncher`].
+    pub fn run_on_host(host: &crate::session::HostDef, script: &str) -> Command {
+        Self::for_host(host).run_script(&HostLauncher::for_host(host), script)
+    }
+
+    /// `program` with `args` on the host `launcher` reaches, each argument
+    /// arriving as the one word it is here: [`launch`] on a POSIX host,
+    /// [`launch_on_windows`] — refused past [`WINDOWS_CMD_LINE_MAX`] — on a
+    /// Windows one.
+    pub fn launch(
+        self,
+        launcher: &HostLauncher,
+        program: &str,
+        args: &[&str],
+    ) -> Result<Command, CommandLineTooLong> {
+        match self {
+            Self::Posix => Ok(launch(Some(launcher), program, args)),
+            Self::PowerShell => launch_on_windows(launcher, program, args),
+        }
+    }
+
+    /// A window command running `program args…` every `every_secs` forever,
+    /// output discarded: the automation heartbeat keeper.
+    ///
+    /// On Windows the loop is a PowerShell script handed to `powershell.exe`
+    /// explicitly ([`powershell_launcher`]), since psmux runs a window command
+    /// in whichever shell it resolves — `cmd.exe` on a server started over
+    /// ssh. One argv token either way, which on psmux also dodges its
+    /// trailing-token handling.
+    pub fn heartbeat_loop(
+        self,
+        program: &str,
+        args: &[String],
+        every_secs: u64,
+    ) -> Result<String, CommandLineTooLong> {
+        let argv = std::iter::once(program)
+            .chain(args.iter().map(String::as_str))
+            .map(|a| self.quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let secs = every_secs.max(1);
+        match self {
+            Self::Posix => Ok(format!(
+                "while true; do {argv} >/dev/null 2>&1; sleep {secs}; done"
+            )),
+            Self::PowerShell => powershell_launcher(&format!(
+                "while ($true) {{ & {argv} *> $null; Start-Sleep {secs} }}"
+            )),
+        }
+    }
+
+    /// The program a bare shell pane runs: on this machine (`remote` false)
+    /// its own `$SHELL` or `%COMSPEC%`; on a host one that exists there by
+    /// construction — `/bin/sh` (the local `$SHELL` may not be installed
+    /// there) or `powershell`.
+    pub fn default_shell(self, remote: bool) -> String {
+        match (remote, self) {
+            (false, Self::PowerShell) => {
+                std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+            }
+            (false, Self::Posix) => {
+                std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+            }
+            (true, Self::PowerShell) => "powershell".to_string(),
+            (true, Self::Posix) => "/bin/sh".to_string(),
+        }
+    }
+
+    /// The built-in `shell` agent: this shell, interactive.
+    ///
+    /// Both spellings are always compiled in, because the platform that
+    /// matters is the session's host, not this build's (#1458): a Linux
+    /// thurbox spawning on a Windows host must send it PowerShell.
+    ///
+    /// `-i` is load-bearing on POSIX, not decoration. A plain `bash` in a
+    /// pane executes what is sent to it but renders no prompt and no echo,
+    /// which starves anything reading the screen to decide whether the
+    /// session is ready — the pane looks blank and working at the same time.
+    /// On Windows `-NoLogo` only drops the banner; the session is
+    /// interactive because no `-Command` is passed.
+    pub fn interactive_agent(self) -> crate::session::AgentDef {
+        let (command, args) = match self {
+            Self::Posix => ("bash", "-i"),
+            Self::PowerShell => ("powershell", "-NoLogo"),
+        };
+        crate::session::AgentDef {
+            name: "shell".into(),
+            command: command.into(),
+            args: vec![args.into()],
+            ..crate::session::AgentDef::default()
+        }
+    }
+
+    /// `(command, args)` that runs an agent definition's `setup` steps in
+    /// this shell, then the agent itself with `args`.
+    ///
+    /// POSIX: [`wrap_with_setup`](crate::session::agent_def::wrap_with_setup),
+    /// `sh -c` under `set -e`. PowerShell: one encoded script
+    /// ([`powershell_launcher`], so bounded by [`WINDOWS_CMD_LINE_MAX`]) that
+    /// runs each step — a native step's non-zero exit and a terminating error
+    /// both stop it — then starts the agent (`start_process_script`, so its
+    /// arguments arrive exactly) and exits with its status. A failed step
+    /// writes the same
+    /// [`SETUP_FAILURE_MARKER`](crate::session::agent_def::SETUP_FAILURE_MARKER)
+    /// line the POSIX wrapper does, which is what classifies the launch
+    /// failure as the setup's. A step that leaves through its own `exit` is
+    /// caught by the `finally`, which PowerShell runs on an `exit` as well,
+    /// and which reports only while a step is still running.
+    ///
+    /// The agent is looked up first: `ProcessStartInfo` does not search
+    /// `PATH` for an npm `.cmd` shim the way `&` does, and a `.ps1` wrapper is
+    /// run through `powershell.exe -File`. It starts in PowerShell's current
+    /// location, so a `Set-Location` in a step carries into it the way a `cd`
+    /// does on POSIX; the process's own directory does not follow
+    /// `Set-Location`.
+    pub fn wrap_setup(
+        self,
+        setup: &[String],
+        command: &str,
+        args: &[String],
+    ) -> Result<(String, Vec<String>), CommandLineTooLong> {
+        if setup.is_empty() || self == Self::Posix {
+            return Ok(crate::session::agent_def::wrap_with_setup(
+                setup, command, args,
+            ));
+        }
+        let marker = crate::session::agent_def::SETUP_FAILURE_MARKER;
+        let mut script = format!(
+            "$ErrorActionPreference = 'Stop'\n\
+             $global:thurbox_step = 0\n\
+             $global:thurbox_reported = $false\n\
+             function thurbox_fail($code) {{ $global:thurbox_reported = $true; \
+             [Console]::Error.WriteLine(\"`n{marker}$global:thurbox_step failed (exit $code)\"); \
+             exit $code }}\n\
+             try {{\n"
+        );
+        for (i, step) in setup.iter().enumerate() {
+            let n = i + 1;
+            script.push_str(&format!(
+                "$global:thurbox_step = {n}\n\
+                 $global:LASTEXITCODE = 0\n\
+                 try {{\n{step}\n}} catch {{ [Console]::Error.WriteLine($_); thurbox_fail 1 }}\n\
+                 if ($LASTEXITCODE) {{ thurbox_fail $LASTEXITCODE }}\n"
+            ));
+        }
+        script.push_str(&format!(
+            "$global:thurbox_step = 0\n\
+             }} finally {{\n\
+             if ($global:thurbox_step -and -not $global:thurbox_reported) {{ \
+             [Console]::Error.WriteLine(\"`n{marker}$global:thurbox_step failed (exit $LASTEXITCODE)\") }}\n\
+             }}\n\
+             $ErrorActionPreference = 'Continue'\n\
+             $thurbox_cmd = Get-Command -Name {} -CommandType Application, ExternalScript \
+             -ErrorAction Stop | Select-Object -First 1\n\
+             $thurbox_agent = $thurbox_cmd.Source\n\
+             $thurbox_lead = ''\n\
+             if ($thurbox_cmd.CommandType -eq 'ExternalScript') {{ \
+             $thurbox_lead = '-NoLogo -File \"' + $thurbox_agent + '\" '; \
+             $thurbox_agent = (Get-Command -Name 'powershell.exe' -CommandType Application \
+             | Select-Object -First 1).Source }}\n{}",
+            powershell_quote(command),
+            start_process_script(
+                "$thurbox_agent",
+                args,
+                "$s.Arguments = $thurbox_lead + $s.Arguments\n\
+                 $s.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath\n",
+            )
+        ));
+        let line = powershell_launcher(&script)?;
+        let mut words = line.split(' ').map(str::to_string);
+        let program = words.next().unwrap_or_default();
+        Ok((program, words.collect()))
+    }
+
+    /// `command` run in the host user's home directory, its failure — a
+    /// native program's non-zero exit or a PowerShell error — the script's.
+    pub fn in_home(self, command: &str) -> String {
+        match self {
+            Self::Posix => format!("cd \"$HOME\" && {command}"),
+            Self::PowerShell => format!(
+                "Set-Location -LiteralPath $HOME -ErrorAction Stop\n{command}\n\
+                 if (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}; exit 1 }}\n\
+                 exit $LASTEXITCODE"
+            ),
+        }
+    }
+
+    /// A user hook's `command` as a script for this shell on a host: `env`
+    /// set, then run in `cwd`. A host's shell is reached over ssh, which
+    /// carries no environment, so the variables travel inside the script.
+    pub fn hook_script(self, command: &str, cwd: Option<&str>, env: &[(String, String)]) -> String {
+        let mut script = String::new();
+        match self {
+            Self::Posix => {
+                for (k, v) in env {
+                    script.push_str(&format!("export {k}={}\n", posix_quote(v)));
+                }
+                if let Some(dir) = cwd {
+                    script.push_str(&format!("cd {} || exit\n", posix_quote(dir)));
+                }
+                script.push_str(command);
+            }
+            Self::PowerShell => {
+                for (k, v) in env {
+                    script.push_str(&format!("$env:{k} = {}\n", powershell_quote(v)));
+                }
+                if let Some(dir) = cwd {
+                    script.push_str(&format!(
+                        "Set-Location -LiteralPath {} -ErrorAction Stop\n",
+                        powershell_quote(dir)
+                    ));
+                }
+                script.push_str(&format!(
+                    "$global:LASTEXITCODE = 0\n{command}\n\
+                     if (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}; exit 1 }}\n\
+                     exit $LASTEXITCODE"
+                ));
+            }
+        }
+        script
+    }
 }
 
 /// Whether `word` reaches a program unchanged, unquoted, through each login
@@ -512,32 +820,6 @@ fn off_the_terminal(cmd: &mut Command) {
             libc::setsid();
             Ok(())
         });
-    }
-}
-
-/// The built-in `shell` agent for a machine running `platform`: that
-/// machine's own interactive shell.
-///
-/// Both spellings are always compiled in, because the platform that matters
-/// is the session's host, not this build's (#1458): a Linux thurbox spawning on
-/// a Windows host must send it PowerShell.
-///
-/// `-i` is load-bearing on POSIX, not decoration. A plain `bash` in a pane
-/// executes what is sent to it but renders no prompt and no echo, which starves
-/// anything reading the screen to decide whether the session is ready — the
-/// pane looks blank and working at the same time. On Windows `-NoLogo` only
-/// drops the banner; the session is interactive because no `-Command` is
-/// passed.
-pub fn shell_agent_def(platform: crate::session::Platform) -> crate::session::AgentDef {
-    let (command, args) = match platform {
-        crate::session::Platform::Posix => ("bash", "-i"),
-        crate::session::Platform::Windows => ("powershell", "-NoLogo"),
-    };
-    crate::session::AgentDef {
-        name: "shell".into(),
-        command: command.into(),
-        args: vec![args.into()],
-        ..crate::session::AgentDef::default()
     }
 }
 
@@ -821,5 +1103,291 @@ mod tests {
         // The child cwd is left to the OS default; the translation control is
         // the `--cd` flag, not the caller's process cwd.
         assert_eq!(cmd.get_current_dir(), None);
+    }
+
+    /// Words each host shell has to carry intact: separators, quotes of both
+    /// kinds, `cmd.exe`'s `%…%` and `|`, PowerShell's `$` and backtick, an
+    /// empty word, a trailing backslash, non-ASCII.
+    const QUOTING_TABLE: &[&str] = &[
+        "plain",
+        "",
+        "two words",
+        "a|b",
+        "it's",
+        "say \"hi\"",
+        "%PATH%",
+        "$HOME",
+        "`tick`",
+        "semi;colon & amp",
+        "C:\\dir with space\\",
+        "née",
+        "line\nbreak",
+    ];
+
+    fn ssh() -> HostLauncher {
+        HostLauncher::Ssh {
+            destination: "me@box".into(),
+            ssh_opts: vec![],
+        }
+    }
+
+    /// What ssh hands the host's login shell: the words after the
+    /// destination, space-joined.
+    fn remote_line(cmd: &Command) -> String {
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = args
+            .iter()
+            .position(|a| a == "me@box")
+            .expect("destination");
+        args[at + 1..].join(" ")
+    }
+
+    /// The table through the POSIX host shell, read back by a real `sh` the
+    /// way the host's login shell reads ssh's line.
+    #[cfg(unix)]
+    #[test]
+    fn the_quoting_table_survives_a_posix_host_shell() {
+        let launch = HostShell::Posix
+            .launch(&ssh(), "printf", &[&["%s\\0"], QUOTING_TABLE].concat())
+            .expect("POSIX lines are not bounded");
+        let out = Command::new("sh")
+            .args(["-c", &remote_line(&launch)])
+            .output()
+            .expect("sh");
+        let words: Vec<String> = String::from_utf8(out.stdout)
+            .unwrap()
+            .split_terminator('\0')
+            .map(str::to_string)
+            .collect();
+        assert_eq!(words, QUOTING_TABLE, "launch");
+
+        for word in QUOTING_TABLE {
+            let script = format!("printf %s {}", HostShell::Posix.quote(word));
+            let out = Command::new("sh").args(["-c", &script]).output().unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout), *word, "quote");
+        }
+    }
+
+    /// The table through the Windows host shell. Whichever of `cmd.exe` and
+    /// PowerShell logs in, a line is either words both pass bare or one
+    /// encoded PowerShell script, so the check is the script itself: its
+    /// argument line, split back by the C runtime's rules, is the table.
+    #[test]
+    fn the_quoting_table_survives_a_windows_host_shell() {
+        let launch = HostShell::PowerShell
+            .launch(&ssh(), "psmux", QUOTING_TABLE)
+            .expect("fits a Windows line");
+        let line = remote_line(&launch);
+        let encoded = line
+            .split(' ')
+            .skip_while(|w| *w != "-EncodedCommand")
+            .nth(1)
+            .unwrap_or_else(|| panic!("not encoded: {line}"));
+        assert!(
+            encoded
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=')),
+            "nothing a login shell reads as syntax: {encoded}"
+        );
+        let script = decode_powershell(encoded);
+        let arguments = script
+            .split_once("$s.Arguments = ")
+            .and_then(|(_, rest)| rest.split_once("\n$s.UseShellExecute"))
+            .map(|(arguments, _)| arguments)
+            .expect("the argument line");
+        assert_eq!(
+            crt_split(&powershell_unquote(arguments)),
+            QUOTING_TABLE,
+            "{script}"
+        );
+
+        for word in QUOTING_TABLE {
+            assert_eq!(
+                powershell_unquote(&HostShell::PowerShell.quote(word)),
+                *word
+            );
+        }
+    }
+
+    /// A short line of bare words stays bare on a Windows host: control mode
+    /// and `send-paste` keep their own length.
+    #[test]
+    fn bare_words_reach_a_windows_host_unencoded() {
+        let launch = HostShell::PowerShell
+            .launch(&ssh(), "psmux", &["-L", "thurbox", "list-windows"])
+            .unwrap();
+        assert_eq!(remote_line(&launch), "psmux -L thurbox list-windows");
+    }
+
+    /// A user hook's script on a POSIX host: its environment and working
+    /// directory arrive with values no shell may reinterpret.
+    #[cfg(unix)]
+    #[test]
+    fn a_posix_hook_script_carries_env_and_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let odd = dir.path().join("it's $here");
+        std::fs::create_dir(&odd).unwrap();
+        let env: Vec<(String, String)> = QUOTING_TABLE
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (format!("THURBOX_T{i}"), v.to_string()))
+            .collect();
+        let probe = (0..env.len())
+            .map(|i| format!("\"$THURBOX_T{i}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let script = HostShell::Posix.hook_script(
+            &format!("printf '%s\\0' \"$PWD\" {probe}"),
+            Some(&odd.to_string_lossy()),
+            &env,
+        );
+        let out = Command::new("sh").args(["-c", &script]).output().unwrap();
+        let words: Vec<String> = String::from_utf8(out.stdout)
+            .unwrap()
+            .split_terminator('\0')
+            .map(str::to_string)
+            .collect();
+        assert_eq!(words[0], odd.to_string_lossy());
+        assert_eq!(&words[1..], QUOTING_TABLE);
+    }
+
+    /// A Windows setup is one launch line, bounded like every other one.
+    #[test]
+    fn a_windows_setup_past_the_line_limit_is_refused() {
+        let step = "x".repeat(WINDOWS_CMD_LINE_MAX);
+        let err = HostShell::PowerShell
+            .wrap_setup(&[step], "agent", &[])
+            .unwrap_err();
+        assert!(err.len > err.max, "{err}");
+    }
+
+    /// The agent behind a Windows setup gets its arguments exactly: an empty
+    /// one and one holding `"` survive, as PowerShell 5.1's `&` would not
+    /// let them.
+    #[test]
+    fn a_windows_setup_hands_the_agent_its_exact_arguments() {
+        let args: Vec<String> = ["", "say \"hi\"", "two words", "C:\\dir\\"]
+            .map(String::from)
+            .to_vec();
+        let (program, words) = HostShell::PowerShell
+            .wrap_setup(&["prepare.exe".into()], "agent.exe", &args)
+            .unwrap();
+        assert_eq!(program, "powershell.exe");
+        let script = decode_powershell(words.last().unwrap());
+        let arguments = script
+            .split_once("$s.Arguments = ")
+            .and_then(|(_, rest)| rest.split_once("\n$s.UseShellExecute"))
+            .map(|(arguments, _)| arguments)
+            .expect(&script);
+        assert_eq!(crt_split(&powershell_unquote(arguments)), args, "{script}");
+    }
+
+    /// The agent starts where the steps left PowerShell: a `Set-Location` in
+    /// setup carries into it, as a `cd` does on POSIX. A `.ps1` wrapper is an
+    /// agent too, run through `powershell.exe -File`.
+    #[test]
+    fn a_windows_setup_keeps_the_location_and_runs_a_script_agent() {
+        let (_, words) = HostShell::PowerShell
+            .wrap_setup(&["Set-Location sub".into()], "agent", &[])
+            .unwrap();
+        let script = decode_powershell(words.last().unwrap());
+        assert!(
+            script.contains(
+                "$s.WorkingDirectory = (Get-Location -PSProvider FileSystem).ProviderPath"
+            ),
+            "{script}"
+        );
+        assert!(
+            script.contains("-CommandType Application, ExternalScript"),
+            "{script}"
+        );
+        assert!(script.contains("'ExternalScript'"), "{script}");
+        assert!(script.contains("-NoLogo -File"), "{script}");
+    }
+
+    /// A step that leaves with its own `exit` still reports as the setup's
+    /// failure: the marker is written on the way out by a `finally`, which
+    /// PowerShell runs for an `exit` too, and only while a step is running.
+    #[test]
+    fn a_windows_setup_marks_a_step_that_exits_on_its_own() {
+        let (_, words) = HostShell::PowerShell
+            .wrap_setup(&["exit 3".into()], "agent.exe", &[])
+            .unwrap();
+        let script = decode_powershell(words.last().unwrap());
+        let body = script.find("exit 3").expect(&script);
+        let finally = script.find("} finally {").expect(&script);
+        let agent = script.find("ProcessStartInfo").expect(&script);
+        assert!(body < finally && finally < agent, "{script}");
+        let tail = &script[finally..agent];
+        assert!(
+            tail.contains(crate::session::agent_def::SETUP_FAILURE_MARKER),
+            "{script}"
+        );
+    }
+
+    fn decode_powershell(encoded: &str) -> String {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| u16::from_le_bytes([p[0], p[1]]))
+            .collect();
+        String::from_utf16(&units).unwrap()
+    }
+
+    /// A PowerShell single-quoted literal's value.
+    fn powershell_unquote(s: &str) -> String {
+        s.strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+            .expect("single-quoted")
+            .replace("''", "'")
+    }
+
+    /// The MSVC C runtime's argv split of a command line.
+    fn crt_split(line: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut chars = line.chars().peekable();
+        loop {
+            while matches!(chars.peek(), Some(' ' | '\t')) {
+                chars.next();
+            }
+            if chars.peek().is_none() {
+                return out;
+            }
+            let (mut word, mut quoted) = (String::new(), false);
+            while let Some(&c) = chars.peek() {
+                match c {
+                    ' ' | '\t' if !quoted => break,
+                    '\\' => {
+                        let mut n = 0;
+                        while chars.peek() == Some(&'\\') {
+                            chars.next();
+                            n += 1;
+                        }
+                        if chars.peek() == Some(&'"') {
+                            word.push_str(&"\\".repeat(n / 2));
+                            if n % 2 == 1 {
+                                word.push('"');
+                                chars.next();
+                            }
+                        } else {
+                            word.push_str(&"\\".repeat(n));
+                        }
+                        continue;
+                    }
+                    '"' => quoted = !quoted,
+                    c => word.push(c),
+                }
+                chars.next();
+            }
+            out.push(word);
+        }
     }
 }

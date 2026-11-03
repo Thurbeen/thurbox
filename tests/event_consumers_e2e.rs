@@ -624,11 +624,15 @@ fn pre_launch_sees_every_worktree_and_finishes_before_the_agent_starts() {
         std::fs::create_dir_all(&dir).unwrap();
         for args in [
             vec!["init", "-b", "main"],
+            // Signing is a user setting: inherited here, it would wait on the
+            // user's key agent for a throwaway commit.
             vec![
                 "-c",
                 "user.name=Test",
                 "-c",
                 "user.email=test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
                 "commit",
                 "--allow-empty",
                 "-m",

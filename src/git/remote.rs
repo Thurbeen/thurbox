@@ -433,46 +433,21 @@ pub(crate) fn host_shell_c(host: &HostDef, script: &str) -> Command {
     crate::shell::HostLauncher::for_host(host).shell_c(script)
 }
 
-/// Build a `<launcher> powershell -NoProfile -EncodedCommand <base64>`
-/// [`Command`] — [`host_shell_c`] for a **native-Windows** host, which has no
-/// `sh` at all (`sh -c …` there fails with PowerShell's
-/// `CommandNotFoundException`, which is what made the repo picker unable to
-/// list a directory on a Windows host).
-///
-/// `-EncodedCommand` rather than `-Command` because the script must cross two
-/// shells that both rewrite it. ssh space-joins its trailing args into one
-/// string that the host's **default sshd shell** parses — and that shell is
-/// commonly PowerShell itself, which expands `$…` inside double quotes: a
-/// probe reading `$PSVersionTable` came back with the *outer* shell's expansion
-/// (`System.Collections.Hashtable`) substituted into it. Base64 is
-/// `[A-Za-z0-9+/=]` only, so neither `cmd` nor PowerShell finds anything to
-/// interpret and the script arrives byte-exact.
-///
-/// The payload is **UTF-16LE**, which is what `-EncodedCommand` decodes.
-pub(crate) fn host_powershell_c(host: &HostDef, script: &str) -> Command {
-    use base64::Engine as _;
-
-    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&utf16);
-    let mut cmd = host_launcher(host);
-    cmd.args(["powershell", "-NoProfile", "-EncodedCommand"])
-        .arg(encoded);
-    cmd
-}
-
-/// Run a probe on `host` in whichever dialect the host speaks: `posix` through
-/// [`host_shell_c`], or `windows` (PowerShell) through [`host_powershell_c`].
+/// Run a probe on `host` in whichever dialect its
+/// [`HostShell`](crate::shell::HostShell) speaks: `posix` or `windows`
+/// (PowerShell).
 ///
 /// The one dispatch point for the platform, so a probe cannot be POSIX-only by
 /// omission — and each pair of scripts is written to emit the **same line
 /// protocol**, which is why every parser below stays transport-neutral and
 /// untouched by the Windows path.
 pub(super) fn host_probe(host: &HostDef, posix: &str, windows: &str) -> Command {
-    if host.is_windows() {
-        host_powershell_c(host, windows)
-    } else {
-        host_shell_c(host, posix)
-    }
+    let shell = crate::shell::HostShell::for_host(host);
+    let script = match shell {
+        crate::shell::HostShell::Posix => posix,
+        crate::shell::HostShell::PowerShell => windows,
+    };
+    shell.run_script(&crate::shell::HostLauncher::for_host(host), script)
 }
 
 /// Quote `s` as a PowerShell single-quoted literal. Only `'` is special inside
@@ -585,7 +560,8 @@ pub fn copy_stream_to_remote_windows(
         parent = powershell_quote(&parent),
         path = powershell_quote(remote_path),
     );
-    let child = host_powershell_c(host, &script)
+    let child = crate::shell::HostShell::PowerShell
+        .run_script(&crate::shell::HostLauncher::for_host(host), &script)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

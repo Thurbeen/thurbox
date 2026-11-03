@@ -8,9 +8,9 @@
 //! [`TmuxTransport`] is two independent halves: the **launcher** that reaches
 //! the host and the **binary** run there, which the adapter using it names. It
 //! builds [`Command`]s; it never touches I/O, threading, or the protocol, and it
-//! does not know which multiplexer the binary is. Of the host's OS it knows one
-//! bit, whether a native-Windows login shell reads its commands
-//! ([`TmuxTransport::on_windows`]), because that changes how a line is quoted.
+//! does not know which multiplexer the binary is. Of the host's OS it knows
+//! only its shell ([`TmuxTransport::with_shell`]), because that changes how a
+//! line is quoted.
 
 use std::process::Command;
 
@@ -108,9 +108,9 @@ pub struct TmuxTransport {
     /// The `TMUX_TMPDIR` every command carries. [`SocketDir::Inherited`]
     /// unless the adapter chose one: psmux has no socket directory at all.
     socket_dir: SocketDir,
-    /// The host is native Windows, so a line reaches `cmd.exe` or PowerShell
-    /// rather than a POSIX shell ([`crate::shell::launch_on_windows`]).
-    windows: bool,
+    /// The host's shell, which decides how a line reaching it is quoted
+    /// ([`crate::shell::HostShell::launch`]).
+    shell: crate::shell::HostShell,
     /// Run on the host before the multiplexer or a [`Self::shell_command`]
     /// script — see [`Self::with_path`]. POSIX hosts only.
     path: Option<String>,
@@ -149,7 +149,7 @@ impl TmuxTransport {
             launcher: None,
             mux: mux.into(),
             socket_dir: SocketDir::Inherited,
-            windows: false,
+            shell: crate::shell::HostShell::Posix,
             path: None,
         }
     }
@@ -160,15 +160,16 @@ impl TmuxTransport {
             launcher: Some(launcher),
             mux: mux.into(),
             socket_dir: SocketDir::Inherited,
-            windows: false,
+            shell: crate::shell::HostShell::Posix,
             path: None,
         }
     }
 
-    /// This transport, for a native-Windows host: each remote command is
-    /// quoted for its `cmd.exe` or PowerShell login shell, not for POSIX.
-    pub fn on_windows(mut self) -> Self {
-        self.windows = true;
+    /// This transport, for a host whose shell is `shell`: on a Windows host
+    /// each remote command is quoted for its `cmd.exe` or PowerShell login
+    /// shell, not for POSIX.
+    pub fn with_shell(mut self, shell: crate::shell::HostShell) -> Self {
+        self.shell = shell;
         self
     }
 
@@ -210,8 +211,8 @@ impl TmuxTransport {
     /// multiplexer the same way, through the same `sh -c`, so tmux and rmux
     /// resolve their binary alike whatever socket directory they carry.
     ///
-    /// On a Windows host ([`Self::on_windows`]) the line is built by
-    /// [`crate::shell::launch_on_windows`], which refuses one past the
+    /// On a Windows host ([`Self::with_shell`]) the line is built by
+    /// [`crate::shell::HostShell::launch`], which refuses one past the
     /// Windows command-line limit.
     pub fn tmux_command(&self, socket: &str, args: &[&str]) -> Result<Command, CommandLineTooLong> {
         let argv: Vec<&str> = ["-L", socket]
@@ -219,8 +220,10 @@ impl TmuxTransport {
             .chain(args.iter().copied())
             .collect();
         let mut cmd = match (&self.launcher, &self.socket_dir) {
-            (Some(launcher), SocketDir::Inherited) if self.windows => {
-                crate::shell::launch_on_windows(launcher, &self.mux, &argv)?
+            (Some(launcher), SocketDir::Inherited)
+                if self.shell == crate::shell::HostShell::PowerShell =>
+            {
+                self.shell.launch(launcher, &self.mux, &argv)?
             }
             (Some(_), SocketDir::Inherited) if self.path.is_some() => {
                 let mut args = vec!["sh", self.mux.as_str()];

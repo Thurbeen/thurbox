@@ -87,7 +87,7 @@ pub use extensions::{
     update_all_extensions, update_extension, DeactivateReport, EnsureReport, ExtensionHealth,
     InstallReport, ReinstallReport, UninstallReport, UpdateReport,
 };
-pub use lifecycle_hooks::{fire_post, fire_pre};
+pub use lifecycle_hooks::{fire_post, fire_pre, fire_pre_launch};
 pub use purge::{purge_deleted, purge_expired, Age, PurgeReport};
 pub use restart::{restart_session_headless, RestartReport};
 pub use restore::{restore_refusal, restore_session_headless, RestoreReport};
@@ -1120,12 +1120,13 @@ fn shell_for(
     mut def: crate::session::AgentDef,
     platform: crate::session::Platform,
 ) -> crate::session::AgentDef {
-    let stock = crate::session::Platform::ALL.map(crate::shell::shell_agent_def);
+    let stock = crate::session::Platform::ALL
+        .map(|p| crate::shell::HostShell::for_platform(p).interactive_agent());
     if stock
         .iter()
         .any(|s| def.is_family(&s.name) && def.command == s.command && def.args == s.args)
     {
-        let own = crate::shell::shell_agent_def(platform);
+        let own = crate::shell::HostShell::for_platform(platform).interactive_agent();
         def.command = own.command;
         def.args = own.args;
     }
@@ -1209,18 +1210,19 @@ pub(crate) fn build_agent_invocation(
 }
 
 /// `(command, args)` behind `def`'s `setup`, for a launch on `host` (`None`
-/// for this machine).
+/// for this machine), in that machine's shell ([`HostShell::wrap_setup`]).
 ///
 /// Applied last, once every arg is in place, so what is appended after the
 /// definition's own args (directory scope, telemetry, `--agent-arg`) still
-/// reaches the agent through the wrapper's `"$@"`. The setup script is POSIX
-/// `sh`, which a native-Windows host does not have, so a definition with a
-/// setup is refused there rather than launched without it.
+/// reaches the agent: through the POSIX wrapper's `"$@"`, or written into the
+/// PowerShell script on a Windows host.
 ///
 /// A local agent's command is resolved against thurbox's own `PATH` first,
 /// as the backend resolves a window's program: wrapped, the multiplexer only
 /// sees `sh`, and the agent would otherwise be found by `exec` on the tmux
 /// server's `PATH` — which misses a fish user's `fish_add_path` directories.
+///
+/// [`HostShell::wrap_setup`]: crate::shell::HostShell::wrap_setup
 pub(crate) fn with_setup(
     def: &crate::session::AgentDef,
     host: Option<&crate::session::HostDef>,
@@ -1230,22 +1232,18 @@ pub(crate) fn with_setup(
     if def.setup.is_empty() {
         return Ok((command, args));
     }
-    let platform = spawn::platform_of(host);
-    if platform == crate::session::Platform::Windows {
-        return Err(crate::session_ops::OpError::Refused(format!(
-            "agent '{}' declares a setup, which runs through POSIX sh; \
-             a native-Windows host has none",
-            def.name
-        )));
-    }
+    let shell = crate::shell::HostShell::for_platform(spawn::platform_of(host));
     let command = match host {
         None => crate::paths::resolve_on_path(&command)
             .map_or(command, |path| path.to_string_lossy().into_owned()),
         Some(_) => command,
     };
-    Ok(crate::session::agent_def::wrap_with_setup(
-        &def.setup, &command, &args,
-    ))
+    shell.wrap_setup(&def.setup, &command, &args).map_err(|e| {
+        crate::session_ops::OpError::Refused(format!(
+            "agent '{}''s setup cannot start: {e}",
+            def.name
+        ))
+    })
 }
 
 /// Who carries out a verb on a session (#1471), decided once per verb from

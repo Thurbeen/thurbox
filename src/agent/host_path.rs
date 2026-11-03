@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 use crate::session::{HostDef, Multiplexer};
-use crate::shell::{posix_quote, HostLauncher};
+use crate::shell::{posix_quote, HostLauncher, HostShell};
 
 /// Each login shell's own budget on the host, enforced there by `timeout(1)`
 /// when the host has it.
@@ -238,7 +238,7 @@ pub fn shell_assignment(plan: &PathPlan) -> String {
 /// the process, a failure included — a host whose shell hangs costs one
 /// probe timeout, not one per mirror tick.
 pub fn assignment_for(host: &HostDef) -> Option<String> {
-    if host.is_windows() {
+    if HostShell::for_host(host) != HostShell::Posix {
         return None;
     }
     let env = cached_env(host);
@@ -290,7 +290,7 @@ const MUX_TTL: Duration = Duration::from_secs(60);
 /// allows it, an answer that is missing or older than a minute is asked
 /// for again on a thread of its own; the last answer stands meanwhile.
 pub fn multiplexers_found(host: &HostDef, start: bool) -> MuxProbe {
-    if host.is_windows() {
+    if HostShell::for_host(host) != HostShell::Posix {
         return MuxProbe::Unanswered;
     }
     let key = host.backend_name();

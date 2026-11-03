@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::session::HostDef;
+use crate::shell::HostShell;
 
 /// Where a provisioned CLI lands, under the host's thurbox data directory —
 /// deliberately *not* on PATH, since it is thurbox's. It is also the slot the
@@ -744,10 +745,9 @@ impl std::fmt::Display for ProbeFailure {
 
 /// Ask the host whether it has a `thurbox-cli`, and what version.
 pub fn probe(host: &HostDef) -> Result<Option<CliInfo>, ProbeFailure> {
-    let script = if host.is_windows() {
-        probe_script_windows()
-    } else {
-        probe_script_posix()
+    let script = match HostShell::for_host(host) {
+        HostShell::PowerShell => probe_script_windows(),
+        HostShell::Posix => probe_script_posix(),
     };
     let stdout = run_script(host, &script, "thurbox-cli probe", PROBE_TIMEOUT)
         .map_err(ProbeFailure::unreadable)?;
@@ -757,16 +757,16 @@ pub fn probe(host: &HostDef) -> Result<Option<CliInfo>, ProbeFailure> {
 /// [`probe`] for a known path — what a freshly provisioned copy is checked
 /// with, since PATH would not find it.
 fn probe_at(host: &HostDef, path: &str) -> Result<Option<CliInfo>, ProbeFailure> {
-    let script = if host.is_windows() {
-        format!(
+    let shell = HostShell::for_host(host);
+    let script = match shell {
+        HostShell::PowerShell => format!(
             "Write-Output \"@cli {path}\"; {run}",
-            run = probe_run_windows(&crate::shell::powershell_quote(path))
-        )
-    } else {
-        format!(
+            run = probe_run_windows(&shell.quote(path))
+        ),
+        HostShell::Posix => format!(
             "echo \"@cli {path}\"; {run}",
-            run = probe_run_posix(&crate::shell::posix_quote(path))
-        )
+            run = probe_run_posix(&shell.quote(path))
+        ),
     };
     let stdout = run_script(host, &script, "thurbox-cli probe", PROBE_TIMEOUT)
         .map_err(ProbeFailure::unreadable)?;
@@ -1031,10 +1031,9 @@ pub fn run_classified_with_stdin(
     if let Some(answer) = fake::run_override(host, args) {
         return answer;
     }
-    let script = if host.is_windows() {
-        cli_script_windows(&cli.path, args)
-    } else {
-        cli_script_posix(&cli.path, args)
+    let script = match HostShell::for_host(host) {
+        HostShell::PowerShell => cli_script_windows(&cli.path, args),
+        HostShell::Posix => cli_script_posix(&cli.path, args),
     };
     let stdout = run_script_classified(host, &script, "thurbox-cli", SCRIPT_TIMEOUT, stdin)?;
     serde_json::from_str(&stdout).map_err(|e| {
@@ -1125,18 +1124,19 @@ fn run_script_classified(
     if let Some(answer) = fake::script_override(host, script) {
         return answer;
     }
-    let command = if host.is_windows() {
-        crate::git::host_powershell_c(host, script)
-    } else {
-        // The launcher's environment is a non-login one, and a `session
-        // create` run here pins whatever `PATH` it inherits on the agent's
-        // pane — so the host's login `PATH` goes in first (see
-        // `agent::host_path`).
-        let script = match crate::agent::host_path::assignment_for(host) {
-            Some(path) => format!("{path}{script}"),
-            None => script.to_string(),
-        };
-        crate::git::host_shell_c(host, &script)
+    let command = match HostShell::for_host(host) {
+        HostShell::PowerShell => HostShell::run_on_host(host, script),
+        HostShell::Posix => {
+            // The launcher's environment is a non-login one, and a `session
+            // create` run here pins whatever `PATH` it inherits on the agent's
+            // pane — so the host's login `PATH` goes in first (see
+            // `agent::host_path`).
+            let script = match crate::agent::host_path::assignment_for(host) {
+                Some(path) => format!("{path}{script}"),
+                None => script.to_string(),
+            };
+            HostShell::run_on_host(host, &script)
+        }
     };
     let output = output_within(command, timeout, stdin)
         .map_err(|e| {
@@ -1356,12 +1356,11 @@ fn legacy_absence(message: &str) -> bool {
 /// `(os, arch)` as the host's shell spells them (`uname -sm`, or
 /// `windows <PROCESSOR_ARCHITECTURE>`), for [`crate::agent::self_update::target_triple`].
 fn host_platform(host: &HostDef) -> Result<(String, String), String> {
-    let script = if host.is_windows() {
-        "Write-Output \"windows $env:PROCESSOR_ARCHITECTURE\"".to_string()
-    } else {
-        "uname -sm".to_string()
+    let script = match HostShell::for_host(host) {
+        HostShell::PowerShell => "Write-Output \"windows $env:PROCESSOR_ARCHITECTURE\"",
+        HostShell::Posix => "uname -sm",
     };
-    let out = run_script(host, &script, "platform probe", PROBE_TIMEOUT)?;
+    let out = run_script(host, script, "platform probe", PROBE_TIMEOUT)?;
     let mut words = out.split_whitespace();
     match (words.next(), words.next()) {
         (Some(os), Some(arch)) => Ok((os.to_string(), arch.to_string())),
@@ -1376,10 +1375,9 @@ fn host_platform(host: &HostDef) -> Result<(String, String), String> {
 pub fn host_data_dir(host: &HostDef) -> Result<String, String> {
     let home = crate::git::remote_home(host).map_err(|e| format!("{e:#}"))?;
     let flavour = crate::paths::app_dir_name();
-    Ok(if host.is_windows() {
-        format!("{home}/AppData/Local/{flavour}")
-    } else {
-        format!("{home}/.local/share/{flavour}")
+    Ok(match host.platform() {
+        crate::session::Platform::Windows => format!("{home}/AppData/Local/{flavour}"),
+        crate::session::Platform::Posix => format!("{home}/.local/share/{flavour}"),
     })
 }
 
@@ -1450,10 +1448,10 @@ fn install(host: &HostDef) -> Result<String, String> {
     let (os, arch) = host_platform(host)?;
     let target = crate::agent::self_update::target_triple(&os, &arch)?;
     let bin_dir = format!("{}/{HOST_BIN_DIR}", host_data_dir(host)?);
-    let cli_name = if host.is_windows() {
-        "thurbox-cli.exe"
-    } else {
-        "thurbox-cli"
+    let shell = HostShell::for_host(host);
+    let cli_name = match shell {
+        HostShell::PowerShell => "thurbox-cli.exe",
+        HostShell::Posix => "thurbox-cli",
     };
     let dest = format!("{bin_dir}/{cli_name}");
 
@@ -1469,10 +1467,10 @@ fn install(host: &HostDef) -> Result<String, String> {
         let bytes = std::fs::read(&local)
             .map_err(|e| format!("read {} to ship it: {e}", local.display()))?;
         ship(host, &bytes, &dest)?;
-        if !host.is_windows() {
+        if shell == HostShell::Posix {
             run_script(
                 host,
-                &format!("chmod +x {}", crate::shell::posix_quote(&dest)),
+                &format!("chmod +x {}", shell.quote(&dest)),
                 "chmod",
                 SCRIPT_TIMEOUT,
             )?;
@@ -1486,7 +1484,7 @@ fn install(host: &HostDef) -> Result<String, String> {
         .map_err(|e| format!("read {}: {e}", archive.path.display()))?;
     let remote_archive = format!("{bin_dir}/{}", archive.name);
     ship(host, &bytes, &remote_archive)?;
-    let extract = if host.is_windows() {
+    let extract = if shell == HostShell::PowerShell {
         windows_extract_script(&remote_archive, &bin_dir)
     } else {
         format!(
@@ -1557,10 +1555,9 @@ try {{
 }
 
 fn ship(host: &HostDef, bytes: &[u8], dest: &str) -> Result<(), String> {
-    let shipped = if host.is_windows() {
-        crate::git::copy_stream_to_remote_windows(host, bytes, dest)
-    } else {
-        crate::git::copy_bytes_to_remote(host, bytes, dest)
+    let shipped = match HostShell::for_host(host) {
+        HostShell::PowerShell => crate::git::copy_stream_to_remote_windows(host, bytes, dest),
+        HostShell::Posix => crate::git::copy_bytes_to_remote(host, bytes, dest),
     };
     shipped.map_err(|e| format!("could not copy thurbox-cli to '{}': {e:#}", host.name))
 }

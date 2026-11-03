@@ -599,18 +599,8 @@ pub fn command_for(
 
 /// A sessionless command in the configured host user's home and environment.
 pub fn command_for_host(program: &str, host: &crate::session::HostDef) -> std::process::Command {
-    if host.is_windows() {
-        crate::git::host_powershell_c(
-            host,
-            &format!(
-                "Set-Location -LiteralPath $HOME -ErrorAction Stop\n{program}\n\
-                 if (-not $?) {{ if ($LASTEXITCODE) {{ exit $LASTEXITCODE }}; exit 1 }}\n\
-                 exit $LASTEXITCODE"
-            ),
-        )
-    } else {
-        crate::git::host_shell_c(host, &format!("cd \"$HOME\" && {program}"))
-    }
+    let script = crate::shell::HostShell::for_host(host).in_home(program);
+    crate::shell::HostShell::run_on_host(host, &script)
 }
 
 #[cfg(test)]
