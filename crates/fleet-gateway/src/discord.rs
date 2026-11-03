@@ -554,6 +554,45 @@ impl DiscordGateway {
         Observation::Known(EffectOutcome::Posted { message, at })
     }
 
+    /// Create or delete Fleet's own reaction on the message: `PUT` or
+    /// `DELETE /channels/{channel}/messages/{message}/reactions/{emoji}/@me`,
+    /// with the emoji URL-encoded. A thread is a channel, so a reply's
+    /// channel is the thread; a thread started from a message keeps that
+    /// starter message in the parent channel.
+    fn react_on(
+        &self,
+        conversation: &ConversationRef,
+        message: &str,
+        reaction: &str,
+        on: bool,
+    ) -> Observation<EffectOutcome> {
+        if !is_snowflake(message) {
+            return Observation::Known(EffectOutcome::Failed {
+                why: format!("{message:?} is not a Discord message id"),
+            });
+        }
+        let Some(emoji) = emoji(reaction) else {
+            return Observation::Known(EffectOutcome::Failed {
+                why: format!(
+                    "{reaction:?} is no emoji Discord knows: name a Unicode emoji, one of the names Fleet maps, or a custom emoji as name:id"
+                ),
+            });
+        };
+        let channel = match conversation.thread.as_deref() {
+            Some(thread) if thread != message => thread,
+            _ => conversation.chat.as_str(),
+        };
+        let verb = if on { "PUT" } else { "DELETE" };
+        let path = format!(
+            "channels/{channel}/messages/{message}/reactions/{}/@me",
+            url_encode(&emoji)
+        );
+        match self.call(verb, &path, None, self.call_timeout) {
+            Ok(_) => Observation::Known(EffectOutcome::Reacted { already: false }),
+            Err(e) => send_failure(None, e.why(), e.certain_failure()),
+        }
+    }
+
     /// The link Discord copies for a thread: the guild, then the thread's
     /// channel id.
     fn thread_link(&self, thread: &ConversationRef) -> Option<String> {
@@ -604,6 +643,7 @@ impl DiscordGateway {
             },
             unmentioned: self.message_content && flags & APP_MESSAGE_CONTENT != 0,
             threads: true,
+            reactions: true,
         })
     }
 }
@@ -611,6 +651,49 @@ impl DiscordGateway {
 // ----------------------------------------------------------------------
 // Addresses, snowflakes, nonces and times.
 // ----------------------------------------------------------------------
+
+/// The emoji names Fleet maps to Unicode for Discord: Slack's names for
+/// the default reactions, and a few common ones besides.
+const EMOJI: &[(&str, &str)] = &[
+    ("eyes", "\u{1F440}"),
+    ("white_check_mark", "\u{2705}"),
+    ("heavy_check_mark", "\u{2714}\u{FE0F}"),
+    ("hourglass_flowing_sand", "\u{23F3}"),
+    ("hourglass", "\u{231B}"),
+    ("thumbsup", "\u{1F44D}"),
+    ("+1", "\u{1F44D}"),
+    ("speech_balloon", "\u{1F4AC}"),
+    ("robot_face", "\u{1F916}"),
+    ("x", "\u{274C}"),
+];
+
+/// The emoji a reaction name means on Discord: a name Fleet maps, a custom
+/// emoji as `name:id`, or a Unicode emoji as it is. `None` for any other
+/// ASCII name.
+pub fn emoji(name: &str) -> Option<String> {
+    let name = name.trim_matches(':');
+    if let Some((_, e)) = EMOJI.iter().find(|(n, _)| *n == name) {
+        return Some((*e).to_string());
+    }
+    if let Some((n, id)) = name.split_once(':') {
+        return (!n.is_empty() && is_snowflake(id)).then(|| name.to_string());
+    }
+    (!name.is_empty() && !name.is_ascii()).then(|| name.to_string())
+}
+
+/// Percent-encode every byte outside the unreserved set; `:` of a custom
+/// emoji included.
+fn url_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
 
 /// `discord:<channel>[:<thread>]`, each a snowflake.
 pub fn parse_address(address: &str) -> Result<ConversationRef, String> {
@@ -1012,6 +1095,11 @@ impl CallError {
 
 /// The REST API's answer: its JSON on a 2xx, else why not.
 pub fn answer(reply: &Reply, what: &str) -> Result<Value, CallError> {
+    // `204 No Content`, as a reaction's create and delete answer.
+    if (200..=299).contains(&reply.status) && reply.body.trim().is_empty() && reply.exit == Some(0)
+    {
+        return Ok(Value::Null);
+    }
     let body: Result<Value, _> = serde_json::from_str(reply.body.trim());
     if reply.status == 429 {
         // `retry_after` is seconds as a float; the header whole seconds.
@@ -1059,6 +1147,22 @@ pub fn answer(reply: &Reply, what: &str) -> Result<Value, CallError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reaction_name_maps_to_the_emoji_discord_takes() {
+        assert_eq!(emoji("eyes").as_deref(), Some("\u{1F440}"));
+        assert_eq!(emoji(":white_check_mark:").as_deref(), Some("\u{2705}"));
+        assert_eq!(emoji("\u{1F680}").as_deref(), Some("\u{1F680}"));
+        assert_eq!(
+            emoji("fleet:1250000000000000000").as_deref(),
+            Some("fleet:1250000000000000000")
+        );
+        for bad in ["", "no_such_emoji", "fleet:abc", ":1250000000000000000"] {
+            assert_eq!(emoji(bad), None, "{bad:?}");
+        }
+        assert_eq!(url_encode("\u{1F440}"), "%F0%9F%91%80");
+        assert_eq!(url_encode("fleet:12"), "fleet%3A12");
+    }
     use fleet_api::gateway::Verified;
 
     const GUILD: &str = "1200000000000000000";

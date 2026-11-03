@@ -6,7 +6,7 @@ GatewayController keeps under `status.gateway`. TaskController still owns
 the Task's own `status.phase`. The Conversation phases, the transitions
 that create a Task, orphaning and retention are implemented, and so are
 every state of the tie on a Task, its `ConversationGone`, the join, the
-relay, posting and logging.
+relay, posting, logging and reactions.
 
 ![A Conversation starts Untied. The receive verb creates it, or Fleet creates it when it opens a thread for a Task's Question. A thread that Fleet opened is tied at once to the Task that its opening post's marker names. An admitted mention in an Untied thread creates a Task and ties it. When a tied Task is readably gone, the Conversation becomes Orphaned. The next admitted message there creates a new Task with the thread's history. When a Conversation has no message for its retention and is Untied, Orphaned, or tied to a Concluded Task, it retires: its controller deletes the Task, the manager removes the thread directory that it created, and the controller deletes the Conversation. While the Conversation is Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares.](state-machine.svg)
 
@@ -107,6 +107,8 @@ GatewayController relays when a tied thread has new admitted messages:
 - If the mirror dropped messages that were never relayed, because the
   thread outgrew the 200 it keeps, the entry says that they remain on the
   platform, and the Task raises `NeedsAttention/RelayGap`.
+- Each admitted message in the entry that has no mark gets the working
+  reaction. See [reactions](#reactions).
 
 ## Posting
 
@@ -126,6 +128,8 @@ or not `gateway.logs` is set.
 - Posts to one thread go out one at a time. A post with an unknown outcome
   holds back later posts to that thread, and no other thread.
 - A full inbox does not hold back posting.
+- A post that lands marks every message still marked working as replied.
+  See [reactions](#reactions).
 
 ## Logging
 
@@ -147,6 +151,38 @@ tie and no route to log.
 - Without `gateway.logs`, a Draft, a result or change news is marked read
   and posted nowhere. A log post whose outcome is not settled when `gateway.logs`
   leaves the config is dropped, never posted elsewhere.
+
+## Reactions
+
+Each message of a tied thread has one mark, which GatewayController keeps
+under `status.gateway.reactions`. Reactions are on unless
+`gateway.reactions` is `false`, and only where the account's capabilities
+say `reactions`.
+
+| Mark | Meaning |
+| --- | --- |
+| none | Fleet added no reaction. |
+| working | Fleet relayed the message to the Task, and added the working reaction. |
+| replied | Fleet posted in the thread since. It added the replied reaction and removed the working reaction. |
+
+| From | Event | To |
+| --- | --- | --- |
+| none | A relay or the join delivers the message, and it is `Admitted` | working |
+| working | A Question, a Comment or a ready notice lands in the thread for the Task | replied |
+| working or replied | The message leaves the mirror, removed or rotated out | none, and Fleet changes no reaction |
+| working or replied | `gateway.reactions` turns `false` | none, and Fleet changes no reaction |
+| working or replied | The tie ends: the Conversation is readably gone, or names another Task | none, and Fleet changes no reaction |
+
+Rules:
+
+- A message that is edited and relayed again keeps its mark.
+- A thread post counts as a reply only to the messages marked working
+  before it landed.
+- A log post, a refusal and a busy notice are no reply.
+- The capabilities of the account are read before the relay. When they are
+  Unknown, or say no `reactions`, the relay goes on and marks nothing.
+- A mark changes when Fleet plans its reactions, not when they land. A
+  reaction that fails changes no mark.
 
 ## Children
 
@@ -182,7 +218,8 @@ An account's identity and its listener are conditions on its
 [Listener](../../resources/listener.md), not on any Conversation.
 
 `NeedsAttention` stops nothing else. Relay goes on while a post waits, and a
-held post in one thread holds back no other thread.
+held post in one thread holds back no other thread. A reaction raises no
+condition.
 
 ## Deletion
 

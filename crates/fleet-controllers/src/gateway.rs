@@ -4,7 +4,9 @@
 //! Task's inbox under a cursor kept on the Task, posts what a tied Task
 //! declares, opens a thread for an untied Task's Question, routes a child
 //! Task's declarations and result into its parent's inbox, and logs every
-//! Task's result and change news in the `gateway.logs` channel. It owns
+//! Task's result and change news in the `gateway.logs` channel, and marks
+//! each relayed admitted message working, then replied once a thread post
+//! lands, with reactions that are best effort and hold nothing back. It owns
 //! `status.gateway` and appends to `status.inbox`; it writes nothing else
 //! of the Task, and reaches a Conversation only through the `Receive`
 //! action.
@@ -14,8 +16,8 @@
 //! ChangeRequests and, to recover a post, the platform's capabilities and
 //! history, and returns a Plan whose `status` is the desired
 //! `status.gateway`, whose `appends` are the inbox entries to land in the
-//! same write, and whose `effects` are the `Post`, `Open`, `Receive` and
-//! `Log` actions whose intents that status carries. Thread posts and log
+//! same write, and whose `effects` are the `Post`, `Open`, `Receive`, `Log`
+//! and `React` actions whose intents that status carries. Thread posts and log
 //! posts are two lanes: a held post in one never holds back the other. The relay is a status write,
 //! not an effect: no intent, no receipt, no platform call.
 
@@ -39,9 +41,9 @@ use fleet_api::plan::{Action, Effect, EffectOutcome, Intent, Plan, Probe, Receip
 use fleet_api::store::FieldManager;
 use fleet_api::talk::{
     ChildEntry, ConversationTie, DECLARED_COMMENT, DECLARED_DRAFT, DECLARED_QUESTION, ENTRY_CAP,
-    GATEWAY_SOURCE_PREFIX, GatewayStatus, MAX_CHILDREN, PARENT_LABEL, PARENT_UID_LABEL, POSTS_CAP,
-    PostedQuestion, ROUTE_LABEL, TieState, child_key, declared_id, gateway_reads, parent_of,
-    post_key, relay_key,
+    GATEWAY_SOURCE_PREFIX, GatewayStatus, MAX_CHILDREN, Mark, PARENT_LABEL, PARENT_UID_LABEL,
+    POSTS_CAP, PostedQuestion, ROUTE_LABEL, TieState, child_key, declared_id, gateway_reads,
+    parent_of, post_key, react_key, react_of, relay_key,
 };
 use fleet_api::task::{self, TaskStatus};
 use fleet_api::{Observation, StoreError};
@@ -123,6 +125,7 @@ const POST: &str = "post";
 const OPEN: &str = "open";
 const RECEIVE: &str = "receive";
 const LOG: &str = "log";
+const REACT: &str = "react";
 
 /// Which ordered lane a record is in: posts to the thread (and the open of
 /// one), or posts to the log channel.
@@ -166,6 +169,9 @@ impl GatewayController {
             return true;
         }
         if gw.posts.values().any(unsettled) {
+            return true;
+        }
+        if reply_landed(&gw) {
             return true;
         }
         // Every Task's result is logged, or read while nothing logs.
@@ -326,6 +332,15 @@ impl GatewayController {
         {
             accounts.insert(logs.account.clone());
         }
+        // A relay may mark messages working: whether the platform has
+        // reactions decides.
+        if input.defaults.reactions.is_some()
+            && let Some(Observation::Known(Some(conv))) = &obs.conversation
+            && revision_of(conv) > gw.seen
+            && let Ok((spec, _)) = decode_conversation(conv)
+        {
+            accounts.insert(spec.account);
+        }
         for account in accounts {
             if !obs.capabilities.contains_key(&account) {
                 probes.push(Probe::Capabilities { account });
@@ -379,11 +394,15 @@ impl GatewayController {
         };
         let conv = pass.tie();
         if let Some(conv) = &conv {
+            // A post that landed replies to the messages marked before it,
+            // so it is counted before this pass's relay marks new ones.
+            pass.replied(conv);
             pass.relay(conv);
         }
         pass.children();
         pass.speak(conv.as_ref());
         pass.log(conv.as_ref());
+        pass.retry_reactions(conv.as_ref());
         pass.prune_posts();
         pass.conditions();
         settle_transitions(&mut pass.gw.conditions, &before.conditions);
@@ -667,6 +686,7 @@ impl Pass<'_, '_> {
         }
         let answers = self.answers(&above);
         let text = self.render(&name, &spec, &cs, cursor, &above, gap);
+        self.mark_working(&spec, &cs, &above);
         let (task_name, task_uid) = self.task_meta();
         self.appends.push(InboxEntry {
             key: relay_key(task_name, task_uid, &conv.metadata.uid, cs.revision),
@@ -993,10 +1013,35 @@ impl Pass<'_, '_> {
 /// one, or a refusal with attempts left.
 fn unsettled(record: &EffectRecord) -> bool {
     match record.receipt.as_ref().map(|r| &r.outcome) {
+        // A reaction is best effort: past its attempts it is given up.
+        None | Some(Observation::Unknown { .. }) if record.intent.action == REACT => {
+            record.attempts < MAX_ATTEMPTS
+        }
         None | Some(Observation::Unknown { .. }) => true,
         Some(Observation::Known(EffectOutcome::Failed { .. })) => record.attempts < MAX_ATTEMPTS,
         Some(Observation::Known(_)) => false,
     }
+}
+
+/// Whether a thread post landed that no working mark has counted yet.
+fn reply_landed(gw: &GatewayStatus) -> bool {
+    gw.reactions.marks.values().any(|m| *m == Mark::Working)
+        && landed_posts(gw).any(|k| !gw.reactions.replies.contains(k))
+}
+
+/// The keys of the thread posts that landed: a Question, a Comment or a
+/// ready notice. A log post is no reply.
+fn landed_posts(gw: &GatewayStatus) -> impl Iterator<Item = &String> {
+    gw.posts
+        .iter()
+        .filter(|(_, r)| {
+            r.intent.action == POST
+                && matches!(
+                    r.receipt.as_ref().map(|r| &r.outcome),
+                    Some(Observation::Known(EffectOutcome::Posted { .. }))
+                )
+        })
+        .map(|(k, _)| k)
 }
 
 /// The Conversation a Task's tie names, by name and `uid`: a thread Fleet
@@ -1874,6 +1919,208 @@ impl Pass<'_, '_> {
                     // Adding the same delivery again is a duplicate at most.
                     self.plan(&receive_key, action);
                 }
+            }
+        }
+    }
+
+    // -- Reactions: working on a message, then replied ------------------
+
+    /// The reaction effect on `message`, under its key.
+    fn react_action(
+        &self,
+        account: &str,
+        reference: &ConversationRef,
+        message: &str,
+        mark: Mark,
+        on: bool,
+    ) -> Option<Action> {
+        let names = self.input.defaults.reactions.as_ref()?;
+        let reaction = match mark {
+            Mark::Working => &names.working,
+            Mark::Replied => &names.replied,
+        };
+        Some(Action::React {
+            account: account.to_string(),
+            conversation: reference.clone(),
+            message: message.to_string(),
+            reaction: reaction.clone(),
+            on,
+        })
+    }
+
+    fn plan_react(
+        &mut self,
+        account: &str,
+        reference: &ConversationRef,
+        id: &str,
+        mark: Mark,
+        on: bool,
+    ) {
+        let (name, uid) = self.task_meta();
+        let key = react_key(name, uid, id, mark, on);
+        if let Some(action) = self.react_action(account, reference, id, mark, on) {
+            self.plan(&key, action);
+        }
+    }
+
+    /// Each admitted message this relay delivers, not marked before, is
+    /// marked working, where reactions are on and the platform has them.
+    /// An edit of a marked message is not marked again. Context and Fleet's
+    /// own posts get nothing.
+    fn mark_working(
+        &mut self,
+        spec: &ConversationSpec,
+        cs: &ConversationStatus,
+        above: &[Above<'_>],
+    ) {
+        if self.input.defaults.reactions.is_none() {
+            return;
+        }
+        // Unknown or without reactions: the relay goes on unmarked.
+        let Some(Observation::Known(caps)) =
+            self.input.observations.capabilities.get(&spec.account)
+        else {
+            return;
+        };
+        if !caps.reactions {
+            return;
+        }
+        let Some(reference) = cs.reference.clone() else {
+            return;
+        };
+        let fresh: Vec<String> = above
+            .iter()
+            .filter(|a| a.admission == Admission::Admitted)
+            .map(|a| a.message.id.clone())
+            .filter(|id| !self.gw.reactions.marks.contains_key(id))
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+        if !self
+            .gw
+            .reactions
+            .marks
+            .values()
+            .any(|m| *m == Mark::Working)
+        {
+            // Every post that landed so far is older than these marks.
+            self.gw.reactions.replies = landed_posts(&self.gw).cloned().collect();
+        }
+        for id in fresh {
+            self.gw.reactions.marks.insert(id.clone(), Mark::Working);
+            self.plan_react(&spec.account, &reference, &id, Mark::Working, true);
+        }
+    }
+
+    /// A thread post that landed since the working marks were made: each
+    /// message still marked working, and still in the mirror, is marked
+    /// replied and loses its working reaction. A message that left the
+    /// mirror, removed or rotated out, gets nothing more. With reactions
+    /// off, every mark is forgotten.
+    fn replied(&mut self, conv: &Object) {
+        if self.input.defaults.reactions.is_none() {
+            self.gw.reactions = Default::default();
+            return;
+        }
+        let Ok((spec, cs)) = decode_conversation(conv) else {
+            return;
+        };
+        let held: BTreeSet<&str> = cs.messages.iter().map(|m| m.id.as_str()).collect();
+        self.gw
+            .reactions
+            .marks
+            .retain(|id, _| held.contains(id.as_str()));
+        let working: Vec<String> = self
+            .gw
+            .reactions
+            .marks
+            .iter()
+            .filter(|(_, m)| **m == Mark::Working)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if working.is_empty() {
+            self.gw.reactions.replies.clear();
+            return;
+        }
+        let landed: Vec<String> = landed_posts(&self.gw).cloned().collect();
+        let new = landed
+            .iter()
+            .any(|k| !self.gw.reactions.replies.contains(k));
+        // Only posts the record still holds are kept counted.
+        self.gw.reactions.replies = landed.into_iter().collect();
+        if !new {
+            return;
+        }
+        let Some(reference) = cs.reference.clone() else {
+            return;
+        };
+        for id in working {
+            self.gw.reactions.marks.insert(id.clone(), Mark::Replied);
+            self.plan_react(&spec.account, &reference, &id, Mark::Replied, true);
+            self.plan_react(&spec.account, &reference, &id, Mark::Working, false);
+        }
+        self.gw.reactions.replies.clear();
+    }
+
+    /// Reaction records: one that landed, or is given up, is dropped; one
+    /// that was refused or whose outcome is unknown is performed again
+    /// under its key after the delay, at most three times in all, since a
+    /// reaction is set, not counted. One that a later mark made pointless,
+    /// the working reaction of a message already replied to, is dropped.
+    /// None of it holds anything back or raises a condition.
+    fn retry_reactions(&mut self, conv: Option<&Object>) {
+        // The thread is readably gone, or the Task is no longer tied to
+        // it: nothing is left to react on, so the marks and the records go.
+        // An Unknown Conversation changes nothing.
+        let unknown = matches!(
+            self.input.observations.conversation,
+            Some(Observation::Unknown { .. })
+        );
+        if !self.gw.is_tied() && !unknown {
+            self.gw.reactions = Default::default();
+            self.gw.posts.retain(|_, r| r.intent.action != REACT);
+            return;
+        }
+        let (name, uid) = self.task_meta();
+        let (name, uid) = (name.to_string(), uid.to_string());
+        let target = conv
+            .and_then(|c| decode_conversation(c).ok())
+            .and_then(|(spec, cs)| Some((spec.account, cs.reference?)));
+        let keys: Vec<String> = self
+            .gw
+            .posts
+            .iter()
+            .filter(|(_, r)| r.intent.action == REACT)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in keys {
+            if self.effects.iter().any(|e| e.key == key) {
+                continue;
+            }
+            let record = self.gw.posts[&key].clone();
+            let parsed = react_of(&name, &uid, &key);
+            let pointless = match &parsed {
+                None => true,
+                Some((id, Mark::Working, true)) => {
+                    self.gw.reactions.marks.get(id) != Some(&Mark::Working)
+                }
+                Some(_) => false,
+            };
+            if pointless || !unsettled(&record) || self.input.defaults.reactions.is_none() {
+                self.gw.posts.remove(&key);
+                continue;
+            }
+            let since = record.receipt.as_ref().map_or(record.intent.at, |r| r.at);
+            if self.input.now < since.saturating_add(RETRY_DELAY_MS) {
+                continue;
+            }
+            let (Some((id, mark, on)), Some((account, reference))) = (parsed, target.as_ref())
+            else {
+                continue;
+            };
+            if let Some(action) = self.react_action(account, reference, &id, mark, on) {
+                self.plan(&key, action);
             }
         }
     }

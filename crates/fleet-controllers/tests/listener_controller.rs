@@ -77,6 +77,7 @@ fn resolved() -> ListenerObservations {
             marker: Marker::Metadata,
             unmentioned: true,
             threads: true,
+            reactions: false,
         })),
         whoami: Some(Observation::Known(Identity {
             id: BOT.into(),

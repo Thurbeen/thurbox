@@ -284,6 +284,22 @@ impl Gateway for GatewayAccounts {
         }
     }
 
+    fn react(
+        &self,
+        account: &str,
+        conversation: &ConversationRef,
+        message: &str,
+        reaction: &str,
+        on: bool,
+    ) -> Observation<EffectOutcome> {
+        match self.adapter(account) {
+            Some(g) => g.react(account, conversation, message, reaction, on),
+            None => Observation::Known(EffectOutcome::Failed {
+                why: Self::not_configured(account),
+            }),
+        }
+    }
+
     fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
         self.adapter(account).and_then(|g| g.link(account, thread))
     }

@@ -257,6 +257,10 @@ pub struct Capabilities {
     pub unmentioned: bool,
     /// The platform has threads inside a chat.
     pub threads: bool,
+    /// Fleet can add and remove its own reactions on a message. Absent in
+    /// an older record: `false`.
+    #[serde(default)]
+    pub reactions: bool,
 }
 
 /// Fleet's bot identity, as the platform reports it.
@@ -523,6 +527,19 @@ pub trait Gateway {
         text: &str,
         intent_key: &str,
     ) -> Observation<EffectOutcome>;
+    /// Add (`on`) or remove Fleet's own `reaction` on `message` in the
+    /// conversation: `Reacted { already }`, where `already` says the
+    /// reaction was already there, or already absent. A reaction is set, not
+    /// counted, so a repeat changes nothing. `reaction` is the platform's
+    /// emoji name, as `[gateway] reactions` gives it.
+    fn react(
+        &self,
+        account: &str,
+        conversation: &ConversationRef,
+        message: &str,
+        reaction: &str,
+        on: bool,
+    ) -> Observation<EffectOutcome>;
     /// A URL that opens the thread, or `None` where the adapter cannot make
     /// one without a platform call. Pure: it calls no platform.
     fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {
@@ -688,6 +705,69 @@ pub struct GatewayConfig {
     /// posts. Absent: they are posted nowhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logs: Option<LogsConfig>,
+    /// The reactions that mark a person's message: `false` turns them off,
+    /// a table names them. Absent: on, with the default names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reactions: Option<ReactionsConfig>,
+}
+
+/// The default "working" reaction: Slack's name for 👀.
+pub const DEFAULT_WORKING: &str = "eyes";
+/// The default "replied" reaction: Slack's name for ✅.
+pub const DEFAULT_REPLIED: &str = "white_check_mark";
+
+/// `[gateway] reactions`: `false` (or `true`), or
+/// `{ working = "<name>", replied = "<name>" }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ReactionsConfig {
+    Enabled(bool),
+    Names(ReactionNames),
+}
+
+/// The names of the two reactions, each the platform's emoji name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReactionNames {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replied: Option<String>,
+}
+
+/// The two reactions as the controllers read them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reactions {
+    /// Added while a Task works on a message.
+    pub working: String,
+    /// Added once Fleet replied in the thread; `working` is removed then.
+    pub replied: String,
+}
+
+impl Default for Reactions {
+    fn default() -> Self {
+        Reactions {
+            working: DEFAULT_WORKING.into(),
+            replied: DEFAULT_REPLIED.into(),
+        }
+    }
+}
+
+impl ReactionsConfig {
+    /// The reactions in force, or `None` when they are off.
+    pub fn reactions(&self) -> Option<Reactions> {
+        match self {
+            ReactionsConfig::Enabled(false) => None,
+            ReactionsConfig::Enabled(true) => Some(Reactions::default()),
+            ReactionsConfig::Names(n) => {
+                let base = Reactions::default();
+                Some(Reactions {
+                    working: n.working.clone().unwrap_or(base.working),
+                    replied: n.replied.clone().unwrap_or(base.replied),
+                })
+            }
+        }
+    }
 }
 
 /// `[gateway] logs = { account, channel }`: the log destination.
@@ -749,6 +829,8 @@ pub struct GatewayDefaults {
     /// For a Task: where its result and change news are logged. `None`:
     /// nowhere.
     pub logs: Option<LogDestination>,
+    /// For a Task: the reactions that mark a person's message. `None`: off.
+    pub reactions: Option<Reactions>,
 }
 
 /// The account a Listener reports on, as the loaded config has it.
@@ -778,6 +860,7 @@ impl Default for GatewayDefaults {
             questions: None,
             platforms: BTreeMap::new(),
             logs: None,
+            reactions: Some(Reactions::default()),
         }
     }
 }
@@ -837,6 +920,10 @@ impl GatewayConfig {
                     },
                 })
             }),
+            reactions: match &self.reactions {
+                Some(r) => r.reactions(),
+                None => Some(Reactions::default()),
+            },
         }
     }
 
@@ -993,6 +1080,22 @@ impl GatewayConfig {
                 "gateway.questions {q:?} is not under [gateway.routes]"
             ));
         }
+        if let Some(ReactionsConfig::Names(names)) = &self.reactions {
+            for (field, name) in [("working", &names.working), ("replied", &names.replied)] {
+                if let Some(name) = name
+                    && (name.trim_matches(':').is_empty() || name.chars().any(char::is_whitespace))
+                {
+                    return Err(format!(
+                        "gateway.reactions.{field}: {name:?} is not one emoji name"
+                    ));
+                }
+            }
+            if let Some(r) = ReactionsConfig::Names(names.clone()).reactions()
+                && r.working.trim_matches(':') == r.replied.trim_matches(':')
+            {
+                return Err("gateway.reactions: working and replied name the same emoji".into());
+            }
+        }
         if let Some(logs) = &self.logs {
             if !self.accounts.contains_key(&logs.account) {
                 return Err(format!(
@@ -1146,6 +1249,54 @@ mod tests {
             questions: Some("eng".into()),
             ..GatewayConfig::default()
         }
+    }
+
+    #[test]
+    fn reactions_default_on_turn_off_with_false_and_take_platform_names() {
+        let parse = |v: serde_json::Value| -> GatewayConfig {
+            let mut c = serde_json::to_value(config()).unwrap();
+            c["reactions"] = v;
+            serde_json::from_value(c).unwrap()
+        };
+        assert_eq!(config().defaults().reactions, Some(Reactions::default()));
+        assert_eq!(
+            Reactions::default(),
+            Reactions {
+                working: "eyes".into(),
+                replied: "white_check_mark".into()
+            }
+        );
+        assert_eq!(parse(json!(false)).defaults().reactions, None);
+        assert_eq!(
+            parse(json!(true)).defaults().reactions,
+            Some(Reactions::default())
+        );
+        let named = parse(json!({"working": "hourglass_flowing_sand"}));
+        assert_eq!(
+            named.defaults().reactions,
+            Some(Reactions {
+                working: "hourglass_flowing_sand".into(),
+                replied: "white_check_mark".into()
+            })
+        );
+        assert_eq!(named.validate(), Ok(()));
+        for (bad, why) in [
+            (json!({"replied": ""}), "gateway.reactions.replied"),
+            (
+                json!({"working": ":eyes:", "replied": "eyes"}),
+                "the same emoji",
+            ),
+            (
+                json!({"working": "eyes", "replied": "eyes"}),
+                "the same emoji",
+            ),
+        ] {
+            let err = parse(bad.clone()).validate().unwrap_err();
+            assert!(err.contains(why), "{bad}: {err}");
+        }
+        let mut c = serde_json::to_value(config()).unwrap();
+        c["reactions"] = json!({"done": "x"});
+        assert!(serde_json::from_value::<GatewayConfig>(c).is_err());
     }
 
     #[test]

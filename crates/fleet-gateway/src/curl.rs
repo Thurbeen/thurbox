@@ -153,7 +153,8 @@ pub fn landed(
 /// fields `account` and `call_timeout`, the constant
 /// `MAX_CALLS_PER_OPERATION`, the functions `check_ref`, `parse_address` and
 /// `read_event`, and the methods `identity`, `offers`, `thread_history`,
-/// `channel_history`, `post_chunks`, `post_channel` and `thread_link`. A macro, since the port is another
+/// `channel_history`, `post_chunks`, `post_channel`, `react_on` and
+/// `thread_link`. A macro, since the port is another
 /// crate's trait.
 ///
 /// [`Gateway`]: fleet_api::gateway::Gateway
@@ -267,6 +268,23 @@ macro_rules! curl_gateway {
                     // A channel address: top-level posts, no thread.
                     None => self.post_channel(&conversation.chat, text, intent_key),
                 }
+            }
+
+            fn react(
+                &self,
+                account: &str,
+                conversation: &ConversationRef,
+                message: &str,
+                reaction: &str,
+                on: bool,
+            ) -> Observation<EffectOutcome> {
+                if let Some(why) = self.other_account(account) {
+                    return Observation::Known(EffectOutcome::Failed { why });
+                }
+                if let Err(why) = check_ref(conversation) {
+                    return Observation::Known(EffectOutcome::Failed { why });
+                }
+                self.react_on(conversation, message, reaction, on)
             }
 
             fn link(&self, account: &str, thread: &ConversationRef) -> Option<String> {

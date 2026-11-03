@@ -307,6 +307,7 @@ fn an_unconfirmed_post_waits_for_a_person_and_holds_back_later_posts() {
             marker: Marker::None,
             unmentioned: true,
             threads: true,
+            reactions: false,
         })
         .unwrap();
     gateway_fake
@@ -491,6 +492,7 @@ fn nonce(env: &Env, window_ms: u64) {
             marker: Marker::Nonce { window_ms },
             unmentioned: true,
             threads: true,
+            reactions: false,
         })
         .unwrap();
 }

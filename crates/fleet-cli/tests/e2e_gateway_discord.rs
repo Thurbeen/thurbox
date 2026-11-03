@@ -475,3 +475,96 @@ fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doub
         "{refused:?}"
     );
 }
+
+#[test]
+fn the_discord_adapter_creates_and_deletes_its_own_reactions_with_the_emoji_url_encoded() {
+    let (env, curl_config) = discord_env("discord-reactions");
+    let starter = snowflake(1_730_000_100_000);
+    let reply = snowflake(1_730_000_200_000);
+    seed(
+        &env,
+        &[message(
+            &starter,
+            ALEX,
+            1_730_000_100_000,
+            "<@x> look",
+            true,
+        )],
+    );
+    // The thread started from the starter message, holding one reply.
+    env.edit_stub(|s| {
+        s["discord"]["channels"][&starter] = json!({"parent": CHANNEL, "messages": [
+            {"id": reply, "channel_id": starter, "type": 0, "content": "more",
+             "author": {"id": ALEX, "username": "alex"}, "mentions": [], "timestamp": iso(1_730_000_200_000)}
+        ]});
+    });
+    let g = adapter(&env, &curl_config);
+    let thread = ConversationRef {
+        platform: "discord".into(),
+        chat: CHANNEL.into(),
+        thread: Some(starter.clone()),
+    };
+    let done = Observation::Known(EffectOutcome::Reacted { already: false });
+    // The starter stays in the parent channel; a reply is in the thread.
+    assert_eq!(g.react(ACCOUNT, &thread, &starter, "eyes", true), done);
+    assert_eq!(g.react(ACCOUNT, &thread, &reply, "eyes", true), done);
+    assert_eq!(
+        g.react(ACCOUNT, &thread, &reply, "white_check_mark", true),
+        done
+    );
+    assert_eq!(g.react(ACCOUNT, &thread, &reply, "eyes", false), done);
+    // A repeat changes nothing, and Discord answers it the same way.
+    assert_eq!(g.react(ACCOUNT, &thread, &reply, "eyes", false), done);
+    assert_eq!(
+        g.react(ACCOUNT, &thread, &reply, "fleet:1250000000000000000", true),
+        done,
+        "a custom emoji as name:id"
+    );
+    let d = discord(&env);
+    assert_eq!(
+        d["reactions"][format!("{CHANNEL}/{starter}")],
+        json!(["\u{1F440}"])
+    );
+    assert_eq!(
+        d["reactions"][format!("{starter}/{reply}")],
+        json!(["\u{2705}", "fleet:1250000000000000000"])
+    );
+    let calls: Vec<Value> = d["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| {
+            c["path"]
+                .as_str()
+                .is_some_and(|p| p.contains("/reactions/"))
+        })
+        .cloned()
+        .collect();
+    assert_eq!(calls.len(), 6, "{calls:#?}");
+    assert_eq!(calls[0]["method"], "PUT");
+    assert_eq!(
+        calls[0]["path"],
+        format!("channels/{CHANNEL}/messages/{starter}/reactions/%F0%9F%91%80/@me")
+    );
+    assert_eq!(calls[3]["method"], "DELETE");
+    // A name Fleet does not map is refused without a call; an unknown
+    // message is Discord's refusal.
+    assert!(matches!(
+        g.react(ACCOUNT, &thread, &reply, "no_such_emoji", true),
+        Observation::Known(EffectOutcome::Failed { .. })
+    ));
+    assert!(matches!(
+        g.react(
+            ACCOUNT,
+            &thread,
+            &snowflake(1_730_000_300_000),
+            "eyes",
+            true
+        ),
+        Observation::Known(EffectOutcome::Failed { .. })
+    ));
+    assert_eq!(
+        discord(&env)["calls"].as_array().unwrap().len(),
+        d["calls"].as_array().unwrap().len() + 1
+    );
+}

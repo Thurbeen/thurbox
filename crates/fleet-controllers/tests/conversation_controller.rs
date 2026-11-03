@@ -176,6 +176,7 @@ fn caps(history: bool) -> Observation<Capabilities> {
         marker: Marker::Metadata,
         unmentioned: true,
         threads: true,
+        reactions: false,
     })
 }
 

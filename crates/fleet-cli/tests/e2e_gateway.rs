@@ -1173,6 +1173,64 @@ fn slack_calls(env: &Env) -> Vec<Value> {
 }
 
 #[test]
+fn the_slack_adapter_adds_and_removes_its_reactions_as_form_arguments() {
+    let (env, curl, curl_config) = slack_env("slack-reactions");
+    seed_slack(&env);
+    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(30));
+    let t = thread(PARENT_TS);
+    let react = |name: &str, on: bool| g.react(GATEWAY_ACCOUNT, &t, REPLY_TS, name, on);
+    assert_eq!(
+        react("eyes", true),
+        Observation::Known(EffectOutcome::Reacted { already: false })
+    );
+    // A repeat is a Known success: `already_reacted`.
+    assert_eq!(
+        react("eyes", true),
+        Observation::Known(EffectOutcome::Reacted { already: true })
+    );
+    assert_eq!(
+        react(":white_check_mark:", true),
+        Observation::Known(EffectOutcome::Reacted { already: false })
+    );
+    assert_eq!(
+        react("eyes", false),
+        Observation::Known(EffectOutcome::Reacted { already: false })
+    );
+    // Removing one that is not there: `no_reaction`, a Known success.
+    assert_eq!(
+        react("eyes", false),
+        Observation::Known(EffectOutcome::Reacted { already: true })
+    );
+    assert_eq!(
+        env.stub()["slack"]["reactions"][format!("{GATEWAY_CHANNEL}/{REPLY_TS}")],
+        json!(["white_check_mark"])
+    );
+    let calls = slack_calls(&env);
+    let reaction_calls: Vec<&Value> = calls
+        .iter()
+        .filter(|c| {
+            c["method"]
+                .as_str()
+                .is_some_and(|m| m.starts_with("reactions."))
+        })
+        .collect();
+    assert_eq!(reaction_calls.len(), 5, "{calls:#?}");
+    assert_eq!(
+        reaction_calls[0]["body"],
+        json!({"channel": GATEWAY_CHANNEL, "timestamp": REPLY_TS, "name": "eyes"}),
+        "form arguments, read back by the stub"
+    );
+    // A message Slack does not know is refused, never Unknown.
+    assert!(matches!(
+        g.react(GATEWAY_ACCOUNT, &t, "1730000999.000000", "eyes", true),
+        Observation::Known(EffectOutcome::Failed { .. })
+    ));
+    // An answer that cannot be read is Unknown.
+    env.edit_stub(|s| s["faults"] = json!([{"call": "curl", "mode": "malformed"}]));
+    assert!(react("eyes", true).is_unknown());
+}
+
+#[test]
 fn the_slack_adapter_reads_identity_capabilities_and_a_thread_through_the_stub_curl() {
     let (env, curl, curl_config) = slack_env("slack-reads");
     seed_slack(&env);
@@ -1190,7 +1248,8 @@ fn the_slack_adapter_reads_identity_capabilities_and_a_thread_through_the_stub_c
             history: true,
             marker: Marker::Metadata,
             unmentioned: true,
-            threads: true
+            threads: true,
+            reactions: true,
         })
     );
     let t = thread(PARENT_TS);

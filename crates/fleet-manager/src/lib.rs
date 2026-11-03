@@ -1385,8 +1385,8 @@ impl Manager<'_> {
     /// from the sweep's Task listing (neither renews the lease: no adapter
     /// is asked), asking again until the controller wants nothing more;
     /// decide; write `status.gateway` and the relay's entries in one typed
-    /// compare-and-swap write, the intents of its `Open`, `Receive`, `Post`
-    /// and `Log` actions with them; then perform each, receipt after.
+    /// compare-and-swap write, the intents of its `Open`, `Receive`, `Post`,
+    /// `Log` and `React` actions with them; then perform each, receipt after.
     fn reconcile_gateway(
         &self,
         obj: &Object,
@@ -1601,6 +1601,15 @@ impl Manager<'_> {
                 };
                 gateway.port.post(account, channel, &text, &effect.key)
             }
+            Action::React {
+                account,
+                conversation,
+                message,
+                reaction,
+                on,
+            } => gateway
+                .port
+                .react(account, conversation, message, reaction, *on),
             Action::Receive {
                 account,
                 route,
@@ -2034,6 +2043,7 @@ impl Manager<'_> {
             | Action::Open { .. }
             | Action::Receive { .. }
             | Action::Log { .. }
+            | Action::React { .. }
             | Action::DeleteTask { .. }
             | Action::RemoveDir { .. } => Observation::Known(EffectOutcome::Failed {
                 why: format!("{} is not a Task controller effect", effect.action.name()),

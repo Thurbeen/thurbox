@@ -163,8 +163,73 @@ pub struct GatewayStatus {
     /// How many relays found messages dropped from the mirror.
     #[serde(default)]
     pub gaps: u64,
+    /// The reactions on the thread's messages: which are marked working or
+    /// replied.
+    #[serde(default, skip_serializing_if = "ReactionStatus::is_empty")]
+    pub reactions: ReactionStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
+}
+
+/// How a person's message is marked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mark {
+    /// Relayed to the Task, which is working on it: the "working" reaction.
+    Working,
+    /// Fleet posted in the thread since: the "replied" reaction, and no
+    /// "working".
+    Replied,
+}
+
+/// `status.gateway.reactions`: GatewayController's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReactionStatus {
+    /// Per message id in the thread, how it is marked. Only messages the
+    /// mirror still holds.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub marks: BTreeMap<String, Mark>,
+    /// The keys of the thread posts already counted: each landed before
+    /// every working mark, or replied to the marks standing when it landed.
+    /// Empty while no message is marked working.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub replies: std::collections::BTreeSet<String>,
+}
+
+impl ReactionStatus {
+    pub fn is_empty(&self) -> bool {
+        self.marks.is_empty() && self.replies.is_empty()
+    }
+}
+
+/// The key of a reaction effect on a message:
+/// `task/<name>/<uid>/gateway/react/<message id>/<working|replied>/<on|off>`.
+pub fn react_key(name: &str, uid: &str, message: &str, mark: Mark, on: bool) -> String {
+    let mark = match mark {
+        Mark::Working => "working",
+        Mark::Replied => "replied",
+    };
+    let on = if on { "on" } else { "off" };
+    post_key(name, uid, &format!("react/{message}/{mark}/{on}"))
+}
+
+/// What a reaction key names: the message id, the mark and whether it adds.
+pub fn react_of(name: &str, uid: &str, key: &str) -> Option<(String, Mark, bool)> {
+    let rest = key.strip_prefix(&post_key(name, uid, "react/"))?;
+    let mut parts = rest.rsplitn(3, '/');
+    let on = match parts.next()? {
+        "on" => true,
+        "off" => false,
+        _ => return None,
+    };
+    let mark = match parts.next()? {
+        "working" => Mark::Working,
+        "replied" => Mark::Replied,
+        _ => return None,
+    };
+    let message = parts.next().filter(|m| !m.is_empty())?;
+    Some((message.to_string(), mark, on))
 }
 
 impl GatewayStatus {

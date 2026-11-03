@@ -1,6 +1,6 @@
 # Gateway controller
 
-Implemented. The installed binary has steps 1 to 8 below: the `[gateway]`
+Implemented. The installed binary has steps 1 to 9 below: the `[gateway]`
 key, the Gateway port, the `fleet-gateway` crate with its fake, Slack and
 Discord adapters, the `Conversation` and `Listener` kinds,
 ConversationController (the mirror, admission, Task creation in each
@@ -11,8 +11,9 @@ verbs. It has GatewayController's tie, the join and the relay,
 `status.answered` with the `answers` inbox field, the parent labels and a
 child's words reaching its parent's inbox. It posts what a tied Task
 declares, opens a thread for an untied Task's Question, and posts every
-Task's result and change news in the log channel. The listener programs
-stay outside Fleet.
+Task's result and change news in the log channel. It marks each message
+it relays with a working reaction, and with a replied reaction once Fleet
+posted in the thread. The listener programs stay outside Fleet.
 
 The Gateway ties chat threads to Tasks:
 
@@ -60,7 +61,7 @@ to check the model.
 | ConversationController | Keeps each Conversation current, starts a Task for an admitted mention, and retires old Conversations. |
 | GatewayController | A second controller over each Task. It relays the thread into the inbox and posts what the Task declares. |
 | [Listener resource](../../resources/listener.md) and ListenerController | Show whether an account's listener is running, connected and on the current configuration. |
-| Gateway port | The platform API behind one interface: read events, read history, open a thread, post. |
+| Gateway port | The platform API behind one interface: read events, read history, open a thread, post, react. |
 
 ## Flow: a mention starts a Task
 
@@ -97,6 +98,38 @@ to check the model.
 12. A thread with no message for its retention period retires, if its Task
     is Concluded or it has no live Task. See
     [Flow: a thread's end of life](#flow-a-threads-end-of-life).
+
+## Flow: reactions show progress
+
+1. GatewayController relays admitted messages into a tied Task's inbox:
+   the join, or a later relay.
+2. Fleet adds the working reaction, 👀 by default, to each admitted message
+   in that relay.
+3. The Task works, and declares a `Comment` or a `Question`, or a change it
+   follows becomes ready for review.
+4. Fleet posts in the thread for the Task.
+5. Each message in the thread that still has the working reaction gets the
+   replied reaction, ✅ by default. Fleet removes its working reaction.
+
+Rules:
+
+- Only an `Admitted` message gets a reaction. A `Context` message and
+  Fleet's own posts get none.
+- Only a thread post counts as a reply: a Question, a Comment or the ready
+  notice. A log post does not count.
+- A message that is edited and relayed again keeps the mark it has. Fleet
+  marks it working only when it has no mark yet.
+- A message that leaves the mirror, removed or rotated out, gets nothing
+  more.
+- Reactions are best effort. A reaction that fails or has an unknown
+  outcome never holds back a relay or a post, and raises no
+  `NeedsAttention`.
+- Each reaction is a keyed effect: Fleet writes the intent first and the
+  receipt after. A reaction is set, not counted, so a repeat after a crash
+  changes nothing.
+- `gateway.reactions = false` turns reactions off. An adapter whose
+  platform has no reactions answers `reactions = false` in its
+  capabilities, and Fleet then adds none.
 
 ## Flow: a thread's end of life
 
@@ -210,6 +243,9 @@ These rules hold across all flows:
   only. It holds back no thread post, and a thread post holds back no log
   post.
 - **Fleet never relays its own posts.**
+- **Reactions never hold anything back.** A failed or unknown reaction is
+  tried again under its key at most three times in all, and is then given
+  up. It holds back no relay and no post, and raises no condition.
 - **Unknown never means absent.** A platform or store answer that Fleet
   cannot read makes Fleet wait. It never makes Fleet act as if something
   is gone.
@@ -310,7 +346,9 @@ In scope:
 - opening a thread for a Question from an untied Task, and recording
   answers,
 - routing a child Task's words to its parent,
-- the Slack and Discord adapters, the receive verb and the Listener.
+- the Slack and Discord adapters, the receive verb and the Listener,
+- marking a relayed message with a working reaction, and with a replied
+  reaction once Fleet posted in the thread.
 
 Out of scope, deliberately:
 
@@ -319,7 +357,8 @@ Out of scope, deliberately:
 - any judgement about the worth of a message: an intake model, a planner or
   a nudging heartbeat,
 - implementing the Telegram or Teams adapters,
-- reactions, files, edits of Fleet's own posts, and interactive components,
+- reading people's reactions, files, edits of Fleet's own posts, and
+  interactive components,
 - the listener programs themselves.
 
 ## Open questions and recommendations
@@ -338,6 +377,7 @@ Out of scope, deliberately:
 | How is an answer recognised? | The first allowlisted message written after the Question, by the platform's clock. The Gateway does not judge whether it really answers. A worker that needs more asks a new Question. |
 | Does a child's result also go to the log channel? | Yes. The log channel is the record of every Task, a Task that another Task started included. The parent's inbox entry is input for the parent's work, not a record, and the parent does not log it again. |
 | Why is the log channel no route's channel? | So a reply under a log post is never admitted, relayed or answered. The receive verb ignores a channel that no route covers. |
+| Why are reactions best effort? | A reaction only shows progress. The relay and the post are what matter to the person, so a reaction never holds them back. A reaction is set, not counted, so a repeat is harmless and needs no marker. |
 | What if a platform cannot find Fleet's posts again? | Fleet never repeats a post whose outcome is unknown there. It raises `NeedsAttention/PostUnconfirmed`, and later posts to that thread wait for a person. |
 
 ## Implementation steps
@@ -357,3 +397,4 @@ and adds its crate edges, field managers and negative fixtures to
 | 6 | The Discord adapter through `curl`; `inbound = "discord-gateway"`, `messageContent` and `intents`; nonce recovery in ConversationController | `crates/fleet-gateway/src/discord.rs`, `fleet-api/src/gateway.rs`, `fleet-controllers/src/conversation.rs` | Truth tables in the adapter's unit tests; synthetic dispatches; `conversation_controller`; `e2e_gateway_discord` against the stub `curl` |
 | 7 | The log channel: `gateway.logs`; the `Log` action; a top-level `post` to a channel address; the port's `link`; Drafts, results and change news of every Task leave the thread, which keeps one ready notice per change | `fleet-api/src/gateway.rs`, `fleet-api/src/plan.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_logs`, `e2e_gateway_post` |
 | 8 | One directory per thread, and one end of life: a route's `dir` is a base directory; each thread's Tasks get `<dir>/<conversation name>`, which the manager creates through the runtime's `create_dir` and records; `WorkspaceBusy` only for a Task that holds the thread's own directory; an idle thread with a Concluded Task or none retires its Task, its recorded directory and its Conversation; `gateway.retainMs` defaults to seven days | `fleet-api/src/conversation.rs`, `fleet-api/src/runtime.rs`, `fleet-api/src/store.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-runtime`, `fleet-store` | `conversation_controller`, `store_contract`, `e2e_gateway` |
+| 9 | Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked working, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |

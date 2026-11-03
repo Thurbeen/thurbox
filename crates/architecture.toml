@@ -81,7 +81,7 @@ forbidden_methods = [
   "record_relay", "remove_finalizer", "delete", "delete_fenced", "acquire_lease",
   "renew_lease", "release_lease", "reconcile", "probes", "create_dir", "remove_dir", "spawn", "release",
   "change", "mark_ready", "whoami", "call", "admit", "plugin_mutate",
-  "history", "capabilities", "post",
+  "history", "capabilities", "post", "react",
   "receive_event", "record_received", "record_beat", "record_refusal", "retire_conversation_task",
 ]
 
@@ -175,7 +175,7 @@ path = "fleet_api::forge::Forge"
 allowed = ["fleet-api", "fleet-manager", "fleet-forge", "fleet-cli"]
 why = "only the manager performs the mark-ready effect, through the port the CLI wired"
 
-# The Gateway port carries Fleet's chat writes, `open` and `post`. As the
+# The Gateway port carries Fleet's chat writes, `open`, `post` and `react`. As the
 # Forge port, it is defined by the API, implemented by fleet-gateway, wired
 # by the CLI and performed by the manager alone, after the intent is written
 # and the lease renewed: no other adapter and no controller holds a handle
@@ -183,7 +183,7 @@ why = "only the manager performs the mark-ready effect, through the port the CLI
 [[restricted]]
 path = "fleet_api::gateway::Gateway"
 allowed = ["fleet-api", "fleet-manager", "fleet-gateway", "fleet-cli"]
-why = "only the manager performs the open and post effects, through the port the CLI wired"
+why = "only the manager performs the open, post and react effects, through the port the CLI wired"
 
 [[restricted]]
 path = "fleet_api::plugin::Plugins"

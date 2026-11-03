@@ -5,9 +5,9 @@ CLI verbs that listeners and people run, what a Task declares and receives,
 and who may write what. The port, the addresses and admission are
 implemented in `fleet_api::gateway`; the three verbs, the Conversation and
 Listener kinds, ConversationController, ListenerController,
-GatewayController's tie, join, relay, posting and logging, its `Open`,
-`Receive`, `Post` and `Log` actions, `answers`, the parent labels and
-`Probe::List` are implemented. It follows the shape of the
+GatewayController's tie, join, relay, posting, logging and reactions, its
+`Open`, `Receive`, `Post`, `Log` and `React` actions, `answers`, the parent
+labels and `Probe::List` are implemented. It follows the shape of the
 [Forge controller interface](../forge/interface.md). The
 [state machine](state-machine.md) defines when each thing happens.
 
@@ -39,10 +39,11 @@ Unknown. A refused write is `Known(EffectOutcome::Failed { why })`.
 | `parse` | An account and an address | The normalised `ConversationRef`. Unknown for an address the adapter cannot read. |
 | `event` | An account's configuration and a [delivery envelope](#deliveries) | A `Delivery`, `None` for a payload the Gateway ignores (a reaction, a presence change), or Unknown. Pure, so the receive verb runs it without the lease. |
 | `whoami` | An account | Fleet's bot identity, as the platform reports it. |
-| `capabilities` | An account | What the platform offers there: `history`, `marker` (`metadata`, `nonce` or `none`), `unmentioned` (whether messages without a mention are delivered) and `threads`. |
+| `capabilities` | An account | What the platform offers there: `history`, `marker` (`metadata`, `nonce` or `none`), `unmentioned` (whether messages without a mention are delivered), `threads` and `reactions` (whether Fleet can add and remove its own reactions). |
 | `history` | A conversation, and an `after` message id or a `since` time | The messages after that point, oldest first, and the thread's first message as `starter`. Unknown, with `retryAfter` where the platform gives one, when the read fails. `Unsupported` where bots cannot read history. |
 | `open` | A channel, text and an intent key | `Opened { conversation, message, at }`: a new thread whose first post is the text, carrying the key as its marker. |
 | `post` | A conversation, text and an intent key | `Posted { message, at }`: a post carrying the key as its marker. To a thread address, a reply in the thread. To a channel address, a top-level post in the channel. |
+| `react` | A conversation, a message id, a reaction name and `on` | `Reacted { already }`: Fleet's own reaction is added (`on`) or removed. `already` is true when it was already there, or already absent. |
 | `link` | An account and a thread address | A URL that opens the thread, or none where the adapter cannot make one without a platform call. Pure: it calls no platform. |
 
 What an adapter must guarantee:
@@ -61,6 +62,12 @@ What an adapter must guarantee:
   key, and finishes a half-done open on retry.
 - **With `marker = nonce { windowMs }`,** a retry within the window resends
   the same nonce, and the platform returns the existing post.
+- **A reaction is set, not counted.** A repeated add leaves one reaction,
+  and removing an absent one changes nothing. Both are Known successes.
+- **A reaction name is the platform's emoji name**, as
+  `gateway.reactions` gives it. The adapter maps the name to what its
+  platform takes. An adapter whose platform has no reactions answers
+  `reactions = false`, and Fleet then calls no `react`.
 - **A `post` to a channel address opens no thread.** Every part of a split
   text is a top-level post in the channel. A `since` read of the channel
   address finds them.
@@ -71,7 +78,8 @@ long text into consecutive posts under derived keys that name the part and
 the count (`<key>/1/3`, `<key>/2/3`, `<key>/3/3`).
 
 There is no edit, delete or merge method. Fleet never changes a post that
-it made. The [adapters](adapters/README.md#what-the-platforms-changed) say why each
+it made. `react` changes only Fleet's own reaction on a message. The
+[adapters](adapters/README.md#what-the-platforms-changed) say why each
 capability exists.
 
 ### Events
@@ -373,16 +381,18 @@ pub fn reconcile(&self, input: &GatewayInput<'_>) -> Result<Plan, StoreError>;
   costs nothing.
 - `probes` asks `Object` for the Conversation, each followed ChangeRequest
   and the parent; `List` for the children, by the parent labels;
-  `Capabilities` per account; and `History` to recover a post or an open
+  `Capabilities` per account, also before a relay while reactions are on;
+  and `History` to recover a post or an open
   in the thread, or a log post in the log channel. The manager answers
   `List` from one Task listing per sweep.
 - `reconcile` returns:
   - `status`: `status.gateway`.
   - `appends`: the inbox entries, through `record_relay`, so the entry and
     the cursor land in one write.
-  - `effects`: the `Open`, `Receive`, `Post` and `Log` actions whose
-    intents the status carries. One pass plans at most one thread effect
-    and one log effect.
+  - `effects`: the `Open`, `Receive`, `Post`, `Log` and `React` actions
+    whose intents the status carries. One pass plans at most one thread
+    effect and one log effect, and the reactions of its relay and of one
+    reply.
   - `remove_finalizer`: always `None`.
 
 It is a second controller over each [Task](../../resources/task.md). It
@@ -395,7 +405,9 @@ owns `status.gateway` and:
 - logs every Task's Drafts, result and change news in the log channel,
 - opens a thread for a Question from an untied Task,
 - records answers to Questions,
-- routes a child Task's words into its parent's inbox.
+- routes a child Task's words into its parent's inbox,
+- marks each relayed admitted message working, and replied once Fleet
+  posted in the thread.
 
 #### Fields this controller owns
 
@@ -408,12 +420,13 @@ owns `status.gateway` and:
 | `result` | The result generation logged, or read while no log channel is configured. |
 | `changes` | Per ChangeRequest name, the `state.seq` logged through, or read while no log channel is configured. |
 | `children` | Per child Task name, `{uid, seen, declared, result}`. |
-| `posts` | Per intent key, `{intent, receipt, attempts, recovery}`, for thread posts and log posts alike. `intent.action` tells them apart: `post`, `open`, `receive` or `log`. The newest 100 settled, and every unsettled. |
+| `posts` | Per intent key, `{intent, receipt, attempts, recovery}`, for thread posts, log posts and reactions alike. `intent.action` tells them apart: `post`, `open`, `receive`, `log` or `react`. The newest 100 settled, and every unsettled. A `react` record is dropped once it is settled or given up. |
 | `posted` | Every Question and Comment id posted, and every Draft id logged, for the life of the Task. |
 | `logged` | How many items of `status.declared` the log lane read for Drafts. |
 | `ready` | The `uid` of each followed ChangeRequest whose ready notice was posted in the thread. |
 | `questions` | Per Question id, where and when it was posted. |
 | `gaps` | How many relays found messages dropped from the mirror. |
+| `reactions` | `marks`: per message id in the thread, `working` or `replied`, for the messages the mirror still holds. `replies`: the keys of the thread posts already counted against the working marks. |
 | `conditions` | `Tied`, `NeedsAttention`. |
 
 `status.answered` has no single owner. It maps a Question id to
@@ -427,6 +440,7 @@ it.
 | `Open { account, route, channel, text, key }` | `Gateway::open` | `Opened { conversation, message, at }`, Failed, or Unknown |
 | `Receive { account, address, route, delivery }`, under `<question key>/receive` | The store, never a platform: it creates the opened thread's Conversation and adds Fleet's opening post, as the receive verb would | `Received` (written or a duplicate), Failed, or Unknown |
 | `Post { conversation, text, key }` | `Gateway::post` | `Posted { message, at }`, Failed, or Unknown |
+| `React { account, conversation, message, reaction, on, key }` | `Gateway::react` | `Reacted { already }`, Failed, or Unknown |
 | `Log { account, channel, text, thread, key }` | `Gateway::post` to the channel address, a top-level post. The manager adds a line that names `thread`, the tied thread with its account, as `Gateway::link` gives it, else by its address. | `Posted { message, at }`, Failed, or Unknown |
 
 `Receive` is the one way a plan reaches a Conversation, and it changes
@@ -462,6 +476,9 @@ architecture rule:
   `Probe::GatewayWhoami { account }`, answered by the Gateway port. The
   existing `Whoami { host }` stays the Forge port's.
 - New actions: `Open`, `Post` and `Receive`, above.
+- A new action, `React`, above. Only GatewayController plans it. The
+  manager performs it through `Gateway::react`, after the intent and under
+  the lease.
 - A new action, `Log`, above. Only GatewayController plans it. The
   architecture rule that keeps the Gateway port in the manager covers it:
   the manager performs it through `Gateway::post`, after the intent and
@@ -560,6 +577,9 @@ under the same key, so with the same nonce, inside the window. The
 | Ready notice, in the thread | `task/<name>/<uid>/gateway/ready/<cr uid>` |
 | Change news, in the log channel | `task/<name>/<uid>/gateway/change/<cr uid>/<state.seq>` |
 | Result, in the log channel | `task/<name>/<uid>/gateway/result/<generation>` |
+| Working reaction, added | `task/<name>/<uid>/gateway/react/<message id>/working/on` |
+| Replied reaction, added | `task/<name>/<uid>/gateway/react/<message id>/replied/on` |
+| Working reaction, removed on the reply | `task/<name>/<uid>/gateway/react/<message id>/working/off` |
 | Refusal | `conversation/<conv uid>/refuse/<author id>` |
 | Task creation | `conversation/<conv uid>/task/<n>` |
 | Busy notice | `conversation/<conv uid>/busy/<n>` |
@@ -589,6 +609,17 @@ A retirement step follows these rules:
   count as an attempt.
 - A crash after the manager created a directory and before it recorded
   it leaves the directory unrecorded. Fleet then keeps that directory.
+
+A reaction follows its own rules:
+
+- A reaction is never looked for. Reason: a reaction is set, not counted,
+  so performing it again under the same key changes nothing.
+- A refused reaction, one with an unknown outcome, and one whose intent has
+  no receipt are performed again under the same key after the delay.
+- After three attempts in all, the reaction is given up.
+- A reaction raises no condition and holds back nothing.
+- A working reaction not yet settled when its message is marked replied is
+  dropped. Reason: adding it then would undo the removal.
 
 A log post follows the same rules. Its recovery read is a `since` read of
 the log channel's address on the `gateway.logs` account. A log post that

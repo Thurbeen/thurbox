@@ -129,6 +129,18 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thread: Option<crate::gateway::LogThread>,
     },
+    /// Add (`on`) or remove Fleet's own `reaction` on `message` in
+    /// `conversation` on `account`, through the Gateway port. A reaction is
+    /// set, not counted, so a repeat under the same key changes nothing.
+    /// GatewayController asks, to mark a person's message working or
+    /// replied.
+    React {
+        account: String,
+        conversation: crate::gateway::ConversationRef,
+        message: String,
+        reaction: String,
+        on: bool,
+    },
     /// Delete the conversation Task a retiring thread created, through the
     /// store, fenced on its `uid`: only a Task carrying the Conversation's
     /// uid label, and only while it is Concluded. Its finalizer then
@@ -167,6 +179,7 @@ impl Action {
             Action::Open { .. } => "open",
             Action::Receive { .. } => "receive",
             Action::Log { .. } => "log",
+            Action::React { .. } => "react",
             Action::DeleteTask { .. } => "deleteTask",
             Action::RemoveDir { .. } => "removeDir",
         }
@@ -267,6 +280,12 @@ pub enum EffectOutcome {
     Posted {
         message: String,
         at: Millis,
+    },
+    /// The reaction is added or removed, through the Gateway port;
+    /// `already` when it was already there, or already absent.
+    Reacted {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        already: bool,
     },
     /// Fleet's opening post is on the opened thread's Conversation, now or
     /// before (a duplicate delivery): its name and `uid`.

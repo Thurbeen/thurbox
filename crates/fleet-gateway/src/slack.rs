@@ -74,6 +74,7 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     marker: Marker::Metadata,
     unmentioned: true,
     threads: true,
+    reactions: true,
 };
 
 /// One Slack workspace, served by `curl` with the operator's config file.
@@ -427,6 +428,35 @@ impl SlackGateway {
         }
         let (message, at) = first.expect("at least one chunk");
         Observation::Known(EffectOutcome::Posted { message, at })
+    }
+
+    /// `reactions.add` or `reactions.remove` on the message `ts` in the
+    /// conversation's channel, as form arguments. `already_reacted` and
+    /// `no_reaction` say the reaction already stands as asked: a Known
+    /// success.
+    fn react_on(
+        &self,
+        conversation: &ConversationRef,
+        message: &str,
+        reaction: &str,
+        on: bool,
+    ) -> Observation<EffectOutcome> {
+        let method = if on {
+            "reactions.add"
+        } else {
+            "reactions.remove"
+        };
+        let name = reaction.trim_matches(':');
+        let body = json!({"channel": conversation.chat, "timestamp": message, "name": name});
+        match self.call(method, &body, self.call_timeout) {
+            Ok(_) => Observation::Known(EffectOutcome::Reacted { already: false }),
+            Err(CallError::Refused(why))
+                if why.ends_with(": already_reacted") || why.ends_with(": no_reaction") =>
+            {
+                Observation::Known(EffectOutcome::Reacted { already: true })
+            }
+            Err(e) => send_failure(None, e.why(), e.certain_failure()),
+        }
     }
 
     /// No link: a Slack permalink needs the workspace's domain.

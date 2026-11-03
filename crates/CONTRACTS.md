@@ -126,9 +126,9 @@ fleet-dev          tooling        `cargo xtask`: gate and release
   no controller can reach `mark_ready`.
 - fleet-gateway, likewise, depends on nothing above the API and the spawner
   and is depended on by the CLI alone, and the Gateway port, which carries
-  the chat writes `open` and `post`, is held only by fleet-api,
+  the chat writes `open`, `post` and `react`, is held only by fleet-api,
   fleet-gateway, fleet-manager and fleet-cli. The CLI may not call the
-  port's `history`, `capabilities` or `post`.
+  port's `history`, `capabilities`, `post` or `react`.
 - fleet-telemetry depends on no other Fleet crate and is depended on by the
   CLI alone. Only fleet-telemetry reaches `opentelemetry_sdk` or
   `opentelemetry_otlp`: the providers, batching, exporter and shutdown bound
@@ -634,6 +634,18 @@ Guarantees, each with its test in `gateway_controller`,
   that may already append to the parent's inbox: a person, a `tasks =
   "any"` plugin, or a `tasks = "own"` plugin that created the parent. They
   never change afterwards.
+- **Reactions are best effort.** Each admitted message a relay delivers,
+  with no mark yet, is marked working and gets the working reaction, where
+  `gateway.reactions` is on and the account's capabilities say
+  `reactions`. A thread post that lands marks every working message
+  replied: the replied reaction is added and the working one removed.
+  Each reaction is a keyed effect under
+  `task/<name>/<uid>/gateway/react/<message id>/<working|replied>/<on|off>`,
+  tried at most three times, never looked for, and dropped once settled or
+  given up. A reaction holds back no relay and no post, and raises no
+  condition. A message that leaves the mirror, a thread that is readably
+  gone and reactions turned off forget the marks. Tested in
+  `gateway_controller`'s `reactions` module and `e2e_gateway_reactions`.
 - **Quiet costs nothing.** A tied Task is due only when its Conversation's
   revision moved past `seen`, its `uid` changed or it left the listing;
   a parent only when a child's `resourceVersion` moved; a Task with the

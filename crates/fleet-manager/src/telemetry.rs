@@ -175,7 +175,8 @@ fn effect_outcome(outcome: &Observation<EffectOutcome>) -> &'static str {
             EffectOutcome::Spawned { adopted: true, .. } => "adopted",
             EffectOutcome::Spawned { .. } => "spawned",
             EffectOutcome::Delivered { already: true, .. }
-            | EffectOutcome::MarkedReady { already: true } => "already",
+            | EffectOutcome::MarkedReady { already: true }
+            | EffectOutcome::Reacted { already: true } => "already",
             EffectOutcome::Delivered { .. } => "delivered",
             EffectOutcome::Queued { .. } => "queued",
             EffectOutcome::Released => "released",
@@ -184,6 +185,7 @@ fn effect_outcome(outcome: &Observation<EffectOutcome>) -> &'static str {
             EffectOutcome::Moved { .. } => "moved",
             EffectOutcome::Opened { .. } => "opened",
             EffectOutcome::Posted { .. } => "posted",
+            EffectOutcome::Reacted { .. } => "reacted",
             EffectOutcome::Received { .. } => "received",
             EffectOutcome::Created { adopted: true, .. } => "adopted",
             EffectOutcome::Created { .. } => "created",

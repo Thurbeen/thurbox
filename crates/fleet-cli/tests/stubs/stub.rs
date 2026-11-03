@@ -1772,8 +1772,45 @@ mod slack {
             "conversations.replies" => replies(&state, &body),
             "conversations.history" => history(&state, &body),
             "chat.postMessage" => post(&mut state, &body, &bot_user, &bot_id),
+            "reactions.add" => react(&mut state, &body, true),
+            "reactions.remove" => react(&mut state, &body, false),
             _ => ok_false("unknown_method"),
         }
+    }
+
+    /// `reactions.add` and `reactions.remove` on a message of the model:
+    /// `slack.reactions["<channel>/<ts>"]` lists the bot's reactions there.
+    /// Adding one already there is `already_reacted`; removing one that is
+    /// not is `no_reaction`, as Slack answers.
+    fn react(state: &mut Value, body: &Value, add: bool) -> ExitCode {
+        let channel = string(&body["channel"]);
+        let ts = string(&body["timestamp"]);
+        let name = string(&body["name"]);
+        let Some(all) = channel_messages(state, &channel) else {
+            return ok_false("channel_not_found");
+        };
+        if !all.iter().any(|m| m["ts"] == ts) {
+            return ok_false("message_not_found");
+        }
+        if name.is_empty() || name.contains(':') {
+            return ok_false("invalid_name");
+        }
+        let at = format!("{channel}/{ts}");
+        if !state["slack"]["reactions"][&at].is_array() {
+            state["slack"]["reactions"][&at] = json!([]);
+        }
+        let list = state["slack"]["reactions"][&at]
+            .as_array_mut()
+            .expect("reactions");
+        let there = list.iter().any(|r| *r == name);
+        match (add, there) {
+            (true, true) => return ok_false("already_reacted"),
+            (false, false) => return ok_false("no_reaction"),
+            (true, false) => list.push(json!(name)),
+            (false, true) => list.retain(|r| *r != name),
+        }
+        save(state);
+        answer(HEAD, &json!({"ok": true}))
     }
 
     /// The messages of `channel`, or `None` for a channel the model lacks.
@@ -2074,6 +2111,9 @@ mod discord {
             ("POST", ["channels", c, "messages", m, "threads"]) => {
                 start_thread(&mut state, c, m, &body)
             }
+            (verb @ ("PUT" | "DELETE"), ["channels", c, "messages", m, "reactions", e, "@me"]) => {
+                react(&mut state, c, m, e, verb == "PUT")
+            }
             _ => error(404, 0, "404: Not Found"),
         }
     }
@@ -2120,6 +2160,62 @@ mod discord {
             hang();
         }
         answer(200, &message)
+    }
+
+    /// `%XX` decoded.
+    fn unescape(s: &str) -> String {
+        let b = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%' && i + 2 < b.len() {
+                let hex = std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("");
+                out.push(u8::from_str_radix(hex, 16).unwrap_or(b'?'));
+                i += 3;
+            } else {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// Create or delete the bot's own reaction: `204` with no body either
+    /// way, as Discord answers. `discord.reactions["<channel>/<message>"]`
+    /// lists the emoji there. An emoji that is neither Unicode nor
+    /// `name:id` is `10014 Unknown Emoji`.
+    fn react(state: &mut Value, channel: &str, message: &str, emoji: &str, add: bool) -> ExitCode {
+        let found = state["discord"]["channels"][channel]["messages"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|m| m["id"] == message));
+        if !found {
+            return error(404, 10008, "Unknown Message");
+        }
+        if emoji.contains(':') || emoji.contains('\u{1F440}') {
+            // Not URL-encoded: Discord answers Unknown Emoji.
+            return error(400, 10014, "Unknown Emoji");
+        }
+        let emoji = unescape(emoji);
+        let custom = emoji
+            .split_once(':')
+            .is_some_and(|(n, id)| !n.is_empty() && id.bytes().all(|c| c.is_ascii_digit()));
+        if !custom && emoji.is_ascii() {
+            return error(400, 10014, "Unknown Emoji");
+        }
+        let at = format!("{channel}/{message}");
+        if !state["discord"]["reactions"][&at].is_array() {
+            state["discord"]["reactions"][&at] = json!([]);
+        }
+        let list = state["discord"]["reactions"][&at]
+            .as_array_mut()
+            .expect("reactions");
+        list.retain(|r| *r != emoji);
+        if add {
+            list.push(json!(emoji));
+        }
+        save(state);
+        print!("HTTP/2 204 \r\n\r\n");
+        ExitCode::SUCCESS
     }
 
     fn start_thread(state: &mut Value, channel: &str, message: &str, body: &Value) -> ExitCode {

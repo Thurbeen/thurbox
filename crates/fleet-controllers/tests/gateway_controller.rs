@@ -1350,6 +1350,7 @@ mod posting {
                 marker,
                 unmentioned: true,
                 threads: true,
+                reactions: false,
             }),
         )])
     }
@@ -2066,6 +2067,7 @@ mod logging {
                 marker: Marker::Metadata,
                 unmentioned: true,
                 threads: true,
+                reactions: false,
             }),
         )])
     }
@@ -2374,5 +2376,449 @@ mod logging {
             serde_json::from_value::<TaskStatus>(t.status.clone()).unwrap(),
         );
         assert!(!GatewayController::due(&quiet, NOW));
+    }
+}
+
+// --- Reactions. ---------------------------------------------------------
+
+mod reactions {
+    use super::*;
+    use fleet_api::conversation::EffectRecord;
+    use fleet_api::gateway::{Capabilities, ConversationRef, Marker};
+    use fleet_api::plan::{Action, EffectOutcome, Intent, Receipt};
+    use fleet_api::talk::{Mark, ReactionStatus};
+
+    fn key(item: &str) -> String {
+        format!("task/{TASK}/{TASK_UID}/gateway/{item}")
+    }
+
+    fn react(id: &str, mark: &str, on: bool) -> String {
+        key(&format!(
+            "react/{id}/{mark}/{}",
+            if on { "on" } else { "off" }
+        ))
+    }
+
+    /// The tied Conversation at `revision`, with its parsed address.
+    fn conv(revision: u64, messages: Vec<StoredMessage>) -> Object {
+        let mut c = conversation(revision, messages);
+        c.status["ref"] = serde_json::to_value(ConversationRef::split(ADDRESS).unwrap()).unwrap();
+        c
+    }
+
+    fn caps(reactions: bool) -> Observation<Capabilities> {
+        Observation::Known(Capabilities {
+            history: true,
+            marker: Marker::Metadata,
+            unmentioned: true,
+            threads: true,
+            reactions,
+        })
+    }
+
+    fn with_caps(c: Object, answer: Observation<Capabilities>) -> GatewayObservations {
+        let mut obs = observed(Observation::Known(Some(c)));
+        obs.capabilities.insert(ACCOUNT.to_string(), answer);
+        obs
+    }
+
+    fn record(
+        action: &str,
+        at: u64,
+        outcome: Option<Observation<EffectOutcome>>,
+        attempts: u32,
+    ) -> EffectRecord {
+        EffectRecord {
+            intent: Intent {
+                action: action.into(),
+                at,
+                generation: 1,
+            },
+            receipt: outcome.map(|o| Receipt {
+                action: action.into(),
+                at,
+                outcome: o,
+            }),
+            attempts,
+            recovery: 0,
+        }
+    }
+
+    fn posted(at: u64) -> Option<Observation<EffectOutcome>> {
+        Some(Observation::Known(EffectOutcome::Posted {
+            message: format!("m{at}"),
+            at,
+        }))
+    }
+
+    /// The React effects a plan carries, as (key, reaction, on).
+    fn reacts(plan: &Plan) -> Vec<(String, String, bool)> {
+        plan.effects
+            .iter()
+            .filter_map(|e| match &e.action {
+                Action::React {
+                    reaction,
+                    on,
+                    message,
+                    ..
+                } => {
+                    assert!(e.key.contains(&format!("/react/{message}/")), "{e:?}");
+                    Some((e.key.clone(), reaction.clone(), *on))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn marked(id: &str, mark: Mark) -> Option<GatewayStatus> {
+        tied_at(2).map(|g| GatewayStatus {
+            reactions: ReactionStatus {
+                marks: BTreeMap::from([(id.to_string(), mark)]),
+                ..ReactionStatus::default()
+            },
+            ..g
+        })
+    }
+
+    fn attention(gw: &GatewayStatus) -> bool {
+        gw.conditions
+            .iter()
+            .any(|c| c.type_ == "NeedsAttention" && c.status == ConditionStatus::True)
+    }
+
+    #[test]
+    fn the_join_marks_each_admitted_message_working_and_nothing_else() {
+        let t = task(tied(), TaskStatus::default());
+        let mut messages = thread();
+        let mut own = msg(T0 + 400_000, 1, BOT, AuthorKind::Fleet, "Looking.");
+        own.key = Some(key("comment/c0"));
+        messages.push(own);
+        let (plan, gw) = run(&t, with_caps(conv(1, messages), caps(true)));
+        assert_eq!(plan.appends.len(), 1, "the join goes out");
+        let alex = (T0 + 300_000).to_string();
+        assert_eq!(
+            reacts(&plan),
+            vec![(react(&alex, "working", true), "eyes".into(), true)],
+            "context and Fleet's own post get nothing"
+        );
+        assert_eq!(
+            gw.reactions.marks,
+            BTreeMap::from([(alex.clone(), Mark::Working)])
+        );
+        assert_eq!(gw.posts[&react(&alex, "working", true)].attempts, 1);
+        // The probes ask the account's capabilities for the relay to come.
+        let input = GatewayInput {
+            task: &t,
+            observations: observed(Observation::Known(Some(conv(1, thread())))),
+            now: NOW,
+            defaults: defaults(),
+        };
+        assert!(
+            GatewayController
+                .probes(&input)
+                .unwrap()
+                .contains(&Probe::Capabilities {
+                    account: ACCOUNT.into()
+                })
+        );
+    }
+
+    #[test]
+    fn without_reactions_unknown_capabilities_or_reactions_off_the_relay_goes_out_unmarked() {
+        let t = task(tied(), TaskStatus::default());
+        for (obs, defaults) in [
+            (with_caps(conv(1, thread()), caps(false)), defaults()),
+            (
+                with_caps(conv(1, thread()), Observation::unknown("capabilities lost")),
+                defaults(),
+            ),
+            (
+                observed(Observation::Known(Some(conv(1, thread())))),
+                defaults(),
+            ),
+            (
+                with_caps(conv(1, thread()), caps(true)),
+                GatewayDefaults {
+                    reactions: None,
+                    ..defaults()
+                },
+            ),
+        ] {
+            let (plan, gw) = run_with(&t, obs, defaults);
+            assert_eq!(plan.appends.len(), 1, "the join goes out");
+            assert!(plan.effects.is_empty(), "{:#?}", plan.effects);
+            assert!(gw.reactions.is_empty(), "{gw:#?}");
+            assert!(!attention(&gw));
+        }
+    }
+
+    #[test]
+    fn an_edit_of_a_marked_message_is_relayed_without_a_second_mark() {
+        let alex = (T0 + 300_000).to_string();
+        for mark in [Mark::Working, Mark::Replied] {
+            let t = task(marked(&alex, mark), TaskStatus::default());
+            let mut edited = person(T0 + 300_000, 3, ALEX, "<@B0FLEET001> the weekly one");
+            edited.first_seq = 1;
+            let (plan, gw) = run(&t, with_caps(conv(3, vec![edited]), caps(true)));
+            assert_eq!(plan.appends.len(), 1, "the edit is relayed");
+            assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
+            assert_eq!(gw.reactions.marks[&alex], mark);
+        }
+    }
+
+    #[test]
+    fn a_thread_post_that_lands_marks_every_working_message_replied() {
+        let alex = (T0 + 300_000).to_string();
+        let mut gw = marked(&alex, Mark::Working).unwrap();
+        gw.reactions.marks.insert(T0.to_string(), Mark::Working);
+        gw.reactions.replies.insert(key("comment/c0"));
+        gw.posts.insert(
+            key("comment/c0"),
+            record("post", NOW - 9_000, posted(NOW - 9_000), 1),
+        );
+        gw.posts.insert(
+            key("comment/c1"),
+            record("post", NOW - 2_000, posted(NOW - 2_000), 1),
+        );
+        let mut messages = thread();
+        messages.iter_mut().for_each(|m| m.seq = 2);
+        assert!(GatewayController::due(
+            &task(Some(gw.clone()), TaskStatus::default()),
+            NOW
+        ));
+        let t = task(Some(gw), TaskStatus::default());
+        let (plan, gw) = run(&t, with_caps(conv(2, messages), caps(true)));
+        let mut got = reacts(&plan);
+        got.sort();
+        let mut want = vec![
+            (
+                react(&alex, "replied", true),
+                "white_check_mark".to_string(),
+                true,
+            ),
+            (react(&alex, "working", false), "eyes".to_string(), false),
+            (
+                react(&T0.to_string(), "replied", true),
+                "white_check_mark".to_string(),
+                true,
+            ),
+            (
+                react(&T0.to_string(), "working", false),
+                "eyes".to_string(),
+                false,
+            ),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+        assert!(gw.reactions.marks.values().all(|m| *m == Mark::Replied));
+        assert!(gw.reactions.replies.is_empty());
+        // Once the reactions' receipts landed, the post is not counted again.
+        let mut gw = gw;
+        gw.posts.retain(|k, _| !k.contains("/react/"));
+        assert!(!GatewayController::due(
+            &task(Some(gw), TaskStatus::default()),
+            NOW
+        ));
+    }
+
+    #[test]
+    fn a_post_counted_before_the_marks_and_a_log_post_reply_to_nothing() {
+        let alex = (T0 + 300_000).to_string();
+        let mut gw = marked(&alex, Mark::Working).unwrap();
+        gw.reactions.replies.insert(key("comment/c0"));
+        gw.posts.insert(
+            key("comment/c0"),
+            record("post", NOW - 9_000, posted(NOW - 9_000), 1),
+        );
+        gw.posts.insert(
+            key("result/1"),
+            record("log", NOW - 2_000, posted(NOW - 2_000), 1),
+        );
+        let mut messages = thread();
+        messages.iter_mut().for_each(|m| m.seq = 2);
+        let t = task(Some(gw), TaskStatus::default());
+        assert!(!GatewayController::due(&t, NOW));
+        let (plan, gw) = run(&t, with_caps(conv(2, messages), caps(true)));
+        assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
+        assert_eq!(gw.reactions.marks[&alex], Mark::Working);
+    }
+
+    #[test]
+    fn the_first_mark_counts_every_post_that_landed_before_it() {
+        let mut gw = tied().unwrap();
+        gw.posts.insert(
+            key("comment/c0"),
+            record("post", NOW - 9_000, posted(NOW - 9_000), 1),
+        );
+        let t = task(Some(gw), TaskStatus::default());
+        let (plan, gw) = run(&t, with_caps(conv(1, thread()), caps(true)));
+        assert_eq!(reacts(&plan).len(), 1, "one working mark");
+        assert_eq!(
+            gw.reactions.replies.iter().cloned().collect::<Vec<_>>(),
+            vec![key("comment/c0")]
+        );
+        // So the next pass, once the reaction's receipt landed, replies to
+        // nothing.
+        let mut gw = gw;
+        gw.posts.retain(|k, _| !k.contains("/react/"));
+        let t = task(Some(gw), TaskStatus::default());
+        assert!(!GatewayController::due(&t, NOW));
+    }
+
+    #[test]
+    fn a_message_that_left_the_mirror_gets_nothing_more() {
+        let alex = (T0 + 300_000).to_string();
+        let mut gw = marked(&alex, Mark::Working).unwrap();
+        gw.posts.insert(
+            key("comment/c1"),
+            record("post", NOW - 2_000, posted(NOW - 2_000), 1),
+        );
+        let t = task(Some(gw), TaskStatus::default());
+        // Alex's message was removed: the mirror holds only the other one.
+        let (plan, gw) = run(
+            &t,
+            with_caps(conv(2, vec![person(T0, 1, "U0456EFGH", "x")]), caps(true)),
+        );
+        assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
+        assert!(gw.reactions.is_empty(), "{gw:#?}");
+    }
+
+    #[test]
+    fn a_reaction_is_tried_again_after_the_delay_three_times_at_most_and_never_raises() {
+        let alex = (T0 + 300_000).to_string();
+        let k = react(&alex, "working", true);
+        let failed = || {
+            Some(Observation::Known(EffectOutcome::Failed {
+                why: "no".into(),
+            }))
+        };
+        let lost = || Some(Observation::unknown("lost"));
+        for (outcome, attempts, at, again) in [
+            (failed(), 1, NOW - 40_000, true),
+            (lost(), 2, NOW - 40_000, true),
+            (None, 1, NOW - 40_000, true),
+            (failed(), 1, NOW - 1_000, false),
+            (lost(), 3, NOW - 40_000, false),
+            (failed(), 3, NOW - 40_000, false),
+        ] {
+            let mut gw = marked(&alex, Mark::Working).unwrap();
+            gw.posts
+                .insert(k.clone(), record("react", at, outcome.clone(), attempts));
+            let t = task(Some(gw), TaskStatus::default());
+            assert_eq!(
+                GatewayController::due(&t, NOW),
+                attempts < 3,
+                "{outcome:?} after {attempts}"
+            );
+            let (plan, gw) = run(&t, with_caps(conv(2, thread()), caps(true)));
+            assert!(!attention(&gw), "{gw:#?}");
+            if again {
+                assert_eq!(reacts(&plan), vec![(k.clone(), "eyes".into(), true)]);
+                assert_eq!(gw.posts[&k].attempts, attempts + 1);
+                assert!(gw.posts[&k].receipt.is_none());
+            } else {
+                assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
+                assert_eq!(gw.posts.contains_key(&k), attempts < 3, "{gw:#?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_landed_reaction_is_dropped_and_a_pointless_one_is_not_tried_again() {
+        let alex = (T0 + 300_000).to_string();
+        let working = react(&alex, "working", true);
+        let replied = react(&alex, "replied", true);
+        let mut gw = marked(&alex, Mark::Replied).unwrap();
+        gw.posts.insert(
+            replied.clone(),
+            record(
+                "react",
+                NOW - 1_000,
+                Some(Observation::Known(EffectOutcome::Reacted {
+                    already: false,
+                })),
+                1,
+            ),
+        );
+        // Its working reaction never answered, and the message is replied
+        // to since: adding it now would undo the removal.
+        gw.posts.insert(
+            working.clone(),
+            record("react", NOW - 40_000, Some(Observation::unknown("lost")), 1),
+        );
+        let t = task(Some(gw), TaskStatus::default());
+        let (plan, gw) = run(&t, with_caps(conv(2, thread()), caps(true)));
+        assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
+        assert!(!gw.posts.contains_key(&replied));
+        assert!(!gw.posts.contains_key(&working));
+        assert_eq!(gw.reactions.marks[&alex], Mark::Replied);
+    }
+
+    #[test]
+    fn turning_reactions_off_forgets_the_marks_and_drops_the_records() {
+        let alex = (T0 + 300_000).to_string();
+        let k = react(&alex, "working", true);
+        let mut gw = marked(&alex, Mark::Working).unwrap();
+        gw.posts.insert(
+            k.clone(),
+            record("react", NOW - 40_000, Some(Observation::unknown("lost")), 1),
+        );
+        let t = task(Some(gw), TaskStatus::default());
+        let (plan, gw) = run_with(
+            &t,
+            with_caps(conv(2, thread()), caps(true)),
+            GatewayDefaults {
+                reactions: None,
+                ..defaults()
+            },
+        );
+        assert!(plan.effects.is_empty(), "{:#?}", plan.effects);
+        assert!(gw.reactions.is_empty());
+        assert!(!gw.posts.contains_key(&k));
+    }
+}
+
+mod reactions_gone {
+    use super::*;
+    use fleet_api::conversation::EffectRecord;
+    use fleet_api::plan::{Intent, Receipt};
+    use fleet_api::talk::{Mark, ReactionStatus};
+
+    #[test]
+    fn a_thread_readably_gone_forgets_its_marks_so_the_task_is_not_due_forever() {
+        let alex = (T0 + 300_000).to_string();
+        let k = format!("task/{TASK}/{TASK_UID}/gateway/react/{alex}/working/on");
+        let mut gw = tied_at(2).unwrap();
+        gw.reactions = ReactionStatus {
+            marks: BTreeMap::from([(alex, Mark::Working)]),
+            ..ReactionStatus::default()
+        };
+        gw.posts.insert(
+            k.clone(),
+            EffectRecord {
+                intent: Intent {
+                    action: "react".into(),
+                    at: NOW - 1_000,
+                    generation: 1,
+                },
+                receipt: Some(Receipt {
+                    action: "react".into(),
+                    at: NOW - 1_000,
+                    outcome: Observation::unknown("timed out"),
+                }),
+                attempts: 1,
+                recovery: 0,
+            },
+        );
+        let t = task(Some(gw.clone()), TaskStatus::default());
+        // Unknown: nothing moves.
+        let (_, kept) = run(&t, observed(Observation::unknown("store unreadable")));
+        assert!(kept.posts.contains_key(&k));
+        assert!(!kept.reactions.is_empty());
+        // Readably gone: the marks and the record go.
+        let (_, gone) = run(&t, observed(Observation::Known(None)));
+        assert!(gone.conversation.is_none());
+        assert!(!gone.posts.contains_key(&k), "{gone:#?}");
+        assert!(gone.reactions.is_empty());
     }
 }

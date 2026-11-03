@@ -20,7 +20,14 @@
 //! per call and consumed in order, as on the fake forge: `lost`, `timeout`,
 //! `throttle`, `incomplete` and `malformed` for reads; `failed`, `lost`,
 //! `lost-applied` and `lost-partly` (the first part of a split landed, the
-//! rest did not) for `open` and `post`.
+//! rest did not) for `open` and `post`; `failed`, `lost` and
+//! `lost-applied` for `react`.
+//!
+//! **reactions** on or off: off refuses every `react`, as a platform
+//! without reactions would. On, a reaction is set, not counted: adding one
+//! twice leaves one, and removing an absent one changes nothing. Every
+//! `react` call is recorded in order, so a test reads what Fleet did, and
+//! `reacted` gives a message's reactions as they stand.
 //!
 //! The platform's clock is the state's `clock`, which a test sets: every
 //! post takes the clock as its `at` and advances it one second, so `at`
@@ -49,12 +56,12 @@ pub const DEFAULT_BOT: &str = "B0FLEET001";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayFault {
-    /// `parse`, `event`, `whoami`, `capabilities`, `history`, `open` or
-    /// `post`.
+    /// `parse`, `event`, `whoami`, `capabilities`, `history`, `open`,
+    /// `post` or `react`.
     pub call: String,
     /// For reads: `lost`, `timeout`, `throttle`, `incomplete` or
     /// `malformed`. For `open` and `post`: `failed`, `lost`, `lost-applied`
-    /// or `lost-partly`.
+    /// or `lost-partly`. For `react`: `failed`, `lost` or `lost-applied`.
     pub mode: String,
     /// For `throttle`: what the platform says to wait, in milliseconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -112,12 +119,24 @@ pub struct PostRecord {
     pub text: String,
 }
 
+/// One `react` call Fleet made that the platform performed, in order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReactionRecord {
+    pub conversation: ConversationRef,
+    pub message: String,
+    pub reaction: String,
+    /// Added, or removed.
+    pub on: bool,
+}
+
 fn default_capabilities() -> Capabilities {
     Capabilities {
         history: true,
         marker: Marker::Metadata,
         unmentioned: true,
         threads: true,
+        reactions: true,
     }
 }
 
@@ -147,6 +166,8 @@ pub struct FakeGatewayState {
     /// Threads by address.
     pub conversations: BTreeMap<String, FakeConversation>,
     pub posts: Vec<PostRecord>,
+    /// Every `react` the platform performed, in order.
+    pub reactions: Vec<ReactionRecord>,
     pub faults: Vec<GatewayFault>,
     pub calls: BTreeMap<String, u64>,
 }
@@ -160,6 +181,7 @@ impl Default for FakeGatewayState {
             post_limit: None,
             conversations: BTreeMap::new(),
             posts: Vec::new(),
+            reactions: Vec::new(),
             faults: Vec::new(),
             calls: BTreeMap::new(),
         }
@@ -286,6 +308,42 @@ impl FakeGateway {
     /// Every post Fleet made, in order.
     pub fn posts(&self) -> io::Result<Vec<PostRecord>> {
         Ok(self.state()?.posts)
+    }
+
+    /// Every `react` the platform performed, in order.
+    pub fn reactions(&self) -> io::Result<Vec<ReactionRecord>> {
+        Ok(self.state()?.reactions)
+    }
+
+    /// The reactions Fleet has on `message` in `conversation` now, in the
+    /// order they were first added.
+    pub fn reacted(
+        &self,
+        conversation: &ConversationRef,
+        message: &str,
+    ) -> io::Result<Vec<String>> {
+        Ok(Self::standing(&self.state()?, conversation, message))
+    }
+
+    fn standing(
+        s: &FakeGatewayState,
+        conversation: &ConversationRef,
+        message: &str,
+    ) -> Vec<String> {
+        let mut on: Vec<String> = Vec::new();
+        for r in &s.reactions {
+            if r.conversation != *conversation || r.message != message {
+                continue;
+            }
+            if r.on {
+                if !on.contains(&r.reaction) {
+                    on.push(r.reaction.clone());
+                }
+            } else {
+                on.retain(|x| *x != r.reaction);
+            }
+        }
+        on
     }
 
     pub fn calls(&self, call: &str) -> io::Result<u64> {
@@ -770,6 +828,43 @@ impl Gateway for FakeGateway {
         self.write("post", account, move |s, partly| {
             let (message, at) = Self::land(s, &conversation, &text, &key, false, partly);
             EffectOutcome::Posted { message, at }
+        })
+    }
+
+    fn react(
+        &self,
+        account: &str,
+        conversation: &ConversationRef,
+        message: &str,
+        reaction: &str,
+        on: bool,
+    ) -> Observation<EffectOutcome> {
+        match self.state() {
+            Ok(s) if !s.capabilities.reactions => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: "the platform has no reactions".into(),
+                });
+            }
+            Ok(s) if !s.conversations.contains_key(&conversation.address()) => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: format!("no such conversation {}", conversation.address()),
+                });
+            }
+            Ok(_) => {}
+            Err(e) => return Observation::unknown(format!("fake gateway unreadable: {e}")),
+        }
+        let conversation = conversation.clone();
+        let message = message.to_string();
+        let reaction = reaction.to_string();
+        self.write("react", account, move |s, _| {
+            let had = Self::standing(s, &conversation, &message).contains(&reaction);
+            s.reactions.push(ReactionRecord {
+                conversation,
+                message,
+                reaction,
+                on,
+            });
+            EffectOutcome::Reacted { already: had == on }
         })
     }
 
@@ -1302,6 +1397,59 @@ mod tests {
         assert_eq!(keys(&g)[4..], ["n/1/3", "n/2/3", "n/3/3"]);
         assert_eq!(message, posts[4].message, "the part that landed first");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_reaction_is_set_not_counted_and_recorded_in_order() {
+        let (g, _dir) = fake("react");
+        g.seed(&thread(), vec![person("U1", 1, "hi")]).unwrap();
+        let react = |name: &str, on: bool| g.react("fake-main", &thread(), "1", name, on);
+        assert_eq!(
+            react("eyes", true),
+            Observation::Known(EffectOutcome::Reacted { already: false })
+        );
+        assert_eq!(
+            react("eyes", true),
+            Observation::Known(EffectOutcome::Reacted { already: true })
+        );
+        assert_eq!(g.reacted(&thread(), "1").unwrap(), vec!["eyes".to_string()]);
+        react("white_check_mark", true);
+        assert_eq!(
+            react("eyes", false),
+            Observation::Known(EffectOutcome::Reacted { already: false })
+        );
+        assert_eq!(
+            g.reacted(&thread(), "1").unwrap(),
+            vec!["white_check_mark".to_string()]
+        );
+        assert_eq!(g.reactions().unwrap().len(), 4);
+        // Faults: a refusal, a lost answer with nothing done, and one done.
+        g.add_fault(GatewayFault::new("react", "failed")).unwrap();
+        assert!(matches!(
+            react("x", true),
+            Observation::Known(EffectOutcome::Failed { .. })
+        ));
+        g.add_fault(GatewayFault::new("react", "lost")).unwrap();
+        assert!(react("x", true).is_unknown());
+        g.add_fault(GatewayFault::new("react", "lost-applied"))
+            .unwrap();
+        assert!(react("x", true).is_unknown());
+        assert_eq!(g.reacted(&thread(), "1").unwrap().len(), 2);
+        // An unknown thread, another account, or no reactions: refused.
+        let other = ConversationRef::split("fake:C9:9").unwrap();
+        assert!(matches!(
+            g.react("fake-main", &other, "1", "eyes", true),
+            Observation::Known(EffectOutcome::Failed { .. })
+        ));
+        assert!(matches!(
+            g.react("other", &thread(), "1", "eyes", true),
+            Observation::Known(EffectOutcome::Failed { .. })
+        ));
+        g.update(|s| s.capabilities.reactions = false).unwrap();
+        assert!(matches!(
+            react("eyes", true),
+            Observation::Known(EffectOutcome::Failed { .. })
+        ));
     }
 
     #[test]

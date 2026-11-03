@@ -18,8 +18,10 @@ its own page:
 An adapter's `post` carries ConversationController's refusals and busy
 notices, GatewayController's posts for a tied Task, and its top-level log
 posts in the `gateway.logs` channel. An adapter's `open` carries a Question
-that opens a thread. An adapter's `link` names a thread in a log post. The
-[Gateway controller](../README.md) lists what is built.
+that opens a thread. An adapter's `react` adds and removes Fleet's working
+and replied reactions on a person's message. An adapter's `link` names a
+thread in a log post. The [Gateway controller](../README.md) lists what is
+built.
 
 ## Common rules
 
@@ -49,6 +51,9 @@ Every adapter that reaches a real platform keeps these rules:
 - **A history read is complete or Unknown.** A read pages under the budget of
   calls. When the budget runs out, the answer is Unknown (`Incomplete`), never
   a partial list.
+- **A reaction is set, not counted.** Adding a reaction that is there, or
+  removing one that is not, is a Known success. A refused reaction is
+  `Failed`; one whose outcome Fleet cannot read is Unknown.
 - **A throttled read is Unknown with `retryAfter`.** HTTP 429 carries the
   platform's wait time where it gives one. A throttled write is per platform:
   see each platform's page.
@@ -64,6 +69,9 @@ controllers decide on these values, never on the platform's name.
 | `marker` | Set by the test | `metadata` | `nonce { windowMs: 60000 }` |
 | `unmentioned` | Set by the test | `true` | `messageContent` and the application's message content flag |
 | `threads` | Set by the test | `true` | `true` |
+| `reactions` | Set by the test, `true` by default | `true` | `true` |
+| Reaction names | Recorded as given | Slack's emoji names, colons stripped | A name Fleet maps to Unicode (`eyes`, `white_check_mark` and a few more), a Unicode emoji as it is, or a custom emoji as `name:id` |
+| `react` | One call, recorded | `reactions.add` or `reactions.remove` | `PUT` or `DELETE` of the bot's own reaction |
 | Recovery of an Unknown post | As the marker | One `since` read finds the key | Resend under the same nonce inside the window |
 | `inbound` | `connection` | `socket-mode` or `events-api` | `discord-gateway` |
 | Text | The port's text | Converted to `mrkdwn` | Markdown, unchanged |
