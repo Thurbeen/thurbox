@@ -53,6 +53,11 @@ jobs:
         with:
           fetch-depth: 0  # Full history for cocogitto
 
+      - name: Install Python for release tooling
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
+
       - name: Install cocogitto
         uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
         with:
@@ -207,6 +212,8 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-musl
             os: ubuntu-26.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-15
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -218,6 +225,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.check-release.outputs.version }}
+      - name: Install Python for release tooling
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
       # Every hosted image here ships rustup. A downloaded installer is never
       # piped into a shell; an image without rustup fails here instead.
       - name: Require rustup
@@ -259,7 +270,7 @@ jobs:
         run: |
           mkdir -p "installer-fixture/$VERSION"
           cp dist/* "installer-fixture/$VERSION/"
-          (cd "installer-fixture/$VERSION" && sha256sum fleet-* > "fleet-$VERSION-checksums.txt")
+          (cd "installer-fixture/$VERSION" && shasum -a 256 fleet-* > "fleet-$VERSION-checksums.txt")
           export FLEET_VERSION="$VERSION"
           export FLEET_RELEASE_BASE="$PWD/installer-fixture"
           export FLEET_INSTALL_DIR="$PWD/installed/bin"

@@ -15,6 +15,8 @@ Required gate tools:
 - cocogitto (`cog`) at the version the pinned `cocogitto-action` installs; the
   release tooling tests run it.
 - Git for tracked-file checks, and `prek` for the commit hooks.
+- Python 3.11 or newer with `tomllib` on PATH. Release workflow fixtures execute
+  the same TOML readiness check as publication. CI selects Python 3.13.17.
 
 Install hooks with `prek install`. Hooks invoke focused areas of the same
 gate; publish runs the full gate. Missing tools or a missing workspace fail
@@ -40,8 +42,10 @@ rule detects a forbidden edge. Tooling's E2E suite runs the actual gate against
 a tiny workspace with deleted, ignored and filtered suites, failing tests,
 failing doctests, malformed formatting and warning-denied lint/docs.
 
-Native CI runs the full gate on Linux x86_64 and Linux aarch64. Windows and
-macOS are not supported, tested or released. Every release runner must have
+Native CI runs the full gate on Linux x86_64, Linux aarch64 and macOS
+Apple Silicon (`macos-15`). The macOS CLI/build is experimental; real
+thurbox sessions and operational migration have not passed acceptance.
+Windows and Intel Macs are not released. Every release runner must have
 its Rust checks in CI. Do not duplicate a full gate for a
 reviewer when exact-tree evidence is already available.
 

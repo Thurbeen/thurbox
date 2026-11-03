@@ -13,7 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-26.04-arm]
+        # macos-15 is the standard Apple Silicon runner, not macos-15-intel.
+        os: [ubuntu-latest, ubuntu-26.04-arm, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -22,6 +23,10 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Python for release tooling
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
       - name: Install the pinned toolchain
         shell: bash
         run: |

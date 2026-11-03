@@ -10,7 +10,7 @@
 Fleet runs one AI agent session per Task. A Task is a JSON resource that
 names a harness, a host, a workspace and a brief. Fleet spawns the session,
 sends the brief once, records the worker's result, and releases the session
-when you delete the Task. Fleet v2 is one Linux binary with a bundled
+when you delete the Task. Fleet v2 is one native binary with a bundled
 [VEGA](https://github.com/Thurbeen/vega) starter.
 
 ![Animated diagram: VEGA as Mission Control, the fleet up reconcile loop and the kinds it drives](media/fleet-flow-doom.svg)
@@ -22,7 +22,8 @@ curl -fsSL https://github.com/Thurbeen/fleet/releases/latest/download/install-re
 ```
 
 The command installs the latest release into `~/.local/bin` on Linux x86_64
-or aarch64. Add that directory to PATH if the installer asks you to. Rust,
+or aarch64, and on macOS Apple Silicon (experimental CLI/build).
+Add that directory to PATH if the installer asks you to. Rust,
 Cargo and Git are not needed. Then create the config and the VEGA workspace,
 offline:
 
@@ -117,8 +118,12 @@ fleet --config examples/fleet.toml list task
 
 ## Install, update and uninstall
 
-Supported release targets are Linux x86_64 and aarch64 (musl). Windows and
-macOS have no binary release.
+Release targets are Linux x86_64 and aarch64 (musl), and experimental macOS
+Apple Silicon (`aarch64-apple-darwin`). Windows, Intel Macs and universal
+binaries are not released. The macOS build covers the CLI and offline
+initialization. Real thurbox sessions and operational migration on macOS
+have not passed acceptance. An installed CLI does not establish runtime
+support.
 
 The installer that each release publishes installs that release. The
 one-line setup fetches the latest release's installer. To pin a release, set

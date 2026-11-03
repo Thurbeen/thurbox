@@ -6,7 +6,11 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
-pub const TARGETS: [&str; 2] = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
+pub const TARGETS: [&str; 3] = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+];
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Title {

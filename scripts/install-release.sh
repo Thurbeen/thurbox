@@ -12,7 +12,7 @@
 # The archive is verified against the release's checksum file before anything
 # is replaced, and the binary moves into place with one rename, so a failed or
 # tampered download leaves the installed binary as it was. Linux on x86_64 and
-# aarch64 only, the targets the release builds.
+# aarch64, and experimental macOS on Apple Silicon, match the release targets.
 set -eu
 
 repo=Thurbeen/fleet
@@ -26,11 +26,11 @@ fail() {
 
 system=$(uname -s)
 machine=$(uname -m)
-unsupported="unsupported platform: $system $machine. The release builds x86_64-unknown-linux-musl and aarch64-unknown-linux-musl"
-[ "$system" = Linux ] || fail "$unsupported"
-case "$machine" in
-    x86_64 | amd64) target=x86_64-unknown-linux-musl ;;
-    aarch64 | arm64) target=aarch64-unknown-linux-musl ;;
+unsupported="unsupported platform: $system $machine. The release builds x86_64-unknown-linux-musl, aarch64-unknown-linux-musl and aarch64-apple-darwin"
+case "$system/$machine" in
+    Linux/x86_64 | Linux/amd64) target=x86_64-unknown-linux-musl ;;
+    Linux/aarch64 | Linux/arm64) target=aarch64-unknown-linux-musl ;;
+    Darwin/arm64) target=aarch64-apple-darwin ;;
     *) fail "$unsupported" ;;
 esac
 

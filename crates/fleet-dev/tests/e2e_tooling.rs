@@ -163,7 +163,11 @@ fn archives_are_reproducible_and_missing_targets_fail_checksums() {
     let e = Env::new();
     e.write("LICENSE", "fixture licence\n");
     e.write("binary", "binary fixture\n");
-    let targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
+    let targets = [
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "aarch64-apple-darwin",
+    ];
     for t in targets {
         let args = [
             "release",
@@ -205,7 +209,7 @@ fn archives_are_reproducible_and_missing_targets_fail_checksums() {
                 ("LICENSE".into(), 0o644, "fixture licence\n".into())
             ]
         );
-        if t != targets[1] {
+        if t != targets[targets.len() - 1] {
             assert!(
                 !e.call(
                     &["release", "checksums", "--version", "v1.2.3", "dist"],
@@ -221,12 +225,16 @@ fn archives_are_reproducible_and_missing_targets_fail_checksums() {
     );
     assert!(ok, "{out}");
     let sums = fs::read_to_string(e.0.join("dist/fleet-v1.2.3-checksums.txt")).unwrap();
-    assert_eq!(sums.lines().count(), 2);
+    assert_eq!(sums.lines().count(), 3);
 }
 
 #[test]
 fn windows_is_not_a_release_target_and_no_workflow_runs_on_it() {
-    let linux = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
+    let supported = [
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "aarch64-apple-darwin",
+    ];
     let e = Env::new();
     e.write("LICENSE", "fixture licence\n");
     e.write("binary", "binary fixture\n");
@@ -249,18 +257,18 @@ fn windows_is_not_a_release_target_and_no_workflow_runs_on_it() {
     };
     let (ok, out) = package("x86_64-pc-windows-msvc");
     assert!(!ok && out.contains("unsupported release target"), "{out}");
-    for t in linux {
+    for t in supported {
         let (ok, out) = package(t);
         assert!(ok, "{out}");
     }
-    // The Linux archives alone are a complete release.
+    // All supported archives are required for a complete release.
     let (ok, out) = e.call(
         &["release", "checksums", "--version", "v1.2.3", "dist"],
         &[],
     );
     assert!(ok, "{out}");
     let sums = fs::read_to_string(e.0.join("dist/fleet-v1.2.3-checksums.txt")).unwrap();
-    assert_eq!(sums.lines().count(), linux.len(), "{sums}");
+    assert_eq!(sums.lines().count(), supported.len(), "{sums}");
     // A Linux-only CI satisfies the workflow gate.
     e.write(".github/workflows/ci.yml", CI);
     let (ok, out) = e.call(&["workflow"], &[]);
@@ -276,7 +284,17 @@ fn windows_is_not_a_release_target_and_no_workflow_runs_on_it() {
         .iter()
         .map(|i| i["target"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(targets, linux);
+    assert_eq!(targets, supported);
+    let darwin = &cd["jobs"]["build"]["strategy"]["matrix"]["include"][2];
+    assert_eq!(darwin["os"], "macos-15");
+    let ci: serde_json::Value =
+        serde_saphyr::from_str(&fs::read_to_string(workflows.join("ci.yml")).unwrap()).unwrap();
+    assert!(
+        ci["jobs"]["rust"]["strategy"]["matrix"]["os"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("macos-15"))
+    );
     for entry in fs::read_dir(&workflows).unwrap() {
         let path = entry.unwrap().path();
         if !matches!(
@@ -345,6 +363,16 @@ fn installer_with(e: &Env, args: &[&str], version: Option<&str>) -> (bool, Strin
         ("TMPDIR".into(), e.0.to_string_lossy().into()),
         ("TEMP".into(), e.0.to_string_lossy().into()),
     ];
+    if e.0.join("tools/uname").exists() {
+        s.env.push((
+            "PATH".into(),
+            format!(
+                "{}:{}",
+                e.0.join("tools").display(),
+                std::env::var("PATH").unwrap()
+            ),
+        ));
+    }
     if let Some(v) = version {
         s.env.push(("FLEET_VERSION".into(), v.into()));
     }
@@ -366,7 +394,11 @@ fn installer_with(e: &Env, args: &[&str], version: Option<&str>) -> (bool, Strin
 }
 fn install_fixture(e: &Env) {
     e.write("LICENSE", "fixture\n");
-    for t in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
+    for t in [
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "aarch64-apple-darwin",
+    ] {
         let (ok, out) = e.call(
             &[
                 "release",
@@ -396,6 +428,56 @@ fn install_fixture(e: &Env) {
     );
     assert!(ok, "{out}");
 }
+#[cfg(unix)]
+fn platform(e: &Env, system: &str, machine: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    e.write("tools/uname", &format!("#!/bin/sh\ncase \"$1\" in -s) echo {system} ;; -m) echo {machine} ;; *) exit 1 ;; esac\n"));
+    fs::set_permissions(e.0.join("tools/uname"), fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn installer_selects_native_archives_and_refuses_unsupported_platforms() {
+    let e = Env::new();
+    install_fixture(&e);
+    // The fixture executable is native to the test host. Only uname is stubbed.
+    for (system, machine, target) in [
+        ("Linux", "x86_64", "x86_64-unknown-linux-musl"),
+        ("Linux", "amd64", "x86_64-unknown-linux-musl"),
+        ("Linux", "aarch64", "aarch64-unknown-linux-musl"),
+        ("Linux", "arm64", "aarch64-unknown-linux-musl"),
+        ("Darwin", "arm64", "aarch64-apple-darwin"),
+    ] {
+        platform(&e, system, machine);
+        let (ok, out) = installer(&e, &[]);
+        assert!(ok && out.contains(target), "{system}/{machine}: {out}");
+    }
+    let before = fs::read(e.0.join("bin/fleet")).unwrap();
+    for (system, machine) in [
+        ("Darwin", "x86_64"),
+        ("Darwin", "aarch64"),
+        ("Linux", "riscv64"),
+        ("FreeBSD", "arm64"),
+    ] {
+        platform(&e, system, machine);
+        let (ok, out) = installer(&e, &[]);
+        assert!(
+            !ok && out.contains("unsupported platform"),
+            "{system}/{machine}: {out}"
+        );
+        assert_eq!(before, fs::read(e.0.join("bin/fleet")).unwrap());
+        assert!(!e.0.join("bin/.fleet-install.lock").exists());
+    }
+    platform(&e, "Darwin", "arm64");
+    e.write(
+        "releases/v1.2.3/fleet-v1.2.3-aarch64-apple-darwin.tar.gz",
+        "tampered",
+    );
+    let (ok, out) = installer(&e, &[]);
+    assert!(!ok && out.contains("checksum mismatch"), "{out}");
+    assert_eq!(before, fs::read(e.0.join("bin/fleet")).unwrap());
+}
+
 #[test]
 fn offline_install_update_tamper_refusal_and_uninstall() {
     let e = Env::new();
@@ -431,7 +513,11 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     fs::remove_dir(e.0.join("bin/.fleet-install.lock")).unwrap();
     // A correctly checksummed archive carrying the wrong version is still refused.
     fs::rename(e.0.join("releases/v1.2.3"), e.0.join("releases/v2.0.0")).unwrap();
-    for t in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
+    for t in [
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "aarch64-apple-darwin",
+    ] {
         assert!(
             e.call(
                 &[
@@ -893,7 +979,7 @@ fn release_fixture_checksum_recipe_installs() {
     }
     let recipe = include_str!("../../../.github/workflows/cd.yml")
         .lines()
-        .find(|l| l.contains("sha256sum") && l.contains("checksums.txt"))
+        .find(|l| l.contains("shasum -a 256") && l.contains("checksums.txt"))
         .expect("native release fixture checksum recipe")
         .trim();
     let mut spec =
