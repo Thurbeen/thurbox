@@ -157,7 +157,8 @@ spec.forge          optional: relay and draft overrides for declared changes
 
 The spec is immutable once created, except `dispatch` and `forge`; a
 different brief is a different Task. `amendments` only grows, through the
-store's `amend_task` mutation: `update_spec`, and so `apply` and a plugin
+store's amend mutation (`amend_task` for `fleet amend`, a plugin's `amends[]`
+verb through `plugin_mutate`): `update_spec`, and so `apply` and a plugin
 patch, refuses any change to it, and `apply` keeps the stored amendments
 when a manifest omits them. `harness` and `host` may not start
 with `-`, since both reach the runtime as arguments.
@@ -241,7 +242,10 @@ Guarantees, each with its test:
   queued behind an unsent one carries both, and the older is recorded
   without a send. Its receipt sets `status.brief` to its key and
   generation. A delivered amendment re-opens a Concluded Task to Briefed,
-  with `Concluded=False/Amended`, and keeps the old result.
+  with `Concluded=False/Amended`, and keeps the old result. A plugin's
+  `amends[]` verb applies the same mutation and checks as
+  `plugin/<name>`, with a required `ifGeneration`: on any other generation
+  the store refuses it, and `host.verbs` records the refusal.
 - **WorkerGone.** A session a readable list no longer shows sets `WorkerGone`
   and `NeedsAttention`. An unreadable list is never read as gone. Nothing
   abandons the Task by itself.

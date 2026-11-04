@@ -77,7 +77,7 @@ pub struct Amendment {
     /// already declared.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, OutputDecl>,
-    /// Who amended: `cli/<user>`.
+    /// Who amended: `cli/<user>`, or `plugin/<name>` for a plugin plan.
     pub from: String,
     /// Unix milliseconds.
     pub at: Millis,

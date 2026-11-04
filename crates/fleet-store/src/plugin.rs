@@ -47,6 +47,7 @@ impl FileStore {
             Mutation::Patch(p) => (&*p.kind, &*p.name, &*p.uid),
             Mutation::Delete(d) => (&*d.kind, &*d.name, &*d.uid),
             Mutation::Append(a) => ("Task", &*a.task, &*a.uid),
+            Mutation::Amend(a) => ("Task", &*a.task, &*a.uid),
             Mutation::Declare { task, uid, .. } => ("Task", &**task, &**uid),
             Mutation::Create(_) => unreachable!(),
         };
@@ -118,6 +119,53 @@ impl FileStore {
                 }
                 push_entry(&obj, &mut status, entry)?;
                 obj.status = encode_status(&status)?;
+            }
+            Mutation::Amend(a) => {
+                // The precondition the plan was computed against: a pass
+                // repeated after this amendment landed appends nothing.
+                if a.if_generation != obj.metadata.generation {
+                    return Err(StoreError::Precondition(format!(
+                        "{} is at generation {}, not {}",
+                        obj.key(),
+                        obj.metadata.generation,
+                        a.if_generation
+                    )));
+                }
+                if a.text.trim().is_empty() {
+                    return Err(StoreError::Invalid(
+                        "nothing to amend: the text is empty".into(),
+                    ));
+                }
+                let generation = obj.metadata.generation.saturating_add(1);
+                let from = format!("plugin/{name}");
+                let at = self.now();
+                let amendment = task::Amendment {
+                    text: a.text.clone(),
+                    reason: a
+                        .reason
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|r| !r.is_empty())
+                        .map(str::to_string),
+                    outputs: a.outputs.clone(),
+                    from: from.clone(),
+                    at,
+                    generation,
+                };
+                let entry = InboxEntry {
+                    key: fleet_api::inbox::amend_key(
+                        &obj.metadata.name,
+                        &obj.metadata.uid,
+                        generation,
+                    ),
+                    from,
+                    text: a.text.clone(),
+                    about: None,
+                    answers: Vec::new(),
+                    amends: Some(generation),
+                    queued_at: at,
+                };
+                apply_amendment(&mut obj, amendment, entry)?;
             }
             Mutation::Declare { item, .. } => {
                 fleet_api::follow::validate_declaration(item).map_err(StoreError::Invalid)?;

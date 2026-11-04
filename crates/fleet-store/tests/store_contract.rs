@@ -3207,3 +3207,147 @@ fn only_a_concluded_conversation_task_is_retired_and_only_by_its_conversation() 
         Err(StoreError::NotFound(_))
     ));
 }
+
+#[test]
+fn a_plugins_amend_is_fenced_on_its_generation_and_keeps_fleet_amends_checks() {
+    use fleet_api::plugin::{Amend, Append, Mutation};
+    let dir = Dir::new("plugin-amend");
+    let store = FileStore::open(&dir.0)
+        .unwrap()
+        .with_plugins(&[plugin_registration()])
+        .unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let writer = fleet_api::plugin::writer_for_store("issues");
+    let mut own = task("own");
+    own.spec["outputs"] = json!({"prUrl": {"type": "string"}});
+    store
+        .plugin_mutate(Mutation::Create(own), writer.clone(), &lease)
+        .unwrap();
+    let uid = known(store.get("Task", "own")).unwrap().metadata.uid;
+    let amend = |task: &str, uid: &str, generation: u64, outputs: Value| {
+        Mutation::Amend(Amend {
+            task: task.into(),
+            uid: uid.into(),
+            text: "Review the new push.".into(),
+            reason: Some(" head moved ".into()),
+            outputs: serde_json::from_value(outputs).unwrap(),
+            if_generation: generation,
+        })
+    };
+    // An output name already declared is refused, and nothing is written.
+    assert!(matches!(
+        store.plugin_mutate(amend("own", &uid, 1, json!({"prUrl": {"type": "string"}})), writer.clone(), &lease),
+        Err(StoreError::Invalid(why)) if why.contains("already declared")
+    ));
+    assert_eq!(
+        store
+            .plugin_mutate(
+                amend("own", &uid, 1, json!({"verdict": {"type": "string"}})),
+                writer.clone(),
+                &lease
+            )
+            .unwrap(),
+        json!("applied")
+    );
+    let t = known(store.get("Task", "own")).unwrap();
+    assert_eq!(t.metadata.generation, 2);
+    let amendments = t.spec["amendments"].as_array().unwrap();
+    assert_eq!(amendments.len(), 1);
+    assert_eq!(amendments[0]["from"], "plugin/issues");
+    assert_eq!(amendments[0]["reason"], "head moved");
+    assert_eq!(amendments[0]["generation"], 2);
+    let st = inbox_status(&t);
+    assert_eq!(st.inbox.len(), 1);
+    assert_eq!(st.inbox[0].key, format!("task/own/{uid}/amend/2"));
+    assert_eq!(st.inbox[0].from, "plugin/issues");
+    assert_eq!(st.inbox[0].amends, Some(2));
+
+    // The same verb again is refused on its precondition: one amendment.
+    assert!(matches!(
+        store.plugin_mutate(amend("own", &uid, 1, json!({})), writer.clone(), &lease),
+        Err(StoreError::Precondition(why)) if why.contains("generation 2, not 1")
+    ));
+    assert_eq!(
+        known(store.get("Task", "own")).unwrap().spec["amendments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // A replaced Task is refused on its uid.
+    assert!(matches!(
+        store.plugin_mutate(
+            amend("own", "replaced", 2, json!({})),
+            writer.clone(),
+            &lease
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
+
+    // A full inbox refuses it.
+    for n in 0..=MAX_INBOX {
+        let _ = store.plugin_mutate(
+            Mutation::Append(Append {
+                task: "own".into(),
+                uid: uid.clone(),
+                key: format!("m{n}"),
+                text: "more".into(),
+                answers: Vec::new(),
+            }),
+            writer.clone(),
+            &lease,
+        );
+    }
+    assert!(matches!(
+        store.plugin_mutate(amend("own", &uid, 2, json!({})), writer.clone(), &lease),
+        Err(StoreError::Forbidden(why)) if why.contains("undelivered")
+    ));
+
+    // A Task this plugin did not create is foreign under `tasks = "own"`.
+    let foreign = store.create(task("foreign"), FieldManager::Apply).unwrap();
+    assert!(matches!(
+        store.plugin_mutate(amend("foreign", &foreign.metadata.uid, 1, json!({})), writer.clone(), &lease),
+        Err(StoreError::Forbidden(why)) if why.contains("foreign Task")
+    ));
+
+    // A Stalled Task refuses it; so does a deleting one.
+    store
+        .plugin_mutate(Mutation::Create(task("stalled")), writer.clone(), &lease)
+        .unwrap();
+    let s = known(store.get("Task", "stalled")).unwrap();
+    store
+        .update_status(
+            "Task",
+            "stalled",
+            status("Stalled"),
+            s.metadata.resource_version,
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap();
+    assert!(matches!(
+        store.plugin_mutate(amend("stalled", &s.metadata.uid, 1, json!({})), writer.clone(), &lease),
+        Err(StoreError::Forbidden(why)) if why.contains("Stalled")
+    ));
+    store
+        .plugin_mutate(Mutation::Create(task("going")), writer.clone(), &lease)
+        .unwrap();
+    let g = known(store.get("Task", "going")).unwrap();
+    store.delete("Task", "going", FieldManager::Apply).unwrap();
+    assert!(known(store.get("Task", "going")).unwrap().is_deleting());
+    assert!(matches!(
+        store.plugin_mutate(
+            amend("going", &g.metadata.uid, g.metadata.generation, json!({})),
+            writer,
+            &lease
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
+    assert_eq!(
+        known(store.get("Task", "foreign"))
+            .unwrap()
+            .metadata
+            .generation,
+        1
+    );
+}

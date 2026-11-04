@@ -297,6 +297,7 @@ impl Manager<'_> {
                 .map(|p| (&*p.kind, &*p.name))
                 .chain(plan.deletes.iter().map(|d| (&*d.kind, &*d.name)))
                 .chain(plan.appends.iter().map(|a| ("Task", &*a.task)))
+                .chain(plan.amends.iter().map(|a| ("Task", &*a.task)))
                 .chain(plan.declares.iter().map(|d| ("Task", &*d.task)))
             {
                 targets.insert(format!("{kind}/{name}"), object(self.store, kind, name)?);
@@ -397,6 +398,9 @@ impl Manager<'_> {
             .creates
             .into_iter()
             .map(Mutation::Create)
+            // Before patches: `ifGeneration` names the generation the plan
+            // was computed against, which a patch would move.
+            .chain(plan.amends.into_iter().map(Mutation::Amend))
             .chain(plan.patches.into_iter().map(Mutation::Patch))
             .chain(plan.appends.into_iter().map(Mutation::Append));
         for mutation in mutations {

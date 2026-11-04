@@ -428,3 +428,98 @@ fn unregistered_plugin_objects_are_reported_by_the_manager() {
         .stdout_has("Issue")
         .stdout_has("unregistered");
 }
+
+#[test]
+fn a_plugin_amends_its_own_task_once_per_generation_and_reopens_it() {
+    let env = setup("plugin-amend");
+    env.apply(issue()).ok();
+    scenario(&env, json!({"creates":[support::task("child",true)]}));
+    env.reconcile().ok();
+    let uid = env.get("child")["metadata"]["uid"].clone();
+    env.fleet(&[
+        "result",
+        "child",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--output",
+        "prUrl=\"https://forge.test/example/project/pull/1\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("child")["phase"], "Concluded");
+
+    let amend = json!({"amends":[{"task":"child","uid":uid,"text":"A new push: review it again.","reason":"head moved","outputs":{"verdict":{"type":"string"}},"ifGeneration":1}]});
+    scenario(&env, amend.clone());
+    env.expire_wait_of("Issue", "issue-1");
+    env.reconcile().ok();
+    env.reconcile().ok();
+    let child = env.get("child");
+    assert_eq!(child["metadata"]["generation"], 2);
+    let amendments = child["spec"]["amendments"].as_array().unwrap();
+    assert_eq!(amendments.len(), 1);
+    assert_eq!(amendments[0]["from"], "plugin/test");
+    assert_eq!(amendments[0]["reason"], "head moved");
+    assert_eq!(amendments[0]["generation"], 2);
+    assert_eq!(amendments[0]["outputs"]["verdict"]["type"], "string");
+    let st = env.status("child");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    support::assert_condition(&st, "Concluded", "False", "Amended");
+    assert_eq!(child["status"]["brief"]["generation"], 2);
+
+    // The same plan again, as a repeated or recovered pass: a refused verb,
+    // recorded on the plugin object, and nothing appended.
+    scenario(&env, amend);
+    env.expire_wait_of("Issue", "issue-1");
+    env.reconcile().ok();
+    let child = env.get("child");
+    assert_eq!(child["metadata"]["generation"], 2);
+    assert_eq!(child["spec"]["amendments"].as_array().unwrap().len(), 1);
+    let verbs =
+        env.fleet(&["get", "issue", "issue-1"]).ok().json()["status"]["host"]["verbs"].clone();
+    assert!(
+        verbs[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("generation 2, not 1"),
+        "{verbs:#}"
+    );
+
+    env.fleet(&[
+        "result",
+        "child",
+        "--generation",
+        "2",
+        "--outcome",
+        "shipped",
+        "--output",
+        "prUrl=\"https://forge.test/example/project/pull/1\"",
+        "--output",
+        "verdict=\"approve\"",
+    ])
+    .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("child")["phase"], "Concluded");
+}
+
+#[test]
+fn a_plugin_amend_of_a_foreign_task_refuses_the_whole_plan() {
+    let env = setup("plugin-amend-foreign");
+    env.apply(issue()).ok();
+    env.apply(support::task("foreign", false)).ok();
+    let uid = env.get("foreign")["metadata"]["uid"].clone();
+    scenario(
+        &env,
+        json!({"amends":[{"task":"foreign","uid":uid,"text":"Not yours.","ifGeneration":1}]}),
+    );
+    env.reconcile().code(1);
+    let foreign = env.get("foreign");
+    assert_eq!(foreign["metadata"]["generation"], 1);
+    assert!(foreign["spec"].get("amendments").is_none_or(Value::is_null));
+    let host = &env.fleet(&["get", "issue", "issue-1"]).ok().json()["status"]["host"];
+    assert!(
+        host["error"].as_str().unwrap().contains("foreign Task"),
+        "{host:#}"
+    );
+}

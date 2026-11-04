@@ -6,7 +6,7 @@ through a sweep, how an effect is carried from intent to receipt, and how an
 object is deleted. The [interface](interface.md) defines the calls, probes
 and plan verbs used here.
 
-![One object of a plugin kind: when due, its plugin's pure probes function is asked in rounds, store probes are answered from the store and plugin probes through the plugin's bounded observe call; reconcile returns a plan; the pure gate admits it; status with the effect intents is written by CAS under the lease, then creates, patches, appends, declares and deletes run as manager verbs, then each effect runs through perform and its receipt is written. A deleting object with a finalizer is reconciled until its plan removes it.](state-machine.svg)
+![One object of a plugin kind: when due, its plugin's pure probes function is asked in rounds, store probes are answered from the store and plugin probes through the plugin's bounded observe call; reconcile returns a plan; the pure gate admits it; status with the effect intents is written by CAS under the lease, then creates, amends, patches, appends, declares and deletes run as manager verbs, then each effect runs through perform and its receipt is written. A deleting object with a finalizer is reconciled until its plan removes it.](state-machine.svg)
 
 ## Due
 
@@ -31,7 +31,7 @@ keeps its `notBefore` and the manager counts it in its report.
 | Reconcile | `reconcile` with the object, the answers, `now` and the kind's defaults | A plan | A failed or malformed call ends the pass with `host.error` and `notBefore = now + pollMs`; the plugin's status is untouched. |
 | Admit | The plan, the plugin's rights, the object | The plan as typed writes | A refused plan ends the pass with `host.error` naming the verb refused; nothing of it is written. |
 | Write | The admitted status, carrying every new effect's intent | One compare-and-swap write under the lease | A conflict drops the whole plan; the next pass rereads. |
-| Verbs | `creates`, `patches`, `appends`, `declares`, `deletes`, in that order | Each a manager verb under the lease; each outcome recorded in `host.verbs` | A refused verb is recorded and stops nothing after it. |
+| Verbs | `creates`, `amends`, `patches`, `appends`, `declares`, `deletes`, in that order | Each a manager verb under the lease; each outcome recorded in `host.verbs` | A refused verb is recorded and stops nothing after it. |
 | Effects | Each `effects[]` entry with an intent and no receipt | `perform`, the lease renewed before each | The outcome, Known or Unknown, is the receipt. |
 | Receipts | Each performed effect | Written into `status.effects` by compare-and-swap | A conflict rereads and retries the receipt write, preserving concurrent changes. |
 

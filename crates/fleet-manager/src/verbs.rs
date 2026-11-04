@@ -128,7 +128,7 @@ pub fn apply(
                 let labels = Some(obj.metadata.labels.clone());
                 let mut spec = obj.spec.clone();
                 // A manifest carries no amendments: re-applying it keeps the
-                // stored ones, which only `fleet amend` writes.
+                // stored ones, which only the store's amend mutation writes.
                 if obj.kind == task::KIND
                     && let (Some(fields), Some(kept)) =
                         (spec.as_object_mut(), current.spec.get("amendments"))
@@ -919,7 +919,7 @@ pub fn apply_conversation(
                 let labels = Some(obj.metadata.labels.clone());
                 let mut spec = obj.spec.clone();
                 // A manifest carries no amendments: re-applying it keeps the
-                // stored ones, which only `fleet amend` writes.
+                // stored ones, which only the store's amend mutation writes.
                 if obj.kind == task::KIND
                     && let (Some(fields), Some(kept)) =
                         (spec.as_object_mut(), current.spec.get("amendments"))

@@ -4,6 +4,10 @@ use fleet_api::{FieldManager, Object, StoreError};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Amendments per plan. Each one is a new generation of a Task's brief,
+/// so a plan carries a few, never a stream.
+pub const MAX_AMENDS: usize = 8;
+
 #[derive(Debug)]
 pub struct Admitted {
     pub plan: Plan,
@@ -20,7 +24,13 @@ pub fn admit(
     let plan: Plan = serde_json::from_value(raw).map_err(|_| refuse("malformed plan"))?;
     if plan.creates.len() > 20
         || plan.effects.len() > 8
-        || plan.patches.len() + plan.appends.len() + plan.declares.len() + plan.deletes.len() > 200
+        || plan.amends.len() > MAX_AMENDS
+        || plan.patches.len()
+            + plan.appends.len()
+            + plan.amends.len()
+            + plan.declares.len()
+            + plan.deletes.len()
+            > 200
     {
         return Err(refuse("too many verbs or effects"));
     }
@@ -109,6 +119,12 @@ pub fn admit(
         target("Task", &append.task, &append.uid)?;
         if append.key.is_empty() || append.key.len() > 512 || append.text.trim().is_empty() {
             return Err(refuse("appends: empty text or invalid key"));
+        }
+    }
+    for amend in &plan.amends {
+        target("Task", &amend.task, &amend.uid)?;
+        if amend.text.trim().is_empty() {
+            return Err(refuse("amends: empty text"));
         }
     }
     for declare in &plan.declares {

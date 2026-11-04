@@ -215,6 +215,7 @@ Source: [Store](../../../crates/fleet-api/src/store.rs) and
 | `apply` | New served resources, labels and permitted spec changes; request deletion. Never `spec.amendments`. | Store validation, exclusive creation or resourceVersion CAS for spec updates. |
 | `worker` | `status.result` through `record_result` | Current resourceVersion, `status.brief.generation`, no amendment waiting, and the output types declared up to that generation. |
 | `cli` | Appends to `status.inbox` through `send`. Appends to `spec.amendments` and `status.inbox` together through `amend_task`. | Current resourceVersion. No lease: the CLI calls a manager verb. |
+| `plugin/<name>` | Appends to `spec.amendments` and `status.inbox` together through a plan's `amends[]`, with `amend_task`'s checks. | The Task's `uid`, `ifGeneration`, the plugin's `tasks` scope and live manager lease. |
 | `forge-controller` | `status.forge`; appends to `status.inbox`, both through `record_relay` | Current resourceVersion and live manager lease. |
 | `task-controller` | Other Task status, `status.deliveries` and the release finalizer; removes delivered `inbox` entries | Current resourceVersion and live manager lease. |
 
@@ -229,11 +230,13 @@ while more than 20 entries are undelivered or the Task is deleting, and no
 other field of the Task changed by any of them. A plain `update_status` that
 changes `inbox` is refused whoever writes it.
 
-`amend_task` is the only write to `spec.amendments` and the only write that
-queues an entry with `amends`. In one CAS write it appends the amendment,
-increments `metadata.generation` to the amendment's generation and queues the
-entry under `task/<name>/<uid>/amend/<generation>`, with the inbox's checks.
-It refuses a deleting or Stalled Task. `update_spec`, and so `apply` and a
+The amend mutation is the only write to `spec.amendments` and the only write
+that queues an entry with `amends`. `fleet amend` reaches it through
+`amend_task`, and a plugin through its plan's `amends[]` verb. In one CAS
+write it appends the amendment, increments `metadata.generation` to the
+amendment's generation and queues the entry under
+`task/<name>/<uid>/amend/<generation>`, with the inbox's checks. It
+refuses a deleting or Stalled Task. `update_spec`, and so `apply` and a
 plugin patch, refuses any change to `spec.amendments`, and a create refuses a
 Task that carries any.
 

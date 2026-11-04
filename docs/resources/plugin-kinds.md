@@ -85,7 +85,7 @@ fields the host writes under the same owner:
 | --- | --- |
 | `notBefore` | Earliest next pass, Unix milliseconds: the plan's, else `now + pollMs`. |
 | `effects` | Per effect key: `intent {at, generation}`, written before the effect runs; `receipt {at, outcome}`, written after, `outcome` one of `done`, `failed` or `unknown` with the plugin's payload or reason. Newest 100 keys. |
-| `host` | The host's bookkeeping: `observedAt`, the last pass; `error`, what failed on the last pass and why, absent when nothing did; `verbs`, the outcome of each `creates`, `patches`, `appends`, `declares` and `deletes` entry of the last pass, by index. |
+| `host` | The host's bookkeeping: `observedAt`, the last pass; `error`, what failed on the last pass and why, absent when nothing did; `verbs`, the outcome of each `creates`, `amends`, `patches`, `appends`, `declares` and `deletes` entry of the last pass, by index. |
 
 A plan that names a reserved field is refused. `fleet apply` refuses a
 supplied status on every kind.

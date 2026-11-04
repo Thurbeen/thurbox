@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 480" role="img" aria-labelledby="title desc">
 <title id="title">Plugin controller: one object of a plugin kind through one pass</title>
-<desc id="desc">At fleet up each registered plugin's manifest is read once and the store serves its kinds. When an object of a plugin kind is due, the plugin's pure probes function is asked in up to three rounds; store probes are answered from the store and plugin probes through the plugin's bounded observe call. The pure reconcile function returns a plan; a pure gate admits it against the plugin's rights; the status carrying the effect intents is written by compare-and-swap under the lease; then creates, patches, appends, declares and deletes run as manager verbs; then each effect runs through the plugin's bounded perform call and its receipt is written. A deleting object with a finalizer is reconciled until its plan removes the finalizer.</desc>
+<desc id="desc">At fleet up each registered plugin's manifest is read once and the store serves its kinds. When an object of a plugin kind is due, the plugin's pure probes function is asked in up to three rounds; store probes are answered from the store and plugin probes through the plugin's bounded observe call. The pure reconcile function returns a plan; a pure gate admits it against the plugin's rights; the status carrying the effect intents is written by compare-and-swap under the lease; then creates, amends, patches, appends, declares and deletes run as manager verbs; then each effect runs through the plugin's bounded perform call and its receipt is written. A deleting object with a finalizer is reconciled until its plan removes the finalizer.</desc>
 <style>
   svg { color-scheme:light dark }
   @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
@@ -46,8 +46,8 @@
 <text x="630" y="341" font-size="12">with each effect's intent,</text>
 <text x="630" y="357" font-size="12">under the lease</text>
 <text x="895" y="321" font-weight="700">verbs</text>
-<text x="895" y="341" font-size="12">creates, patches, appends,</text>
-<text x="895" y="357" font-size="12">declares, deletes</text>
+<text x="895" y="341" font-size="12">creates, amends, patches,</text>
+<text x="895" y="357" font-size="12">appends, declares, deletes</text>
 <text x="255" y="427" font-weight="700">deleting with a finalizer</text>
 <text x="255" y="447" font-size="12">reconciled each pass until the plan says removeFinalizer</text>
 <text x="630" y="427" font-weight="700">perform (bounded)</text>

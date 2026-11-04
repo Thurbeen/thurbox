@@ -134,6 +134,8 @@ at most three, until the answer is empty:
   "patches": [{"kind": "Task", "name": "issue-88-review", "uid": "…", "spec": {"dispatch": true}}],
   "appends": [{"task": "issue-88-review", "uid": "…", "key": "issue/88/comment/3",
                "text": "A maintainer replied on the issue: …"}],
+  "amends": [{"task": "issue-88-review", "uid": "…", "text": "The issue changed: …",
+              "reason": "new issue body", "ifGeneration": 2}],
   "declares": [],
   "deletes": [],
   "effects": [{"key": "comment/88/1", "request": {"op": "comment", "number": 88, "body": "…"}}],
@@ -148,6 +150,7 @@ at most three, until the answer is empty:
 | `creates[]` | Full objects to create, each exclusive by name, labelled `fleet.dev/plugin` by the host | Kind is one of this plugin's, or Task; the spec validates; at most 20 per plan. |
 | `patches[]` | Spec fields to change on an existing object, named with its `uid` | Task: `dispatch` and `forge` only. Own kinds: nothing; a mirror's identity is its spec. The `uid` matches, and the Task is this plugin's under `tasks = "own"`. |
 | `appends[]` | Inbox entries for a Task, as `plugin/<name>` | Same store checks as `fleet send`; the key is `task/<task>/<uid>/plugin/<plugin>/<key>`, unique for the Task; the Task is within `tasks`. |
+| `amends[]` | `{task, uid, text, reason?, outputs?, ifGeneration}`, the `amend` verb on the Task's behalf, from `plugin/<name>` | The text is not empty and `ifGeneration` is present; the `uid` matches, and the Task is within `tasks`. At most 8 per plan. |
 | `declares[]` | `{task, uid, changeRequest: url}`, the `declare` verb on the Task's behalf | The verb's own preconditions: a brief receipt, not deleting; the Task is within `tasks`. |
 | `deletes[]` | Objects to delete, named with their `uid` | Own kinds, or a Task within `tasks`. Fenced on `uid`; retire the current controller object with `delete`, after effects. |
 | `effects[]` | `{key, request}` to perform through `perform`, with intent before and receipt after | At most eight; existing keys are retained and never repeated. |
@@ -158,6 +161,24 @@ A plan with any inadmissible entry is refused whole: nothing of it is
 written, and `host.error` names the entry. The gate that decides this is a
 pure function in `fleet-controllers`, tested like the controllers, and the
 only code that names the `plugin/<name>` field manager.
+
+An admitted verb can still be refused when it runs. `host.verbs` records the
+refusal, and the other verbs of the plan still run. An `amends[]` entry
+follows these rules:
+
+- The store applies the checks of `fleet amend`. It refuses a missing,
+  Stalled or deleting Task, a full inbox, and an output name that the Task
+  already declares.
+- The amendment's `from` is `plugin/<name>`. Its inbox entry has the key
+  `task/<task>/<uid>/amend/<generation>`.
+- `ifGeneration` must equal the Task's `metadata.generation` when the verb
+  runs. Otherwise the store refuses the verb with
+  `Task/<task> is at generation M, not N`.
+- Amends run before patches. A patch in the same plan does not move the
+  generation that `ifGeneration` names.
+
+A plugin reads the Task's generation from a probe and sets `ifGeneration` to
+it. A repeated or recovered pass then appends nothing a second time.
 
 ### `observe` and `perform`
 
@@ -212,7 +233,7 @@ config.
 | Probe rounds per object per pass | 3. |
 | stdout per process | 8 MiB; past it the process is killed and every unanswered request has failed. |
 | One plan's `status` | 256 KiB. |
-| `creates` per plan | 20; `effects` per plan, 8. |
+| `creates` per plan | 20; `amends` per plan, 8; `effects` per plan, 8. |
 | `list` answer | 200 objects. |
 | `status.effects` | Newest 100 keys. |
 | `operation_bound` | One call's worst case; the lease is sized to outlast it, as for the runtime and forge ports. |
@@ -224,7 +245,7 @@ config.
 | `apply` | A plugin kind's spec and labels, except `fleet.dev/plugin`; request deletion | Schema validation; `immutableSpec` when declared. |
 | `plugin/<name>` | All of the status of its kinds, through the manager only; deletion of its own objects; the label `fleet.dev/plugin` on what it creates | Current `resourceVersion`, the live lease, the gate's admission. |
 | Host, as `plugin/<name>` | The reserved fields `status.notBefore`, `status.effects`, `status.host` | The same write as the plugin's status. |
-| `plugin/<name>` on a Task | `spec.dispatch`, `spec.forge`, inbox appends, declarations, deletion | The verbs' own checks; `tasks = "own"` requires the Task's `fleet.dev/plugin` label to name this plugin. |
+| `plugin/<name>` on a Task | `spec.dispatch`, `spec.forge`, amendments, inbox appends, declarations, deletion | The verbs' own checks; `tasks = "own"` requires the Task's `fleet.dev/plugin` label to name this plugin. |
 
 `fleet.dev/plugin` is a label the store sets on objects created through a
 plugin's plan and refuses from `apply`. `ownerReferences` stay refused on

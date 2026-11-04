@@ -127,6 +127,8 @@ pub struct Plan {
     #[serde(default)]
     pub appends: Vec<Append>,
     #[serde(default)]
+    pub amends: Vec<Amend>,
+    #[serde(default)]
     pub declares: Vec<Declare>,
     #[serde(default)]
     pub deletes: Vec<Target>,
@@ -163,6 +165,20 @@ pub struct Append {
     /// `status.answered` by the store, first answer wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub answers: Vec<String>,
+}
+/// `fleet amend` on a Task's behalf, from `plugin/<name>`. `if_generation`
+/// is required: a repeated or recovered pass cannot append twice.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Amend {
+    pub task: String,
+    pub uid: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, crate::result::OutputDecl>,
+    pub if_generation: u64,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -217,6 +233,7 @@ pub enum Mutation {
     Patch(Patch),
     Delete(Target),
     Append(Append),
+    Amend(Amend),
     Declare {
         task: String,
         uid: String,

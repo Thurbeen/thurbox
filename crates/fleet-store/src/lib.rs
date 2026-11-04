@@ -516,6 +516,84 @@ fn check_no_amendments(obj: &Object) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// The amend mutation's one write, for `fleet amend` and a plugin's
+/// `amends[]` alike: append the amendment to `spec.amendments`, bump the
+/// generation and queue its inbox entry. Refused on a deleting or Stalled
+/// Task, for an output name already declared, and on a full inbox.
+fn apply_amendment(
+    obj: &mut Object,
+    amendment: task::Amendment,
+    entry: InboxEntry,
+) -> Result<(), StoreError> {
+    if amendment.from != entry.from {
+        return Err(StoreError::Invalid(
+            "an amendment and its inbox entry name one sender".into(),
+        ));
+    }
+    if obj.is_deleting() {
+        return Err(StoreError::Forbidden(format!(
+            "{} is being deleted; nothing would deliver the amendment",
+            obj.key()
+        )));
+    }
+    let mut st = task_status(obj)?;
+    if st.phase == task::Phase::Stalled {
+        return Err(StoreError::Forbidden(format!(
+            "{} is Stalled; nothing would deliver the amendment, so create a new Task",
+            obj.key()
+        )));
+    }
+    let generation = obj
+        .metadata
+        .generation
+        .checked_add(1)
+        .ok_or_else(|| StoreError::Invalid("generation exhausted".into()))?;
+    let key = fleet_api::inbox::amend_key(&obj.metadata.name, &obj.metadata.uid, generation);
+    if amendment.generation != generation || entry.amends != Some(generation) || entry.key != key {
+        return Err(StoreError::Invalid(format!(
+            "{}: an amendment creates generation {generation} under {key}",
+            obj.key()
+        )));
+    }
+    let spec: task::TaskSpec = fleet_api::validate::typed(task::KIND, &obj.spec)?;
+    let declared = spec.outputs_at(u64::MAX);
+    if let Some(name) = amendment.outputs.keys().find(|n| declared.contains_key(*n)) {
+        return Err(StoreError::Invalid(format!(
+            "{}: output {name:?} is already declared; an amendment only adds outputs",
+            obj.key()
+        )));
+    }
+    // Appended to the stored JSON as is: which execution fields a spec
+    // sets is itself meaningful, so the spec is never re-encoded.
+    let amendment = serde_json::to_value(&amendment)
+        .map_err(|e| StoreError::Invalid(format!("Task amendment: {e}")))?;
+    let mut spec = obj.spec.clone();
+    let Some(fields) = spec.as_object_mut() else {
+        return Err(StoreError::Invalid(format!(
+            "{}: spec is not an object",
+            obj.key()
+        )));
+    };
+    match fields
+        .entry("amendments")
+        .or_insert_with(|| Value::Array(Vec::new()))
+    {
+        Value::Array(list) => list.push(amendment),
+        _ => {
+            return Err(StoreError::Invalid(format!(
+                "{}: spec.amendments",
+                obj.key()
+            )));
+        }
+    }
+    fleet_api::validate::validate_spec(task::KIND, &spec)?;
+    push_checked(obj, &mut st, entry)?;
+    obj.spec = spec;
+    obj.metadata.generation = generation;
+    obj.status = encode_status(&st)?;
+    Ok(())
+}
+
 fn expect_rv(obj: &Object, expected: u64) -> Result<(), StoreError> {
     if obj.metadata.resource_version != expected {
         return Err(StoreError::Conflict {
@@ -942,70 +1020,10 @@ impl Store for FileStore {
             )));
         }
         check_source(by.clone(), &entry)?;
-        if amendment.from != entry.from {
-            return Err(StoreError::Invalid(
-                "an amendment and its inbox entry name one sender".into(),
-            ));
-        }
         let _guard = self.lock()?;
         let mut obj = self.read_existing(task::KIND, name)?;
         expect_rv(&obj, expected)?;
-        if obj.is_deleting() {
-            return Err(StoreError::Forbidden(format!(
-                "{} is being deleted; nothing would deliver the amendment",
-                obj.key()
-            )));
-        }
-        let mut st = task_status(&obj)?;
-        if st.phase == task::Phase::Stalled {
-            return Err(StoreError::Forbidden(format!(
-                "{} is Stalled; nothing would deliver the amendment, so create a new Task",
-                obj.key()
-            )));
-        }
-        let generation = obj
-            .metadata
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| StoreError::Invalid("generation exhausted".into()))?;
-        let key = fleet_api::inbox::amend_key(&obj.metadata.name, &obj.metadata.uid, generation);
-        if amendment.generation != generation
-            || entry.amends != Some(generation)
-            || entry.key != key
-        {
-            return Err(StoreError::Invalid(format!(
-                "{}: an amendment creates generation {generation} under {key}",
-                obj.key()
-            )));
-        }
-        // Appended to the stored JSON as is: which execution fields a spec
-        // sets is itself meaningful, so the spec is never re-encoded.
-        let amendment = serde_json::to_value(&amendment)
-            .map_err(|e| StoreError::Invalid(format!("Task amendment: {e}")))?;
-        let mut spec = obj.spec.clone();
-        let Some(fields) = spec.as_object_mut() else {
-            return Err(StoreError::Invalid(format!(
-                "{}: spec is not an object",
-                obj.key()
-            )));
-        };
-        match fields
-            .entry("amendments")
-            .or_insert_with(|| Value::Array(Vec::new()))
-        {
-            Value::Array(list) => list.push(amendment),
-            _ => {
-                return Err(StoreError::Invalid(format!(
-                    "{}: spec.amendments",
-                    obj.key()
-                )));
-            }
-        }
-        fleet_api::validate::validate_spec(task::KIND, &spec)?;
-        push_checked(&obj, &mut st, entry)?;
-        obj.spec = spec;
-        obj.metadata.generation = generation;
-        obj.status = encode_status(&st)?;
+        apply_amendment(&mut obj, amendment, entry)?;
         obj.metadata.resource_version = self.next_rv()?;
         self.write(&obj)?;
         Ok(obj)

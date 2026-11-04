@@ -89,3 +89,47 @@ fn task_targets_need_a_known_uid_and_rights_and_only_mutable_spec_fields() {
         .is_err()
     );
 }
+
+#[test]
+fn amends_need_the_task_in_scope_a_known_uid_text_and_a_small_count() {
+    let amend =
+        |text: &str, uid: &str| json!({"task":"child","uid":uid,"text":text,"ifGeneration":1});
+    let mut task = object("Task", "child", "uid");
+    let mut targets = BTreeMap::from([("Task/child".into(), task.clone())]);
+    let check = |plan: Value, targets: &BTreeMap<String, Object>| {
+        admit(
+            plan,
+            &registration(),
+            &object("Issue", "one", "uid"),
+            targets,
+        )
+    };
+    let one = json!({"amends":[amend("Review the new push.","uid")]});
+    let foreign = check(one.clone(), &targets).unwrap_err().to_string();
+    assert!(foreign.contains("foreign Task"), "{foreign}");
+    task.metadata
+        .labels
+        .insert("fleet.dev/plugin".into(), "issues".into());
+    targets.insert("Task/child".into(), task);
+    assert!(check(one, &targets).is_ok());
+    for plan in [
+        json!({"amends":[amend("Review the new push.","old")]}),
+        json!({"amends":[amend("  ","uid")]}),
+        json!({"amends":[{"task":"child","uid":"uid","text":"no precondition"}]}),
+        json!({"amends":(0..=fleet_controllers::plugin::MAX_AMENDS).map(|_|amend("again","uid")).collect::<Vec<_>>()}),
+    ] {
+        assert!(check(plan.clone(), &targets).is_err(), "{plan}");
+    }
+    let mut any = registration();
+    any.config.tasks = fleet_api::plugin::TaskAccess::Any;
+    let unlabelled = BTreeMap::from([("Task/child".into(), object("Task", "child", "uid"))]);
+    assert!(
+        admit(
+            json!({"amends":[amend("Any Task in scope.","uid")]}),
+            &any,
+            &object("Issue", "one", "uid"),
+            &unlabelled
+        )
+        .is_ok()
+    );
+}

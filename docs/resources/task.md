@@ -173,7 +173,8 @@ fleet amend design-305 --file more.md --output notesUrl=string! --if-generation 
 One compare-and-swap write does three things:
 
 1. It appends `{text, reason, outputs, from, at, generation}` to
-   `spec.amendments`. `from` is `cli/<user>`.
+   `spec.amendments`. `from` is `cli/<user>`, or `plugin/<name>` for a
+   plugin's amend.
 2. It increments `metadata.generation` to the amendment's `generation`.
 3. It queues an inbox entry under `task/<name>/<uid>/amend/<generation>` with
    `amends` set to that generation.
@@ -184,7 +185,9 @@ Two identical amendments are both kept. A script that retries uses
 `--if-generation`, so that a retry cannot append twice.
 
 An amend is refused for a missing Task, a Stalled Task, a deleting Task and a
-full inbox. Nothing would deliver it. An amend is accepted while `WorkerGone`
+full inbox. Nothing would deliver it. A plugin amends a Task through its plan's
+`amends[]`, with the same checks and a required `ifGeneration`. See
+[Plugin operations](#plugin-operations). An amend is accepted while `WorkerGone`
 is True; it waits for the session, as `fleet send` does. Only the store's amend
 mutation can queue an entry with `amends`, or append to `spec.amendments`. A
 manifest that creates a Task with `amendments` is refused.
@@ -221,7 +224,7 @@ prints the entry as appended.
 | Field | Meaning |
 | --- | --- |
 | `key` | Deterministic and unique across `inbox` and `deliveries`; also the runtime intent key the delivery is journaled under. |
-| `from` | `cli/<user>` for `fleet send` and `fleet amend`; `forge/<change>` for a relay, the ChangeRequest's name. |
+| `from` | `cli/<user>` for `fleet send` and `fleet amend`; `forge/<change>` for a relay, the ChangeRequest's name; `plugin/<name>` for a plugin's append or amend. |
 | `text` | The message. The runtime can put its own header before it. For an amendment, the amendment's text; TaskController composes the delivered message from the spec. |
 | `about` | For a relay: the mirror's `uid`, `revision` and `head`. Absent for `fleet send`. |
 | `amends` | For an amendment: the spec generation it created. Absent otherwise. |
@@ -343,6 +346,7 @@ manager verbs, never through a status write:
 | --- | --- | --- |
 | Create | A full Task manifest, exclusive by name; the store labels it `fleet.dev/plugin: <plugin>`, a label `apply` refuses to set | The plan's `creates` |
 | Patch | `dispatch` and `forge`, the two mutable spec fields; a patch never changes `amendments` | The plan's `patches` |
+| Amend | `fleet amend` on the Task's behalf: an amendment from `plugin/<name>`, with that verb's checks. `ifGeneration` is required; on any other generation the verb is refused and recorded in `host.verbs`, so a repeated pass appends nothing | The plan's `amends` |
 | Send | An inbox entry from `plugin/<name>` under `task/<name>/<uid>/plugin/<plugin>/<key>`, with the inbox's own checks | The plan's `appends` |
 | Declare | `fleet declare TASK --change-request URL` on the Task's behalf, with that verb's preconditions | The plan's `declares` |
 | Delete | By name and `uid`; the release finalizer then runs as for any deletion | The plan's `deletes` |

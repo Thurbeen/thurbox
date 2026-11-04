@@ -110,7 +110,7 @@ one.
 
 The plugin returns a plan; the manager performs it, in the order every
 controller's plan is performed: the status carrying each effect's intent is
-written first, then the creates, patches, appends, declares and deletes,
+written first, then the creates, amends, patches, appends, declares and deletes,
 each a manager verb under the lease, then the effects, then their receipts.
 The plugin's field manager is `plugin/<name>`. It owns all of the status of
 its kinds; the host keeps three reserved fields in it, `notBefore`,
@@ -123,7 +123,7 @@ through the verbs a person has, never a status write.
 In scope: plugin-defined kinds with validated specs, a pure controller half
 and a bounded observer half, store probes and plugin probes, keyed effects
 with intents and receipts, and every Task verb a person has except `result`:
-create, patch the mutable spec fields, delete, send, declare. A plugin
+create, patch the mutable spec fields, amend, delete, send, declare. A plugin
 reconciles only kinds it defines; it reads Tasks and ChangeRequests through
 probes.
 
@@ -154,6 +154,6 @@ process and accepts plugin kind names and plurals.
 
 `e2e_plugin_controller` drives the built CLI and a Rust protocol stub across
 process restarts. `plugin_gate` covers admission rules; `store_contract`
-covers fencing and creator ownership; `architecture` enforces the crate and
-writer boundaries. TypeScript/Python SDKs and issue-specific plugins remain
-outside this repository.
+covers fencing, creator ownership and the amend precondition;
+`architecture` enforces the crate and writer boundaries. TypeScript/Python
+SDKs and issue-specific plugins remain outside this repository.
