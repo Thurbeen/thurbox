@@ -2149,7 +2149,10 @@ the pane option a peer's subscription reads; ADR-32). A shared-host fork uses
 conversation selection and checkout together. Older or directly created
 sessions can still be registered on the host by `session sync --adopt`.
 `session register` makes a row for a window that already runs and refuses to
-launch.
+launch. It is `session_ops::mirror::register_running`, beside the
+`register_unknown` that calls it on the host, and takes the session and name
+locks a creator takes (issue #1475), so it never writes a row that a creation
+or restore holding either is about to write.
 
 Reconciliation has a direction, and delegation has a fallback. Three rules
 follow from the host owning the record, none of which the first cut had:

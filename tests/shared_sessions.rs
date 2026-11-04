@@ -22,6 +22,9 @@ use thurbox::sync::{SharedSession, SharedWorktree};
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
 
+#[path = "support/recording_backend.rs"]
+mod recording_backend;
+
 const BACKEND: &str = "ssh:devbox";
 
 /// `register` shells out to list windows on this machine's tmux server, so
@@ -221,6 +224,100 @@ fn register_records_only_a_window_that_is_running() {
     )
     .unwrap_err();
     assert!(err.contains("--json-row"), "{err}");
+}
+
+/// A row for a window already running on this machine's route, and a backend
+/// that serves it, as `sync --adopt` finds them on the host it registers on.
+fn running_here(name: &str) -> (SharedSession, thurbox::cli::Backends<'static>) {
+    let route =
+        thurbox::session::Route::local(Some(thurbox::session::Multiplexer::platform_default()));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let session = row(SessionId::default(), name, &route.format());
+    backend.open(
+        name,
+        &session.id.to_string(),
+        thurbox::backend::WindowRole::Agent,
+    );
+    let backends =
+        thurbox::cli::Backends::ready(thurbox::backend::BackendRegistry::new(route, backend));
+    (session, backends)
+}
+
+fn register(
+    db: &Database,
+    backends: &thurbox::cli::Backends<'_>,
+    session: &SharedSession,
+) -> Result<thurbox::cli::output::CommandOutput, String> {
+    let body = mirror::session_to_json(session, Some("working"), None, None);
+    run(
+        Action::Register {
+            json_row: body.to_string(),
+        },
+        db,
+        backends,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[test]
+fn register_waits_for_an_operation_already_deciding_the_session() {
+    // `register` is the host half of `sync --adopt`: it writes a row and its
+    // state like any creator, so it takes the locks every creator takes. A
+    // creation holding the name has not written its row yet, so the
+    // "a session named … already exists" check alone cannot see it.
+    let db = Database::open_in_memory().unwrap();
+    let (session, backends) = running_here("adopted");
+    let creation =
+        thurbox::session_ops::names::hold(&db, "adopted", &session.backend_type, "create")
+            .unwrap()
+            .expect("the name is free");
+    let err = register(&db, &backends, &session).unwrap_err();
+    assert!(err.contains("right now"), "{err}");
+    assert!(db.get_session_by_id(session.id).unwrap().is_none());
+    drop(creation);
+
+    // The same row, while another operation holds the session itself.
+    let held = thurbox::session_ops::lock::lock(
+        &db,
+        thurbox::session_ops::lock::Subject::Session(session.id),
+        "restore",
+    )
+    .unwrap()
+    .expect("the session is free");
+    let err = register(&db, &backends, &session).unwrap_err();
+    assert!(err.contains("right now"), "{err}");
+    assert!(db.get_session_by_id(session.id).unwrap().is_none());
+    drop(held);
+
+    let out = register(&db, &backends, &session).expect("registered once both are free");
+    assert_eq!(out["registered"], true);
+    assert_eq!(
+        db.load_hook_state(session.id)
+            .unwrap()
+            .unwrap()
+            .state
+            .as_deref(),
+        Some("working")
+    );
+}
+
+#[test]
+fn register_takes_only_a_state_from_the_host() {
+    // The state comes from another machine's JSON; it is held to the same
+    // allow-list as every other report.
+    let db = Database::open_in_memory().unwrap();
+    let (session, backends) = running_here("adopted");
+    let mut body = mirror::session_to_json(&session, None, None, None);
+    body["hook_state"] = json!("'; DROP TABLE sessions; --");
+    run(
+        Action::Register {
+            json_row: body.to_string(),
+        },
+        &db,
+        &backends,
+    )
+    .expect("registered");
+    assert_eq!(db.load_hook_state(session.id).unwrap().unwrap().state, None);
 }
 
 #[test]

@@ -1214,6 +1214,108 @@ pub fn register_unknown(
     (registered, errors)
 }
 
+/// What [`register_running`] recorded: the row as stored, and why its key was
+/// left behind when it was.
+pub struct Registered {
+    pub session: SharedSession,
+    pub key_dropped: Option<String>,
+}
+
+/// Record `row`, a session whose window is already running on this machine,
+/// as a peer's [`register_unknown`] sends it (`session register`). It never
+/// launches: a row with no live window to claim is refused.
+///
+/// It writes a row, a name and a key like any creator, so it takes the locks
+/// every creator takes — the session's own and its name's — and refuses while
+/// another operation holds either. A creation holding the name has not
+/// written its row yet, so the namesake check alone cannot see it.
+pub fn register_running(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    row: HostRow,
+    telemetry_attrs: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<Registered, super::OpError> {
+    let mut session = row.session;
+    let busy = || {
+        super::OpError::Conflict(format!(
+            "'{}' is being changed here right now; try again once that finishes",
+            session.name
+        ))
+    };
+    let _lease = super::lock::lock(db, super::lock::Subject::Session(session.id), "register")?
+        .ok_or_else(busy)?;
+    let _name = super::names::hold(db, &session.name, &session.backend_type, "register")?
+        .ok_or_else(busy)?;
+    if db
+        .get_session_by_id(session.id)
+        .map_err(|e| format!("get_session_by_id: {e}"))?
+        .is_some()
+    {
+        return Err(format!("session {} is already registered here", session.id).into());
+    }
+    if let Some(existing) = db
+        .get_session_by_name(&session.name)
+        .map_err(|e| format!("get_session_by_name: {e}"))?
+    {
+        return Err(format!(
+            "a session named '{}' already exists here ({})",
+            session.name, existing.id
+        )
+        .into());
+    }
+    // The row is being adopted onto this machine, so no window can be stamped
+    // for its id yet; passing the real id (rather than "") still lets the
+    // by-name fallback require the sole match to be unstamped, refusing to
+    // steal a window already stamped for a different, live session. Claimed,
+    // it is stamped: the row then owns that window by id rather than by a name
+    // a later namesake could take.
+    session.backend_id = super::windows::claim_running_window(
+        backends,
+        &session.backend_type,
+        &session.id.to_string(),
+        &session.name,
+    )?;
+    // A key comes along only when nobody on this machine has it: the row is
+    // being recorded either way — its window is already running, and refusing
+    // would leave `sync --adopt` retrying it every pass — so a taken key is
+    // dropped and said so, the way a restore drops one.
+    let (key_claim, key_dropped) = super::names::admit_key(
+        db,
+        session.key.as_deref(),
+        &session.backend_type,
+        "register",
+    )?;
+    let key_dropped = key_dropped.map(|why| format!("registered without its key: {why}"));
+    if key_dropped.is_some() {
+        session.key = None;
+    }
+    db.upsert_session_with_launch_metadata(
+        &session,
+        crate::storage::EventReason::Registered,
+        row.agent_args.as_deref(),
+        telemetry_attrs,
+    )
+    .map_err(|e| format!("upsert_session: {e}"))?;
+    drop(key_claim);
+    // The state is the host's last report, from another machine's JSON: held
+    // to the allow-list every report is.
+    if let Some(state) = row.hook_state.as_deref() {
+        let _ = super::signals::report(
+            db,
+            session.id,
+            state,
+            crate::session::background_work::ReportFrom::Agent,
+        );
+    }
+    if let Some(base) = row.base_branch.as_deref() {
+        let _ = db.set_session_base_branch(session.id, base);
+    }
+    Ok(Registered {
+        session,
+        key_dropped,
+    })
+}
+
 /// Mirror one host (`only`) or every shareable one, optionally registering
 /// the local rows a host does not know. A host that cannot be used lands in
 /// its report's `error`; an unknown `only` is the one hard failure.
