@@ -108,7 +108,11 @@ curlConfig = "/etc/fleet/discord-curl.conf"   # operator-owned; holds the Author
 | `curlConfig` | Required | An absolute path. Fleet passes it to `curl --config` and never reads it. |
 
 A route's `channels` are text or announcement channels. A thread belongs to the
-route of its parent channel. A person's id under `[gateway.people]` is a user
+route of its parent channel. A wildcard route, `channels = ["*"]`, covers
+every text and announcement channel that the bot can view in the guild, and
+their public threads, apart from a channel that another route lists and the
+`gateway.logs` channel. On such an account, the `VIEW_CHANNEL` grants are the
+allowlist of channels. A person's id under `[gateway.people]` is a user
 snowflake, never a username.
 
 `fleet gateway account NAME --json` prints `intents` for a Discord account:

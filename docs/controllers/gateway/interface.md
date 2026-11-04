@@ -125,11 +125,13 @@ arrived, as `via`.
 the event to its thread's Conversation. It is a manager verb, like
 `fleet send`, and takes no lease.
 
-- An event in a channel that no route covers is ignored.
+- An event in a channel that no route covers is ignored. A route covers a
+  channel id that it lists. The account's wildcard route, with `"*"` in
+  `channels`, covers every other channel except the `gateway.logs` channel.
 - An event in a thread Fleet does not mirror yet creates the Conversation
   only when it could start a Task, earn a refusal, or is Fleet's own
   Question post. Other chatter is ignored, so a busy channel costs no
-  objects.
+  objects. This holds in every channel that a wildcard route covers.
 - A redelivered event changes nothing.
 
 | Exit | Meaning | The listener |
@@ -686,5 +688,6 @@ A tie to a thread, once verified, wins over a parent label.
 
 ### The route label
 
-`gateway.fleet.dev/route` chooses the route whose channel a Task's Question
-opens in. It is an ordinary label.
+`gateway.fleet.dev/route` chooses the route whose first channel id a Task's
+Question opens in. It is an ordinary label. A route with no channel id, such
+as a wildcard route with only `"*"`, raises `NeedsAttention/RouteUnknown`.

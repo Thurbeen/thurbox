@@ -1723,8 +1723,25 @@ mod posting {
         assert_eq!(gw.declared, 2, "the Comment before it is skipped");
         assert_eq!(gw.conversation.as_ref().unwrap().state, TieState::Opening);
         // Without a questions route nothing opens and nothing is written.
-        let (plan, _) = run_with(&t, obs, defaults());
+        let (plan, _) = run_with(&t, obs.clone(), defaults());
         assert!(plan.effects.is_empty() && plan.status.is_none(), "{plan:?}");
+        // A wildcard route opens in the first channel id it lists.
+        let mut wild = questions_defaults();
+        let r = wild.routes.get_mut(ROUTE).unwrap();
+        r.channels = vec!["*".into(), "C0789IJKL".into()];
+        let (plan, _) = run_with(&t, obs.clone(), wild.clone());
+        let Action::Open { channel, .. } = &plan.effects[0].action else {
+            panic!("{plan:?}")
+        };
+        assert_eq!(channel.address(), "fake:C0789IJKL");
+        // A labelled route with no channel id cannot ask: it says so.
+        wild.routes.get_mut(ROUTE).unwrap().channels = vec!["*".into()];
+        let (plan, _) = run_with(&t, obs, wild);
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        assert!(
+            format!("{plan:?}").contains("with a channel id"),
+            "{plan:?}"
+        );
     }
 
     #[test]

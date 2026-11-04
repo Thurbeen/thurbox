@@ -1705,7 +1705,7 @@ impl Pass<'_, '_> {
                 ROUTE_UNKNOWN,
                 &task_name,
                 format!(
-                    "route {route_name:?} is not under [gateway.routes] with a channel on a configured account; the Question cannot open a thread"
+                    "route {route_name:?} is not under [gateway.routes] with a channel id on a configured account; the Question cannot open a thread"
                 ),
             );
             return;
@@ -1728,14 +1728,14 @@ impl Pass<'_, '_> {
     fn open_action(&self, route_name: &str, question: &Value) -> Option<Action> {
         let route = self.input.defaults.routes.get(route_name)?;
         let platform = self.input.defaults.platforms.get(&route.account)?;
-        let chat = route.channels.first()?;
+        let chat = route.first_channel()?;
         let (name, _) = self.task_meta();
         Some(Action::Open {
             account: route.account.clone(),
             route: route_name.to_string(),
             channel: ConversationRef {
                 platform: platform.clone(),
-                chat: chat.clone(),
+                chat: chat.to_string(),
                 thread: None,
             },
             text: format!("Task {name} asks:\n\n{}", render_item(question)),

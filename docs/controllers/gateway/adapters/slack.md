@@ -32,8 +32,10 @@ On the Slack side, the operator does these steps:
      each request's signature[^slack-events].
 5. Put the bot token in a curl config file that the operator owns, as an
    Authorization header. Name the file in `curlConfig`.
-6. Invite the bot to every channel that a route covers. Message events and
-   history reach the bot only in a channel where it is a member.
+6. Invite the bot to every channel that a route lists. Message events and
+   history reach the bot only in a channel where it is a member. On an
+   account with a wildcard route, membership is the allowlist of channels:
+   the wildcard covers every channel the bot is in.
 
 The listener is a program outside Fleet. It does these things:
 
@@ -75,6 +77,23 @@ breaks these rules, with one of these errors:
   "events-api"`
 - `a slack account needs a curlConfig`
 - `messageContent is a Discord account's key, not "slack"'s`
+
+### The wildcard route
+
+A wildcard route, `channels = ["*"]`, covers these Slack conversations:
+
+- Every public channel (`message.channels`) and private channel
+  (`message.groups`) where the bot is a member, apart from a channel id that
+  another route lists and the `gateway.logs` channel.
+- A DM (`D…`) or a group DM, only when the app also subscribes to
+  `message.im` or `message.mpim`. The setup above does not subscribe to
+  them, so by default the wildcard covers no DM.
+
+Recommendation: leave DMs unsubscribed. In a DM, a request must still
+mention the bot under `mention = "required"`, which people rarely do.
+
+The adapter reads no channel type. A subscription is the operator's choice
+of which conversations reach Fleet.
 
 ## Address format
 

@@ -102,6 +102,16 @@ An address is `<platform>:<chat>[:<thread>]`. Only the adapter reads its parts.
 | `slack` | `slack:C0123ABCD:1730000000.000100` | `slack:C0123ABCD` | A channel id (`C`, `G` or `D`, then uppercase letters and digits) and the parent's `ts`. |
 | `discord` | `discord:1300000000000000000:1300000000000000001` | `discord:1300000000000000000` | The parent channel's snowflake and the thread's snowflake. A thread started from a message has that message's id. |
 
+A route covers channels by their `<chat>` part. A thread belongs to the
+route of its channel. A wildcard route covers every conversation that the
+account's listener delivers in a channel no other route lists:
+
+| Platform | A wildcard route covers |
+| --- | --- |
+| `fake` | Every chat. |
+| `slack` | Every public and private channel the bot is a member of, with the message events the setup subscribes to. A DM (`D…`) or a group DM only when the operator also subscribes the app to `message.im` or `message.mpim`. |
+| `discord` | Every text and announcement channel the bot can view in the account's guild, and their public threads. Never a DM, a private thread or a forum channel: the adapter ignores them. |
+
 A thread address names a conversation. A channel address names where Fleet
 opens a new thread, or where it posts a top-level log post. A `post` to a
 channel address makes every part of its text a top-level post there and

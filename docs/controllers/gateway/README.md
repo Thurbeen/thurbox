@@ -1,6 +1,6 @@
 # Gateway controller
 
-Implemented. The installed binary has steps 1 to 10 below: the `[gateway]`
+Implemented. The installed binary has steps 1 to 11 below: the `[gateway]`
 key, the Gateway port, the `fleet-gateway` crate with its fake, Slack and
 Discord adapters, the `Conversation` and `Listener` kinds,
 ConversationController (the mirror, admission, Task creation in each
@@ -15,7 +15,8 @@ Task's result and change news in the log channel. It marks an admitted
 request with a working reaction when admission starts its Task, or with a
 queued reaction while the request waits. It marks each message it relays
 with a working reaction, and with a replied reaction once Fleet posted in
-the thread. The listener programs stay outside Fleet.
+the thread. A wildcard route covers every channel that no other route
+lists. The listener programs stay outside Fleet.
 
 The Gateway ties chat threads to Tasks:
 
@@ -68,7 +69,8 @@ to check the model.
 ## Flow: a mention starts a Task
 
 1. A person on a route's allowlist mentions Fleet's bot in a channel that
-   the route covers. The thread can be new or old.
+   the route covers. The thread can be new or old. See
+   [Flow: which route covers a channel](#flow-which-route-covers-a-channel).
 2. The listener receives the event and runs `fleet gateway receive`. The
    verb creates the thread's Conversation and adds the event to it. The
    listener acknowledges the event only after the verb succeeds.
@@ -100,6 +102,36 @@ to check the model.
 12. A thread with no message for its retention period retires, if its Task
     is Concluded or it has no live Task. See
     [Flow: a thread's end of life](#flow-a-threads-end-of-life).
+
+## Flow: which route covers a channel
+
+The receive verb finds the route of each event's channel on the event's
+account:
+
+1. A route of the account lists the channel id. That route covers the
+   channel.
+2. Else, the channel is the `gateway.logs` channel. No route covers it.
+3. Else, the account has a wildcard route, with `"*"` in `channels`. The
+   wildcard route covers the channel.
+4. Else, no route covers the channel. The verb ignores the event.
+
+Rules:
+
+- An explicit channel id always wins over the wildcard. The order of the
+  routes in the file does not matter.
+- An account has at most one wildcard route.
+- The wildcard covers only conversations that the account's listener
+  delivers. Each [adapter page](adapters/README.md) says which ones.
+- Admission applies on a wildcard route as on any route: `allow`,
+  `allowBots`, the mention rule and the refusal.
+- A wildcard route needs `mention = "required"`.
+- A thread that a wildcard route covers keeps that route. A later route
+  that lists its channel id changes the route of new threads only.
+
+The cost rule holds on a wildcard route. In a thread that Fleet does not
+mirror, only a message that can start a Task, earn a refusal, or is Fleet's
+own keyed post creates a Conversation. Other chatter, in any channel, costs
+no object.
 
 ## Flow: reactions show progress
 
@@ -198,9 +230,10 @@ Rules:
 
 1. A Task that nobody started from chat declares a `Question`. For example,
    a plugin created the Task.
-2. GatewayController opens a new thread in the channel of the questions
-   route. The first post is the Question, and it carries a marker that names
-   the Task.
+2. GatewayController opens a new thread in the first channel id of the
+   questions route. The wildcard is no channel id. A route without a
+   channel id cannot take Questions. The first post is the Question, and
+   it carries a marker that names the Task.
 3. The new thread gets a Conversation, which is tied to that Task by the
    marker.
 4. Replies in the thread reach the Task's inbox. The first allowlisted reply
@@ -233,7 +266,8 @@ Rules:
   ready for review included.
 - A log post opens no thread, creates no Conversation and ties nothing.
 - Fleet relays no reply written under a log post. The log channel is no
-  route's channel, so the receive verb ignores every event there.
+  route's channel, and a wildcard route never covers it. So the receive
+  verb ignores every event there.
 - Without `gateway.logs`, Fleet posts Drafts, results and change news
   nowhere. It marks them read, so a log channel named later does not
   replay them. The thread's ready notice does not depend on
@@ -364,7 +398,8 @@ Recommendation: **(c)**, for every platform.
 
 In scope:
 
-- accounts, people and routes in native config,
+- accounts, people and routes in native config, a wildcard route
+  included,
 - admission: the allowlist, the mention rule, and one polite refusal,
 - the Conversation mirror, with numbered messages and retention,
 - one Task per thread, created from a route,
@@ -406,7 +441,12 @@ Out of scope, deliberately:
 | How is the questions route chosen per Task? | By the label `gateway.fleet.dev/route`, else the `[gateway]` default. Plugins already mark Tasks with labels. |
 | How is an answer recognised? | The first allowlisted message written after the Question, by the platform's clock. The Gateway does not judge whether it really answers. A worker that needs more asks a new Question. |
 | Does a child's result also go to the log channel? | Yes. The log channel is the record of every Task, a Task that another Task started included. The parent's inbox entry is input for the parent's work, not a record, and the parent does not log it again. |
-| Why is the log channel no route's channel? | So a reply under a log post is never admitted, relayed or answered. The receive verb ignores a channel that no route covers. |
+| Why is the log channel no route's channel? | So a reply under a log post is never admitted, relayed or answered. The receive verb ignores a channel that no route covers. A wildcard route skips the log channel for the same reason. |
+| How does a route cover every channel? | With `channels = ["*"]`. The wildcard is an entry of the existing list, so a route keeps one key for what it covers, and an explicit list stays as it is. No platform's channel id is `*`. |
+| Which route wins when a channel id is listed and a wildcard exists? | The route that lists the id. A wildcard is the fallback for its account. An account has one wildcard route at most, so the fallback is never ambiguous. |
+| Where does a wildcard route open a thread for a Question? | In the first channel id it lists. A route with only `"*"` has none, so `gateway.questions` refuses it. A Task whose route label names such a route raises `NeedsAttention/RouteUnknown`. No separate setting is needed. |
+| Can a wildcard route use `mention = "top-level"`? | No. On every channel, it would make every top-level post of an allowlisted person a Task. |
+| Does a wildcard route change the listener digest or the Listener conditions? | No. The digest covers the account's own settings, not its routes. `Accepted` asks only whether some route uses the account, and a wildcard route does. |
 | Where does a mark live before the Task exists? | On the Conversation, under `status.reactions`. ConversationController owns admission, so it owns the queued mark and the first working mark. GatewayController owns every mark from the join on. |
 | Why are reactions best effort? | A reaction only shows progress. The relay and the post are what matter to the person, so a reaction never holds them back. A reaction is set, not counted, so a repeat is harmless and needs no marker. |
 | What if a platform cannot find Fleet's posts again? | Fleet never repeats a post whose outcome is unknown there. It raises `NeedsAttention/PostUnconfirmed`, and later posts to that thread wait for a person. |
@@ -430,3 +470,4 @@ and adds its crate edges, field managers and negative fixtures to
 | 8 | One directory per thread, and one end of life: a route's `dir` is a base directory; each thread's Tasks get `<dir>/<conversation name>`, which the manager creates through the runtime's `create_dir` and records; `WorkspaceBusy` only for a Task that holds the thread's own directory; an idle thread with a Concluded Task or none retires its Task, its recorded directory and its Conversation; `gateway.retainMs` defaults to seven days | `fleet-api/src/conversation.rs`, `fleet-api/src/runtime.rs`, `fleet-api/src/store.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-runtime`, `fleet-store` | `conversation_controller`, `store_contract`, `e2e_gateway` |
 | 9 | Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked working, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |
 | 10 | Reactions at admission: the trigger marked working when its Task is created, or queued while it waits for the thread's directory; a waiting request's later admitted messages marked queued; queued replaced by working when the Task is created; `[gateway] reactions` `queued`; the Conversation's `status.reactions` and its `React` effects; the join takes those marks without a second reaction | `fleet-api/src/conversation.rs`, `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager` | `conversation_controller`, `gateway_controller`, `e2e_gateway_reactions` |
+| 11 | The wildcard route: `"*"` in `channels`; an explicit channel id wins; the log channel stays uncovered; one wildcard route per account, with `mention = "required"`; a questions route needs a channel id | `fleet-api/src/gateway.rs`, `fleet-controllers/src/gateway.rs` | `fleet-api` unit tests, `gateway_controller`, `e2e_gateway_wildcard` |

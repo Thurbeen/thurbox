@@ -439,12 +439,15 @@ writes the receipt back under the key, a key with a Known receipt is never
 performed again, and a missing or Unknown receipt is answered by looking
 for the Task, or for the post's marker in the mirror, never by repeating
 the effect blindly. Guarantees, each with its test in
-`conversation_controller`, `e2e_gateway` and `store_contract`:
+`conversation_controller`, `e2e_gateway`, `e2e_gateway_wildcard` and
+`store_contract`:
 
 - **Receive.** `fleet gateway receive --account NAME` reads one envelope
   from stdin, refuses a `verified` that is not the account's `inbound`,
   reads the payload through the adapter's pure `event`, ignores an event in
-  a channel no route covers, creates the thread's Conversation under
+  a channel no route covers (a listed channel id wins over the account's
+  one wildcard route, `"*"`, which never covers the log channel), creates
+  the thread's Conversation under
   `conv-<12 hex of sha256(<account>/<address>)>` only for an event that
   could start a Task, earn a refusal, or is Fleet's own keyed post, and
   spools the delivery under its delivery id through `receive_event`, as

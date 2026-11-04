@@ -636,7 +636,9 @@ pub enum Mention {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouteConfig {
     pub account: String,
-    /// Platform channel ids. A channel belongs to at most one route.
+    /// Platform channel ids, and `"*"`, the wildcard: every other channel
+    /// of the account. A channel id belongs to at most one route, and an
+    /// account has at most one wildcard route.
     #[serde(default)]
     pub channels: Vec<String>,
     #[serde(default)]
@@ -661,9 +663,32 @@ pub struct RouteConfig {
     pub refusal: Option<String>,
 }
 
+/// The `channels` entry that covers every channel of the route's account
+/// that no other route lists and that is not the log channel.
+pub const ANY_CHANNEL: &str = "*";
+
 impl RouteConfig {
     pub fn refusal(&self) -> &str {
         self.refusal.as_deref().unwrap_or(DEFAULT_REFUSAL)
+    }
+
+    /// Whether `channels` holds the wildcard.
+    pub fn is_wildcard(&self) -> bool {
+        self.channels.iter().any(|c| c == ANY_CHANNEL)
+    }
+
+    /// The channel ids the route lists, the wildcard left out.
+    pub fn channel_ids(&self) -> impl Iterator<Item = &str> {
+        self.channels
+            .iter()
+            .map(String::as_str)
+            .filter(|c| *c != ANY_CHANNEL)
+    }
+
+    /// The first channel id the route lists: where a Question opens a
+    /// thread. `None` for a wildcard route that lists no id.
+    pub fn first_channel(&self) -> Option<&str> {
+        self.channel_ids().next()
     }
 }
 
@@ -691,7 +716,7 @@ pub struct GatewayConfig {
     /// The longest a listener goes between beats; stale after three.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beat_ms: Option<Millis>,
-    /// The route whose first channel takes a Question from an untied,
+    /// The route whose first channel id takes a Question from an untied,
     /// unlabelled Task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub questions: Option<String>,
@@ -941,12 +966,26 @@ impl GatewayConfig {
         self.routes.values().any(|r| r.account == account)
     }
 
-    /// The route a channel on an account belongs to, if any.
+    /// The route a channel on an account belongs to, if any: the route
+    /// that lists the channel id, else the account's wildcard route. The
+    /// wildcard never covers the log channel.
     pub fn route_of(&self, account: &str, channel: &str) -> Option<(&str, &RouteConfig)> {
-        self.routes
-            .iter()
-            .find(|(_, r)| r.account == account && r.channels.iter().any(|c| c == channel))
-            .map(|(n, r)| (n.as_str(), r))
+        let mut routes = self.routes.iter().filter(|(_, r)| r.account == account);
+        let listed = routes
+            .clone()
+            .find(|(_, r)| r.channel_ids().any(|c| c == channel));
+        let found = match listed {
+            Some(found) => Some(found),
+            None if self.is_log_channel(account, channel) => None,
+            None => routes.find(|(_, r)| r.is_wildcard()),
+        };
+        found.map(|(n, r)| (n.as_str(), r))
+    }
+
+    fn is_log_channel(&self, account: &str, channel: &str) -> bool {
+        self.logs
+            .as_ref()
+            .is_some_and(|l| l.account == account && l.channel == channel)
     }
 
     /// Every rule the config page states, each refused with the entry it
@@ -1003,6 +1042,7 @@ impl GatewayConfig {
             }
         }
         let mut channels: BTreeMap<(&str, &str), &str> = BTreeMap::new();
+        let mut wildcards: BTreeMap<&str, &str> = BTreeMap::new();
         let mut dirs: Vec<(&str, &Path)> = Vec::new();
         for (name, route) in &self.routes {
             let at = format!("gateway.routes.{name}");
@@ -1024,6 +1064,15 @@ impl GatewayConfig {
                 if !own.insert(channel.as_str()) {
                     return Err(format!("{at}: channel {channel:?} is listed twice"));
                 }
+                if channel == ANY_CHANNEL {
+                    if let Some(other) = wildcards.insert(route.account.as_str(), name.as_str()) {
+                        return Err(format!(
+                            "gateway.routes: routes {other} and {name} are both the wildcard route of account {:?}",
+                            route.account
+                        ));
+                    }
+                    continue;
+                }
                 if let Some(other) =
                     channels.insert((route.account.as_str(), channel.as_str()), name.as_str())
                 {
@@ -1031,6 +1080,13 @@ impl GatewayConfig {
                         "gateway.routes: channel {channel:?} belongs to routes {other} and {name}"
                     ));
                 }
+            }
+            // A top-level route makes every top-level post a request: right
+            // for one alert channel, never for every channel.
+            if route.is_wildcard() && route.mention == Mention::TopLevel {
+                return Err(format!(
+                    "{at}: a wildcard route needs mention = \"required\""
+                ));
             }
             if route.allow.is_empty() && route.allow_bots.is_empty() {
                 return Err(format!("{at}: the route admits nobody"));
@@ -1082,12 +1138,17 @@ impl GatewayConfig {
             }
             dirs.push((name.as_str(), dir));
         }
-        if let Some(q) = &self.questions
-            && !self.routes.contains_key(q)
-        {
-            return Err(format!(
-                "gateway.questions {q:?} is not under [gateway.routes]"
-            ));
+        if let Some(q) = &self.questions {
+            let Some(route) = self.routes.get(q) else {
+                return Err(format!(
+                    "gateway.questions {q:?} is not under [gateway.routes]"
+                ));
+            };
+            if route.first_channel().is_none() {
+                return Err(format!(
+                    "gateway.questions {q:?} lists no channel id to open a thread in"
+                ));
+            }
         }
         if let Some(ReactionsConfig::Names(names)) = &self.reactions {
             for (field, name) in [
@@ -1649,6 +1710,93 @@ mod tests {
             .to_string()
             .contains("unknown variant `carrier-pigeon`")
         );
+    }
+
+    #[test]
+    fn a_wildcard_route_covers_every_channel_no_route_lists_but_the_log_channel() {
+        let mut c = config();
+        let mut any = route("/work/anywhere");
+        any.channels = vec![ANY_CHANNEL.into()];
+        c.routes.insert("any".into(), any.clone());
+        c.logs = Some(LogsConfig {
+            account: "fake-main".into(),
+            channel: "C0456EFGH".into(),
+        });
+        assert_eq!(c.validate(), Ok(()));
+        let route_name = |chat: &str| c.route_of("fake-main", chat).map(|(n, _)| n);
+        // An explicit route wins its channel, whatever the names' order.
+        assert_eq!(route_name("C0123ABCD"), Some("eng"));
+        assert_eq!(route_name("C0999WILD"), Some("any"));
+        assert_eq!(route_name("D0123ABCD"), Some("any"));
+        assert_eq!(route_name("C0456EFGH"), None, "never the log channel");
+        assert_eq!(c.route_of("other", "C0999WILD"), None, "one account only");
+        let mut z = c.clone();
+        let eng = z.routes.remove("eng").unwrap();
+        z.routes.insert("zz".into(), eng);
+        z.questions = Some("zz".into());
+        assert_eq!(
+            z.route_of("fake-main", "C0123ABCD").map(|(n, _)| n),
+            Some("zz")
+        );
+        // The wildcard is no channel id: the log channel check and the
+        // explicit lists ignore it.
+        assert!(any.is_wildcard() && !c.routes["eng"].is_wildcard());
+        assert_eq!(any.first_channel(), None);
+        any.channels.push("C0789IJKL".into());
+        assert_eq!(any.first_channel(), Some("C0789IJKL"));
+        assert_eq!(any.channel_ids().collect::<Vec<_>>(), ["C0789IJKL"]);
+        // An explicit route still may not cover the log channel.
+        let mut bad = c.clone();
+        bad.routes
+            .get_mut("eng")
+            .unwrap()
+            .channels
+            .push("C0456EFGH".into());
+        assert!(
+            bad.validate()
+                .unwrap_err()
+                .contains("the log channel must be no route's channel")
+        );
+        // One wildcard route per account; another account may have its own.
+        let mut two = c.clone();
+        let mut second = route("/work/second");
+        second.channels = vec![ANY_CHANNEL.into()];
+        two.routes.insert("second".into(), second.clone());
+        assert!(two.validate().unwrap_err().contains(
+            "routes any and second are both the wildcard route of account \"fake-main\""
+        ));
+        let mut elsewhere = c.clone();
+        elsewhere.accounts.insert("other".into(), account());
+        elsewhere
+            .people
+            .get_mut("alex")
+            .unwrap()
+            .insert("other".into(), "U0123ABCD".into());
+        second.account = "other".into();
+        elsewhere.routes.insert("second".into(), second);
+        assert_eq!(elsewhere.validate(), Ok(()));
+        // Every channel's top-level posts are never all requests.
+        let mut top = c.clone();
+        top.routes.get_mut("any").unwrap().mention = Mention::TopLevel;
+        assert!(
+            top.validate()
+                .unwrap_err()
+                .contains("routes.any: a wildcard route needs mention = \"required\"")
+        );
+        // A questions route needs a channel id to open a thread in.
+        let mut q = c.clone();
+        q.questions = Some("any".into());
+        assert!(
+            q.validate()
+                .unwrap_err()
+                .contains("gateway.questions \"any\" lists no channel id")
+        );
+        q.routes
+            .get_mut("any")
+            .unwrap()
+            .channels
+            .push("C0789IJKL".into());
+        assert_eq!(q.validate(), Ok(()));
     }
 
     #[test]

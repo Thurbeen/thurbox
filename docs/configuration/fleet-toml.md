@@ -279,7 +279,7 @@ pollMs = 300000               # history backstop for tied threads
 activeMs = 86400000           # ... while the thread had a message this recently
 retainMs = 604800000          # seven days: an idle thread's retention, then it retires
 beatMs = 60000                # a listener beats at least this often; stale after three
-questions = "eng"             # the route whose channel takes Questions from untied Tasks
+questions = "eng"             # the route whose first channel id takes Questions from untied Tasks
 logs = { account = "slack-main", channel = "C0456EFGH" }   # every Task's Drafts, result and change news
 reactions = { queued = "hourglass_flowing_sand", working = "eyes", replied = "white_check_mark" }   # the defaults; `reactions = false` turns them off
 
@@ -325,6 +325,14 @@ allowBots = ["B0123ABCD"]     # the alerting app whose posts are requests
 taskConfig = "conversation"
 brief = "/etc/fleet/briefs/triage.md"
 workspace = { dir = "/work/triage" }   # a base: each alert's thread gets its own directory
+
+[gateway.routes.anywhere]
+account = "slack-main"
+channels = ["*"]              # the wildcard: every other channel the bot is in
+allow = ["alex", "sam"]       # mention = "required", the only mention a wildcard route takes
+taskConfig = "conversation"
+brief = "/etc/fleet/briefs/conversation.md"
+workspace = { dir = "/work/anywhere" }
 ```
 
 | Field | Required/default | Meaning |
@@ -334,12 +342,31 @@ workspace = { dir = "/work/triage" }   # a base: each alert's thread gets its ow
 | `gateway.activeMs` | `86400000` | How long after a Tied thread's last message its history backstop keeps polling. |
 | `gateway.retainMs` | `604800000` | How long a thread is kept with no message, counted from the later of its last message and its orphaning. Past it, a thread that is Untied, Orphaned or tied to a Concluded Task retires: Fleet deletes its Task, the thread directory that the manager created, and its Conversation. A thread with a running Task is kept. |
 | `gateway.beatMs` | `60000` | The longest a listener goes between beats. An account's `InboundReady` turns False when three are missed. |
-| `gateway.questions` | Absent | The route whose first channel takes a new thread for a Question declared by a Task with no tie and no parent. A Task's `gateway.fleet.dev/route` label overrides it. Absent and unlabelled: such a Question is not posted. |
-| `gateway.logs` | Absent | The log destination: `account`, a name under `[gateway.accounts]`, and `channel`, one channel id on it. Fleet posts every Task's Drafts, result and change news there, as top-level posts. Absent: Fleet posts them nowhere; a tied thread's ready notice is posted either way. Refused when the account is not configured, when the account's adapter cannot read the channel id, or when a route of that account covers the channel. |
+| `gateway.questions` | Absent | The route whose first channel id takes a new thread for a Question declared by a Task with no tie and no parent. A Task's `gateway.fleet.dev/route` label overrides it. Absent and unlabelled: such a Question is not posted. Refused when the route lists no channel id, as a wildcard route with only `"*"` does. |
+| `gateway.logs` | Absent | The log destination: `account`, a name under `[gateway.accounts]`, and `channel`, one channel id on it. Fleet posts every Task's Drafts, result and change news there, as top-level posts. Absent: Fleet posts them nowhere; a tied thread's ready notice is posted either way. Refused when the account is not configured, when the account's adapter cannot read the channel id, or when a route of that account lists the channel. A wildcard route never covers the log channel. |
 | `gateway.reactions` | On: `queued = "hourglass_flowing_sand"`, `working = "eyes"`, `replied = "white_check_mark"` | The reactions that mark a person's message: `queued` while admission holds the request for its Task, `working` once the Task exists or Fleet relayed the message to it, when `queued` is removed, and `replied` once Fleet posted in the thread, when `working` is removed. Each is a platform emoji name, which each adapter maps as its [adapter page](../controllers/gateway/adapters/README.md#capabilities) says. A name left out keeps its default. `false` turns reactions off, and `true` keeps the defaults. Refused when a name is empty or holds whitespace, when two name one emoji, or for another key. |
 | `gateway.accounts.<name>` | One per chat account | `platform` is `slack`, `discord`, or `fake` with a `dir`, in this build, and later `telegram` or `teams`; a platform the build lacks is refused when the manager runs; `team` the platform's workspace identity (Slack: the team or enterprise id, optional; Discord: the guild id, required); `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart (Discord: a snowflake, as is `team`); `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; Discord: `discord-gateway`, an authenticated connection; `fake`: `connection`), and an envelope claiming another is refused; `messageContent`, Discord only, default `false`, whether the application holds the privileged message content intent, which sets the `intents` that `fleet gateway account` prints; `cli`, default `curl`, and the platform's credential reference, here `curlConfig`, required for Slack and Discord, an absolute path Fleet passes to `curl -K` and never reads. The [Slack](../controllers/gateway/adapters/slack.md#configuration) and [Discord](../controllers/gateway/adapters/discord.md#configuration) adapter pages list each platform's keys and errors. |
 | `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
-| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids; `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir`, an absolute base directory, below which each thread's Tasks get `<dir>/<conversation name>`, created by the manager with the Task on the TaskConfig's host (the thurbox runtime creates it on the local host only), recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel belongs to at most one route. |
+| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids, or `"*"`, the wildcard (see below); `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir`, an absolute base directory, below which each thread's Tasks get `<dir>/<conversation name>`, created by the manager with the Task on the TaskConfig's host (the thurbox runtime creates it on the local host only), recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel id belongs to at most one route. |
+
+A wildcard route has `"*"` in `channels`. It covers every channel of its
+account that the account's listener delivers, with these exceptions:
+
+- A channel id that another route of the account lists belongs to that
+  route.
+- The `gateway.logs` channel belongs to no route.
+
+These rules apply to a wildcard route:
+
+- An account has at most one wildcard route.
+- A wildcard route needs `mention = "required"`. Reason: `top-level` makes
+  every top-level post a request, which suits one alert channel only.
+- `allow`, `allowBots` and `refusal` apply as on any route.
+- A wildcard route can also list channel ids. The first id is the channel
+  where the route opens a thread for a Question.
+
+The [adapter pages](../controllers/gateway/adapters/README.md) say which
+conversations each platform delivers.
 
 Credentials stay with the external client: Fleet passes the curl config's
 path and never constructs an Authorization header. The listener holds the
