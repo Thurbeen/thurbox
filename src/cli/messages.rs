@@ -10,11 +10,11 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::cli::identity::{caller, calling_session};
+use crate::cli::identity::{caller, sender};
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
 use crate::session::{SessionId, SessionMessage};
-use crate::session_ops::delivery::{self, DeliveredVia, Handed};
+use crate::session_ops::delivery::{self, DeliveredVia, Handed, Sender};
 use crate::storage::messages::{NewMessage, DEFAULT_RETENTION_DAYS};
 use crate::storage::Database;
 use crate::sync::{current_time_millis, SharedSession};
@@ -149,16 +149,16 @@ fn send_message(
     // Provenance + task tag default to the calling session's injected
     // identity (`THURBOX_SESSION` / `THURBOX_TASK`), so an agent never has
     // to know or pass its own ids. Explicit flags override.
-    let from_session_id = resolve_from(db, from.as_deref())?;
+    let from = resolve_from(db, from.as_deref())?;
     let from_task_id = task.or_else(calling_task_id);
     let new = NewMessage {
         to_session_id: recipient.id,
-        from_session_id,
+        from_session_id: from.session_id(),
         from_task_id,
         kind,
         body,
     };
-    enqueue_and_deliver(db, &recipient, new, no_wake)
+    enqueue_and_deliver(db, &recipient, new, from, no_wake)
 }
 
 /// Handle `message reply`: enqueue back to the original message's sender.
@@ -181,24 +181,24 @@ fn reply_message(
         .get_session_by_id(sender_id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .ok_or_else(|| format!("Sender of message #{message_id} ({sender_id}) no longer exists"))?;
-    let from_session_id = resolve_from(db, from.as_deref())?;
+    let from = resolve_from(db, from.as_deref())?;
     // Carry the originating task tag through so the reply stays threaded.
     let new = NewMessage {
         to_session_id: recipient.id,
-        from_session_id,
+        from_session_id: from.session_id(),
         from_task_id: original.from_task_id,
         kind,
         body,
     };
-    enqueue_and_deliver(db, &recipient, new, no_wake)
+    enqueue_and_deliver(db, &recipient, new, from, no_wake)
 }
 
-/// Resolve the `--from` provenance: an explicit reference, else the calling
-/// session's injected id (`THURBOX_SESSION`).
-fn resolve_from(db: &Database, from: Option<&str>) -> Result<Option<SessionId>, CommandError> {
+/// Resolve the `--from` provenance: an explicit reference, else the caller
+/// named by its injected `THURBOX_SESSION`.
+fn resolve_from(db: &Database, from: Option<&str>) -> Result<Sender, CommandError> {
     match from {
-        Some(f) => Ok(Some(resolve_uuid_or_name(db, f)?.id)),
-        None => Ok(calling_session_id(db)),
+        Some(f) => Ok(Sender::Session(resolve_uuid_or_name(db, f)?.id)),
+        None => Ok(sender(db)),
     }
 }
 
@@ -313,9 +313,10 @@ fn enqueue_and_deliver(
     db: &Database,
     recipient: &SharedSession,
     new: NewMessage,
+    from: Sender,
     no_wake: bool,
 ) -> Result<CommandOutput, CommandError> {
-    let handed = delivery::enqueue_and_deliver(db, recipient, new, no_wake)?;
+    let handed = delivery::enqueue_and_deliver(db, recipient, new, from, no_wake)?;
     let human = handed_human(recipient, &handed);
     Ok(CommandOutput::new(handed_json(recipient, &handed), human))
 }
@@ -356,11 +357,6 @@ fn handed_human(recipient: &SharedSession, handed: &Handed) -> String {
     } else {
         human
     }
-}
-
-/// The calling session's id from `THURBOX_SESSION` (used for provenance).
-fn calling_session_id(db: &Database) -> Option<SessionId> {
-    calling_session(db).map(|s| s.id)
 }
 
 /// The calling session's originating task id from the injected `THURBOX_TASK`.
