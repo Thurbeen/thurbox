@@ -70,7 +70,9 @@ pub fn home_dir() -> Option<PathBuf> {
 /// same-filesystem operation: readers see either the previous complete file or
 /// the new complete file. A failed staged write leaves the destination alone.
 /// A replaced file keeps its permissions — a `chmod 600` config stays private
-/// and an executable stays executable — which a bare rename would reset.
+/// and an executable stays executable — which a bare rename would reset. A
+/// read-only one is refused, as `fs::write` refused it: the rename needs only
+/// the directory to be writable, and would otherwise undo the user's lock.
 /// This does not promise durability across storage or operating-system failure;
 /// neither the file nor its parent directory is synced explicitly.
 pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
@@ -81,12 +83,19 @@ pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::
         std::process::id(),
         SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
+    let kept = match std::fs::metadata(&path) {
+        Ok(existing) if existing.permissions().readonly() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{} is read-only", path.display()),
+            ));
+        }
+        Ok(existing) => Some(existing.permissions()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
     std::fs::write(&staged, contents)
-        .and_then(|()| match std::fs::metadata(&path) {
-            Ok(existing) => std::fs::set_permissions(&staged, existing.permissions()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        })
+        .and_then(|()| kept.map_or(Ok(()), |mode| std::fs::set_permissions(&staged, mode)))
         .and_then(|()| replace_file(&staged, &path))
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&staged);

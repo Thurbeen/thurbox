@@ -819,3 +819,22 @@ fn a_replaced_file_keeps_its_permissions() {
         assert_eq!(kept, mode);
     }
 }
+
+/// A file the user made read-only is a refusal: `fs::write` honoured it, and a
+/// rename, which needs only the directory to be writable, must not undo it.
+#[cfg(unix)]
+#[test]
+fn a_read_only_file_is_not_replaced() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agents.toml");
+    std::fs::write(&path, "mine").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    let err = write_atomically(&path, "theirs").unwrap_err();
+
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine");
+    let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+    assert_eq!(left.len(), 1, "a staged file was left behind");
+}

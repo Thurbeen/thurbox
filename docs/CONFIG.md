@@ -75,10 +75,11 @@ destination and replaces it with one native same-directory rename, so a reader
 never observes a truncated intermediate file and a failed staged write (a
 crash, a full disk) leaves the previous file intact. On Unix this is `rename`;
 native Windows uses `MoveFileExW` with replacement. An existing symlink is
-preserved and its target is replaced, and a replaced file keeps its
-permissions. This protects the process-interruption boundary, not storage
-failure: the staged file and parent directory are not explicitly synced to
-stable storage. `tests/architecture_rules.rs`
+preserved and its target is replaced, a replaced file keeps its
+permissions, and a file made read-only is refused rather than replaced. This
+protects the process-interruption boundary, not storage failure: the staged
+file and parent directory are not explicitly synced to stable storage.
+`tests/architecture_rules.rs`
 (`files_thurbox_reads_back_are_written_atomically`) fails on any other
 production write, apart from an allow-list of logs, a cache and the control
 socket's privately staged files.
