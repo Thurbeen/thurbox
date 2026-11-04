@@ -286,7 +286,7 @@ impl App {
                 let outcome = thurbox::clipboard::copy(
                     &text,
                     self.clipboard.as_mut(),
-                    thurbox::session::settings::global().clipboard.provider,
+                    self.config.in_force().clipboard.provider,
                 );
                 self.toast(match outcome {
                     Ok(route) => {

@@ -247,9 +247,7 @@ impl App {
         // exception: it clears the selection like any key, finds none, and
         // falls through as the interrupt (Herdr's rule).
         let is_copy = kernel_action.as_deref() == Some(clipboard::COPY_ACTION)
-            && !thurbox::session::settings::global()
-                .clipboard
-                .copy_on_select;
+            && !self.config.in_force().clipboard.copy_on_select;
         if !is_copy && self.selection.take().is_some() {
             self.dirty = true;
         }

@@ -306,8 +306,9 @@ some of them (mouse capture, the notifier thread, the scrollback a parser was
 built with) were consumed at startup and cannot be un-consumed — so the core
 half is a **draft**: `Ctrl+S` writes it, `Esc` discards it, and `⟳` marks the
 rows that will not take effect until the next launch. `kernel::config` owns that
-split; `Settings::restart_only_differs` is the shared definition of it, asserted
-against in both places so the two cannot drift.
+split; `session::settings::FIELDS` is its one definition, a row per field saying
+`Live` or `NextLaunch`, and both `Config::adopt` and
+`Settings::restart_only_differs` are derived from it so the two cannot drift.
 
 That split has a second edge, and missing it cost the panel its edits: what the
 modal shows and drafts from is `Config::on_disk`, **not** `Config::in_force`. A
