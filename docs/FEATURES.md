@@ -3068,6 +3068,13 @@ What the agent receives is one provenance line, then the body verbatim:
 <body>
 ```
 
+`from:` is the sending session's name. A send from no thurbox session (a
+script, or a control plane driving thurbox from outside) reads `from: a process
+outside thurbox, not a session`. Claude Code puts its own heading and caveat
+above every message its inbox socket receives, calling the sender "another
+Claude session"; thurbox writes only the user turn below it, so this line is
+where a non-session sender can be told apart from a peer agent.
+
 There is deliberately no "run `message inbox`" instruction: the body *is*
 the delivery. A native send runs under a **delivery lease**: the sender stamps
 `delivering_at` on the still-unread row (`lease_message_delivery`), and

@@ -501,14 +501,27 @@ fn claude_envelope(text: &str) -> String {
 ///
 /// Deliberately no instruction to run `message inbox`: the body *is* the
 /// delivery, and the row is marked read so a drain does not repeat it.
-pub(crate) fn delivery_text(message: &SessionMessage, sender: Option<&str>) -> String {
+pub(crate) fn delivery_text(message: &SessionMessage, sender: &str) -> String {
     format!(
-        "[thurbox message #{} · kind: {} · from: {}]\n\n{}",
-        message.id,
-        message.kind,
-        sender.unwrap_or("unknown sender"),
-        message.body
+        "[thurbox message #{} · kind: {} · from: {sender}]\n\n{}",
+        message.id, message.kind, message.body
     )
+}
+
+/// Who sent a message, as the recipient's agent reads it.
+///
+/// A send with no sending session says so outright: Claude Code frames every
+/// socket message as coming from another Claude session, so a vaguer
+/// "unknown sender" reads as an unidentified peer agent rather than a script
+/// or a control plane running outside thurbox.
+fn sender_label(db: &Database, from: Option<crate::session::SessionId>) -> String {
+    let Some(from) = from else {
+        return "a process outside thurbox, not a session".into();
+    };
+    db.get_session_by_id(from)
+        .ok()
+        .flatten()
+        .map_or_else(|| "a session that no longer exists".into(), |s| s.name)
 }
 
 /// How a delivery went, for the command output.
@@ -655,11 +668,7 @@ pub(crate) fn enqueue_and_deliver(
         .get_message(id)
         .map_err(|e| format!("get_message: {e}"))?
         .ok_or_else(|| format!("message #{id} vanished after enqueue"))?;
-    let sender = new
-        .from_session_id
-        .and_then(|from| db.get_session_by_id(from).ok().flatten())
-        .map(|s| s.name);
-    let text = delivery_text(&message, sender.as_deref());
+    let text = delivery_text(&message, &sender_label(db, new.from_session_id));
     let evidence = gather(db, recipient);
     let outcome = deliver(db, &message, &text, &evidence, &Native);
     Ok(Handed { id, outcome })
@@ -987,7 +996,7 @@ mod tests {
     fn delivery_text_is_provenance_then_the_body_verbatim() {
         let db = Database::open_in_memory().unwrap();
         let msg = enqueued(&db);
-        let text = delivery_text(&msg, Some("coder-x"));
+        let text = delivery_text(&msg, "coder-x");
         let (head, body) = text.split_once("\n\n").unwrap();
         assert_eq!(
             head,

@@ -597,3 +597,31 @@ fn a_claude_signalled_before_its_registry_entry_is_still_reachable() {
     assert!(delivered, "{sent}");
     assert!(reader.join().expect("reader").contains("your brief"));
 }
+
+/// A send from no thurbox session (a script, a control plane such as a task
+/// manager) says so in its provenance line. Claude Code frames every socket
+/// message as coming from another Claude session, so "unknown sender" there
+/// reads as an unidentified peer agent rather than a process outside thurbox.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_send_from_outside_any_session_names_no_peer() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = isolate(home.path());
+    let row = claude_row("77777777-7777-4777-8777-777777777777");
+    db.upsert_session(&row).expect("insert row");
+    let (mut agent, reader) =
+        stand_in_claude(home.path(), &home.path().join("claude/sessions"), &row);
+
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let sent = send(&row, "notice", &path, &home.path().join("unused.log"));
+    let _ = agent.kill();
+    let _ = agent.wait();
+
+    assert_eq!(sent["delivered_via"], "claude-socket", "{sent}");
+    let line = reader.join().expect("reader");
+    assert!(!line.contains("unknown sender"), "{line}");
+    assert!(
+        line.contains("from: a process outside thurbox, not a session"),
+        "{line}"
+    );
+}
