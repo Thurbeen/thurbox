@@ -358,11 +358,18 @@ fn env_value<'a>(fields: impl Iterator<Item = &'a [u8]>, name: &str) -> Option<S
 /// Claude Code gives its hooks. Called by `session signal`, which every thurbox
 /// Claude hook runs, so a restarted session is recorded on its `SessionStart`.
 ///
-/// Recorded only once [`owned_sockets`] proves the socket belongs to
+/// The registry directory is recorded unproven: it is only where [`gather`]
+/// looks, and `gather` proves every socket it finds there. It has to be, as
+/// `SessionStart` fires before Claude Code writes its registry entry, so on a
+/// fresh session nothing is provable yet and no other hook runs until a first
+/// message arrives — which, for a recipient under another `CLAUDE_CONFIG_DIR`,
+/// it never would.
+///
+/// The socket is recorded only once [`owned_sockets`] proves it belongs to
 /// `session`: the variable is inherited by panes that are not that Claude's
 /// (a nested `claude -p`, or every pane of a tmux server started from inside
-/// another Claude session). [`gather`] proves it again before use, since the
-/// process may have gone and its pid been reused.
+/// another Claude session). It only orders the proven sockets, so missing it
+/// costs nothing but that order.
 pub(crate) fn remember_claude_socket(db: &Database, session: &SharedSession) {
     let Some(socket) = std::env::var(CLAUDE_SOCKET_ENV)
         .ok()
@@ -376,9 +383,15 @@ pub(crate) fn remember_claude_socket(db: &Database, session: &SharedSession) {
     };
     let dir_str = dir.to_string_lossy().into_owned();
     let recorded = |key| db.get_session_meta(session.id, key).ok().flatten();
-    if recorded(CLAUDE_SOCKET_META).as_deref() == Some(socket.as_str())
-        && recorded(CLAUDE_REGISTRY_META).as_deref() == Some(dir_str.as_str())
-    {
+    let record = |key, value: &str| {
+        if let Err(e) = db.set_session_meta(session.id, key, value) {
+            tracing::warn!("could not record {key}: {e}");
+        }
+    };
+    if recorded(CLAUDE_REGISTRY_META).as_deref() != Some(dir_str.as_str()) {
+        record(CLAUDE_REGISTRY_META, &dir_str);
+    }
+    if recorded(CLAUDE_SOCKET_META).as_deref() == Some(socket.as_str()) {
         return;
     }
     if !owned_sockets(&dir, &session.id.to_string(), &session.backend_id)
@@ -390,14 +403,7 @@ pub(crate) fn remember_claude_socket(db: &Database, session: &SharedSession) {
         );
         return;
     }
-    for (key, value) in [
-        (CLAUDE_SOCKET_META, &socket),
-        (CLAUDE_REGISTRY_META, &dir_str),
-    ] {
-        if let Err(e) = db.set_session_meta(session.id, key, value) {
-            tracing::warn!("could not record {key}: {e}");
-        }
-    }
+    record(CLAUDE_SOCKET_META, &socket);
 }
 
 /// The side effects of delivery, separated so tests can observe them.

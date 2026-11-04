@@ -3006,7 +3006,11 @@ only an ordering hint for the next send, which proves it again (the process
 may have exited and its pid been reused). It also records the registry the
 hook itself sees (`thurbox.claude_registry_dir`): a sender running with a
 different `CLAUDE_CONFIG_DIR` searches that one too, since the recipient's
-Claude never registers in the sender's.
+Claude never registers in the sender's. That directory is recorded without the
+proof: it is only where a send looks, and the send proves every socket it finds
+there. It must be, because `SessionStart` fires before Claude Code writes its
+registry entry, so a fresh session has nothing provable yet, and no other hook
+runs until a first message arrives.
 
 A **Codex** session is reached through `thurbox.codex_conversation_id`, bound
 by the Codex `SessionStart` hook (`session bind-codex`). A later `SessionStart`

@@ -446,6 +446,7 @@ fn codex_hook_waits_for_the_restarted_pane_to_be_published() {
 #[cfg(target_os = "linux")]
 fn stand_in_claude(
     home: &Path,
+    registry: &Path,
     row: &SharedSession,
 ) -> (std::process::Child, std::thread::JoinHandle<String>) {
     use std::io::BufRead;
@@ -464,8 +465,7 @@ fn stand_in_claude(
         .env("THURBOX_SESSION", row.id.to_string())
         .spawn()
         .expect("spawn stand-in agent");
-    let registry = home.join("claude").join("sessions");
-    std::fs::create_dir_all(&registry).expect("mkdir registry");
+    std::fs::create_dir_all(registry).expect("mkdir registry");
     std::fs::write(
         registry.join(format!("{}.json", agent.id())),
         serde_json::json!({
@@ -499,7 +499,8 @@ fn a_claude_socket_send_says_it_may_be_held() {
     let db = isolate(home.path());
     let row = claude_row("33333333-3333-4333-8333-333333333333");
     db.upsert_session(&row).expect("insert row");
-    let (mut agent, reader) = stand_in_claude(home.path(), &row);
+    let (mut agent, reader) =
+        stand_in_claude(home.path(), &home.path().join("claude/sessions"), &row);
 
     let path = std::env::var_os("PATH").unwrap_or_default();
     let sent = send(
@@ -527,7 +528,8 @@ fn a_claude_socket_send_says_so_in_text() {
     let db = isolate(home.path());
     let row = claude_row("44444444-4444-4444-8444-444444444444");
     db.upsert_session(&row).expect("insert row");
-    let (mut agent, reader) = stand_in_claude(home.path(), &row);
+    let (mut agent, reader) =
+        stand_in_claude(home.path(), &home.path().join("claude/sessions"), &row);
 
     let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
         .args(["message", "send", "--to", &row.name, "--kind", "note"])
@@ -549,4 +551,49 @@ fn a_claude_socket_send_says_so_in_text() {
     assert!(text.contains("crossSessionInbound"), "{text}");
     // Joined last: it returns only once the socket was written to.
     let _ = reader.join();
+}
+
+/// A Claude whose launcher sets its own `CLAUDE_CONFIG_DIR`, reached by a
+/// sender that has none. Its `SessionStart` hook runs before Claude Code writes
+/// its registry entry, and no other hook runs until a first message arrives, so
+/// what that one signal records is all a sender ever learns of where to look.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_claude_signalled_before_its_registry_entry_is_still_reachable() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = isolate(home.path());
+    let row = claude_row("66666666-6666-4666-8666-666666666666");
+    db.upsert_session(&row).expect("insert row");
+    let theirs = home.path().join("their-claude");
+
+    let signal = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["session", "signal", "--state", "idle"])
+        .env("THURBOX_SESSION", row.id.to_string())
+        .env("CLAUDE_CONFIG_DIR", &theirs)
+        .env(
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            home.path().join("inbox.sock"),
+        )
+        .stdin(Stdio::null())
+        .output()
+        .expect("run session signal");
+    assert!(
+        signal.status.success(),
+        "session signal failed: {}",
+        String::from_utf8_lossy(&signal.stderr)
+    );
+    let (mut agent, reader) = stand_in_claude(home.path(), &theirs.join("sessions"), &row);
+
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let sent = send(&row, "your brief", &path, &home.path().join("unused.log"));
+    let delivered = sent["delivered_via"] == "claude-socket";
+    if !delivered {
+        // Unblock the reader, which otherwise waits for a connection forever.
+        let _ = std::os::unix::net::UnixStream::connect(home.path().join("inbox.sock"));
+    }
+    let _ = agent.kill();
+    let _ = agent.wait();
+
+    assert!(delivered, "{sent}");
+    assert!(reader.join().expect("reader").contains("your brief"));
 }
