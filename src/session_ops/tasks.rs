@@ -60,31 +60,42 @@ pub struct TaskEdit {
 }
 
 /// Apply `changes` to task `id` in one write, returning the row as stored.
+///
+/// The row is read and written under one write lock, so a field this edit
+/// does not name keeps whatever another caller saved meanwhile.
 pub fn edit(db: &Database, id: i64, changes: TaskEdit) -> Result<Task, OpError> {
-    let mut task = get(db, id)?;
-    if let Some(title) = changes.title {
-        if title.trim().is_empty() {
-            return Err(blank_title());
-        }
-        task.title = title;
+    if changes
+        .title
+        .as_deref()
+        .is_some_and(|t| t.trim().is_empty())
+    {
+        return Err(blank_title());
     }
-    if let Some(description) = changes.description {
-        task.description = blank_to_none(Some(description));
-    }
-    if let Some(status) = changes.status {
-        task.status = status;
-    }
-    if let Some(source) = blank_to_none(changes.source) {
-        task.source = source;
-    }
-    if let Some(external_id) = changes.external_id {
-        task.external_id = blank_to_none(Some(external_id));
-    }
-    if let Some(external_url) = changes.external_url {
-        task.external_url = blank_to_none(Some(external_url));
-    }
-    db.update_task(&task)
+    let found = db
+        .modify_task(id, |task| {
+            if let Some(title) = changes.title {
+                task.title = title;
+            }
+            if let Some(description) = changes.description {
+                task.description = blank_to_none(Some(description));
+            }
+            if let Some(status) = changes.status {
+                task.status = status;
+            }
+            if let Some(source) = blank_to_none(changes.source) {
+                task.source = source;
+            }
+            if let Some(external_id) = changes.external_id {
+                task.external_id = blank_to_none(Some(external_id));
+            }
+            if let Some(external_url) = changes.external_url {
+                task.external_url = blank_to_none(Some(external_url));
+            }
+        })
         .map_err(|e| OpError::Other(format!("update task: {e}")))?;
+    if !found {
+        return Err(not_found(id));
+    }
     get(db, id)
 }
 
@@ -257,4 +268,63 @@ fn running_task_session(
         ));
     }
     Ok(running.pop())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An edit reads the row it rewrites under the write lock, so a peer's
+    /// change committed while the edit waited for that lock survives it. A
+    /// read taken before the lock would hold the old title and write it back.
+    #[test]
+    fn an_edit_keeps_what_a_peer_committed_while_it_waited() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("thurbox.db");
+        let db = Database::open(&path).unwrap();
+        let id = create(&db, NewTask::local("before")).unwrap().id;
+
+        let peer = rusqlite::Connection::open(&path).unwrap();
+        peer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let (started, call_started) = mpsc::channel();
+        let (done, call_done) = mpsc::channel();
+        let edit_path = path.clone();
+        let editor = std::thread::spawn(move || {
+            let db = Database::open_existing(&edit_path).unwrap();
+            started.send(()).unwrap();
+            let changes = TaskEdit {
+                status: Some(TaskStatus::Done),
+                ..Default::default()
+            };
+            let outcome = edit(&db, id, changes);
+            let _ = done.send(());
+            outcome
+        });
+
+        call_started.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < deadline {
+            assert!(
+                call_done.try_recv().is_err(),
+                "the edit returned while the peer held the lock, so it never blocked"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        peer.execute(
+            "UPDATE tasks SET title = 'renamed by the peer' WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+        peer.execute_batch("COMMIT").unwrap();
+
+        let edited = editor.join().unwrap().expect("the edit");
+        assert_eq!(
+            (edited.title.as_str(), edited.status),
+            ("renamed by the peer", TaskStatus::Done)
+        );
+    }
 }

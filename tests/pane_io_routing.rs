@@ -1037,24 +1037,53 @@ fn a_task_is_created_edited_and_deleted_the_same_through_the_kernel_and_the_cli(
             }
         };
 
+        let create_bad_status = run(
+            KernelCommand::Task {
+                id: None,
+                title: Some(format!("never made via {via}")),
+                status: Some("finished".into()),
+                delete: false,
+            },
+            &[
+                "task",
+                "create",
+                "--title",
+                &format!("never made via {via}"),
+                "--status",
+                "finished",
+            ],
+        );
+
         let title = format!("made via {via}");
         run(
             KernelCommand::Task {
                 id: None,
                 title: Some(title.clone()),
-                status: None,
+                status: Some("in_progress".into()),
                 delete: false,
             },
-            &["task", "create", "--title", &title],
+            &[
+                "task",
+                "create",
+                "--title",
+                &title,
+                "--status",
+                "in_progress",
+            ],
         )
         .unwrap_or_else(|e| panic!("create via {via}: {e}"));
-        let id = db
+        let created = db
             .list_tasks()
             .expect("list")
             .into_iter()
             .find(|t| t.title == title)
-            .unwrap_or_else(|| panic!("via {via}: the created task"))
-            .id;
+            .unwrap_or_else(|| panic!("via {via}: the created task"));
+        assert_eq!(
+            created.status,
+            thurbox::session::TaskStatus::InProgress,
+            "via {via}: the status it was created with"
+        );
+        let id = created.id;
 
         let renamed = format!("renamed via {via}");
         run(
@@ -1130,7 +1159,12 @@ fn a_task_is_created_edited_and_deleted_the_same_through_the_kernel_and_the_cli(
         .unwrap_or_else(|e| panic!("delete via {via}: {e}"));
         assert_eq!(db.get_task(id).expect("read"), None, "via {via}");
 
-        outcomes.push((via, bad_status, edit_missing, delete_missing));
+        outcomes.push((
+            via,
+            (create_bad_status, bad_status),
+            edit_missing,
+            delete_missing,
+        ));
     }
 
     let [(_, kernel_bad, kernel_edit, kernel_delete), (_, cli_bad, cli_edit, cli_delete)] =
@@ -1140,8 +1174,19 @@ fn a_task_is_created_edited_and_deleted_the_same_through_the_kernel_and_the_cli(
     assert_eq!(cli_delete, not_found, "cli delete of a missing task");
     assert_eq!(kernel_edit, not_found, "kernel edit of a missing task");
     assert_eq!(cli_edit, not_found, "cli edit of a missing task");
-    assert!(kernel_bad.is_err(), "kernel accepted an unknown status");
+    assert!(
+        kernel_bad.0.is_err(),
+        "kernel created with an unknown status"
+    );
+    assert!(kernel_bad.1.is_err(), "kernel edited to an unknown status");
     assert_eq!(kernel_bad, cli_bad, "one answer for an unknown status");
+    assert!(
+        db.list_tasks()
+            .expect("list")
+            .iter()
+            .all(|t| !t.title.starts_with("never made")),
+        "a create with an unknown status stored a task"
+    );
 }
 
 /// The interface's `send` and `thurbox-cli session send` are one verb (#1468):

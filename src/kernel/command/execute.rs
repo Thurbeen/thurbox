@@ -552,9 +552,15 @@ fn task(
 ) -> Result<(), String> {
     use crate::session_ops::tasks;
 
+    let status: Option<crate::session::TaskStatus> =
+        status.as_deref().map(str::parse).transpose()?;
     let Some(id) = id else {
         let title = title.clone().ok_or("a new task needs a title")?;
-        return tasks::create(db, crate::storage::tasks::NewTask::local(title))
+        let new = crate::storage::tasks::NewTask {
+            status: status.unwrap_or_default(),
+            ..crate::storage::tasks::NewTask::local(title)
+        };
+        return tasks::create(db, new)
             .map(|_| ())
             .map_err(|e| e.to_string());
     };
@@ -563,7 +569,7 @@ fn task(
     }
     let changes = tasks::TaskEdit {
         title: title.clone(),
-        status: status.as_deref().map(str::parse).transpose()?,
+        status,
         ..Default::default()
     };
     tasks::edit(db, id, changes)
