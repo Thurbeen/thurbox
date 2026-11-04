@@ -1156,6 +1156,9 @@ once the agent was shown the prompt: one left only in the mailbox fails the disp
 `session_ops::tasks::dispatch` is the one implementation (#1468): `task run` and the
 interface's `dispatch` command both call it, so they name, reuse and refuse alike; the
 command additionally takes a session to send to instead of the task's action.
+Creating, editing and deleting go the same way (#1637): `session_ops::tasks::{create,
+edit, delete}` return `OpError`, `TaskStatus: FromStr` is the one status parser, and a
+missing task is `tasks::not_found` ("Task not found: <id>") from either caller.
 
 - **Data** (`session/task.rs`): `Task` (`id`, `title`, `description:
   Option<String>`, `status: TaskStatus` {`Todo`/`InProgress`/`Done`}, `action:

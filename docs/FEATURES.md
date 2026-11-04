@@ -1969,7 +1969,12 @@ relinks). The interface's `dispatch` command runs the same verb,
 `session_ops::tasks::dispatch`, so both reuse the running tagged session
 rather than spawning a second one. A plain todo is skipped by `run` and
 refused by `dispatch`: the command used to spawn `task-<id>` in the most
-recently used repository, a guess the CLI never made.
+recently used repository, a guess the CLI never made. Creating, editing and
+deleting a task are one set of verbs too, `session_ops::tasks::{create, edit,
+delete}`, called by the interface's `task` command and `thurbox-cli task`: an
+edit reads and writes the row under one write lock, so it keeps a field another
+caller saved meanwhile, and deleting a task that is not there is
+"Task not found" from both, where the command used to report success.
 
 ---
 
