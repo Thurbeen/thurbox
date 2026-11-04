@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use crate::cli::identity::{caller, sender};
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
-use crate::session::{SessionId, SessionMessage};
+use crate::session::SessionMessage;
 use crate::session_ops::delivery::{self, DeliveredVia, Handed, Sender};
 use crate::storage::messages::{NewMessage, DEFAULT_RETENTION_DAYS};
 use crate::storage::Database;
@@ -390,6 +390,7 @@ fn message_to_json(m: &SessionMessage) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionId;
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()

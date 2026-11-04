@@ -1966,7 +1966,14 @@ fn a_prompt_thurbox_hands_to_a_claude_inbox_names_thurbox_as_its_sender() {
     let pane = reg
         .probe
         .open("tb-claude-inbox", &id.to_string(), WindowRole::Agent);
-    seed_row(&db, id, "claude-inbox", "local:rmux", &pane, &instance.repo());
+    seed_row(
+        &db,
+        id,
+        "claude-inbox",
+        "local:rmux",
+        &pane,
+        &instance.repo(),
+    );
     SessionBackend::send_text(&*reg.probe, &pane, "half a dra", false).expect("draft");
 
     // What a running Claude Code leaves behind for the row: a process carrying
@@ -2013,5 +2020,8 @@ fn a_prompt_thurbox_hands_to_a_claude_inbox_names_thurbox_as_its_sender() {
     sent.expect("handed to the Claude inbox");
     let line = reader.join().expect("reader");
     assert!(!line.contains("outside thurbox"), "{line}");
-    assert!(line.contains("from: thurbox itself, not a session"), "{line}");
+    assert!(
+        line.contains("from: thurbox itself, not a session"),
+        "{line}"
+    );
 }
