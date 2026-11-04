@@ -715,9 +715,11 @@ pub struct GatewayConfig {
 pub const DEFAULT_WORKING: &str = "eyes";
 /// The default "replied" reaction: Slack's name for ✅.
 pub const DEFAULT_REPLIED: &str = "white_check_mark";
+/// The default "queued" reaction: Slack's and Discord's name for ⏳.
+pub const DEFAULT_QUEUED: &str = "hourglass_flowing_sand";
 
 /// `[gateway] reactions`: `false` (or `true`), or
-/// `{ working = "<name>", replied = "<name>" }`.
+/// `{ queued = "<name>", working = "<name>", replied = "<name>" }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ReactionsConfig {
@@ -725,7 +727,7 @@ pub enum ReactionsConfig {
     Names(ReactionNames),
 }
 
-/// The names of the two reactions, each the platform's emoji name.
+/// The names of the three reactions, each the platform's emoji name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReactionNames {
@@ -733,15 +735,20 @@ pub struct ReactionNames {
     pub working: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replied: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued: Option<String>,
 }
 
-/// The two reactions as the controllers read them.
+/// The three reactions as the controllers read them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reactions {
     /// Added while a Task works on a message.
     pub working: String,
     /// Added once Fleet replied in the thread; `working` is removed then.
     pub replied: String,
+    /// Added when admission accepts a message that must wait for its Task;
+    /// replaced by `working` once the Task exists.
+    pub queued: String,
 }
 
 impl Default for Reactions {
@@ -749,6 +756,7 @@ impl Default for Reactions {
         Reactions {
             working: DEFAULT_WORKING.into(),
             replied: DEFAULT_REPLIED.into(),
+            queued: DEFAULT_QUEUED.into(),
         }
     }
 }
@@ -764,6 +772,7 @@ impl ReactionsConfig {
                 Some(Reactions {
                     working: n.working.clone().unwrap_or(base.working),
                     replied: n.replied.clone().unwrap_or(base.replied),
+                    queued: n.queued.clone().unwrap_or(base.queued),
                 })
             }
         }
@@ -1081,7 +1090,11 @@ impl GatewayConfig {
             ));
         }
         if let Some(ReactionsConfig::Names(names)) = &self.reactions {
-            for (field, name) in [("working", &names.working), ("replied", &names.replied)] {
+            for (field, name) in [
+                ("working", &names.working),
+                ("replied", &names.replied),
+                ("queued", &names.queued),
+            ] {
                 if let Some(name) = name
                     && (name.trim_matches(':').is_empty() || name.chars().any(char::is_whitespace))
                 {
@@ -1090,10 +1103,18 @@ impl GatewayConfig {
                     ));
                 }
             }
-            if let Some(r) = ReactionsConfig::Names(names.clone()).reactions()
-                && r.working.trim_matches(':') == r.replied.trim_matches(':')
-            {
-                return Err("gateway.reactions: working and replied name the same emoji".into());
+            if let Some(r) = ReactionsConfig::Names(names.clone()).reactions() {
+                for (a, b, x, y) in [
+                    ("working", "replied", &r.working, &r.replied),
+                    ("working", "queued", &r.working, &r.queued),
+                    ("replied", "queued", &r.replied, &r.queued),
+                ] {
+                    if x.trim_matches(':') == y.trim_matches(':') {
+                        return Err(format!(
+                            "gateway.reactions: {a} and {b} name the same emoji"
+                        ));
+                    }
+                }
             }
         }
         if let Some(logs) = &self.logs {
@@ -1263,7 +1284,8 @@ mod tests {
             Reactions::default(),
             Reactions {
                 working: "eyes".into(),
-                replied: "white_check_mark".into()
+                replied: "white_check_mark".into(),
+                queued: "hourglass_flowing_sand".into(),
             }
         );
         assert_eq!(parse(json!(false)).defaults().reactions, None);
@@ -1271,12 +1293,13 @@ mod tests {
             parse(json!(true)).defaults().reactions,
             Some(Reactions::default())
         );
-        let named = parse(json!({"working": "hourglass_flowing_sand"}));
+        let named = parse(json!({"working": "gear", "queued": "pause_button"}));
         assert_eq!(
             named.defaults().reactions,
             Some(Reactions {
-                working: "hourglass_flowing_sand".into(),
-                replied: "white_check_mark".into()
+                working: "gear".into(),
+                replied: "white_check_mark".into(),
+                queued: "pause_button".into(),
             })
         );
         assert_eq!(named.validate(), Ok(()));
@@ -1289,6 +1312,15 @@ mod tests {
             (
                 json!({"working": "eyes", "replied": "eyes"}),
                 "the same emoji",
+            ),
+            (json!({"queued": " "}), "gateway.reactions.queued"),
+            (
+                json!({"working": "hourglass_flowing_sand"}),
+                "working and queued name the same emoji",
+            ),
+            (
+                json!({"queued": ":white_check_mark:"}),
+                "replied and queued name the same emoji",
             ),
         ] {
             let err = parse(bad.clone()).validate().unwrap_err();

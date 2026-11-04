@@ -2524,6 +2524,82 @@ mod reactions {
     }
 
     #[test]
+    fn the_join_adds_no_working_reaction_admission_saw_land_and_adds_any_other() {
+        let t = task(tied(), TaskStatus::default());
+        let alex = (T0 + 300_000).to_string();
+        let conv_key = format!("conversation/conv-uid/react/{alex}/working/on");
+        let landed = Some(Observation::Known(EffectOutcome::Reacted {
+            already: false,
+        }));
+        let failed = Some(Observation::Known(EffectOutcome::Failed {
+            why: "rate limited".into(),
+        }));
+        // (the Conversation's mark, its working record's outcome, whether
+        // the join reacts itself)
+        for (admitted, outcome, reacts_itself) in [
+            (Some(Mark::Working), landed.clone(), false),
+            (Some(Mark::Working), failed, true),
+            (
+                Some(Mark::Working),
+                Some(Observation::unknown("timed out")),
+                true,
+            ),
+            (Some(Mark::Working), None, true),
+            (Some(Mark::Queued), landed, true),
+        ] {
+            let mut c = conv(1, thread());
+            if let Some(m) = admitted {
+                c.status["reactions"] = json!({"marks": {alex.clone(): m}});
+            }
+            if let Some(o) = outcome {
+                c.status["effects"] =
+                    json!({conv_key.clone(): record("react", NOW - 1_000, Some(o), 1)});
+            }
+            let (plan, gw) = run(&t, with_caps(c, caps(true)));
+            let what = format!("{admitted:?}, reacts itself: {reacts_itself}");
+            assert_eq!(plan.appends.len(), 1, "the join goes out: {what}");
+            let want = if reacts_itself {
+                vec![(react(&alex, "working", true), "eyes".into(), true)]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(reacts(&plan), want, "{what}");
+            assert_eq!(
+                gw.reactions.marks,
+                BTreeMap::from([(alex.clone(), Mark::Working)]),
+                "{what}"
+            );
+            // A thread post then replies to it, as to any working mark.
+            let mut replied = gw.clone();
+            for r in replied.posts.values_mut() {
+                r.receipt = Some(Receipt {
+                    action: "react".into(),
+                    at: NOW,
+                    outcome: Observation::Known(EffectOutcome::Reacted { already: false }),
+                });
+            }
+            replied
+                .posts
+                .insert(key("comment/c1"), record("post", NOW, posted(NOW), 1));
+            let t2 = task(Some(replied), TaskStatus::default());
+            let (plan, gw) = run(&t2, with_caps(conv(1, thread()), caps(true)));
+            assert_eq!(
+                reacts(&plan),
+                vec![
+                    (
+                        react(&alex, "replied", true),
+                        "white_check_mark".into(),
+                        true
+                    ),
+                    (react(&alex, "working", false), "eyes".into(), false),
+                ],
+                "{what}"
+            );
+            assert_eq!(gw.reactions.marks[&alex], Mark::Replied);
+        }
+    }
+
+    #[test]
     fn without_reactions_unknown_capabilities_or_reactions_off_the_relay_goes_out_unmarked() {
         let t = task(tied(), TaskStatus::default());
         for (obs, defaults) in [

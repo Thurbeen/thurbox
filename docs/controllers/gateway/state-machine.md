@@ -154,31 +154,54 @@ tie and no route to log.
 
 ## Reactions
 
-Each message of a tied thread has one mark, which GatewayController keeps
-under `status.gateway.reactions`. Reactions are on unless
-`gateway.reactions` is `false`, and only where the account's capabilities
-say `reactions`.
+Each message of a thread has one mark. Two controllers keep the marks:
+
+- ConversationController keeps the marks that admission makes, before the
+  Task has the message, under the Conversation's `status.reactions`.
+- GatewayController keeps the marks from the join on, under the Task's
+  `status.gateway.reactions`.
+
+Reactions are on unless `gateway.reactions` is `false`, and only where the
+account's capabilities say `reactions`.
 
 | Mark | Meaning |
 | --- | --- |
 | none | Fleet added no reaction. |
-| working | Fleet relayed the message to the Task, and added the working reaction. |
+| queued | Admission accepted the message, and the message waits for its Task. Fleet added the queued reaction. |
+| working | The Task has the message, or admission just created the Task for it. Fleet added the working reaction, and removed the queued reaction. |
 | replied | Fleet posted in the thread since. It added the replied reaction and removed the working reaction. |
 
 | From | Event | To |
 | --- | --- | --- |
+| none | Admission starts a Task for the message, and the create answers `Created` | working |
+| none | Admission starts a Task for the message, and the create answers `WorkspaceBusy` | queued |
+| none | The thread's create waits for its directory, and the message is `Admitted` and later than the trigger | queued |
+| queued | The create answers `Created`, and the capabilities are known on that pass | working |
+| queued | The create answered `Created` on an earlier pass, whose capabilities were Unknown | none, and Fleet removes the queued reaction. The join marks the message working. |
+| queued | The wait is withdrawn: the trigger left the mirror | none, and Fleet removes the queued reaction |
 | none | A relay or the join delivers the message, and it is `Admitted` | working |
 | working | A Question, a Comment or a ready notice lands in the thread for the Task | replied |
+| queued | The message leaves the mirror, removed or rotated out | none, and Fleet removes the queued reaction |
 | working or replied | The message leaves the mirror, removed or rotated out | none, and Fleet changes no reaction |
-| working or replied | `gateway.reactions` turns `false` | none, and Fleet changes no reaction |
+| queued, working or replied | `gateway.reactions` turns `false` | none, and Fleet changes no reaction |
 | working or replied | The tie ends: the Conversation is readably gone, or names another Task | none, and Fleet changes no reaction |
 
 Rules:
 
+- Fleet adds the working reaction to a message once. The join marks a
+  message that admission marked working, and adds no reaction where
+  admission's working reaction landed. Otherwise the join adds it.
+- Admission tries its working reaction once. Reason: a retry could land
+  after the Task replied, and the working reaction would then stay.
+- A message marked queued keeps the queued reaction when a thread post
+  lands. Reason: nothing worked on it yet.
 - A message that is edited and relayed again keeps its mark.
 - A thread post counts as a reply only to the messages marked working
   before it landed.
 - A log post, a refusal and a busy notice are no reply.
+- A reaction of ConversationController is a keyed effect on the
+  Conversation, under `conversation/<uid>/react/`. It is best effort, as a
+  reaction of GatewayController is.
 - The capabilities of the account are read before the relay. When they are
   Unknown, or say no `reactions`, the relay goes on and marks nothing.
 - A mark changes when Fleet plans its reactions, not when they land. A

@@ -175,11 +175,34 @@ pub struct GatewayStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mark {
+    /// Admitted, and waiting for its Task: the "queued" reaction. Only a
+    /// Conversation marks a message queued.
+    Queued,
     /// Relayed to the Task, which is working on it: the "working" reaction.
     Working,
     /// Fleet posted in the thread since: the "replied" reaction, and no
     /// "working".
     Replied,
+}
+
+impl Mark {
+    /// The mark's word in a reaction key and in a status.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mark::Queued => "queued",
+            Mark::Working => "working",
+            Mark::Replied => "replied",
+        }
+    }
+
+    fn parse(word: &str) -> Option<Mark> {
+        match word {
+            "queued" => Some(Mark::Queued),
+            "working" => Some(Mark::Working),
+            "replied" => Some(Mark::Replied),
+            _ => None,
+        }
+    }
 }
 
 /// `status.gateway.reactions`: GatewayController's.
@@ -203,33 +226,35 @@ impl ReactionStatus {
     }
 }
 
-/// The key of a reaction effect on a message:
-/// `task/<name>/<uid>/gateway/react/<message id>/<working|replied>/<on|off>`.
-pub fn react_key(name: &str, uid: &str, message: &str, mark: Mark, on: bool) -> String {
-    let mark = match mark {
-        Mark::Working => "working",
-        Mark::Replied => "replied",
-    };
+/// The tail of a reaction key: `react/<message id>/<mark>/<on|off>`.
+pub fn react_suffix(message: &str, mark: Mark, on: bool) -> String {
     let on = if on { "on" } else { "off" };
-    post_key(name, uid, &format!("react/{message}/{mark}/{on}"))
+    format!("react/{message}/{}/{on}", mark.as_str())
 }
 
-/// What a reaction key names: the message id, the mark and whether it adds.
-pub fn react_of(name: &str, uid: &str, key: &str) -> Option<(String, Mark, bool)> {
-    let rest = key.strip_prefix(&post_key(name, uid, "react/"))?;
+/// What the part of a reaction key after `react/` names: the message id,
+/// the mark and whether it adds.
+pub fn react_parse(rest: &str) -> Option<(String, Mark, bool)> {
     let mut parts = rest.rsplitn(3, '/');
     let on = match parts.next()? {
         "on" => true,
         "off" => false,
         _ => return None,
     };
-    let mark = match parts.next()? {
-        "working" => Mark::Working,
-        "replied" => Mark::Replied,
-        _ => return None,
-    };
+    let mark = Mark::parse(parts.next()?)?;
     let message = parts.next().filter(|m| !m.is_empty())?;
     Some((message.to_string(), mark, on))
+}
+
+/// The key of a reaction effect on a message:
+/// `task/<name>/<uid>/gateway/react/<message id>/<working|replied>/<on|off>`.
+pub fn react_key(name: &str, uid: &str, message: &str, mark: Mark, on: bool) -> String {
+    post_key(name, uid, &react_suffix(message, mark, on))
+}
+
+/// What a reaction key names: the message id, the mark and whether it adds.
+pub fn react_of(name: &str, uid: &str, key: &str) -> Option<(String, Mark, bool)> {
+    react_parse(key.strip_prefix(&post_key(name, uid, "react/"))?)
 }
 
 impl GatewayStatus {

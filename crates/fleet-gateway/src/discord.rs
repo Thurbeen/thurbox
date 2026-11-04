@@ -1152,6 +1152,10 @@ mod tests {
     fn a_reaction_name_maps_to_the_emoji_discord_takes() {
         assert_eq!(emoji("eyes").as_deref(), Some("\u{1F440}"));
         assert_eq!(emoji(":white_check_mark:").as_deref(), Some("\u{2705}"));
+        assert_eq!(
+            emoji(fleet_api::gateway::DEFAULT_QUEUED).as_deref(),
+            Some("\u{23F3}")
+        );
         assert_eq!(emoji("\u{1F680}").as_deref(), Some("\u{1F680}"));
         assert_eq!(
             emoji("fleet:1250000000000000000").as_deref(),

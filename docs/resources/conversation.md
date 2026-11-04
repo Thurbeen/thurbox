@@ -92,10 +92,11 @@ changes nothing else.
 | `received` | Deliveries spooled by the receive verb or a `Receive` action and not yet numbered, each `{id, verified, receivedAt, event}` under its [delivery id](../controllers/gateway/interface.md#deliveries), never under a message id; at most 100. |
 | `seenEvents` | The newest 500 delivery ids numbered, so a redelivery after its spool entry was drained is still a no-op, while an edit or removal of a numbered message, a new delivery, is not. |
 | `refusals` | Every author id refused, at most 200; past that no further refusal is sent. The refusal post's intent and receipt live under `effects`. |
-| `effects` | Intents and receipts of this controller's effects, the Task creation, the refusals and busy notices, and the retirement's steps, each with its `attempts` and its `recovery` reads: every unsettled, newest 100 settled. |
+| `effects` | Intents and receipts of this controller's effects, the Task creation, the refusals and busy notices, the reactions, and the retirement's steps, each with its `attempts` and its `recovery` reads: every unsettled, newest 100 settled. |
 | `observedAt` | When `history` last answered Known. |
 | `dir` | `{path, host}`: the thread's directory, recorded when the manager made it for the thread's Task, in the same write as the create's receipt. Absent when the directory was there before, or on a route without a `dir` workspace. Only a recorded directory is ever removed. |
 | `retiring` | `{at, revision}`: the thread's retirement, from when it started and the `revision` it started from. Its effects are keyed `conversation/<uid>/retire/<at>/task` and `…/dir`. A message numbered since, which moves `revision`, ends it. |
+| `reactions` | `{marks}`: per message id, `queued` while an admitted request waits for its Task, or `working` once admission created the Task for it, as the [state machine](../controllers/gateway/state-machine.md#reactions) defines. Only messages the mirror holds. A `working` mark lasts while the tie lasts; GatewayController takes it at the join. The reactions are keyed `conversation/<uid>/react/<message id>/<queued\|working>/<on\|off>` under `effects`. Absent while no message is marked. |
 | `lastMessageAt` | The newest message's time; retention counts from it. |
 | `notBefore` | Earliest next pass. |
 | `conditions` | `Reachable`, `Tied`, `NeedsAttention`, as the [state machine](../controllers/gateway/state-machine.md#conditions) defines them. Whether the account's listener is delivering is its [Listener's](listener.md). |

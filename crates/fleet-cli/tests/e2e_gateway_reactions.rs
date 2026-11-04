@@ -272,13 +272,10 @@ fn reactions_can_be_renamed_in_the_config() {
     let (env, task) = tied("reactions-renamed", |env| {
         gateway_line(
             env,
-            "reactions = { working = \"hourglass_flowing_sand\", replied = \"thumbsup\" }",
+            "reactions = { working = \"gear\", replied = \"thumbsup\" }",
         )
     });
-    assert_eq!(
-        reacted(&env, MENTION),
-        vec!["hourglass_flowing_sand".to_string()]
-    );
+    assert_eq!(reacted(&env, MENTION), vec!["gear".to_string()]);
     declare(
         &env,
         &task,
@@ -299,6 +296,14 @@ fn a_reaction_name_that_is_not_one_emoji_name_is_refused() {
             "reactions = { working = \"white_check_mark\" }",
             "gateway.reactions: working and replied name the same emoji",
         ),
+        (
+            "reactions = { queued = \"eyes\" }",
+            "gateway.reactions: working and queued name the same emoji",
+        ),
+        (
+            "reactions = { queued = \"\" }",
+            "gateway.reactions.queued: \"\" is not one emoji name",
+        ),
         ("reactions = { done = \"x\" }", "reactions"),
     ] {
         let env = Env::gateway("reactions-refused");
@@ -307,4 +312,223 @@ fn a_reaction_name_that_is_not_one_emoji_name_is_refused() {
         assert_ne!(run.code, Some(0), "{line}");
         assert!(run.stderr.contains(want), "{line}: {}", run.stderr);
     }
+}
+
+const QUEUED: &str = "hourglass_flowing_sand";
+
+/// The adds of `reaction` Fleet made on `message`, in order.
+fn adds(env: &Env, message: &str, reaction: &str) -> usize {
+    env.fake_gateway()
+        .reactions()
+        .unwrap()
+        .iter()
+        .filter(|r| r.message == message && r.reaction == reaction && r.on)
+        .count()
+}
+
+fn conv() -> String {
+    conversation_name(GATEWAY_ACCOUNT, THREAD)
+}
+
+/// The Conversation's reaction effect records, by key.
+fn conv_reactions(env: &Env) -> Vec<String> {
+    env.conversation_status(&conv())["effects"]
+        .as_object()
+        .map(|o| {
+            o.keys()
+                .filter(|k| k.contains("/react/"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Move the Conversation's reaction records ten minutes into the past, as
+/// time would, so a retry is due.
+fn age_reactions(env: &Env) {
+    let path = env.object_path("Conversation", &conv());
+    let mut obj: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    if let Some(effects) = obj["status"]["effects"].as_object_mut() {
+        for (key, record) in effects.iter_mut() {
+            if !key.contains("/react/") {
+                continue;
+            }
+            for part in ["intent", "receipt"] {
+                if let Some(t) = record[part]["at"].as_u64() {
+                    record[part]["at"] = json!(t - 600_000);
+                }
+            }
+        }
+    }
+    std::fs::write(&path, obj.to_string()).unwrap();
+}
+
+/// A gateway environment with one thread seeded and nothing received yet.
+fn admitting(name: &str) -> Env {
+    let mut env = Env::gateway(name);
+    env.set_var("USER", "tester");
+    env.fake_gateway()
+        .seed(
+            &thread(),
+            vec![person(SAM_ID, T0, "The nightly export failed again.")],
+        )
+        .unwrap();
+    env.apply(support::object(
+        "TaskConfig",
+        "conversation",
+        json!({"harness": "claude-code", "host": "local"}),
+    ))
+    .ok();
+    env
+}
+
+fn mention(env: &Env, delivery: &str, id: &str, at: u64) {
+    env.receive(
+        delivery,
+        message_event(
+            THREAD,
+            id,
+            ALEX_ID,
+            at,
+            &format!("<@{BOT}> can you look into it?"),
+        ),
+    )
+    .ok();
+}
+
+#[test]
+fn an_admitted_mention_is_marked_working_at_admission_and_not_again_at_the_join() {
+    let env = admitting("working-at-admission");
+    mention(&env, "Ev01", MENTION, T0 + 300_000);
+    reconcile_clean(&env);
+    let task = format!("{}-1", conv());
+    // Admission reacted, under the Conversation's own key: the mark exists
+    // before the Task's first pass needs to run.
+    let st = env.conversation_status(&conv());
+    assert_eq!(st["reactions"]["marks"][MENTION], "working", "{st:#}");
+    let keys = conv_reactions(&env);
+    assert!(
+        keys.iter()
+            .any(|k| k.ends_with(&format!("/react/{MENTION}/working/on"))),
+        "the working reaction is the Conversation's effect: {keys:?}"
+    );
+    assert_eq!(reacted(&env, MENTION), vec![WORKING.to_string()]);
+    // The join relayed the mention and marked it working, without a second
+    // reaction; the earlier message, which started nothing, is the join's.
+    assert_eq!(
+        gateway(&env, &task)["conversation"]["state"],
+        "tied",
+        "{:#}",
+        gateway(&env, &task)
+    );
+    assert_eq!(
+        gateway(&env, &task)["reactions"]["marks"][MENTION],
+        "working"
+    );
+    assert_eq!(adds(&env, MENTION, WORKING), 1, "added once");
+    assert_eq!(reacted(&env, &T0.to_string()), vec![WORKING.to_string()]);
+    assert_eq!(adds(&env, &T0.to_string(), WORKING), 1);
+    // A thread post replies to both, as before.
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c1", "text": "Looking at it."}),
+    );
+    reconcile_clean(&env);
+    reconcile_clean(&env);
+    assert_eq!(reacted(&env, MENTION), vec![REPLIED.to_string()]);
+    assert_eq!(reacted(&env, &T0.to_string()), vec![REPLIED.to_string()]);
+    assert_eq!(adds(&env, MENTION, WORKING), 1, "never added twice");
+}
+
+#[test]
+fn a_queued_request_is_marked_queued_then_working_once_its_task_starts() {
+    let env = admitting("queued-then-working");
+    // Another Task holds the thread's own directory: the request queues.
+    let mut holder = support::task("holder", false);
+    holder["spec"]["workspace"]["dir"] = json!(format!("{}/{}", env.gateway_workspace(), conv()));
+    env.apply(holder).ok();
+    mention(&env, "Ev01", MENTION, T0 + 300_000);
+    reconcile_clean(&env);
+    let task = format!("{}-1", conv());
+    env.get_absent(&task);
+    let st = env.conversation_status(&conv());
+    assert_eq!(st["task"]["state"], "busy", "{st:#}");
+    assert_eq!(st["reactions"]["marks"][MENTION], "queued", "{st:#}");
+    assert_eq!(reacted(&env, MENTION), vec![QUEUED.to_string()]);
+    // A later admitted message waits with it, and is marked queued too; a
+    // stranger's is not.
+    env.receive(
+        "Ev02",
+        message_event(THREAD, "x2", ALEX_ID, T0 + 400_000, "Also the weekly one."),
+    )
+    .ok();
+    env.receive(
+        "Ev03",
+        message_event(THREAD, "x3", "U0STRANGER", T0 + 410_000, "me too"),
+    )
+    .ok();
+    reconcile_clean(&env);
+    assert_eq!(reacted(&env, "x2"), vec![QUEUED.to_string()]);
+    assert_eq!(reacted(&env, "x3"), Vec::<String>::new());
+    // The busy notice is no reply: the marks stay queued.
+    assert_eq!(reacted(&env, MENTION), vec![QUEUED.to_string()]);
+    // The directory frees: the Task starts, and every queued message is
+    // marked working instead, once.
+    env.fleet(&["delete", "task", "holder"]).ok();
+    env.reconcile().ok();
+    env.expire_wait_of("Conversation", &conv());
+    reconcile_clean(&env);
+    reconcile_clean(&env);
+    assert_eq!(
+        gateway(&env, &task)["conversation"]["state"],
+        "tied",
+        "{:#}",
+        gateway(&env, &task)
+    );
+    for id in [MENTION, "x2"] {
+        assert_eq!(reacted(&env, id), vec![WORKING.to_string()], "{id}");
+        assert_eq!(adds(&env, id, WORKING), 1, "{id}: added once");
+        assert_eq!(adds(&env, id, QUEUED), 1, "{id}: queued once");
+    }
+    let st = env.conversation_status(&conv());
+    assert_eq!(st["reactions"]["marks"][MENTION], "working", "{st:#}");
+    assert_eq!(reacted(&env, "x3"), Vec::<String>::new());
+    // A thread post replies to them.
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c1", "text": "Looking at it."}),
+    );
+    reconcile_clean(&env);
+    reconcile_clean(&env);
+    for id in [MENTION, "x2"] {
+        assert_eq!(reacted(&env, id), vec![REPLIED.to_string()], "{id}");
+    }
+}
+
+#[test]
+fn the_queued_reaction_can_be_renamed_and_a_failing_one_holds_nothing_back() {
+    let env = admitting("queued-renamed");
+    gateway_line(&env, "reactions = { queued = \"pause_button\" }");
+    env.fake_gateway()
+        .add_fault(GatewayFault::new("react", "failed").times(1))
+        .unwrap();
+    let mut holder = support::task("holder", false);
+    holder["spec"]["workspace"]["dir"] = json!(format!("{}/{}", env.gateway_workspace(), conv()));
+    env.apply(holder).ok();
+    mention(&env, "Ev01", MENTION, T0 + 300_000);
+    reconcile_clean(&env);
+    let st = env.conversation_status(&conv());
+    assert_eq!(st["task"]["state"], "busy", "{st:#}");
+    // The first attempt was refused: the busy notice went out all the
+    // same, and no condition names the reaction.
+    assert_eq!(env.fake_gateway().posts().unwrap().len(), 1);
+    let attention = support::condition(&st, "NeedsAttention");
+    assert_eq!(attention["reason"], "WorkspaceBusy", "{st:#}");
+    // Tried again after the delay.
+    age_reactions(&env);
+    env.expire_wait_of("Conversation", &conv());
+    reconcile_clean(&env);
+    assert_eq!(reacted(&env, MENTION), vec!["pause_button".to_string()]);
 }

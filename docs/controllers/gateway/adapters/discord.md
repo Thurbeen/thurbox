@@ -46,7 +46,7 @@ On the Discord side, the operator does these steps:
 | `SEND_MESSAGES_IN_THREADS` | `1 << 38` | Post in threads. |
 | `CREATE_PUBLIC_THREADS` | `1 << 35` | Start a thread from a message. |
 | `READ_MESSAGE_HISTORY` | `1 << 16` | Read history. Without it, "no messages will be returned". Adding a reaction also needs it. |
-| `ADD_REACTIONS` | `1 << 6` | Add the working and replied reactions. Discord asks for it only when nobody has reacted with that emoji yet ([create reaction](https://docs.discord.com/developers/resources/message#create-reaction)). |
+| `ADD_REACTIONS` | `1 << 6` | Add the queued, working and replied reactions. Discord asks for it only when nobody has reacted with that emoji yet ([create reaction](https://docs.discord.com/developers/resources/message#create-reaction)). |
 
 Fleet never passes the token to the listener. The listener never reads Fleet's
 curl config. No token appears in `fleet.toml`, in an envelope, in a heartbeat,
@@ -207,7 +207,7 @@ no Authorization header itself.
 | `post` | `POST /channels/{T}/messages` ([create message](https://docs.discord.com/developers/resources/message#create-message-json/form-params)). On error 10003 Unknown Channel, the thread is not started yet. The adapter starts it with `POST /channels/{C}/messages/{T}/threads`, then sends again. Error 160004 (a thread already exists) counts as started. |
 | `open` | Posts the first chunk in `C`, then starts a thread from that post. The other chunks go into the thread. The answer is `Opened { conversation: discord:C:M }`. |
 | `post` to a channel address | `POST /channels/{C}/messages` for every chunk. It starts no thread. |
-| `react` | `PUT /channels/{X}/messages/{M}/reactions/{emoji}/@me` to add, `DELETE` of the same path to remove ([create reaction](https://docs.discord.com/developers/resources/message#create-reaction), [delete own reaction](https://docs.discord.com/developers/resources/message#delete-own-reaction)). `X` is the thread `T`, or the parent channel `C` for the thread's starter message `M = T`. `emoji` is URL-encoded, as Discord requires. The adapter maps a name such as `eyes` or `white_check_mark` to its Unicode emoji, takes a Unicode emoji as it is, and takes a custom emoji as `name:id`. Another name is a Known failure, and no call is made. Both endpoints answer 204 with no body. |
+| `react` | `PUT /channels/{X}/messages/{M}/reactions/{emoji}/@me` to add, `DELETE` of the same path to remove ([create reaction](https://docs.discord.com/developers/resources/message#create-reaction), [delete own reaction](https://docs.discord.com/developers/resources/message#delete-own-reaction)). `X` is the thread `T`, or the parent channel `C` for the thread's starter message `M = T`. `emoji` is URL-encoded, as Discord requires. The adapter maps a name such as `eyes`, `white_check_mark` or `hourglass_flowing_sand` to its Unicode emoji, takes a Unicode emoji as it is, and takes a custom emoji as `name:id`. Another name is a Known failure, and no call is made. Both endpoints answer 204 with no body. |
 | `link` | `https://discord.com/channels/{guild}/{T}`, with the account's `team` as the guild: the link Discord copies for a channel or thread. |
 | Identity | User snowflakes. A `username` is "not unique across the platform" ([user object](https://docs.discord.com/developers/resources/user#user-object-user-structure)). |
 
@@ -309,7 +309,7 @@ These points are **unverified**:
 | --- | --- | --- |
 | The listener closes with 4014 | The listener asked for `MESSAGE_CONTENT`, and the application lacks it in the portal. | Set `messageContent = false`, or enable the Message Content intent in the portal. |
 | The listener closes with 4004 | The listener's token is wrong. | Fix the token in the listener's secret store. |
-| A message gets no 👀 or ✅, and the manager's report names `HTTP 403 50013` | The bot lacks `ADD_REACTIONS` or `READ_MESSAGE_HISTORY` in the channel. | Grant both. Relays and posts go on meanwhile. |
+| A message gets no ⏳, 👀 or ✅, and the manager's report names `HTTP 403 50013` | The bot lacks `ADD_REACTIONS` or `READ_MESSAGE_HISTORY` in the channel. | Grant both. Relays and posts go on meanwhile. |
 | A message gets no reaction, and the manager's report names `HTTP 400 10014 Unknown Emoji` | A custom emoji in `gateway.reactions` is not in the guild. | Name a Unicode emoji, or a custom emoji of the guild as `name:id`. |
 | `NeedsAttention/MentionsOnly` | `messageContent` is `false`, or the application lacks the intent. | Mention the bot on each turn. Or enable the intent in the portal and set `messageContent = true`. |
 | `fleet gateway receive` exits 4: `… the envelope has no parentId …` or `… the envelope's parentId is null` | The listener sent no `parentId`, or does not know the thread's parent. | Send `parentId` on every envelope, and fix the listener's thread map. Discord replays the event after a resume. |

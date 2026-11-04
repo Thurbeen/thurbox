@@ -774,6 +774,13 @@ impl Manager<'_> {
                     conversation: thread,
                     text,
                 } => gateway.port.post(account, thread, text, &effect.key),
+                Action::React {
+                    account,
+                    conversation: thread,
+                    message,
+                    reaction,
+                    on,
+                } => gateway.port.react(account, thread, message, reaction, *on),
                 Action::DeleteTask { name: task, uid } => {
                     self.retire_task(task, uid, &obj.metadata.uid, lease)
                 }

@@ -19,8 +19,8 @@ On the Slack side, the operator does these steps:
 2. Give the bot user the history scopes `channels:history` and
    `groups:history`[^slack-message], and `message_metadata:read`. History
    reads need the last scope to return Fleet's marker[^slack-metadata].
-   Add `reactions:write`, so Fleet can mark a person's message working and
-   replied[^slack-react-add][^slack-react-remove]. Without it, every
+   Add `reactions:write`, so Fleet can mark a person's message queued,
+   working and replied[^slack-react-add][^slack-react-remove]. Without it, every
    reaction fails, and relays and posts go on.
 3. Subscribe the app to the `message.channels` and `message.groups`
    events[^slack-message].
@@ -181,7 +181,7 @@ These points are **unverified**:
 | `Resolved` is Unknown: `auth.test: invalid_auth` or a similar error | The curl config holds no valid bot token. | Fix the token in the curl config. |
 | `InboundReady` is True, but no message arrives | The bot is not in the channel, or the app has no message subscriptions. | Invite the bot. Subscribe to `message.channels` and `message.groups`. |
 | A post fails with `chat.postMessage: not_in_channel` | The bot is not a member of the channel. | Invite the bot to the channel. |
-| A message gets no 👀 or ✅, and the manager's report names `reactions.add: missing_scope` | The app lacks `reactions:write`. | Add the scope, and reinstall the app. |
+| A message gets no ⏳, 👀 or ✅, and the manager's report names `reactions.add: missing_scope` | The app lacks `reactions:write`. | Add the scope, and reinstall the app. |
 | `NeedsAttention/PostUnconfirmed` | A post stayed Unknown, and no recovery read found its key. | Check the thread, then act as the [Conversation](../../../resources/conversation.md) describes. |
 
 [^slack-limits2025]: <https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps>

@@ -3,14 +3,16 @@
 //! history and the Task the thread is tied to, it numbers what is new,
 //! keeps the tie honest, admits each message by the route's rules, starts
 //! one Task for an admitted message that meets the mention rule, refuses a
-//! stranger once, and retires the object after its retention.
+//! stranger once, marks an admitted request queued or working with a
+//! best-effort reaction, and retires the object after its retention.
 //!
 //! Pure: it reads the Conversation and what the probes saw, and returns a
 //! Plan whose `status` is the whole Conversation status with the spool
 //! drained of what was numbered and the intent of every effect it asks
 //! for, whose `creates` is the Task a thread starts in the thread's own
 //! directory under the `exclusive: {workspace}` precondition, whose
-//! `effects` are the refusal and busy-notice posts, and whose `delete`
+//! `effects` are the refusal and busy-notice posts and the reactions, and
+//! whose `delete`
 //! retires the object. The manager performs the plan through
 //! `record_received`, the fenced create, the Gateway port and the fenced
 //! delete, and writes each receipt back under its key. A key that has a receipt is never performed again; a
@@ -23,8 +25,8 @@ use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_tra
 use fleet_api::conversation::{
     self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus,
     EFFECTS_CAP, EffectRecord, MESSAGE_CAP, Phase, REFUSALS_CAP, ROUTE_LABEL, Retiring,
-    SEEN_EVENTS_CAP, StoredMessage, Tie, TieState, Via, busy_key, busy_notice, refusal_key,
-    retire_dir_key, retire_task_key, task_key, task_name, thread_dir,
+    SEEN_EVENTS_CAP, StoredMessage, Tie, TieState, Via, busy_key, busy_notice, react_key, react_of,
+    refusal_key, retire_dir_key, retire_task_key, task_key, task_name, thread_dir,
 };
 use fleet_api::gateway::{
     Admission, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
@@ -37,6 +39,7 @@ use fleet_api::plan::{
     task_of_key,
 };
 use fleet_api::store::FieldManager;
+use fleet_api::talk::Mark;
 use fleet_api::task;
 use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
@@ -166,8 +169,17 @@ impl ConversationController {
         let Some(reference) = reference else {
             return Ok(probes);
         };
+        if obs.capabilities.is_none() && reactions_due(&st, input) {
+            // Whether the platform has reactions decides the marks.
+            probes.push(Probe::Capabilities {
+                account: spec.account.clone(),
+            });
+        }
         let query = history_due(&spec, &st, input).or_else(|| recovery_due(&st, obs));
-        if query.is_none() && obs.capabilities.is_none() && has_refused_post(&st) {
+        let asked = probes
+            .iter()
+            .any(|p| matches!(p, Probe::Capabilities { .. }));
+        if !asked && query.is_none() && obs.capabilities.is_none() && has_refused_post(&st) {
             // Whether a retry must stay inside a nonce window.
             probes.push(Probe::Capabilities {
                 account: spec.account.clone(),
@@ -175,6 +187,7 @@ impl ConversationController {
         }
         if let Some(query) = query {
             match &obs.capabilities {
+                None if asked => {}
                 None => probes.push(Probe::Capabilities {
                     account: spec.account.clone(),
                 }),
@@ -210,6 +223,8 @@ impl ConversationController {
             delete: false,
             creates: Vec::new(),
             effects: Vec::new(),
+            tied_now: false,
+            started: None,
         };
         pass.advance();
         settle_transitions(&mut pass.st.conditions, &before.conditions);
@@ -230,6 +245,27 @@ impl ConversationController {
             ..Plan::default()
         })
     }
+}
+
+/// Whether this pass may mark a message or retry a reaction, so it needs
+/// the account's capabilities: a create is pending or waits for the
+/// thread's directory, a message is marked queued, or a reaction record is
+/// left.
+fn reactions_due(st: &ConversationStatus, input: &ConversationInput<'_>) -> bool {
+    if input.defaults.reactions.is_none() {
+        return false;
+    }
+    let waiting = st
+        .task
+        .as_ref()
+        .is_some_and(|t| matches!(t.state, TieState::Pending | TieState::Busy));
+    waiting
+        || st.reactions.marks.values().any(|m| *m == Mark::Queued)
+        || st.effects.keys().any(|k| is_react_key(k))
+}
+
+fn is_react_key(key: &str) -> bool {
+    key.contains("/react/")
 }
 
 /// Which history read this pass wants, if any: the first read of the
@@ -434,6 +470,10 @@ struct Pass<'a, 'b> {
     delete: bool,
     creates: Vec<Create>,
     effects: Vec<Effect>,
+    /// The Task was tied on this pass.
+    tied_now: bool,
+    /// The message that started the Task tied on this pass.
+    started: Option<String>,
 }
 
 /// A message first seen this pass, before it is numbered.
@@ -509,6 +549,7 @@ impl Pass<'_, '_> {
         self.settle_create();
         self.settle_posts();
         self.withdraw();
+        self.react();
         self.retry_busy();
         self.admit();
         self.trim_effects();
@@ -1208,7 +1249,8 @@ impl Pass<'_, '_> {
         if let Some(t) = self.st.task.as_mut() {
             t.uid = uid.to_string();
             t.state = TieState::Created;
-            t.trigger = None;
+            self.started = t.trigger.take();
+            self.tied_now = true;
         }
         self.attention.clear(WORKSPACE_BUSY);
         self.attention.clear(TASK_CREATE_FAILED);
@@ -1408,6 +1450,237 @@ impl Pass<'_, '_> {
         if !present {
             self.st.task = None;
             self.attention.clear(WORKSPACE_BUSY);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Reactions: an admitted request is marked queued or working.
+    // ------------------------------------------------------------------
+
+    /// The marks admission makes before a Task has the thread's messages,
+    /// each a best-effort reaction:
+    ///
+    /// - a create that waits for the thread's directory marks its trigger,
+    ///   and every admitted message after it, queued;
+    /// - the Task tied on this pass marks its trigger working, and every
+    ///   queued message working in place of queued, in the write the join
+    ///   reads; the working reaction is tried this once, never again, so it
+    ///   cannot land after the Task replied;
+    /// - a queued message the tie pass could not mark loses its queued
+    ///   reaction later, and the join adds the working one;
+    /// - a wait withdrawn, or a queued message that left the mirror, loses
+    ///   the queued reaction;
+    /// - a tie that ends forgets the working marks, which GatewayController
+    ///   then owns.
+    ///
+    /// Reactions off, or a platform without them, forget every mark.
+    /// Unknown capabilities change no mark and wait.
+    fn react(&mut self) {
+        if self.input.defaults.reactions.is_none() || self.st.retiring.is_some() {
+            self.st.reactions = Default::default();
+            self.st.effects.retain(|k, _| !is_react_key(k));
+            return;
+        }
+        let held: BTreeSet<String> = self.st.messages.iter().map(|m| m.id.clone()).collect();
+        match &self.input.observations.capabilities {
+            Some(Observation::Known(caps)) if caps.reactions => {}
+            Some(Observation::Known(_)) => {
+                self.st.reactions = Default::default();
+                self.st.effects.retain(|k, _| !is_react_key(k));
+                return;
+            }
+            // Not asked, or Unknown: no mark changes this pass.
+            _ => return,
+        }
+        let left: Vec<String> = self
+            .st
+            .reactions
+            .marks
+            .keys()
+            .filter(|id| !held.contains(*id))
+            .cloned()
+            .collect();
+        for id in left {
+            if self.st.reactions.marks.remove(&id) == Some(Mark::Queued) {
+                // Rotated out, or removed: a queued reaction would stay.
+                self.plan_react(&id, Mark::Queued, false);
+            }
+        }
+        let tie = self.st.task.clone();
+        match tie.as_ref().map(|t| t.state) {
+            Some(TieState::Busy) => {
+                for id in self.waiting_messages() {
+                    if !self.st.reactions.marks.contains_key(&id) {
+                        self.mark(&id, Mark::Queued);
+                    }
+                }
+            }
+            Some(TieState::Created) if self.tied_now => {
+                let queued: Vec<String> = self.marked(Mark::Queued);
+                for id in queued {
+                    self.mark(&id, Mark::Working);
+                }
+                if let Some(id) = self.started.clone()
+                    && held.contains(&id)
+                    && !self.st.reactions.marks.contains_key(&id)
+                {
+                    self.mark(&id, Mark::Working);
+                }
+            }
+            Some(TieState::Created) => {
+                // Queued marks the tie pass could not change: the Task may
+                // have them already, so only the queued reaction goes.
+                for id in self.marked(Mark::Queued) {
+                    self.st.reactions.marks.remove(&id);
+                    self.plan_react(&id, Mark::Queued, false);
+                }
+            }
+            Some(TieState::Pending) => {}
+            None | Some(TieState::Gone) => {
+                for id in self.marked(Mark::Queued) {
+                    self.st.reactions.marks.remove(&id);
+                    self.plan_react(&id, Mark::Queued, false);
+                }
+                self.st.reactions.marks.retain(|_, m| *m != Mark::Working);
+            }
+        }
+        self.retry_reactions();
+    }
+
+    fn marked(&self, mark: Mark) -> Vec<String> {
+        self.st
+            .reactions
+            .marks
+            .iter()
+            .filter(|(_, m)| **m == mark)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// The messages a waiting create holds: its trigger, and every
+    /// admitted message the listener delivered since.
+    fn waiting_messages(&self) -> Vec<String> {
+        let Some(trigger) = self.st.task.as_ref().and_then(|t| t.trigger.clone()) else {
+            return Vec::new();
+        };
+        let Some(first) = self
+            .st
+            .messages
+            .iter()
+            .find(|m| m.id == trigger)
+            .map(|m| m.first_seq)
+        else {
+            return Vec::new();
+        };
+        let Some(route) = self.input.defaults.route.as_ref() else {
+            return vec![trigger];
+        };
+        let people = &self.input.defaults.people;
+        let starter = self.st.starter.as_ref();
+        self.st
+            .messages
+            .iter()
+            .filter(|m| m.id == trigger || (m.first_seq > first && delivered(&m.via)))
+            .filter(|m| {
+                m.id == trigger
+                    || admit(route, people, &as_message(m, starter)) == Admission::Admitted
+            })
+            .map(|m| m.id.clone())
+            .collect()
+    }
+
+    /// Move a message to `mark`, with the reactions that takes: queued is
+    /// added; working is added, and a queued reaction removed.
+    fn mark(&mut self, id: &str, mark: Mark) {
+        let before = self.st.reactions.marks.insert(id.to_string(), mark);
+        self.plan_react(id, mark, true);
+        if before == Some(Mark::Queued) && mark != Mark::Queued {
+            self.plan_react(id, Mark::Queued, false);
+        }
+    }
+
+    /// The reaction effect on `message`, under its key, intent first.
+    fn plan_react(&mut self, message: &str, mark: Mark, on: bool) {
+        let Some(action) = self.react_action(message, mark, on) else {
+            return;
+        };
+        let key = react_key(self.uid(), message, mark, on);
+        self.renew_intent(&key, "react", true);
+        self.effects.push(Effect { key, action });
+    }
+
+    fn react_action(&self, message: &str, mark: Mark, on: bool) -> Option<Action> {
+        let names = self.input.defaults.reactions.as_ref()?;
+        let reference = self.st.reference.clone()?;
+        let reaction = match mark {
+            Mark::Queued => &names.queued,
+            Mark::Working => &names.working,
+            Mark::Replied => &names.replied,
+        };
+        Some(Action::React {
+            account: self.spec.account.clone(),
+            conversation: reference,
+            message: message.to_string(),
+            reaction: reaction.clone(),
+            on,
+        })
+    }
+
+    /// Reaction records: one that landed, is given up, or that a later mark
+    /// made pointless is dropped; one refused, or whose outcome is unknown,
+    /// is performed again under its key after the delay, at most three
+    /// times in all, since a reaction is set, not counted. None of it holds
+    /// anything back or raises a condition.
+    fn retry_reactions(&mut self) {
+        let uid = self.uid().to_string();
+        let keys: Vec<String> = self
+            .st
+            .effects
+            .keys()
+            .filter(|k| is_react_key(k))
+            .cloned()
+            .collect();
+        for key in keys {
+            if self.effects.iter().any(|e| e.key == key) {
+                continue;
+            }
+            let record = self.st.effects[&key].clone();
+            let parsed = react_of(&uid, &key);
+            let pointless = match &parsed {
+                None => true,
+                Some((id, mark, true)) => self.st.reactions.marks.get(id) != Some(mark),
+                Some((id, Mark::Queued, false)) => {
+                    self.st.reactions.marks.get(id) == Some(&Mark::Queued)
+                }
+                Some(_) => false,
+            };
+            let unsettled = match record.receipt.as_ref().map(|r| &r.outcome) {
+                None | Some(Observation::Unknown { .. }) => true,
+                Some(Observation::Known(EffectOutcome::Failed { .. })) => true,
+                Some(Observation::Known(_)) => false,
+            };
+            if matches!(parsed, Some((_, Mark::Working, true))) {
+                // Tried once, on the tie pass: kept while the mark stands,
+                // so the join can read whether it landed, and never again.
+                if pointless {
+                    self.st.effects.remove(&key);
+                }
+                continue;
+            }
+            if pointless || !unsettled || record.attempts >= MAX_ATTEMPTS {
+                self.st.effects.remove(&key);
+                continue;
+            }
+            let since = record.receipt.as_ref().map_or(record.intent.at, |r| r.at);
+            let retry_at = since.saturating_add(RETRY_DELAY_MS);
+            if self.now() < retry_at {
+                self.wake_at(retry_at);
+                continue;
+            }
+            let Some((id, mark, on)) = parsed else {
+                continue;
+            };
+            self.plan_react(&id, mark, on);
         }
     }
 

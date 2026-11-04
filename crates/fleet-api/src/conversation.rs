@@ -18,6 +18,7 @@ use crate::condition::Condition;
 use crate::gateway::{Author, ConversationRef, Delivery, Starter, Verified};
 use crate::meta::Millis;
 use crate::plan::{Intent, Receipt};
+use crate::talk::{Mark, react_parse, react_suffix};
 
 pub const KIND: &str = "Conversation";
 
@@ -89,6 +90,39 @@ pub struct ThreadDir {
 /// the `n`th Task.
 pub fn busy_key(conversation_uid: &str, n: u64) -> String {
     format!("conversation/{conversation_uid}/busy/{n}")
+}
+
+/// `conversation/<conv uid>/react/<message id>/<queued|working>/<on|off>`:
+/// the key of a reaction admission adds to, or removes from, a message
+/// before the thread's Task has it.
+pub fn react_key(conversation_uid: &str, message: &str, mark: Mark, on: bool) -> String {
+    format!(
+        "conversation/{conversation_uid}/{}",
+        react_suffix(message, mark, on)
+    )
+}
+
+/// What a Conversation's reaction key names: the message id, the mark and
+/// whether it adds.
+pub fn react_of(conversation_uid: &str, key: &str) -> Option<(String, Mark, bool)> {
+    react_parse(key.strip_prefix(&format!("conversation/{conversation_uid}/react/"))?)
+}
+
+/// `status.reactions`: the marks admission made on the thread's messages
+/// before a Task had them. ConversationController's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConversationReactions {
+    /// Per message id: `queued` while the message waits for its Task,
+    /// `working` once the Task exists. Only messages the mirror holds.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub marks: BTreeMap<String, Mark>,
+}
+
+impl ConversationReactions {
+    pub fn is_empty(&self) -> bool {
+        self.marks.is_empty()
+    }
 }
 
 /// `conversation/<conv uid>/refuse/<author id>`: the key of the one
@@ -293,6 +327,10 @@ pub struct ConversationStatus {
     /// is not being retired.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retiring: Option<Retiring>,
+    /// The reactions admission made: which messages are marked queued or
+    /// working before the thread's Task relayed them.
+    #[serde(default, skip_serializing_if = "ConversationReactions::is_empty")]
+    pub reactions: ConversationReactions,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
 }

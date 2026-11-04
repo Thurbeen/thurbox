@@ -1500,6 +1500,7 @@ fn status_summary(obj: &Object) -> Value {
             "notBefore",
             "dir",
             "retiring",
+            "reactions",
         ] {
             own.insert(k.to_string(), field(k));
         }

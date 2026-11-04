@@ -68,6 +68,11 @@ What an adapter must guarantee:
   `gateway.reactions` gives it. The adapter maps the name to what its
   platform takes. An adapter whose platform has no reactions answers
   `reactions = false`, and Fleet then calls no `react`.
+- **`gateway.reactions` names three reactions.** `queued` defaults to
+  `hourglass_flowing_sand` (⏳), `working` to `eyes` (👀) and `replied` to
+  `white_check_mark` (✅). `reactions = false` turns all three off. The
+  config is refused when a name is empty or holds whitespace, when two
+  names give the same emoji, and when it has another key.
 - **A `post` to a channel address opens no thread.** Every part of a split
   text is a top-level post in the channel. A `since` read of the channel
   address finds them.
@@ -200,14 +205,17 @@ pub fn reconcile(&self, input: &ConversationInput<'_>) -> Result<Plan, StoreErro
 - `probes` asks `History` for the first read, the backstop and recovery;
   `Object` for the tied Task, or the Task a Question marker names; and
   `Capabilities` for the account, at most once per account per sweep.
+  While reactions are on, it also asks `Capabilities` when a create is
+  pending or waits, when a message is marked queued, and when a reaction
+  record is left.
 - `reconcile` returns:
   - `status`: the whole Conversation status. The same write drains the
     events it numbered.
   - `creates`: at most one Task, from the route, with its intent in the same
     status.
   - `effects`: at most one refusal `Post` per author, one busy notice
-    per tie number, and the retirement's one `DeleteTask` or `RemoveDir`
-    step.
+    per tie number, the `React` actions of the marks below, and the
+    retirement's one `DeleteTask` or `RemoveDir` step.
   - `delete: true`: deletes the object as the last step of its
     retirement, fenced on `uid` and `resourceVersion`.
 
@@ -223,6 +231,9 @@ It works over each [Conversation](../../resources/conversation.md):
   Task now holds that name,
 - sends one polite refusal per author who is not on the allowlist and
   mentions Fleet,
+- marks the trigger of a created Task working, and the messages of a
+  waiting request queued, then working when its Task is created, under
+  `status.reactions`,
 - retires the thread after its retention: its Concluded Task, the
   directory the manager made for it, then the Conversation.
 
@@ -407,7 +418,8 @@ owns `status.gateway` and:
 - records answers to Questions,
 - routes a child Task's words into its parent's inbox,
 - marks each relayed admitted message working, and replied once Fleet
-  posted in the thread.
+  posted in the thread. Where admission's working reaction on the message
+  landed, the join adds no second one.
 
 #### Fields this controller owns
 
@@ -428,6 +440,12 @@ owns `status.gateway` and:
 | `gaps` | How many relays found messages dropped from the mirror. |
 | `reactions` | `marks`: per message id in the thread, `working` or `replied`, for the messages the mirror still holds. `replies`: the keys of the thread posts already counted against the working marks. |
 | `conditions` | `Tied`, `NeedsAttention`. |
+
+ConversationController owns `status.reactions` on a Conversation:
+`marks`, per message id, `queued` or `working`, for the messages the mirror
+still holds. A `working` mark there lasts while the tie lasts. Its reaction
+records are in the Conversation's `status.effects`, with `intent.action`
+`react`.
 
 `status.answered` has no single owner. It maps a Question id to
 `{key, from, at}`, and only an inbox append that carries `answers` writes
@@ -580,6 +598,9 @@ under the same key, so with the same nonce, inside the window. The
 | Working reaction, added | `task/<name>/<uid>/gateway/react/<message id>/working/on` |
 | Replied reaction, added | `task/<name>/<uid>/gateway/react/<message id>/replied/on` |
 | Working reaction, removed on the reply | `task/<name>/<uid>/gateway/react/<message id>/working/off` |
+| Queued reaction, added at admission | `conversation/<conv uid>/react/<message id>/queued/on` |
+| Working reaction, added at admission | `conversation/<conv uid>/react/<message id>/working/on` |
+| Queued reaction, removed when the Task is created or the wait is withdrawn | `conversation/<conv uid>/react/<message id>/queued/off` |
 | Refusal | `conversation/<conv uid>/refuse/<author id>` |
 | Task creation | `conversation/<conv uid>/task/<n>` |
 | Busy notice | `conversation/<conv uid>/busy/<n>` |
@@ -620,6 +641,13 @@ A reaction follows its own rules:
 - A reaction raises no condition and holds back nothing.
 - A working reaction not yet settled when its message is marked replied is
   dropped. Reason: adding it then would undo the removal.
+- A queued reaction not yet settled when its message is marked working is
+  dropped, for the same reason.
+- ConversationController's working reaction is tried once and never again.
+  Its record stays while the mark stands, so the join can read whether it
+  landed. Reason: a retry could land after the Task replied.
+- These rules hold for the reactions of ConversationController and of
+  GatewayController alike.
 
 A log post follows the same rules. Its recovery read is a `since` read of
 the log channel's address on the `gateway.logs` account. A log post that

@@ -1112,10 +1112,15 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
     );
     assert_eq!(
         probes(&pending, ConversationObservations::default()),
-        vec![Probe::Object {
-            kind: "Task".into(),
-            name: format!("{NAME}-1")
-        }]
+        vec![
+            Probe::Object {
+                kind: "Task".into(),
+                name: format!("{NAME}-1")
+            },
+            Probe::Capabilities {
+                account: ACCOUNT.into()
+            }
+        ]
     );
     let (plan, st) = run(
         &pending,
@@ -1862,12 +1867,19 @@ fn a_removed_trigger_withdraws_a_busy_tie_and_the_next_number_never_repeats() {
 fn a_create_with_no_receipt_adopts_the_task_it_finds_and_never_creates_it_again() {
     let st = pending(None, 1);
     let obj = object(Some(&st));
+    // The Task under its name, and the capabilities that decide whether
+    // the request is marked with a reaction.
     assert_eq!(
         probes(&obj, ConversationObservations::default()),
-        vec![Probe::Object {
-            kind: "Task".into(),
-            name: format!("{NAME}-1")
-        }]
+        vec![
+            Probe::Object {
+                kind: "Task".into(),
+                name: format!("{NAME}-1")
+            },
+            Probe::Capabilities {
+                account: ACCOUNT.into()
+            }
+        ]
     );
     // Found with this thread's uid: adopted, the receipt recovered.
     let (plan, st) = run(
@@ -2413,4 +2425,397 @@ fn a_message_written_while_the_tied_task_is_deleted_waits_to_be_judged() {
         after.judged, 1,
         "judged once the thread is Orphaned: {after:#?}"
     );
+}
+
+// ----------------------------------------------------------------------
+// Reactions: admission marks a request working, or queued while it waits.
+// ----------------------------------------------------------------------
+
+mod reactions {
+    use super::*;
+    use fleet_api::conversation::react_key;
+    use fleet_api::talk::Mark;
+
+    const MENTION: &str = "1730000300000";
+
+    fn reacting(on: bool) -> Observation<Capabilities> {
+        Observation::Known(Capabilities {
+            history: true,
+            marker: Marker::Metadata,
+            unmentioned: true,
+            threads: true,
+            reactions: on,
+        })
+    }
+
+    fn with_caps(
+        caps: Observation<Capabilities>,
+        task: Option<Object>,
+    ) -> ConversationObservations {
+        ConversationObservations {
+            capabilities: Some(caps),
+            task: Some(Observation::Known(task)),
+            ..ConversationObservations::default()
+        }
+    }
+
+    /// The reactions a plan asks for: message, reaction name, on.
+    fn reacts(plan: &Plan) -> Vec<(String, String, bool)> {
+        plan.effects
+            .iter()
+            .filter_map(|e| match &e.action {
+                Action::React {
+                    message,
+                    reaction,
+                    on,
+                    ..
+                } => Some((message.clone(), reaction.clone(), *on)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn r(message: &str, reaction: &str, on: bool) -> (String, String, bool) {
+        (message.into(), reaction.into(), on)
+    }
+
+    fn created() -> ConversationStatus {
+        pending(
+            Some(receipt(EffectOutcome::Created {
+                uid: "t1".into(),
+                adopted: false,
+            })),
+            1,
+        )
+    }
+
+    fn busy() -> ConversationStatus {
+        pending(
+            Some(receipt(EffectOutcome::WorkspaceBusy {
+                task: "holder".into(),
+            })),
+            1,
+        )
+    }
+
+    #[test]
+    fn a_created_task_marks_its_trigger_working_once_under_the_conversations_key() {
+        let (plan, st) = run(
+            &object(Some(&created())),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        assert_eq!(st.phase, Phase::Tied);
+        assert_eq!(reacts(&plan), vec![r(MENTION, "eyes", true)]);
+        let key = react_key(UID, MENTION, Mark::Working, true);
+        assert_eq!(plan.effects[0].key, key);
+        assert_eq!(st.effects[&key].intent.action, "react");
+        assert_eq!(st.reactions.marks[MENTION], Mark::Working);
+        // The message before it started nothing: the join marks it.
+        assert_eq!(st.reactions.marks.len(), 1, "{:?}", st.reactions);
+        // Landed: the record is kept for the join to read, and nothing is
+        // added again.
+        let mut landed = st.clone();
+        landed.effects.get_mut(&key).unwrap().receipt =
+            Some(receipt(EffectOutcome::Reacted { already: false }));
+        let (plan, st) = run(
+            &object(Some(&landed)),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        assert!(reacts(&plan).is_empty(), "{plan:?}");
+        assert!(st.effects.contains_key(&key));
+        assert_eq!(st.reactions.marks[MENTION], Mark::Working);
+    }
+
+    #[test]
+    fn a_working_reaction_that_fails_is_never_tried_again_by_the_conversation() {
+        // The Task may reply before a retry lands, and a late working
+        // reaction would then stay beside the replied one: the join adds it
+        // instead, under the Task's key.
+        let (_, st) = run(
+            &object(Some(&created())),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        let key = react_key(UID, MENTION, Mark::Working, true);
+        for outcome in [
+            Observation::Known(EffectOutcome::Failed {
+                why: "rate limited".into(),
+            }),
+            Observation::Unknown {
+                why: "timed out".into(),
+            },
+        ] {
+            let mut failed = st.clone();
+            failed.effects.get_mut(&key).unwrap().receipt = Some(Receipt {
+                action: "react".into(),
+                at: NOW - 1_000,
+                outcome,
+            });
+            let (plan, after) = run_with(
+                &object(Some(&failed)),
+                with_caps(reacting(true), Some(task_object("t1"))),
+                defaults(),
+                NOW + 600_000,
+            );
+            assert!(reacts(&plan).is_empty(), "{plan:?}");
+            assert_eq!(after.effects[&key].attempts, 1);
+            assert_eq!(after.reactions.marks[MENTION], Mark::Working);
+        }
+    }
+
+    #[test]
+    fn queued_marks_the_tie_pass_could_not_change_only_lose_their_queued_reaction() {
+        let mut st = busy();
+        st.reactions.marks.insert(MENTION.into(), Mark::Queued);
+        st.effects.get_mut(&create_key()).unwrap().receipt =
+            Some(receipt(EffectOutcome::Created {
+                uid: "t1".into(),
+                adopted: false,
+            }));
+        // The tie pass, with the capabilities Unknown: no mark changes.
+        let (plan, tied_st) = run(
+            &object(Some(&st)),
+            with_caps(
+                Observation::Unknown {
+                    why: "timed out".into(),
+                },
+                Some(task_object("t1")),
+            ),
+        );
+        assert_eq!(tied_st.phase, Phase::Tied);
+        assert!(reacts(&plan).is_empty());
+        assert_eq!(tied_st.reactions.marks[MENTION], Mark::Queued);
+        // A later pass: the queued reaction goes, and no working one is
+        // added, since the join may have replied already.
+        let (plan, st) = run(
+            &object(Some(&tied_st)),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        assert_eq!(
+            reacts(&plan),
+            vec![r(MENTION, "hourglass_flowing_sand", false)]
+        );
+        assert!(st.reactions.marks.is_empty(), "{:?}", st.reactions);
+    }
+
+    #[test]
+    fn a_queued_message_that_leaves_the_mirror_loses_its_queued_reaction() {
+        let mut st = busy();
+        st.task.as_mut().unwrap().state = TieState::Busy;
+        st.reactions.marks.insert("gone-1".into(), Mark::Queued);
+        st.reactions.marks.insert(MENTION.into(), Mark::Queued);
+        let (plan, st) = run(&object(Some(&st)), with_caps(reacting(true), None));
+        assert_eq!(
+            reacts(&plan),
+            vec![r("gone-1", "hourglass_flowing_sand", false)]
+        );
+        assert!(!st.reactions.marks.contains_key("gone-1"));
+        assert_eq!(st.reactions.marks[MENTION], Mark::Queued);
+    }
+
+    #[test]
+    fn a_waiting_create_marks_its_request_queued_then_working_once_the_task_starts() {
+        let mut st = busy();
+        // A later admitted message, and a stranger's, both delivered.
+        st.messages
+            .push(stored(person(ALEX, T0 + 400_000, "also this"), 2));
+        st.messages
+            .push(stored(person(SAM, T0 + 410_000, "me too"), 3));
+        st.revision = 3;
+        st.judged = 3;
+        let (plan, st) = run(&object(Some(&st)), with_caps(reacting(true), None));
+        assert_eq!(st.task.as_ref().unwrap().state, TieState::Busy);
+        let later = (T0 + 400_000).to_string();
+        let mut want = vec![
+            r(MENTION, "hourglass_flowing_sand", true),
+            r(&later, "hourglass_flowing_sand", true),
+        ];
+        want.sort();
+        let mut got = reacts(&plan);
+        got.sort();
+        assert_eq!(got, want);
+        assert_eq!(st.reactions.marks[MENTION], Mark::Queued);
+        assert_eq!(st.reactions.marks[&later], Mark::Queued);
+        assert!(!st.reactions.marks.contains_key(&T0.to_string()));
+        assert!(!st.reactions.marks.contains_key(&(T0 + 410_000).to_string()));
+        // The busy notice is planned beside them: a reaction holds nothing.
+        assert!(
+            plan.effects
+                .iter()
+                .any(|e| matches!(e.action, Action::Post { .. }))
+        );
+        // Still busy on the next pass: nothing is added again.
+        let mut again = st.clone();
+        for rec in again.effects.values_mut() {
+            if rec.intent.action == "react" {
+                rec.receipt = Some(receipt(EffectOutcome::Reacted { already: false }));
+            }
+        }
+        again.task.as_mut().unwrap().state = TieState::Pending;
+        again.effects.get_mut(&create_key()).unwrap().receipt =
+            Some(receipt(EffectOutcome::WorkspaceBusy {
+                task: "holder".into(),
+            }));
+        let (plan, busy_again) = run(&object(Some(&again)), with_caps(reacting(true), None));
+        assert!(reacts(&plan).is_empty(), "{plan:?}");
+        // Free: each queued message is marked working, queued removed.
+        let mut free = busy_again.clone();
+        free.task.as_mut().unwrap().state = TieState::Pending;
+        free.effects.get_mut(&create_key()).unwrap().receipt =
+            Some(receipt(EffectOutcome::Created {
+                uid: "t1".into(),
+                adopted: false,
+            }));
+        let (plan, st) = run(
+            &object(Some(&free)),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        assert_eq!(st.phase, Phase::Tied);
+        let mut got = reacts(&plan);
+        got.sort();
+        let mut want = vec![
+            r(MENTION, "eyes", true),
+            r(MENTION, "hourglass_flowing_sand", false),
+            r(&later, "eyes", true),
+            r(&later, "hourglass_flowing_sand", false),
+        ];
+        want.sort();
+        assert_eq!(got, want);
+        assert_eq!(st.reactions.marks[MENTION], Mark::Working);
+        assert_eq!(st.reactions.marks[&later], Mark::Working);
+    }
+
+    #[test]
+    fn a_withdrawn_wait_removes_its_queued_reaction() {
+        let mut st = busy();
+        st.task.as_mut().unwrap().state = TieState::Busy;
+        st.messages
+            .push(stored(person(ALEX, T0 + 400_000, "also this"), 2));
+        st.revision = 2;
+        st.judged = 2;
+        let later = (T0 + 400_000).to_string();
+        st.reactions.marks.insert(MENTION.into(), Mark::Queued);
+        st.reactions.marks.insert(later.clone(), Mark::Queued);
+        st.received = vec![removed("Ev05", MENTION)];
+        let (plan, st) = run(&object(Some(&st)), with_caps(reacting(true), None));
+        assert_eq!(st.task, None, "withdrawn");
+        // Every queued reaction goes, the removed message's included: the
+        // mirror cannot tell a removal from a rotation, and a removal of a
+        // reaction is set, not counted.
+        assert_eq!(
+            reacts(&plan),
+            vec![
+                r(MENTION, "hourglass_flowing_sand", false),
+                r(&later, "hourglass_flowing_sand", false)
+            ]
+        );
+        assert!(st.reactions.marks.is_empty(), "{:?}", st.reactions);
+    }
+
+    #[test]
+    fn no_mark_without_reactions_and_none_while_the_capabilities_are_unknown() {
+        // The platform has no reactions.
+        let (plan, st) = run(
+            &object(Some(&created())),
+            with_caps(reacting(false), Some(task_object("t1"))),
+        );
+        assert!(reacts(&plan).is_empty());
+        assert!(st.reactions.marks.is_empty());
+        // Unknown: the tie goes on, no mark, no reaction.
+        let (plan, st) = run(
+            &object(Some(&created())),
+            with_caps(
+                Observation::Unknown {
+                    why: "timed out".into(),
+                },
+                Some(task_object("t1")),
+            ),
+        );
+        assert_eq!(st.phase, Phase::Tied);
+        assert!(reacts(&plan).is_empty());
+        assert!(st.reactions.marks.is_empty());
+        // Reactions off.
+        let mut off = defaults();
+        off.reactions = None;
+        let (plan, st) = run_with(
+            &object(Some(&busy())),
+            with_caps(reacting(true), None),
+            off.clone(),
+            NOW,
+        );
+        assert!(reacts(&plan).is_empty());
+        assert!(st.reactions.marks.is_empty());
+        // And no capabilities are asked for them.
+        let input_probes = ConversationController
+            .probes(&ConversationInput {
+                object: &object(Some(&pending(None, 1))),
+                observations: ConversationObservations::default(),
+                now: NOW,
+                defaults: off,
+            })
+            .unwrap();
+        assert!(
+            !input_probes
+                .iter()
+                .any(|p| matches!(p, Probe::Capabilities { .. })),
+            "{input_probes:?}"
+        );
+    }
+
+    #[test]
+    fn a_refused_reaction_is_tried_three_times_then_given_up_and_raises_nothing() {
+        let (_, st) = run(&object(Some(&busy())), with_caps(reacting(true), None));
+        let key = react_key(UID, MENTION, Mark::Queued, true);
+        let mut failed = st.clone();
+        failed.effects.get_mut(&key).unwrap().receipt = Some(receipt(EffectOutcome::Failed {
+            why: "rate limited".into(),
+        }));
+        // Before the delay: not yet, and a wake is asked for.
+        let (plan, st) = run(&object(Some(&failed)), with_caps(reacting(true), None));
+        assert!(reacts(&plan).is_empty());
+        assert!(st.effects.contains_key(&key));
+        let reason = cond(&st, "NeedsAttention").reason.clone();
+        assert_eq!(reason, "WorkspaceBusy", "the reaction raises nothing");
+        // After the delay: again, under the same key.
+        let later = NOW + 60_000;
+        let (plan, st) = run_with(
+            &object(Some(&failed)),
+            with_caps(reacting(true), None),
+            defaults(),
+            later,
+        );
+        assert_eq!(
+            reacts(&plan),
+            vec![r(MENTION, "hourglass_flowing_sand", true)]
+        );
+        assert_eq!(st.effects[&key].attempts, 2);
+        // Past three attempts: dropped, and the mark stays.
+        let mut spent = st.clone();
+        let rec = spent.effects.get_mut(&key).unwrap();
+        rec.attempts = 3;
+        rec.receipt = Some(receipt(EffectOutcome::Failed {
+            why: "rate limited".into(),
+        }));
+        let (plan, st) = run_with(
+            &object(Some(&spent)),
+            with_caps(reacting(true), None),
+            defaults(),
+            later + 60_000,
+        );
+        assert!(reacts(&plan).is_empty());
+        assert!(!st.effects.contains_key(&key));
+        assert_eq!(st.reactions.marks[MENTION], Mark::Queued);
+    }
+
+    #[test]
+    fn an_orphaned_thread_forgets_the_working_marks_of_its_old_task() {
+        let mut st = tied();
+        st.reactions.marks.insert(MENTION.into(), Mark::Working);
+        st.messages
+            .push(stored(person(ALEX, T0 + 300_000, "<@B0FLEET001> hi"), 1));
+        st.judged = 1;
+        let (plan, st) = run(&object(Some(&st)), with_caps(reacting(true), None));
+        assert_eq!(st.phase, Phase::Orphaned);
+        assert!(reacts(&plan).is_empty(), "nothing is removed: {plan:?}");
+        assert!(st.reactions.marks.is_empty());
+    }
 }

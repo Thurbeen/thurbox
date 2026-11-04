@@ -43,7 +43,7 @@ use fleet_api::talk::{
     ChildEntry, ConversationTie, DECLARED_COMMENT, DECLARED_DRAFT, DECLARED_QUESTION, ENTRY_CAP,
     GATEWAY_SOURCE_PREFIX, GatewayStatus, MAX_CHILDREN, Mark, PARENT_LABEL, PARENT_UID_LABEL,
     POSTS_CAP, PostedQuestion, ROUTE_LABEL, TieState, child_key, declared_id, gateway_reads,
-    parent_of, post_key, react_key, react_of, relay_key,
+    parent_of, post_key, react_key, react_of, react_suffix, relay_key,
 };
 use fleet_api::task::{self, TaskStatus};
 use fleet_api::{Observation, StoreError};
@@ -1023,6 +1023,23 @@ fn unsettled(record: &EffectRecord) -> bool {
     }
 }
 
+/// Whether admission marked `message` working on the Conversation and its
+/// working reaction landed. Anything less, the join adds the reaction
+/// itself: a reaction is set, not counted.
+fn admission_reacted(cs: &ConversationStatus, message: &str) -> bool {
+    if cs.reactions.marks.get(message) != Some(&Mark::Working) {
+        return false;
+    }
+    let suffix = format!("/{}", react_suffix(message, Mark::Working, true));
+    cs.effects.iter().any(|(key, record)| {
+        key.ends_with(&suffix)
+            && matches!(
+                record.receipt.as_ref().map(|r| &r.outcome),
+                Some(Observation::Known(EffectOutcome::Reacted { .. }))
+            )
+    })
+}
+
 /// Whether a thread post landed that no working mark has counted yet.
 fn reply_landed(gw: &GatewayStatus) -> bool {
     gw.reactions.marks.values().any(|m| *m == Mark::Working)
@@ -1936,6 +1953,7 @@ impl Pass<'_, '_> {
     ) -> Option<Action> {
         let names = self.input.defaults.reactions.as_ref()?;
         let reaction = match mark {
+            Mark::Queued => &names.queued,
             Mark::Working => &names.working,
             Mark::Replied => &names.replied,
         };
@@ -1965,6 +1983,8 @@ impl Pass<'_, '_> {
 
     /// Each admitted message this relay delivers, not marked before, is
     /// marked working, where reactions are on and the platform has them.
+    /// A message whose working reaction admission added, and saw land, is
+    /// marked working with no reaction of this Task's.
     /// An edit of a marked message is not marked again. Context and Fleet's
     /// own posts get nothing.
     fn mark_working(
@@ -2009,7 +2029,9 @@ impl Pass<'_, '_> {
         }
         for id in fresh {
             self.gw.reactions.marks.insert(id.clone(), Mark::Working);
-            self.plan_react(&spec.account, &reference, &id, Mark::Working, true);
+            if !admission_reacted(cs, &id) {
+                self.plan_react(&spec.account, &reference, &id, Mark::Working, true);
+            }
         }
     }
 
