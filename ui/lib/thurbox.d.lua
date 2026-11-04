@@ -963,10 +963,12 @@ function require(name) end
 ---@field value? string A text setting's value.
 ---@field reset? boolean Put the setting back to its default.
 
+--- Create, edit or delete a task, as `thurbox-cli task` does; a task that is
+--- not there, or an unknown status, is reported as `command.failed`.
 ---@class (exact) thurbox.cmd.Task
 ---@field text? string A title: creates when there is no `number`.
 ---@field number? integer An existing task's id.
----@field status? string
+---@field status? string `todo`, `in_progress` or `done`.
 ---@field reset? boolean Delete it.
 
 --- Hand a task to an agent, as `thurbox-cli task run` does: its Send action

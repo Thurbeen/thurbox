@@ -1015,6 +1015,135 @@ fn a_confirmed_send_and_a_dispatch_never_interleave() {
     );
 }
 
+/// The interface's `task` command and `thurbox-cli task` create, edit and
+/// delete through one set of verbs (#1637): the same input leaves the same
+/// row, and a task that is not there gets the same answer from both.
+#[test]
+fn a_task_is_created_edited_and_deleted_the_same_through_the_kernel_and_the_cli() {
+    let instance = Instance::new(None);
+    let db = instance.db();
+    let reg = registries();
+    let backends = &reg.cli;
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let missing = 9_999_i64;
+
+    let mut outcomes = Vec::new();
+    for via in ["kernel", "cli"] {
+        let mut run = |kernel_command: KernelCommand, args: &[&str]| -> Result<(), String> {
+            if via == "kernel" {
+                kernel(&mut bus, kernel_command)
+            } else {
+                cli(&db, backends, args).map(|_| ())
+            }
+        };
+
+        let title = format!("made via {via}");
+        run(
+            KernelCommand::Task {
+                id: None,
+                title: Some(title.clone()),
+                status: None,
+                delete: false,
+            },
+            &["task", "create", "--title", &title],
+        )
+        .unwrap_or_else(|e| panic!("create via {via}: {e}"));
+        let id = db
+            .list_tasks()
+            .expect("list")
+            .into_iter()
+            .find(|t| t.title == title)
+            .unwrap_or_else(|| panic!("via {via}: the created task"))
+            .id;
+
+        let renamed = format!("renamed via {via}");
+        run(
+            KernelCommand::Task {
+                id: Some(id),
+                title: Some(renamed.clone()),
+                status: Some("done".into()),
+                delete: false,
+            },
+            &[
+                "task",
+                "edit",
+                &id.to_string(),
+                "--title",
+                &renamed,
+                "--status",
+                "done",
+            ],
+        )
+        .unwrap_or_else(|e| panic!("edit via {via}: {e}"));
+        let task = db.get_task(id).expect("read").expect("the task");
+        assert_eq!(
+            (task.title.as_str(), task.status),
+            (renamed.as_str(), thurbox::session::TaskStatus::Done),
+            "via {via}"
+        );
+
+        let bad_status = run(
+            KernelCommand::Task {
+                id: Some(id),
+                title: None,
+                status: Some("finished".into()),
+                delete: false,
+            },
+            &["task", "edit", &id.to_string(), "--status", "finished"],
+        );
+        let edit_missing = run(
+            KernelCommand::Task {
+                id: Some(missing),
+                title: Some("anything".into()),
+                status: Some("done".into()),
+                delete: false,
+            },
+            &[
+                "task",
+                "edit",
+                &missing.to_string(),
+                "--title",
+                "anything",
+                "--status",
+                "done",
+            ],
+        );
+        let delete_missing = run(
+            KernelCommand::Task {
+                id: Some(missing),
+                title: None,
+                status: None,
+                delete: true,
+            },
+            &["task", "remove", &missing.to_string()],
+        );
+
+        run(
+            KernelCommand::Task {
+                id: Some(id),
+                title: None,
+                status: None,
+                delete: true,
+            },
+            &["task", "remove", &id.to_string()],
+        )
+        .unwrap_or_else(|e| panic!("delete via {via}: {e}"));
+        assert_eq!(db.get_task(id).expect("read"), None, "via {via}");
+
+        outcomes.push((via, bad_status, edit_missing, delete_missing));
+    }
+
+    let [(_, kernel_bad, kernel_edit, kernel_delete), (_, cli_bad, cli_edit, cli_delete)] =
+        <[_; 2]>::try_from(outcomes).expect("two runs");
+    let not_found = Err(format!("Task not found: {missing}"));
+    assert_eq!(kernel_delete, not_found, "kernel delete of a missing task");
+    assert_eq!(cli_delete, not_found, "cli delete of a missing task");
+    assert_eq!(kernel_edit, not_found, "kernel edit of a missing task");
+    assert_eq!(cli_edit, not_found, "cli edit of a missing task");
+    assert!(kernel_bad.is_err(), "kernel accepted an unknown status");
+    assert_eq!(kernel_bad, cli_bad, "one answer for an unknown status");
+}
+
 /// The interface's `send` and `thurbox-cli session send` are one verb (#1468):
 /// the same text to the same session is refused, typed or left in the mailbox
 /// the same way whichever of the two sends it.

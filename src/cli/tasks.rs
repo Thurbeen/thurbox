@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 
 use crate::cli::action;
 use crate::cli::output::{self, CommandOutput};
-use crate::session::{AutomationAction, Task, TaskStatus, SOURCE_LOCAL};
+use crate::session::{AutomationAction, Task, TaskStatus};
+use crate::session_ops::tasks;
 use crate::storage::tasks::NewTask;
 use crate::storage::Database;
 
@@ -125,26 +126,17 @@ pub fn run(
             external_id,
             external_url,
         } => {
-            if title.trim().is_empty() {
-                return Err("title must not be empty".into());
-            }
             let extra_repos = super::parse_extra_repos(&add_repo, &add_dir);
             let new = NewTask {
                 title,
-                description: blank_to_none(description),
-                status: parse_status(status.as_deref())?,
+                description,
+                status: parse_status(status.as_deref())?.unwrap_or_default(),
                 action: resolve_action(session, repo, worktree, base, agent, extra_repos, db)?,
-                source: source
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| SOURCE_LOCAL.to_string()),
-                external_id: blank_to_none(external_id),
-                external_url: blank_to_none(external_url),
+                source: source.unwrap_or_default(),
+                external_id,
+                external_url,
             };
-            let id = db
-                .create_task(&new)
-                .map_err(|e| format!("create_task: {e}"))?;
-            let task = load(db, id)?;
+            let task = tasks::create(db, new).map_err(|e| e.to_string())?;
             Ok(CommandOutput::new(
                 task_to_json(&task),
                 format!("Created task #{}: {}", task.id, task.title),
@@ -182,32 +174,27 @@ pub fn run(
             external_id,
             external_url,
         } => {
-            let mut task = load(db, id)?;
-            apply_edits(
-                &mut task,
+            let changes = tasks::TaskEdit {
                 title,
                 description,
-                status,
+                status: parse_status(status.as_deref())?,
                 source,
                 external_id,
                 external_url,
-            )?;
-            db.update_task(&task)
-                .map_err(|e| format!("update_task: {e}"))?;
-            let task = load(db, id)?;
+            };
+            let task = tasks::edit(db, id, changes).map_err(|e| e.to_string())?;
             Ok(CommandOutput::new(
                 task_to_json(&task),
                 render_task_detail(&task),
             ))
         }
-        Action::Remove { id } => match db.soft_delete_task(id) {
-            Ok(true) => Ok(CommandOutput::new(
+        Action::Remove { id } => {
+            tasks::delete(db, id).map_err(|e| e.to_string())?;
+            Ok(CommandOutput::new(
                 json!({ "removed": true, "id": id }),
                 format!("Removed task #{id}."),
-            )),
-            Ok(false) => Err(format!("Task not found: {id}")),
-            Err(e) => Err(format!("soft_delete_task: {e}")),
-        },
+            ))
+        }
         Action::Run { id } => {
             let task = load(db, id)?;
             let json = run_task(db, backends.get(), &task)?;
@@ -215,48 +202,6 @@ pub fn run(
             Ok(CommandOutput::new(json, human))
         }
     }
-}
-
-/// Fold the `edit` flags that were passed into `task`.
-///
-/// Every field follows the same rule: passing the flag sets it. `--description`
-/// and the two `external_*` clear to NULL when passed empty; a blank `--source`
-/// is ignored, since the column is NOT NULL.
-#[allow(clippy::too_many_arguments)]
-fn apply_edits(
-    task: &mut Task,
-    title: Option<String>,
-    description: Option<String>,
-    status: Option<String>,
-    source: Option<String>,
-    external_id: Option<String>,
-    external_url: Option<String>,
-) -> Result<(), String> {
-    if let Some(t) = title {
-        if t.trim().is_empty() {
-            return Err("title must not be empty".into());
-        }
-        task.title = t;
-    }
-    if let Some(d) = description {
-        task.description = blank_to_none(Some(d));
-    }
-    if let Some(s) = status {
-        task.status = parse_status(Some(&s))?;
-    }
-    if let Some(s) = source
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-    {
-        task.source = s;
-    }
-    if let Some(e) = external_id {
-        task.external_id = blank_to_none(Some(e));
-    }
-    if let Some(u) = external_url {
-        task.external_url = blank_to_none(Some(u));
-    }
-    Ok(())
 }
 
 /// Render the task list as an aligned table (or a friendly empty line).
@@ -343,33 +288,11 @@ fn run_task(
 }
 
 fn load(db: &Database, id: i64) -> Result<Task, String> {
-    db.get_task(id)
-        .map_err(|e| format!("get_task: {e}"))?
-        .ok_or_else(|| format!("Task not found: {id}"))
+    tasks::get(db, id).map_err(|e| e.to_string())
 }
 
-/// Trim an optional CLI string, mapping blank input to `None` (cleared). Shared
-/// by the blank-able task fields: `--description`, `--external-id`, and
-/// `--external-url` (passing `""` clears each).
-fn blank_to_none(s: Option<String>) -> Option<String> {
-    s.and_then(|s| {
-        let t = s.trim();
-        (!t.is_empty()).then(|| t.to_string())
-    })
-}
-
-fn parse_status(s: Option<&str>) -> Result<TaskStatus, String> {
-    match s {
-        None => Ok(TaskStatus::Todo),
-        Some(v) => match v {
-            "todo" => Ok(TaskStatus::Todo),
-            "in_progress" => Ok(TaskStatus::InProgress),
-            "done" => Ok(TaskStatus::Done),
-            other => Err(format!(
-                "invalid status `{other}` (use todo|in_progress|done)"
-            )),
-        },
-    }
+fn parse_status(s: Option<&str>) -> Result<Option<TaskStatus>, String> {
+    s.map(str::parse).transpose()
 }
 
 /// Resolve the optional action from the send/spawn flags. Neither flag → a plain
@@ -419,7 +342,7 @@ fn task_to_json(t: &Task) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::SessionId;
+    use crate::session::{SessionId, SOURCE_LOCAL};
 
     /// Minimal local task for render tests.
     fn task(id: i64, title: &str, status: TaskStatus, action: Option<AutomationAction>) -> Task {

@@ -1,13 +1,113 @@
-//! Handing a task to an agent: the one implementation the interface's
-//! `dispatch` command and `thurbox-cli task run` both call (#1468), so a task
-//! gets the same session, reuse and refusal whichever of them hands it over.
+//! The task verbs the interface's `task` and `dispatch` commands and
+//! `thurbox-cli task` share (#1468, #1637): creating, editing, deleting and
+//! handing a task to an agent each have one implementation here, so a task
+//! gets the same row, the same session and the same refusal whichever of them
+//! asked. The callers keep only parsing and output.
 
-use crate::session::{AutomationAction, SessionId, Task, TaskStatus};
+use crate::session::{AutomationAction, SessionId, Task, TaskStatus, SOURCE_LOCAL};
+use crate::storage::tasks::NewTask;
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
 use super::deliver::{spawn_and_deliver, SpawnDeliverError};
-use super::SpawnRequest;
+use super::{OpError, SpawnRequest};
+
+/// The one answer for a task id that names no active task.
+pub fn not_found(id: i64) -> OpError {
+    OpError::NotFound(format!("Task not found: {id}"))
+}
+
+/// The active task `id`.
+pub fn get(db: &Database, id: i64) -> Result<Task, OpError> {
+    db.get_task(id)
+        .map_err(|e| OpError::Other(format!("get task: {e}")))?
+        .ok_or_else(|| not_found(id))
+}
+
+/// Store a new task and return the row as stored.
+///
+/// A blank title is refused. A blank description or external field is stored
+/// as none, and a blank source as [`SOURCE_LOCAL`], since that column is NOT
+/// NULL.
+pub fn create(db: &Database, mut new: NewTask) -> Result<Task, OpError> {
+    if new.title.trim().is_empty() {
+        return Err(blank_title());
+    }
+    new.description = blank_to_none(new.description);
+    new.source = blank_to_none(Some(new.source)).unwrap_or_else(|| SOURCE_LOCAL.to_string());
+    new.external_id = blank_to_none(new.external_id);
+    new.external_url = blank_to_none(new.external_url);
+    let id = db
+        .create_task(&new)
+        .map_err(|e| OpError::Other(format!("create task: {e}")))?;
+    get(db, id)
+}
+
+/// The fields an [`edit`] changes; `None` leaves a field as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskEdit {
+    /// Refused when blank.
+    pub title: Option<String>,
+    /// Cleared when blank.
+    pub description: Option<String>,
+    pub status: Option<TaskStatus>,
+    /// Ignored when blank, since the column is NOT NULL.
+    pub source: Option<String>,
+    /// Cleared when blank.
+    pub external_id: Option<String>,
+    /// Cleared when blank.
+    pub external_url: Option<String>,
+}
+
+/// Apply `changes` to task `id` in one write, returning the row as stored.
+pub fn edit(db: &Database, id: i64, changes: TaskEdit) -> Result<Task, OpError> {
+    let mut task = get(db, id)?;
+    if let Some(title) = changes.title {
+        if title.trim().is_empty() {
+            return Err(blank_title());
+        }
+        task.title = title;
+    }
+    if let Some(description) = changes.description {
+        task.description = blank_to_none(Some(description));
+    }
+    if let Some(status) = changes.status {
+        task.status = status;
+    }
+    if let Some(source) = blank_to_none(changes.source) {
+        task.source = source;
+    }
+    if let Some(external_id) = changes.external_id {
+        task.external_id = blank_to_none(Some(external_id));
+    }
+    if let Some(external_url) = changes.external_url {
+        task.external_url = blank_to_none(Some(external_url));
+    }
+    db.update_task(&task)
+        .map_err(|e| OpError::Other(format!("update task: {e}")))?;
+    get(db, id)
+}
+
+/// Soft-delete task `id`; one that is not there is [`not_found`], not success.
+pub fn delete(db: &Database, id: i64) -> Result<(), OpError> {
+    match db.soft_delete_task(id) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(not_found(id)),
+        Err(e) => Err(OpError::Other(format!("delete task: {e}"))),
+    }
+}
+
+fn blank_title() -> OpError {
+    OpError::Usage("title must not be empty".into())
+}
+
+/// Trim, mapping blank to `None`.
+fn blank_to_none(s: Option<String>) -> Option<String> {
+    s.and_then(|s| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    })
+}
 
 /// What [`dispatch`] did with a task.
 #[derive(Debug, Clone, PartialEq, Eq)]
