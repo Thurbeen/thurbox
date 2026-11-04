@@ -47,8 +47,8 @@ leaves the last good registry in force and reports the error; correcting it is p
 up by the next poll. Existing session records are not changed.
 The `ui/` directory reloads live too, but on a **filesystem watcher**
 (120 ms debounce) rather than a poll, and `F10` forces one. For
-`settings.toml` the flags that apply live are `shell_pane`, `perf_hud`
-and `soft_delete`; the restart-only values stay
+`settings.toml` the values that apply live are the `shell_pane`, `perf_hud`
+and `soft_delete` flags, `[clipboard]` and `[remote]`; the restart-only values stay
 published through a write-once global (so they can't drift mid-frame),
 and the reload toast says when a restart is needed. `hosts.toml` (SSH
 backends register at startup) and `themes.toml` need a restart.

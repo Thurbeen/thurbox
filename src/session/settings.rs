@@ -484,33 +484,116 @@ fn default_git_poll_secs() -> u64 {
     5
 }
 
+/// When a change to a field of [`Settings`] takes effect in a running interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Applies {
+    /// Read where it is used, every time, so an edit is in force at once.
+    Live,
+    /// Consumed once, at startup, by something that cannot be redone mid-run.
+    NextLaunch,
+}
+
+/// One row of [`FIELDS`]: a field of `settings.toml` and when it takes effect.
+pub struct Field {
+    /// The path the file spells it as: a top-level key, a `[features]` flag
+    /// (`features.mouse`), or a whole table.
+    pub key: &'static str,
+    /// When a change to it takes effect.
+    pub applies: Applies,
+    differs: fn(&Settings, &Settings) -> bool,
+    take: fn(&mut Settings, &Settings),
+}
+
+/// A row comparing and copying the field at `$path` as a whole.
+macro_rules! field {
+    ($applies:ident, $first:ident $(. $rest:ident)*) => {
+        Field {
+            key: concat!(stringify!($first) $(, ".", stringify!($rest))*),
+            applies: Applies::$applies,
+            differs: |a, b| a.$first $(.$rest)* != b.$first $(.$rest)*,
+            take: |into, from| into.$first $(.$rest)* = from.$first $(.$rest)*.clone(),
+        }
+    };
+}
+
+/// Every field of `settings.toml`, and when a change to it takes effect.
+///
+/// The one place that says so: [`Settings::restart_only_differs`] and
+/// [`Settings::with_live_from`] (what `kernel::config::adopt` takes into force)
+/// both read it, so a field cannot be live in one and restart-only in the
+/// other. Two hand-kept lists did drift — `[clipboard]` was held as booted
+/// and reported live (issue #1638). A test fails until a new field has a row.
+pub const FIELDS: &[Field] = &[
+    // The multiplexer a session is created on is picked from the booted
+    // registry.
+    field!(NextLaunch, multiplexer),
+    field!(Live, config_version),
+    // Every terminal's parser is built with it.
+    field!(NextLaunch, scrollback_lines),
+    // The terminals read these once, when they are built.
+    field!(NextLaunch, hidden_terminal_secs),
+    field!(NextLaunch, two_panel_min_cols),
+    field!(NextLaunch, three_panel_min_cols),
+    // Pruned once, at startup.
+    field!(NextLaunch, audit_retention_days),
+    field!(NextLaunch, deleted_retention_days),
+    // The git-stat cache is built with it, and a cache that re-read it would
+    // also have to re-age every entry.
+    field!(NextLaunch, git_poll_secs),
+    // The feature switches that only gate whether a surface is drawn, which is
+    // decided per frame.
+    field!(Live, features.tasks),
+    field!(Live, features.file_viewer),
+    field!(Live, features.info_panel),
+    field!(Live, features.global_search),
+    field!(Live, features.shell_pane),
+    field!(Live, features.code_review),
+    field!(Live, features.perf_hud),
+    field!(Live, features.soft_delete),
+    // Capture is an escape already sent, the notifier is a thread already
+    // started (or not), the heartbeat is armed once, and the update work ran
+    // at startup.
+    field!(NextLaunch, features.mouse),
+    field!(NextLaunch, features.notifications),
+    field!(NextLaunch, features.automations),
+    field!(NextLaunch, features.version_check),
+    field!(NextLaunch, features.auto_update),
+    // The dispatcher thread is started once with the backend it resolved.
+    field!(NextLaunch, notifications),
+    // Read at every copy.
+    field!(Live, clipboard),
+    // The mirror reads the file itself on every pass.
+    field!(Live, remote),
+    // Spawns, restarts and the tick read the file themselves, so the table
+    // applies live there. What is in force here feeds only the diagnostic-log
+    // bridge, built once at boot (ADR-38), so it is held as booted and only a
+    // change to how that bridge would be built needs a restart.
+    Field {
+        key: "telemetry",
+        applies: Applies::NextLaunch,
+        differs: |a, b| a.telemetry.diagnostic_bridge_differs(&b.telemetry),
+        take: |into, from| into.telemetry = from.telemetry.clone(),
+    },
+];
+
 impl Settings {
-    /// Whether any **restart-only** setting differs between `self` and `other`.
-    ///
-    /// These are the values read once at startup (the scalars — `git_poll_secs`
-    /// included, the git-stat cache being built with it — every
-    /// `[notifications]` knob, and the feature flags whose effect is wired at
-    /// launch — `automations`, `mouse`, `notifications`, `version_check`). The
-    /// remaining feature flags gate UI panels read from `App.features` every
-    /// frame, so they apply live and are intentionally excluded here. Drives the
-    /// "some changes apply after restart" hint shown by the settings panel and
-    /// the live-reload toast.
+    /// Whether any [`Applies::NextLaunch`] field of [`FIELDS`] differs between
+    /// `self` and `other`. Drives the "some changes apply after restart" hint
+    /// shown by the settings panel and the live-reload toast.
     pub fn restart_only_differs(&self, other: &Settings) -> bool {
-        self.multiplexer != other.multiplexer
-            || self.scrollback_lines != other.scrollback_lines
-            || self.hidden_terminal_secs != other.hidden_terminal_secs
-            || self.two_panel_min_cols != other.two_panel_min_cols
-            || self.three_panel_min_cols != other.three_panel_min_cols
-            || self.audit_retention_days != other.audit_retention_days
-            || self.deleted_retention_days != other.deleted_retention_days
-            || self.git_poll_secs != other.git_poll_secs
-            || self.notifications != other.notifications
-            || self.features.automations != other.features.automations
-            || self.features.mouse != other.features.mouse
-            || self.features.notifications != other.features.notifications
-            || self.features.version_check != other.features.version_check
-            || self.features.auto_update != other.features.auto_update
-            || self.telemetry.diagnostic_bridge_differs(&other.telemetry)
+        FIELDS
+            .iter()
+            .any(|f| f.applies == Applies::NextLaunch && (f.differs)(self, other))
+    }
+
+    /// `self` with every [`Applies::Live`] field of [`FIELDS`] taken from
+    /// `fresh`, and every [`Applies::NextLaunch`] field left as it is.
+    pub fn with_live_from(&self, fresh: &Settings) -> Settings {
+        let mut adopted = self.clone();
+        for field in FIELDS.iter().filter(|f| f.applies == Applies::Live) {
+            (field.take)(&mut adopted, fresh);
+        }
+        adopted
     }
 }
 
@@ -861,6 +944,64 @@ mod tests {
         };
         live.into_iter().for_each(|flip| check(flip, false));
         restart.into_iter().for_each(|flip| check(flip, true));
+    }
+
+    #[test]
+    fn every_field_has_exactly_one_row() {
+        // A field with no row is neither taken live nor reported as needing a
+        // restart: the silent half of #1638. Each top-level key is a row, or
+        // (for `[features]`) each of its keys is.
+        let value = serde_json::to_value(Settings::default()).unwrap();
+        let mut keys = Vec::new();
+        for (key, inner) in value.as_object().unwrap() {
+            match inner.as_object() {
+                Some(table) if key == "features" => {
+                    keys.extend(table.keys().map(|flag| format!("features.{flag}")));
+                }
+                _ => keys.push(key.clone()),
+            }
+        }
+        let mut rows: Vec<&str> = FIELDS.iter().map(|f| f.key).collect();
+        rows.sort_unstable();
+        keys.sort_unstable();
+        assert_eq!(rows, keys);
+    }
+
+    #[test]
+    fn a_next_launch_row_is_never_taken_and_a_live_one_always_is() {
+        // Two settings that disagree on every field: a row's `take` must make
+        // it agree, and only a live row may be taken.
+        let base = Settings::default();
+        let other: Settings = toml::from_str(
+            "multiplexer = \"rmux\"\nconfig_version = 2\nscrollback_lines = 1\n\
+             hidden_terminal_secs = 1\ntwo_panel_min_cols = 1\nthree_panel_min_cols = 1\n\
+             audit_retention_days = 1\ndeleted_retention_days = 1\ngit_poll_secs = 1\n\
+             [features]\ntasks = false\nautomations = false\nfile_viewer = false\n\
+             global_search = false\ninfo_panel = false\nshell_pane = false\n\
+             code_review = false\nperf_hud = false\nmouse = false\nnotifications = false\n\
+             soft_delete = true\nversion_check = false\nauto_update = false\n\
+             [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\
+             [remote]\ntransitive_sessions = false\n\
+             [telemetry]\nenabled = true\nexport_diagnostic_logs = true\n",
+        )
+        .unwrap();
+        let adopted = base.with_live_from(&other);
+        for field in FIELDS {
+            assert!(
+                (field.differs)(&base, &other),
+                "{} is not varied",
+                field.key
+            );
+            let expect = field.applies == Applies::NextLaunch;
+            assert_eq!(
+                (field.differs)(&adopted, &other),
+                expect,
+                "{} was taken or left wrongly",
+                field.key
+            );
+        }
+        assert!(base.restart_only_differs(&other));
+        assert!(!adopted.restart_only_differs(&base));
     }
 
     #[test]

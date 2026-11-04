@@ -710,7 +710,7 @@ impl App {
     /// reading `thurbox.selection` still sees it — until the next key, click
     /// or wheel tick drops it; `on_key` keeps `Ctrl+C` from copying it twice.
     pub(crate) fn copy_on_select(&mut self) {
-        let settings = thurbox::session::settings::global().clipboard;
+        let settings = self.config.in_force().clipboard;
         if !settings.copy_on_select || settings.provider == ClipboardProvider::None {
             return;
         }
@@ -740,7 +740,7 @@ impl App {
                 let outcome = thurbox::clipboard::copy(
                     &text,
                     self.clipboard.as_mut(),
-                    thurbox::session::settings::global().clipboard.provider,
+                    self.config.in_force().clipboard.provider,
                 );
                 copy_message(&text, outcome)
             }
@@ -819,7 +819,7 @@ impl App {
                 let outcome = thurbox::clipboard::copy(
                     url,
                     self.clipboard.as_mut(),
-                    thurbox::session::settings::global().clipboard.provider,
+                    self.config.in_force().clipboard.provider,
                 );
                 match outcome {
                     Ok(route) => format!(

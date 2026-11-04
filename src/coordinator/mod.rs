@@ -146,7 +146,7 @@ impl App {
         let message = match thurbox::clipboard::copy(
             &text,
             self.clipboard.as_mut(),
-            thurbox::session::settings::global().clipboard.provider,
+            self.config.in_force().clipboard.provider,
         ) {
             Ok(route) => format!(
                 "app copied {} line(s){}",

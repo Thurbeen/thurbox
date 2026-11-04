@@ -2250,13 +2250,14 @@ stays in `settings.toml`, written through a `toml_edit::DocumentMut` so
 the seed's documentation comments survive the round-trip.
 
 **Why some rows take effect immediately and others need a restart.** The
-feature flags that gate UI panels are read every frame, so a save copies
-them into the live `App.features` and they apply at once. Everything else
-is read once at startup from a write-once `OnceLock` that can't be
+feature flags that gate UI panels are read every frame, and `[clipboard]` at
+every copy, so a save takes them into force and they apply at once. Everything
+else is read once at startup from a write-once `OnceLock` that can't be
 re-applied in-process; those rows are marked `⟳`, and a save that touches
-one toasts "some changes apply after restart". The canonical comparison
-(`Settings::restart_only_differs`) is shared by the toast and the reload
-path so the two never disagree.
+one toasts "some changes apply after restart". Which is which is one table,
+`session::settings::FIELDS`, and both what a reload takes into force and
+`Settings::restart_only_differs` are derived from it, so the two never
+disagree.
 
 **Why live-reload the file too.** `settings.toml` is watched by mtime
 (like `agents.toml` / `keybindings.json`): an external edit — a
