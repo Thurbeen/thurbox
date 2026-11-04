@@ -673,7 +673,8 @@ pub struct Handed {
 }
 
 /// Enqueue `new` from `from` for `recipient` and hand it to the recipient
-/// agent's own inbox, unless `no_wake`. `new.from_session_id` is `from`'s. The mailbox row is the durable copy either way;
+/// agent's own inbox, unless `no_wake`. `new.from_session_id` is `from`'s.
+/// The mailbox row is the durable copy either way;
 /// `message send`/`reply` and a `session send` that met a busy composer all
 /// come through here.
 pub(crate) fn enqueue_and_deliver(
@@ -708,7 +709,6 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
-    use crate::session::SessionId;
     use crate::storage::messages::NewMessage;
 
     /// Records every send and fails the routes it is told to.
@@ -1019,6 +1019,36 @@ mod tests {
         let out = deliver(&db, &msg, "text", &claude("/s/a.sock"), &fake);
         assert_eq!(out.via, DeliveredVia::Mailbox);
         assert!(fake.sent.borrow().is_empty());
+    }
+
+    /// A sender session deleted since it sent is named as gone, not dropped to
+    /// a label that reads as no session at all.
+    #[test]
+    fn a_sender_session_is_named_while_it_exists_and_called_gone_after() {
+        let db = Database::open_in_memory().unwrap();
+        let sender = SharedSession {
+            id: SessionId::default(),
+            name: "coder-x".into(),
+            agent: "claude".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        db.upsert_session(&sender).unwrap();
+        assert_eq!(Sender::Session(sender.id).label(&db), "coder-x");
+        assert_eq!(
+            Sender::Session(SessionId::default()).label(&db),
+            "a session that no longer exists"
+        );
     }
 
     #[test]
