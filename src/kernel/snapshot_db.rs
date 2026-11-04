@@ -15,7 +15,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use super::snapshot::{AutomationRow, DeletedRow, RunRow, TaskRow};
+use crate::session::background_work::ReportFrom;
 use crate::session::SessionId;
+use crate::session_ops::signals;
 use crate::storage::{Database, HookRow};
 use crate::sync::SharedSession;
 
@@ -98,8 +100,16 @@ pub(crate) enum Reply {
     /// the rows because the claim deleted it: a read discarded as stale must
     /// not take the request with it.
     Focus(String),
-    /// The stamp a hook write landed with.
-    Stamped(String, Option<i64>),
+    /// The stamp a hook write landed with, and the word it stored — which
+    /// sub-work in flight can make differ from the word reported (a `done`
+    /// with work running rests as `background`). `provisional` is the stamp
+    /// the store gave it in place.
+    Stamped {
+        session: String,
+        provisional: i64,
+        at: i64,
+        state: String,
+    },
     /// A write that did not land, so the in-place correction made for it is
     /// wrong until the rows are read again.
     Rejected,
@@ -298,7 +308,7 @@ impl Worker {
         };
         let database = &self.database;
         let landed = match write {
-            Write::Seen(id, at) => database.mark_turn_seen(id, at).unwrap_or(false),
+            Write::Seen(id, at) => signals::mark_seen(database, id, at).unwrap_or(false),
             Write::Shell { id, seen, pane } => {
                 match database.set_session_shell_from(id, seen.as_deref(), pane.as_deref()) {
                     Ok(landed) => landed,
@@ -333,22 +343,25 @@ impl Worker {
             // one whose state another writer already set: refused, not failed,
             // and the row must be read again either way.
             Write::Hook(id, row, state, provisional) => {
-                let stored = match database.report_hook_state(id, &state) {
-                    Ok(Some(stored)) => stored,
-                    Ok(None) | Err(_) => return Some(Reply::Rejected),
+                let (stored, at) = match signals::report(database, id, &state, ReportFrom::Echo) {
+                    Ok(signals::Reported::Stored { state, at }) => (state, at),
+                    Ok(_) | Err(_) => return Some(Reply::Rejected),
                 };
-                self.stamped.insert(id, (provisional, stored));
-                return Some(Reply::Stamped(row, Some(stored)));
+                self.stamped.insert(id, (provisional, at));
+                return Some(Reply::Stamped {
+                    session: row,
+                    provisional,
+                    at,
+                    state: stored,
+                });
             }
-            Write::Retire(id, report) => {
-                match database.clear_hook_state_if_unchanged(id, &report) {
-                    Ok(retired) => retired,
-                    Err(e) => {
-                        tracing::warn!("could not retire the hook report for {id}: {e}");
-                        false
-                    }
+            Write::Retire(id, report) => match signals::retire(database, id, &report) {
+                Ok(retired) => retired,
+                Err(e) => {
+                    tracing::warn!("could not retire the hook report for {id}: {e}");
+                    false
                 }
-            }
+            },
             Write::Perf(json) => {
                 // Never worth a reread; the CLI simply reports the older
                 // snapshot, or none.

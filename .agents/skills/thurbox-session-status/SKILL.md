@@ -227,6 +227,15 @@ own, which is the point.
   the materialized hook file sets a tmux pane user option instead, delivered
   over the control-mode subscription into the same hook columns (see the
   Remote-session-status bullet in the Remote SSH & WSL section).
+- **One entry point for a report.** `session signal`, the interface's
+  subscription (`SnapshotStore::apply_hook_states`) and the heartbeat's poll
+  all write through `session_ops::signals::report`, which allow-lists the
+  word, refuses a parked row, and takes an echo only as a change. The two that
+  correct a copy in place first judge it with `signals::echo_changes`, the
+  same rule; the snapshot worker answers with the word storage kept, so a
+  `done` that sub-work settled as `background` is shown as `background`. The
+  seen and retire edges (`signals::mark_seen`, `signals::retire`) are there
+  too: the snapshot worker writes no session state of its own.
 - **The pane has to be able to find the binary.** The callback is a **bare**
   name, so it is only as good as the `PATH` of the thurbox that spawned the
   pane — tmux copies that in by itself (the session environment is replaced
@@ -471,7 +480,7 @@ run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
   the word it stored to the pane option after its transaction, so two hook
   processes can publish out of the order they stored in. The interface's
   drain and the heartbeat's status poll (`remote_hooks::poll_hook_states`,
-  which reads local panes too) both write through `report_hook_state` as
+  which reads local panes too) both write through `signals::report` as
   `ReportFrom::Echo`, which
   refuses a `background` once the session's counted work has all ended — a
   late `Stop` echo cannot undo the `done` the last `SubagentStop` stored. A

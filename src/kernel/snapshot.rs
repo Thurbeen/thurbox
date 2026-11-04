@@ -1236,12 +1236,35 @@ impl SnapshotStore {
                 self.pending_focus = Some(id);
                 false
             }
-            Reply::Stamped(session, stamp) => {
-                match stamp {
-                    Some(stamp) => self.hook_state_at.insert(session, stamp),
-                    None => self.hook_state_at.remove(&session),
+            Reply::Stamped {
+                session,
+                provisional,
+                at,
+                state,
+            } => {
+                let latest = self.hook_state_at.get(&session) == Some(&provisional);
+                self.hook_state_at.insert(session.clone(), at);
+                // The row was corrected in place to the word reported; storage
+                // may have settled it as another. A later report corrected
+                // since then is answered after this one, and stands.
+                if !latest {
+                    return false;
+                }
+                let Some(row) = self
+                    .current
+                    .sessions
+                    .iter_mut()
+                    .find(|row| row.id == session)
+                else {
+                    return false;
                 };
-                false
+                if row.hook_state.as_deref() == Some(state.as_str()) {
+                    return false;
+                }
+                row.status = derive_state(Some(&state), Some(at), None);
+                row.hook_state = Some(state);
+                self.mark_changed();
+                true
             }
             Reply::Rejected => {
                 self.reread = true;
@@ -1523,9 +1546,9 @@ impl SnapshotStore {
 
         let mut applied = 0;
         for event in queue {
-            // Remote-host-controlled free text: allow-list it, never interpret
-            // anything else as a state.
-            if !crate::session::HOOK_STATES.contains(&event.state.as_str()) {
+            // Remote-host-controlled free text: a word that is no state is not
+            // even kept for a pane that appears later.
+            if !crate::session_ops::signals::is_state(&event.state) {
                 continue;
             }
             // A backend reports under the qualified route it serves; the row
@@ -1544,15 +1567,14 @@ impl SnapshotStore {
                 }
                 continue;
             };
-            // The subscription re-reports on every reconnect, so writing an
-            // unchanged state would re-stamp `state_at` and resurrect an
-            // already-acknowledged `done` as unseen.
-            if row.hook_state.as_deref() == Some(event.state.as_str()) {
-                continue;
-            }
-            // A parked session refuses a state it has no process to be in, so
-            // its row is not corrected as though the write had happened.
-            if row.stopped {
+            // Judged as the heartbeat's poll judges it, before the row is
+            // corrected in place: a re-report on reconnect, or a state for a
+            // parked session, must not be shown as though it had been written.
+            if !crate::session_ops::signals::echo_changes(
+                row.hook_state.as_deref(),
+                row.stopped,
+                &event.state,
+            ) {
                 continue;
             }
             let Some(id) = parse_id(&row.id) else {
@@ -1564,7 +1586,8 @@ impl SnapshotStore {
             // is cleared here rather than left to that (absent) refresh, because
             // this path never reaches `assess` at all — it writes the row
             // directly, which is the one case its hook.state gate cannot cover.
-            // Stamped now; the worker answers with the stamp storage chose.
+            // Stamped now; the worker answers with the stamp and the word
+            // storage chose.
             let stamped = crate::sync::current_time_millis() as i64;
             self.hook_state_at.insert(row.id.clone(), stamped);
             row.status = derive_state(Some(&event.state), Some(stamped), None);

@@ -67,6 +67,11 @@ pub const PUBLISHED_META_PREFIX: &str = "ui.";
 /// something else.
 pub const RESERVED_META_PREFIX: &str = "thurbox.";
 
+/// The session meta key `session bind-codex` records a Codex session's
+/// conversation under: what a restart resumes, a fork forks and a message is
+/// delivered to — or `picker-required` when no event proved which one.
+pub const CODEX_CONVERSATION_META: &str = "thurbox.codex_conversation_id";
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;

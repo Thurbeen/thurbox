@@ -111,7 +111,7 @@ pub(crate) fn build_restart_plan(
     );
     let codex_builtin = def.is_family("codex") && def.resume_args == ["resume", "{id}"];
     let codex_id = if codex_builtin {
-        db.get_session_meta(session.id, "thurbox.codex_conversation_id")
+        db.get_session_meta(session.id, crate::session::CODEX_CONVERSATION_META)
             .map_err(|e| format!("read Codex conversation id: {e}"))?
             .filter(|id| uuid::Uuid::parse_str(id).is_ok())
     } else {
