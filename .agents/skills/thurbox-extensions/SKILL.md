@@ -155,9 +155,11 @@ account, #1526 — gets the payload there via
 `extensions::land_payload`, the installer's own merge rules) or the host pass.
 The installed manifest saves the env-resolved paths, so uninstall reverts the
 file the install wrote whatever its own env; it reverts only the installer's
-copy. Merged hook files are replaced atomically (temp file + rename, through a
-symlink to its target), since the tick and each account launch may merge one
-at once. Opt out of either with `thurbox-cli extension deactivate <name>` (records a
+copy. Every file the installer writes — payloads, merged hook files, the saved
+manifest, `agents.toml` — goes through `paths::write_atomically` (temp file +
+rename, through a symlink to its target, keeping the file's permissions), since
+the tick and each account launch may merge one at once. Opt out of either with
+`thurbox-cli extension deactivate <name>` (records a
 `builtin_<name>_optout` metadata flag so self-heal won't resurrect it — the key
 format is chosen so `hooks` keeps producing the `builtin_hooks_optout` row it
 wrote before there was more than one built-in); `activate`/`install <name>`

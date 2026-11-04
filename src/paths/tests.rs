@@ -799,3 +799,23 @@ fn env_default_tokens_follow_the_given_environment() {
     assert_eq!(env_token_names(path), ["CODEX_HOME"]);
     assert!(env_token_names("~/.codex/hooks.json").is_empty());
 }
+
+/// A rename alone would give the replacement the staged file's default mode, so
+/// a private config would turn world-readable and a script lose its exec bit.
+#[cfg(unix)]
+#[test]
+fn a_replaced_file_keeps_its_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    for mode in [0o600, 0o755] {
+        let path = dir.path().join(format!("file-{mode:o}"));
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+
+        write_atomically(&path, "new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        let kept = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(kept, mode);
+    }
+}

@@ -1575,6 +1575,106 @@ fn the_declared_check_sees_a_mutual_allowance() {
 /// rename.
 ///
 /// This is the check that a wide rename needs and that nothing else provides.
+/// The calls that create or truncate a file in place.
+const IN_PLACE_WRITES: &[&str] = &["fs::write", "File::create", "OpenOptions::new"];
+
+/// One production file allowed to write in place, and why. Everything else a
+/// user edits or thurbox reads back goes through `paths::write_atomically`,
+/// which a crash, a full disk or a second writer cannot leave half-written.
+struct InPlaceWrite {
+    file: &'static str,
+    call: &'static str,
+    why: &'static str,
+}
+
+const IN_PLACE_ALLOWED: &[InPlaceWrite] = &[
+    InPlaceWrite {
+        file: "agent/version_check.rs",
+        call: "fs::write",
+        why: "a cache: one that fails to parse is fetched again",
+    },
+    InPlaceWrite {
+        file: "clipboard.rs",
+        call: "OpenOptions::new",
+        why: "opens /dev/tty to send an OSC 52 sequence, not a file",
+    },
+    InPlaceWrite {
+        file: "session_ops/automations/tick_log.rs",
+        call: "OpenOptions::new",
+        why: "appends a line to the heartbeat log",
+    },
+    InPlaceWrite {
+        file: "ui_control.rs",
+        call: "OpenOptions::new",
+        why: "appends to the control audit log",
+    },
+    InPlaceWrite {
+        file: "ui_control.rs",
+        call: "File::create",
+        why: "creates the empty audit log on Windows so its ACL is set before the first append",
+    },
+    InPlaceWrite {
+        file: "ui_control.rs",
+        call: "fs::write",
+        why: "stages the instance file under a private mode or owner ACL, then renames it",
+    },
+];
+
+/// Production code outside `paths` writes no file in place unless
+/// [`IN_PLACE_ALLOWED`] says why (#1634): a truncated `agents.toml`, manifest
+/// or plugin lock is a broken install, while a cut log line or a stale cache
+/// is not. Every entry must still match, so a write that moves to the atomic
+/// writer takes its exception with it.
+#[test]
+fn files_thurbox_reads_back_are_written_atomically() {
+    let tree = src_tree();
+    let mut found = Vec::new();
+    let mut used = BTreeSet::new();
+    for (file, line, call) in tree.production_calls(IN_PLACE_WRITES) {
+        if file.starts_with("paths") {
+            continue;
+        }
+        let allowed = IN_PLACE_ALLOWED
+            .iter()
+            .position(|a| Path::new(a.file) == file && a.call == call);
+        match allowed {
+            Some(i) => {
+                used.insert(i);
+            }
+            None => found.push(format!("{}:{line} {call}", file.display())),
+        }
+    }
+    let stale: Vec<_> = IN_PLACE_ALLOWED
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !used.contains(i))
+        .map(|(_, a)| format!("{} {} ({})", a.file, a.call, a.why))
+        .collect();
+    assert!(
+        found.is_empty(),
+        "write these through paths::write_atomically, or list them in IN_PLACE_ALLOWED with why:\n  {}",
+        found.join("\n  ")
+    );
+    assert!(
+        stale.is_empty(),
+        "IN_PLACE_ALLOWED names writes that are gone:\n  {}",
+        stale.join("\n  ")
+    );
+}
+
+/// The scan behind [`files_thurbox_reads_back_are_written_atomically`] sees the
+/// production write and none of its lookalikes: a comment, a string, another
+/// module's `write`, a `#[cfg(test)]` module inline or in a file of its own.
+#[test]
+fn the_in_place_write_scan_sees_only_production_calls() {
+    let found = fixture("in_place_writes").production_calls(IN_PLACE_WRITES);
+    let found: Vec<_> = found
+        .iter()
+        .map(|(file, line, call)| format!("{}:{line} {call}", file.display()))
+        .collect();
+    assert_eq!(found, ["config.rs:5 fs::write"]);
+}
+
 #[test]
 fn every_proptest_seed_still_names_a_live_source_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

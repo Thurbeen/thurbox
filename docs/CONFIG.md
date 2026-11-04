@@ -66,14 +66,22 @@ the panel — set it only by hand-editing `settings.toml`. Hand-editing
 the file (or the panel in another instance) is picked up the same way,
 via the live mtime poll.
 
-TUI saves of `settings.toml`, `ui.json` and `plugin-state.json` stage a complete file beside the
-destination and replace it with one native same-directory rename, so a reader
-never observes a truncated intermediate file and a failed staged write leaves
-the previous decisions intact. On Unix this is `rename`; native Windows uses
-`MoveFileExW` with replacement. An existing config-file symlink is preserved and
-its target is replaced. This protects the process-interruption boundary, not
-storage failure: the staged file and parent directory are not explicitly synced
-to stable storage.
+Every file thurbox writes that a user edits or thurbox reads back — `settings.toml`,
+`ui.json`, `plugin-state.json`, `agents.toml` (and the other seeded config files),
+extension manifests and payloads, the keybindings JSON, the interface's plugin
+lock, spec and bundled files, and the heartbeat's state — is written through
+one writer, `paths::write_atomically`. It stages a complete file beside the
+destination and replaces it with one native same-directory rename, so a reader
+never observes a truncated intermediate file and a failed staged write (a
+crash, a full disk) leaves the previous file intact. On Unix this is `rename`;
+native Windows uses `MoveFileExW` with replacement. An existing symlink is
+preserved and its target is replaced, and a replaced file keeps its
+permissions. This protects the process-interruption boundary, not storage
+failure: the staged file and parent directory are not explicitly synced to
+stable storage. `tests/architecture_rules.rs`
+(`files_thurbox_reads_back_are_written_atomically`) fails on any other
+production write, apart from an allow-list of logs, a cache and the control
+socket's privately staged files.
 
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 

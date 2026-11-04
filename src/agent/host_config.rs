@@ -224,7 +224,7 @@ fn load_or_seed_result() -> Result<(HostRegistry, Vec<String>), String> {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create config dir for hosts.toml: {e}"))?;
         }
-        std::fs::write(&path, SEED_HOSTS_TOML)
+        crate::paths::write_atomically(&path, SEED_HOSTS_TOML)
             .map_err(|e| format!("Failed to seed hosts.toml: {e}"))?;
         tracing::info!(path = %path.display(), "Seeded hosts.toml (no active hosts)");
         return Ok((HostRegistry::default(), Vec::new()));

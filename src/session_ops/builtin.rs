@@ -90,7 +90,7 @@ impl Builtin {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("create {}: {e}", parent.display()))?;
             }
-            std::fs::write(&path, contents)
+            crate::paths::write_atomically(&path, contents)
                 .map_err(|e| format!("write {}: {e}", path.display()))?;
         }
         Ok(dir)

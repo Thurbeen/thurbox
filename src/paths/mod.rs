@@ -61,14 +61,19 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os(var).map(PathBuf::from)
 }
 
-/// Write a config file beside its destination, then replace the destination.
+/// Write a file beside its destination, then replace the destination.
+///
+/// The one writer for every file a user edits or thurbox reads back;
+/// `tests/architecture_rules.rs` holds production code outside `paths` to it.
 ///
 /// Keeping the staged file in the same directory makes the final rename a
 /// same-filesystem operation: readers see either the previous complete file or
 /// the new complete file. A failed staged write leaves the destination alone.
+/// A replaced file keeps its permissions — a `chmod 600` config stays private
+/// and an executable stays executable — which a bare rename would reset.
 /// This does not promise durability across storage or operating-system failure;
 /// neither the file nor its parent directory is synced explicitly.
-pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = write_destination(path)?;
     let staged = path.with_extension(format!(
@@ -77,6 +82,11 @@ pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<(
         SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::write(&staged, contents)
+        .and_then(|()| match std::fs::metadata(&path) {
+            Ok(existing) => std::fs::set_permissions(&staged, existing.permissions()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        })
         .and_then(|()| replace_file(&staged, &path))
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&staged);

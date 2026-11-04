@@ -318,7 +318,8 @@ fn install_payload_file(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    std::fs::write(&dest, content).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    crate::paths::write_atomically(&dest, content)
+        .map_err(|e| format!("write {}: {e}", dest.display()))?;
     if f.executable {
         set_executable(&dest)?;
     }
@@ -435,7 +436,8 @@ fn install_external_file(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    std::fs::write(&dest, content).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    crate::paths::write_atomically(&dest, content)
+        .map_err(|e| format!("write {}: {e}", dest.display()))?;
     if f.executable {
         set_executable(&dest)?;
     }
@@ -505,57 +507,13 @@ pub(super) fn write_if_changed(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    replace_atomically(path, content)?;
+    // A hook file is merged by the install tick and by each launch of its
+    // account; a merge that read a half-written file as `{}` would write the
+    // user's own hooks away. A symlinked `path` (a dotfiles checkout) keeps its
+    // link: the write lands on the file it points at.
+    crate::paths::write_atomically(path, content)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(true)
-}
-
-/// Write `content` to a sibling temp file and rename it over `path`, so a
-/// reader sees the old file or the new one and never an empty one. A hook file
-/// is merged by the install tick and by each launch of its account, and a
-/// merge that read a half-written file as `{}` would write the user's own
-/// hooks away. A symlinked `path` (a dotfiles checkout) keeps its link: the
-/// rename lands on the file it points at, with that file's permissions, or
-/// creates that file when the link dangles.
-fn replace_atomically(path: &Path, content: &str) -> Result<(), crate::session_ops::OpError> {
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let target = link_target(path);
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = target.with_file_name(format!(
-        ".{name}.thurbox-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let written = std::fs::write(&tmp, content)
-        .and_then(|()| match std::fs::metadata(&target) {
-            Ok(meta) => std::fs::set_permissions(&tmp, meta.permissions()),
-            Err(_) => Ok(()),
-        })
-        .and_then(|()| std::fs::rename(&tmp, &target));
-    written.map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("write {}: {e}", path.display()).into()
-    })
-}
-
-/// The file `path`'s symlink chain ends at, whether or not it exists yet —
-/// `canonicalize` gives up on a dangling link, and renaming over the link
-/// would cut the user's dotfiles out. A loop longer than the OS allows stops
-/// where it is, as the write through it would fail anyway.
-fn link_target(path: &Path) -> std::path::PathBuf {
-    let mut target = path.to_path_buf();
-    for _ in 0..40 {
-        let Ok(next) = std::fs::read_link(&target) else {
-            break;
-        };
-        target = match target.parent() {
-            Some(parent) if next.is_relative() => parent.join(next),
-            _ => next,
-        };
-    }
-    target
 }
 
 /// How one hook payload lands in a config dir: merged into a shared file in
