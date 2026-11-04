@@ -1718,6 +1718,153 @@ fn a_fresh_restart_starts_a_new_conversation_on_the_same_row() {
     assert_ne!(third_id, fresh_id);
     assert_eq!(launches(4)[3], format!("--session-id {third_id}"));
 
+    // A stop while `--wait` waits ends the restart: the operator parked it.
+    db.set_hook_state(id, "working").unwrap();
+    let waiting = env
+        .command(&[
+            "session", "restart", &id_text, "--fresh", "--wait", "--json",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let stop = env.run(&["session", "stop", &id_text, "--json"]);
+    assert!(stop.status.success(), "{}", stdout_of(&stop));
+    let stopped = waiting.wait_with_output().unwrap();
+    assert!(!stopped.status.success(), "{}", stdout_of(&stopped));
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert_eq!(launches(4).len(), 4, "a stopped session was relaunched");
+    let row = db.get_session_by_id(id).unwrap().unwrap();
+    assert_eq!(row.agent_session_id.as_deref(), Some(third_id.as_str()));
+    assert!(db.session_stopped_at(id).unwrap().is_some());
+
     let version = json(&env.run(&["version", "--json"]));
     assert_eq!(version["session_restart_fresh"], true, "{version}");
+}
+
+/// A fresh restart delegated to a sharing host hands this machine's
+/// `post_restart` hook the conversation the host started, not the old one.
+#[cfg(unix)]
+#[test]
+fn a_delegated_fresh_restart_hands_the_post_hook_the_new_conversation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    let bin = env.path("bin");
+    std::fs::create_dir(&bin).unwrap();
+    std::fs::write(
+        env.path("config/settings.toml"),
+        "[features]\nautomations = false\nversion_check = false\nauto_update = false\n",
+    )
+    .unwrap();
+    let version = env.run(&["version", "--json"]);
+    assert!(version.status.success());
+    std::fs::write(env.path("data/host-version"), version.stdout).unwrap();
+    std::fs::write(
+        env.path("config/hosts.toml"),
+        "[[hosts]]\nname = 'probe'\ndestination = 'probe'\nshare_sessions = true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        env.path("config/hooks.toml"),
+        r#"[[hooks]]
+event = 'session.post_restart'
+command = 'printf %s "$THURBOX_SESSION_ID" > "$THURBOX_DATA_DIR/post-hook"'
+"#,
+    )
+    .unwrap();
+    let ssh = bin.join("ssh");
+    std::fs::write(
+        &ssh,
+        r#"#!/bin/sh
+case "$*" in
+    *'version --json'*)
+        printf '%s\n' '@cli /probe/thurbox-cli' '@status 0'
+        cat "$THURBOX_DATA_DIR/host-version"
+        ;;
+    *session*restart*--fresh*) printf '%s\n' '{"outcome":"cleared","restarted":true,"agent_session_id":"conversation-2","hook_failures":[]}' ;;
+    *session*list*) printf '%s\n' '[]' ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let id = env.seed("delegated-fresh", None);
+    let db = env.db();
+    let mut session = db.get_session_by_id(id).unwrap().unwrap();
+    session.backend_type = "ssh:probe".into();
+    db.upsert_session(&session).unwrap();
+    let mut cmd = env.command(&["session", "restart", &id.to_string(), "--fresh", "--json"]);
+    cmd.env(
+        "PATH",
+        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+    );
+    let out = cmd.output().unwrap();
+    assert!(
+        out.status.success(),
+        "{} / {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["outcome"], "cleared", "{report}");
+    assert_eq!(report["agent_session_id"], "conversation-2", "{report}");
+    assert_eq!(
+        std::fs::read_to_string(env.path("data/post-hook")).unwrap(),
+        "conversation-2"
+    );
+}
+
+/// The new agent's first hook (Codex binds its conversation at `SessionStart`)
+/// checks its `THURBOX_SESSION_ID` against the row, so the row must already
+/// name the new conversation when the agent starts.
+#[cfg(unix)]
+#[test]
+fn a_fresh_agent_starts_on_a_row_that_already_names_its_conversation() {
+    if thurbox::paths::resolve_on_path("tmux").is_none() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let seen = env.path("seen");
+    let cli = env!("CARGO_BIN_EXE_thurbox-cli");
+    std::fs::write(
+        env.path("config/agents.toml"),
+        format!(
+            "default = \"stub\"\n[[agents]]\nname = \"stub\"\ncommand = \"sh\"\n\
+             args = ['-c', 'echo \"$THURBOX_SESSION_ID $({cli} session get $THURBOX_SESSION --json \
+             | grep -o \"conversation-1\\|$THURBOX_SESSION_ID\" | head -n 1)\" >> {seen}; \
+             while :; do sleep 1; done', 'stub', '{{session_args}}']\n\
+             new_session_args = ['--session-id', '{{id}}']\n",
+            seen = seen.display()
+        ),
+    )
+    .unwrap();
+    let id = env.seed("ordered", Some(&env.path("work")));
+    let db = env.db();
+    let mut row = db.get_session_by_id(id).unwrap().unwrap();
+    row.agent = "stub".into();
+    db.upsert_session(&row).unwrap();
+    let out = env
+        .command(&["session", "restart", &id.to_string(), "--fresh", "--json"])
+        .env("THURBOX_CONFIG_DIR", env.path("config"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stdout_of(&out));
+    let mut line = String::new();
+    for _ in 0..100 {
+        line = std::fs::read_to_string(&seen).unwrap_or_default();
+        if line.ends_with('\n') {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let words: Vec<&str> = line.split_whitespace().collect();
+    assert_eq!(words.len(), 2, "{line:?}");
+    assert_ne!(words[0], "conversation-1");
+    assert_eq!(
+        words[0], words[1],
+        "the row named another conversation at start"
+    );
 }

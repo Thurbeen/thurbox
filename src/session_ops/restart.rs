@@ -585,7 +585,21 @@ pub fn restart_fresh(
             timeout: None,
         };
         match super::wait::run(db, backends, &session, ended, None) {
-            Ok(_) | Err(super::wait::Error::Gone) => {}
+            Ok(_) => {}
+            // Parked by an operator while waiting: that ends the restart. Any
+            // other end (the agent exited, was lost) left no turn to cut off.
+            Err(super::wait::Error::Gone)
+                if db
+                    .session_stopped_at(session_id)
+                    .map_err(|e| format!("could not read '{}': {e}", session.name))?
+                    .is_some() =>
+            {
+                return Err(crate::session_ops::OpError::Gone(format!(
+                    "'{}' was stopped while its turn was awaited; not restarting it",
+                    session.name
+                )));
+            }
+            Err(super::wait::Error::Gone) => {}
             Err(super::wait::Error::Timeout) => {
                 return Err(crate::session_ops::OpError::Timeout(format!(
                     "'{}' did not end its turn",
@@ -845,35 +859,42 @@ fn restart_for(
 
     refuse_if_deleted(db, &session)?;
 
-    respawn(db, backend.as_ref(), &session, &plan)?;
-    if fresh {
-        // Recorded only once the old agent is verifiably gone and the new one
-        // is up: a teardown that leaves the old window running must leave the
-        // row naming the conversation that window is still on.
+    // A fresh restart's new id goes on the row once the old agent is verifiably
+    // gone and before the new one starts: a surviving old window keeps the row
+    // on the conversation it is still on, and the new agent's first hook (Codex
+    // binds its conversation at `SessionStart`) checks its id against the row.
+    let adopt_new_conversation = || -> Result<(), super::OpError> {
+        if !fresh {
+            return Ok(());
+        }
         let id = session.agent_session_id.as_deref().unwrap_or_default();
-        match db.set_agent_session_id(session_id, id) {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(
-                    format!("'{}' was deleted while it was restarting", session.name).into(),
-                )
-            }
-            Err(e) => {
-                return Err(format!(
-                    "'{}' runs a new conversation, but its id could not be recorded \
-                     (a plain restart would resume the old one): {e}",
-                    session.name
-                )
-                .into())
-            }
+        let stored = db.set_agent_session_id(session_id, id).map_err(|e| {
+            format!(
+                "could not record the new conversation of '{}': {e}",
+                session.name
+            )
+        })?;
+        if !stored {
+            return Err(format!("'{}' was deleted while it was restarting", session.name).into());
         }
         // Codex's own conversation id is what a plain restart resumes it by.
-        if let Err(e) = db.unset_session_meta(session_id, "thurbox.codex_conversation_id") {
-            tracing::warn!(
-                "could not forget the conversation of '{}': {e}",
-                session.name
-            );
-        }
+        db.unset_session_meta(session_id, "thurbox.codex_conversation_id")
+            .map_err(|e| {
+                format!(
+                    "could not forget the conversation of '{}': {e}",
+                    session.name
+                )
+            })?;
+        Ok(())
+    };
+    respawn(
+        db,
+        backend.as_ref(),
+        &session,
+        &plan,
+        adopt_new_conversation,
+    )?;
+    if fresh {
         hook_ctx.agent_session_id = session.agent_session_id.clone();
         // A multi-repo session's workspace is named by the old id; the new one
         // was built by the plan, so the old one is nobody's now. Delete keeps
@@ -939,6 +960,10 @@ fn restart_delegated(
         return Ok((report, result));
     }
     hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session.id);
+    // A fresh restart on the host moved the session to a new conversation.
+    if let Some(id) = result["agent_session_id"].as_str() {
+        hook_ctx.agent_session_id = Some(id.to_string());
+    }
     let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);
     let report = RestartReport {
         hook_failures,
@@ -1019,12 +1044,14 @@ fn relaunch_is_owed(
 }
 
 /// Replace a session's window with the plan's on its backend, and point the
-/// row at the new pane.
+/// row at the new pane. `before_spawn` runs once the old windows are verifiably
+/// gone and before the new one starts; its error leaves no window running.
 fn respawn(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
     session: &SharedSession,
     plan: &RestartPlan,
+    before_spawn: impl FnOnce() -> Result<(), crate::session_ops::OpError>,
 ) -> Result<(), crate::session_ops::OpError> {
     let id = session.id.to_string();
     // By the windows' own stamps, agent and companion shell together: the
@@ -1059,6 +1086,7 @@ fn respawn(
         )
         .into());
     }
+    before_spawn()?;
 
     let pane = backend
         .create_window(&crate::backend::WindowSpec {
