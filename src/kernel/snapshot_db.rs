@@ -57,11 +57,18 @@ pub(crate) enum Write {
         seen: String,
         pane: String,
     },
-    /// A remote agent's hook report: the row's id as published, the state, and
-    /// the stamp the store gave it in place until this answers with storage's.
-    /// Decided as a change of state, so it is re-decided against whatever
-    /// state storage holds by then.
-    Hook(SessionId, String, String, i64),
+    /// A remote agent's hook report: the row's id as published, the state,
+    /// the stamp the store gave it in place until this answers with storage's,
+    /// and which of the store's in-place corrections it is. Decided as a
+    /// change of state, so it is re-decided against whatever state storage
+    /// holds by then.
+    Hook {
+        id: SessionId,
+        row: String,
+        state: String,
+        provisional: i64,
+        correction: u64,
+    },
     /// Clear the report an Enter superseded, unless a newer one replaced it.
     /// Its stamp may still be the store's provisional one.
     Retire(SessionId, HookRow),
@@ -102,11 +109,11 @@ pub(crate) enum Reply {
     Focus(String),
     /// The stamp a hook write landed with, and the word it stored — which
     /// sub-work in flight can make differ from the word reported (a `done`
-    /// with work running rests as `background`). `provisional` is the stamp
-    /// the store gave it in place.
+    /// with work running rests as `background`). `correction` is the store's
+    /// number for the in-place correction it answers.
     Stamped {
         session: String,
-        provisional: i64,
+        correction: u64,
         at: i64,
         state: String,
     },
@@ -342,7 +349,13 @@ impl Worker {
             // Nothing written is a session parked after the store looked, or
             // one whose state another writer already set: refused, not failed,
             // and the row must be read again either way.
-            Write::Hook(id, row, state, provisional) => {
+            Write::Hook {
+                id,
+                row,
+                state,
+                provisional,
+                correction,
+            } => {
                 let (stored, at) = match signals::report(database, id, &state, ReportFrom::Echo) {
                     Ok(signals::Reported::Stored { state, at }) => (state, at),
                     Ok(_) | Err(_) => return Some(Reply::Rejected),
@@ -350,7 +363,7 @@ impl Worker {
                 self.stamped.insert(id, (provisional, at));
                 return Some(Reply::Stamped {
                     session: row,
-                    provisional,
+                    correction,
                     at,
                     state: stored,
                 });

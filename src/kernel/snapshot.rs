@@ -837,6 +837,13 @@ pub struct SnapshotStore {
     /// since printed past, and every other consumer of that stamp already
     /// reads it from the database.
     hook_state_at: std::collections::HashMap<String, i64>,
+    /// The hook report each row was last corrected to in place, by session
+    /// id, numbered from `hook_corrections_made`: only the answer to that one
+    /// may correct the row again. A stamp cannot say which report an answer
+    /// is for — two can share a millisecond, and storage may stamp either
+    /// later than the store did.
+    hook_corrections: std::collections::HashMap<String, u64>,
+    hook_corrections_made: u64,
 }
 
 /// A remote hook event waiting for the session it names to appear.
@@ -903,6 +910,8 @@ impl SnapshotStore {
             pending_focus: None,
             editor: std::sync::mpsc::channel(),
             hook_state_at: std::collections::HashMap::new(),
+            hook_corrections: std::collections::HashMap::new(),
+            hook_corrections_made: 0,
         };
         store.refresh();
         store
@@ -948,6 +957,8 @@ impl SnapshotStore {
             pending_focus: None,
             editor: std::sync::mpsc::channel(),
             hook_state_at: std::collections::HashMap::new(),
+            hook_corrections: std::collections::HashMap::new(),
+            hook_corrections_made: 0,
         };
         store.refresh();
         store
@@ -1238,18 +1249,19 @@ impl SnapshotStore {
             }
             Reply::Stamped {
                 session,
-                provisional,
+                correction,
                 at,
                 state,
             } => {
-                let latest = self.hook_state_at.get(&session) == Some(&provisional);
-                self.hook_state_at.insert(session.clone(), at);
-                // The row was corrected in place to the word reported; storage
-                // may have settled it as another. A later report corrected
-                // since then is answered after this one, and stands.
-                if !latest {
+                // A later report corrected the row since: its own answer is
+                // still to come, and until then its stamp and word stand.
+                if self.hook_corrections.get(&session) != Some(&correction) {
                     return false;
                 }
+                self.hook_corrections.remove(&session);
+                self.hook_state_at.insert(session.clone(), at);
+                // The row was corrected in place to the word reported; storage
+                // may have settled it as another.
                 let Some(row) = self
                     .current
                     .sessions
@@ -1593,7 +1605,16 @@ impl SnapshotStore {
             row.status = derive_state(Some(&event.state), Some(stamped), None);
             row.hook_state = Some(event.state.clone());
             row.detected_agent = None;
-            writes.push(Write::Hook(id, row.id.clone(), event.state, stamped));
+            self.hook_corrections_made += 1;
+            let correction = self.hook_corrections_made;
+            self.hook_corrections.insert(row.id.clone(), correction);
+            writes.push(Write::Hook {
+                id,
+                row: row.id.clone(),
+                state: event.state,
+                provisional: stamped,
+                correction,
+            });
             applied += 1;
         }
         for write in writes {

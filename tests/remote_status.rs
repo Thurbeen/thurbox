@@ -311,7 +311,7 @@ fn through_the_subscription(before: Before, state: &str) -> After {
 
 fn through_session_signal(before: Before, state: &str) -> After {
     let (home, id) = prepared(before);
-    let _ = run(
+    let result = run(
         Action::Signal {
             state: Some(state.into()),
             work_start: None,
@@ -323,6 +323,20 @@ fn through_session_signal(before: Before, state: &str) -> After {
         &database(&home),
         &thurbox::cli::Backends::ready(backends()),
     );
+    // A report the row cannot take is refused out loud, each for its reason.
+    match (before, thurbox::session_ops::signals::is_state(state)) {
+        (_, false) => {
+            let err = result.expect_err("a word that is no state is refused");
+            assert!(err.contains("is not a state"), "{err}");
+        }
+        (Before::Parked, true) => {
+            let err = result.expect_err("a parked session is refused");
+            assert!(err.contains("parked"), "{err}");
+        }
+        _ => {
+            result.unwrap_or_else(|e| panic!("{state} after {}: {e}", name(before)));
+        }
+    }
     After {
         stored: stored(&home, id),
         shown: shown(&store_over(&home), id),
@@ -367,6 +381,35 @@ fn both_paths_store_the_same_state() {
             name(before)
         );
     }
+}
+
+#[test]
+fn the_last_of_several_queued_reports_is_shown_as_stored() {
+    // Two reports in one drain, both corrected in place before either is
+    // answered. The first answer must not stand in for the second: with work
+    // still running, the `done` that came last rests as `background`.
+    let (home, id) = prepared(Before::WorkInFlight);
+    // A report stamped ahead of this clock (another machine's), so storage
+    // stamps the next one after it rather than at the store's own now: each
+    // answer then names a stamp the store did not give.
+    rusqlite::Connection::open(home.path().join("thurbox.db"))
+        .expect("open")
+        .execute(
+            "UPDATE sessions SET hook_state_at = hook_state_at + 60000 WHERE id = ?1",
+            [id.to_string()],
+        )
+        .expect("stamp ahead");
+    let mut store = store_over(&home);
+    store.apply_hook_states(
+        vec![
+            (SERVED_BY.into(), PANE.into(), "blocked".into()),
+            (SERVED_BY.into(), PANE.into(), "done".into()),
+        ],
+        Instant::now(),
+    );
+    store.settle();
+    assert_eq!(stored(&home, id).as_deref(), Some("background"));
+    assert_eq!(shown(&store, id), shown(&store_over(&home), id));
 }
 
 #[test]
