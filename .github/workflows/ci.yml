@@ -219,7 +219,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-nextest
       # A real multiplexer, so the tests that drive one run here rather than
@@ -281,7 +281,7 @@ jobs:
           Add-MpPreference -ExclusionPath "$env:USERPROFILE\.rustup"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: cargo-nextest
       # --no-fail-fast: surface every native-Windows test failure in one run
@@ -365,7 +365,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Lint markdown files
-        uses: rvben/rumdl@9b8161e6124f1bde9d5c3dd0c9a36ceb559e1f53 # v0.3.1
+        uses: rvben/rumdl@1e0f1d13c87418c31e0d59dacddd98f27a02efcc # v0.3.2
         with:
           report-type: annotations
 
