@@ -5,7 +5,8 @@ The Slack adapter maps one Slack workspace onto the
 `crates/fleet-gateway/src/slack.rs`. It keeps the
 [common rules](README.md#common-rules) of every adapter.
 
-Every Slack claim cites Slack's own documentation, read on 2026-10-26. A claim
+Every Slack claim cites Slack's own documentation, read on 2026-10-26. The
+DM claims were read on 2026-11-04. A claim
 that those pages do not state is marked **unverified**.
 
 ## Setup
@@ -36,6 +37,8 @@ On the Slack side, the operator does these steps:
    history reach the bot only in a channel where it is a member. On an
    account with a wildcard route, membership is the allowlist of channels:
    the wildcard covers every channel the bot is in.
+7. For one-to-one DMs, also do the steps under
+   [The DM route](#the-dm-route).
 
 The listener is a program outside Fleet. It does these things:
 
@@ -85,15 +88,60 @@ A wildcard route, `channels = ["*"]`, covers these Slack conversations:
 - Every public channel (`message.channels`) and private channel
   (`message.groups`) where the bot is a member, apart from a channel id that
   another route lists and the `gateway.logs` channel.
-- A DM (`D…`) or a group DM, only when the app also subscribes to
-  `message.im` or `message.mpim`. The setup above does not subscribe to
-  them, so by default the wildcard covers no DM.
+- A group DM, only when the app also subscribes to `message.mpim`. A
+  request there needs a mention, as in a channel.
+- A one-to-one DM, only when the app also subscribes to `message.im` and
+  the account has no DM route. A request there needs a mention.
 
-Recommendation: leave DMs unsubscribed. In a DM, a request must still
-mention the bot under `mention = "required"`, which people rarely do.
+The setup above subscribes to neither, so by default the wildcard covers
+no DM. A subscription is the operator's choice of which conversations
+reach Fleet.
 
-The adapter reads no channel type. A subscription is the operator's choice
-of which conversations reach Fleet.
+Recommendation: to take requests in one-to-one DMs, add a DM route. Do not
+rely on the wildcard there. Reason: under the wildcard, a DM request must
+mention the bot, which people rarely do.
+
+### The DM route
+
+A DM route has `"dm:*"` in `channels`. It covers every one-to-one DM
+between the bot and a user of the workspace, apart from a channel id that a
+route lists. In such a DM:
+
+- A top-level message from a person on `allow` starts a Task. It needs no
+  mention.
+- A reply in a tied DM thread is a turn for that thread's Task. A new
+  top-level message is a new thread, and it starts a new Task. To continue
+  a Task, a person replies in its thread.
+- A top-level message from anyone else earns the route's refusal, once per
+  thread. It never becomes an instruction.
+
+The adapter marks a delivery `direct` when the message event's
+`channel_type` is `im`. Slack documents `channel_type` as the way to tell a
+DM from other message events[^slack-message-im]. A group DM has
+`channel_type` `mpim`[^slack-message-mpim], so it is not `direct`. The
+adapter does not read the channel id prefix. Reason: the documented group
+DM example has a `G…` id, the prefix of a private channel too.
+
+`message_changed` and `message_deleted` events may lack `channel_type`:
+Slack's example shows none (**unverified** in general). The receive verb
+still routes such an edit to its DM thread from the Conversation's
+`spec.direct`.
+
+To take DMs on an account, the operator makes these Slack app changes:
+
+1. Add the bot scope `im:history`. It reads DM history, including through
+   `conversations.replies`[^slack-message-im][^slack-replies].
+2. Subscribe the app to the `message.im` event[^slack-message-im].
+3. In App Home, switch on the **Messages Tab**[^slack-app-home]. Slack's
+   App Home page names `chat:write` and `im:history` for it. A checkbox that
+   lets users send messages from that tab may also need to be on
+   (**unverified**: the page does not name it).
+4. Reinstall the app to the workspace, so that the new scope applies.
+5. In the Fleet config, add `"dm:*"` to the route's `channels`. Keep every
+   person who may DM the bot under that route's `allow`.
+
+Group DMs need `message.mpim` and `mpim:history`[^slack-message-mpim]. They
+are optional, and the wildcard covers them under the mention rule.
 
 ## Address format
 
@@ -129,7 +177,7 @@ first, so that a failing account answers Unknown.
 | Port item | Slack |
 | --- | --- |
 | `whoami` | `auth.test`. Its `user_id` is the identity. When `team` is set, the answer's `team_id` or `enterprise_id` must equal it. |
-| `event` | Reads a Socket Mode envelope (`type: events_api`) or an Events API body (`type: event_callback`). Message events become `Message`, `message_changed` becomes `Edited`, and `message_deleted` becomes `Removed`. |
+| `event` | Reads a Socket Mode envelope (`type: events_api`) or an Events API body (`type: event_callback`). Message events become `Message`, `message_changed` becomes `Edited`, and `message_deleted` becomes `Removed`. A delivery is `direct` when the event's `channel_type` is `im`[^slack-message-im]. |
 | Delivery id | The event wrapper's `event_id`, which is globally unique[^slack-events]. |
 | Ignored events | Other envelope types, events that are not messages, other workspaces, and message subtypes other than none, `file_share`, `thread_broadcast` and `bot_message`. |
 | Mention | `<@U…>` or `<@U…\|name>` with Fleet's bot user id in `text`[^slack-format]. The adapter does not rely on `app_mention`. Reason: `app_mention` needs `app_mentions.read`, and the reference does not state how it behaves inside threads (**unverified**)[^slack-mention]. |
@@ -188,11 +236,21 @@ These points are **unverified**:
 - Whether the app receives its own posts as events. Bolt's `ignoreSelf`
   implies that it does[^slack-ignoreself]. So the adapter reads them as
   `fleet` authors.
+- Whether `message_changed` and `message_deleted` events carry
+  `channel_type`. The receive verb does not need it for a DM thread that
+  Fleet already mirrors.
+- Whether App Home needs a separate checkbox, besides the Messages Tab, so
+  that users can send messages to the app.
+- Whether `im:history` alone, without `mpim:history`, lets
+  `conversations.replies` read a one-to-one DM. The method lists all four
+  history scopes[^slack-replies].
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| A DM to the bot starts no Task, and the receive verb logs nothing | The app does not subscribe to `message.im`, or App Home's Messages Tab is off. | Do the steps under [The DM route](#the-dm-route). |
+| A DM to the bot is ignored as chatter | No route of the account holds `"dm:*"`, so the wildcard covers the DM under the mention rule. | Add `"dm:*"` to the route's `channels`. |
 | The manager refuses the config: `inbound "X" is not how a Slack listener delivers` | `inbound` names another platform's method. | Set `socket-mode` or `events-api`. |
 | The manager refuses the config: `a slack account needs a curlConfig` | The account has no `curlConfig`. | Name the operator's curl config file. |
 | `Resolved` is Unknown: `auth.test answered for team …, not the account's …` | The token belongs to another workspace, or `team` is wrong. | Fix `team`, or the token in the curl config. |
@@ -212,11 +270,14 @@ These points are **unverified**:
 [^slack-events]: <https://docs.slack.dev/apis/events-api/>
 [^slack-java]: <https://docs.slack.dev/tools/java-slack-sdk/guides/socket-mode/>
 [^slack-ent]: <https://docs.slack.dev/enterprise/developing-for-enterprise-orgs/>
+[^slack-message-im]: <https://docs.slack.dev/reference/events/message.im>
+[^slack-message-mpim]: <https://docs.slack.dev/reference/events/message.mpim>
+[^slack-replies]: <https://docs.slack.dev/reference/methods/conversations.replies>
+[^slack-app-home]: <https://docs.slack.dev/surfaces/app-home>
 [^slack-threads]: <https://docs.slack.dev/messaging/retrieving-messages>
 [^slack-post]: <https://docs.slack.dev/reference/methods/chat.postMessage>
 [^slack-format]: <https://docs.slack.dev/messaging/formatting-message-text>
 [^slack-mention]: <https://docs.slack.dev/reference/events/app_mention>
-[^slack-replies]: <https://docs.slack.dev/reference/methods/conversations.replies>
 [^slack-user]: <https://docs.slack.dev/reference/objects/user-object/>
 [^slack-compare]: <https://docs.slack.dev/apis/events-api/comparing-http-socket-mode>
 [^slack-ignoreself]: <https://docs.slack.dev/tools/bolt-js/reference/variables/ignoreself>

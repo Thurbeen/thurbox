@@ -1059,21 +1059,35 @@ pub fn receive(
         }
     };
     let reference = delivery.event.conversation().clone();
-    let Some((route_name, route)) = config.route_of(account, &reference.chat) else {
+    let name = conversation_name(account, &reference);
+    let direct = delivery.direct
+        || match mirrored_as_dm(store, config, account, &name, &delivery.event) {
+            Ok(direct) => direct,
+            Err(why) => return Err(refuse(Refusal::UnknownRecord, StoreError::Unknown(why))),
+        };
+    let Some(covered) = config.route_for(account, &reference.chat, direct) else {
         return Ok(Received::Ignored {
             why: format!("no route covers channel {}", reference.chat),
         });
     };
-    let name = conversation_name(account, &reference);
+    let (route_name, route) = (covered.name, covered.route);
     let by = FieldManager::Listener(account.to_string());
     for _ in 0..CAS_TRIES {
         let current = match store.get(conversation::KIND, &name) {
             Observation::Known(Some(o)) => o,
             Observation::Known(None) => {
-                if !worth_mirroring(route, config, &delivery.event) {
+                if !worth_mirroring(route, covered.direct, config, &delivery.event) {
                     return Ok(Received::Ignored {
                         why: "chatter in a thread Fleet does not mirror".into(),
                     });
+                }
+                let mut spec = json!({
+                    "account": account,
+                    "address": reference.address(),
+                    "route": route_name,
+                });
+                if covered.direct {
+                    spec["direct"] = json!(true);
                 }
                 let manifest = Object {
                     api_version: API_VERSION.to_string(),
@@ -1082,11 +1096,7 @@ pub fn receive(
                         name: name.clone(),
                         ..fleet_api::ObjectMeta::default()
                     },
-                    spec: json!({
-                        "account": account,
-                        "address": reference.address(),
-                        "route": route_name,
-                    }),
+                    spec,
                     status: Value::Null,
                 };
                 store.validate(&manifest)?;
@@ -1212,11 +1222,34 @@ pub fn receive_opened(
     ))
 }
 
+/// Whether an edit or a removal that does not say it is in a DM is in a
+/// thread Fleet mirrors as one. A platform may leave the chat's type out of
+/// such an event, and the thread's route must still cover it. Only an
+/// account with a DM route reads the store for this; a missing
+/// Conversation is no DM, and an unknown one is the store's doubt.
+fn mirrored_as_dm(
+    store: &dyn Store,
+    config: &GatewayConfig,
+    account: &str,
+    name: &str,
+    event: &Event,
+) -> Result<bool, String> {
+    if matches!(event, Event::Message { .. }) || !config.has_dm_route(account) {
+        return Ok(false);
+    }
+    match store.get(conversation::KIND, name) {
+        Observation::Known(Some(o)) => Ok(o.spec["direct"] == json!(true)),
+        Observation::Known(None) => Ok(false),
+        Observation::Unknown { why } => Err(why),
+    }
+}
+
 /// Whether an event in a thread Fleet does not mirror yet is worth a
 /// Conversation: it could start a Task, earn a refusal, or is Fleet's own
 /// keyed post. Other chatter costs no object.
 fn worth_mirroring(
     route: &fleet_api::gateway::RouteConfig,
+    direct: bool,
     config: &GatewayConfig,
     event: &Event,
 ) -> bool {
@@ -1224,8 +1257,8 @@ fn worth_mirroring(
         return false;
     };
     let admission = admit(route, &config.people, message);
-    starts_task(route, admission, message)
-        || earns_refusal(admission, message)
+    starts_task(route, direct, admission, message)
+        || earns_refusal(direct, admission, message)
         || (message.author.kind == AuthorKind::Fleet && message.key.is_some())
 }
 

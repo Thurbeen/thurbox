@@ -231,6 +231,11 @@ pub struct Delivery {
     pub verified: Verified,
     pub received_at: Millis,
     pub event: Event,
+    /// The platform says the event's chat is a one-to-one direct message
+    /// between Fleet's bot and one other user. Absent means `false`: a
+    /// channel, a group chat, or a payload that does not say.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct: bool,
 }
 
 /// How an adapter recognises Fleet's own posts again.
@@ -636,9 +641,11 @@ pub enum Mention {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouteConfig {
     pub account: String,
-    /// Platform channel ids, and `"*"`, the wildcard: every other channel
-    /// of the account. A channel id belongs to at most one route, and an
-    /// account has at most one wildcard route.
+    /// Platform channel ids; `"*"`, the wildcard: every other channel of
+    /// the account; and `"dm:*"`, the DM entry: every one-to-one direct
+    /// message with the bot that no route lists. A channel id belongs to at
+    /// most one route, and an account has at most one wildcard route and at
+    /// most one DM route.
     #[serde(default)]
     pub channels: Vec<String>,
     #[serde(default)]
@@ -667,6 +674,20 @@ pub struct RouteConfig {
 /// that no other route lists and that is not the log channel.
 pub const ANY_CHANNEL: &str = "*";
 
+/// The `channels` entry that covers every one-to-one direct message
+/// between the bot and a person on the route's account that no other route
+/// lists. There a top-level message starts a Task without a mention.
+pub const ANY_DM: &str = "dm:*";
+
+/// The route that covers a chat, and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Covered<'a> {
+    pub name: &'a str,
+    pub route: &'a RouteConfig,
+    /// The route covers the chat by its DM entry, `"dm:*"`.
+    pub direct: bool,
+}
+
 impl RouteConfig {
     pub fn refusal(&self) -> &str {
         self.refusal.as_deref().unwrap_or(DEFAULT_REFUSAL)
@@ -677,16 +698,23 @@ impl RouteConfig {
         self.channels.iter().any(|c| c == ANY_CHANNEL)
     }
 
-    /// The channel ids the route lists, the wildcard left out.
+    /// Whether `channels` holds the DM entry.
+    pub fn covers_dms(&self) -> bool {
+        self.channels.iter().any(|c| c == ANY_DM)
+    }
+
+    /// The channel ids the route lists, the wildcard and the DM entry left
+    /// out.
     pub fn channel_ids(&self) -> impl Iterator<Item = &str> {
         self.channels
             .iter()
             .map(String::as_str)
-            .filter(|c| *c != ANY_CHANNEL)
+            .filter(|c| *c != ANY_CHANNEL && *c != ANY_DM)
     }
 
     /// The first channel id the route lists: where a Question opens a
-    /// thread. `None` for a wildcard route that lists no id.
+    /// thread. `None` for a route that lists only the wildcard or the DM
+    /// entry.
     pub fn first_channel(&self) -> Option<&str> {
         self.channel_ids().next()
     }
@@ -970,16 +998,41 @@ impl GatewayConfig {
     /// that lists the channel id, else the account's wildcard route. The
     /// wildcard never covers the log channel.
     pub fn route_of(&self, account: &str, channel: &str) -> Option<(&str, &RouteConfig)> {
-        let mut routes = self.routes.iter().filter(|(_, r)| r.account == account);
-        let listed = routes
-            .clone()
-            .find(|(_, r)| r.channel_ids().any(|c| c == channel));
-        let found = match listed {
-            Some(found) => Some(found),
-            None if self.is_log_channel(account, channel) => None,
-            None => routes.find(|(_, r)| r.is_wildcard()),
-        };
-        found.map(|(n, r)| (n.as_str(), r))
+        self.route_for(account, channel, false)
+            .map(|c| (c.name, c.route))
+    }
+
+    /// The route a chat on an account belongs to, if any, when `direct`
+    /// says whether the platform calls the chat a one-to-one DM:
+    ///
+    /// 1. the route that lists the chat's id;
+    /// 2. none, for the log channel;
+    /// 3. for a DM, the account's DM route, by its DM entry;
+    /// 4. the account's wildcard route.
+    pub fn route_for(&self, account: &str, chat: &str, direct: bool) -> Option<Covered<'_>> {
+        let routes = || self.routes.iter().filter(|(_, r)| r.account == account);
+        let (found, direct) =
+            if let Some(found) = routes().find(|(_, r)| r.channel_ids().any(|c| c == chat)) {
+                (found, false)
+            } else if self.is_log_channel(account, chat) {
+                return None;
+            } else if let Some(found) = routes().find(|(_, r)| direct && r.covers_dms()) {
+                (found, true)
+            } else {
+                (routes().find(|(_, r)| r.is_wildcard())?, false)
+            };
+        Some(Covered {
+            name: found.0.as_str(),
+            route: found.1,
+            direct,
+        })
+    }
+
+    /// Whether some route of the account holds the DM entry.
+    pub fn has_dm_route(&self, account: &str) -> bool {
+        self.routes
+            .values()
+            .any(|r| r.account == account && r.covers_dms())
     }
 
     fn is_log_channel(&self, account: &str, channel: &str) -> bool {
@@ -1043,6 +1096,7 @@ impl GatewayConfig {
         }
         let mut channels: BTreeMap<(&str, &str), &str> = BTreeMap::new();
         let mut wildcards: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut dm_routes: BTreeMap<&str, &str> = BTreeMap::new();
         let mut dirs: Vec<(&str, &Path)> = Vec::new();
         for (name, route) in &self.routes {
             let at = format!("gateway.routes.{name}");
@@ -1069,6 +1123,22 @@ impl GatewayConfig {
                         return Err(format!(
                             "gateway.routes: routes {other} and {name} are both the wildcard route of account {:?}",
                             route.account
+                        ));
+                    }
+                    continue;
+                }
+                if channel == ANY_DM {
+                    if let Some(other) = dm_routes.insert(route.account.as_str(), name.as_str()) {
+                        return Err(format!(
+                            "gateway.routes: routes {other} and {name} are both the DM route of account {:?}",
+                            route.account
+                        ));
+                    }
+                    // The Discord adapter ignores every DM, so the entry
+                    // would cover nothing.
+                    if self.accounts[&route.account].platform == "discord" {
+                        return Err(format!(
+                            "{at}: the Discord adapter reads no direct message; {ANY_DM:?} needs a slack or fake account"
                         ));
                     }
                     continue;
@@ -1250,22 +1320,34 @@ pub fn admit(
     }
 }
 
-/// Whether an admitted message in an untied thread starts a Task: it meets
+/// Whether an admitted message in an untied thread starts a Task. In a
+/// thread the route covers by its DM entry (`direct`), a message that
+/// starts the thread or mentions Fleet does. Elsewhere the message meets
 /// the route's mention rule.
-pub fn starts_task(route: &RouteConfig, admission: Admission, message: &Message) -> bool {
+pub fn starts_task(
+    route: &RouteConfig,
+    direct: bool,
+    admission: Admission,
+    message: &Message,
+) -> bool {
     admission == Admission::Admitted
-        && match route.mention {
-            Mention::Required => message.mentions_fleet,
-            Mention::TopLevel => message.starts_thread,
+        && if direct {
+            message.starts_thread || message.mentions_fleet
+        } else {
+            match route.mention {
+                Mention::Required => message.mentions_fleet,
+                Mention::TopLevel => message.starts_thread,
+            }
         }
 }
 
 /// Whether a message earns the route's refusal: a person who is not on the
-/// allowlist and mentions Fleet. An unlisted bot gets none.
-pub fn earns_refusal(admission: Admission, message: &Message) -> bool {
+/// allowlist and mentions Fleet, or, in a thread the route covers by its
+/// DM entry (`direct`), starts the thread. An unlisted bot gets none.
+pub fn earns_refusal(direct: bool, admission: Admission, message: &Message) -> bool {
     admission == Admission::Context
         && message.author.kind == AuthorKind::Person
-        && message.mentions_fleet
+        && (message.mentions_fleet || (direct && message.starts_thread))
 }
 
 #[cfg(test)]
@@ -1800,6 +1882,82 @@ mod tests {
     }
 
     #[test]
+    fn a_dm_route_covers_every_dm_no_route_lists_and_nothing_else() {
+        let mut c = config();
+        let mut any = route("/work/anywhere");
+        any.channels = vec![ANY_CHANNEL.into(), ANY_DM.into()];
+        c.routes.insert("any".into(), any.clone());
+        c.logs = Some(LogsConfig {
+            account: "fake-main".into(),
+            channel: "C0456EFGH".into(),
+        });
+        assert_eq!(c.validate(), Ok(()));
+        let covered = |c: &GatewayConfig, chat: &str, direct| {
+            c.route_for("fake-main", chat, direct)
+                .map(|k| (k.name.to_string(), k.direct))
+        };
+        // A DM no route lists is the DM route's, by its DM entry.
+        assert_eq!(covered(&c, "D0123ALEX", true), Some(("any".into(), true)));
+        // The same chat not called a DM, such as a group DM, is a channel.
+        assert_eq!(covered(&c, "G0123GRP", false), Some(("any".into(), false)));
+        // A listed id wins, DM or not; the log channel stays uncovered.
+        assert_eq!(covered(&c, "C0123ABCD", true), Some(("eng".into(), false)));
+        assert_eq!(covered(&c, "C0456EFGH", true), None);
+        assert_eq!(c.route_for("other", "D0123ALEX", true), None);
+        assert!(c.has_dm_route("fake-main") && !c.has_dm_route("other"));
+        // Without a DM entry, a DM is the wildcard's, as before.
+        let mut plain = c.clone();
+        plain.routes.get_mut("any").unwrap().channels = vec![ANY_CHANNEL.into()];
+        assert_eq!(
+            covered(&plain, "D0123ALEX", true),
+            Some(("any".into(), false))
+        );
+        assert!(!plain.has_dm_route("fake-main"));
+        // A DM-only route covers no channel.
+        let mut only = c.clone();
+        only.routes.get_mut("any").unwrap().channels = vec![ANY_DM.into()];
+        assert_eq!(only.validate(), Ok(()));
+        assert_eq!(covered(&only, "C0999WILD", false), None);
+        assert_eq!(covered(&only, "D0123ALEX", false), None);
+        assert_eq!(
+            covered(&only, "D0123ALEX", true),
+            Some(("any".into(), true))
+        );
+        // The DM entry is no channel id, and no wildcard.
+        assert!(any.covers_dms() && any.is_wildcard());
+        assert!(!only.routes["any"].is_wildcard());
+        assert_eq!(only.routes["any"].first_channel(), None);
+        // A DM-only route may be top-level: its mention rule covers no
+        // channel, and a DM has its own rule.
+        only.routes.get_mut("any").unwrap().mention = Mention::TopLevel;
+        assert_eq!(only.validate(), Ok(()));
+        // One DM route per account.
+        let mut two = c.clone();
+        let mut second = route("/work/second");
+        second.channels = vec![ANY_DM.into()];
+        two.routes.insert("second".into(), second);
+        assert!(
+            two.validate()
+                .unwrap_err()
+                .contains("routes any and second are both the DM route of account \"fake-main\"")
+        );
+        // A questions route needs a channel id.
+        let mut q = only.clone();
+        q.questions = Some("any".into());
+        assert!(
+            q.validate()
+                .unwrap_err()
+                .contains("gateway.questions \"any\" lists no channel id")
+        );
+        // The Discord adapter reads no DM.
+        let mut discord = c.clone();
+        discord.accounts.get_mut("fake-main").unwrap().platform = "discord".into();
+        assert!(discord.validate().unwrap_err().contains(
+            "routes.any: the Discord adapter reads no direct message; \"dm:*\" needs a slack or fake account"
+        ));
+    }
+
+    #[test]
     fn admission_sorts_by_the_people_table_and_the_bot_list() {
         let c = config();
         let route = &c.routes["eng"];
@@ -1850,16 +2008,19 @@ mod tests {
         // The mention rule decides whether an admitted message starts a Task.
         assert!(starts_task(
             route,
+            false,
             Admission::Admitted,
             &msg(person("U0123ABCD"), true)
         ));
         assert!(!starts_task(
             route,
+            false,
             Admission::Admitted,
             &msg(person("U0123ABCD"), false)
         ));
         assert!(!starts_task(
             route,
+            false,
             Admission::Context,
             &msg(person("U0999ZZZZ"), true)
         ));
@@ -1867,25 +2028,65 @@ mod tests {
         top.mention = Mention::TopLevel;
         let mut starter = msg(bot, false);
         starter.starts_thread = true;
-        assert!(starts_task(&top, Admission::Admitted, &starter));
+        assert!(starts_task(&top, false, Admission::Admitted, &starter));
         assert!(!starts_task(
             &top,
+            false,
             Admission::Admitted,
             &msg(person("U0123ABCD"), true)
         ));
         // One refusal for an unlisted person who mentions Fleet; none for a bot.
         assert!(earns_refusal(
+            false,
             Admission::Context,
             &msg(person("U0999ZZZZ"), true)
         ));
         assert!(!earns_refusal(
+            false,
             Admission::Context,
             &msg(person("U0999ZZZZ"), false)
         ));
-        assert!(!earns_refusal(Admission::Context, &msg(other_bot, true)));
         assert!(!earns_refusal(
+            false,
+            Admission::Context,
+            &msg(other_bot.clone(), true)
+        ));
+        assert!(!earns_refusal(
+            false,
             Admission::Admitted,
             &msg(person("U0123ABCD"), true)
         ));
+        // In a DM the route covers by its DM entry, a top-level message or
+        // a mention starts a Task, whatever the mention rule, and a
+        // stranger's top-level message earns the refusal.
+        let mut dm = msg(person("U0123ABCD"), false);
+        dm.starts_thread = true;
+        assert!(starts_task(route, true, Admission::Admitted, &dm));
+        assert!(!starts_task(route, false, Admission::Admitted, &dm));
+        assert!(starts_task(
+            route,
+            true,
+            Admission::Admitted,
+            &msg(person("U0123ABCD"), true)
+        ));
+        assert!(!starts_task(
+            route,
+            true,
+            Admission::Admitted,
+            &msg(person("U0123ABCD"), false)
+        ));
+        assert!(!starts_task(route, true, Admission::Context, &dm));
+        let mut stranger = msg(person("U0999ZZZZ"), false);
+        stranger.starts_thread = true;
+        assert!(earns_refusal(true, Admission::Context, &stranger));
+        assert!(!earns_refusal(false, Admission::Context, &stranger));
+        assert!(!earns_refusal(
+            true,
+            Admission::Context,
+            &msg(person("U0999ZZZZ"), false)
+        ));
+        let mut bot_dm = msg(other_bot, false);
+        bot_dm.starts_thread = true;
+        assert!(!earns_refusal(true, Admission::Context, &bot_dm));
     }
 }

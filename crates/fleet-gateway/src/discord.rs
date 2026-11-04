@@ -1004,6 +1004,7 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
         id: delivery,
         verified: envelope.verified,
         received_at: envelope.received_at,
+        direct: false,
         event,
     }))
 }

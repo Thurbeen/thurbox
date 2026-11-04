@@ -166,6 +166,11 @@ pub struct ConversationSpec {
     /// The `[gateway.routes]` entry whose admission rules and Task template
     /// apply.
     pub route: String,
+    /// The route covers the thread by its DM entry, `"dm:*"`: a one-to-one
+    /// direct message, where a top-level message starts a Task without a
+    /// mention. Absent means `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct: bool,
     /// The history backstop interval while Tied; `gateway.pollMs` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll_ms: Option<Millis>,
@@ -401,6 +406,7 @@ mod tests {
             id: id.into(),
             verified: Verified::Connection,
             received_at: 5,
+            direct: false,
             event: Event::Message {
                 conversation: ConversationRef::split("fake:C1:t1").unwrap(),
                 message: Message {

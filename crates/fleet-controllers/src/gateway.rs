@@ -1869,6 +1869,7 @@ impl Pass<'_, '_> {
                 id: format!("fleet/{key}"),
                 verified: Verified::Fleet,
                 received_at: self.input.now,
+                direct: false,
                 event: Event::Message {
                     conversation: conversation.clone(),
                     message: Message {

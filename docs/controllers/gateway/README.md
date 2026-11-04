@@ -16,7 +16,9 @@ request with a working reaction when admission starts its Task, or with a
 queued reaction while the request waits. It marks each message it relays
 with a working reaction, and with a replied reaction once Fleet posted in
 the thread. A wildcard route covers every channel that no other route
-lists. The listener programs stay outside Fleet.
+lists. A DM route covers every one-to-one DM with the bot, where a
+top-level message needs no mention. The listener programs stay outside
+Fleet.
 
 The Gateway ties chat threads to Tasks:
 
@@ -111,9 +113,12 @@ account:
 1. A route of the account lists the channel id. That route covers the
    channel.
 2. Else, the channel is the `gateway.logs` channel. No route covers it.
-3. Else, the account has a wildcard route, with `"*"` in `channels`. The
+3. Else, the adapter says the channel is a one-to-one DM, and the account
+   has a DM route, with `"dm:*"` in `channels`. The DM route covers the
+   channel by its DM entry.
+4. Else, the account has a wildcard route, with `"*"` in `channels`. The
    wildcard route covers the channel.
-4. Else, no route covers the channel. The verb ignores the event.
+5. Else, no route covers the channel. The verb ignores the event.
 
 Rules:
 
@@ -127,6 +132,23 @@ Rules:
 - A wildcard route needs `mention = "required"`.
 - A thread that a wildcard route covers keeps that route. A later route
   that lists its channel id changes the route of new threads only.
+
+Rules for the DM entry:
+
+- An explicit channel id always wins over the DM entry.
+- An account has at most one DM route.
+- A group DM is no one-to-one DM. The wildcard covers it under the mention
+  rule.
+- The Conversation of a thread that the DM entry covers records
+  `spec.direct`. In that thread, a message that starts the thread, or
+  mentions Fleet, starts a Task. A stranger's top-level message there earns
+  the refusal.
+- An edit or a removal that does not say it is in a DM still reaches a
+  thread whose Conversation records `spec.direct`.
+- A thread keeps its `spec.direct`. A later config without `"dm:*"`
+  changes the rule of new threads only.
+- On Slack, each top-level DM message starts a new thread, so it starts a
+  new Task. A person continues a Task by replying in its thread.
 
 The cost rule holds on a wildcard route. In a thread that Fleet does not
 mirror, only a message that can start a Task, earn a refusal, or is Fleet's
@@ -231,9 +253,9 @@ Rules:
 1. A Task that nobody started from chat declares a `Question`. For example,
    a plugin created the Task.
 2. GatewayController opens a new thread in the first channel id of the
-   questions route. The wildcard is no channel id. A route without a
-   channel id cannot take Questions. The first post is the Question, and
-   it carries a marker that names the Task.
+   questions route. The wildcard and the DM entry are no channel id. A
+   route without a channel id cannot take Questions. The first post is the
+   Question, and it carries a marker that names the Task.
 3. The new thread gets a Conversation, which is tied to that Task by the
    marker.
 4. Replies in the thread reach the Task's inbox. The first allowlisted reply
@@ -445,6 +467,10 @@ Out of scope, deliberately:
 | How does a route cover every channel? | With `channels = ["*"]`. The wildcard is an entry of the existing list, so a route keeps one key for what it covers, and an explicit list stays as it is. No platform's channel id is `*`. |
 | Which route wins when a channel id is listed and a wildcard exists? | The route that lists the id. A wildcard is the fallback for its account. An account has one wildcard route at most, so the fallback is never ambiguous. |
 | Where does a wildcard route open a thread for a Question? | In the first channel id it lists. A route with only `"*"` has none, so `gateway.questions` refuses it. A Task whose route label names such a route raises `NeedsAttention/RouteUnknown`. No separate setting is needed. |
+| How can every allowlisted person DM the bot? | With `"dm:*"` in a route's `channels`. Like `"*"`, it is an entry of the existing list, so a route keeps one key for what it covers. No DM id is listed, so a new person needs only an `allow` entry. No platform's channel id holds `:`. |
+| Why does a DM need no mention? | A one-to-one DM already addresses the bot, and people rarely type a mention there. The admission rule is the same: only `allow` and `allowBots` start a Task. |
+| Why is a group DM no DM? | A group DM includes other people, as a channel does. So the wildcard covers it, and a request there needs a mention. |
+| Why does the Conversation record `direct`? | Admission reads the rule from the Conversation, not from each event. A history read does not say whether its chat is a DM, and some edit events do not either. |
 | Can a wildcard route use `mention = "top-level"`? | No. On every channel, it would make every top-level post of an allowlisted person a Task. |
 | Does a wildcard route change the listener digest or the Listener conditions? | No. The digest covers the account's own settings, not its routes. `Accepted` asks only whether some route uses the account, and a wildcard route does. |
 | Where does a mark live before the Task exists? | On the Conversation, under `status.reactions`. ConversationController owns admission, so it owns the queued mark and the first working mark. GatewayController owns every mark from the join on. |
@@ -471,3 +497,4 @@ and adds its crate edges, field managers and negative fixtures to
 | 9 | Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked working, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |
 | 10 | Reactions at admission: the trigger marked working when its Task is created, or queued while it waits for the thread's directory; a waiting request's later admitted messages marked queued; queued replaced by working when the Task is created; `[gateway] reactions` `queued`; the Conversation's `status.reactions` and its `React` effects; the join takes those marks without a second reaction | `fleet-api/src/conversation.rs`, `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager` | `conversation_controller`, `gateway_controller`, `e2e_gateway_reactions` |
 | 11 | The wildcard route: `"*"` in `channels`; an explicit channel id wins; the log channel stays uncovered; one wildcard route per account, with `mention = "required"`; a questions route needs a channel id | `fleet-api/src/gateway.rs`, `fleet-controllers/src/gateway.rs` | `fleet-api` unit tests, `gateway_controller`, `e2e_gateway_wildcard` |
+| 12 | The DM route: `"dm:*"` in `channels`; the port's `direct` on a delivery, Slack's `channel_type` `im`; the Conversation's `spec.direct`; a top-level DM starts a Task without a mention, and a stranger's earns the refusal; an explicit channel id wins; one DM route per account; never on Discord | `fleet-api/src/gateway.rs`, `fleet-api/src/conversation.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `crates/fleet-gateway` | `fleet-api` unit tests, Slack truth tables, `conversation_controller`, `e2e_gateway_dm` |

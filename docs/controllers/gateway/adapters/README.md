@@ -109,8 +109,17 @@ account's listener delivers in a channel no other route lists:
 | Platform | A wildcard route covers |
 | --- | --- |
 | `fake` | Every chat. |
-| `slack` | Every public and private channel the bot is a member of, with the message events the setup subscribes to. A DM (`D…`) or a group DM only when the operator also subscribes the app to `message.im` or `message.mpim`. |
+| `slack` | Every public and private channel the bot is a member of, with the message events the setup subscribes to. A group DM only when the operator also subscribes the app to `message.mpim`. A one-to-one DM only when the app subscribes to `message.im` and the account has no DM route. |
 | `discord` | Every text and announcement channel the bot can view in the account's guild, and their public threads. Never a DM, a private thread or a forum channel: the adapter ignores them. |
+
+A DM route, with `"dm:*"` in `channels`, covers every one-to-one DM that the
+adapter marks `direct` and that no route lists:
+
+| Platform | A delivery is `direct` when |
+| --- | --- |
+| `fake` | The payload holds `"direct": true`. |
+| `slack` | The message event's `channel_type` is `im`. A group DM is `mpim`, and is not `direct`. |
+| `discord` | Never. The adapter ignores every DM, so a Discord account refuses `"dm:*"`. |
 
 A thread address names a conversation. A channel address names where Fleet
 opens a new thread, or where it posts a top-level log post. A `post` to a

@@ -67,6 +67,7 @@ listener or the manager created the object.
 | `account` | yes | The `[gateway.accounts]` entry the thread lives on. |
 | `address` | yes | `platform:chat[:thread]`, the only platform-specific input. The account's adapter parses it into `status.ref`; an address it cannot read is refused at apply. |
 | `route` | yes | The `[gateway.routes]` entry whose admission rules and Task template apply. Retention is the global `gateway.retainMs`. |
+| `direct` | no | `true` when the route covers the thread by its DM entry, `"dm:*"`: a one-to-one DM with the bot. There a message that starts the thread starts a Task without a mention. Default `false`. The receive verb sets it when it creates the Conversation. |
 | `pollMs` | no | The history backstop interval while Tied, where the account has history. Default `gateway.pollMs`. |
 
 An account or route not configured is refused at apply. Any other field is

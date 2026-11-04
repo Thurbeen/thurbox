@@ -108,6 +108,7 @@ newer edit replaces the text. An older edit delivered late changes nothing.
 | `verified` | How the delivery was authenticated: `connection` (an authenticated socket), `signature` (a verified webhook), `fleet` (Fleet's own opening post) or `history` (read by the backstop). |
 | `receivedAt` | When the listener received it. |
 | `event` | The `Message`, `Edited` or `Removed`. |
+| `direct` | `true` when the payload says the chat is a one-to-one DM between Fleet's bot and one other user. Absent means `false`: a channel, a group DM, or a payload that does not say. |
 
 A listener writes one envelope per delivery to the verb's stdin:
 
@@ -126,12 +127,19 @@ the event to its thread's Conversation. It is a manager verb, like
 `fleet send`, and takes no lease.
 
 - An event in a channel that no route covers is ignored. A route covers a
-  channel id that it lists. The account's wildcard route, with `"*"` in
-  `channels`, covers every other channel except the `gateway.logs` channel.
+  channel id that it lists. For a delivery with `direct`, the account's DM
+  route, with `"dm:*"` in `channels`, covers every other chat. The
+  account's wildcard route, with `"*"` in `channels`, covers every other
+  channel. Neither covers the `gateway.logs` channel.
+- A Conversation that the DM entry covers is created with `spec.direct`.
+  An `Edited` or `Removed` event without `direct` is read as `direct` when
+  the thread's Conversation records `spec.direct`. Reason: a platform can
+  leave the chat's type out of an edit.
 - An event in a thread Fleet does not mirror yet creates the Conversation
   only when it could start a Task, earn a refusal, or is Fleet's own
   Question post. Other chatter is ignored, so a busy channel costs no
-  objects. This holds in every channel that a wildcard route covers.
+  objects. This holds in every channel that a wildcard route covers, and in
+  every DM.
 - A redelivered event changes nothing.
 
 | Exit | Meaning | The listener |
@@ -569,16 +577,26 @@ Admission sorts each message by the route and the people table:
 | Anyone else | `Context` | Relayed with the next `Admitted` message. Starts no turn. |
 
 An `Admitted` message starts a Task in an untied thread only when it meets
-`route.mention`:
+the thread's start rule:
 
-- `required`, the default: the message mentions Fleet.
-- `top-level`: the message starts a thread. This suits a channel where every
-  top-level post is a request, such as an alert channel.
+- `route.mention = "required"`, the default: the message mentions Fleet.
+- `route.mention = "top-level"`: the message starts a thread. This suits a
+  channel where every top-level post is a request, such as an alert
+  channel.
+- The Conversation records `spec.direct`: the message starts the thread or
+  mentions Fleet. This rule replaces `route.mention` in a DM thread.
 
 In a tied thread, every `Admitted` message is a turn, with or without a
-mention. A person who is not on the allowlist and mentions Fleet gets one
-refusal per author and thread. Past 200 refused authors in a thread, no
-further refusal is sent. An unlisted bot gets none.
+mention.
+
+A person who is not on the allowlist gets one refusal per author and
+thread. These messages earn it:
+
+- A message that mentions Fleet.
+- In a thread with `spec.direct`, a message that starts the thread.
+
+Past 200 refused authors in a thread, no further refusal is sent. An
+unlisted bot gets none.
 
 ## Effect and recovery keys
 
@@ -690,4 +708,4 @@ A tie to a thread, once verified, wins over a parent label.
 
 `gateway.fleet.dev/route` chooses the route whose first channel id a Task's
 Question opens in. It is an ordinary label. A route with no channel id, such
-as a wildcard route with only `"*"`, raises `NeedsAttention/RouteUnknown`.
+as a route with only `"*"` or `"dm:*"`, raises `NeedsAttention/RouteUnknown`.

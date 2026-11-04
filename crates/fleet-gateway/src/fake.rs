@@ -612,8 +612,9 @@ impl Gateway for FakeGateway {
         }
     }
 
-    /// The payload is `{"id", "event"}` in the port's shape, or something
-    /// the Gateway ignores. The account's `bot` tells Fleet's own posts and
+    /// The payload is `{"id", "event", "direct"?}` in the port's shape, or
+    /// something the Gateway ignores; `direct: true` says the chat is a
+    /// one-to-one DM. The account's `bot` tells Fleet's own posts and
     /// mentions apart, whatever the payload claimed.
     fn event(&self, account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
         if account.platform != KIND {
@@ -657,6 +658,7 @@ impl Gateway for FakeGateway {
             verified: envelope.verified,
             received_at: envelope.received_at,
             event,
+            direct: payload.get("direct").and_then(Value::as_bool) == Some(true),
         }))
     }
 

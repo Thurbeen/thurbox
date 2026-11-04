@@ -81,6 +81,7 @@ fn delivery(id: &str, event: Event) -> Delivery {
         id: id.into(),
         verified: Verified::Connection,
         received_at: NOW - 500,
+        direct: false,
         event,
     }
 }
@@ -1237,6 +1238,49 @@ fn only_a_delivered_message_that_meets_the_mention_rule_starts_a_task() {
         NOW,
     );
     assert!(plan.creates.is_empty(), "a reply does not, under top-level");
+}
+
+#[test]
+fn in_a_dm_thread_a_top_level_message_starts_a_task_and_a_strangers_earns_the_refusal() {
+    // `spec.direct`: the route covers the thread by its DM entry.
+    let dm = |status: &ConversationStatus| {
+        let mut obj = object(Some(status));
+        obj.spec["direct"] = json!(true);
+        obj
+    };
+    let obs = |starter: Message| ConversationObservations {
+        capabilities: Some(caps(true)),
+        history: Some(history(vec![starter])),
+        ..ConversationObservations::default()
+    };
+    let hello = person(ALEX, T0, "hello");
+    let status = mirrored(vec![message("Ev01", hello.clone())]);
+    let (plan, st) = run(&dm(&status), obs(hello.clone()));
+    assert_eq!(plan.creates.len(), 1, "no mention needed: {plan:#?}");
+    assert!(st.refusals.is_empty());
+    // The same thread outside the DM entry keeps the mention rule.
+    let (plan, _) = run(&object(Some(&status)), obs(hello.clone()));
+    assert!(plan.creates.is_empty(), "{plan:#?}");
+    // An unmentioned reply in an untied DM thread starts nothing.
+    let reply = person(ALEX, T0 + 300_000, "and another thing");
+    let (plan, _) = run(
+        &dm(&mirrored(vec![message("Ev02", reply)])),
+        obs(person(SAM, T0, "first")),
+    );
+    assert!(plan.creates.is_empty(), "{plan:#?}");
+    // A stranger's top-level DM earns one refusal and starts nothing.
+    let stranger = person("U0999ZZZZ", T0, "hi bot");
+    let (plan, st) = run(
+        &dm(&mirrored(vec![
+            message("Ev01", stranger.clone()),
+            message("Ev02", person("U0999ZZZZ", T0 + 1_000, "please?")),
+        ])),
+        obs(stranger),
+    );
+    assert!(plan.creates.is_empty());
+    assert_eq!(st.refusals, vec!["U0999ZZZZ".to_string()]);
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, refusal_key(UID, "U0999ZZZZ"));
 }
 
 #[test]

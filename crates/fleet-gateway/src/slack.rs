@@ -757,7 +757,8 @@ fn collect<'a>(
 /// or an Events API body (the `event_callback` itself). Other envelope
 /// types (`hello`, `disconnect`, `interactive`, `slash_commands`,
 /// `url_verification`), events that are not messages, message subtypes
-/// that are system notes, and events of another workspace are ignored. A
+/// that are system notes, and events of another workspace are ignored. An
+/// event whose `channel_type` is `im` is in a one-to-one DM: `direct`. A
 /// payload that is no object, has no type, or has a message event without
 /// its `event_id`, `channel` or `ts` is Unknown.
 pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
@@ -866,6 +867,9 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
         verified: envelope.verified,
         received_at: envelope.received_at,
         event,
+        // A one-to-one DM is the event's `channel_type` "im"; a group DM is
+        // "mpim", and a channel id prefix does not tell them apart.
+        direct: str_of(ev, "channel_type") == Some("im"),
     }))
 }
 
@@ -1252,6 +1256,8 @@ mod tests {
     const CHANNEL_JOIN: &str = include_str!("../fixtures/slack/socket-mode-channel-join.json");
     const OTHER_TEAM: &str = include_str!("../fixtures/slack/socket-mode-other-team.json");
     const HTTP_MENTION: &str = include_str!("../fixtures/slack/events-api-mention.json");
+    const DM: &str = include_str!("../fixtures/slack/socket-mode-dm.json");
+    const GROUP_DM: &str = include_str!("../fixtures/slack/socket-mode-group-dm.json");
     const URL_VERIFICATION: &str =
         include_str!("../fixtures/slack/events-api-url-verification.json");
 
@@ -1277,6 +1283,32 @@ mod tests {
         // The `<@id|name>` form is a mention too.
         let named = MENTION.replace("<@U0BOT0001>", "<@U0BOT0001|fleet>");
         assert!(message(&delivery(&named)).1.mentions_fleet);
+    }
+
+    #[test]
+    fn a_one_to_one_dm_is_direct_by_its_channel_type_and_a_group_dm_is_not() {
+        let d = delivery(DM);
+        assert!(d.direct, "channel_type \"im\": a one-to-one DM");
+        let (conversation, m) = message(&d);
+        assert_eq!(conversation.address(), "slack:D0123ABCD:1730000400.000100");
+        assert!(m.starts_thread && !m.mentions_fleet);
+        assert_eq!(m.author.kind, AuthorKind::Person);
+        // A group DM is `mpim`; its `G` id prefix is no DM signal either.
+        assert!(!delivery(GROUP_DM).direct, "channel_type \"mpim\"");
+        // The channel type, not the id prefix, decides.
+        let typed = |payload: &str, from: &str, to: &str| {
+            delivery(&payload.replace(
+                &format!("\"channel_type\": \"{from}\""),
+                &format!("\"channel_type\": \"{to}\""),
+            ))
+            .direct
+        };
+        assert!(!typed(DM, "im", "channel"));
+        assert!(typed(MENTION, "channel", "im"));
+        assert!(!delivery(MENTION).direct && !delivery(REPLY).direct);
+        // An event without a channel type does not say it is a DM.
+        let untyped = DM.replace("\"channel_type\": \"im\",", "");
+        assert!(!delivery(&untyped).direct);
     }
 
     #[test]

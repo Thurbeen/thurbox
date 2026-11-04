@@ -443,14 +443,18 @@ writes the receipt back under the key, a key with a Known receipt is never
 performed again, and a missing or Unknown receipt is answered by looking
 for the Task, or for the post's marker in the mirror, never by repeating
 the effect blindly. Guarantees, each with its test in
-`conversation_controller`, `e2e_gateway`, `e2e_gateway_wildcard` and
-`store_contract`:
+`conversation_controller`, `e2e_gateway`, `e2e_gateway_wildcard`,
+`e2e_gateway_dm` and `store_contract`:
 
 - **Receive.** `fleet gateway receive --account NAME` reads one envelope
   from stdin, refuses a `verified` that is not the account's `inbound`,
   reads the payload through the adapter's pure `event`, ignores an event in
   a channel no route covers (a listed channel id wins over the account's
-  one wildcard route, `"*"`, which never covers the log channel), creates
+  one DM route, `"dm:*"`, for a delivery with `direct`, which wins over its
+  one wildcard route, `"*"`; neither covers the log channel; an edit or
+  removal without `direct` is `direct` when its Conversation records
+  `spec.direct`), records `spec.direct` on a Conversation the DM entry
+  covers, creates
   the thread's Conversation under
   `conv-<12 hex of sha256(<account>/<address>)>` only for an event that
   could start a Task, earn a refusal, or is Fleet's own keyed post, and
@@ -522,7 +526,8 @@ the effect blindly. Guarantees, each with its test in
   config; `judged` then moves to the revision judged.
 - **Start.** In an Untied thread, an admitted message that meets
   `route.mention` (`required`: it mentions Fleet; `top-level`: it is the
-  thread's starter) starts the thread's next Task, `<conversation>-<n>`,
+  thread's starter), or with `spec.direct` is the thread's starter or
+  mentions Fleet, starts the thread's next Task, `<conversation>-<n>`,
   exactly the interface page's JSON (the route's `taskConfig` and brief,
   the thread's workspace, `dispatch` true, the three labels), under
   `conversation/<uid>/task/<n>` with the tie `pending` and the trigger
@@ -564,10 +569,11 @@ the effect blindly. Guarantees, each with its test in
   refusal waits `RETRY_DELAY_MS` first. Only the controller's fenced create
   may set the `gateway.fleet.dev/conversation` labels, and nothing changes
   them afterwards.
-- **Refuse.** A person not on the allowlist who mentions Fleet gets one
-  refusal post per author and thread, the route's `refusal` or the default,
-  under `conversation/<uid>/refuse/<author id>`; past 200 refused authors
-  none is sent. A refused post is tried again under the same key after
+- **Refuse.** A person not on the allowlist who mentions Fleet, or with
+  `spec.direct` starts the thread, gets one refusal post per author and
+  thread, the route's `refusal` or the default, under
+  `conversation/<uid>/refuse/<author id>`; past 200 refused authors none is
+  sent. A refused post is tried again under the same key after
   `RETRY_DELAY_MS`, at most `MAX_ATTEMPTS` times, then
   `NeedsAttention/PostFailed`. An Unknown post is found again by its marker
   in the mirror, or by one `since` read where the platform reads markers
