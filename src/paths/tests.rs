@@ -838,3 +838,31 @@ fn a_read_only_file_is_not_replaced() {
     let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
     assert_eq!(left.len(), 1, "a staged file was left behind");
 }
+
+/// The staged copy of a private file is private from its first byte: a crash
+/// before the final permissions are applied must not leave a readable sibling.
+#[cfg(unix)]
+#[test]
+fn a_staged_copy_starts_no_more_open_than_the_file_it_replaces() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let staged = dir.path().join("agents.saving-1-0");
+
+    let _file = open_staged(&staged, Some(&std::fs::Permissions::from_mode(0o600))).unwrap();
+
+    let mode = std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode & 0o077, 0, "staged file opened as {mode:o}");
+}
+
+/// A staged name a crashed process with the same pid left behind is ours to
+/// reuse, not a reason to fail the save.
+#[test]
+fn a_leftover_staged_file_does_not_block_the_next_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let staged = dir.path().join("agents.saving-1-0");
+    std::fs::write(&staged, "half a file").unwrap();
+
+    drop(open_staged(&staged, None).unwrap());
+
+    assert_eq!(std::fs::read_to_string(&staged).unwrap(), "");
+}

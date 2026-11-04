@@ -5,6 +5,10 @@ pub fn save(path: &std::path::Path) {
     std::fs::write(path, "the production write").unwrap();
 }
 
+pub fn save_again(path: &std::path::Path) {
+    std::fs::write(path, "a second production write").unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     fn seed(path: &std::path::Path) {

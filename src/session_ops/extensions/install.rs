@@ -174,9 +174,15 @@ fn install(
         tracing::warn!("{w}");
     }
 
-    // 1. Payload files.
+    // 1. Payload files, re-linking any hard-link alias of one they replace.
+    let aliases = hard_link_aliases(&def, &home);
     for f in &def.files {
         install_payload_file(&source, f, &home, &home_str, force, &mut report)?;
+    }
+    for (alias, target) in &aliases {
+        if std::fs::read(alias).ok() != std::fs::read(target).ok() {
+            std::fs::remove_file(alias).map_err(|e| format!("re-link {}: {e}", alias.display()))?;
+        }
     }
 
     // 2. Symlinks (never clobber a regular file the user owns).
@@ -717,6 +723,32 @@ fn revert_config_merge(
 /// Create one symlink under the home dir, replacing an existing symlink but
 /// never clobbering a regular file the user owns, recording the outcome in
 /// `report`.
+/// Declared links that are a regular file holding exactly what their target
+/// holds: the hard link [`make_symlink`] falls back to on Windows without
+/// symlink rights, or an identical copy, which re-linking loses nothing of. A
+/// payload replaced by rename leaves such an alias on the old contents, and the
+/// symlink pass skips a regular file as the user's, so [`install`] notes these
+/// before the payloads move and removes each one its payload left behind, for
+/// that pass to link anew. Each is returned with its target.
+fn hard_link_aliases(
+    def: &ExtensionDef,
+    home: &Path,
+) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+    def.symlinks
+        .iter()
+        .filter_map(|s| {
+            ensure_safe_relative(&s.target).ok()?;
+            let link = safe_join(home, &s.link).ok()?;
+            if !std::fs::symlink_metadata(&link).ok()?.is_file() {
+                return None;
+            }
+            let target = link.parent()?.join(&s.target);
+            let same = std::fs::read(&link).ok()? == std::fs::read(&target).ok()?;
+            same.then_some((link, target))
+        })
+        .collect()
+}
+
 fn install_symlink(
     s: &crate::session::extension_def::ExtensionSymlink,
     home: &Path,

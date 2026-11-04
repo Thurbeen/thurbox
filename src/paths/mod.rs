@@ -94,12 +94,40 @@ pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),
     };
-    std::fs::write(&staged, contents)
+    open_staged(&staged, kept.as_ref())
+        .and_then(|mut file| std::io::Write::write_all(&mut file, contents.as_ref()))
         .and_then(|()| kept.map_or(Ok(()), |mode| std::fs::set_permissions(&staged, mode)))
         .and_then(|()| replace_file(&staged, &path))
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&staged);
         })
+}
+
+/// Create the staged file, on Unix already no more open than the file it will
+/// replace: a crash before [`write_atomically`] applies the final permissions
+/// must not leave a readable copy of a private file. The umask can only narrow
+/// the mode, so the exact one is applied after the write.
+///
+/// A file already at the staged name is a leftover of a crashed process that
+/// had this pid, so it is removed rather than reopened with its own mode.
+fn open_staged(
+    staged: &Path,
+    kept: Option<&std::fs::Permissions>,
+) -> std::io::Result<std::fs::File> {
+    match std::fs::remove_file(staged) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if let Some(kept) = kept {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(kept.mode() & 0o7777);
+    }
+    #[cfg(not(unix))]
+    let _ = kept;
+    options.open(staged)
 }
 
 /// Resolve the file itself separately from its parent so an existing config

@@ -2307,3 +2307,36 @@ fn an_atomic_hook_write_creates_a_dangling_links_target() {
         .is_symlink());
     assert_eq!(std::fs::read_to_string(&real).unwrap(), "{\"hooks\":{}}");
 }
+
+/// Windows without symlink rights falls back to a hard link for a file alias
+/// (`make_symlink`). A payload refreshed by rename leaves that alias on the old
+/// contents, and the symlink pass would skip it as a user's file, so the alias
+/// must be re-linked once the payload moves. Linux makes the same hard link.
+#[test]
+fn a_hard_linked_alias_follows_its_refreshed_payload() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("extension.toml"),
+        format!(
+            "name = \"aliased\"\nhome = \"{}\"\n[[files]]\npath = \"FLOW.md\"\n[[symlinks]]\nlink = \"CLAUDE.md\"\ntarget = \"FLOW.md\"\n",
+            home.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(src.path().join("FLOW.md"), "spec v1").unwrap();
+    let target = src.path().to_string_lossy().to_string();
+    let backends = crate::backend::registry::inert();
+    install_extension(&db, &backends, &target, None, false).unwrap();
+    let alias = home.path().join("CLAUDE.md");
+    std::fs::remove_file(&alias).unwrap();
+    std::fs::hard_link(home.path().join("FLOW.md"), &alias).unwrap();
+
+    std::fs::write(src.path().join("FLOW.md"), "spec v2").unwrap();
+    install_extension(&db, &backends, &target, None, false).unwrap();
+
+    assert_eq!(std::fs::read_to_string(&alias).unwrap(), "spec v2");
+}
