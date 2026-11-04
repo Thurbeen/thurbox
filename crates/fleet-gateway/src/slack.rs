@@ -15,9 +15,12 @@
 //!   A `post` to a channel address sends every chunk without `thread_ts`:
 //!   top-level posts that start no thread. `link` makes none: a permalink
 //!   needs the workspace's domain, which only `chat.getPermalink` gives.
-//!   Each post carries the intent key as message metadata; the text is
-//!   converted from Fleet's Markdown subset to mrkdwn with `&`, `<` and `>`
-//!   escaped, and split at [`POST_LIMIT`] characters under derived keys.
+//!   Each post carries the intent key as message metadata. The text is
+//!   split at [`POST_LIMIT`] characters under derived keys. Each chunk is
+//!   posted as a `markdown` block, which Slack renders as standard
+//!   Markdown, tables included. The chunk converted to mrkdwn, with `&`,
+//!   `<` and `>` escaped, is the post's `text`: the notification and
+//!   history fallback.
 //! - A rate limit (HTTP 429, or `ratelimited`) is Unknown, with Slack's
 //!   `Retry-After` where the answer is a history read.
 //!
@@ -315,18 +318,20 @@ impl SlackGateway {
         }
     }
 
-    /// `chat.postMessage` once: the posted message's `ts`, and its time.
+    /// `chat.postMessage` once with one chunk of Markdown: the posted
+    /// message's `ts`, and its time.
     fn post_once(
         &self,
         chat: &str,
         thread: Option<&str>,
-        text: &str,
+        markdown: &str,
         key: &str,
         budget: &mut Budget,
     ) -> Result<(String, Millis), CallError> {
         let mut body = json!({
             "channel": chat,
-            "text": text,
+            "text": to_mrkdwn(markdown),
+            "blocks": [{"type": "markdown", "text": defuse(markdown)}],
             "mrkdwn": true,
             "unfurl_links": false,
             "unfurl_media": false,
@@ -358,7 +363,7 @@ impl SlackGateway {
         text: &str,
         key: &str,
     ) -> Observation<EffectOutcome> {
-        let chunks = split(&to_mrkdwn(text), POST_LIMIT);
+        let chunks = split(text, POST_LIMIT);
         if chunks.len() > MAX_CHUNKS {
             return Observation::Known(EffectOutcome::Failed {
                 why: format!(
@@ -398,7 +403,7 @@ impl SlackGateway {
     /// `thread_ts`, so no thread starts. The first chunk's `ts` and time
     /// come back as `Posted`.
     fn post_channel(&self, chat: &str, text: &str, key: &str) -> Observation<EffectOutcome> {
-        let chunks = split(&to_mrkdwn(text), POST_LIMIT);
+        let chunks = split(text, POST_LIMIT);
         if chunks.len() > MAX_CHUNKS {
             return Observation::Known(EffectOutcome::Failed {
                 why: format!(
@@ -1013,17 +1018,30 @@ pub fn escape(s: &str) -> String {
     out
 }
 
-/// Fleet's Markdown subset (paragraphs, emphasis, code, links, lists and
-/// quotes) as mrkdwn: `**bold**` to `*bold*`, `*em*` and `_em_` to `_em_`,
-/// `~~gone~~` to `~gone~`, `[text](url)` to `<url|text>`, a heading to a
-/// bold line, a bullet to `•`, a quote line to `&gt;`, code spans and
-/// fences kept, and everything else escaped. Text inside code is escaped
-/// and never formatted. A fence left open is closed.
+/// Fleet's Markdown subset (paragraphs, emphasis, code, links, lists,
+/// quotes and tables) as mrkdwn: `**bold**` to `*bold*`, `*em*` and
+/// `_em_` to `_em_`, `~~gone~~` to `~gone~`, `[text](url)` to
+/// `<url|text>`, a heading to a bold line, a bullet to `•`, a quote line
+/// to `&gt;`, a table's lines to a code block, code spans and fences kept,
+/// and everything else escaped. Text inside code is escaped and never
+/// formatted. A fence left open is closed.
 pub fn to_mrkdwn(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len());
     let mut in_fence = false;
+    let mut in_table = false;
     for line in markdown.lines() {
         let trimmed = line.trim_start();
+        // mrkdwn has no table: its lines stay aligned in a code block.
+        let table_line = !in_fence && trimmed.starts_with('|');
+        if table_line != in_table {
+            in_table = table_line;
+            out.push_str("```\n");
+        }
+        if in_table {
+            out.push_str(&escape(trimmed));
+            out.push('\n');
+            continue;
+        }
         if trimmed.starts_with("```") {
             in_fence = !in_fence;
             out.push_str("```\n");
@@ -1036,7 +1054,7 @@ pub fn to_mrkdwn(markdown: &str) -> String {
         }
         let indent = &line[..line.len() - trimmed.len()];
         let converted = if let Some(rest) = heading(trimmed) {
-            format!("*{}*", inline(rest))
+            format!("*{}*", inline(unbold(rest)))
         } else if let Some(rest) = bullet(trimmed) {
             format!("{indent}• {}", inline(rest))
         } else if let Some((number, rest)) = ordered(trimmed) {
@@ -1049,10 +1067,47 @@ pub fn to_mrkdwn(markdown: &str) -> String {
         out.push_str(&converted);
         out.push('\n');
     }
-    if in_fence {
+    if in_fence || in_table {
         out.push_str("```\n");
     }
     out.trim_end_matches('\n').to_string()
+}
+
+/// Markdown for a `markdown` block, with every `<` that would open a
+/// Slack mention, a broadcast or a channel link (`<@`, `<!`, `<#`)
+/// escaped by a backslash outside code, so a post makes none.
+pub fn defuse(markdown: &str) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    let mut in_fence = false;
+    for (n, line) in markdown.split('\n').enumerate() {
+        if n > 0 {
+            out.push('\n');
+        }
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        }
+        if in_fence || line.trim_start().starts_with("```") {
+            out.push_str(line);
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '`'
+                && let Some(end) = find(&chars, i + 1, &['`'])
+            {
+                out.extend(&chars[i..=end]);
+                i = end + 1;
+                continue;
+            }
+            if chars[i] == '<' && matches!(chars.get(i + 1), Some('@' | '!' | '#')) {
+                out.push('\\');
+            }
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn heading(line: &str) -> Option<&str> {
@@ -1064,6 +1119,21 @@ fn heading(line: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// A heading's text without the bold that wraps it whole: the heading is
+/// bold already, and mrkdwn does not nest bold in bold.
+fn unbold(text: &str) -> &str {
+    for marker in ["**", "__"] {
+        if let Some(inner) = text
+            .strip_prefix(marker)
+            .and_then(|t| t.strip_suffix(marker))
+            .filter(|t| !t.is_empty() && !t.contains(marker))
+        {
+            return inner;
+        }
+    }
+    text
 }
 
 fn bullet(line: &str) -> Option<&str> {
@@ -1737,8 +1807,36 @@ mod tests {
                 "<@U0123ABCD> is not a mention Fleet makes",
                 "&lt;@U0123ABCD&gt; is not a mention Fleet makes",
             ),
+            ("## **Production**", "*Production*"),
+            ("## **a** and **b**", "**a* and *b**"),
+            (
+                "intro\n| a | b |\n|---|---|\n| 1 < 2 | **x** |\nafter",
+                "intro\n```\n| a | b |\n|---|---|\n| 1 &lt; 2 | **x** |\n```\nafter",
+            ),
+            ("| a |\n|---|", "```\n| a |\n|---|\n```"),
+            ("```\n| in a fence |\n```", "```\n| in a fence |\n```"),
         ] {
             assert_eq!(to_mrkdwn(markdown), mrkdwn, "{markdown:?}");
+        }
+    }
+
+    #[test]
+    fn a_markdown_block_makes_no_mention_and_keeps_code_as_written() {
+        for (markdown, block) in [
+            ("**bold** & <b>", "**bold** & <b>"),
+            (
+                "hi <@U0123ABCD> and <!here>",
+                "hi \\<@U0123ABCD> and \\<!here>",
+            ),
+            ("see <#C0123ABCD>", "see \\<#C0123ABCD>"),
+            ("`<@U1>` stays", "`<@U1>` stays"),
+            (
+                "```\n<!channel>\n```\n<!channel>",
+                "```\n<!channel>\n```\n\\<!channel>",
+            ),
+            ("| a |\n|---|\n", "| a |\n|---|\n"),
+        ] {
+            assert_eq!(defuse(markdown), block, "{markdown:?}");
         }
     }
 

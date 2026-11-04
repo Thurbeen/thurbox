@@ -1484,12 +1484,14 @@ fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
         Observation::Known(EffectOutcome::Failed { why }) if why.contains("channel_not_found")
     ));
     assert_eq!(slack_posts(&env).len(), 5);
-    // Every post named mrkdwn and carried its text on stdin, never in argv.
+    // Every post named mrkdwn, carried one markdown block, and carried its
+    // text on stdin, never in argv.
     for call in slack_calls(&env)
         .iter()
         .filter(|c| c["method"] == "chat.postMessage")
     {
         assert_eq!(call["body"]["mrkdwn"], true);
+        assert_eq!(call["body"]["blocks"][0]["type"], "markdown");
     }
     for call in env.stub_calls() {
         assert!(
@@ -1501,6 +1503,57 @@ fn the_slack_adapter_opens_and_posts_keyed_mrkdwn_through_the_stub_curl() {
             "the text travels on stdin"
         );
     }
+}
+
+#[test]
+fn the_slack_adapter_posts_an_agents_markdown_as_a_markdown_block_with_a_mrkdwn_fallback() {
+    let (env, curl, curl_config) = slack_env("slack-markdown");
+    seed_slack(&env);
+    let g = slack_adapter(&curl, &curl_config, Duration::from_secs(30));
+    let report = "## **Production**\n\n\
+                  | Week | Total | ACTIVE |\n\
+                  |---|---|---|\n\
+                  | 44 | 12 | 3 |\n\n\
+                  Run `fleet get task t` & check.";
+    let posted = g.post(
+        GATEWAY_ACCOUNT,
+        &thread(PARENT_TS),
+        report,
+        "task/t/u7/gateway/result/1",
+    );
+    assert!(
+        matches!(posted, Observation::Known(EffectOutcome::Posted { .. })),
+        "{posted:?}"
+    );
+    let posts = slack_posts(&env);
+    assert_eq!(posts.len(), 1, "{posts:#?}");
+    // Slack renders the Markdown itself, the table included.
+    assert_eq!(
+        posts[0]["blocks"],
+        json!([{"type": "markdown", "text": report}]),
+        "{:#}",
+        posts[0]
+    );
+    // The fallback, for notifications and history, is mrkdwn: the heading
+    // is one bold span and the table is kept legible as a code block.
+    assert_eq!(
+        posts[0]["text"],
+        "*Production*\n\n```\n| Week | Total | ACTIVE |\n|---|---|---|\n| 44 | 12 | 3 |\n```\n\n\
+         Run `fleet get task t` &amp; check."
+    );
+    // The post still reads back as Fleet's, with its key.
+    let h = g.history(
+        GATEWAY_ACCOUNT,
+        &thread(PARENT_TS),
+        &HistoryQuery::Since { at: 0 },
+    );
+    let h = h.known().unwrap_or_else(|| panic!("{h:?}"));
+    assert!(
+        h.messages
+            .iter()
+            .any(|m| m.key.as_deref() == Some("task/t/u7/gateway/result/1")),
+        "{h:#?}"
+    );
 }
 
 #[test]

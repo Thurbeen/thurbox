@@ -74,7 +74,7 @@ controllers decide on these values, never on the platform's name.
 | `react` | One call, recorded | `reactions.add` or `reactions.remove` | `PUT` or `DELETE` of the bot's own reaction |
 | Recovery of an Unknown post | As the marker | One `since` read finds the key | Resend under the same nonce inside the window |
 | `inbound` | `connection` | `socket-mode` or `events-api` | `discord-gateway` |
-| Text | The port's text | Converted to `mrkdwn` | Markdown, unchanged |
+| Text | The port's text | A `markdown` block, with a `mrkdwn` fallback | Markdown, unchanged |
 | Post limit | Set by the test | 4,000 characters | 2,000 characters |
 | Open a thread | One call | One `chat.postMessage` | A post, then Start Thread from Message |
 | Message `key` | Read back with a `metadata` marker | Message metadata | None |

@@ -184,7 +184,7 @@ first, so that a failing account answers Unknown.
 | Authors | The account's `bot` is `fleet`. A message with a `bot_id`, or of subtype `bot_message`, is a `bot`. Anyone else is a `person`. |
 | `history` | `conversations.replies` for a thread, `conversations.history` for a channel, both with `include_all_metadata`[^slack-replies]. Pages of 200 follow `next_cursor`. `has_more` without a cursor is Unknown (`Incomplete`). |
 | `starter` | The parent message. A `tombstone` parent is `removed`. |
-| `post` | `chat.postMessage` with `thread_ts`, `mrkdwn`, and `unfurl_links` and `unfurl_media` off[^slack-post]. |
+| `post` | `chat.postMessage` with `thread_ts`, one `markdown` block, a `mrkdwn` `text`, and `unfurl_links` and `unfurl_media` off[^slack-post]. |
 | `open` | `chat.postMessage` without `thread_ts`. The new thread's address is the channel and the returned `ts`. Later chunks of a split text reply to it. |
 | `post` to a channel address | `chat.postMessage` without `thread_ts`, for every chunk: a log post starts no thread. A `since` read of the channel uses `conversations.history`. |
 | `react` | `reactions.add` to add, `reactions.remove` to remove, with `channel`, `timestamp` (the message's `ts`) and `name`[^slack-react-add][^slack-react-remove]. `name` is Slack's emoji name, such as `eyes` or `white_check_mark`; surrounding colons are stripped. Both methods list JSON and form bodies as accepted. The adapter sends form arguments, as it does for every method other than `chat.*`. `already_reacted` and `no_reaction` mean the reaction already stands as asked: a Known success. |
@@ -193,8 +193,22 @@ first, so that a failing account answers Unknown.
 | Idempotency | None on `chat.postMessage`: `client_msg_id` is not an argument[^slack-post]. Recovery uses the marker in a later `since` read. |
 | Identity | User ids, unique in their workspace[^slack-user]. In an Enterprise org, every user has one global id that starts with `U` or `W`[^slack-ent]. |
 
-Fleet's Markdown subset becomes `mrkdwn`, Slack's own syntax. The adapter
-escapes `&`, `<` and `>`[^slack-format]. Code spans and fences stay code.
+Each post carries its text twice:
+
+- `blocks` holds one `markdown` block with the Markdown as written. Slack
+  renders standard Markdown in this block, tables included[^slack-markdown].
+- `text` holds the same Markdown converted to `mrkdwn`, Slack's own
+  syntax[^slack-format]. Slack shows `text` in notifications. History reads
+  `text` back.
+
+In the `markdown` block, the adapter escapes with a backslash each `<` that
+starts `<@`, `<!` or `<#` outside code. So a post makes no mention, no
+broadcast and no channel link. Slack's reference does not state that a
+`markdown` block parses these forms (**unverified**).
+
+In `text`, the adapter escapes `&`, `<` and `>`[^slack-format]. Code spans
+and fences stay code. A heading becomes one bold line. A table becomes a
+code block, because `mrkdwn` has no table.
 
 A Slack answer maps onto the port as follows:
 
@@ -211,6 +225,8 @@ A Slack answer maps onto the port as follows:
 - The adapter splits a text at 4,000 characters, Slack's recommended length.
   Slack truncates text over 40,000[^slack-post]. So a text that needs more
   than 10 posts is refused, never cut.
+- Slack allows 12,000 characters across the `markdown` blocks of one
+  payload[^slack-markdown]. One post holds one chunk of 4,000 at most.
 - Slack allows about one message a second per channel[^slack-post].
 - `conversations.replies` and `conversations.history` are Tier 3: 50 or more
   calls a minute[^slack-replies].
@@ -279,5 +295,6 @@ These points are **unverified**:
 [^slack-format]: <https://docs.slack.dev/messaging/formatting-message-text>
 [^slack-mention]: <https://docs.slack.dev/reference/events/app_mention>
 [^slack-user]: <https://docs.slack.dev/reference/objects/user-object/>
+[^slack-markdown]: <https://docs.slack.dev/reference/block-kit/blocks/markdown-block>
 [^slack-compare]: <https://docs.slack.dev/apis/events-api/comparing-http-socket-mode>
 [^slack-ignoreself]: <https://docs.slack.dev/tools/bolt-js/reference/variables/ignoreself>

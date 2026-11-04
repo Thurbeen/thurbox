@@ -1934,7 +1934,7 @@ mod slack {
             .expect("posts")
             .push(json!({
                 "channel": channel, "ts": ts, "thread_ts": body["thread_ts"], "text": body["text"],
-                "metadata": body["metadata"], "mrkdwn": body["mrkdwn"],
+                "metadata": body["metadata"], "mrkdwn": body["mrkdwn"], "blocks": body["blocks"],
             }));
         save(state);
         // `postErrorAfter`: the post landed, and Slack answers an error
