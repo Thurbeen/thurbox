@@ -181,6 +181,17 @@ fn restart_refuses_a_false_successful_kill_and_explicit_retry_recovers() {
             .lines()
             .any(|p| p == format!("{}|tb-recovery", before.backend_id)));
     }
+    // A fresh restart refused the same way keeps the row on the conversation
+    // the surviving agent is still on.
+    let fresh = env
+        .command(&["session", "restart", &id_text, "--fresh", "--json"])
+        .env("PATH", &path)
+        .env("RECOVERY_REAL_TMUX", &real_tmux)
+        .output()
+        .unwrap();
+    assert!(!fresh.status.success(), "{}", stdout_of(&fresh));
+    let after = env.db().get_session_by_id(id).unwrap().unwrap();
+    assert_eq!(after.agent_session_id, before.agent_session_id);
 
     let retry = env.run(&["session", "restart", &id_text, "--json"]);
     assert!(retry.status.success(), "{}", stdout_of(&retry));

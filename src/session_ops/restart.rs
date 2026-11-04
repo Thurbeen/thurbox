@@ -626,6 +626,10 @@ fn mid_turn(
         .load_hook_state(session.id)
         .map_err(read)?
         .unwrap_or_default();
+    // A lost agent has no turn left to cut off, whatever it last reported.
+    if db.session_lost_at(session.id).map_err(read)?.is_some() {
+        return Ok(None);
+    }
     let stopped = db.session_stopped_at(session.id).map_err(read)?.is_some();
     let registry = crate::agent::agent_config::load_or_seed();
     let state = super::events::assess(&registry, facts, &hook, stopped).state();
@@ -841,20 +845,27 @@ fn restart_for(
 
     refuse_if_deleted(db, &session)?;
 
+    respawn(db, backend.as_ref(), &session, &plan)?;
     if fresh {
+        // Recorded only once the old agent is verifiably gone and the new one
+        // is up: a teardown that leaves the old window running must leave the
+        // row naming the conversation that window is still on.
         let id = session.agent_session_id.as_deref().unwrap_or_default();
-        let stored = db.set_agent_session_id(session_id, id).map_err(|e| {
-            format!(
-                "could not record the new conversation of '{}': {e}",
-                session.name
-            )
-        })?;
-        if !stored {
-            return Err(format!(
-                "'{}' was deleted while it was preparing to restart",
-                session.name
-            )
-            .into());
+        match db.set_agent_session_id(session_id, id) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(
+                    format!("'{}' was deleted while it was restarting", session.name).into(),
+                )
+            }
+            Err(e) => {
+                return Err(format!(
+                    "'{}' runs a new conversation, but its id could not be recorded \
+                     (a plain restart would resume the old one): {e}",
+                    session.name
+                )
+                .into())
+            }
         }
         // Codex's own conversation id is what a plain restart resumes it by.
         if let Err(e) = db.unset_session_meta(session_id, "thurbox.codex_conversation_id") {
@@ -864,10 +875,6 @@ fn restart_for(
             );
         }
         hook_ctx.agent_session_id = session.agent_session_id.clone();
-    }
-
-    respawn(db, backend.as_ref(), &session, &plan)?;
-    if fresh {
         // A multi-repo session's workspace is named by the old id; the new one
         // was built by the plan, so the old one is nobody's now. Delete keeps
         // the same rule (local only).
