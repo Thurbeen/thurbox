@@ -514,9 +514,17 @@ pub(crate) fn delivery_text(message: &SessionMessage, sender: &str) -> String {
 /// socket message as coming from another Claude session, so a vaguer
 /// "unknown sender" reads as an unidentified peer agent rather than a script
 /// or a control plane running outside thurbox.
+///
+/// No sender id with `THURBOX_SESSION` set is still a session: one this
+/// database has no row for, such as a remote peer's. Every send runs in the
+/// caller's own process, so its environment is the sender's.
 fn sender_label(db: &Database, from: Option<crate::session::SessionId>) -> String {
     let Some(from) = from else {
-        return "a process outside thurbox, not a session".into();
+        return if std::env::var_os("THURBOX_SESSION").is_some_and(|v| !v.is_empty()) {
+            "a session this thurbox has no record of".into()
+        } else {
+            "a process outside thurbox, not a session".into()
+        };
     };
     db.get_session_by_id(from)
         .ok()

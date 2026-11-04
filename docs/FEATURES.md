@@ -3070,7 +3070,9 @@ What the agent receives is one provenance line, then the body verbatim:
 
 `from:` is the sending session's name. A send from no thurbox session (a
 script, or a control plane driving thurbox from outside) reads `from: a process
-outside thurbox, not a session`. Claude Code puts its own heading and caveat
+outside thurbox, not a session`; a caller whose `THURBOX_SESSION` names no
+session in this database (a remote peer's) reads `from: a session this thurbox
+has no record of`. Claude Code puts its own heading and caveat
 above every message its inbox socket receives, calling the sender "another
 Claude session"; thurbox writes only the user turn below it, so this line is
 where a non-session sender can be told apart from a peer agent.

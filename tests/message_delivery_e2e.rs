@@ -625,3 +625,38 @@ fn a_send_from_outside_any_session_names_no_peer() {
         "{line}"
     );
 }
+
+/// A caller whose `THURBOX_SESSION` names no session here (a remote peer's
+/// session, whose row lives in another thurbox's database) is a session all
+/// the same, so it must not be labelled as a process outside thurbox.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_send_from_a_session_unknown_here_is_not_called_outside_thurbox() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = isolate(home.path());
+    let row = claude_row("88888888-8888-4888-8888-888888888888");
+    db.upsert_session(&row).expect("insert row");
+    let (mut agent, reader) =
+        stand_in_claude(home.path(), &home.path().join("claude/sessions"), &row);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["message", "send", "--to", &row.name, "--kind", "note"])
+        .args(["--body", "from a peer", "--json"])
+        .env("THURBOX_SESSION", "99999999-9999-4999-8999-999999999999")
+        .output()
+        .expect("run message send");
+    let _ = agent.kill();
+    let _ = agent.wait();
+
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let line = reader.join().expect("reader");
+    assert!(!line.contains("outside thurbox"), "{line}");
+    assert!(
+        line.contains("from: a session this thurbox has no record of"),
+        "{line}"
+    );
+}
