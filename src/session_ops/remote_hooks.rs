@@ -647,7 +647,7 @@ pub(crate) fn poll_hook_states(
             .collect();
         for (id, state) in hook_status_updates(&polled, &rows) {
             // An echo of what `session signal` published, in the order its
-            // writers published rather than stored: `report_hook_state` refuses
+            // writers published rather than stored: `signals::report` refuses
             // a late `background` for work that has all ended (issue #1510).
             match super::signals::report(db, id, &state, ReportFrom::Echo) {
                 Ok(reported) => {

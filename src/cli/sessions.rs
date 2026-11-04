@@ -2173,7 +2173,7 @@ fn run_signal(
             };
             use crate::session_ops::signals::{report, Reported};
             let stored = match report(db, target.id, state, from)
-                .map_err(|e| format!("set_hook_state: {e}"))?
+                .map_err(|e| format!("record the state: {e}"))?
             {
                 Reported::Stored { state, .. } => state,
                 Reported::NotAState => {
