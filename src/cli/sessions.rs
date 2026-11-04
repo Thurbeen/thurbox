@@ -1838,7 +1838,7 @@ fn run_send(
         strict: wait.strict,
         wait_turn: wait.wait_turn,
         timeout: wait.timeout.map(std::time::Duration::from_secs),
-        from_session: super::identity::calling_session(db).map(|s| s.id),
+        from: super::identity::sender(db),
         from_task: super::messages::calling_task_id(),
     };
     let report = send::send(db, backends, &session, &text, &policy)?;

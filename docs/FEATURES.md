@@ -3068,6 +3068,26 @@ What the agent receives is one provenance line, then the body verbatim:
 <body>
 ```
 
+`from:` names the sender, which the caller states (`session_ops::delivery::Sender`)
+rather than the delivery guessing it from the environment:
+
+| sender | `from:` |
+| --- | --- |
+| a session in this database | its name, or `a session that no longer exists` once deleted |
+| a `THURBOX_SESSION` naming no session here (a remote peer's) | `a session this thurbox has no record of` |
+| thurbox itself: the interface's send, a task dispatch, a send automation | `thurbox itself, not a session` |
+| a CLI call from no session (a script, a control plane outside thurbox) | `a process outside thurbox, not a session` |
+
+A send a host's own CLI does for a shared session (ADR-24 delegation) is
+labelled by that host's `thurbox-cli`, which runs in no session there, so it
+reads `a process outside thurbox` whoever sent it: `session send` has no flag
+that carries the sender across.
+
+Claude Code puts its own heading and caveat above every message its inbox
+socket receives, calling the sender "another Claude session"; thurbox writes
+only the user turn below it, so this line is where a sender that is not a
+session can be told apart from a peer agent.
+
 There is deliberately no "run `message inbox`" instruction: the body *is*
 the delivery. A native send runs under a **delivery lease**: the sender stamps
 `delivering_at` on the still-unread row (`lease_message_delivery`), and

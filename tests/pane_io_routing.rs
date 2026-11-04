@@ -1941,3 +1941,87 @@ fn an_empty_host_is_checked_as_this_machine() {
     assert_eq!(via_cli, refused, "the CLI");
     assert_eq!(via_kernel, refused, "the interface");
 }
+
+/// A prompt thurbox itself sends (the interface's `send`, a task dispatch, a
+/// send automation) and hands to a Claude inbox because someone is typing in
+/// the composer names thurbox as its sender. It has no sending session, and
+/// "a process outside thurbox" would be wrong (#1653).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_prompt_thurbox_hands_to_a_claude_inbox_names_thurbox_as_its_sender() {
+    use std::io::BufRead;
+    use std::os::unix::net::UnixListener;
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    reg.probe.read_cursor();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    let id = SessionId::default();
+    let pane = reg
+        .probe
+        .open("tb-claude-inbox", &id.to_string(), WindowRole::Agent);
+    seed_row(
+        &db,
+        id,
+        "claude-inbox",
+        "local:rmux",
+        &pane,
+        &instance.repo(),
+    );
+    SessionBackend::send_text(&*reg.probe, &pane, "half a dra", false).expect("draft");
+
+    // What a running Claude Code leaves behind for the row: a process carrying
+    // its identity and pane, an inbox socket, and a registry entry naming both.
+    let claude = instance.root.path().join("claude");
+    std::fs::create_dir_all(claude.join("sessions")).expect("mkdir registry");
+    std::env::set_var("CLAUDE_CONFIG_DIR", &claude);
+    let socket = claude.join("inbox.sock");
+    let listener = UnixListener::bind(&socket).expect("bind inbox");
+    let reader = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        let mut line = String::new();
+        let _ = std::io::BufReader::new(stream).read_line(&mut line);
+        line
+    });
+    let mut agent = Command::new("sleep")
+        .arg("60")
+        .env("THURBOX_SESSION", id.to_string())
+        .env("TMUX_PANE", &pane)
+        .spawn()
+        .expect("spawn stand-in agent");
+    std::fs::write(
+        claude.join(format!("sessions/{}.json", agent.id())),
+        serde_json::json!({
+            "pid": agent.id(),
+            "kind": "interactive",
+            "messagingSocketPath": socket,
+            "startedAt": 1,
+        })
+        .to_string(),
+    )
+    .expect("write registry entry");
+
+    let sent = kernel(
+        &mut bus,
+        KernelCommand::Send {
+            session: id.to_string(),
+            text: "from the interface".into(),
+        },
+    );
+    let _ = agent.kill();
+    let _ = agent.wait();
+
+    sent.expect("handed to the Claude inbox");
+    let line = reader.join().expect("reader");
+    assert!(!line.contains("outside thurbox"), "{line}");
+    assert!(
+        line.contains("from: thurbox itself, not a session"),
+        "{line}"
+    );
+}
