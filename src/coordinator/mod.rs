@@ -853,6 +853,7 @@ impl App {
             self.dispatch_tracked(thurbox::kernel::command::Command::Restart {
                 session: id,
                 if_missing: true,
+                fresh: false,
             });
         }
     }

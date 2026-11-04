@@ -732,6 +732,16 @@ because restart reuses the session cwd and a single-repo fork reuses
 the parent cwd. Agents that declare no `resume_args` start fresh on
 restart instead of resuming.
 
+`session restart --fresh` skips the resume group for every agent and
+launches on a new agent session id, written to the same row before the
+launch. A new id rather than the old one again because a pinned agent refuses
+an id it has a transcript for, and because the id is what every later
+restart decides resume-or-not by; Codex's saved conversation id is
+dropped for the same reason. A multi-repo session's workspace is named by
+that id, so it is rebuilt under the new one and the old one removed (local
+hosts, as delete does). The busy rule and the `--json` outcomes are in
+[ORCHESTRATION.md](ORCHESTRATION.md#clearing-a-workers-conversation).
+
 Example:
 
 ```toml

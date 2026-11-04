@@ -345,6 +345,14 @@ defaults and this instance's locations (config dir, data dir, socket), with no
 session identity. Always a **fresh** launch — continuing a
 conversation is `session start`/`restart`.
 
+`session restart --fresh [--wait]` is the other way round: the same session on
+a **new** conversation (no resume group, new `agent_session_id` written to the
+row), refused with exit 5 while the session reports `working`/`blocked`/
+`background` unless `--wait`. `--json` `outcome` is `cleared`, `waited` or
+`refused`. One owner, `session_ops::restart::restart_fresh`, behind the CLI and
+the interface's `restart` command (`fresh = true`, never waits);
+docs/ORCHESTRATION.md → *Clearing a worker's conversation*.
+
 ### Session keys — the address a driver finds its sessions by
 
 One opaque **key** per session (issue #1408, ADR-35): `session create --key K`

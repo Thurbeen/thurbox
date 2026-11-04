@@ -1058,6 +1058,13 @@ function require(name) end
 ---@field session string
 ---@field force? boolean Restore what can be restored.
 
+--- Kill and relaunch a session's agent, as `thurbox-cli session restart`.
+--- `fresh` starts it on a new conversation (same session, new agent session
+--- id), refused while a turn is in progress.
+---@class (exact) thurbox.cmd.Restart
+---@field session string
+---@field fresh? boolean
+
 ---@class (exact) thurbox.cmd.Session
 ---@field session string A session id, or for `copy` a surface: `<id>#shell` reads the companion shell's screen rather than the agent's.
 
@@ -1122,7 +1129,7 @@ function require(name) end
 ---@overload fun(verb: "program", opts: thurbox.cmd.Program)
 ---@overload fun(verb: "delete", opts: thurbox.cmd.Delete)
 ---@overload fun(verb: "restore", opts: thurbox.cmd.Restore)
----@overload fun(verb: "restart", opts: thurbox.cmd.Session)
+---@overload fun(verb: "restart", opts: thurbox.cmd.Restart)
 ---@overload fun(verb: "send", opts: thurbox.cmd.Send)
 ---@overload fun(verb: "reorder", opts: thurbox.cmd.Reorder)
 ---@overload fun(verb: "fork", opts: thurbox.cmd.Fork)

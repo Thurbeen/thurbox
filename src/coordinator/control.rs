@@ -530,6 +530,7 @@ impl App {
                     "sessions.restart" => Command::Restart {
                         session: pending.target.clone(),
                         if_missing: false,
+                        fresh: false,
                     },
                     _ => Command::Sync {
                         session: pending.target.clone(),

@@ -1581,3 +1581,132 @@ args = []
     assert_eq!(args("replace"), serde_json::json!(["replacement", "tail"]));
     assert_eq!(args("empty"), serde_json::json!([]));
 }
+
+/// `session restart --fresh` (#1642): the same row, a new conversation. A busy
+/// session is refused rather than cut off mid-turn, `--wait` lets the turn end
+/// first, and `--json` says which of the three happened.
+#[cfg(unix)]
+#[test]
+fn a_fresh_restart_starts_a_new_conversation_on_the_same_row() {
+    if thurbox::paths::resolve_on_path("tmux").is_none() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let env = Env::new();
+    let argv = env.path("argv");
+    // A pinned agent: `{id}` in both launch groups, so which one it got and with
+    // which id is all on its command line.
+    std::fs::write(
+        env.path("config/agents.toml"),
+        format!(
+            "default = \"stub\"\n[[agents]]\nname = \"stub\"\ncommand = \"sh\"\n\
+             args = ['-c', 'echo \"$*\" >> {}; while :; do sleep 1; done', 'stub', \
+             '{{session_args}}']\n\
+             new_session_args = ['--session-id', '{{id}}']\n\
+             resume_args = ['--resume', '{{id}}']\n",
+            argv.display()
+        ),
+    )
+    .unwrap();
+    let id = env.seed("fresh", Some(&env.path("work")));
+    let id_text = id.to_string();
+    let db = env.db();
+    {
+        let mut row = db.get_session_by_id(id).unwrap().unwrap();
+        row.agent = "stub".into();
+        db.upsert_session(&row).unwrap();
+    }
+    // The agent has had a turn on its conversation, so a plain restart resumes.
+    db.set_session_meta(
+        id,
+        thurbox::session_ops::CONVERSATION_STARTED_META,
+        "conversation-1",
+    )
+    .unwrap();
+    let launches = |count: usize| -> Vec<String> {
+        for _ in 0..100 {
+            let lines: Vec<String> = std::fs::read_to_string(&argv)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect();
+            if lines.len() >= count {
+                return lines;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("the agent was not launched {count} times");
+    };
+    let json = |out: &Output| -> Value {
+        serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| panic!("{e}: {} / {}", stdout_of(out), stderr_of(out)))
+    };
+
+    let plain = env.run(&["session", "restart", &id_text, "--json"]);
+    assert!(plain.status.success(), "{}", stdout_of(&plain));
+    assert_eq!(launches(1)[0], "--resume conversation-1");
+
+    // Mid-turn: refused, and the running agent is left alone.
+    db.set_hook_state(id, "working").unwrap();
+    let before = db.get_session_by_id(id).unwrap().unwrap();
+    let refused = env.run(&["session", "restart", &id_text, "--fresh", "--json"]);
+    assert_eq!(refused.status.code(), Some(5), "{}", stdout_of(&refused));
+    let answer = json(&refused);
+    assert_eq!(answer["outcome"], "refused", "{answer}");
+    assert!(
+        answer["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("working")),
+        "{answer}"
+    );
+    let after = db.get_session_by_id(id).unwrap().unwrap();
+    assert_eq!(after.backend_id, before.backend_id);
+    assert_eq!(after.agent_session_id, before.agent_session_id);
+
+    // Between turns: cleared. Same row, new agent id, no resume group.
+    db.set_hook_state(id, "done").unwrap();
+    let cleared = env.run(&["session", "restart", &id_text, "--fresh", "--json"]);
+    assert!(cleared.status.success(), "{}", stdout_of(&cleared));
+    let answer = json(&cleared);
+    assert_eq!(answer["outcome"], "cleared", "{answer}");
+    let row = db.get_session_by_id(id).unwrap().unwrap();
+    let fresh_id = row.agent_session_id.clone().expect("an agent session id");
+    assert_ne!(fresh_id, "conversation-1");
+    assert_eq!(answer["agent_session_id"], fresh_id.as_str(), "{answer}");
+    assert_eq!(row.name, "fresh");
+    assert_eq!(launches(2)[1], format!("--session-id {fresh_id}"));
+
+    // A plain restart after it resumes nothing of the old conversation.
+    let plain = env.run(&["session", "restart", &id_text, "--json"]);
+    assert!(plain.status.success(), "{}", stdout_of(&plain));
+    assert_eq!(launches(3)[2], format!("--session-id {fresh_id}"));
+
+    // `--wait` holds the restart until the turn ends, then clears.
+    db.set_hook_state(id, "working").unwrap();
+    let waiting = env
+        .command(&[
+            "session", "restart", &id_text, "--fresh", "--wait", "--json",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert_eq!(
+        launches(3).len(),
+        3,
+        "--wait relaunched before the turn ended"
+    );
+    db.set_hook_state(id, "idle").unwrap();
+    let waited = waiting.wait_with_output().unwrap();
+    assert!(waited.status.success(), "{}", stdout_of(&waited));
+    let answer = json(&waited);
+    assert_eq!(answer["outcome"], "waited", "{answer}");
+    let row = db.get_session_by_id(id).unwrap().unwrap();
+    let third_id = row.agent_session_id.clone().unwrap();
+    assert_ne!(third_id, fresh_id);
+    assert_eq!(launches(4)[3], format!("--session-id {third_id}"));
+
+    let version = json(&env.run(&["version", "--json"]));
+    assert_eq!(version["session_restart_fresh"], true, "{version}");
+}
