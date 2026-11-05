@@ -734,6 +734,10 @@ pub enum StateSource {
     /// Nothing signalled, but the pane's foreground process is an agent. Coarse
     /// — it says an agent is running, never what it is doing.
     Process,
+    /// The session's host did not answer when last asked, so whatever the
+    /// hook columns hold is a report from before it went quiet
+    /// ([`Assessment::host_unreachable`]).
+    Host,
 }
 
 impl StateSource {
@@ -741,6 +745,7 @@ impl StateSource {
         match self {
             StateSource::Hook => "hook",
             StateSource::Process => "process",
+            StateSource::Host => "host",
         }
     }
 }
@@ -1336,6 +1341,16 @@ impl Assessment {
         self.stopped = true;
         self.state = None;
         self.state_source = None;
+        self
+    }
+
+    /// Record that the session's host is down: the CLI's counterpart of the
+    /// interface's [`with_reachability`], fed by a recorded verdict rather
+    /// than a live attach. `hook_state` stays as stored, as in [`Self::parked`];
+    /// a parked or failed session keeps outranking this in [`Self::state`].
+    pub fn host_unreachable(mut self) -> Self {
+        self.state = Some(SessionState::Unreachable);
+        self.state_source = Some(StateSource::Host);
         self
     }
 }

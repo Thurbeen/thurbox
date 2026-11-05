@@ -260,6 +260,57 @@ fn read_stored() -> HashMap<String, StoredNo> {
         .unwrap_or_default()
 }
 
+/// How a `No` for a host that did not answer begins — the one verdict that
+/// says the host itself is down, rather than that its CLI cannot be shared.
+const NOT_ANSWERING: &str = "host not answering";
+
+/// Whether the host serving `backend_type` (any route spelling,
+/// `ssh:box:tmux` as well as `ssh:box`) was recorded as not answering, and that
+/// verdict's backoff has not run out. A recorded verdict, not a probe: past
+/// its backoff nobody has asked again — the interface re-probes then and
+/// re-stamps it, a host that answered clears it — so an expired one is no
+/// evidence either way.
+pub fn recorded_down(backend_type: &str) -> bool {
+    verdict_key(backend_type)
+        .and_then(|key| stored_no(&key))
+        .is_some_and(|verdict| is_fresh(&verdict) && is_not_answering(&verdict.usable))
+}
+
+/// Drop a stored "not answering" verdict for the host behind `backend_type`
+/// — here and in `host-verdicts.json` — because something just reached it: the
+/// interface's survey of that host. Without this a host that came back reads
+/// [`recorded_down`] until the backoff runs out, while the interface already
+/// shows its sessions live. Any other `No` was decided on a host that answered,
+/// so reaching it again says nothing new and the backoff stands.
+pub fn host_answered(backend_type: &str) {
+    let Some(key) = verdict_key(backend_type) else {
+        return;
+    };
+    if let Ok(mut cache) = verdicts().lock() {
+        if cache
+            .get(&key)
+            .is_some_and(|verdict| is_not_answering(&verdict.usable))
+        {
+            cache.remove(&key);
+        }
+    }
+    if stored_no(&key).is_some_and(|verdict| is_not_answering(&verdict.usable)) {
+        store(&key, None);
+    }
+}
+
+/// The key a verdict for the host behind `backend_type` is stored under — its
+/// unqualified route, as [`HostDef::backend_name`] spells it — or `None` for a
+/// local route.
+fn verdict_key(backend_type: &str) -> Option<String> {
+    let route = crate::session::Route::parse(backend_type).ok()?;
+    Some(crate::session::Route::remote(route.via()?, route.host()?, None).format())
+}
+
+fn is_not_answering(usable: &Usable) -> bool {
+    matches!(usable, Usable::No(reason) if reason.starts_with(NOT_ANSWERING))
+}
+
 /// The `No` another process stored for `key`, as a verdict.
 fn stored_no(key: &str) -> Option<Verdict> {
     let stored = read_stored().remove(key)?;
@@ -523,7 +574,7 @@ fn establish(host: &HostDef) -> Usable {
         }
         // A host that did not answer is the other state, and the only one
         // waiting helps. It keeps its backoff untouched.
-        Err(e) => return Usable::No(format!("host not answering: {e}")),
+        Err(e) => return Usable::No(format!("{NOT_ANSWERING}: {e}")),
     };
     if let Some(cli) = &found {
         if let Err(mismatch) = compatible(cli) {
@@ -2569,6 +2620,35 @@ mod tests {
         .unwrap();
 
         assert!(stored_no("ssh:far-future").is_none());
+    }
+
+    /// A host that answered again is not down, whatever its backoff says: the
+    /// interface's survey reaching it clears the `not answering` verdict, so
+    /// `session list` does not hold it unreachable until the backoff runs out.
+    /// A refusal is a different fact about a host that *was* reached, and
+    /// stays backed off.
+    #[test]
+    fn a_host_that_answered_again_is_no_longer_recorded_down() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(temp.path());
+        let now = SystemTime::now();
+        let no = |reason: &str| Verdict {
+            usable: Usable::No(reason.to_string()),
+            at: now,
+            failures: 3,
+        };
+        store("ssh:back-again", Some(&no("host not answering: timed out")));
+        store("ssh:refuser", Some(&no("thurbox-cli could not be started")));
+        assert!(recorded_down("ssh:back-again:tmux"));
+
+        host_answered("ssh:back-again:tmux");
+        host_answered("ssh:refuser:tmux");
+
+        assert!(!recorded_down("ssh:back-again:tmux"));
+        assert!(
+            stored_no("ssh:refuser").is_some(),
+            "a refusal is kept: reaching the host is what it already did"
+        );
     }
 
     /// And the message an operator reads has to name the cause. "printed no

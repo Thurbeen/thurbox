@@ -372,6 +372,100 @@ fn a_custom_agent_can_claim_a_hook_family() {
     drop(guard);
 }
 
+/// A host recorded as not answering holds no state anybody can know: its
+/// rows read `unreachable`, as the interface shows them, rather than the
+/// `idle` the last mirror pass left in the hook columns.
+#[test]
+fn a_session_on_a_host_recorded_as_down_reads_unreachable_not_its_stale_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+    let db = Database::open_in_memory().expect("db");
+    let down = session_row("on-down-host", "claude", "ssh:down-box:tmux");
+    let up = session_row("on-other-host", "claude", "ssh:up-box:tmux");
+    for row in [&down, &up] {
+        db.upsert_session(row).expect("persist");
+        db.set_hook_state(row.id, "idle").expect("signal");
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let verdict = |at: u64| {
+        format!(
+            r#"{{"ssh:down-box":{{"reason":"host not answering: ssh: connect to host down-box port 22: Connection timed out","at":{at},"failures":3}}}}"#
+        )
+    };
+    let verdicts = dir.path().join("host-verdicts.json");
+    std::fs::write(&verdicts, verdict(now)).expect("record the verdict");
+
+    let out = get(&db, down.id, false);
+    assert_eq!(out["state"], Value::String("unreachable".into()));
+    assert_eq!(out["state_source"], Value::String("host".into()));
+    assert_eq!(out["ready"], Value::Bool(false));
+    assert_eq!(
+        out["hook_state"],
+        Value::String("idle".into()),
+        "the stored report itself is untouched"
+    );
+    let out = get(&db, up.id, false);
+    assert_eq!(out["state"], Value::String("idle".into()));
+
+    let listed = run(
+        Action::List {
+            include_purged: false,
+            parent: None,
+            recursive: false,
+            tree: false,
+            deleted: false,
+            since: None,
+            verify: false,
+            key: None,
+            key_prefix: None,
+        },
+        &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+    )
+    .expect("session list");
+    let state_of = |name: &str| {
+        listed
+            .json
+            .as_array()
+            .expect("a list")
+            .iter()
+            .find(|s| s["name"] == name)
+            .map(|s| s["state"].clone())
+    };
+    assert_eq!(
+        state_of("on-down-host"),
+        Some(Value::String("unreachable".into()))
+    );
+    assert_eq!(
+        state_of("on-other-host"),
+        Some(Value::String("idle".into()))
+    );
+
+    // A verdict past its backoff is one nobody has re-checked: the host may be
+    // back, so it says nothing and the stored report stands.
+    std::fs::write(&verdicts, verdict(1)).expect("age the verdict");
+    assert_eq!(
+        get(&db, down.id, false)["state"],
+        Value::String("idle".into())
+    );
+
+    // A host that answered and refused to start its CLI is up: a fresh `No`
+    // for any reason other than not answering leaves the stored state alone.
+    std::fs::write(
+        &verdicts,
+        format!(
+            r#"{{"ssh:down-box":{{"reason":"the host refused to run thurbox-cli","at":{now},"failures":3}}}}"#
+        ),
+    )
+    .expect("record a refusal");
+    let out = get(&db, down.id, false);
+    assert_eq!(out["state"], Value::String("idle".into()));
+    assert_eq!(out["ready"], Value::Bool(true));
+}
+
 #[test]
 fn a_remote_sessions_pane_is_reported_unreadable_rather_than_guessed() {
     let dir = tempfile::tempdir().expect("tempdir");
