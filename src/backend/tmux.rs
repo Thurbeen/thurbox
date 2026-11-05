@@ -1,20 +1,19 @@
 //! The tmux adapter: tmux's answers to [`TmuxCompatible`].
 //!
 //! What tmux shares with the other multiplexers that speak its protocol is
-//! [`Server`]; every way tmux differs from them is a body here — its `-H` key
-//! encoding, its bracketed paste, its clipboard and mouse options, its version
-//! floor. Nothing here is psmux's, and nothing in the shared code asks whether
-//! a server is tmux.
+//! [`Server`], and tmux's own wording is [`TmuxCompatible`]'s defaults — its
+//! `-H` key encoding, its bracketed paste, its absence replies. Every way tmux
+//! differs from the others is a body here — its clipboard and mouse options,
+//! its UTF-8 flag, its version floor. Nothing here is psmux's, and nothing in
+//! the shared code asks whether a server is tmux.
 
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 
 use crate::backend::contract::SessionBackend;
-use crate::backend::tmux_compat::control_mode::{
-    hex_send_keys_commands, shell_escape, ControlPolicy, PaneInput,
-};
-use crate::backend::tmux_compat::server::{ConfigOption, Server, TmuxCompatible};
+use crate::backend::tmux_compat::control_mode::ControlPolicy;
+use crate::backend::tmux_compat::server::{parse_version, ConfigOption, Server, TmuxCompatible};
 use crate::backend::tmux_compat::transport::TmuxTransport;
 use crate::session::{HostDef, Multiplexer, Platform};
 use crate::shell::HostLauncher;
@@ -118,25 +117,6 @@ impl TmuxCompatible for Tmux {
         config
     }
 
-    /// The bracketed-paste-wrapped bytes, taken literally (`send-keys -l`).
-    fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
-        vec![vec![
-            "send-keys".to_string(),
-            "-t".to_string(),
-            target.to_string(),
-            "-l".to_string(),
-            bracketed_paste(text),
-        ]]
-    }
-
-    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String> {
-        Ok(deferred_paste_script(mux, socket, target, text))
-    }
-
-    fn pane_input(_transport: &TmuxTransport, _socket: &str) -> Arc<dyn PaneInput> {
-        Arc::new(HexKeys)
-    }
-
     fn control_policy(_transport: &TmuxTransport, _session: &str) -> ControlPolicy {
         ControlPolicy {
             flow_control_command: Some("refresh-client -f pause-after=5"),
@@ -150,32 +130,6 @@ impl TmuxCompatible for Tmux {
     }
 
     const HOOK_STATUS: bool = true;
-
-    /// Inside a pane tmux finds its own server and pane from `$TMUX` and
-    /// `$TMUX_PANE`, so the command names neither — and works whichever
-    /// socket the pane's server is on.
-    fn hook_signal_command(_server: &Server<Self>) -> String {
-        format!(
-            "{} set-option -p {} ",
-            Self::MULTIPLEXER.name(),
-            crate::backend::tmux_compat::control_mode::REMOTE_HOOK_STATE_OPTION
-        )
-    }
-}
-
-/// tmux's input: every keystroke as `send-keys -H` hex. A paste takes no other
-/// way in: the writer pastes it through control mode (`set-buffer` and
-/// `paste-buffer -p`), so tmux frames it only for an app that asked.
-struct HexKeys;
-
-impl PaneInput for HexKeys {
-    fn send_keys(&self, pane_id: &str, buf: &[u8]) -> Vec<String> {
-        hex_send_keys_commands(pane_id, buf)
-    }
-
-    fn paste(&self, _pane_id: &str, _text: &str) -> Option<Result<()>> {
-        None
-    }
 }
 
 /// tmux's `-u` — "assume the terminal supports UTF-8".
@@ -196,74 +150,24 @@ const CLIPBOARD_FEATURE_SLOT: &str = "terminal-features[100]";
 /// Minimum tmux version required.
 const MIN_TMUX_VERSION: (u32, u32) = (3, 2);
 
-/// Parse a `tmux -V` version string (e.g. `"tmux 3.4"`, `"tmux 3.3a"`) into a
-/// `(major, minor)` pair.
-fn parse_tmux_version(version_str: &str) -> Result<(u32, u32)> {
-    let version_part = version_str.strip_prefix("tmux ").unwrap_or(version_str);
-
-    let parts: Vec<&str> = version_part.split('.').collect();
-    if parts.len() < 2 {
-        bail!("Cannot parse tmux version from: {version_str}");
-    }
-
-    let major: u32 = parts[0]
-        .parse()
-        .with_context(|| format!("Cannot parse tmux major version from: {version_str}"))?;
-    // Minor might have a trailing letter (e.g., "3a"), strip non-digits.
-    let minor_str: String = parts[1].chars().take_while(char::is_ascii_digit).collect();
-    let minor: u32 = minor_str
-        .parse()
-        .with_context(|| format!("Cannot parse tmux minor version from: {version_str}"))?;
-
-    Ok((major, minor))
-}
-
 /// Enforce the minimum-version gate against a multiplexer's `-V` output.
 ///
 /// The `>= 3.2` floor applies to a `tmux …` banner; any other banner from a
 /// binary that answered `-V` as tmux is accepted as-is.
 fn check_min_version(version_output: &str) -> Result<()> {
-    let trimmed = version_output.trim();
-    if let Some(rest) = trimmed.strip_prefix("tmux ") {
-        let (major, minor) = parse_tmux_version(rest)?;
-        if (major, minor) < MIN_TMUX_VERSION {
-            bail!(
-                "tmux {major}.{minor} is too old; thurbox requires >= {}.{}",
-                MIN_TMUX_VERSION.0,
-                MIN_TMUX_VERSION.1
-            );
-        }
+    let Some(version) = Tmux::banner_version(version_output) else {
+        return Ok(());
+    };
+    let (major, minor, _) = parse_version(version)
+        .ok_or_else(|| anyhow!("Cannot parse tmux version from: {version_output}"))?;
+    if (major, minor) < MIN_TMUX_VERSION {
+        bail!(
+            "tmux {major}.{minor} is too old; thurbox requires >= {}.{}",
+            MIN_TMUX_VERSION.0,
+            MIN_TMUX_VERSION.1
+        );
     }
     Ok(())
-}
-
-/// Wrap `text` in the bracketed-paste escape sequences (`ESC[200~ … ESC[201~`)
-/// so a multi-line prompt is delivered as a single paste — the embedded
-/// newlines insert as text instead of submitting the prompt on the first one.
-/// Used by [`SessionBackend::send_text`](crate::backend::SessionBackend::send_text), which is how the TUI reaches this too
-/// — the kernel's prompt commands call it rather than framing the paste
-/// themselves. The trailing `Enter` is sent separately. tmux delivers
-/// these bytes literally via `send-keys -l`.
-fn bracketed_paste(text: &str) -> String {
-    format!("\x1b[200~{text}\x1b[201~")
-}
-
-/// The `run-shell` script that pastes the prompt, waits a beat so the paste is
-/// consumed, then presses Enter — a plain `sh` one-liner, which is what tmux's
-/// `run-shell` executes it through.
-fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> String {
-    // Quoted as the immediate commands pass them — one argument each — since a
-    // host may configure a socket name with a space in it.
-    let (mux, socket) = (shell_escape(mux), shell_escape(socket));
-    let escaped_target = shell_escape(target);
-    // Bracketed-paste wrap (see `bracketed_paste`) so multi-line prompts don't
-    // submit early; `-l` makes the multiplexer deliver the bytes literally.
-    let escaped_text = shell_escape(&bracketed_paste(text));
-    format!(
-        "{mux} -L {socket} send-keys -t {escaped_target} -l {escaped_text}; \
-         sleep 0.2; \
-         {mux} -L {socket} send-keys -t {escaped_target} Enter"
-    )
 }
 
 #[cfg(test)]
@@ -271,23 +175,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_tmux_version_plain() {
-        assert_eq!(parse_tmux_version("tmux 3.4").unwrap(), (3, 4));
-    }
-
-    #[test]
-    fn parse_tmux_version_trailing_letter() {
-        assert_eq!(parse_tmux_version("tmux 3.3a").unwrap(), (3, 3));
-    }
-
-    #[test]
-    fn parse_tmux_version_without_prefix() {
-        assert_eq!(parse_tmux_version("3.2").unwrap(), (3, 2));
-    }
-
-    #[test]
-    fn parse_tmux_version_rejects_garbage() {
-        assert!(parse_tmux_version("not a version").is_err());
+    fn a_tmux_banner_names_its_version() {
+        assert_eq!(Tmux::banner_version("tmux 3.4\n"), Some("3.4"));
+        assert_eq!(parse_version("3.4"), Some((3, 4, 0)));
+        assert_eq!(parse_version("3.3a"), Some((3, 3, 0)));
+        assert_eq!(parse_version("not a version"), None);
+        assert!(check_min_version("tmux next").is_err());
     }
 
     /// psmux installs a `tmux` alias, so the tmux adapter on a Windows
@@ -419,7 +312,7 @@ mod tests {
 
     #[test]
     fn a_deferred_prompt_names_the_servers_own_mux_and_socket() {
-        let tmux = deferred_paste_script("tmux", "sock", "%3", "it's\nhere");
+        let tmux = Tmux::deferred_paste_script("tmux", "sock", "%3", "it's\nhere").unwrap();
         assert!(tmux.starts_with("tmux -L sock send-keys -t "), "{tmux}");
         assert!(
             tmux.ends_with("tmux -L sock send-keys -t '%3' Enter"),
@@ -431,7 +324,7 @@ mod tests {
     fn a_deferred_prompt_quotes_a_socket_name_the_host_configured() {
         // A socket the immediate commands pass as one argument must reach the
         // server's shell as one word too, or the paste runs against no server.
-        let tmux = deferred_paste_script("tmux", "my sock", "%3", "hi");
+        let tmux = Tmux::deferred_paste_script("tmux", "my sock", "%3", "hi").unwrap();
         assert_eq!(tmux.matches("-L 'my sock' send-keys").count(), 2, "{tmux}");
     }
 
@@ -457,5 +350,21 @@ mod tests {
             .hook_signal_command()
             .expect("tmux has a status channel");
         assert_eq!(command, "tmux set-option -p @thurbox_state ");
+    }
+
+    /// tmux 3.8's own replies, captured on a scratch socket.
+    #[cfg(unix)]
+    #[test]
+    fn tmuxs_own_absence_replies_read_as_absence() {
+        crate::backend::tmux_compat::server::assert_absence_replies::<Tmux>(&[
+            (
+                "error connecting to /tmp/tmux-1000/thurbox (No such file or directory)",
+                true,
+            ),
+            ("no server running on /tmp/tmux-1000/thurbox", true),
+            ("can't find session: thurbox", true),
+            ("can't find pane: %99", false),
+            ("can't find window: tb-nope", false),
+        ]);
     }
 }

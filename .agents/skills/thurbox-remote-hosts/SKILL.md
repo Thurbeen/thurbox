@@ -570,16 +570,18 @@ session), never on the loop, ADR-P12).
   message lands in the wrong branch silently. `ssh` exits **255** for its own
   failures and passes a remote command's status through untouched, and
   `thurbox-cli` only ever exits 1 to 6 — so 255 means the question never
-  arrived, whatever stderr says (`listing_is_absence`,
+  arrived, whatever stderr says (`mux_answered`,
   `host_cli::classify_failure`). `host_cli::Reach` names the three answers —
   `Unreached` / `Answered` / `Undetermined` — and the third is its own answer,
   never rounded to the nearest of the other two. `wsl.exe` has no 255
   convention, so a WSL host is never `Unreached` on a status alone.
-  **Do not widen `mux_answered_absent`**: it is narrowed to the exact answers
-  tmux and psmux are documented to give, and each extra string makes it more
-  confidently wrong about the next one nobody anticipated. In particular
-  `error connecting to` is not a prefix match — only `(No such file or
-  directory)` is absence; `(Permission denied)` / `(Connection refused)` /
+  **Do not widen `TmuxCompatible::answered_absent`**: each adapter answers it
+  in its own multiplexer's exact words, matched from the first byte (tmux's
+  are the default, `tmux_answered_absent`), and it is the one classifier a
+  one-shot's stderr, a control-mode `%error` and a status-zero `ERROR:` all go
+  through. Each extra string makes it more confidently wrong about the next
+  one nobody anticipated. In particular `error connecting to` is not a prefix
+  match — only `(No such file or directory)` is absence; `(Permission denied)` / `(Connection refused)` /
   `(Connection reset by peer)` are a server that may be alive behind a socket
   that cannot be opened right now.
 - **An unclassifiable failure takes whichever branch destroys nothing**, which

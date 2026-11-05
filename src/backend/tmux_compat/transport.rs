@@ -303,7 +303,7 @@ impl TmuxTransport {
     /// can act on — see [`crate::agent::preflight::launch_failure`]. A remote
     /// transport's missing binary is its launcher; a local one's is the
     /// multiplexer.
-    pub fn launch_failure(&self, context: &'static str, err: std::io::Error) -> anyhow::Error {
+    pub fn launch_failure(&self, context: &str, err: std::io::Error) -> anyhow::Error {
         let launcher = self.is_remote().then(|| self.launcher());
         crate::agent::preflight::launch_failure(launcher, &self.mux, context, err)
     }

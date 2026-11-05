@@ -24,8 +24,8 @@ use crate::backend::identity::{window_name_for, Located, WindowIndex, SHELL_WIND
 use crate::backend::instance::{host_socket, known_host_socket, learned_host_socket, local_socket};
 use crate::backend::tmux_compat::control_mode::{
     self, is_broken_pipe, is_recv_timeout, mouse_seed_bytes, shell_escape, title_seed_bytes,
-    ControlMode, ControlModeReader, ControlModeWriter, ControlPolicy, PaneInput, SIZED_BY,
-    SIZER_OPTION,
+    ControlMode, ControlModeReader, ControlModeWriter, ControlPolicy, Missing, PaneInput, Refusal,
+    SIZED_BY, SIZER_OPTION,
 };
 use crate::backend::tmux_compat::transport::{SocketDir, TmuxTransport};
 use crate::session::{HostDef, Multiplexer, Platform};
@@ -174,6 +174,15 @@ pub trait TmuxCompatible: Send + Sync + 'static {
         shell_escape(arg)
     }
 
+    /// What `answer` — one line of this multiplexer's refusal, exactly as it
+    /// printed it — says is not there, or `None` when it is not one of this
+    /// multiplexer's own absence replies. Every refusal path reads it: a
+    /// one-shot's stderr, a control-mode `%error` and a status-zero `ERROR:`.
+    /// tmux's words are the default (`tmux_answered_absent`).
+    fn answered_absent(answer: &str) -> Option<Missing> {
+        tmux_answered_absent(answer)
+    }
+
     /// The `new-window` flags carrying `env` into the window, if the server
     /// honours them; empty where the environment rides in the command itself.
     fn env_flags(env: &HashMap<String, String>) -> String {
@@ -212,16 +221,43 @@ pub trait TmuxCompatible: Send + Sync + 'static {
 
     /// The one-shot argvs that deliver `text` into `target`, in order — more
     /// than one where a single line would be too long for the server's host.
-    fn paste_args(target: &str, text: &str) -> Vec<Vec<String>>;
+    /// By default one: the `bracketed_paste`-wrapped bytes, taken literally
+    /// (`send-keys -l`).
+    fn paste_args(target: &str, text: &str) -> Vec<Vec<String>> {
+        vec![vec![
+            "send-keys".into(),
+            "-t".into(),
+            target.into(),
+            "-l".into(),
+            bracketed_paste(text),
+        ]]
+    }
 
     /// The `run-shell` script that pastes `text` into `target` on `mux -L
     /// socket`, waits a beat so the paste is consumed, then presses Enter —
     /// run through the server's own shell — or why that shell cannot run it.
-    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String>;
+    /// By default a plain `sh` one-liner, quoted as the immediate commands
+    /// pass each argument, since a host may name a socket with a space in it.
+    fn deferred_paste_script(mux: &str, socket: &str, target: &str, text: &str) -> Result<String> {
+        let (mux, socket, target) = (
+            shell_escape(mux),
+            shell_escape(socket),
+            shell_escape(target),
+        );
+        let text = shell_escape(&bracketed_paste(text));
+        Ok(format!(
+            "{mux} -L {socket} send-keys -t {target} -l {text}; \
+             sleep 0.2; {mux} -L {socket} send-keys -t {target} Enter"
+        ))
+    }
 
     /// How a pane's input is typed through control mode, and whether a paste
-    /// goes another way.
-    fn pane_input(transport: &TmuxTransport, socket: &str) -> Arc<dyn PaneInput>;
+    /// goes another way. By default every keystroke as `send-keys -H` hex, and
+    /// a paste through control mode (`set-buffer` and `paste-buffer -p`), so
+    /// the server frames it only for an app that asked.
+    fn pane_input(_transport: &TmuxTransport, _socket: &str) -> Arc<dyn PaneInput> {
+        Arc::new(HexKeys)
+    }
 
     /// What a control-mode connection to this server may expect of it.
     fn control_policy(transport: &TmuxTransport, session: &str) -> ControlPolicy;
@@ -233,10 +269,104 @@ pub trait TmuxCompatible: Send + Sync + 'static {
     const HOOK_STATUS: bool;
 
     /// The in-pane command that sets the option, the state word to follow —
-    /// whatever this server needs to find its own pane from inside one.
-    fn hook_signal_command(server: &Server<Self>) -> String
+    /// whatever this server needs to find its own pane from inside one. By
+    /// default it names neither server nor pane: inside a pane the binary
+    /// finds both (tmux from `$TMUX` and `$TMUX_PANE`), whichever socket the
+    /// server is on, and the command needs no shell variable a hook file
+    /// might refuse.
+    fn hook_signal_command(_server: &Server<Self>) -> String
     where
-        Self: Sized;
+        Self: Sized,
+    {
+        format!(
+            "{} set-option -p {} ",
+            Self::MULTIPLEXER.name(),
+            control_mode::REMOTE_HOOK_STATE_OPTION
+        )
+    }
+
+    /// The control-mode listing of every pane of `session` with its hook-state
+    /// option, as the hook poller runs it ([`ControlPolicy::status_poll`]).
+    fn hook_poll_command(session: &str) -> String {
+        format!(
+            "list-panes -s -t {} -F {}",
+            Self::quote(session),
+            Self::quote(&hook_state_format())
+        )
+    }
+
+    /// The version word a `-V` banner names: the word after this
+    /// multiplexer's name on the last line that has one, or `None` when no
+    /// line does.
+    fn banner_version(banner: &str) -> Option<&str> {
+        named_version(banner, &[Self::MULTIPLEXER.name()])
+    }
+}
+
+/// The `list-panes` format giving every pane with its hook-state option, one
+/// `<pane id> <state>` per line.
+fn hook_state_format() -> String {
+    format!(
+        "#{{pane_id}} #{{{}}}",
+        control_mode::REMOTE_HOOK_STATE_OPTION
+    )
+}
+
+/// The word after any of `names` on the last line of `banner` naming one.
+/// That line or nothing: an earlier line is an older name for the same
+/// binary, and reading past a suffixed one (`3.3.8-dev`) to it would judge a
+/// version the binary does not claim to be.
+pub(in crate::backend) fn named_version<'a>(banner: &'a str, names: &[&str]) -> Option<&'a str> {
+    banner
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let line = line.trim();
+            names.iter().find_map(|name| {
+                line.strip_prefix(name)
+                    .and_then(|rest| rest.strip_prefix(' '))
+            })
+        })?
+        .split_whitespace()
+        .next()
+}
+
+/// The `(major, minor, patch)` a version word names, each part read up to its
+/// first non-digit (`3.3a`, `3.3.8-dev`) and the patch 0 where there is none.
+/// `None` without a major and a minor.
+pub(in crate::backend) fn parse_version(word: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = word.split('.').map(|part| {
+        let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse::<u32>().ok()
+    });
+    Some((
+        parts.next()??,
+        parts.next()??,
+        parts.next().flatten().unwrap_or(0),
+    ))
+}
+
+/// Wrap `text` in the bracketed-paste escape sequences (`ESC[200~ … ESC[201~`)
+/// so a multi-line prompt is delivered as a single paste — the embedded
+/// newlines insert as text instead of submitting the prompt on the first one.
+/// [`SessionBackend::send_text`](crate::backend::SessionBackend::send_text) is
+/// how the TUI reaches this too: the kernel's prompt commands call it rather
+/// than framing the paste themselves. The trailing `Enter` is sent separately.
+fn bracketed_paste(text: &str) -> String {
+    format!("\x1b[200~{text}\x1b[201~")
+}
+
+/// The default pane input ([`TmuxCompatible::pane_input`]).
+struct HexKeys;
+
+impl PaneInput for HexKeys {
+    fn send_keys(&self, pane_id: &str, buf: &[u8]) -> Vec<String> {
+        control_mode::hex_send_keys_commands(pane_id, buf)
+    }
+
+    fn paste(&self, _pane_id: &str, _text: &str) -> Option<Result<()>> {
+        None
+    }
 }
 
 /// The tmux session name grouping every thurbox window. Dev builds use
@@ -535,118 +665,106 @@ const SSH_ERROR_EXIT: i32 = 255;
 /// enough that a link carrying nothing costs a hitch instead of a freeze.
 const LOOP_COMMAND_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Whether a failed listing means the server genuinely holds nothing, given
-/// the layer that failed (`is_ssh` + the exit `code`) and what it said.
+/// What a failed one-shot's multiplexer said is missing, given the layer that
+/// failed (`is_ssh` + the exit `code`) and its one line of `answer`.
 ///
 /// **Layer before text**, and the order is the point. `ssh` exits 255 for its
 /// own failures and passes a remote command's status through untouched
 /// (a remote `exit 7` exits 7), so 255 is ssh saying the question never
 /// arrived — no matter what the stderr underneath happens to resemble.
 /// Only once the transport is ruled out does the multiplexer's own answer get
-/// to speak, and then only in the exact words it is documented to use
-/// ([`mux_answered_absent`]).
+/// to speak, and then only in the exact words its adapter says it uses
+/// ([`TmuxCompatible::answered_absent`]).
 ///
 /// Everything else is "could not tell", which the caller must treat as the
-/// unanswered question it is: an empty listing here means *there is nothing to
+/// unanswered question it is: an empty listing means *there is nothing to
 /// kill*, and that is not a conclusion to reach by guessing.
-fn listing_is_absence(is_ssh: bool, code: Option<i32>, stderr: &str) -> bool {
+fn mux_answered<M: TmuxCompatible>(
+    is_ssh: bool,
+    code: Option<i32>,
+    answer: &str,
+) -> Option<Missing> {
     match code {
         // ssh's own error, so nothing on the host ever saw the question.
-        Some(SSH_ERROR_EXIT) if is_ssh => false,
+        Some(SSH_ERROR_EXIT) if is_ssh => None,
         // Killed by a signal: it did not finish, and whatever reached stderr
         // before that is a fragment of an answer rather than one. There is no
         // layer to reason from, so there is nothing to conclude.
-        None => false,
-        _ => mux_answered_absent(stderr),
+        None => None,
+        _ => M::answered_absent(answer),
     }
 }
 
-/// Whether a failed listing is exactly the multiplexer's absence reply.
+/// What a failed one-shot's stderr says is missing, when it is exactly one of
+/// the multiplexer's absence replies.
 ///
-/// A refusal does not make any stdout trustworthy, and another stderr line
-/// means another failure happened beside it. SSH advisory banners are the one
-/// transport-owned exception; [`mux_stderr`] removes those before this check.
-fn listing_output_is_absence(is_ssh: bool, output: &std::process::Output) -> bool {
-    if !output.stdout.is_empty() {
-        return false;
-    }
+/// Another stderr line means another failure happened beside it. SSH advisory
+/// banners are the one transport-owned exception; [`mux_stderr`] removes
+/// those first.
+fn output_answered<M: TmuxCompatible>(
+    is_ssh: bool,
+    output: &std::process::Output,
+) -> Option<Missing> {
     let stderr = mux_stderr(output, is_ssh);
     let mut answers = stderr
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty());
-    let Some(answer) = answers.next() else {
-        return false;
-    };
-    answers.next().is_none()
-        && listing_is_absence(is_ssh, output.status.code(), answer)
-        && raw_listing_answered_absent(answer)
+    let answer = answers.next()?;
+    if answers.next().is_some() {
+        return None;
+    }
+    mux_answered::<M>(is_ssh, output.status.code(), answer)
 }
 
-/// The unwrapped refusal shapes a one-shot listing can emit.
+/// Whether a failed listing is exactly the multiplexer's reply that its server
+/// holds nothing. A refusal does not make any stdout trustworthy.
+fn listing_output_is_absence<M: TmuxCompatible>(
+    is_ssh: bool,
+    output: &std::process::Output,
+) -> bool {
+    output.stdout.is_empty() && output_answered::<M>(is_ssh, output) == Some(Missing::Server)
+}
+
+/// tmux's own "nothing there" replies — the default
+/// [`TmuxCompatible::answered_absent`], which another adapter extends with its
+/// own words.
 ///
-/// [`mux_answered_absent`] also reads errors after callers have added command
-/// context, so it deliberately searches within a string. Raw process output
-/// has no such wrapper and must match one documented shape from its first byte.
-fn raw_listing_answered_absent(error: &str) -> bool {
-    if error == "psmux: no server running on session" {
-        return true;
-    }
-    if let Some(socket) = error.strip_prefix("psmux: no server running on session '") {
-        return socket
-            .strip_suffix('\'')
-            .is_some_and(|socket| !socket.is_empty() && !socket.contains('\''));
-    }
-    if let Some(path) = error.strip_prefix("error connecting to ") {
-        return path
-            .strip_suffix(" (No such file or directory)")
-            .is_some_and(|path| !path.is_empty());
-    }
-    [
-        "no server running on ",
-        "can't find session: ",
-        "session not found: ",
-    ]
-    .into_iter()
-    .any(|prefix| {
-        error
+/// Each is matched from its first byte with a value after it, because an
+/// adapter's reading is what stands between a host that was down for a minute
+/// and a teardown that reports nothing to kill. Over-reporting a live host as
+/// unanswered costs one cheap retry, while the reverse costs an orphaned agent
+/// nobody ever looks for again.
+///
+/// `error connecting to` is the trap: tmux prints it for a socket that is not
+/// there (`(No such file or directory)`) **and** for one it cannot open while
+/// a server is very much alive behind it — `(Permission denied)` on another
+/// user's socket, `(Connection refused)` on a stale one. Only the first is an
+/// answer. Widening this list to cover more wordings is the trap it looks like
+/// a fix: each new string makes the classifier more confidently wrong about
+/// the next one nobody anticipated.
+pub(in crate::backend) fn tmux_answered_absent(answer: &str) -> Option<Missing> {
+    let names = |prefix: &str| {
+        answer
             .strip_prefix(prefix)
             .is_some_and(|value| !value.is_empty())
-    })
-}
-
-/// Whether a multiplexer's stderr is its *own* answer that there is nothing to
-/// act on, rather than any of the ways a question can fail to be answered.
-///
-/// The distinction the remote teardown rests on, and the reason this list is
-/// as short as it is. Only the exact answers tmux and psmux are documented to
-/// give for "there is no server" and "there is no such session" count;
-/// everything else — including a failure whose wording merely resembles one —
-/// is unanswered. Over-reporting a live host as unanswered costs one cheap
-/// retry, while the reverse costs an orphaned agent nobody ever looks for
-/// again.
-///
-/// `error connecting to` is the trap and the reason this is not a prefix
-/// match: tmux prints it for a socket that is not there
-/// (`(No such file or directory)`) **and** for one it cannot open while a
-/// server is very much alive behind it — `(Permission denied)` on another
-/// user's socket, `(Connection refused)` on a stale one. Only the first is an
-/// answer; reading the others as absence is exactly the "reachable failure
-/// mistaken for absence" this whole path exists to stop. Widening this list to
-/// cover more wordings is the trap it looks like a fix: each new string makes
-/// the classifier more confidently wrong about the next one nobody anticipated.
-fn mux_answered_absent(error: &str) -> bool {
-    // The socket has no server behind it. tmux ≥ 3.4 words this as "error
-    // connecting to <path> (<reason>)", and only this reason means absence.
-    if error.contains("error connecting to") {
-        return error.contains("(No such file or directory)");
+    };
+    if let Some(path) = answer.strip_prefix("error connecting to ") {
+        // tmux ≥ 3.4's wording for a socket with no server behind it.
+        return path
+            .strip_suffix(" (No such file or directory)")
+            .filter(|path| !path.is_empty())
+            .map(|_| Missing::Server);
     }
-    // tmux < 3.4's wording for the same thing, which carries no reason at all.
-    if error.contains("no server running on") {
-        return true;
+    // tmux < 3.4's wording for the same thing, then a server up with no
+    // session by that name.
+    if names("no server running on ") || names("can't find session: ") {
+        return Some(Missing::Server);
     }
-    // The server is up and holds no session by that name — tmux, then psmux.
-    error.contains("can't find session") || error.contains("session not found")
+    if names("can't find pane: ") || names("can't find window: ") {
+        return Some(Missing::Target);
+    }
+    None
 }
 
 /// One command of the session config — a `set-option`, or an `if-shell` an
@@ -1317,7 +1435,7 @@ impl<M: TmuxCompatible> Server<M> {
         // restarting that would end every agent and change nothing.
         let mux = self.transport.mux();
         let banner = self.tmux_output(&["-V"])?;
-        let Some(client) = banner_version(&banner) else {
+        let Some(client) = M::banner_version(&banner).filter(|v| is_version_answer(v)) else {
             bail!(
                 "the {mux} binary did not give a version thurbox can hold to its floor (it \
                  answered {banner:?}); put a released {mux} first on PATH"
@@ -1359,7 +1477,7 @@ impl<M: TmuxCompatible> Server<M> {
                     .launch_failure("Failed to ask the server its version", e)
             })?;
         let is_ssh = self.transport.is_ssh();
-        if listing_output_is_absence(is_ssh, &output) {
+        if listing_output_is_absence::<M>(is_ssh, &output) {
             return Ok(None);
         }
         if !output.status.success() || !mux_stderr(&output, is_ssh).trim().is_empty() {
@@ -1373,7 +1491,7 @@ impl<M: TmuxCompatible> Server<M> {
             .strip_prefix("ERROR:")
             .filter(|_| M::EXIT_ZERO_ERRORS)
         {
-            if !error.contains('\n') && raw_listing_answered_absent(error.trim()) {
+            if !error.contains('\n') && M::answered_absent(error.trim()) == Some(Missing::Server) {
                 return Ok(None);
             }
             bail!("the server refused the version question: {answer}");
@@ -1411,8 +1529,10 @@ impl<M: TmuxCompatible> Server<M> {
             .stderr(Stdio::piped())
             .output()
             .map_err(|e| {
-                self.transport
-                    .launch_failure("Failed to run tmux command", e)
+                self.transport.launch_failure(
+                    &format!("Failed to run {} command", M::MULTIPLEXER.name()),
+                    e,
+                )
             })?;
         if !out.status.success() && !exists() {
             bail!(
@@ -1498,8 +1618,10 @@ impl<M: TmuxCompatible> Server<M> {
             // this machine. Nothing was asked, so nothing was answered, and
             // `launch_failure` says which of the three is not there.
             .map_err(|e| {
-                self.transport
-                    .launch_failure("Failed to run tmux command", e)
+                self.transport.launch_failure(
+                    &format!("Failed to run {} command", M::MULTIPLEXER.name()),
+                    e,
+                )
             })?;
         if output.status.success()
             && !(M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), true))
@@ -1517,12 +1639,13 @@ impl<M: TmuxCompatible> Server<M> {
         // through so psmux's own "no server running" (exit 1) reads as absence.
         if output.status.success() {
             bail!(
-                "tmux {} failed: {}",
+                "{} {} failed: {}",
+                M::MULTIPLEXER.name(),
                 args.join(" "),
                 mux_failure(&output, self.transport.is_ssh())
             );
         }
-        if listing_output_is_absence(self.transport.is_ssh(), &output) {
+        if listing_output_is_absence::<M>(self.transport.is_ssh(), &output) {
             return Ok(None);
         }
         Err(self.command_failure(&args, &output).into())
@@ -1585,9 +1708,12 @@ impl<M: TmuxCompatible> Server<M> {
     /// keeps the window for an interface to adopt later.
     fn create_remote_window(&self, spec: &WindowSpec<'_>) -> Result<PaneId> {
         let backend = self.transient();
-        backend
-            .check_available()
-            .context("remote host is unreachable or tmux is missing")?;
+        backend.check_available().with_context(|| {
+            format!(
+                "remote host is unreachable or {} is missing",
+                M::MULTIPLEXER.name()
+            )
+        })?;
         backend.ensure_ready()?;
         let window_name = window_name_for(spec.role, spec.owner.name);
         // Headless: no live terminal, so use a sane default geometry. The TUI
@@ -1724,8 +1850,10 @@ impl<M: TmuxCompatible> Server<M> {
             .stderr(Stdio::piped())
             .output()
             .map_err(|e| {
-                self.transport
-                    .launch_failure("Failed to run tmux command", e)
+                self.transport.launch_failure(
+                    &format!("Failed to run {} command", M::MULTIPLEXER.name()),
+                    e,
+                )
             })?;
         if !output.status.success()
             || (M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), false))
@@ -1785,8 +1913,10 @@ impl<M: TmuxCompatible> Server<M> {
             .stderr(Stdio::piped())
             .output()
             .map_err(|e| {
-                self.transport
-                    .launch_failure("Failed to run tmux command", e)
+                self.transport.launch_failure(
+                    &format!("Failed to run {} command", M::MULTIPLEXER.name()),
+                    e,
+                )
             })?;
 
         if !output.status.success()
@@ -1804,23 +1934,51 @@ impl<M: TmuxCompatible> Server<M> {
         output: &std::process::Output,
     ) -> crate::backend::contract::BackendError {
         let detail = mux_failure(output, self.transport.is_ssh());
-        let message = format!("tmux {} failed: {detail}", args.join(" "));
+        let message = format!(
+            "{} {} failed: {detail}",
+            M::MULTIPLEXER.name(),
+            args.join(" ")
+        );
         if self.transport.is_ssh() && output.status.code() == Some(SSH_ERROR_EXIT) {
             return crate::backend::contract::BackendError::Unreachable(message);
         }
         if output.status.code().is_none() {
             return crate::backend::contract::BackendError::Io(message);
         }
-        if listing_output_is_absence(self.transport.is_ssh(), output) {
-            return crate::backend::contract::BackendError::Absent(message);
-        }
-        match control_mode::classify_refusal(&detail, message) {
+        match self.refusal(&detail, message) {
             crate::backend::contract::BackendError::Absent(message)
                 if !output.stdout.is_empty() =>
             {
                 crate::backend::contract::BackendError::Refused(message)
             }
             classified => classified,
+        }
+    }
+
+    /// The multiplexer's refusal `reply`, typed by what this adapter's words
+    /// say: the one classifier a one-shot's stderr and a control-mode `%error`
+    /// both go through.
+    fn refusal(&self, reply: &str, message: String) -> crate::backend::contract::BackendError {
+        let reply = reply.trim();
+        if !reply.contains('\n') && M::answered_absent(reply).is_some() {
+            return crate::backend::contract::BackendError::Absent(message);
+        }
+        if reply.starts_with("duplicate session: ") || reply.starts_with("duplicate window: ") {
+            return crate::backend::contract::BackendError::Busy(message);
+        }
+        crate::backend::contract::BackendError::Refused(message)
+    }
+
+    /// `error`, with a control-mode [`Refusal`] in it typed by [`Self::refusal`].
+    fn classified(&self, error: anyhow::Error) -> anyhow::Error {
+        match error.downcast::<Refusal>() {
+            Ok(refused) => self
+                .refusal(
+                    &refused.reply,
+                    format!("{} {refused}", M::MULTIPLEXER.name()),
+                )
+                .into(),
+            Err(error) => error,
         }
     }
 
@@ -1852,7 +2010,11 @@ impl<M: TmuxCompatible> Server<M> {
             match self.tmux_run(&args) {
                 Ok(()) => {}
                 Err(e) if option.fatal => return Err(e),
-                Err(e) => debug!("tmux option {} not set: {e}", option.args.join(" ")),
+                Err(e) => debug!(
+                    "{} option {} not set: {e}",
+                    M::MULTIPLEXER.name(),
+                    option.args.join(" ")
+                ),
             }
         }
         Ok(())
@@ -1994,7 +2156,8 @@ impl<M: TmuxCompatible> Server<M> {
             // refuse. The binary is what would start it, so it answers instead.
             M::check_banner(&self.tmux_output(&["-V"])?, &self.socket())?;
             debug!(
-                "Creating tmux session '{}' on socket '{}'",
+                "Creating {} session '{}' on socket '{}'",
+                M::MULTIPLEXER.name(),
                 self.session,
                 self.socket()
             );
@@ -2017,10 +2180,13 @@ impl<M: TmuxCompatible> Server<M> {
                     if crate::agent::preflight::is_missing_dependency(&e) {
                         return Err(e);
                     }
-                    return Err(e).context("Failed to create tmux session");
+                    return Err(e).with_context(|| {
+                        format!("Failed to create {} session", M::MULTIPLEXER.name())
+                    });
                 }
                 debug!(
-                    "tmux session '{}' was created by a peer; continuing",
+                    "{} session '{}' was created by a peer; continuing",
+                    M::MULTIPLEXER.name(),
                     self.session
                 );
             }
@@ -2244,7 +2410,7 @@ impl<M: TmuxCompatible> Server<M> {
         F: FnOnce(&ControlMode) -> Result<R>,
     {
         let ctrl = self.connection()?;
-        f(&ctrl)
+        f(&ctrl).map_err(|e| self.classified(e))
     }
 
     /// Start control mode unless it is running.
@@ -2259,14 +2425,15 @@ impl<M: TmuxCompatible> Server<M> {
         if self.attached() {
             return Ok(());
         }
-        debug!("Starting tmux control mode");
+        debug!("Starting {} control mode", M::MULTIPLEXER.name());
         let fresh = ControlMode::start(
             &self.located_transport(),
             &self.socket(),
             &self.session,
             &self.sizer,
             &M::control_policy(&self.transport, &self.session),
-        )?;
+        )
+        .map_err(|e| self.classified(e))?;
         self.install(fresh)
     }
 
@@ -2300,6 +2467,7 @@ impl<M: TmuxCompatible> Server<M> {
                 &self.sizer,
                 &M::control_policy(&self.transport, &self.session),
             )
+            .map_err(|e| self.classified(e))
         };
         // A connection that cannot be made again may be a server whose socket
         // went while the old connection held on: look for it once more.
@@ -2383,7 +2551,10 @@ impl<M: TmuxCompatible> Server<M> {
             cmds.len()
         };
         let ctrl = self.connection()?;
-        match ctrl.send_command_list(cmds, blocks) {
+        match ctrl
+            .send_command_list(cmds, blocks)
+            .map_err(|e| self.classified(e))
+        {
             Ok(val) => Ok(val),
             Err(err) if is_broken_pipe(&err) => {
                 warn!("Control mode error, reconnecting: {err:#}");
@@ -2608,8 +2779,8 @@ impl<M: TmuxCompatible> Server<M> {
             // this reader wants its output.
             self.with_control(|ctrl| ctrl.show_pane(pane_id))?;
             self.ctrl_command(&format!(
-                "refresh-client -A '{}:on'",
-                pane_id.replace('\'', "'\\''")
+                "refresh-client -A {}",
+                M::quote(&format!("{pane_id}:on"))
             ))?;
         }
 
@@ -2825,7 +2996,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         };
         if !control_mode::is_valid_pane_id(&pane_id) {
             return Err(anyhow::anyhow!(
-                "tmux new-window returned an invalid pane id: {pane_id:?}"
+                "{} new-window returned an invalid pane id: {pane_id:?}",
+                M::MULTIPLEXER.name()
             )
             .into());
         }
@@ -2835,12 +3007,15 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         let window_id = window_id.filter(|id| {
             let ok = control_mode::is_valid_window_id(id);
             if !ok {
-                debug!("tmux new-window answered with an unusable window id: {id:?}");
+                debug!(
+                    "{} new-window answered with an unusable window id: {id:?}",
+                    M::MULTIPLEXER.name()
+                );
             }
             ok
         });
 
-        debug!(pane_id = %pane_id, window_id = ?window_id, "tmux window created via control mode");
+        debug!(pane_id = %pane_id, window_id = ?window_id, "window created via control mode");
 
         let connected = self.connect_pane(&pane_id, window_id.as_deref(), rows, cols)?;
 
@@ -3004,7 +3179,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // round trips overlap: a search reads many panes at once.
         Ok(self
             .with_control(|ctrl| ctrl.ask_snapshot(backend_id, snapshot_history()))?
-            .wait()?)
+            .wait()
+            .map_err(|e| self.classified(e))?)
     }
 
     fn set_pane_retention(
@@ -3174,7 +3350,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // A one-shot `list-windows`, and deliberately nothing more: starting
         // control mode would bring a server into being where there was none.
         // Answered, so an unreachable host is an `Err` rather than a listing
-        // that reads the same as "no such window" — see `mux_answered_absent`.
+        // that reads the same as "no such window" — see `TmuxCompatible::answered_absent`.
         // One listing serves both roles: an ssh round trip per role would
         // double the cost of every remote teardown.
         let index = WindowIndex::from_listing(self.discover_answered()?);
@@ -3679,8 +3855,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         // Disable output monitoring for this pane.
         if M::PANE_MONITORING {
             let off = format!(
-                "refresh-client -A '{}:off'",
-                backend_id.replace('\'', "'\\''")
+                "refresh-client -A {}",
+                M::quote(&format!("{backend_id}:off"))
             );
             if let Err(e) = self.ctrl_command_detached(&[&off], 1) {
                 warn!("Failed to disable output monitoring during detach: {e}");
@@ -3796,10 +3972,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             Err(e) if typed_absence(&e) => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
         }
-        let format = format!(
-            "#{{pane_id}} #{{{}}}",
-            control_mode::REMOTE_HOOK_STATE_OPTION
-        );
+        let format = hook_state_format();
         let body = self.run_tmux(&["list-panes", "-s", "-t", &self.session, "-F", &format])?;
         Ok(control_mode::parse_pane_hook_states(
             String::from_utf8_lossy(&body.stdout).trim(),
@@ -3864,11 +4037,13 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             .stderr(Stdio::piped())
             .output()
             .map_err(|e| {
-                self.transport
-                    .launch_failure("Failed to run tmux command", e)
+                self.transport.launch_failure(
+                    &format!("Failed to run {} command", M::MULTIPLEXER.name()),
+                    e,
+                )
             })?;
         if !out.status.success() {
-            if listing_output_is_absence(self.transport.is_ssh(), &out) {
+            if listing_output_is_absence::<M>(self.transport.is_ssh(), &out) {
                 return Ok(false);
             }
             return Err(anyhow::anyhow!(
@@ -4719,8 +4894,13 @@ impl<M: TmuxCompatible> Server<M> {
                 }
             }
             tmux.output().map_err(|e| {
-                self.transport
-                    .launch_failure("Failed to run tmux new-window for headless spawn", e)
+                self.transport.launch_failure(
+                    &format!(
+                        "Failed to run {} new-window for headless spawn",
+                        M::MULTIPLEXER.name()
+                    ),
+                    e,
+                )
             })
         };
         let mut output = run_new_window()?;
@@ -4730,17 +4910,16 @@ impl<M: TmuxCompatible> Server<M> {
         if batch_config
             && !output.status.success()
             && new_window_pane_id(&output.stdout).is_empty()
-            && mux_answered_absent(&String::from_utf8_lossy(&output.stderr))
+            && output_answered::<M>(self.transport.is_ssh(), &output) == Some(Missing::Server)
         {
             self.ensure_session_configured()?;
             output = run_new_window()?;
         }
         let deadline = std::time::Instant::now() + M::COLD_START_GRACE;
         loop {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             if output.status.success()
                 || !M::RETRY_NO_SERVER_ERROR
-                || !mux_answered_absent(&stderr)
+                || output_answered::<M>(self.transport.is_ssh(), &output) != Some(Missing::Server)
                 || std::time::Instant::now() >= deadline
             {
                 break;
@@ -4771,18 +4950,20 @@ impl<M: TmuxCompatible> Server<M> {
             if !control_mode::is_valid_pane_id(&pane_id) {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 bail!(
-                    "tmux new-window exited {} for window {}: {}",
+                    "{} new-window exited {} for window {}: {}",
+                    M::MULTIPLEXER.name(),
                     output.status,
                     window_name,
                     stderr.trim()
                 );
             }
             warn!(
-                "tmux answered {} for window {} and created it anyway ({}): a hook \
+                "{} answered {} for window {} and created it anyway ({}): a hook \
                  on thurbox's own server failed, which is what an uninstalled \
                  plugin's leftover hook does for the life of that server. `{} -L {} \
                  show-hooks -g` names it. Unset the hook rather than killing that \
                  server — it holds every live session",
+                M::MULTIPLEXER.name(),
                 output.status,
                 window_name,
                 pane_id,
@@ -5001,7 +5182,7 @@ impl<M: TmuxCompatible> Server<M> {
         let output = self
             .mux_command(&[verb, "-t", &target])?
             .output()
-            .context("Failed to run tmux kill-window")?;
+            .with_context(|| format!("Failed to run {} {verb}", M::MULTIPLEXER.name()))?;
         if !output.status.success()
             || (M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), false))
         {
@@ -5210,29 +5391,12 @@ fn path_prefix_args() -> Vec<std::ffi::OsString> {
 /// about to be named to.
 ///
 /// [`admit_server`]: Server::admit_server
-fn is_version_answer(answer: &str) -> bool {
+pub(in crate::backend) fn is_version_answer(answer: &str) -> bool {
     let parts: Vec<&str> = answer.split('.').collect();
     parts.len() >= 2
         && parts
             .iter()
             .all(|part| part.bytes().all(|b| b.is_ascii_digit()) && part.parse::<u32>().is_ok())
-}
-
-/// The version a `-V` banner names, held to [`is_version_answer`]: the word
-/// after `psmux ` or `tmux ` on the last line that names one (psmux 3.3.7
-/// prints both, 3.3.6 only the second). `None` when no line does.
-fn banner_version(banner: &str) -> Option<&str> {
-    let rest = banner.lines().rev().find_map(|line| {
-        let line = line.trim();
-        line.strip_prefix("psmux ")
-            .or_else(|| line.strip_prefix("tmux "))
-    })?;
-    // That line or nothing: an earlier line is an older name for the same
-    // binary, and reading past a suffixed one (`3.3.8-dev`) to it would judge
-    // a version the binary does not claim to be.
-    rest.split_whitespace()
-        .next()
-        .filter(|v| is_version_answer(v))
 }
 
 /// What [`Server::admit_server`]'s question found.
@@ -5247,6 +5411,45 @@ fn typed_absence(error: &anyhow::Error) -> bool {
         error.downcast_ref::<crate::backend::contract::BackendError>(),
         Some(crate::backend::contract::BackendError::Absent(_))
     )
+}
+
+/// Assert that each of an adapter's own "nothing there" `replies`, as its
+/// binary printed it, reads as absence through the one classifier every
+/// refusal path uses — a one-shot's stderr and a control-mode `%error` — and
+/// as an empty listing exactly when it is marked `true`: a server that holds
+/// nothing (no server, or no thurbox session on it), rather than a pane or
+/// window gone from a live one.
+#[cfg(all(test, unix))]
+pub(in crate::backend) fn assert_absence_replies<M: TmuxCompatible>(replies: &[(&str, bool)]) {
+    use std::os::unix::process::ExitStatusExt;
+    let backend = Server::<M>::new();
+    let name = M::MULTIPLEXER.name();
+    for &(reply, holds_nothing) in replies {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: format!("{reply}\n").into_bytes(),
+        };
+        assert!(
+            matches!(
+                backend.command_failure(&["list-windows"], &output),
+                crate::backend::BackendError::Absent(_)
+            ),
+            "{name} one-shot: {reply}"
+        );
+        assert!(
+            matches!(
+                backend.refusal(reply, String::new()),
+                crate::backend::BackendError::Absent(_)
+            ),
+            "{name} control mode: {reply}"
+        );
+        assert_eq!(
+            listing_output_is_absence::<M>(false, &output),
+            holds_nothing,
+            "{name} listing: {reply}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -5620,29 +5823,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_banner_names_the_version_on_its_last_line_that_has_one() {
-        assert_eq!(
-            banner_version("tmux 3.3.7\npsmux 3.3.7 (05cc5d4 2026-07-20)\n"),
-            Some("3.3.7")
-        );
-        assert_eq!(banner_version("tmux 3.3.6\n"), Some("3.3.6"));
-        assert_eq!(banner_version("psmux 3.4.0 (20aa1d7)"), Some("3.4.0"));
-        for banner in [
-            "",
-            "3.3.8",
-            "psmux",
-            "psmux dev",
-            "ERROR: x",
-            // The last line names a pre-release, and an earlier one is not
-            // read in its place.
-            "tmux 3.3.7\npsmux 3.3.8-dev (x)\n",
-            "tmux 3.3.9\npsmux 3.3.9-dev (x)\n",
-        ] {
-            assert_eq!(banner_version(banner), None, "{banner:?}");
-        }
-    }
-
     /// The paint's resize and the input loop's dead-check cannot wait on the
     /// version question, so they name a pane only on a connection already
     /// admitted: after a reconnect to a server not yet asked, or refused, they
@@ -5694,6 +5874,76 @@ mod tests {
         backend.shutdown();
         backend.target("%1").expect("asked again with a one-shot");
         assert_eq!(asked(), 2);
+    }
+
+    /// A stand-in control-mode server for [`TestMux`] that answers `%error`
+    /// with `reply` to any line containing `refuse`, and `%end` otherwise.
+    #[cfg(unix)]
+    fn refusing_mux(root: &std::path::Path, refuse: &str, reply: &str) -> TestBackend {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mux = root.join("refusing-mux");
+        std::fs::write(
+            &mux,
+            format!(
+                "#!/bin/sh\nreply=\"{reply}\"\nprintf '%%begin 1 1 0\\n%%end 1 1 0\\n'\n\
+                 while IFS= read -r line; do\n\
+                   case \"$line\" in\n\
+                     *'{refuse}'*) printf '%%begin 2 2 0\\n%s\\n%%error 2 2 0\\n' \"$reply\" ;;\n\
+                     *) printf '%%begin 2 2 0\\n%%end 2 2 0\\n' ;;\n\
+                   esac\n\
+                 done\n"
+            ),
+        )
+        .expect("write fake mux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        TestBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy()),
+            "unused",
+            "unused",
+            "local:tmux",
+        )
+    }
+
+    /// A control-mode `%error` is typed by the adapter's words, both on a
+    /// command and on the flow-control command sent while the connection
+    /// starts.
+    #[cfg(unix)]
+    #[test]
+    fn a_control_mode_error_is_typed_by_the_adapter() {
+        use crate::backend::contract::BackendError;
+
+        let kind = |error: anyhow::Error| match error.downcast::<BackendError>() {
+            Ok(BackendError::Absent(_)) => "absent",
+            Ok(BackendError::Refused(_)) => "refused",
+            Ok(BackendError::Busy(_)) => "busy",
+            other => panic!("untyped: {other:?}"),
+        };
+        let roots: Vec<_> = (0..3)
+            .map(|_| tempfile::tempdir().expect("tempdir"))
+            .collect();
+
+        let backend = refusing_mux(roots[0].path(), "pause-after", "can't find session: unused");
+        let error = backend.ensure_control().expect_err("flow control refused");
+        assert_eq!(kind(error), "absent");
+
+        let backend = refusing_mux(roots[1].path(), "kill-window", "can't find window: @9");
+        backend.ensure_control().expect("control client");
+        let error = backend
+            .ctrl_command("kill-window -t @9")
+            .expect_err("refused");
+        assert_eq!(kind(error), "absent");
+
+        let backend = refusing_mux(
+            roots[2].path(),
+            "kill-window",
+            "unknown command: kill-window",
+        );
+        backend.ensure_control().expect("control client");
+        let error = backend
+            .ctrl_command("kill-window -t @9")
+            .expect_err("refused");
+        assert_eq!(kind(error), "refused");
     }
 
     /// Over control mode an answer that is not a version may be a reply that
@@ -6751,11 +7001,10 @@ done
             "error connecting to /tmp/tmux-0/thurbox (No such file or directory)",
             "no server running on /tmp/tmux-0/thurbox",
             "can't find session: thurbox",
-            "session not found: thurbox",
         ];
         for answer in answers {
             assert!(
-                mux_answered_absent(answer),
+                TestMux::answered_absent(answer) == Some(Missing::Server),
                 "the multiplexer answered: {answer}"
             );
         }
@@ -6767,7 +7016,10 @@ done
             "Failed to run tmux command",
         ];
         for failure in unanswered {
-            assert!(!mux_answered_absent(failure), "nothing answered: {failure}");
+            assert!(
+                TestMux::answered_absent(failure).is_none(),
+                "nothing answered: {failure}"
+            );
         }
     }
 
@@ -6781,9 +7033,9 @@ done
     #[test]
     fn a_socket_that_cannot_be_opened_is_not_a_server_that_is_not_there() {
         assert!(
-            mux_answered_absent(
+            TestMux::answered_absent(
                 "error connecting to /tmp/tmux-0/thurbox (No such file or directory)"
-            ),
+            ) == Some(Missing::Server),
             "no socket at all is the one reason that means absence"
         );
         for live in [
@@ -6792,7 +7044,7 @@ done
             "error connecting to /tmp/tmux-1000/thurbox (Connection reset by peer)",
         ] {
             assert!(
-                !mux_answered_absent(live),
+                TestMux::answered_absent(live).is_none(),
                 "a server may be alive behind this socket: {live}"
             );
         }
@@ -6808,23 +7060,23 @@ done
         let tmux_said_absent = "no server running on /tmp/tmux-0/thurbox";
 
         assert!(
-            listing_is_absence(true, Some(1), tmux_said_absent),
+            mux_answered::<TestMux>(true, Some(1), tmux_said_absent).is_some(),
             "ssh passed through tmux's own answer"
         );
         assert!(
-            !listing_is_absence(true, Some(255), tmux_said_absent),
+            mux_answered::<TestMux>(true, Some(255), tmux_said_absent).is_none(),
             "255 is ssh's own failure; nothing on the host answered"
         );
         assert!(
-            listing_is_absence(false, Some(255), tmux_said_absent),
+            mux_answered::<TestMux>(false, Some(255), tmux_said_absent).is_some(),
             "without ssh in the path, 255 carries none of that meaning"
         );
         assert!(
-            !listing_is_absence(true, Some(127), "bash: tmux: command not found"),
+            mux_answered::<TestMux>(true, Some(127), "bash: tmux: command not found").is_none(),
             "reached the host, but nothing there answered the question"
         );
         assert!(
-            !listing_is_absence(true, None, tmux_said_absent),
+            mux_answered::<TestMux>(true, None, tmux_said_absent).is_none(),
             "killed by a signal: no status to reason from"
         );
     }
@@ -7226,21 +7478,34 @@ done
 
     /// The headless status poll reads an empty listing as "every pane quiet",
     /// so only the server's own "nothing here" may become one.
+    #[cfg(unix)]
     #[test]
     fn only_the_server_saying_no_session_is_an_empty_status_answer() {
+        use std::os::unix::process::ExitStatusExt;
+        let backend = TestBackend::new();
+        let has_session = |stderr: &str| {
+            let output = std::process::Output {
+                status: std::process::ExitStatus::from_raw(1 << 8),
+                stdout: Vec::new(),
+                stderr: stderr.as_bytes().to_vec(),
+            };
+            matches!(
+                backend.command_failure(&["has-session", "-t", "thurbox"], &output),
+                crate::backend::BackendError::Absent(_)
+            )
+        };
         for absent in [
-            "tmux has-session -t thurbox failed: can't find session: thurbox",
-            "tmux has-session -t thurbox failed: no server running on /tmp/tmux-1/thurbox",
-            "tmux has-session -t thurbox failed: error connecting to /tmp/tmux-1/thurbox (No such file or directory)",
+            "can't find session: thurbox",
+            "no server running on /tmp/tmux-1/thurbox",
+            "error connecting to /tmp/tmux-1/thurbox (No such file or directory)",
         ] {
-            assert!(mux_answered_absent(absent), "{absent}");
+            assert!(has_session(absent), "{absent}");
         }
         for unanswered in [
-            "tmux has-session -t thurbox failed: ssh: connect to host box port 22: Connection refused",
-            "Failed to run tmux command: No such file or directory (os error 2)",
-            "tmux has-session -t thurbox failed: error connecting to /tmp/tmux-1/thurbox (Permission denied)",
+            "bash: line 1: tmux: command not found",
+            "error connecting to /tmp/tmux-1/thurbox (Permission denied)",
         ] {
-            assert!(!mux_answered_absent(unanswered), "{unanswered}");
+            assert!(!has_session(unanswered), "{unanswered}");
         }
     }
 

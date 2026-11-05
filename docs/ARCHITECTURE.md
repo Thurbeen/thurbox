@@ -2271,12 +2271,13 @@ follow from the host owning the record, none of which the first cut had:
   passes a remote command's status through untouched (a remote `exit 7` exits
   7), while delegated CLI operation errors use 1 through 6 — so 255 is ssh saying the
   question never arrived, whatever the stderr underneath resembles
-  (`backend::tmux_compat::server::listing_is_absence`, `session_ops::host_cli::classify_failure`).
+  (`backend::tmux_compat::server::mux_answered`, `session_ops::host_cli::classify_failure`).
   `session_ops::host_cli::Reach` names the three answers a failed remote call
   can have — `Unreached`, `Answered`, `Undetermined` — and `Undetermined` is
   deliberately its own answer rather than being rounded to the nearest of the
-  other two. Where a substring test is still the only signal (tmux's own
-  refusals) it is narrowed to the exact answers the tool is documented to give;
+  other two. Where the words are still the only signal (a multiplexer's own
+  refusals) they are each adapter's to read, in the exact answers its tool gives
+  (`TmuxCompatible::answered_absent`, ADR-31);
   widening that list is the trap it looks like a fix, since each new string
   makes the classifier more confidently wrong about the next one nobody
   anticipated. `wsl.exe` has no 255 convention, so a WSL host is never called
@@ -2901,10 +2902,14 @@ multiplexer `M`; each adapter is its multiplexer's answers to that trait: what
 its server can do (`WINDOW_OPTIONS`, `WINDOW_EVENTS`, `SNAPSHOTS`, …), how it
 quotes, how a window's command and environment reach it, how keystrokes and a
 paste are typed (`PaneInput`), what its control-mode connection may expect
-(`ControlPolicy`), and its version floor. The shared code asks what a server
-can do and never which multiplexer it is. POSIX quoting, environment flags,
-and window commands have shared trait defaults; adapters with a different
-tokenizer or launch grammar override them. `ControlPolicy::flow_control_command`
+(`ControlPolicy`), what its own "nothing there" replies are
+(`answered_absent`), and its version floor. The shared code asks what a server
+can do and never which multiplexer it is: every command it builds is quoted
+through `M::quote`, and its error text names `M::MULTIPLEXER`. tmux's own
+answers are the trait defaults — POSIX quoting, environment flags, window
+commands, `-H` keystrokes and bracketed paste, the hook command and listing,
+the banner's version word and the absence replies — so RMUX overrides only its
+words and psmux, with a different tokenizer and launch grammar, what differs. `ControlPolicy::flow_control_command`
 provides an optional startup command to limit buffered output;
 `PANE_MONITORING` gates
 `refresh-client -A` when a server streams attached panes on its own, and
