@@ -638,6 +638,15 @@ anything handed to it meanwhile makes the parked one stale and asks again. A
 snapshot that fails puts the reader back in step. A server that cannot snapshot
 a pane (psmux) keeps dropping the chunk.
 
+Pinned end to end in `tests/tui_e2e.rs` on the remote stand-in, comparing the
+painted pane with `capture-pane` row for row. A flood straight through a local
+multiplexer never overflows: tmux prints slower than the reader drains. What
+overflows a channel is a link that stalls with the host's output in flight and
+then delivers it in one burst, so that scenario spools the downlink while it is
+wedged and requires the overflow in the log; without the resync it ends on a
+damaged grid. Its twin keeps the stand-in's shallow link, where tmux is pushed
+back on and holds the flood mid-print until the link heals.
+
 **Input**: `send-keys -H <hex>` through the connection's shared outbox,
 wrapped in a `ControlModeWriter` (implements `Write`), which encodes
 the bytes the way its adapter's `PaneInput` says. The **psmux** adapter, whose
