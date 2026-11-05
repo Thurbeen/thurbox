@@ -63,6 +63,13 @@ struct Rig {
     _guard: crate::paths::TestPathGuard,
     db: Database,
     host: Rc<RefCell<Host>>,
+    /// Held for the rig's life, and dropped last (fields drop in order, after
+    /// `Drop::drop`). The mirror's listing caches are process-wide and keyed by
+    /// backend name, every rig here is `ssh:devbox`, and `forget_lists` clears
+    /// them all. Run side by side, one test's teardown emptied another's
+    /// deleted history between its two passes, so the second read the whole
+    /// list instead of asking `--since`.
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 impl Drop for Rig {
@@ -72,7 +79,16 @@ impl Drop for Rig {
     }
 }
 
+/// One rig at a time: see [`Rig::_serial`].
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn rig() -> Rig {
+    // A test that failed while holding the lock poisons it, and that failure
+    // has already been reported; the next test only needs its turn.
+    let serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    mirror::forget_lists();
     let temp = tempfile::TempDir::new().unwrap();
     let guard = crate::paths::TestPathGuard::new(temp.path());
     let path = crate::agent::host_config::hosts_config_path().unwrap();
@@ -193,6 +209,7 @@ fn rig() -> Rig {
         _guard: guard,
         db: Database::open_in_memory().unwrap(),
         host,
+        _serial: serial,
     }
 }
 
