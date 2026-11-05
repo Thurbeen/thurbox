@@ -37,6 +37,9 @@ pub struct SessionFacts {
     /// Which agent — what the hook-coverage assessment is decided from.
     pub agent: String,
     pub backend_id: String,
+    /// The route the row runs on (`local-tmux`, `ssh:box:tmux`, …) — what says
+    /// whose host verdict applies to it.
+    pub backend_type: String,
     /// Parked by `session stop`.
     pub stopped: bool,
     /// Epoch ms an interface stamped when the user moved focus off a finished
@@ -52,7 +55,8 @@ pub struct SessionFacts {
 /// The columns [`SessionFacts`] is read from, and the launch-failure meta
 /// beside them.
 const SESSION_FACTS: &str =
-    "SELECT s.id, s.name, s.agent, s.backend_id, s.stopped_at, s.seen_at, m.value FROM sessions s";
+    "SELECT s.id, s.name, s.agent, s.backend_id, s.stopped_at, s.seen_at, m.value, s.backend_type \
+     FROM sessions s";
 const FACTS_FAILURE_JOIN: &str = "LEFT JOIN session_meta m ON m.session_id = s.id \
      AND m.key = 'thurbox.launch_failure'";
 
@@ -1307,6 +1311,7 @@ impl Database {
                     name: row.get(1)?,
                     agent: row.get(2)?,
                     backend_id: row.get(3)?,
+                    backend_type: row.get(7)?,
                     stopped: row.get::<_, Option<i64>>(4)?.is_some(),
                     seen_at: row.get(5)?,
                     launch_failure: None,

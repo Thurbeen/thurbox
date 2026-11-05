@@ -186,7 +186,8 @@ Each line carries a `seq` (monotonic, never reused), the `event`
 (`present`/`created`/`changed`/`gone`), a `reason` saying which kind it was —
 `spawned`/`registered`/`restored`,
 `state`/`stopped`/`started`/`updated`/`lost`/`exited`/`relaunched`,
-`soft_deleted`/`force_deleted`/`forgotten` — the `from_state` → `to_state` of the
+`soft_deleted`/`force_deleted`/`forgotten`, `host_down`/`host_up` — the
+`from_state` → `to_state` of the
 transition, an `exited` event's `exit_code` and pane tail (`detail`), and the
 same gating fields the table above lists, so acting on a `blocked` needs no
 follow-up `session get`. `hook_state_contradicted` is `null`
@@ -217,6 +218,15 @@ session's loss reaches nobody unless a `watch` runs on that host. Run `watch`
 with the environment the sessions were created in — a watcher that resolves a
 different tmux socket (another `TMUX_TMPDIR`, a private `/tmp`) finds no server
 and reports every local session lost.
+
+`host_down` and `host_up` are a remote session's host being recorded as not
+answering, and that verdict clearing (see `unreachable` under *The status
+field is not a completion signal*). A verdict is not a row, so nothing appends them to the log: `watch`
+compares the verdicts every few seconds and reports a flip itself, as
+`changed` with the new `state`, `seq: null` (there is nothing to resume from)
+and no `from_state`/`to_state` — the hook report did not change. A `--since`
+resume does not replay them; `--initial`, and every event's `state`, already
+read the verdict as it stands. A parked session gets neither.
 
 `exited` and `relaunched` come from a multiplexer whose windows close with their
 agent (psmux), where a vanished window is otherwise all anyone sees. The agent's

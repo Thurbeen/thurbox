@@ -276,6 +276,30 @@ pub fn recorded_down(backend_type: &str) -> bool {
         .is_some_and(|verdict| is_fresh(&verdict) && is_not_answering(&verdict.usable))
 }
 
+/// Fold the host's recorded verdict into `hook`: `unreachable` while
+/// [`recorded_down`] holds for the route the session runs on, untouched
+/// otherwise (a local route never has one). What the interface shows from a
+/// failed attach, read here from the verdict the last probe recorded — the one
+/// place `session get`/`list` and `watch` take it from, so they cannot answer
+/// differently for one row.
+pub fn with_host_verdict(
+    hook: crate::session::Assessment,
+    backend_type: &str,
+) -> crate::session::Assessment {
+    with_host_down(hook, recorded_down(backend_type))
+}
+
+/// [`with_host_verdict`] for a verdict already read: a caller that sampled
+/// [`recorded_down`] once and reports on that sample (`watch`'s host flips)
+/// folds the same value rather than reading a verdict that may have moved.
+pub fn with_host_down(hook: crate::session::Assessment, down: bool) -> crate::session::Assessment {
+    if down {
+        hook.host_unreachable()
+    } else {
+        hook
+    }
+}
+
 /// Drop a stored "not answering" verdict for the host behind `backend_type`
 /// — here and in `host-verdicts.json` — because something just reached it: the
 /// interface's survey of that host. Without this a host that came back reads

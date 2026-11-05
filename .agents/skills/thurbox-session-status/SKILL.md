@@ -311,7 +311,7 @@ own, which is the point.
   | `classify_foreground` → `Assessment::with_corroboration` | the pane's foreground process group | anyone who can run `ps` |
   | `with_output_quiescence` (incl. the latched-`blocked` fold) | terminal output age, against `hook_state_at` | the interface only |
   | `with_reachability` | a live attach error | the interface only |
-  | `Assessment::host_unreachable` | a `host not answering` verdict in `host-verdicts.json` (`session_ops::host_cli::recorded_down`) | `session get`/`list` |
+  | `Assessment::host_unreachable` | a `host not answering` verdict in `host-verdicts.json` (`session_ops::host_cli::with_host_verdict`) | `session get`/`list`, `watch` |
 
   `seen_at` being a **stored fact** rather than a timeout is why the CLI applies
   it too: the CLI rightly refuses to guess a staleness bound, but this column is
@@ -319,7 +319,8 @@ own, which is the point.
   acknowledged reported `done` on `session get`/`list`/`watch` for the rest of
   the session's life. The two folds the CLI cannot make it does not fake —
   but a down host is a **stored fact** too: the probe's backoff verdict is
-  shared through `host-verdicts.json`, so `session get`/`list` read a remote
+  shared through `host-verdicts.json`, so `session get`/`list` and `watch`
+  (one fold, `host_cli::with_host_verdict`; a flip folds the verdict it sampled, `with_host_down`) read a remote
   row on a host recorded as not answering as `unreachable` with
   `state_source: "host"`, instead of the last mirrored `idle` (`hook_state`
   itself stays as stored). Only while that verdict's backoff runs — the
@@ -329,7 +330,9 @@ own, which is the point.
   its panes clears the verdict on its worker (`host_cli::host_answered`), so
   a host that came back stops reading `unreachable` as soon as it reattaches. A verdict that is not a host
   failure — sharing off, a CLI the host refuses to start — leaves the state
-  alone.
+  alone. A verdict is a file, not a row, so its flip appends no event: `watch`
+  compares the verdicts on its sweep and reports each flip itself as
+  `changed`/`host_down` or `changed`/`host_up`, with `seq: null`.
   A local session is never unreachable: this is its machine, and a missing pane
   there means the agent was not launched. The rows are read on the snapshot's
   own schedule rather than per frame, gated on `PRAGMA data_version` moving (see
