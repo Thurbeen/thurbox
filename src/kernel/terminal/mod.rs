@@ -1166,14 +1166,7 @@ impl Terminals {
             let runtime = self.runtime.clone();
             std::thread::spawn(move || {
                 let _guard = runtime.as_ref().map(|handle| handle.enter());
-                let done = discover_windows(&backend, backend_name, already_ready);
-                // A host that answered is not down, so a verdict saying it was
-                // must not outlive this: `session list` reads it. Here, on the
-                // worker, because it reads and may rewrite a file.
-                if done.readied && done.panes.is_ok() {
-                    crate::session_ops::host_cli::host_answered(&done.backend);
-                }
-                let _ = tx.send(done);
+                let _ = tx.send(survey(&backend, backend_name, already_ready));
             });
         }
     }
@@ -2172,6 +2165,22 @@ fn discovery_interval(backend: &str) -> std::time::Duration {
 ///
 /// Split out of [`Terminals::refresh_discovery`] so the throttle and the spawn
 /// stay readable beside the two fallible host calls this makes.
+/// One survey, as its worker runs it: [`discover_windows`], then — when it
+/// reached the host — clearing that host's "not answering" verdict. A host
+/// that answered is not down, and `session list` reads that verdict; done
+/// here, on the worker, because it reads and may rewrite a file.
+fn survey(
+    backend: &std::sync::Arc<dyn crate::backend::SessionBackend>,
+    name: String,
+    already_ready: bool,
+) -> Discovered {
+    let done = discover_windows(backend, name, already_ready);
+    if done.readied && done.panes.is_ok() {
+        crate::session_ops::host_cli::host_answered(&done.backend);
+    }
+    done
+}
+
 fn discover_windows(
     backend: &std::sync::Arc<dyn crate::backend::SessionBackend>,
     name: String,
@@ -2968,6 +2977,47 @@ mod tests {
         fn pane_pid(&self, _: &str) -> crate::backend::contract::BackendResult<Option<u32>> {
             Ok(None)
         }
+    }
+
+    /// A survey that reached a remote host is the evidence `session list` needs
+    /// to stop calling it unreachable: the worker clears the host's stored
+    /// "not answering" verdict, so a recovered host does not read down until
+    /// its backoff runs out.
+    #[test]
+    fn a_survey_that_reaches_a_host_clears_its_not_answering_verdict() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(temp.path());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let verdicts = crate::paths::log_directory()
+            .unwrap()
+            .join("host-verdicts.json");
+        std::fs::create_dir_all(verdicts.parent().unwrap()).unwrap();
+        std::fs::write(
+            &verdicts,
+            format!(
+                r#"{{"ssh:fake":{{"reason":"host not answering: timed out","at":{now},"failures":3}}}}"#
+            ),
+        )
+        .unwrap();
+        let route = crate::session::Route::remote(
+            crate::session::Via::Ssh,
+            "fake",
+            Some(crate::session::Multiplexer::Tmux),
+        );
+        assert!(crate::session_ops::host_cli::recorded_down(&route.format()));
+
+        // Mode 0: the host answers, and its listing holds no window.
+        let backend: std::sync::Arc<dyn crate::backend::SessionBackend> =
+            std::sync::Arc::new(FakeLivenessBackend(std::sync::atomic::AtomicU8::new(0)));
+        let done = survey(&backend, route.format(), true);
+
+        assert!(done.readied && done.panes.is_ok(), "the stub must answer");
+        assert!(!crate::session_ops::host_cli::recorded_down(
+            &route.format()
+        ));
     }
 
     #[test]
