@@ -195,6 +195,16 @@ pub(super) fn execute(
         }
         // A failed post-restart hook is already in the log; the restart stands.
         // A relaunch held back for a crash loop does not, and fails with why.
+        // Fresh is refused mid-turn: the interface never blocks a worker
+        // waiting for a turn to end, and the refusal says why.
+        Command::Restart { fresh: true, .. } => crate::session_ops::restart::restart_fresh(
+            &db,
+            backends,
+            id,
+            crate::session_ops::restart::WhenBusy::Refuse,
+        )
+        .and_then(crate::session_ops::restart::FreshReport::into_outcome)
+        .map_err(|e| e.to_string()),
         Command::Restart { if_missing, .. } => {
             crate::session_ops::restart::restart_session_headless_with(
                 &db,
