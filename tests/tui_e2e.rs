@@ -10060,37 +10060,93 @@ fn captured_rows(profile: &Profile, pane: &str) -> Vec<String> {
         .collect()
 }
 
-impl Tui {
-    /// Every row of the frame, one char per cell, an empty cell a space — so a
-    /// column index is a cell index.
-    fn cell_rows(&self) -> Vec<Vec<char>> {
-        let screen = self.screen.lock().unwrap();
-        let screen = screen.screen();
-        let (rows, cols) = (screen.size().0.get(), screen.size().1.get());
-        (0..rows)
-            .map(|y| {
-                (0..cols)
-                    .map(|x| {
-                        screen
-                            .cell(y, x)
+/// One cell as a comparison sees it: the glyph, and the attributes the flood
+/// sets — so a grid that kept the text but lost or leaked a style differs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Styled {
+    ch: char,
+    fg: vt100::Color,
+    bold: bool,
+    underline: bool,
+}
+
+fn styled_rows(screen: &vt100::Screen) -> Vec<Vec<Styled>> {
+    let (rows, cols) = (screen.size().0.get(), screen.size().1.get());
+    (0..rows)
+        .map(|y| {
+            (0..cols)
+                .map(|x| {
+                    let cell = screen.cell(y, x);
+                    Styled {
+                        // An empty cell is a space, so a column is a cell.
+                        ch: cell
                             .and_then(|cell| cell.contents().chars().next())
-                            .unwrap_or(' ')
-                    })
-                    .collect()
-            })
-            .collect()
+                            .unwrap_or(' '),
+                        fg: cell.map_or(vt100::Color::Default, vt100::Cell::fgcolor),
+                        bold: cell.is_some_and(vt100::Cell::bold),
+                        underline: cell.is_some_and(vt100::Cell::underline),
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+impl Tui {
+    fn styled_rows(&self) -> Vec<Vec<Styled>> {
+        styled_rows(self.screen.lock().unwrap().screen())
     }
 }
 
-/// Whether `captured` is painted somewhere in `frame`, row for row: its first
-/// non-blank row placed by text, every other row read at the same column.
-fn grid_painted(frame: &[Vec<char>], captured: &[String]) -> bool {
-    let Some(first) = captured.iter().position(|row| !row.is_empty()) else {
+/// The pane's screen as the multiplexer holds it, styles included
+/// (`capture-pane -e`), parsed onto a grid of the pane's own size.
+fn captured_cells(profile: &Profile, pane: &str) -> Vec<Vec<Styled>> {
+    let size = profile.server.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        pane,
+        "#{pane_height} #{pane_width}",
+    ]);
+    let size = String::from_utf8_lossy(&size.stdout);
+    let mut size = size
+        .split_whitespace()
+        .map(|n| n.parse::<u16>().expect("size"));
+    let (rows, cols) = (size.next().expect("rows"), size.next().expect("cols"));
+    let out = profile
+        .server
+        .tmux(&["capture-pane", "-p", "-e", "-t", pane]);
+    assert!(out.status.success(), "capture-pane -e {pane}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parser = vt100::Parser::new(rows.try_into().unwrap(), cols.try_into().unwrap(), 0);
+    let lines: Vec<&str> = text.lines().collect();
+    parser.process(lines.join("\r\n").as_bytes());
+    styled_rows(parser.screen())
+}
+
+/// Whether `captured` is painted somewhere in `frame`, cell for cell: placed
+/// by its first non-blank row's text, every other row read at the same
+/// column, up to the pane's border.
+///
+/// Colour is compared as painted. Text the pane leaves in its default colour
+/// may be painted in a theme's, but in one and the same everywhere — so a
+/// colour leaking onto it still shows.
+fn grid_painted(frame: &[Vec<Styled>], captured: &[Vec<Styled>]) -> bool {
+    let text = |row: &[Styled]| -> String {
+        row.iter()
+            .map(|c| c.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    };
+    let Some(first) = captured.iter().position(|row| !text(row).is_empty()) else {
         return false;
     };
-    let needle: Vec<char> = captured[first].chars().collect();
+    let needle: Vec<char> = text(&captured[first]).chars().collect();
     let found = frame.iter().enumerate().find_map(|(y, row)| {
-        row.windows(needle.len())
+        let chars: Vec<char> = row.iter().map(|c| c.ch).collect();
+        chars
+            .windows(needle.len())
             .position(|cells| cells == needle.as_slice())
             .map(|x| (y, x))
     });
@@ -10100,18 +10156,27 @@ fn grid_painted(frame: &[Vec<char>], captured: &[String]) -> bool {
     let Some(top) = y.checked_sub(first) else {
         return false;
     };
+    let mut default_fg = None;
     captured.iter().enumerate().all(|(i, want)| {
         let Some(row) = frame.get(top + i) else {
             return false;
         };
-        let want: Vec<char> = want.chars().collect();
         let painted = row.get(x..).unwrap_or_default();
-        painted.starts_with(&want)
-            && painted[want.len()..]
+        let len = text(want).chars().count();
+        painted.len() >= len
+            && want[..len].iter().zip(painted).all(|(want, got)| {
+                let fg = if want.fg == vt100::Color::Default {
+                    *default_fg.get_or_insert(got.fg) == got.fg
+                } else {
+                    want.fg == got.fg
+                };
+                want.ch == got.ch && want.bold == got.bold && want.underline == got.underline && fg
+            })
+            && painted[len..]
                 .iter()
-                .take_while(|cell| !matches!(cell, '│' | '┃' | '║'))
+                .take_while(|cell| !matches!(cell.ch, '│' | '┃' | '║'))
                 // The interface paints the pane's cursor as a block.
-                .all(|cell| matches!(cell, ' ' | '█'))
+                .all(|cell| matches!(cell.ch, ' ' | '█'))
     })
 }
 
@@ -10119,15 +10184,17 @@ fn grid_painted(frame: &[Vec<char>], captured: &[String]) -> bool {
 fn wait_for_true_grid(profile: &Profile, tui: &Tui, pane: &str) {
     let deadline = Instant::now() + WAIT;
     loop {
-        let captured = captured_rows(profile, pane);
-        let done = captured.iter().any(|row| row == "flood-done");
-        if done && grid_painted(&tui.cell_rows(), &captured) {
+        let captured = captured_cells(profile, pane);
+        let done = captured_rows(profile, pane)
+            .iter()
+            .any(|row| row == "flood-done");
+        if done && grid_painted(&tui.styled_rows(), &captured) {
             return;
         }
         if Instant::now() > deadline {
             tui.give_up(&format!(
                 "the flooded pane to match capture-pane:\n{}",
-                captured.join("\n")
+                captured_rows(profile, pane).join("\n")
             ));
         }
         std::thread::sleep(Duration::from_millis(100));

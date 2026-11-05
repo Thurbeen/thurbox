@@ -639,7 +639,8 @@ snapshot that fails puts the reader back in step. A server that cannot snapshot
 a pane (psmux) keeps dropping the chunk.
 
 Pinned end to end in `tests/tui_e2e.rs` on the remote stand-in, comparing the
-painted pane with `capture-pane` row for row. A flood straight through a local
+painted pane with `capture-pane -e` cell for cell, colour and attributes
+included. A flood straight through a local
 multiplexer never overflows: tmux prints slower than the reader drains. What
 overflows a channel is a link that stalls with the host's output in flight and
 then delivers it in one burst, so that scenario spools the downlink while it is
