@@ -516,12 +516,25 @@ fn restart_for(
     session_id: SessionId,
     why: Relaunch,
 ) -> Result<RestartReport, crate::session_ops::OpError> {
-    let session = db
+    let session = match db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
-        .ok_or_else(|| {
-            crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
-        })?;
+    {
+        Some(session) => session,
+        // A repairer acts on a listing taken before it ran: the interface's
+        // snapshot, or a peer's survey. A session deleted since has no window
+        // to put back, so there is nothing to repair; reporting it as a failed
+        // restart blamed a delete for something it did on purpose.
+        None if why.is_a_repairer() => {
+            tracing::debug!("{session_id} is gone; nothing to relaunch");
+            return Ok(RestartReport::default());
+        }
+        None => {
+            return Err(crate::session_ops::OpError::NotFound(format!(
+                "Session not found: {session_id}"
+            )))
+        }
+    };
 
     // A remote session's window lives on its host, so both halves have to go
     // there — restarting it locally would leave the real window running and add
@@ -531,6 +544,22 @@ fn restart_for(
     // kills and relaunches where the agent runs, with the host's own
     // configuration; the local row is then mirrored from the host's.
     if let super::Executor::HostCli { host, cli } = super::Executor::for_session(&session)? {
+        // The hold here is somebody else's lifecycle operation on this row.
+        // A delegated delete, for one, holds it while the host kills the
+        // window and drops its row, and only then marks the row here. A
+        // repairer that saw the window go in that gap would otherwise ask
+        // the host to relaunch a session it has just deleted. Checked and
+        // let go rather than held: the mirror after the restart skips a held
+        // row, and it is what brings the new pane back here. A delete that
+        // starts after this check gets a "not found" from the host, which
+        // `restart_delegated` reads the same way.
+        if why.is_a_repairer() && hold_restart(db, session_id).is_none() {
+            tracing::debug!(
+                "'{}' is held by another lifecycle operation; not relaunching",
+                session.name
+            );
+            return Ok(RestartReport::default());
+        }
         // `--if-missing` is "I am a repairer", and the host reads both halves
         // out of it: put a window back only if one is gone, and stand down for
         // a hold somebody there already has. An unpark is neither — the
@@ -672,7 +701,21 @@ fn restart_delegated(
     if if_missing {
         args.push("--if-missing");
     }
-    let result = super::host_cli::run(host, cli, &args)?;
+    let result = match super::host_cli::run(host, cli, &args) {
+        Ok(result) => result,
+        // The host has deleted the session, so there is no window to put
+        // back. Its row here is marked by the delete that did it, or by the
+        // next mirror pass. A restart somebody asked for still fails.
+        Err(crate::session_ops::OpError::NotFound(why)) if if_missing => {
+            tracing::debug!(
+                "'{}' is gone on '{}' ({why}); nothing to relaunch",
+                session.name,
+                host.name
+            );
+            return Ok(RestartReport::default());
+        }
+        Err(e) => return Err(e),
+    };
     if let Err(e) = super::mirror::mirror_host(db, host, cli) {
         tracing::warn!("mirror of '{}' after restart failed: {e}", host.name);
     }

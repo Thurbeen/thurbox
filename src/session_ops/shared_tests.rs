@@ -178,7 +178,14 @@ fn rig() -> Rig {
                 let known = host.deleted.iter().any(|(gone, _)| *gone == id);
                 Ok(json!({ "reaped": known, "id": id.to_string() }))
             }
-            ["session", "restart", _id, ..] => Ok(json!({ "restarted": true })),
+            ["session", "restart", id, ..] => {
+                let id: SessionId = id.parse().unwrap();
+                if !host.active.iter().any(|s| s.id == id) {
+                    // What the host's resolver answers for a row it has deleted.
+                    return Err(fake::not_found(&format!("Session not found: {id}")));
+                }
+                Ok(json!({ "restarted": true }))
+            }
             ["session", "reparent", id, parent] => {
                 let id: SessionId = id.parse().unwrap();
                 let parent = (*parent != "--clear").then(|| parent.parse().unwrap());
@@ -411,6 +418,113 @@ fn a_restart_asks_the_host_and_a_relaunch_says_if_missing() {
         .nth(1)
         .unwrap();
     assert_eq!(relaunch.last().map(String::as_str), Some("--if-missing"));
+}
+
+/// The interface's repairer (`respawn_missing_agents` → `Command::Restart {
+/// if_missing: true }`) running inside a delegated delete. The host has already
+/// killed the window and dropped its row, the local row is not marked yet, and
+/// the delete still holds the row's lease. The repairer must stand down as it
+/// does for a local session, not ask the host and surface "Session not found"
+/// as "could not restart <name>".
+#[test]
+fn a_repairer_racing_a_delegated_delete_stands_down() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-deleting");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    // Mid-delete: gone on the host, still active here, the delete's lease held.
+    let _delete = super::lock::lock(&rig.db, super::lock::Subject::Session(id), "delete")
+        .unwrap()
+        .expect("the delete holds the row");
+
+    let outcome = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true);
+
+    assert!(
+        outcome.is_ok(),
+        "a repairer must not fail on a session being deleted: {:?}",
+        outcome.err().map(|e| e.to_string())
+    );
+    assert!(
+        !fake::calls()
+            .iter()
+            .any(|c| c.get(1).map(String::as_str) == Some("restart")),
+        "a row another operation holds is not relaunched on the host"
+    );
+}
+
+/// The same repairer one beat later: the delete has finished and marked the row
+/// here, but the interface's snapshot still listed it when it dispatched. A
+/// relaunch "if missing" of a session that no longer exists has nothing to
+/// repair, so it is a no-op rather than an error.
+#[test]
+fn a_repairer_for_a_session_deleted_since_its_snapshot_is_a_no_op() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-deleted");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.soft_delete_session(id).unwrap();
+
+    let outcome = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true);
+
+    assert!(
+        outcome.is_ok(),
+        "a repairer must not fail on a session already deleted: {:?}",
+        outcome.err().map(|e| e.to_string())
+    );
+}
+
+/// A delete that began after the repairer checked the hold: the host has
+/// dropped the row, and nothing here holds it any more. The host's "not
+/// found" means there is nothing to relaunch.
+#[test]
+fn a_repairer_the_host_answers_not_found_is_a_no_op() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-gone-there");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+
+    let outcome = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true);
+
+    assert!(
+        outcome.is_ok(),
+        "a repairer must not fail on a session its host deleted: {:?}",
+        outcome.err().map(|e| e.to_string())
+    );
+    assert!(
+        fake::calls()
+            .iter()
+            .any(|c| c.get(1).map(String::as_str) == Some("restart")),
+        "with no hold here, the host is still the one asked"
+    );
+}
+
+/// A restart somebody asked for by name is not a repair, so a session that is
+/// gone, here or on its host, is still an error they need to see.
+#[test]
+fn an_asked_restart_of_a_gone_session_still_fails() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-gone-there");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+
+    let on_host = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, false);
+    assert!(
+        matches!(on_host, Err(super::OpError::NotFound(_))),
+        "the host's not-found reaches the caller: {:?}",
+        on_host.err().map(|e| e.to_string())
+    );
+
+    rig.db.soft_delete_session(id).unwrap();
+    let here = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, false);
+    assert!(
+        matches!(here, Err(super::OpError::NotFound(_))),
+        "a row gone here is not found: {:?}",
+        here.err().map(|e| e.to_string())
+    );
 }
 
 /// `--if-missing` is "I am a repairer" on the wire, and a host reads both halves
