@@ -9,6 +9,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'thurbox: when you end a turn and nothing you started is still running or scheduled (no background commands, watchers, subagents, timers or loops), make the last line of your final message exactly [thurbox-idle]. Leave that line out while anything you started is still running.'  # managed by thurbox `extension install` — do not edit",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -61,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state done >/dev/null 2>&1 || true; echo '{}'  # managed by thurbox `extension install` — do not edit",
+            "command": "thurbox-cli session signal --state done --stop-payload - >/dev/null 2>&1 || true; echo '{}'  # managed by thurbox `extension install` — do not edit",
             "timeout": 10
           }
         ]

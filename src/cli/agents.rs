@@ -92,6 +92,12 @@ pub fn run(
                     "hooks_enabled": plan.hooks_enabled,
                     "hook_coverage": crate::session::Coverage::of(coverage.map(|(c, _)| c)).as_str(),
                     "hook_states_reportable": coverage.map(|(c, _)| c.states).unwrap_or(&[]),
+                    // `full`: the agent reports its own background work;
+                    // `partial`: idleness rests on its idle claim; null:
+                    // nothing is wired (an unknown agent, or the extension off).
+                    "state_support": coverage
+                        .filter(|_| plan.hooks_enabled)
+                        .map(|(c, _)| c.state_support.as_str()),
                     "degraded": plan.degraded,
                 }),
                 human,

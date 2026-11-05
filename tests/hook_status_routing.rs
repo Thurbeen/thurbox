@@ -542,7 +542,7 @@ fn automation_tick_refuses_a_late_background_for_work_that_ended() {
     db.signal_work_edge(counted, WorkEdge::Start, "a2a3df31469ca24ca")
         .expect("start");
     assert_eq!(
-        db.signal_hook_state(counted, "done", ReportFrom::Agent)
+        db.signal_hook_state(counted, "done", ReportFrom::Agent, None)
             .expect("stop")
             .as_deref(),
         Some("background")
