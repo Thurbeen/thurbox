@@ -188,23 +188,15 @@ impl TelemetrySettings {
 }
 
 /// How sessions on remote hosts are mirrored (`[remote]` table).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteSettings {
     /// Also list the sessions a shareable host mirrors from hosts of its own
     /// (A → B → C: C's sessions, seen on A through B). Each session is listed
-    /// once, on the most direct path this instance has to it. `false` lists
-    /// only each host's own sessions. Read by every mirror pass, so a change
-    /// applies on the next one.
-    #[serde(default = "default_true")]
+    /// once, on the most direct path this instance has to it. Off by default:
+    /// a host's list is its own sessions, not a remote's remotes. Read by
+    /// every mirror pass, so a change applies on the next one.
+    #[serde(default)]
     pub transitive_sessions: bool,
-}
-
-impl Default for RemoteSettings {
-    fn default() -> Self {
-        Self {
-            transitive_sessions: true,
-        }
-    }
 }
 
 /// Whole-feature switches (`[features]` in settings.toml). Each flag hides the
@@ -981,7 +973,7 @@ mod tests {
              code_review = false\nperf_hud = false\nmouse = false\nnotifications = false\n\
              soft_delete = true\nversion_check = false\nauto_update = false\n\
              [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\
-             [remote]\ntransitive_sessions = false\n\
+             [remote]\ntransitive_sessions = true\n\
              [telemetry]\nenabled = true\nexport_diagnostic_logs = true\n",
         )
         .unwrap();

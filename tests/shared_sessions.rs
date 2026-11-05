@@ -795,18 +795,12 @@ fn listings(root: &std::path::Path) -> usize {
         .count()
 }
 
-/// The mirror over a real `ssh` round trip: an idle host is not re-listed.
-///
-/// A host's full `session list` + `session list --deleted` grows with its
-/// deleted history, and the mirror runs every few seconds per host. The
-/// stand-in logs every remote script, so the test sees what crossed the wire.
-/// It sets `PATH` and the data directories process-wide, which nextest's
-/// process per test keeps to this test.
+/// Lay out a caller and a stand-in host under `root`, and point this process
+/// at the caller's side with the [`write_ssh`] stand-in first on `PATH`. Sets
+/// the variables process-wide, which nextest's process per test keeps to the
+/// test.
 #[cfg(unix)]
-#[test]
-fn an_idle_host_is_not_listed_again() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
+fn stand_in_host(root: &std::path::Path) {
     for dir in [
         "bin",
         "home",
@@ -830,6 +824,29 @@ fn an_idle_host_is_not_listed_again() {
             std::env::var("PATH").unwrap_or_default()
         ),
     );
+}
+
+#[cfg(unix)]
+fn usable_cli(host: &HostDef) -> thurbox::session_ops::host_cli::CliInfo {
+    match thurbox::session_ops::host_cli::usable(host) {
+        thurbox::session_ops::host_cli::Usable::Yes(cli) => cli,
+        thurbox::session_ops::host_cli::Usable::No(why) => {
+            panic!("the stand-in host is not usable: {why}")
+        }
+    }
+}
+
+/// The mirror over a real `ssh` round trip: an idle host is not re-listed.
+///
+/// A host's full `session list` + `session list --deleted` grows with its
+/// deleted history, and the mirror runs every few seconds per host. The
+/// stand-in logs every remote script, so the test sees what crossed the wire.
+#[cfg(unix)]
+#[test]
+fn an_idle_host_is_not_listed_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    stand_in_host(root);
 
     // The host: one live session and a long deleted history.
     let host_db = Database::open(&root.join("host-data/thurbox.db")).unwrap();
@@ -848,12 +865,7 @@ fn an_idle_host_is_not_listed_again() {
         destination: "probe".into(),
         ..Default::default()
     };
-    let cli = match thurbox::session_ops::host_cli::usable(&host) {
-        thurbox::session_ops::host_cli::Usable::Yes(cli) => cli,
-        thurbox::session_ops::host_cli::Usable::No(why) => {
-            panic!("the stand-in host is not usable: {why}")
-        }
-    };
+    let cli = usable_cli(&host);
     let db = Database::open(&root.join("data/thurbox.db")).unwrap();
 
     let first = mirror::mirror_host(&db, &host, &cli).unwrap();
@@ -874,6 +886,46 @@ fn an_idle_host_is_not_listed_again() {
     let moved = mirror::mirror_host(&db, &host, &cli).unwrap();
     assert_eq!(moved.deleted, vec![live], "{moved:?}");
     assert!(listings(root) > after_first);
+}
+
+/// A → B → C over a real `ssh` round trip, with no `settings.toml` here: A
+/// lists B's own session and none of the ones B only mirrors from C. A remote
+/// session of a remote session is shown only on an explicit
+/// `[remote] transitive_sessions = true`.
+#[cfg(unix)]
+#[test]
+fn a_hosts_mirror_of_its_own_host_is_not_listed_by_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    stand_in_host(root);
+
+    // B: one session of its own, and its mirror of one on its host C.
+    let host_db = Database::open(&root.join("host-data/thurbox.db")).unwrap();
+    let on_b = SessionId::default();
+    host_db
+        .upsert_session(&host_row(on_b, "bravo-own"))
+        .unwrap();
+    let on_c = SessionId::default();
+    let mut mirrored = host_row(on_c, "charlie-own");
+    mirrored.backend_type = "ssh:charlie".into();
+    host_db.upsert_session(&mirrored).unwrap();
+
+    let host = HostDef {
+        name: "bravo".into(),
+        destination: "bravo".into(),
+        ..Default::default()
+    };
+    let cli = usable_cli(&host);
+    let db = Database::open(&root.join("data/thurbox.db")).unwrap();
+
+    let report = mirror::mirror_host(&db, &host, &cli).unwrap();
+    assert_eq!(report.adopted, vec![on_b], "{report:?}");
+    assert_eq!(listed_on(&db, on_b), vec!["ssh:bravo"]);
+    assert!(
+        listed_on(&db, on_c).is_empty(),
+        "C's session, seen only through B, is listed here: {:?}",
+        listed_on(&db, on_c)
+    );
 }
 
 /// A host that upgraded first is still shared with (#1429). Its CLI is a minor

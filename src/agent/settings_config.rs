@@ -125,15 +125,14 @@ config_version = 1
 # provider = "auto"             # auto | native | osc52 | none
 # copy_on_select = true
 
-# Sessions on remote hosts (hosts.toml). A shareable host lists its own
-# sessions and, when it mirrors hosts of its own, theirs too. Those transitive
-# sessions are listed here once each, on the most direct path this instance has
-# to them (a host you reach directly wins over the same session seen through
-# another), and every action on one goes to the host that owns it. Set to
-# `false` to list only each host's own sessions. Applies on the next mirror
-# pass.
+# Sessions on remote hosts (hosts.toml). Each host's own sessions are listed
+# here. A shareable host that mirrors hosts of its own also lists theirs; set
+# this to `true` to list those transitive sessions too, once each, on the most
+# direct path this instance has to them (a host you reach directly wins over
+# the same session seen through another), with every action on one going to
+# the host that owns it. Applies on the next mirror pass.
 # [remote]
-# transitive_sessions = true
+# transitive_sessions = false
 
 # OpenTelemetry: turn on each agent's own exporter for the sessions thurbox
 # spawns — the spec's OTEL_EXPORTER_OTLP_* variables, OTEL_RESOURCE_ATTRIBUTES
@@ -716,16 +715,16 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let path = settings_config_path().unwrap();
 
-        assert!(load_quiet().remote.transitive_sessions, "absent = default");
+        assert!(!load_quiet().remote.transitive_sessions, "absent = default");
         assert!(!path.exists(), "and nothing was seeded");
 
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "[remote]\ntransitive_sessions = false\n").unwrap();
-        assert!(!load_quiet().remote.transitive_sessions);
+        std::fs::write(&path, "[remote]\ntransitive_sessions = true\n").unwrap();
+        assert!(load_quiet().remote.transitive_sessions);
 
         std::fs::write(&path, "[remote\n").unwrap();
         assert!(
-            load_quiet().remote.transitive_sessions,
+            !load_quiet().remote.transitive_sessions,
             "malformed = default"
         );
     }
