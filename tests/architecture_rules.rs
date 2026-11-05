@@ -1576,7 +1576,7 @@ fn the_declared_check_sees_a_mutual_allowance() {
 ///
 /// This is the check that a wide rename needs and that nothing else provides.
 /// The calls that create or truncate a file in place.
-const IN_PLACE_WRITES: &[&str] = &["fs::write", "File::create", "OpenOptions::new"];
+const IN_PLACE_WRITES: &[&str] = &["fs::write", "fs::copy", "File::create", "OpenOptions::new"];
 
 /// Production calls in one file allowed to write in place, how many, and why.
 /// Everything else a user edits or thurbox reads back goes through
@@ -1591,6 +1591,12 @@ struct InPlaceWrite {
 }
 
 const IN_PLACE_ALLOWED: &[InPlaceWrite] = &[
+    InPlaceWrite {
+        file: "agent/self_update.rs",
+        call: "fs::copy",
+        sites: 1,
+        why: "copies the new binary onto a staged .new file that is renamed into place",
+    },
     InPlaceWrite {
         file: "agent/version_check.rs",
         call: "fs::write",
@@ -1631,7 +1637,8 @@ const IN_PLACE_ALLOWED: &[InPlaceWrite] = &[
 
 /// What [`files_thurbox_reads_back_are_written_atomically`] reports: every site
 /// of a call no entry allows or that outnumbers its entry, and every entry that
-/// outnumbers what is left of it.
+/// outnumbers what is left of it. Files are compared with `/` separators, as
+/// the entries spell them, so the rule holds on Windows too.
 fn unlisted_in_place_writes(
     found: &[(PathBuf, usize, &str)],
     allowed: &[InPlaceWrite],
@@ -1639,7 +1646,7 @@ fn unlisted_in_place_writes(
     let mut sites: BTreeMap<(String, &str), Vec<usize>> = BTreeMap::new();
     for (file, line, call) in found {
         sites
-            .entry((file.display().to_string(), *call))
+            .entry((file.to_string_lossy().replace('\\', "/"), *call))
             .or_default()
             .push(*line);
     }

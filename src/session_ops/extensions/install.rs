@@ -11,7 +11,7 @@ use crate::storage::Database;
 
 use super::fs::{
     ensure_safe_relative, guard_removable_dir, is_user_modified, make_symlink,
-    remove_dir_all_resilient, safe_join, set_executable, MANAGED_MARKER,
+    remove_dir_all_resilient, safe_join, same_file, set_executable, MANAGED_MARKER,
 };
 use super::lifecycle::{activate_extension, deactivate_extension, DeactivateReport, EnsureReport};
 
@@ -180,7 +180,7 @@ fn install(
         install_payload_file(&source, f, &home, &home_str, force, &mut report)?;
     }
     for (alias, target) in &aliases {
-        if std::fs::read(alias).ok() != std::fs::read(target).ok() {
+        if !same_file(alias, target) {
             std::fs::remove_file(alias).map_err(|e| format!("re-link {}: {e}", alias.display()))?;
         }
     }
@@ -723,13 +723,13 @@ fn revert_config_merge(
 /// Create one symlink under the home dir, replacing an existing symlink but
 /// never clobbering a regular file the user owns, recording the outcome in
 /// `report`.
-/// Declared links that are a regular file holding exactly what their target
-/// holds: the hard link [`make_symlink`] falls back to on Windows without
-/// symlink rights, or an identical copy, which re-linking loses nothing of. A
-/// payload replaced by rename leaves such an alias on the old contents, and the
-/// symlink pass skips a regular file as the user's, so [`install`] notes these
-/// before the payloads move and removes each one its payload left behind, for
-/// that pass to link anew. Each is returned with its target.
+/// Declared links that are a hard link to their target: what [`make_symlink`]
+/// falls back to on Windows without symlink rights. A payload replaced by
+/// rename leaves such an alias on the old contents, and the symlink pass skips
+/// a regular file as the user's, so [`install`] notes these before the payloads
+/// move and removes each one its payload left behind, for that pass to link
+/// anew. Each is returned with its target. A user's copy, equal or not, is a
+/// different file and stays theirs.
 fn hard_link_aliases(
     def: &ExtensionDef,
     home: &Path,
@@ -743,8 +743,7 @@ fn hard_link_aliases(
                 return None;
             }
             let target = link.parent()?.join(&s.target);
-            let same = std::fs::read(&link).ok()? == std::fs::read(&target).ok()?;
-            same.then_some((link, target))
+            same_file(&link, &target).then_some((link, target))
         })
         .collect()
 }

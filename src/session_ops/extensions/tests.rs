@@ -2322,7 +2322,7 @@ fn a_hard_linked_alias_follows_its_refreshed_payload() {
     std::fs::write(
         src.path().join("extension.toml"),
         format!(
-            "name = \"aliased\"\nhome = \"{}\"\n[[files]]\npath = \"FLOW.md\"\n[[symlinks]]\nlink = \"CLAUDE.md\"\ntarget = \"FLOW.md\"\n",
+            "name = \"aliased\"\nhome = '{}'\n[[files]]\npath = \"FLOW.md\"\n[[symlinks]]\nlink = \"CLAUDE.md\"\ntarget = \"FLOW.md\"\n",
             home.path().display()
         ),
     )
@@ -2339,4 +2339,39 @@ fn a_hard_linked_alias_follows_its_refreshed_payload() {
     install_extension(&db, &backends, &target, None, false).unwrap();
 
     assert_eq!(std::fs::read_to_string(&alias).unwrap(), "spec v2");
+}
+
+/// A user's own copy at a declared link stays theirs even when it matches the
+/// payload: only a hard link to the payload itself is the installer's alias.
+#[test]
+fn a_users_copy_matching_the_payload_is_not_taken_for_an_alias() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let _guard = crate::paths::TestPathGuard::new(temp.path());
+    let db = Database::open_in_memory().unwrap();
+    let src = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("extension.toml"),
+        format!(
+            "name = \"copied\"\nhome = '{}'\n[[files]]\npath = \"FLOW.md\"\n[[symlinks]]\nlink = \"CLAUDE.md\"\ntarget = \"FLOW.md\"\n",
+            home.path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(src.path().join("FLOW.md"), "spec v1").unwrap();
+    let target = src.path().to_string_lossy().to_string();
+    let backends = crate::backend::registry::inert();
+    install_extension(&db, &backends, &target, None, false).unwrap();
+    let copy = home.path().join("CLAUDE.md");
+    std::fs::remove_file(&copy).unwrap();
+    std::fs::write(&copy, "spec v1").unwrap();
+
+    std::fs::write(src.path().join("FLOW.md"), "spec v2").unwrap();
+    install_extension(&db, &backends, &target, None, false).unwrap();
+
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "spec v1");
+    assert!(!std::fs::symlink_metadata(&copy)
+        .unwrap()
+        .file_type()
+        .is_symlink());
 }
