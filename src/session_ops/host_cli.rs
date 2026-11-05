@@ -150,6 +150,8 @@ pub struct CliInfo {
     pub telemetry_attrs: bool,
     pub purged_tombstones: bool,
     pub lifecycle_preconditions: bool,
+    /// Whether `message send` takes `--wait-bound` and reports `delivered`.
+    pub message_native_send: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -1013,6 +1015,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .get("create_parity")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        message_native_send: json
+            .get("message_native_send")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }))
 }
 
@@ -1798,6 +1804,7 @@ pub(crate) mod fake {
             telemetry_attrs: false,
             purged_tombstones: false,
             lifecycle_preconditions: false,
+            message_native_send: false,
         }
     }
 }
@@ -1935,6 +1942,7 @@ mod tests {
             telemetry_attrs: false,
             purged_tombstones: false,
             lifecycle_preconditions: false,
+            message_native_send: false,
         }
     }
 

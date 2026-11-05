@@ -396,6 +396,7 @@ mod tests {
             telemetry_attrs: true,
             purged_tombstones: false,
             lifecycle_preconditions: false,
+            message_native_send: false,
         }
     }
 

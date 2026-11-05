@@ -153,6 +153,32 @@ both `--from` and `inbox --for` default to it, so neither side needs ids.
 `send` wakes the recipient unless given `--no-wake`; Fleet's reconciler
 uses `--no-wake` to leave Mission Control a note it cannot type in.
 
+Waking means handing the body to the agent's own inbox: a Claude Code
+inbox socket, or `codex queue` on the thread the Codex session bound. When
+there is none, the body waits in the mailbox, which no agent reads unless
+told to. A sender that needs the agent to have it reads one field:
+
+| `delivered` | meaning |
+|---|---|
+| `true` | the agent was handed the body; `delivered_via` names the inbox |
+| `false` | only the mailbox has it; `delivery_note` says why |
+
+`--require-native` makes `delivered: false` a failed command (exit 1), with
+the answer still printed and the message still enqueued, so the sender can
+retry or act on it. A Codex session cannot be reached until its first hook
+binds a thread, which is the moment a freshly spawned one is sent its first
+prompt; `--wait-bound <seconds>` waits that long for the recipient to have
+an inbox before leaving the body in the mailbox.
+
+A recipient on a host that shares its sessions is sent to by the host's own
+`thurbox-cli` (ADR-24): its inbox socket, its Codex binding and the mailbox
+its agent drains are all on that host. The answer then carries `host`, and
+`message_id` is the host's. A host whose CLI cannot be used keeps the body
+in this machine's mailbox, with `delivered: false`.
+
+`version --json` reports `message_native_send: true` on a build that has
+`delivered`, `--require-native`, `--wait-bound` and delivery on a host.
+
 **Why not poll `gh pr list`?** Either report beats it:
 
 - It is **exact**. The report comes from a worker that knows it

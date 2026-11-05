@@ -3109,8 +3109,8 @@ rather than the delivery guessing it from the environment:
 
 A send a host's own CLI does for a shared session (ADR-24 delegation) is
 labelled by that host's `thurbox-cli`, which runs in no session there, so it
-reads `a process outside thurbox` whoever sent it: `session send` has no flag
-that carries the sender across.
+reads `a process outside thurbox` whoever sent it: neither `session send` nor
+`message send` has a flag that carries the sender across.
 
 Claude Code puts its own heading and caveat above every message its inbox
 socket receives, calling the sender "another Claude session"; thurbox writes
@@ -3184,8 +3184,13 @@ surface. `AGENTS.md` keeps the identity contract and points here.
     <text> [--no-wake]` enqueues and, unless `--no-wake`, delivers the body to
     the recipient agent's own inbox (`session_ops::delivery`). The output's
     `delivered_via` is `claude-socket`, `codex-queue` or `mailbox`, with
-    `delivery_note` saying why a message stayed in the mailbox. A failed
-    native send is logged at `warn` and never fails the command.
+    `delivery_note` saying why a message stayed in the mailbox, and
+    `delivered` (`false` when only the mailbox has it). A failed native send
+    is logged at `warn` and fails the command only under `--require-native`.
+    `--wait-bound <seconds>` waits for a recipient with no inbox yet (a Codex
+    session before its hook binds a thread). A recipient on a host that
+    shares its sessions is sent to by the host's own `thurbox-cli` (ADR-24),
+    whose mailbox its agent reads; the answer carries `host`.
     **Provenance + task tag default to the caller's injected identity**
     (`THURBOX_SESSION`/`THURBOX_TASK`) so an agent passes **no ids**; `--from`/
     `--task` override.

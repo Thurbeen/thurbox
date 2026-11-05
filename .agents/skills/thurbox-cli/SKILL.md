@@ -1017,7 +1017,9 @@ without double-processing.
   (`delivering_at`, `delivery_lease`) that `claim` skips and that is renewed
   before each attempt; success marks the row read + `delivered_via` (schema
   v48), failure releases it, and a killed sender's lease just lapses.
-  Output: `delivered_via` = `claude-socket` | `codex-queue` | `mailbox`, plus
+  Output: `delivered` (bool; `false` = mailbox only), `delivered_via` =
+  `claude-socket` | `codex-queue` | `mailbox`, `host` (set when a sharing
+  host's own CLI did the send, ADR-24 — `delivery::on_host`), plus
   `delivery_note` and `may_hold` — true for `claude-socket`, whose recipient
   can hold the body behind an approval dialog unless its settings carry
   `crossSessionInbound: accept` (a fact about the route; thurbox never sees the

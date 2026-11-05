@@ -3230,6 +3230,7 @@ mod tests {
             agent_args: false,
             purged_tombstones: false,
             lifecycle_preconditions: false,
+            message_native_send: false,
             ..super::super::host_cli::fake::cli()
         }
     }
