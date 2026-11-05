@@ -846,6 +846,7 @@ mod remote {
                 ssh_opts: Vec::new(),
             },
             Platform::Posix,
+            thurbox::session::settings::default_scrollback_lines(),
         ))
     }
 

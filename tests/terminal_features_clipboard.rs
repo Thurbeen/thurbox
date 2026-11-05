@@ -69,7 +69,9 @@ fn clipboard_entries(features: &[String]) -> usize {
 fn spawn(n: usize, dir: &std::path::Path) {
     let id = format!("11111111-1111-4111-8111-{n:012}");
     let spawned = thurbox::backend::WindowLifecycle::create_window(
-        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::tmux::TmuxBackend::local(
+            thurbox::session::settings::default_scrollback_lines(),
+        ),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(&id, &format!("features-{n}")),
             role: thurbox::backend::WindowRole::Agent,

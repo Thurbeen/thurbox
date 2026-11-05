@@ -102,6 +102,55 @@ fn audit_history_is_pruned_to_the_configured_retention() {
     );
 }
 
+#[test]
+fn the_cli_prunes_audit_history_to_the_configured_retention() {
+    // The sweep runs in the binary once it has loaded its settings, so drive
+    // the binary: a setting no startup path reads is the failure this file is
+    // about.
+    // The child resolves its files from THURBOX_CONFIG_DIR/THURBOX_DATA_DIR,
+    // which `isolate` exports; `set_test_dir` steers only this process.
+    let home = isolate();
+    std::fs::write(
+        home.path().join("config/settings.toml"),
+        "audit_retention_days = 1\n",
+    )
+    .expect("write settings.toml");
+    let path = home.path().join("data/thurbox.db");
+    let db = thurbox::storage::Database::open(&path).expect("open");
+    let aged = |days: u64| thurbox::storage::current_time_millis() - days * 24 * 60 * 60 * 1000;
+    for (id, at) in [("aged", aged(5)), ("fresh", aged(0))] {
+        db.conn_ref()
+            .execute(
+                "INSERT INTO audit_log (timestamp, entity_type, entity_id, action) \
+                 VALUES (?1, 'session', ?2, 'created')",
+                rusqlite::params![at as i64, id],
+            )
+            .expect("insert");
+    }
+    drop(db);
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["version", "--json"])
+        .output()
+        .expect("run thurbox-cli");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let db = thurbox::storage::Database::open(&path).expect("reopen");
+    let kept: Vec<String> = db
+        .conn_ref()
+        .prepare("SELECT entity_id FROM audit_log WHERE entity_type = 'session' ORDER BY entity_id")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("rows");
+    assert_eq!(kept, ["fresh"], "the aged entry outlived a 1-day retention");
+}
+
 // ── Reload ─────────────────────────────────────────────────────────────────
 
 #[test]

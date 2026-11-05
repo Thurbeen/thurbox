@@ -51,13 +51,13 @@ fn the_tmux_backend_keeps_the_contract() {
         return;
     }
     let server = TmuxServer::pin(SOCKET);
-    let backend = TmuxBackend::new();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     backend_contract::suite(&backend);
     backend.shutdown();
 
     // Headless, on a backend nothing attached to: a teardown or a restart
     // from `thurbox-cli` opens no control client on the server it acts on.
-    let headless = TmuxBackend::new();
+    let headless = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     backend_contract::lifecycle(&headless);
     backend_contract::pane_io(&headless);
     backend_contract::status(&headless);
@@ -67,7 +67,7 @@ fn the_tmux_backend_keeps_the_contract() {
         "",
         "the headless lifecycle attached a client"
     );
-    let quitting = TmuxBackend::new();
+    let quitting = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     backend_contract::shutdown_is_final(&quitting);
     let clients = server.tmux(&["list-clients", "-F", "#{client_name}"]);
     assert_eq!(
@@ -144,6 +144,7 @@ fn missing_window_pid<M: TmuxCompatible>() {
         &socket,
         "identity-probe",
         format!("local:{binary}"),
+        thurbox::session::settings::default_scrollback_lines(),
     );
     let pane = backend
         .create_window(&WindowSpec {
@@ -231,6 +232,7 @@ fn a_tmux_output_time_is_read_without_a_utf8_locale() {
         &socket,
         "output-time-probe",
         "local:tmux",
+        thurbox::session::settings::default_scrollback_lines(),
     );
     let owner = "00000000-0000-4000-8000-0000000000cd";
     backend
@@ -313,7 +315,7 @@ fn an_attached_tmux_backend_does_not_read_an_unanswered_listing_as_empty() {
         return;
     }
     let server = TmuxServer::pin("thurbox-backend-contract-unanswered");
-    let backend = TmuxBackend::new();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     backend.ensure_ready().expect("attach");
     let socket = server
         .tmpdir()
@@ -359,7 +361,7 @@ fn killing_a_split_window_takes_the_whole_window() {
     let env = std::collections::HashMap::new();
     let args = ["300".to_string()];
     for attached in [false, true] {
-        let backend = TmuxBackend::new();
+        let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
         let name = format!("split-{attached}");
         let pane = backend
             .create_window(&WindowSpec {
@@ -490,7 +492,10 @@ fn a_psmux_hosts_duplicate_names_stay_unknown_even_with_a_remembered_pane() {
         session: Some("probe".into()),
         ..Default::default()
     };
-    let backend = thurbox::backend::psmux::PsmuxBackend::for_host(&host);
+    let backend = thurbox::backend::psmux::PsmuxBackend::for_host(
+        &host,
+        thurbox::session::settings::default_scrollback_lines(),
+    );
     let row = "00000000-0000-4000-8000-0000000000bb";
 
     for remembered in [&own, &namesake, &other] {
@@ -524,7 +529,7 @@ fn the_tmux_backend_refuses_an_exited_pane_and_delivers_a_deferred_prompt() {
         return;
     }
     let _server = TmuxServer::pin(SOCKET);
-    let backend = TmuxBackend::new();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     let env = HashMap::new();
     let open = |id: &'static str, name: &'static str, command: &'static str| {
         backend
@@ -586,7 +591,7 @@ fn a_keystroke_never_answers_the_next_command() {
         return;
     }
     let _server = TmuxServer::pin(SOCKET);
-    let backend = TmuxBackend::new();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     backend.ensure_ready().expect("the backend readies");
     let pane = backend
         .spawn("tb-replies", "cat", &[], None, &HashMap::new(), 24, 80)
@@ -628,7 +633,7 @@ fn a_pane_reported_gone_is_never_adopted() {
         return;
     }
     let _server = TmuxServer::pin(SOCKET);
-    let backend = TmuxBackend::new();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     backend.ensure_ready().expect("the backend readies");
     let pane = backend
         .spawn("tb-gone", "cat", &[], None, &HashMap::new(), 24, 80)

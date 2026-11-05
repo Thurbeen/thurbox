@@ -121,7 +121,9 @@ fn start(server: &TmuxServer) -> bool {
 }
 
 fn instance() -> Arc<dyn SessionBackend> {
-    let backend = Arc::new(TmuxBackend::local());
+    let backend = Arc::new(TmuxBackend::local(
+        thurbox::session::settings::default_scrollback_lines(),
+    ));
     backend
         .ensure_ready()
         .unwrap_or_else(|e| panic!("tmux control mode would not start: {e:#}"));

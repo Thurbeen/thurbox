@@ -204,7 +204,7 @@ fn a_local_spawn_finds_the_agent_the_multiplexer_cannot() {
     );
     std::env::set_var("PATH", &path);
 
-    let backend = TmuxBackend::local();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     if let Err(e) = backend.ensure_ready() {
         eprintln!("skipping: tmux control mode would not start: {e:#}");
         return;

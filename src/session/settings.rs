@@ -454,7 +454,8 @@ impl Default for FeatureFlags {
     }
 }
 
-fn default_scrollback_lines() -> usize {
+/// The scrollback a terminal keeps when `settings.toml` names none.
+pub fn default_scrollback_lines() -> usize {
     1000
 }
 fn default_hidden_terminal_secs() -> u64 {

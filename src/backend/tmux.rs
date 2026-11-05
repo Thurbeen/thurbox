@@ -26,7 +26,7 @@ pub type TmuxBackend = Server<Tmux>;
 
 /// tmux on this machine, whatever OS it is.
 pub fn local(scrollback_lines: usize) -> Arc<dyn SessionBackend> {
-    Arc::new(TmuxBackend::local().with_scrollback(scrollback_lines))
+    Arc::new(TmuxBackend::local(scrollback_lines))
 }
 
 /// tmux on `host`, reached through `launcher` on a machine of `platform`.
@@ -36,7 +36,12 @@ pub fn on_host(
     platform: Platform,
     scrollback_lines: usize,
 ) -> Arc<dyn SessionBackend> {
-    Arc::new(TmuxBackend::on_host(host, launcher, platform).with_scrollback(scrollback_lines))
+    Arc::new(TmuxBackend::on_host(
+        host,
+        launcher,
+        platform,
+        scrollback_lines,
+    ))
 }
 
 impl TmuxCompatible for Tmux {
@@ -220,7 +225,7 @@ mod tests {
 
     #[test]
     fn local_backend_is_named_by_its_local_route_with_local_transport() {
-        let backend = TmuxBackend::new();
+        let backend = TmuxBackend::local(crate::session::settings::default_scrollback_lines());
         assert_eq!(
             backend.name(),
             "local:tmux",
@@ -240,7 +245,8 @@ mod tests {
             multiplexer: Some("rmux".into()),
             ..Default::default()
         };
-        let backend = TmuxBackend::for_host(&host);
+        let backend =
+            TmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         assert_eq!(backend.name(), "ssh:devbox:tmux");
         assert_eq!(backend.transport.mux(), "tmux");
         assert_eq!(backend.host.as_ref(), Some(&host));
@@ -265,24 +271,35 @@ mod tests {
         for local in Platform::ALL {
             simulate_local(local, || {
                 assert!(
-                    !TmuxBackend::local().capabilities().needs_liveness_poll,
+                    !TmuxBackend::local(crate::session::settings::default_scrollback_lines())
+                        .capabilities()
+                        .needs_liveness_poll,
                     "local tmux on simulated {local:?}"
                 );
                 assert!(
-                    !TmuxBackend::for_host(&windows_host("tmux"))
-                        .capabilities()
-                        .needs_liveness_poll
+                    !TmuxBackend::for_host(
+                        &windows_host("tmux"),
+                        crate::session::settings::default_scrollback_lines()
+                    )
+                    .capabilities()
+                    .needs_liveness_poll
                 );
                 assert!(
-                    !TmuxBackend::for_host(&windows_host("psmux"))
-                        .capabilities()
-                        .needs_liveness_poll,
+                    !TmuxBackend::for_host(
+                        &windows_host("psmux"),
+                        crate::session::settings::default_scrollback_lines()
+                    )
+                    .capabilities()
+                    .needs_liveness_poll,
                     "tmux on a host that prefers psmux is still tmux"
                 );
                 assert!(
-                    !TmuxBackend::for_host(&HostDef::wsl("Ubuntu"))
-                        .capabilities()
-                        .needs_liveness_poll
+                    !TmuxBackend::for_host(
+                        &HostDef::wsl("Ubuntu"),
+                        crate::session::settings::default_scrollback_lines()
+                    )
+                    .capabilities()
+                    .needs_liveness_poll
                 );
             });
         }
@@ -299,11 +316,20 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            TmuxBackend::for_host(&devbox).transport.socket_dir(),
+            TmuxBackend::for_host(
+                &devbox,
+                crate::session::settings::default_scrollback_lines()
+            )
+            .transport
+            .socket_dir(),
             SocketDir::HostData { .. }
         ));
         assert_eq!(
-            TmuxBackend::for_host(&windows_host("tmux")).socket_dir(),
+            TmuxBackend::for_host(
+                &windows_host("tmux"),
+                crate::session::settings::default_scrollback_lines()
+            )
+            .socket_dir(),
             SocketDir::Inherited
         );
     }
@@ -350,15 +376,22 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        assert!(TmuxBackend::for_host(&winbox).stamps_are_per_window());
-        assert!(TmuxBackend::local().stamps_are_per_window());
+        assert!(TmuxBackend::for_host(
+            &winbox,
+            crate::session::settings::default_scrollback_lines()
+        )
+        .stamps_are_per_window());
+        assert!(
+            TmuxBackend::local(crate::session::settings::default_scrollback_lines())
+                .stamps_are_per_window()
+        );
     }
 
     /// Inside a pane tmux resolves its own server and pane, so the command a
     /// hook runs names neither, and splices into a JSON string as it stands.
     #[test]
     fn the_hook_command_needs_no_socket_or_pane() {
-        let command = TmuxBackend::local()
+        let command = TmuxBackend::local(crate::session::settings::default_scrollback_lines())
             .hook_signal_command()
             .expect("tmux has a status channel");
         assert_eq!(command, "tmux set-option -p @thurbox_state ");

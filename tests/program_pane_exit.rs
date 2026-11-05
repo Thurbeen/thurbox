@@ -91,7 +91,9 @@ async fn a_program_that_ends_reports_that_it_ended() {
         return;
     }
 
-    let backend = std::sync::Arc::new(TmuxBackend::local());
+    let backend = std::sync::Arc::new(TmuxBackend::local(
+        thurbox::session::settings::default_scrollback_lines(),
+    ));
     if let Err(e) = backend.ensure_ready() {
         panic!("tmux control mode would not start: {e:#}");
     }

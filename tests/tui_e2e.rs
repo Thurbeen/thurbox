@@ -11902,14 +11902,14 @@ fn the_editor_opens_under_a_held_write_lock() {
     let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
     // The interface may be writing too, recording the pane it just attached.
     db.busy_timeout(WAIT).expect("busy timeout");
-    // An entry past the retention window, as a long-running interface
+    // A read message past the retention window, as a long-running interface
     // accumulates: what makes opening a connection prune, which is a write.
     db.execute(
-        "INSERT INTO audit_log (timestamp, entity_type, entity_id, action) \
-         VALUES (1, 'session', 'aged', 'created')",
+        "INSERT INTO session_messages (to_session_id, body, created_at, read_at) \
+         VALUES ('aged', 'aged', 1, 1)",
         [],
     )
-    .expect("an aged audit entry");
+    .expect("an aged read message");
     db.execute_batch("BEGIN IMMEDIATE")
         .expect("take the write lock");
     tui.send(b"\x1b[18~");
