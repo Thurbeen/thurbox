@@ -1567,7 +1567,8 @@ reads the result as `activity` (see
 [Activity](ORCHESTRATION.md#activity)); the work and the proof live in the row's
 `background_work` column (schema v57), which needs no migration of its own.
 The state is persisted on the `sessions` row (`hook_state`, `hook_state_at`,
-`seen_at` — schema v34) and survives the TUI being closed; a hook fired headlessly is picked up via `PRAGMA data_version`.
+`seen_at` — schema v34) and survives the TUI being closed; a hook fired
+headlessly is picked up via `PRAGMA data_version`.
 Identity comes from the injected `THURBOX_SESSION` env var, so a hook passes
 no id. A finished turn shows `Done` (blue) — for the session you're watching too
 — and becomes `Idle` once you switch focus off it.
