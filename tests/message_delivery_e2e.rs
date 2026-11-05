@@ -881,6 +881,13 @@ fn a_send_to_a_session_on_a_sharing_host_is_delivered_there() {
     assert_eq!(host_rows.len(), 1);
     assert_eq!(host_rows[0].delivered_via.as_deref(), Some("codex-queue"));
     assert_eq!(host_rows[0].body, "--across the wire");
+    // Over stdin, not the command line: a Windows host's shell takes 8191
+    // characters, and `ps` on either machine shows a command line to everyone.
+    let link = std::fs::read_to_string(path("ssh.log")).unwrap_or_default();
+    assert!(
+        !link.contains("across the wire"),
+        "the body crossed as an argument:\n{link}"
+    );
     assert!(caller_db
         .list_messages(on_host.id, false, None)
         .unwrap()

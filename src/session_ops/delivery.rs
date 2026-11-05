@@ -781,7 +781,6 @@ fn on_host(
     let id = recipient.id.to_string();
     // `--flag=value` keeps a value that starts with a dash a value.
     let kind = format!("--kind={}", new.kind);
-    let body = format!("--body={}", new.body);
     let mut args = vec!["message", "send", "--to", &id, &kind];
     if no_wake {
         args.push("--no-wake");
@@ -791,8 +790,20 @@ fn on_host(
     if let (Some(wait), true) = (&wait, cli.message_native_send) {
         args.extend(["--wait-bound", wait]);
     }
-    args.push(&body);
-    let answer = super::host_cli::run(host, cli, &args).map_err(|e| e.to_string())?;
+    // The body goes over stdin to a host that reads it there: a Windows
+    // host's shell takes 8191 characters, and `ps` shows a command line to
+    // every user of both machines. The task tag stays behind: task ids are
+    // this database's, and would name an unrelated task on the host.
+    let body = format!("--body={}", new.body);
+    let stdin = if cli.message_native_send {
+        args.push("--body-stdin");
+        Some(new.body.as_bytes())
+    } else {
+        args.push(&body);
+        None
+    };
+    let answer = super::host_cli::run_classified_with_stdin(host, cli, &args, stdin)
+        .map_err(|e| e.to_string())?;
     let via = answer["delivered_via"]
         .as_str()
         .map_or(DeliveredVia::Mailbox, DeliveredVia::parse);

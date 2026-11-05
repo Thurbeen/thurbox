@@ -50,8 +50,13 @@ pub enum Action {
         #[arg(long)]
         kind: String,
         /// Message body.
-        #[arg(long)]
-        body: String,
+        #[arg(long, required_unless_present = "body_stdin")]
+        body: Option<String>,
+        /// Read the body from stdin instead: what a peer thurbox uses, so the
+        /// body is on no command line (a Windows shell takes 8191 characters,
+        /// and `ps` shows one to every user).
+        #[arg(long, conflicts_with = "body")]
+        body_stdin: bool,
         /// Originating task id. Defaults to the caller's `THURBOX_TASK` when run
         /// inside a task-spawned session; pass explicitly to override.
         #[arg(long)]
@@ -134,11 +139,29 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
             to,
             kind,
             body,
+            body_stdin,
             task,
             from,
             no_wake,
             native,
-        } => send_message(db, to, kind, body, task, from, no_wake, native),
+        } => {
+            let body = match body {
+                Some(body) => body,
+                None if body_stdin => {
+                    let mut body = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut body)
+                        .map_err(|e| format!("read the body from stdin: {e}"))?;
+                    body
+                }
+                None => {
+                    return Err(crate::session_ops::OpError::Usage(
+                        "--body or --body-stdin is required".into(),
+                    )
+                    .into())
+                }
+            };
+            send_message(db, to, kind, body, task, from, no_wake, native)
+        }
         Action::Reply {
             message_id,
             body,
@@ -475,7 +498,8 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "questions".into(),
-                body: "q1?".into(),
+                body: Some("q1?".into()),
+                body_stdin: false,
                 task: Some(5),
                 from: None,
                 no_wake: true,
@@ -535,7 +559,8 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "result".into(),
-                body: "done".into(),
+                body: Some("done".into()),
+                body_stdin: false,
                 task: None,
                 from: Some("worker".into()),
                 no_wake: true,
@@ -571,7 +596,8 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "questions".into(),
-                body: "Q1?".into(),
+                body: Some("Q1?".into()),
+                body_stdin: false,
                 task: Some(7),
                 from: Some("worker".into()),
                 no_wake: true,
@@ -625,7 +651,8 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "note".into(),
-                body: "anon".into(),
+                body: Some("anon".into()),
+                body_stdin: false,
                 task: None,
                 from: None,
                 no_wake: true,
@@ -694,7 +721,8 @@ mod tests {
                 Action::Send {
                     to: "flow".into(),
                     kind: "note".into(),
-                    body: body.into(),
+                    body: Some(body.into()),
+                    body_stdin: false,
                     task: None,
                     from: None,
                     no_wake: true,
@@ -752,7 +780,8 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "note".into(),
-                body: String::new(),
+                body: Some(String::new()),
+                body_stdin: false,
                 task: None,
                 from: None,
                 no_wake: true,
@@ -771,7 +800,8 @@ mod tests {
             Action::Send {
                 to: "ghost".into(),
                 kind: "note".into(),
-                body: "hi".into(),
+                body: Some("hi".into()),
+                body_stdin: false,
                 task: None,
                 from: None,
                 no_wake: true,

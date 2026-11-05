@@ -753,7 +753,7 @@ fn parse_message_send_requires_to_kind_body() {
     };
     assert_eq!(to, "flow");
     assert_eq!(kind, "questions");
-    assert_eq!(body, "q1?");
+    assert_eq!(body.as_deref(), Some("q1?"));
     assert_eq!(task, Some(5));
     assert!(no_wake);
 }

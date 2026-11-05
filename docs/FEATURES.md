@@ -3181,7 +3181,8 @@ surface. `AGENTS.md` keeps the identity contract and points here.
   mirroring audit-log pruning. The mailbox is **not** audited (high-churn).
 - **CLI** (`thurbox-cli message`, alias `msg`) — identity-aware:
   - `send --to <uuid|name> --kind <k> [--task <id>] [--from <uuid|name>] --body
-    <text> [--no-wake]` enqueues and, unless `--no-wake`, delivers the body to
+    <text> [--no-wake] [--require-native] [--wait-bound <s>]` (or
+    `--body-stdin`, what a peer thurbox uses) enqueues and, unless `--no-wake`, delivers the body to
     the recipient agent's own inbox (`session_ops::delivery`). The output's
     `delivered_via` is `claude-socket`, `codex-queue` or `mailbox`, with
     `delivery_note` saying why a message stayed in the mailbox, and
