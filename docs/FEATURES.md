@@ -3194,7 +3194,8 @@ surface. `AGENTS.md` keeps the identity contract and points here.
     whose mailbox its agent reads; the answer carries `host`.
     **Provenance + task tag default to the caller's injected identity**
     (`THURBOX_SESSION`/`THURBOX_TASK`) so an agent passes **no ids**; `--from`/
-    `--task` override.
+    `--task` override. A send a sharing host's CLI does carries neither: the
+    host's row names no sender and no task, as task ids are per database.
   - `reply <message_id> --body <text> [--kind k] [--from …] [--no-wake]` —
     enqueues back to the *original message's sender* (looked up via
     `get_message`) and delivers it the same way, carrying the original
