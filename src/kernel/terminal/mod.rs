@@ -2161,10 +2161,6 @@ fn discovery_interval(backend: &str) -> std::time::Duration {
     }
 }
 
-/// One backend's window inventory, on the discovery worker.
-///
-/// Split out of [`Terminals::refresh_discovery`] so the throttle and the spawn
-/// stay readable beside the two fallible host calls this makes.
 /// One survey, as its worker runs it: [`discover_windows`], then — when it
 /// reached the host — clearing that host's "not answering" verdict. A host
 /// that answered is not down, and `session list` reads that verdict; done
@@ -2181,6 +2177,10 @@ fn survey(
     done
 }
 
+/// One backend's window inventory, on the discovery worker.
+///
+/// Split out of [`Terminals::refresh_discovery`] so the throttle and the spawn
+/// stay readable beside the two fallible host calls this makes.
 fn discover_windows(
     backend: &std::sync::Arc<dyn crate::backend::SessionBackend>,
     name: String,
