@@ -88,7 +88,8 @@ socket's privately staged files and the self-update's staged binary.
 The config files beside `config.toml` — `agents.toml`, `settings.toml`,
 `themes.toml`, `hooks.toml`, `hosts.toml` and the extension manifests — are
 read and written by one loader, `config::file`. It seeds an absent file with
-its documented defaults, parses it reporting every unknown key as a warning,
+its documented defaults (a manifest is never seeded: absent means the
+extension is not installed), parses it reporting every unknown key as a warning,
 writes through `paths::write_atomically`, and on any failure (no path, a seed
 it could not write, an unreadable or malformed file) keeps thurbox starting:
 the file's fallback is used and a warning names the file and what it fell
