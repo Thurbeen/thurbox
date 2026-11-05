@@ -126,14 +126,30 @@ pub fn record_exited(
             .unwrap_or(false)
 }
 
-/// The pane's death, if it is dead: its exit status and last lines.
+/// The pane's death, if it is dead and its program reaped: its exit status
+/// and last lines.
+///
+/// A failure is recorded once, so it is read only once the multiplexer knows
+/// how the program ended — before that it would say the status is unknown for
+/// good. tmux before 3.7 reads a pane dead before then and can stay there
+/// until asked to reap ([`crate::backend::SessionBackend::reap_exited`]); a
+/// pane still unreaped after that has a program that closed its terminal and
+/// runs on, and is looked at again on the next sweep. Where the multiplexer
+/// cannot tell (tmux 3.2) it is read as it stands.
 fn observe(
     backends: &crate::backend::BackendRegistry,
     row: &crate::sync::SharedSession,
 ) -> Option<LaunchFailure> {
     let (backend, pane) = super::windows::agent_pane(backends, row).ok()??;
-    let state = backend.pane_state(&pane).ok()?;
+    let mut state = backend.pane_state(&pane).ok()?;
     if state.dead != Some(true) {
+        return None;
+    }
+    if state.reaped != Some(true) {
+        backend.reap_exited();
+        state = backend.pane_state(&pane).ok()?;
+    }
+    if state.dead != Some(true) || state.reaped == Some(false) {
         return None;
     }
     let output = backend

@@ -497,6 +497,17 @@ pub struct PaneState {
     /// multiplexer reports one (`#{pane_dead_status}`). `None` while the pane
     /// lives, for a program a signal killed, and where the format is unknown.
     pub exit_status: Option<i64>,
+    /// Whether the multiplexer has reaped a [`dead`](Self::dead) pane's
+    /// program, and so knows how it ended: `Some(true)` once it reports an
+    /// exit status or the signal that killed it, `Some(false)` while it reports
+    /// neither, `None` while the pane lives and where it cannot tell (tmux
+    /// 3.2 names no signal, so a program a signal killed reads like one not
+    /// reaped yet).
+    ///
+    /// tmux before 3.7 reads a pane dead once its terminal closes, which is
+    /// before the program is reaped, and can then leave it unreaped until
+    /// another of its children exits — see [`SessionBackend::reap_exited`].
+    pub reaped: Option<bool>,
 }
 
 /// Metadata returned when discovering existing sessions from the backend.
@@ -841,6 +852,16 @@ pub trait SessionBackend: Send + Sync {
     /// could not ask; an answer it could not read is a default field, not an
     /// error.
     fn pane_state(&self, pane: &str) -> BackendResult<PaneState>;
+
+    /// Have the backend collect the exit of every pane program that has ended,
+    /// so a [`PaneState::reaped`] read after it is current. Best effort.
+    ///
+    /// tmux before 3.7 can leave an exited pane's program unreaped — dead, no
+    /// status — until another of its children exits (measured on 3.2a and
+    /// 3.4: some of several panes exiting together stayed so for as long as
+    /// the server ran on). A child of the server's own that exits is that
+    /// other child. No-op where a backend reaps on its own.
+    fn reap_exited(&self) {}
 
     /// The `PATH` thurbox handed the pane's program when it opened the window,
     /// read back from the backend's own record of it. `Ok(None)`: the pane is

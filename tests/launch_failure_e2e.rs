@@ -57,6 +57,15 @@ hook_schema = "claude"
 command = "sh"
 args = ["-c", "sleep 1; echo \"error: role 'debugger' not found\"; exit 1"]
 
+# Closes its terminal and lives on: tmux before 3.7 reads the pane dead
+# from then on, while the program it has not reaped still runs. tmux hangs
+# up on the terminal it closes, hence the trap.
+[[agents]]
+name = "closes-its-terminal"
+hook_schema = "claude"
+command = "sh"
+args = ["-c", "trap '' HUP; sleep 1; exec </dev/null >/dev/null 2>&1; sleep 2; exit 4"]
+
 # The same exit from an agent wired to report nothing: its silence never
 # meant anything, so its exit is not a failed launch.
 [[agents]]
@@ -135,6 +144,28 @@ fn an_agent_exiting_before_it_reports_reads_failed() {
             .count(),
         1
     );
+}
+
+/// A failure carries the status its program exited with, not the moment
+/// before it is known. tmux before 3.7 reads a pane dead as soon as its
+/// terminal closes, which is before it has reaped the program and learnt the
+/// status; a program that closes its terminal and lives on holds that moment
+/// open for as long as it runs, where an ordinary exit makes it a race (the
+/// tests above failed on it on CI). tmux 3.2 cannot tell that moment from a
+/// program a signal killed, so there the failure is read as it stands.
+#[test]
+fn a_failed_launch_waits_for_its_exit_status() {
+    let Some(env) = Env::new() else { return };
+    let version = Command::new("tmux").arg("-V").output().expect("tmux -V");
+    if String::from_utf8_lossy(&version.stdout).starts_with("tmux 3.2") {
+        eprintln!("skipping: tmux 3.2 names no signal, so cannot say a program still runs");
+        return;
+    }
+    let id = env.spawn("closes-its-terminal");
+
+    let session = env.until_state(&id, "failed");
+    assert_eq!(session["launch_failure"]["exit_code"], 4, "{session:#}");
+    assert_eq!(env.launch_failed_event(&id).exit_code, Some(4));
 }
 
 /// psmux closes a window once its program exits, so a failed launch is
