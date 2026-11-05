@@ -3754,9 +3754,6 @@ fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String 
     }
 }
 
-/// `session register`: a row for an agent window that is already running on
-/// this machine's server. The window must exist — this records, it never
-/// launches — and neither the id nor the name may already be a session here.
 #[cfg(test)]
 mod tests {
     use super::*;
