@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thurbox::backend::{PaneIo, PaneStream, WindowLifecycle};
 
 use clap::Parser;
 use serde_json::Value;
@@ -1241,7 +1242,7 @@ fn a_send_does_the_same_through_the_kernel_and_the_cli() {
 
         // Someone's half-typed line is not typed onto: the text goes to the
         // session's mailbox, and the send says so.
-        SessionBackend::send_text(&**probe, &pane, "half a dra", false).expect("draft");
+        PaneIo::send_text(&**probe, &pane, "half a dra", false).expect("draft");
         let busy = send(&uuid, "from elsewhere").expect_err("a busy composer");
         assert!(
             busy.contains("has text in its composer") && busy.contains("only in its mailbox"),
@@ -1299,7 +1300,7 @@ fn every_prompt_delivery_leaves_a_half_typed_line_alone() {
         let name = format!("drafting-{}", via.replace(' ', "-"));
         let pane = probe.open(&format!("tb-{name}"), &uuid, WindowRole::Agent);
         seed_row(&db, id, &name, "local:rmux", &pane, &repo);
-        SessionBackend::send_text(&**probe, &pane, "half a dra", false).expect("draft");
+        PaneIo::send_text(&**probe, &pane, "half a dra", false).expect("draft");
 
         let (prompt, from_task, failure) = if via == "send automation" {
             let prompt = format!("prompt via {via}");
@@ -2148,7 +2149,7 @@ fn a_prompt_thurbox_hands_to_a_claude_inbox_names_thurbox_as_its_sender() {
         &pane,
         &instance.repo(),
     );
-    SessionBackend::send_text(&*reg.probe, &pane, "half a dra", false).expect("draft");
+    PaneIo::send_text(&*reg.probe, &pane, "half a dra", false).expect("draft");
 
     // What a running Claude Code leaves behind for the row: a process carrying
     // its identity and pane, an inbox socket, and a registry entry naming both.

@@ -411,7 +411,7 @@ session), never on the loop, ADR-P12).
   `\` honoured as a separator **only** for such a root (it is a legal POSIX
   filename char) since the injected arg mixes them (`C:\…\hooks/claude.json`).
   On a route whose backend reports no status channel
-  (`SessionBackend::hook_signal_command` is `None` — psmux today) or a failed
+  (`Capabilities::hook_signal_command` is `None` — psmux today) or a failed
   home lookup/copy the **flag+path pair is stripped** so the agent launches
   clean — surfaced as a `Hooks: degraded` row in the info panel
   (`SessionInfo.hook_wiring`). Literal signal commands carried directly in

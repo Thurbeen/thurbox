@@ -282,7 +282,8 @@ pub fn status(backend: &dyn SessionBackend) {
     let quiet = open(OWNER_D);
 
     let command = backend
-        .hook_signal_command()
+        .capabilities()
+        .hook_signal_command
         .expect("a backend with a status channel names its hook command");
     assert!(
         !command.contains(['"', '\\']) && command.ends_with(' '),

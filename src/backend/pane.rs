@@ -751,7 +751,7 @@ impl WiredPane {
     /// whether there was a grid to drop.
     ///
     /// Only for a pane whose backend can give the grid back exactly
-    /// ([`SessionBackend::supports_snapshots`]): [`Self::restore`] asks for it,
+    /// ([`Capabilities::supports_snapshots`](crate::backend::Capabilities::supports_snapshots)): [`Self::restore`] asks for it,
     /// and the reader loop rebuilds it where the answer lands in the stream.
     pub fn evict(&self) -> bool {
         let Ok(mut parser) = self.parser.lock() else {
@@ -1004,7 +1004,7 @@ impl Session {
     }
 
     /// Reconnect to an existing backend session. `seed` is the optional
-    /// pre-captured pane state (see [`SessionBackend::capture_history`]);
+    /// pre-captured pane state (see [`PaneStream::capture_history`](crate::backend::PaneStream::capture_history));
     /// `None` = the backend captures it during the adopt.
     #[allow(clippy::too_many_arguments)]
     pub fn adopt(
@@ -1044,7 +1044,7 @@ impl Session {
     /// [`WiredPane::evict`] leaves, and the grid is fetched on the first
     /// [`WiredPane::restore`] — which, for a session that is never shown, is
     /// never. Only for a backend that
-    /// [`supports_snapshots`](SessionBackend::supports_snapshots).
+    /// [`supports_snapshots`](crate::backend::Capabilities::supports_snapshots).
     #[allow(clippy::too_many_arguments)]
     pub fn adopt_dormant(
         name: String,
@@ -1090,7 +1090,7 @@ impl Session {
     /// Whether this session's backend can give a dropped grid back
     /// ([`WiredPane::evict`]).
     pub fn supports_snapshots(&self) -> bool {
-        !self.placeholder && self.backend.supports_snapshots()
+        !self.placeholder && self.backend.capabilities().supports_snapshots
     }
 
     /// The agent's pane, or its companion shell's.
@@ -1105,7 +1105,7 @@ impl Session {
     /// [`WiredPane::evict`] one of this session's panes.
     ///
     /// A pane with no grid streams no output where its backend can hold it
-    /// back ([`SessionBackend::hide_output`]).
+    /// back ([`PaneStream::hide_output`](crate::backend::PaneStream::hide_output)).
     pub fn evict_pane(&self, shell: bool) -> bool {
         let Some(pane) = self.wired_pane(shell) else {
             return false;
@@ -1309,7 +1309,7 @@ impl Session {
     ///
     /// `seed_len` is the number of bytes at the front of `reader` that are
     /// replayed history (an adopt's scrollback seed, chained ahead of the
-    /// live stream — see `SessionBackend::adopt` on the tmux-protocol server) rather
+    /// live stream — see `PaneStream::adopt` on the tmux-protocol server) rather
     /// than genuine pane activity. Those bytes still reach the parser, but
     /// must not stamp `last_output_at`: a restart/reattach replaying hours of
     /// scrollback would otherwise look identical to the agent having just
@@ -1689,7 +1689,7 @@ impl Session {
     /// session's *launch* cwd (the multi-repo symlink workspace when there is
     /// one, so the shell lands where the agent does), falling back to the
     /// primary repo (`info.cwd`) when `None`. The command is the backend's
-    /// [`SessionBackend::default_shell`]. The window name uses the `tbs-` prefix
+    /// [`WindowLifecycle::default_shell`](crate::backend::WindowLifecycle::default_shell). The window name uses the `tbs-` prefix
     /// to distinguish from the agent's `tb-` windows.
     ///
     /// A shell whose stream has ended is replaced rather than kept: nothing
@@ -1745,7 +1745,7 @@ impl Session {
             let mut io = SessionIo::spawned(spawned);
             // The shell can print before the backend connects its output reader.
             // Its first view needs the complete screen, including that prefix.
-            io.resident = !backend.supports_snapshots();
+            io.resident = !backend.capabilities().supports_snapshots;
             let (wired, _) = Self::wire_up(rows, cols, io, &backend, "Shell");
             stamp(&backend, &wired.backend_id, id, WindowRole::Shell);
             Ok(ShellPane { wired })

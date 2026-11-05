@@ -3,7 +3,7 @@
 //! back to thurbox (see the hooks-driven `SessionState`). For **remote**
 //! sessions the same hook file is shipped with its commands rewritten to the
 //! command the row's backend reports state through
-//! (`SessionBackend::hook_signal_command`, via `rewrite_hook_signals`) — the
+//! (`Capabilities::hook_signal_command`, via `rewrite_hook_signals`) — the
 //! local interface reads those back through that backend.
 //!
 //! Unlike user extensions (which are fetched from a source on demand, ADR-20),
@@ -44,7 +44,7 @@ pub const SIGNAL_MARKER: &str = "thurbox-cli session signal --state ";
 /// Rewrite thurbox-managed hook commands for a pane on another machine:
 /// `thurbox-cli session signal --state <s>` → `<command><s>`, where `command`
 /// is what the row's backend says a hook in its panes runs
-/// ([`crate::backend::SessionBackend::hook_signal_command`]).
+/// ([`crate::backend::Capabilities::hook_signal_command`]).
 ///
 /// `thurbox-cli` can't signal from a remote host (it isn't installed there,
 /// and it would write the host's own DB — never the one the local interface

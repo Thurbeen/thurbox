@@ -576,7 +576,7 @@ fn hook_status_updates(
 
 /// Headless counterpart of the interface's live status channels: ask the
 /// backend serving each route that has **live sessions in the DB** for its
-/// panes' hook states ([`crate::backend::SessionBackend::hook_states`]), and
+/// panes' hook states ([`crate::backend::StatusChannel::hook_states`]), and
 /// write the changed ones into the same hook columns `session signal` uses.
 /// Returns the number of states written.
 ///

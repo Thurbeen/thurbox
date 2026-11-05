@@ -50,7 +50,7 @@ fn have_tmux() -> bool {
 /// Type `text` into the session's own window, located the way every pane verb
 /// locates it: by the row, through the backend.
 fn send_to(session_id: &str, name: &str, text: &str) -> anyhow::Result<()> {
-    use thurbox::backend::SessionBackend;
+    use thurbox::backend::{PaneIo, WindowLifecycle};
     let backend = thurbox::backend::tmux::TmuxBackend::new();
     let pane = backend
         .locate(thurbox::backend::Owner::new(session_id, name))?
@@ -62,7 +62,7 @@ fn send_to(session_id: &str, name: &str, text: &str) -> anyhow::Result<()> {
 
 /// A window running a program that outlives the test's own commands.
 fn spawn(session_id: &str, name: &str) -> String {
-    thurbox::backend::SessionBackend::create_window(
+    thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::new(),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(session_id, name),
@@ -119,14 +119,14 @@ fn plant_stamp(server: &TmuxServer, pane: &str) {
 /// Every thurbox window on the private server, indexed.
 fn local_index() -> thurbox::backend::identity::WindowIndex {
     thurbox::backend::identity::WindowIndex::from_listing(
-        thurbox::backend::SessionBackend::discover(&thurbox::backend::tmux::TmuxBackend::new())
+        thurbox::backend::WindowLifecycle::discover(&thurbox::backend::tmux::TmuxBackend::new())
             .expect("list windows"),
     )
 }
 
 /// Kill the session's agent window, found as every teardown finds it.
 fn kill_agent(session: &str, name: &str) -> anyhow::Result<()> {
-    use thurbox::backend::SessionBackend;
+    use thurbox::backend::WindowLifecycle;
     let backend = thurbox::backend::tmux::TmuxBackend::new();
     if let Located::At(pane) = backend
         .locate(thurbox::backend::Owner::new(session, name))?
@@ -341,7 +341,7 @@ fn the_listing_itself_still_refuses_a_pair() {
 #[test]
 #[cfg(unix)]
 fn observed_unowned_creation_preserves_unrelated_unowned_windows() {
-    use thurbox::backend::SessionBackend;
+    use thurbox::backend::WindowLifecycle;
     if !have_tmux() {
         return;
     }
@@ -374,7 +374,7 @@ fn observed_unowned_creation_preserves_unrelated_unowned_windows() {
 #[cfg(unix)]
 fn remote_startup_observation_rejects_a_foreign_owner() {
     use std::os::unix::fs::PermissionsExt;
-    use thurbox::backend::SessionBackend;
+    use thurbox::backend::WindowLifecycle;
     if !have_tmux() {
         return;
     }

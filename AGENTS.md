@@ -260,7 +260,7 @@ agent::*             every file a node: session, paths, shell and the other
                      agent::* files each declares (NEVER git, NEVER backend)
 agent::host_config   session, paths, shell, agent::agent_config
 backend              backend::{contract,pane,registry} (re-exports only)
-backend::contract    nothing — the trait and the values crossing it
+backend::contract    nothing — the role traits and the values crossing them
 backend::identity    backend::contract
 backend::instance    session, paths                    (ADR-12 socket naming)
 backend::pane        session, backend::{contract,identity,osc8,output_wake}

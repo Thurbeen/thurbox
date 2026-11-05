@@ -21,9 +21,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use thurbox::backend::PaneIo;
 
 use clap::Parser;
-use thurbox::backend::{SessionBackend, WindowRole};
+use thurbox::backend::WindowRole;
 use thurbox::session::{Multiplexer, Route, SessionId, Via};
 use thurbox::storage::Database;
 use thurbox::sync::SharedSession;

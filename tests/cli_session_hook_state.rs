@@ -983,7 +983,7 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
     stamp(&format!("{SESSION}:tb-{name}"), &row.id.to_string());
     let local = thurbox::backend::tmux::TmuxBackend::new();
     let placed = |id: &str| {
-        thurbox::backend::SessionBackend::locate(&local, thurbox::backend::Owner::new(id, &name))
+        thurbox::backend::WindowLifecycle::locate(&local, thurbox::backend::Owner::new(id, &name))
             .expect("locate")
             .agent
             .pane()

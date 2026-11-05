@@ -1114,6 +1114,7 @@ impl PsmuxPaste {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{PaneIo, StatusChannel, WindowLifecycle};
 
     #[cfg(unix)]
     fn cold_start_backend(root: &tempfile::TempDir, scenario: &str) -> PsmuxBackend {
@@ -1691,9 +1692,13 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        assert!(PsmuxBackend::for_host(&host).needs_liveness_poll());
         assert!(
-            PsmuxBackend::local().needs_liveness_poll(),
+            PsmuxBackend::for_host(&host)
+                .capabilities()
+                .needs_liveness_poll
+        );
+        assert!(
+            PsmuxBackend::local().capabilities().needs_liveness_poll,
             "on this machine too, whatever OS it is"
         );
     }
@@ -2480,7 +2485,11 @@ mod tests {
         };
         for backend in [PsmuxBackend::local(), PsmuxBackend::for_host(&host)] {
             assert!(!backend.stamps_are_per_window(), "{}", backend.name());
-            assert!(!backend.supports_snapshots(), "{}", backend.name());
+            assert!(
+                !backend.capabilities().supports_snapshots,
+                "{}",
+                backend.name()
+            );
         }
     }
 
@@ -2838,7 +2847,7 @@ mod tests {
             ..Default::default()
         };
         for backend in [PsmuxBackend::local(), PsmuxBackend::for_host(&host)] {
-            assert_eq!(backend.hook_signal_command(), None);
+            assert_eq!(backend.capabilities().hook_signal_command, None);
             assert!(backend.record_hook_state("%1", "working").is_err());
             assert!(backend.hook_states().is_err());
         }

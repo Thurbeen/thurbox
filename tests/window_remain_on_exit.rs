@@ -99,7 +99,7 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     // applies its options on the way, exactly as a restart does. A long-lived
     // program: one that exits before tmux finishes setting the window up turns a
     // real failure into a skip.
-    let spawned = thurbox::backend::SessionBackend::create_window(
+    let spawned = thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::new(),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(
@@ -246,7 +246,7 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    let spawned = thurbox::backend::SessionBackend::create_window(
+    let spawned = thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::new(),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(
@@ -307,7 +307,7 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
 
     // The older namesake, from the other session that shares the name. Spawned
     // through the same path, so it is a real one rather than a hand-made window.
-    let first = thurbox::backend::SessionBackend::create_window(
+    let first = thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::new(),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(
@@ -325,7 +325,7 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
         panic!("the first window could not be spawned: {first:?}");
     }
 
-    let second = thurbox::backend::SessionBackend::create_window(
+    let second = thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::new(),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(
@@ -395,7 +395,7 @@ async fn a_window_is_born_sized_by_hand_and_the_server_is_not() {
     let _server = TmuxServer::pin(SOCKET);
     thurbox::paths::set_test_dir(dir.path());
 
-    let spawned = thurbox::backend::SessionBackend::create_window(
+    let spawned = thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::new(),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(

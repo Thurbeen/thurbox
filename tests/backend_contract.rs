@@ -7,7 +7,8 @@ use thurbox::backend::identity::WindowIndex;
 use thurbox::backend::rmux::Rmux;
 use thurbox::backend::tmux::TmuxBackend;
 use thurbox::backend::tmux_compat::server::TmuxCompatible;
-use thurbox::backend::{BackendLiveness, SessionBackend, WindowRole};
+use thurbox::backend::{BackendLiveness, WindowRole};
+use thurbox::backend::{PaneIo, PaneStream, WindowLifecycle};
 use thurbox::session::{Multiplexer, Route};
 
 #[path = "support/tmux_server.rs"]

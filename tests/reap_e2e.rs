@@ -808,7 +808,7 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
         .expect("clear the pane id");
 
     let backend = thurbox::backend::tmux::TmuxBackend::new();
-    let outcome = thurbox::backend::SessionBackend::discover(&backend).map(|listing| {
+    let outcome = thurbox::backend::WindowLifecycle::discover(&backend).map(|listing| {
         thurbox::backend::identity::WindowIndex::from_listing(listing)
             .live_agent_window(&session.session_id.to_string(), "stamped")
             .pane()
@@ -1024,7 +1024,7 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
 
     let id = thurbox::session::SessionId::default();
     let backend = thurbox::backend::tmux::TmuxBackend::new();
-    let _ = thurbox::backend::SessionBackend::locate(
+    let _ = thurbox::backend::WindowLifecycle::locate(
         &backend,
         thurbox::backend::Owner::new(&id.to_string(), "ghost"),
     );

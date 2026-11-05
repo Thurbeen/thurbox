@@ -263,15 +263,25 @@ mod tests {
         for local in Platform::ALL {
             simulate_local(local, || {
                 assert!(
-                    !TmuxBackend::local().needs_liveness_poll(),
+                    !TmuxBackend::local().capabilities().needs_liveness_poll,
                     "local tmux on simulated {local:?}"
                 );
-                assert!(!TmuxBackend::for_host(&windows_host("tmux")).needs_liveness_poll());
                 assert!(
-                    !TmuxBackend::for_host(&windows_host("psmux")).needs_liveness_poll(),
+                    !TmuxBackend::for_host(&windows_host("tmux"))
+                        .capabilities()
+                        .needs_liveness_poll
+                );
+                assert!(
+                    !TmuxBackend::for_host(&windows_host("psmux"))
+                        .capabilities()
+                        .needs_liveness_poll,
                     "tmux on a host that prefers psmux is still tmux"
                 );
-                assert!(!TmuxBackend::for_host(&HostDef::wsl("Ubuntu")).needs_liveness_poll());
+                assert!(
+                    !TmuxBackend::for_host(&HostDef::wsl("Ubuntu"))
+                        .capabilities()
+                        .needs_liveness_poll
+                );
             });
         }
     }
@@ -347,7 +357,8 @@ mod tests {
     #[test]
     fn the_hook_command_needs_no_socket_or_pane() {
         let command = TmuxBackend::local()
-            .hook_signal_command()
+            .capabilities()
+            .hook_signal_command
             .expect("tmux has a status channel");
         assert_eq!(command, "tmux set-option -p @thurbox_state ");
     }

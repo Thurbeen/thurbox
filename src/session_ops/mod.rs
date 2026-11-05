@@ -757,7 +757,7 @@ pub fn agent_launch_plan(
     let signal = match (session, &host) {
         (Some(s), Some(_)) => windows::backend_for(backends, &s.backend_type)
             .ok()
-            .and_then(|backend| backend.hook_signal_command()),
+            .and_then(|backend| backend.capabilities().hook_signal_command),
         _ => None,
     };
     if session.is_none() {

@@ -29,6 +29,7 @@
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thurbox::backend::WindowLifecycle;
 
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;

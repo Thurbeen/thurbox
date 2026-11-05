@@ -462,7 +462,7 @@ fn spawn(
     let hooks_enabled = super::hooks_enabled(db);
     let signal = backends
         .get(&choice.route)
-        .and_then(|backend| backend.hook_signal_command());
+        .and_then(|backend| backend.capabilities().hook_signal_command);
     let mut launch_env = if inherited_env {
         BTreeMap::new()
     } else {

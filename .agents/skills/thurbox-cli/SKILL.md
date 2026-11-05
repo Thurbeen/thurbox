@@ -504,7 +504,7 @@ host's transport through the registry instead (ADR-30). Only a backend with no
 ### `runtime` — what thurbox runs that is not a session
 
 The automation heartbeat is kept by this machine's backend — the registry's
-default (`SessionBackend::ensure_heartbeat`; on a tmux-protocol server a
+default (`StatusChannel::ensure_heartbeat`; on a tmux-protocol server a
 detached `automation-heartbeat` window) — and created implicitly by anything
 that arms an automation. It is not a session, so no session listing shows it
 and no delete reclaims it. `runtime status` reports it (`null` when the backend
