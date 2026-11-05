@@ -67,6 +67,7 @@ pub mod plan;
 pub mod plugin;
 pub mod result;
 pub mod runtime;
+pub mod session;
 pub mod store;
 pub mod talk;
 pub mod task;

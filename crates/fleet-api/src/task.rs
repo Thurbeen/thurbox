@@ -316,6 +316,11 @@ pub struct TaskStatus {
     pub conditions: Vec<Condition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionRef>,
+    /// What the runtime last proved about the session (see
+    /// [`crate::session`]). Absent until a pass proved something; a pass
+    /// that proved nothing keeps the last state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_state: Option<SessionState>,
     /// Effect intents, written before the effect runs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub intents: BTreeMap<String, Intent>,
@@ -436,13 +441,9 @@ pub struct BriefRecord {
     pub recovered: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SessionRef {
-    pub id: String,
-    pub host: String,
-    pub key: String,
-}
+/// A Task's session is defined in [`crate::session`]; these names stay here
+/// for the code that reaches them through the Task.
+pub use crate::session::{SessionRef, SessionState, session_key, uid_of_session_key};
 
 /// The status fields the worker owns.
 pub const WORKER_FIELDS: &[&str] = &["result", "declared"];
@@ -456,19 +457,6 @@ pub const GATEWAY_FIELDS: &[&str] = &["gateway"];
 /// The status fields nobody owns: reached only through typed mutations.
 /// Every field in none of these lists is TaskController's.
 pub const UNOWNED_FIELDS: &[&str] = &["inbox", "answered"];
-
-/// The session key for a Task: deterministic, so a second spawn finds the
-/// first session instead of twinning it. The uid keeps a Task recreated under
-/// the same name from adopting a session it never owned.
-pub fn session_key(name: &str, uid: &str) -> String {
-    format!("{name}.{uid}")
-}
-
-/// The uid part of a session key: `<name>.<uid>`, or a bare uid, which is
-/// what an adapter whose keys must be short hands back from `list`.
-pub fn uid_of_session_key(key: &str) -> &str {
-    key.rsplit('.').next().unwrap_or(key)
-}
 
 #[cfg(test)]
 mod tests {
@@ -536,12 +524,5 @@ mod tests {
         ]}))
         .unwrap();
         assert_eq!(repos.normalised(), None);
-    }
-
-    #[test]
-    fn a_session_key_carries_the_uid() {
-        let key = session_key("t", "u1");
-        assert_eq!(uid_of_session_key(&key), "u1");
-        assert_eq!(uid_of_session_key("u1"), "u1");
     }
 }

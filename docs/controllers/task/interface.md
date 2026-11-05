@@ -144,7 +144,9 @@ external action already started. Recovery relies on stable runtime keys.
 
 ## Runtime port
 
-Source: [Runtime](../../../crates/fleet-api/src/runtime.rs). All session operations
+Source: [Runtime](../../../crates/fleet-api/src/runtime.rs). Every call acts on
+one Session, defined in [session](../../../crates/fleet-api/src/session.rs):
+the agent a Task owns, named by `SessionRef`. All session operations
 return `Observation<T>`; a refused effect is
 `Known(EffectOutcome::Failed { why })`, distinct from an Unknown outcome.
 

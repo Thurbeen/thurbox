@@ -1538,6 +1538,7 @@ fn status_summary(obj: &Object) -> Value {
     } else {
         for k in [
             "session",
+            "sessionState",
             "execution",
             "brief",
             "result",
@@ -1600,6 +1601,13 @@ fn print_status(s: &Value) {
             field("status"),
             field("reason"),
             field("message")
+        );
+    }
+    if let Some(id) = s["session"]["id"].as_str() {
+        println!(
+            "session {id} on {} {}",
+            s["session"]["host"].as_str().unwrap_or("-"),
+            s["sessionState"].as_str().unwrap_or("(not yet observed)")
         );
     }
     if !s["result"].is_null() {

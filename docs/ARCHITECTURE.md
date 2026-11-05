@@ -144,6 +144,37 @@ through the existing runtime port and bounded executor before freezing a
 private launch snapshot. TaskController stays pure and owns the lifecycle.
 See [execution configuration](resources/task-config.md).
 
+## Sessions and the runtime port
+
+A Session is one running agent: the unit the runtime port starts,
+observes, briefs, sends to and releases. Fleet defines it in
+[fleet-api's session module](../crates/fleet-api/src/session.rs). A
+Session is not a stored kind. One Task owns at most one Session, from the
+Task's spawn to the Task's release, and names it in `status.session`.
+
+A Session has two parts:
+
+- an identity, `SessionRef`: the runtime's `id`, the `host` and Fleet's
+  `key`. The key is deterministic per Task and carries the Task's uid, so a
+  second spawn finds the first Session and a recreated Task adopts nothing
+  it never owned.
+- a lifecycle, `SessionState`: `Running`, `Idle`, `Paused`, `Lost` or
+  `Gone`, folded from the runtime's Known answers. TaskController records
+  it in `status.sessionState` on every pass that proved something. Unknown
+  never changes it. Nothing decides on it; a view reads it.
+
+The runtime port is the only way Fleet reaches a Session. Fleet owns the
+Session's identity, its lifecycle record and every decision about it. The
+runtime owns the agent process, its window, its workspace and its
+conversation, and answers what it can prove.
+
+This split is the first step toward the
+[target architecture](../media/fleet-architecture-doom.svg), where Thurbox
+is one view among others and Fleet runs Sessions behind the runtime port.
+The next steps move the remaining Session responsibilities out of the
+Thurbox runtime adapter, one port call at a time: workspace materialization,
+the agent's lifecycle hooks, and attaching a live terminal.
+
 ## Forge integration
 
 [ChangeRequest](resources/change-request.md) and its

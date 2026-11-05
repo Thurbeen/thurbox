@@ -18,7 +18,7 @@ use fleet_api::plan::{
 };
 use fleet_api::runtime::{Activity, WorkspaceTrust};
 use fleet_api::store::FieldManager;
-use fleet_api::task::{self, BriefRecord, Phase, SessionRef, TaskSpec, TaskStatus};
+use fleet_api::task::{self, BriefRecord, Phase, SessionRef, SessionState, TaskSpec, TaskStatus};
 use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
 
@@ -215,6 +215,7 @@ impl TaskController {
         } else {
             r.advance();
         }
+        r.observe_session();
         settle_transitions(&mut r.st.conditions, &before.conditions);
         // A delivery is a status write even when nothing else moved: the
         // store takes the status along with the receipt.
@@ -265,6 +266,18 @@ impl Pass<'_, '_> {
             generation,
             now,
         );
+    }
+
+    /// Record what this pass's answers proved about the session, for views.
+    /// Nothing decides on it; a pass that proved nothing keeps the last state.
+    fn observe_session(&mut self) {
+        let Some(session) = &self.st.session else {
+            self.st.session_state = None;
+            return;
+        };
+        if let Some(state) = SessionState::observe(session, &self.input.observations) {
+            self.st.session_state = Some(state);
+        }
     }
 
     /// Wait [`RETRY_DELAY_MS`] from `from` before the next attempt.

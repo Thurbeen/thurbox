@@ -1036,3 +1036,32 @@ fn a_reboot_revives_the_session_and_resumes_the_brief_once() {
     ))
     .ok();
 }
+
+#[test]
+fn a_task_reports_its_session_and_what_the_runtime_proves_of_it() {
+    let env = setup("session-state", true);
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_eq!(st["session"]["key"], env.session_key("t1"), "{st:#}");
+    assert_eq!(st["sessionState"], "Running", "{st:#}");
+    env.fleet(&["status", "task", "t1"])
+        .ok()
+        .stdout_has("session fake-1 on local Running")
+        .stdout_has("Running");
+
+    // The runtime still holds the session, but its agent's window is gone:
+    // the pass that sees it says so, and the revive brings it back.
+    env.host().reboot().unwrap();
+    env.fleet(&["reconcile", "--max-passes", "1"]).ok();
+    assert_eq!(env.status("t1")["sessionState"], "Lost");
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["sessionState"], "Running");
+
+    // A readable list that no longer shows the session proves it gone.
+    env.host().vanish(&env.session_key("t1")).unwrap();
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_eq!(st["sessionState"], "Gone", "{st:#}");
+    assert_condition(&st, "WorkerGone", "True", "SessionGone");
+}

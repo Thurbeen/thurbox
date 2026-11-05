@@ -5,7 +5,7 @@
 use fleet_api::condition::ConditionStatus;
 use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt};
 use fleet_api::runtime::{Activity, TrustGap, WorkspaceTrust};
-use fleet_api::task::{Phase, SessionRef, TaskStatus};
+use fleet_api::task::{Phase, SessionRef, SessionState, TaskStatus};
 use fleet_api::{Object, Observation};
 use fleet_controllers::{
     MAX_ATTEMPTS, RETRY_DELAY_MS, SESSION_RECHECK_MS, TaskController, TaskInput,
@@ -1776,4 +1776,47 @@ fn a_concluded_session_found_stopped_is_external_even_while_waiting() {
         plan.effects.is_empty(),
         "the wait holds the resume: {plan:#?}"
     );
+}
+
+#[test]
+fn the_status_reports_what_the_runtime_proved_about_the_session() {
+    let st = TaskStatus {
+        phase: Phase::Briefed,
+        session: Some(session()),
+        brief: Some(fleet_api::task::BriefRecord {
+            key: "task/t/u7/brief".into(),
+            generation: 1,
+            recovered: false,
+        }),
+        ..Default::default()
+    };
+    let obj = task(true, Some(st.clone()));
+    let obs = Observations {
+        find: Some(Observation::Known(Some(session()))),
+        lost: Some(Observation::Known(false)),
+        paused: Some(Observation::Known(false)),
+        ..Default::default()
+    };
+    let (_, after) = run(&obj, obs);
+    assert_eq!(after.session_state, Some(SessionState::Running));
+
+    // A doubt keeps the last state; a proof replaces it.
+    let obj = task(true, Some(after));
+    let obs = Observations {
+        find: Some(Observation::unknown("list unreadable")),
+        lost: Some(Observation::unknown("timeout")),
+        ..Default::default()
+    };
+    let (plan, after) = run(&obj, obs);
+    assert_eq!(after.session_state, Some(SessionState::Running));
+    assert!(plan.status.is_none(), "nothing moved: {plan:#?}");
+    let obj = task(true, Some(after));
+    let obs = Observations {
+        find: Some(Observation::Known(Some(session()))),
+        lost: Some(Observation::Known(true)),
+        ..Default::default()
+    };
+    let (_, after) = run(&obj, obs);
+    assert_eq!(after.session_state, Some(SessionState::Lost));
+    assert_eq!(cond(&after, "SessionLost").status, ConditionStatus::True);
 }

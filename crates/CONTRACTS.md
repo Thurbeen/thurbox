@@ -787,6 +787,16 @@ refused.
 
 ## Runtime contract
 
+A Session is one running agent (`fleet_api::session`): the unit every
+call below starts, observes, briefs, sends to or releases. A Task owns at
+most one, named by `status.session` (`SessionRef`: the runtime's `id`, the
+`host` and Fleet's deterministic `key`). `status.sessionState` is what the
+runtime last proved about it, folded by `SessionState::observe` from the
+Known answers of `find`, `lost`, `paused` and `activity`: `Gone` when a
+readable list lacks the Session, else `Lost`, else `Paused`, else `Idle`
+or `Running` by activity, else `Running` on any proof of presence. Unknown
+answers keep the last state. Nothing decides on the state; a view reads it.
+
 `fleet_api::runtime::Runtime`: `host`, `create_dir`, `remove_dir`,
 `spawn`, `find`, `ready`, `workspace_trust`, `brief`, `brief_delivered`,
 `at_rest`, `release`, `lost`, `revive`, `activity`, `paused`, `pause` and
