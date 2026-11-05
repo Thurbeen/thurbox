@@ -5434,7 +5434,7 @@ fn typed_absence(error: &anyhow::Error) -> bool {
 #[cfg(all(test, unix))]
 pub(in crate::backend) fn assert_absence_replies<M: TmuxCompatible>(replies: &[(&str, bool)]) {
     use std::os::unix::process::ExitStatusExt;
-    let backend = Server::<M>::new();
+    let backend = Server::<M>::local(crate::session::settings::default_scrollback_lines());
     let name = M::MULTIPLEXER.name();
     for &(reply, holds_nothing) in replies {
         let output = std::process::Output {
@@ -5915,6 +5915,7 @@ mod tests {
             "unused",
             "unused",
             "local:tmux",
+            crate::session::settings::default_scrollback_lines(),
         )
     }
 
@@ -7561,7 +7562,7 @@ done
     #[test]
     fn only_the_server_saying_no_session_is_an_empty_status_answer() {
         use std::os::unix::process::ExitStatusExt;
-        let backend = TestBackend::new();
+        let backend = TestBackend::local(crate::session::settings::default_scrollback_lines());
         let has_session = |stderr: &str| {
             let output = std::process::Output {
                 status: std::process::ExitStatus::from_raw(1 << 8),
