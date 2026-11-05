@@ -260,6 +260,34 @@ fn read_stored() -> HashMap<String, StoredNo> {
         .unwrap_or_default()
 }
 
+/// How a `No` for a host that did not answer begins — the one verdict that
+/// says the host itself is down, rather than that its CLI cannot be shared.
+const NOT_ANSWERING: &str = "host not answering";
+
+/// Whether the host serving `backend_type` (any route spelling,
+/// `ssh:box:tmux` as well as `ssh:box`) was recorded as not answering by the
+/// last process that asked. A recorded verdict, not a probe: a host that comes
+/// back is cleared by the next probe that reaches it, which the interface's
+/// mirror makes every pass.
+pub fn recorded_down(backend_type: &str) -> bool {
+    let Some(key) = crate::session::Route::parse(backend_type)
+        .ok()
+        .and_then(|route| {
+            Some(crate::session::Route::remote(
+                route.via()?,
+                route.host()?,
+                None,
+            ))
+        })
+        .map(|route| route.format())
+    else {
+        return false;
+    };
+    read_stored()
+        .get(&key)
+        .is_some_and(|stored| stored.reason.starts_with(NOT_ANSWERING))
+}
+
 /// The `No` another process stored for `key`, as a verdict.
 fn stored_no(key: &str) -> Option<Verdict> {
     let stored = read_stored().remove(key)?;
@@ -523,7 +551,7 @@ fn establish(host: &HostDef) -> Usable {
         }
         // A host that did not answer is the other state, and the only one
         // waiting helps. It keeps its backoff untouched.
-        Err(e) => return Usable::No(format!("host not answering: {e}")),
+        Err(e) => return Usable::No(format!("{NOT_ANSWERING}: {e}")),
     };
     if let Some(cli) = &found {
         if let Err(mismatch) = compatible(cli) {

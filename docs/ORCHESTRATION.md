@@ -361,8 +361,10 @@ one row. Besides the five an agent can signal it can read `unreported`
 to report nothing), `stopped` (the session is parked), `failed` (its launch
 died before the agent reported anything — see *Launch failures*) or
 `running` (an agent holds the pane and has not signalled — `session get`'s
-probe only). None of those five is a state an agent can signal, and
-`state_source` is null for the first four. The piped (TOON) `session list` shows this
+probe only), or `unreachable` (a remote session whose host the last probe
+recorded as not answering — `state_source: "host"`; `hook_state` keeps the
+report from before it went quiet). None of those is a state an agent can
+signal, and `state_source` is null for the first four. The piped (TOON) `session list` shows this
 column, and so does the interface — its session list derives through the
 same `Assessment`, so a driver reconciling the screen with a `session
 get` never has to reconcile two vocabularies.

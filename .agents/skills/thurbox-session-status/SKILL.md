@@ -311,12 +311,19 @@ own, which is the point.
   | `classify_foreground` → `Assessment::with_corroboration` | the pane's foreground process group | anyone who can run `ps` |
   | `with_output_quiescence` (incl. the latched-`blocked` fold) | terminal output age, against `hook_state_at` | the interface only |
   | `with_reachability` | a live attach error | the interface only |
+  | `Assessment::host_unreachable` | a `host not answering` verdict in `host-verdicts.json` (`session_ops::host_cli::recorded_down`) | `session get`/`list` |
 
   `seen_at` being a **stored fact** rather than a timeout is why the CLI applies
   it too: the CLI rightly refuses to guess a staleness bound, but this column is
   simply there to be read, and until it was, a turn the interface had already
   acknowledged reported `done` on `session get`/`list`/`watch` for the rest of
-  the session's life. The two folds the CLI cannot make it does not fake.
+  the session's life. The two folds the CLI cannot make it does not fake —
+  but a down host is a **stored fact** too: the probe's backoff verdict is
+  shared through `host-verdicts.json`, so `session get`/`list` read a remote
+  row on a host recorded as not answering as `unreachable` with
+  `state_source: "host"`, instead of the last mirrored `idle` (`hook_state`
+  itself stays as stored). A verdict that is not a host failure — sharing
+  off, a CLI the host refuses to start — leaves the state alone.
   A local session is never unreachable: this is its machine, and a missing pane
   there means the agent was not launched. The rows are read on the snapshot's
   own schedule rather than per frame, gated on `PRAGMA data_version` moving (see

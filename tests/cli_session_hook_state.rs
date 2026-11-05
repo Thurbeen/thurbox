@@ -372,6 +372,73 @@ fn a_custom_agent_can_claim_a_hook_family() {
     drop(guard);
 }
 
+/// A host recorded as not answering holds no state anybody can know: its
+/// rows read `unreachable`, as the interface shows them, rather than the
+/// `idle` the last mirror pass left in the hook columns.
+#[test]
+fn a_session_on_a_host_recorded_as_down_reads_unreachable_not_its_stale_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _guard = isolated_config(dir.path());
+    let db = Database::open_in_memory().expect("db");
+    let down = session_row("on-down-host", "claude", "ssh:down-box:tmux");
+    let up = session_row("on-other-host", "claude", "ssh:up-box:tmux");
+    for row in [&down, &up] {
+        db.upsert_session(row).expect("persist");
+        db.set_hook_state(row.id, "idle").expect("signal");
+    }
+    std::fs::write(
+        dir.path().join("host-verdicts.json"),
+        r#"{"ssh:down-box":{"reason":"host not answering: ssh: connect to host down-box port 22: Connection timed out","at":1,"failures":3}}"#,
+    )
+    .expect("record the verdict");
+
+    let out = get(&db, down.id, false);
+    assert_eq!(out["state"], Value::String("unreachable".into()));
+    assert_eq!(out["state_source"], Value::String("host".into()));
+    assert_eq!(out["ready"], Value::Bool(false));
+    assert_eq!(
+        out["hook_state"],
+        Value::String("idle".into()),
+        "the stored report itself is untouched"
+    );
+    let out = get(&db, up.id, false);
+    assert_eq!(out["state"], Value::String("idle".into()));
+
+    let listed = run(
+        Action::List {
+            include_purged: false,
+            parent: None,
+            recursive: false,
+            tree: false,
+            deleted: false,
+            since: None,
+            verify: false,
+            key: None,
+            key_prefix: None,
+        },
+        &db,
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+    )
+    .expect("session list");
+    let state_of = |name: &str| {
+        listed
+            .json
+            .as_array()
+            .expect("a list")
+            .iter()
+            .find(|s| s["name"] == name)
+            .map(|s| s["state"].clone())
+    };
+    assert_eq!(
+        state_of("on-down-host"),
+        Some(Value::String("unreachable".into()))
+    );
+    assert_eq!(
+        state_of("on-other-host"),
+        Some(Value::String("idle".into()))
+    );
+}
+
 #[test]
 fn a_remote_sessions_pane_is_reported_unreadable_rather_than_guessed() {
     let dir = tempfile::tempdir().expect("tempdir");

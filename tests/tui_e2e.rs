@@ -4307,6 +4307,54 @@ fn ssh_host_labels_do_not_depend_on_platform() {
     assert!(tui.quit().success());
 }
 
+/// A session on a host that does not answer shows `unreachable`, never the
+/// `idle` its row last held. A shareable host (the default) is mirrored as
+/// well as attached, and neither failing may leave the stale word standing.
+#[test]
+fn a_session_on_a_host_that_does_not_answer_reads_unreachable_not_idle() {
+    use std::os::unix::fs::PermissionsExt;
+    let Some((_profile, tui)) = shell_session_prepared(
+        |profile| {
+            let ssh = profile.bin.join("ssh");
+            std::fs::write(
+                &ssh,
+                "#!/bin/sh\necho 'ssh: connect to host down.example port 22: Connection timed out' >&2\nexit 255\n",
+            )
+            .expect("ssh stand-in");
+            std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            std::fs::write(
+                profile.path("config/hosts.toml"),
+                "[[hosts]]\nname = \"down-box\"\ndestination = \"down.example\"\n",
+            )
+            .expect("hosts");
+            profile.cli(&[
+                "session",
+                "create",
+                "--name",
+                "remote-row",
+                "--repo-path",
+                profile.path("repo").to_str().expect("utf-8 path"),
+                "--agent",
+                "shell",
+            ]);
+            let db = rusqlite::Connection::open(profile.path("data/thurbox.db")).expect("database");
+            db.execute(
+                "UPDATE sessions SET backend_type = 'ssh:down-box:tmux', backend_id = '%7', \
+                 hook_state = 'idle', hook_state_at = 1 WHERE name = 'remote-row'",
+                [],
+            )
+            .expect("put probe on a host that is down");
+        },
+        |_| {},
+    ) else {
+        return;
+    };
+    tui.wait_for("@ down-box");
+    tui.wait_until("the remote row to read unreachable", |frame| {
+        frame.contains("⊘ remote-row")
+    });
+}
+
 fn selected_session(profile: &Profile) -> Option<String> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
     profile.apply(&mut cmd);
