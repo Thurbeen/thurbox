@@ -43,6 +43,23 @@ pub(crate) fn build_restart_plan(
     recipe: Option<&crate::session::LaunchRecipe>,
     env: &std::collections::BTreeMap<String, String>,
 ) -> Result<RestartPlan, crate::session_ops::OpError> {
+    build_plan(db, session, host, signal, hooks_enabled, recipe, env, false)
+}
+
+/// [`build_restart_plan`], or with `fresh` the plan for a new conversation:
+/// no resume group, whatever the agent left on disk, so the agent is launched
+/// as at creation on `session`'s (already replaced) agent session id.
+#[allow(clippy::too_many_arguments)]
+fn build_plan(
+    db: &Database,
+    session: &SharedSession,
+    host: Option<&crate::session::HostDef>,
+    signal: Option<&str>,
+    hooks_enabled: bool,
+    recipe: Option<&crate::session::LaunchRecipe>,
+    env: &std::collections::BTreeMap<String, String>,
+    fresh: bool,
+) -> Result<RestartPlan, crate::session_ops::OpError> {
     let agent_session_id = session.agent_session_id.clone().ok_or_else(|| {
         format!(
             "Cannot restart session {} without agent_session_id",
@@ -110,14 +127,16 @@ pub(crate) fn build_restart_plan(
         &crate::agent::settings_config::load_quiet().telemetry,
     );
     let codex_builtin = def.is_family("codex") && def.resume_args == ["resume", "{id}"];
-    let codex_id = if codex_builtin {
+    let codex_id = if codex_builtin && !fresh {
         db.get_session_meta(session.id, crate::session::CODEX_CONVERSATION_META)
             .map_err(|e| format!("read Codex conversation id: {e}"))?
             .filter(|id| uuid::Uuid::parse_str(id).is_ok())
     } else {
         None
     };
-    config.resume_session_id = if codex_builtin {
+    config.resume_session_id = if fresh {
+        None
+    } else if codex_builtin {
         codex_id.clone()
     } else if super::conversation_started(db, session.id, &agent_session_id) {
         Some(agent_session_id.clone())
@@ -155,7 +174,7 @@ pub(crate) fn build_restart_plan(
         )
     });
     let (command, mut args) = super::build_agent_invocation(&def, &config, &member_dirs);
-    if codex_builtin && codex_id.is_none() {
+    if codex_builtin && codex_id.is_none() && !fresh {
         // An old row has only Thurbox's generated id. The interactive picker
         // can recover its real conversation without guessing from the CWD.
         args = def.place_session_group(vec!["resume".to_string()]);
@@ -274,7 +293,7 @@ pub fn start_session_headless(
     }
     db.set_session_stopped(session_id, false)
         .map_err(|e| format!("Failed to clear the stopped mark: {e}"))?;
-    restart_for(db, backends, session_id, Relaunch::Unparking)
+    restart_for(db, backends, session_id, Relaunch::Unparking, false)
 }
 
 /// Refuse a restart of a row that has been deleted since it was loaded.
@@ -368,6 +387,39 @@ pub struct RestartReport {
     /// A relaunch refused because the agent is crash-looping
     /// ([`CRASH_LOOP_RELAUNCHES`]); the session is marked lost instead.
     pub held_back: bool,
+    /// A repair of a session that has been deleted, here or on its host:
+    /// nothing was relaunched, and nothing failed either.
+    pub gone: bool,
+    /// A repair that stood down: another lifecycle operation holds the row (a
+    /// restart replacing its window, a delete taking it away), or the window
+    /// is there after all. Nothing was relaunched. The CLI still answers
+    /// `restarted` for it, as it always has; the interface stays silent.
+    pub stood_down: bool,
+}
+
+impl RestartReport {
+    /// A repair that found the session deleted ([`Self::gone`]).
+    fn gone() -> Self {
+        Self {
+            gone: true,
+            ..Self::default()
+        }
+    }
+
+    /// A repair that stood down ([`Self::stood_down`]).
+    fn stood_down() -> Self {
+        Self {
+            stood_down: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the window was left as it was: a repair that stood down or
+    /// found the session gone. Neither replaced a pane, so the interface has
+    /// nothing to announce and nothing to let go of.
+    pub fn relaunched_nothing(&self) -> bool {
+        self.gone || self.stood_down
+    }
 }
 
 impl RestartReport {
@@ -467,7 +519,203 @@ pub fn restart_session_headless_with(
             true => Relaunch::IfMissing,
             false => Relaunch::Asked,
         },
+        false,
     )
+}
+
+/// What [`restart_fresh`] does with a session in the middle of a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhenBusy {
+    /// Leave it running and say why.
+    Refuse,
+    /// Wait for the turn to end, then clear.
+    Wait,
+}
+
+/// What a fresh restart came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fresh {
+    /// The session was between turns and its agent is on a new conversation.
+    Cleared,
+    /// It was mid-turn; the turn ended and then it was cleared.
+    Waited,
+    /// It was mid-turn and nothing was touched, for the reason given.
+    Refused(String),
+}
+
+impl Fresh {
+    /// The word `--json` carries.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cleared => "cleared",
+            Self::Waited => "waited",
+            Self::Refused(_) => "refused",
+        }
+    }
+}
+
+/// A fresh restart's outcome, the restart it made (default when refused) and
+/// the agent session id the session is on afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreshReport {
+    pub fresh: Fresh,
+    pub restart: RestartReport,
+    pub agent_session_id: Option<String>,
+}
+
+impl FreshReport {
+    /// The fresh restart as a command outcome: a refusal is a failure with its
+    /// reason, as is a relaunch held back.
+    pub fn into_outcome(self) -> Result<(), crate::session_ops::OpError> {
+        match self.fresh {
+            Fresh::Refused(reason) => Err(crate::session_ops::OpError::Conflict(reason)),
+            _ => self.restart.into_outcome(),
+        }
+    }
+}
+
+/// Restart a session on a **new conversation**: same row, name, worktree,
+/// parent and mailbox, the agent launched without its resume group on a new
+/// agent session id. What `/clear` does inside an agent, done by the runtime,
+/// so it stays agent-neutral (issue #1642).
+///
+/// A session mid-turn — readiness `false` because its agent reported
+/// `working`, `blocked` or `background` (docs/ORCHESTRATION.md → Readiness) —
+/// is never cut off: it is refused, or with [`WhenBusy::Wait`] restarted once
+/// its state reaches `idle` or `done`. A session that is gone while waited on
+/// has no turn left to cut off and is cleared.
+pub fn restart_fresh(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    session_id: SessionId,
+    when_busy: WhenBusy,
+) -> Result<FreshReport, crate::session_ops::OpError> {
+    let session = db
+        .get_session_by_id(session_id)
+        .map_err(|e| format!("Failed to load session: {e}"))?
+        .ok_or_else(|| {
+            crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
+        })?;
+    if let super::Executor::HostCli { host, cli } = super::Executor::for_session(&session)? {
+        return fresh_delegated(db, &session, &host, &cli, when_busy);
+    }
+    let mut fresh = Fresh::Cleared;
+    if let Some(state) = mid_turn(db, &session)? {
+        if when_busy == WhenBusy::Refuse {
+            return Ok(FreshReport {
+                fresh: Fresh::Refused(format!(
+                    "'{}' is {state}: a fresh restart would cut its turn off; \
+                     wait for it to end",
+                    session.name
+                )),
+                restart: RestartReport::default(),
+                agent_session_id: session.agent_session_id,
+            });
+        }
+        let ended = super::wait::Conditions {
+            states: vec!["idle".into(), "done".into()],
+            pane: None,
+            timeout: None,
+        };
+        match super::wait::run(db, backends, &session, ended, None) {
+            Ok(_) => {}
+            // Parked by an operator while waiting: that ends the restart. Any
+            // other end (the agent exited, was lost) left no turn to cut off.
+            Err(super::wait::Error::Gone)
+                if db
+                    .session_stopped_at(session_id)
+                    .map_err(|e| format!("could not read '{}': {e}", session.name))?
+                    .is_some() =>
+            {
+                return Err(crate::session_ops::OpError::Gone(format!(
+                    "'{}' was stopped while its turn was awaited; not restarting it",
+                    session.name
+                )));
+            }
+            Err(super::wait::Error::Gone) => {}
+            Err(super::wait::Error::Timeout) => {
+                return Err(crate::session_ops::OpError::Timeout(format!(
+                    "'{}' did not end its turn",
+                    session.name
+                )))
+            }
+            Err(super::wait::Error::Failed(e)) => return Err(e.into()),
+        }
+        fresh = Fresh::Waited;
+    }
+    let restart = restart_for(db, backends, session_id, Relaunch::Asked, true)?;
+    let agent_session_id = db
+        .get_session_by_id(session_id)
+        .map_err(|e| format!("Failed to load session: {e}"))?
+        .and_then(|row| row.agent_session_id);
+    Ok(FreshReport {
+        fresh,
+        restart,
+        agent_session_id,
+    })
+}
+
+/// The state that makes `session` busy for a fresh restart, if it is in one:
+/// the active states [`Assessment::ready`] answers `false` for.
+///
+/// [`Assessment::ready`]: crate::session::Assessment::ready
+fn mid_turn(
+    db: &Database,
+    session: &SharedSession,
+) -> Result<Option<&'static str>, crate::session_ops::OpError> {
+    use crate::session::SessionState;
+    let read = |e: rusqlite::Error| format!("could not read the state of '{}': {e}", session.name);
+    let facts = db.load_session_facts_for(&[session.id]).map_err(read)?;
+    let Some(facts) = facts.get(&session.id) else {
+        return Ok(None);
+    };
+    let hook = db
+        .load_hook_state(session.id)
+        .map_err(read)?
+        .unwrap_or_default();
+    // A lost agent has no turn left to cut off, whatever it last reported.
+    if db.session_lost_at(session.id).map_err(read)?.is_some() {
+        return Ok(None);
+    }
+    let stopped = db.session_stopped_at(session.id).map_err(read)?.is_some();
+    let registry = crate::agent::agent_config::load_or_seed();
+    let state = super::events::assess(&registry, facts, &hook, stopped).state();
+    Ok(matches!(
+        state,
+        SessionState::Working | SessionState::Blocked | SessionState::Background
+    )
+    .then(|| state.as_str()))
+}
+
+/// A fresh restart through the host's own CLI, which decides busy where the
+/// agent runs. Its refusal arrives as a conflict and is reported as one here.
+fn fresh_delegated(
+    db: &Database,
+    session: &SharedSession,
+    host: &crate::session::HostDef,
+    cli: &super::host_cli::CliInfo,
+    when_busy: WhenBusy,
+) -> Result<FreshReport, crate::session_ops::OpError> {
+    let flags: &[&str] = match when_busy {
+        WhenBusy::Refuse => &["--fresh"],
+        WhenBusy::Wait => &["--fresh", "--wait"],
+    };
+    match restart_delegated(db, session, host, cli, flags) {
+        Ok((restart, result)) => Ok(FreshReport {
+            fresh: match result["outcome"].as_str() {
+                Some("waited") => Fresh::Waited,
+                _ => Fresh::Cleared,
+            },
+            restart,
+            agent_session_id: result["agent_session_id"].as_str().map(str::to_string),
+        }),
+        Err(crate::session_ops::OpError::Conflict(reason)) => Ok(FreshReport {
+            fresh: Fresh::Refused(reason),
+            restart: RestartReport::default(),
+            agent_session_id: session.agent_session_id.clone(),
+        }),
+        Err(e) => Err(e),
+    }
 }
 
 /// Why a window is being put back — which is the whole of what a hold on the
@@ -509,19 +757,34 @@ impl Relaunch {
     }
 }
 
-/// Every restart, with [`Relaunch`] saying which caller's rules apply.
+/// Every restart, with [`Relaunch`] saying which caller's rules apply, and
+/// `fresh` whether the agent gets a new conversation ([`restart_fresh`]).
 fn restart_for(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     session_id: SessionId,
     why: Relaunch,
+    fresh: bool,
 ) -> Result<RestartReport, crate::session_ops::OpError> {
-    let session = db
+    let session = match db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
-        .ok_or_else(|| {
-            crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
-        })?;
+    {
+        Some(session) => session,
+        // A repairer acts on a listing taken before it ran: the interface's
+        // snapshot, or a peer's survey. A session deleted since has no window
+        // to put back, so there is nothing to repair; reporting it as a failed
+        // restart blamed a delete for something it did on purpose.
+        None if why.is_a_repairer() => {
+            tracing::debug!("{session_id} is gone; nothing to relaunch");
+            return Ok(RestartReport::gone());
+        }
+        None => {
+            return Err(crate::session_ops::OpError::NotFound(format!(
+                "Session not found: {session_id}"
+            )))
+        }
+    };
 
     // A remote session's window lives on its host, so both halves have to go
     // there — restarting it locally would leave the real window running and add
@@ -531,6 +794,22 @@ fn restart_for(
     // kills and relaunches where the agent runs, with the host's own
     // configuration; the local row is then mirrored from the host's.
     if let super::Executor::HostCli { host, cli } = super::Executor::for_session(&session)? {
+        // The hold here is somebody else's lifecycle operation on this row.
+        // A delegated delete, for one, holds it while the host kills the
+        // window and drops its row, and only then marks the row here. A
+        // repairer that saw the window go in that gap would otherwise ask
+        // the host to relaunch a session it has just deleted. Checked and
+        // let go rather than held: the mirror after the restart skips a held
+        // row, and it is what brings the new pane back here. A delete that
+        // starts after this check gets a "not found" from the host, which
+        // `restart_delegated` reads the same way.
+        if why.is_a_repairer() && hold_restart(db, session_id).is_none() {
+            tracing::debug!(
+                "'{}' is held by another lifecycle operation; not relaunching",
+                session.name
+            );
+            return Ok(RestartReport::stood_down());
+        }
         // `--if-missing` is "I am a repairer", and the host reads both halves
         // out of it: put a window back only if one is gone, and stand down for
         // a hold somebody there already has. An unpark is neither — the
@@ -538,7 +817,13 @@ fn restart_for(
         // already, so the flag saves nothing and a hold left behind there
         // would silently no-op a `session start` that has cleared the parked
         // mark here.
-        return restart_delegated(db, &session, &host, &cli, why.is_a_repairer());
+        let flag = match (fresh, why.is_a_repairer()) {
+            (true, _) => Some("--fresh"),
+            (false, true) => Some("--if-missing"),
+            (false, false) => None,
+        };
+        return restart_delegated(db, &session, &host, &cli, flag.as_slice())
+            .map(|(report, _)| report);
     }
     // Known to `hosts.toml` (`for_session` refused otherwise): the host the
     // plan below launches on, or none for a local session.
@@ -556,7 +841,7 @@ fn restart_for(
             "'{}' is already being restarted; not relaunching",
             session.name
         );
-        return Ok(RestartReport::default());
+        return Ok(RestartReport::stood_down());
     }
 
     // The backend the row's route names: what the windows are killed, listed
@@ -565,7 +850,7 @@ fn restart_for(
         .map_err(|e| format!("cannot restart '{}': {e}", session.name))?;
 
     if why.only_if_missing() && !relaunch_is_owed(db, backend.as_ref(), &session)? {
-        return Ok(RestartReport::default());
+        return Ok(RestartReport::stood_down());
     }
 
     // Where an exit takes its window with it, "missing" is also what an agent
@@ -610,7 +895,15 @@ fn restart_for(
     let env = db
         .load_launch_env(session_id)
         .map_err(|e| format!("could not read the launch env of '{}': {e}", session.name))?;
-    let plan = build_restart_plan(
+    // A new conversation is a new agent session id: a pinned agent (claude's
+    // `--session-id {id}`) refuses an id it already has a transcript for, and
+    // every later plain restart decides resume-or-not by this id.
+    let previous = session.clone();
+    let mut session = session;
+    if fresh {
+        session.agent_session_id = Some(uuid::Uuid::new_v4().to_string());
+    }
+    let plan = build_plan(
         db,
         &session,
         host.as_ref(),
@@ -618,16 +911,63 @@ fn restart_for(
         hooks_enabled,
         recipe.as_ref(),
         &env,
+        fresh,
     )?;
 
     // The user's say, with the plan built and nothing yet killed: a refusal
     // leaves the running window running.
-    let mut hook_ctx = super::lifecycle_hooks::context_for(&session);
+    let mut hook_ctx = super::lifecycle_hooks::context_for(&previous);
     super::fire_pre(crate::session::HookEvent::PreRestart, &hook_ctx)?;
 
     refuse_if_deleted(db, &session)?;
 
-    respawn(db, backend.as_ref(), &session, &plan)?;
+    // A fresh restart's new id goes on the row once the old agent is verifiably
+    // gone and before the new one starts: a surviving old window keeps the row
+    // on the conversation it is still on, and the new agent's first hook (Codex
+    // binds its conversation at `SessionStart`) checks its id against the row.
+    let adopt_new_conversation = || -> Result<(), super::OpError> {
+        if !fresh {
+            return Ok(());
+        }
+        let id = session.agent_session_id.as_deref().unwrap_or_default();
+        let stored = db.set_agent_session_id(session_id, id).map_err(|e| {
+            format!(
+                "could not record the new conversation of '{}': {e}",
+                session.name
+            )
+        })?;
+        if !stored {
+            return Err(format!("'{}' was deleted while it was restarting", session.name).into());
+        }
+        // Codex's own conversation id is what a plain restart resumes it by.
+        db.unset_session_meta(session_id, crate::session::CODEX_CONVERSATION_META)
+            .map_err(|e| {
+                format!(
+                    "could not forget the conversation of '{}': {e}",
+                    session.name
+                )
+            })?;
+        Ok(())
+    };
+    respawn(
+        db,
+        backend.as_ref(),
+        &session,
+        &plan,
+        adopt_new_conversation,
+    )?;
+    if fresh {
+        hook_ctx.agent_session_id = session.agent_session_id.clone();
+        // A multi-repo session's workspace is named by the old id; the new one
+        // was built by the plan, so the old one is nobody's now. Delete keeps
+        // the same rule (local only).
+        if let Err(e) = super::reconcile::remove_workspace(db, &previous) {
+            tracing::warn!(
+                "could not remove the old workspace of '{}': {e}",
+                session.name
+            );
+        }
+    }
     if counted {
         if let Err(e) = db.record_relaunch(
             session.id,
@@ -663,31 +1003,57 @@ fn restart_delegated(
     session: &SharedSession,
     host: &crate::session::HostDef,
     cli: &super::host_cli::CliInfo,
-    if_missing: bool,
-) -> Result<RestartReport, crate::session_ops::OpError> {
+    flags: &[&str],
+) -> Result<(RestartReport, serde_json::Value), crate::session_ops::OpError> {
     let mut hook_ctx = super::lifecycle_hooks::context_for(session);
     super::fire_pre(crate::session::HookEvent::PreRestart, &hook_ctx)?;
     let id = session.id.to_string();
     let mut args = vec!["session", "restart", &id];
-    if if_missing {
-        args.push("--if-missing");
-    }
-    let result = super::host_cli::run(host, cli, &args)?;
+    args.extend_from_slice(flags);
+    // `--if-missing` is the repairer's flag; every other restart was asked for.
+    let repairing = flags.contains(&"--if-missing");
+    let result = match super::host_cli::run(host, cli, &args) {
+        Ok(result) => result,
+        // The host has deleted the session, so there is no window to put
+        // back. Its row here is marked by the delete that did it, or by the
+        // next mirror pass. A restart somebody asked for still fails.
+        Err(crate::session_ops::OpError::NotFound(why)) if repairing => {
+            tracing::debug!(
+                "'{}' is gone on '{}' ({why}); nothing to relaunch",
+                session.name,
+                host.name
+            );
+            return Ok((RestartReport::gone(), serde_json::Value::Null));
+        }
+        Err(e) => return Err(e),
+    };
     if let Err(e) = super::mirror::mirror_host(db, host, cli) {
         tracing::warn!("mirror of '{}' after restart failed: {e}", host.name);
     }
     if result["held_back"].as_bool().unwrap_or(false) {
-        return Ok(RestartReport {
+        let report = RestartReport {
             held_back: true,
             ..RestartReport::default()
-        });
+        };
+        return Ok((report, result));
+    }
+    // A host on this build answers a repair of a session it has deleted with
+    // `gone` rather than "not found". Nothing was relaunched, so the
+    // post-restart hooks are not told otherwise.
+    if result["gone"].as_bool().unwrap_or(false) {
+        return Ok((RestartReport::gone(), result));
     }
     hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session.id);
+    // A fresh restart on the host moved the session to a new conversation.
+    if let Some(id) = result["agent_session_id"].as_str() {
+        hook_ctx.agent_session_id = Some(id.to_string());
+    }
     let hook_failures = super::fire_post(crate::session::HookEvent::PostRestart, &hook_ctx);
-    Ok(RestartReport {
+    let report = RestartReport {
         hook_failures,
         ..RestartReport::default()
-    })
+    };
+    Ok((report, result))
 }
 
 /// Hold the right to replace `session_id`'s window — or `None` when somebody
@@ -762,12 +1128,14 @@ fn relaunch_is_owed(
 }
 
 /// Replace a session's window with the plan's on its backend, and point the
-/// row at the new pane.
+/// row at the new pane. `before_spawn` runs once the old windows are verifiably
+/// gone and before the new one starts; its error leaves no window running.
 fn respawn(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
     session: &SharedSession,
     plan: &RestartPlan,
+    before_spawn: impl FnOnce() -> Result<(), crate::session_ops::OpError>,
 ) -> Result<(), crate::session_ops::OpError> {
     let id = session.id.to_string();
     // By the windows' own stamps, agent and companion shell together: the
@@ -802,6 +1170,7 @@ fn respawn(
         )
         .into());
     }
+    before_spawn()?;
 
     let pane = backend
         .create_window(&crate::backend::WindowSpec {
@@ -901,8 +1270,8 @@ mod tests {
         // is asked anything, so this needs no server.
         assert_eq!(
             restart_session_headless_with(&db, &crate::backend::registry::inert(), row.id, true),
-            Ok(RestartReport::default()),
-            "a relaunch of a row being restarted is not owed"
+            Ok(RestartReport::stood_down()),
+            "a relaunch of a row being restarted is not owed, and says it stood down"
         );
 
         drop(held);
@@ -1175,6 +1544,35 @@ mod tests {
             record_pane(&db, &live, "%3"),
             Recorded::WriteFailed(_)
         ));
+    }
+
+    /// A pinned agent gets the same argv fresh or not once its id is new; the
+    /// guard is for the agents that resume without one — the latest session in
+    /// the directory (opencode) or a bound conversation id (codex).
+    #[test]
+    fn a_fresh_plan_carries_no_resume_group_for_agents_that_resume_without_the_id() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let plan = |agent: &str, fresh: bool| {
+            let mut sess = session(Some("sid"), Some(temp.path().to_path_buf()));
+            sess.agent = agent.into();
+            db.upsert_session(&sess).unwrap();
+            db.set_session_meta(
+                sess.id,
+                crate::session::CODEX_CONVERSATION_META,
+                "0199a213-81c0-7800-8aa1-bbab2a035a53",
+            )
+            .unwrap();
+            let env = Default::default();
+            build_plan(&db, &sess, None, None, true, None, &env, fresh)
+                .unwrap()
+                .args
+        };
+        assert!(plan("opencode", false).contains(&"--continue".to_string()));
+        assert!(!plan("opencode", true).contains(&"--continue".to_string()));
+        assert!(plan("codex", false).contains(&"resume".to_string()));
+        assert!(!plan("codex", true).contains(&"resume".to_string()));
     }
 
     #[test]

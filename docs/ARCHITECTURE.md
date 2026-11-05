@@ -2421,11 +2421,13 @@ mechanisms now, and they answer different halves:
   refusing an operator's own `session restart` would leave the verb answering
   "already restarting" long after the holder died.
 - **A second window carrying a stamp is retired where the stamp is written.**
-  `Server::retire_duplicate_windows` (`backend::tmux_compat::server`) runs after every local stamp
+  `Server::retire_duplicate_windows` (`backend::tmux_compat::server`) runs after every stamp
   (the headless `create_window`, whose stamp rides in `new-window`'s own
   command list, and `stamp_window` for the interface's own spawn,
-  an adopt, a restore and a `session register`) and **the highest window id
-  keeps the identity**.
+  an adopt, a restore, a `session register` and every window created on a
+  host) and **the highest window id keeps the identity**. On a host it lists
+  and kills over the control connection where one is open, so the repair costs
+  no ssh handshake of its own, and one-shot otherwise (issue #1635).
   Not "the window I just made": both racers run the sweep, so "mine wins" has
   each retire the other's and can leave the session no window at all, while a
   key tmux issues in order and never reissues makes every sweep reach the same
@@ -2442,7 +2444,8 @@ that is what reaches a server **already** carrying a pair — no migration does,
 because those windows exist. `WindowIndex` itself is untouched: `stamped_match`
 still refuses two, because the repair is a *write* and reading one of two as the
 answer is the unsound step the pane-id tie-break was rejected for above. Both
-are local tmux only; psmux keeps `@` options in one server-global map, so the
+run wherever the server keeps window options, a host's as well as this
+machine's; psmux keeps `@` options in one server-global map, so the
 stamp is withheld at both ends there (ADR-13) and a sweep that believed a
 listing would retire every window on the server.
 

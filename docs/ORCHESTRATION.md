@@ -227,6 +227,12 @@ waits for an operator's `session restart`. That `restart --if-missing` answers
 `"held_back": true`. Sessions on tmux keep their dead pane and never produce
 either event.
 
+A `restart --if-missing` of a session that has been deleted since the caller
+last looked has nothing to repair. It succeeds with `"gone": true` and
+`"restarted": false` instead of failing with "Session not found". An id this
+machine never held still fails, as does a plain `session restart` of a deleted
+session.
+
 ### `--parent`
 
 Spawn workers with `--parent "$THURBOX_SESSION"` and the lead/worker
@@ -498,6 +504,32 @@ by the host's own thurbox, and the host's `session get` reports it.
 `foreground_cwd` — which is what a lead reading a worker's screen needs
 to tell "waiting at a prompt" from "still printing", and which agent CLI
 is actually in the foreground.
+
+### Clearing a worker's conversation
+
+A worker reused across jobs wants a new conversation for each, and typing
+an agent's own `/clear` into it is composer scraping: delivered as a
+message it is just text. `thurbox-cli session restart <ref> --fresh` does it
+from the runtime and stays agent-neutral. The session keeps its id, name,
+worktree, parent and mailbox; its agent is relaunched without its resume
+group, on a new agent session id, so a pinned agent (`--session-id {id}`)
+starts a new transcript rather than refusing the old one. The old
+conversation is left where the agent keeps it.
+
+It never cuts a turn off. A session whose readiness is `false` because it
+reported `working`, `blocked` or `background` is refused (exit 5); with
+`--wait` the restart waits until the session reads `idle` or `done`, then
+clears it. `--json` says which:
+
+| `outcome` | meaning |
+|---|---|
+| `cleared` | it was between turns and now runs a new conversation; `agent_session_id` is the new id |
+| `waited` | a turn was in progress, ended, and then it was cleared |
+| `refused` | a turn is in progress and nothing was touched; `reason` says which state |
+
+`version --json` reports `session_restart_fresh: true` on a build that has it.
+The interface's `restart` command takes the same switch (`fresh = true`) and
+refuses mid-turn the same way; it does not wait.
 
 ### A driver that launches its own agent can still report state
 

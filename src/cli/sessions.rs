@@ -381,13 +381,27 @@ pub enum Action {
     /// Restart a session in-place: kill the window and re-spawn, resuming the
     /// conversation when one exists (a hook reported a turn, or its transcript
     /// is on disk) and starting it fresh otherwise.
+    ///
+    /// `--fresh` starts the agent on a new conversation instead, on the same
+    /// session (id, name, worktree, parent, mailbox): no resume group and a new
+    /// agent session id. A session mid-turn (`working`, `blocked`,
+    /// `background`) is refused with exit 5 unless `--wait` is given, which
+    /// waits for the turn to end first. `--json` says `outcome`: `cleared`,
+    /// `waited` or `refused` (with `reason`).
     Restart {
         /// Session UUID.
         uuid: String,
         /// Relaunch only if the session has no live window; a running session
         /// is left alone. What a peer asks for after this host rebooted.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "fresh")]
         if_missing: bool,
+        /// Start a new conversation rather than resuming the current one.
+        #[arg(long)]
+        fresh: bool,
+        /// With `--fresh`: wait for a turn in progress to end instead of
+        /// refusing.
+        #[arg(long, requires = "fresh")]
+        wait: bool,
     },
     /// Rename a session, and the windows named after it.
     ///
@@ -956,7 +970,15 @@ pub fn run(
                 if_generation,
             )
         }
-        Action::Restart { uuid, if_missing } => run_restart(db, backends.get(), uuid, if_missing),
+        Action::Restart {
+            uuid,
+            fresh: true,
+            wait,
+            ..
+        } => run_restart_fresh(db, backends.get(), uuid, wait),
+        Action::Restart {
+            uuid, if_missing, ..
+        } => run_restart(db, backends.get(), uuid, if_missing),
         Action::Rename { session, name } => run_rename(db, backends.get(), session, name),
         Action::Reparent {
             session,
@@ -1668,32 +1690,130 @@ fn run_restart(
     uuid: String,
     if_missing: bool,
 ) -> Result<CommandOutput, CommandError> {
+    if if_missing {
+        if let Some(output) = restart_of_a_deleted_session(db, &uuid)? {
+            return Ok(output);
+        }
+    }
     let session = resolve(db, &uuid)?;
     crate::session_ops::deliver::ensure_hooks_wired(db, backends);
     let report = crate::session_ops::restart::restart_session_headless_with(
         db, backends, session.id, if_missing,
     )?;
-    let mut human = match report.held_back {
-        true => format!(
+    let mut human = match (report.held_back, report.gone) {
+        (true, _) => format!(
             "Not relaunching '{}' ({}): {}. `thurbox-cli session restart {}` brings it back.",
             session.name,
             session.id,
             crate::session_ops::restart::held_back_reason(),
             session.id
         ),
-        false => format!("Restarted session '{}' ({})", session.name, session.id),
+        // Deleted between the lookup above and the repair, here or on its
+        // host. The same answer as `restart_of_a_deleted_session`.
+        (false, true) => format!(
+            "'{}' ({}) has been deleted; nothing to relaunch",
+            session.name, session.id
+        ),
+        (false, false) => format!("Restarted session '{}' ({})", session.name, session.id),
     };
     push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
         json!({
-            "restarted": !report.held_back,
+            "restarted": !report.held_back && !report.gone,
             "held_back": report.held_back,
+            "gone": report.gone,
             "session_id": session.id.to_string(),
             "session_name": session.name,
             "hook_failures": report.hook_failures,
         }),
         human,
     ))
+}
+
+/// `restart --if-missing` of a session this database holds as deleted.
+///
+/// A repairer acts on a survey taken before it ran, and a session deleted
+/// since has no window to put back. So the repair is a no-op (`gone`), not a
+/// "Session not found" failure that blames the delete. Only a UUID of a known
+/// deleted row qualifies: a reference that names nothing, such as a typo,
+/// still fails, as does a restart asked for without `--if-missing`.
+fn restart_of_a_deleted_session(
+    db: &Database,
+    reference: &str,
+) -> Result<Option<CommandOutput>, CommandError> {
+    let Ok(id) = reference.parse::<crate::session::SessionId>() else {
+        return Ok(None);
+    };
+    let read = |e: rusqlite::Error| CommandError::from(format!("read session {id}: {e}"));
+    if db.get_session_by_id(id).map_err(read)?.is_some() {
+        return Ok(None);
+    }
+    let Some(gone) = db.get_deleted_session_by_id(id).map_err(read)? else {
+        return Ok(None);
+    };
+    Ok(Some(CommandOutput::new(
+        json!({
+            "restarted": false,
+            "held_back": false,
+            "gone": true,
+            "session_id": id.to_string(),
+            "session_name": gone.name,
+            "hook_failures": [],
+        }),
+        format!(
+            "'{}' ({id}) has been deleted; nothing to relaunch",
+            gone.name
+        ),
+    )))
+}
+
+fn run_restart_fresh(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    uuid: String,
+    wait: bool,
+) -> Result<CommandOutput, CommandError> {
+    use crate::session_ops::restart::{Fresh, WhenBusy};
+    let session = resolve(db, &uuid)?;
+    crate::session_ops::deliver::ensure_hooks_wired(db, backends);
+    let when_busy = match wait {
+        true => WhenBusy::Wait,
+        false => WhenBusy::Refuse,
+    };
+    let report = crate::session_ops::restart::restart_fresh(db, backends, session.id, when_busy)?;
+    let mut json = json!({
+        "outcome": report.fresh.as_str(),
+        "restarted": !matches!(report.fresh, Fresh::Refused(_)),
+        "session_id": session.id.to_string(),
+        "session_name": session.name,
+        "agent_session_id": report.agent_session_id,
+        "hook_failures": report.restart.hook_failures,
+    });
+    if let Fresh::Refused(reason) = &report.fresh {
+        // `error`/`error_kind` too, so a peer delegating to this CLI reads the
+        // refusal as the conflict it is (`host_cli`).
+        json["reason"] = json!(reason);
+        json["error"] = json!(reason);
+        json["error_kind"] = json!("conflict");
+        let human = format!(
+            "Not restarting '{}' ({}): {reason}",
+            session.name, session.id
+        );
+        return Ok(CommandOutput::failed(json, human, reason.clone())
+            .exiting_with(crate::cli::EXIT_CONFLICT));
+    }
+    let mut human = match report.fresh {
+        Fresh::Waited => format!(
+            "Turn ended; restarted '{}' ({}) on a new conversation",
+            session.name, session.id
+        ),
+        _ => format!(
+            "Restarted '{}' ({}) on a new conversation",
+            session.name, session.id
+        ),
+    };
+    push_hook_failures(&mut human, &report.restart.hook_failures);
+    Ok(CommandOutput::new(json, human))
 }
 
 fn run_rename(
@@ -1838,7 +1958,7 @@ fn run_send(
         strict: wait.strict,
         wait_turn: wait.wait_turn,
         timeout: wait.timeout.map(std::time::Duration::from_secs),
-        from_session: super::identity::calling_session(db).map(|s| s.id),
+        from: super::identity::sender(db),
         from_task: super::messages::calling_task_id(),
     };
     let report = send::send(db, backends, &session, &text, &policy)?;

@@ -105,7 +105,7 @@ pub fn load_or_seed_with_warnings() -> (Vec<ThemeEntry>, Vec<String>) {
                 );
             }
         }
-        if let Err(e) = std::fs::write(&path, SEED_THEMES_TOML) {
+        if let Err(e) = crate::paths::write_atomically(&path, SEED_THEMES_TOML) {
             return (Vec::new(), vec![format!("Failed to seed themes.toml: {e}")]);
         }
         tracing::info!(path = %path.display(), "Seeded themes.toml (no custom themes)");

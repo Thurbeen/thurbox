@@ -196,7 +196,7 @@ fn new(name: &str) -> Result<CommandOutput, String> {
     // The example names itself `example`; a scaffold should answer to the name it
     // was asked for, including in its actions and its settings rows.
     let body = STARTER.replace("example", name);
-    std::fs::write(&file, body).map_err(|e| format!("{}: {e}", file.display()))?;
+    crate::paths::write_atomically(&file, body).map_err(|e| format!("{}: {e}", file.display()))?;
 
     let mut human = format!(
         "wrote {}\n  edit it, then `thurbox-cli plugin check`\n  ({} — {})",

@@ -1015,6 +1015,180 @@ fn a_confirmed_send_and_a_dispatch_never_interleave() {
     );
 }
 
+/// The interface's `task` command and `thurbox-cli task` create, edit and
+/// delete through one set of verbs (#1637): the same input leaves the same
+/// row, and a task that is not there gets the same answer from both.
+#[test]
+fn a_task_is_created_edited_and_deleted_the_same_through_the_kernel_and_the_cli() {
+    let instance = Instance::new(None);
+    let db = instance.db();
+    let reg = registries();
+    let backends = &reg.cli;
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let missing = 9_999_i64;
+
+    let mut outcomes = Vec::new();
+    for via in ["kernel", "cli"] {
+        let mut run = |kernel_command: KernelCommand, args: &[&str]| -> Result<(), String> {
+            if via == "kernel" {
+                kernel(&mut bus, kernel_command)
+            } else {
+                cli(&db, backends, args).map(|_| ())
+            }
+        };
+
+        let create_bad_status = run(
+            KernelCommand::Task {
+                id: None,
+                title: Some(format!("never made via {via}")),
+                status: Some("finished".into()),
+                delete: false,
+            },
+            &[
+                "task",
+                "create",
+                "--title",
+                &format!("never made via {via}"),
+                "--status",
+                "finished",
+            ],
+        );
+
+        let title = format!("made via {via}");
+        run(
+            KernelCommand::Task {
+                id: None,
+                title: Some(title.clone()),
+                status: Some("in_progress".into()),
+                delete: false,
+            },
+            &[
+                "task",
+                "create",
+                "--title",
+                &title,
+                "--status",
+                "in_progress",
+            ],
+        )
+        .unwrap_or_else(|e| panic!("create via {via}: {e}"));
+        let created = db
+            .list_tasks()
+            .expect("list")
+            .into_iter()
+            .find(|t| t.title == title)
+            .unwrap_or_else(|| panic!("via {via}: the created task"));
+        assert_eq!(
+            created.status,
+            thurbox::session::TaskStatus::InProgress,
+            "via {via}: the status it was created with"
+        );
+        let id = created.id;
+
+        let renamed = format!("renamed via {via}");
+        run(
+            KernelCommand::Task {
+                id: Some(id),
+                title: Some(renamed.clone()),
+                status: Some("done".into()),
+                delete: false,
+            },
+            &[
+                "task",
+                "edit",
+                &id.to_string(),
+                "--title",
+                &renamed,
+                "--status",
+                "done",
+            ],
+        )
+        .unwrap_or_else(|e| panic!("edit via {via}: {e}"));
+        let task = db.get_task(id).expect("read").expect("the task");
+        assert_eq!(
+            (task.title.as_str(), task.status),
+            (renamed.as_str(), thurbox::session::TaskStatus::Done),
+            "via {via}"
+        );
+
+        let bad_status = run(
+            KernelCommand::Task {
+                id: Some(id),
+                title: None,
+                status: Some("finished".into()),
+                delete: false,
+            },
+            &["task", "edit", &id.to_string(), "--status", "finished"],
+        );
+        let edit_missing = run(
+            KernelCommand::Task {
+                id: Some(missing),
+                title: Some("anything".into()),
+                status: Some("done".into()),
+                delete: false,
+            },
+            &[
+                "task",
+                "edit",
+                &missing.to_string(),
+                "--title",
+                "anything",
+                "--status",
+                "done",
+            ],
+        );
+        let delete_missing = run(
+            KernelCommand::Task {
+                id: Some(missing),
+                title: None,
+                status: None,
+                delete: true,
+            },
+            &["task", "remove", &missing.to_string()],
+        );
+
+        run(
+            KernelCommand::Task {
+                id: Some(id),
+                title: None,
+                status: None,
+                delete: true,
+            },
+            &["task", "remove", &id.to_string()],
+        )
+        .unwrap_or_else(|e| panic!("delete via {via}: {e}"));
+        assert_eq!(db.get_task(id).expect("read"), None, "via {via}");
+
+        outcomes.push((
+            via,
+            (create_bad_status, bad_status),
+            edit_missing,
+            delete_missing,
+        ));
+    }
+
+    let [(_, kernel_bad, kernel_edit, kernel_delete), (_, cli_bad, cli_edit, cli_delete)] =
+        <[_; 2]>::try_from(outcomes).expect("two runs");
+    let not_found = Err(format!("Task not found: {missing}"));
+    assert_eq!(kernel_delete, not_found, "kernel delete of a missing task");
+    assert_eq!(cli_delete, not_found, "cli delete of a missing task");
+    assert_eq!(kernel_edit, not_found, "kernel edit of a missing task");
+    assert_eq!(cli_edit, not_found, "cli edit of a missing task");
+    assert!(
+        kernel_bad.0.is_err(),
+        "kernel created with an unknown status"
+    );
+    assert!(kernel_bad.1.is_err(), "kernel edited to an unknown status");
+    assert_eq!(kernel_bad, cli_bad, "one answer for an unknown status");
+    assert!(
+        db.list_tasks()
+            .expect("list")
+            .iter()
+            .all(|t| !t.title.starts_with("never made")),
+        "a create with an unknown status stored a task"
+    );
+}
+
 /// The interface's `send` and `thurbox-cli session send` are one verb (#1468):
 /// the same text to the same session is refused, typed or left in the mailbox
 /// the same way whichever of the two sends it.
@@ -1940,4 +2114,88 @@ fn an_empty_host_is_checked_as_this_machine() {
     let refused = Err(format!("not a directory: {missing}"));
     assert_eq!(via_cli, refused, "the CLI");
     assert_eq!(via_kernel, refused, "the interface");
+}
+
+/// A prompt thurbox itself sends (the interface's `send`, a task dispatch, a
+/// send automation) and hands to a Claude inbox because someone is typing in
+/// the composer names thurbox as its sender. It has no sending session, and
+/// "a process outside thurbox" would be wrong (#1653).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_prompt_thurbox_hands_to_a_claude_inbox_names_thurbox_as_its_sender() {
+    use std::io::BufRead;
+    use std::os::unix::net::UnixListener;
+
+    if !have_tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let instance = Instance::new(Some("rmux"));
+    let db = instance.db();
+    let reg = registries();
+    reg.probe.read_cursor();
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+
+    let id = SessionId::default();
+    let pane = reg
+        .probe
+        .open("tb-claude-inbox", &id.to_string(), WindowRole::Agent);
+    seed_row(
+        &db,
+        id,
+        "claude-inbox",
+        "local:rmux",
+        &pane,
+        &instance.repo(),
+    );
+    SessionBackend::send_text(&*reg.probe, &pane, "half a dra", false).expect("draft");
+
+    // What a running Claude Code leaves behind for the row: a process carrying
+    // its identity and pane, an inbox socket, and a registry entry naming both.
+    let claude = instance.root.path().join("claude");
+    std::fs::create_dir_all(claude.join("sessions")).expect("mkdir registry");
+    std::env::set_var("CLAUDE_CONFIG_DIR", &claude);
+    let socket = claude.join("inbox.sock");
+    let listener = UnixListener::bind(&socket).expect("bind inbox");
+    let reader = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept");
+        let mut line = String::new();
+        let _ = std::io::BufReader::new(stream).read_line(&mut line);
+        line
+    });
+    let mut agent = Command::new("sleep")
+        .arg("60")
+        .env("THURBOX_SESSION", id.to_string())
+        .env("TMUX_PANE", &pane)
+        .spawn()
+        .expect("spawn stand-in agent");
+    std::fs::write(
+        claude.join(format!("sessions/{}.json", agent.id())),
+        serde_json::json!({
+            "pid": agent.id(),
+            "kind": "interactive",
+            "messagingSocketPath": socket,
+            "startedAt": 1,
+        })
+        .to_string(),
+    )
+    .expect("write registry entry");
+
+    let sent = kernel(
+        &mut bus,
+        KernelCommand::Send {
+            session: id.to_string(),
+            text: "from the interface".into(),
+        },
+    );
+    let _ = agent.kill();
+    let _ = agent.wait();
+
+    sent.expect("handed to the Claude inbox");
+    let line = reader.join().expect("reader");
+    assert!(!line.contains("outside thurbox"), "{line}");
+    assert!(
+        line.contains("from: thurbox itself, not a session"),
+        "{line}"
+    );
 }

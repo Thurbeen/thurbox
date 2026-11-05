@@ -1854,6 +1854,51 @@ impl Database {
         Ok(true)
     }
 
+    /// Give an active session a new agent conversation id — what `session
+    /// restart --fresh` launches the agent on. A targeted write like
+    /// [`Self::rename_session`], so a deleted row stays deleted. Returns whether
+    /// a row took it.
+    pub fn set_agent_session_id(
+        &self,
+        id: SessionId,
+        agent_session_id: &str,
+    ) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let Some(before) = self
+            .conn
+            .query_row(
+                "SELECT agent_session_id FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![id_str],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        self.conn.execute(
+            "UPDATE sessions SET agent_session_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![agent_session_id, current_time_millis() as i64, id_str],
+        )?;
+        self.log_audit(
+            EntityType::Session,
+            &id_str,
+            AuditAction::Updated,
+            Some("agent_session_id"),
+            before.as_deref(),
+            Some(agent_session_id),
+        )?;
+        self.record_session_event(
+            id,
+            SessionEventKind::Changed,
+            EventReason::Updated,
+            None,
+            None,
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Snapshot a host's self-reported `updated_at` for a row a mirror pass
     /// just adopted or updated from it (schema v45).
     ///

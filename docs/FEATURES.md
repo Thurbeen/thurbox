@@ -732,6 +732,16 @@ because restart reuses the session cwd and a single-repo fork reuses
 the parent cwd. Agents that declare no `resume_args` start fresh on
 restart instead of resuming.
 
+`session restart --fresh` skips the resume group for every agent and
+launches on a new agent session id, written to the same row before the
+launch. A new id rather than the old one again because a pinned agent refuses
+an id it has a transcript for, and because the id is what every later
+restart decides resume-or-not by; Codex's saved conversation id is
+dropped for the same reason. A multi-repo session's workspace is named by
+that id, so it is rebuilt under the new one and the old one removed (local
+hosts, as delete does). The busy rule and the `--json` outcomes are in
+[ORCHESTRATION.md](ORCHESTRATION.md#clearing-a-workers-conversation).
+
 Example:
 
 ```toml
@@ -1969,7 +1979,12 @@ relinks). The interface's `dispatch` command runs the same verb,
 `session_ops::tasks::dispatch`, so both reuse the running tagged session
 rather than spawning a second one. A plain todo is skipped by `run` and
 refused by `dispatch`: the command used to spawn `task-<id>` in the most
-recently used repository, a guess the CLI never made.
+recently used repository, a guess the CLI never made. Creating, editing and
+deleting a task are one set of verbs too, `session_ops::tasks::{create, edit,
+delete}`, called by the interface's `task` command and `thurbox-cli task`: an
+edit reads and writes the row under one write lock, so it keeps a field another
+caller saved meanwhile, and deleting a task that is not there is
+"Task not found" from both, where the command used to report success.
 
 ---
 
@@ -2250,13 +2265,14 @@ stays in `settings.toml`, written through a `toml_edit::DocumentMut` so
 the seed's documentation comments survive the round-trip.
 
 **Why some rows take effect immediately and others need a restart.** The
-feature flags that gate UI panels are read every frame, so a save copies
-them into the live `App.features` and they apply at once. Everything else
-is read once at startup from a write-once `OnceLock` that can't be
+feature flags that gate UI panels are read every frame, and `[clipboard]` at
+every copy, so a save takes them into force and they apply at once. Everything
+else is read once at startup from a write-once `OnceLock` that can't be
 re-applied in-process; those rows are marked `⟳`, and a save that touches
-one toasts "some changes apply after restart". The canonical comparison
-(`Settings::restart_only_differs`) is shared by the toast and the reload
-path so the two never disagree.
+one toasts "some changes apply after restart". Which is which is one table,
+`session::settings::FIELDS`, and both what a reload takes into force and
+`Settings::restart_only_differs` are derived from it, so the two never
+disagree.
 
 **Why live-reload the file too.** `settings.toml` is watched by mtime
 (like `agents.toml` / `keybindings.json`): an external edit — a
@@ -2619,6 +2635,19 @@ A restart holds its row for the length of the operation and a
 and one left behind would otherwise refuse the verb long after the holder died.
 What the hold cannot reach — a server already carrying such a pair — is repaired
 by retiring the loser, which ADR-25 describes.
+
+A delete is the other operation a repairer meets halfway through. On a
+shareable host, the delete asks the host to kill the window and drop its row,
+and marks the row here only after the host answers. The repairer checks the
+hold before it asks the host as well, so it stands down while a delete holds
+the row. A `restart --if-missing` for a session that is gone, here or on its
+host, has nothing to repair and is a no-op. An operator's own `session restart`
+of a gone session still fails with "Session not found".
+
+The interface reports a repair that relaunched nothing, whether it stood down
+or found the session gone, as neither: no "restarted" message, no
+`session.post_restart` event, and the pane it was showing is kept. A driver
+deleting a session therefore leaves no trace in the message band.
 
 ### A session's key: the address a driver finds it by
 
@@ -3067,6 +3096,26 @@ What the agent receives is one provenance line, then the body verbatim:
 
 <body>
 ```
+
+`from:` names the sender, which the caller states (`session_ops::delivery::Sender`)
+rather than the delivery guessing it from the environment:
+
+| sender | `from:` |
+| --- | --- |
+| a session in this database | its name, or `a session that no longer exists` once deleted |
+| a `THURBOX_SESSION` naming no session here (a remote peer's) | `a session this thurbox has no record of` |
+| thurbox itself: the interface's send, a task dispatch, a send automation | `thurbox itself, not a session` |
+| a CLI call from no session (a script, a control plane outside thurbox) | `a process outside thurbox, not a session` |
+
+A send a host's own CLI does for a shared session (ADR-24 delegation) is
+labelled by that host's `thurbox-cli`, which runs in no session there, so it
+reads `a process outside thurbox` whoever sent it: `session send` has no flag
+that carries the sender across.
+
+Claude Code puts its own heading and caveat above every message its inbox
+socket receives, calling the sender "another Claude session"; thurbox writes
+only the user turn below it, so this line is where a sender that is not a
+session can be told apart from a peer agent.
 
 There is deliberately no "run `message inbox`" instruction: the body *is*
 the delivery. A native send runs under a **delivery lease**: the sender stamps

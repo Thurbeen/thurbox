@@ -37,31 +37,24 @@ pub enum Command {
         member_dirs: Vec<std::path::PathBuf>,
     },
     /// Soft-delete unless `force`; the interface chooses from the deletion preference.
-    Delete {
-        session: String,
-        force: bool,
-    },
+    Delete { session: String, force: bool },
     Restore {
         session: String,
         /// A force-deleted session lost its worktree, so restoring recovers
         /// committed work only. Refused unless the caller says it knows.
         best_effort: bool,
     },
-    // Kill and relaunch; with `if_missing`, relaunch only when the window is gone.
+    // Kill and relaunch; with `if_missing`, relaunch only when the window is gone,
+    // with `fresh` on a new conversation (refused mid-turn).
     Restart {
         session: String,
         if_missing: bool,
+        fresh: bool,
     },
     /// Paste text into a running session's agent.
-    Send {
-        session: String,
-        text: String,
-    },
+    Send { session: String, text: String },
     /// Move a session up (-1) or down (+1) in the manual order.
-    Reorder {
-        session: String,
-        delta: i64,
-    },
+    Reorder { session: String, delta: i64 },
     /// Persist an explicit manual order, densely renumbered.
     ///
     /// The permutation is computed by the pane that *renders* the list, because
@@ -71,9 +64,7 @@ pub enum Command {
     /// whole-group and subtree moves got lost. Ids the database no longer has
     /// are ignored rather than refused, since the list may have shrunk between
     /// the paint and the press.
-    Order {
-        list: Vec<String>,
-    },
+    Order { list: Vec<String> },
     /// Bring a new session into existence.
     ///
     /// The slowest thing thurbox does — a fetch, a worktree checkout, possibly
@@ -119,23 +110,15 @@ pub enum Command {
         edit: BookmarkEdit,
     },
     /// Fork a session, recording it as the new session's parent.
-    Fork {
-        session: String,
-        name: String,
-    },
+    Fork { session: String, name: String },
     /// Bring a session's worktree up to date with the branch it came from.
-    Sync {
-        session: String,
-    },
+    Sync { session: String },
     /// Give a session a new name, and its windows with it.
     ///
     /// The name is judged on the worker, not at parse time: whether it collides
     /// is a database read, and one place judging all of it keeps a refusal in
     /// the same words the CLI uses. It arrives as `command.failed`.
-    Rename {
-        session: String,
-        name: String,
-    },
+    Rename { session: String, name: String },
     /// Create a task, or change one that exists.
     Task {
         /// `None` creates; `Some` edits.
@@ -172,9 +155,7 @@ pub enum Command {
     /// Applied on the UI thread: the vt100 screen lives behind a `!Send` VM
     /// neighbour and the clipboard wants the tty, neither of which a worker can
     /// reach.
-    Copy {
-        session: String,
-    },
+    Copy { session: String },
     /// Recompute a session's diff, discarding the one already published.
     ///
     /// UI-thread applied: it only drops a cache entry, and the loop re-requests
@@ -186,9 +167,7 @@ pub enum Command {
     /// still writing code would show a diff frozen at first sight, which is worse
     /// than showing none. The store's own doctrine — a cached answer carries an
     /// age, not just a value — was not being met.
-    Diff {
-        session: String,
-    },
+    Diff { session: String },
     /// Focus a pane by name.
     ///
     /// UI-thread applied: focus is the loop's state, and there is nothing to
@@ -210,9 +189,7 @@ pub enum Command {
     ///
     /// UI-thread applied: the pane is wired into the same `!Send` world the
     /// agent's is.
-    Shell {
-        session: String,
-    },
+    Shell { session: String },
     /// Start — or close — an interactive program in a pane a plugin owns.
     ///
     /// UI-thread applied for the same reason `Shell` is: the pane is wired into
@@ -258,16 +235,12 @@ pub enum Command {
     /// `Ctrl+O`: an editor needs a real controlling tty, which is either a tmux
     /// popup or this process's own terminal with the TUI stood down
     /// (`run_pending_editor` in `src/main.rs`). A worker thread has neither.
-    Editor {
-        session: String,
-    },
+    Editor { session: String },
     /// Open a link, falling back to copying it where nothing can open it.
     ///
     /// Applied on the UI thread with copy, for the same reason: the fallback
     /// needs the clipboard, which wants the tty.
-    OpenLink {
-        url: String,
-    },
+    OpenLink { url: String },
     /// Change or reset a declared setting.
     ///
     /// Like `Theme`, applied on the UI thread: it mutates the registry, which
@@ -283,9 +256,7 @@ pub enum Command {
     /// [`Command::session`] returns an empty string for it. It is also the one
     /// command applied on the UI thread rather than a worker, because it
     /// mutates in-process state a worker cannot reach.
-    Theme {
-        name: String,
-    },
+    Theme { name: String },
     /// Let the agents of every session soft-deleted past its undo window go,
     /// and finish the teardowns owed on hosts that were unreachable when a
     /// force delete was taken.
@@ -351,10 +322,7 @@ pub enum Command {
     /// request the action is comes from the queue entry instead
     /// ([`Command::runs_for`]), which through a chain of actions stays the pane
     /// that first asked, where this field names the handler that forwarded it.
-    Action {
-        fallback: String,
-        action: String,
-    },
+    Action { fallback: String, action: String },
     /// A menu action with an explicit row target.
     ActionTarget {
         fallback: String,
@@ -1048,6 +1016,7 @@ impl Command {
             text,
             delta,
             force,
+            fresh,
             ..
         } = args;
         if session.is_empty() {
@@ -1062,6 +1031,7 @@ impl Command {
             "restart" => Ok(Command::Restart {
                 session,
                 if_missing: false,
+                fresh,
             }),
             "send" => match text {
                 Some(text) => Ok(Command::Send { session, text }),
@@ -1149,6 +1119,8 @@ pub struct Args {
     pub value: Option<String>,
     pub delta: Option<i64>,
     pub force: bool,
+    /// `restart`: on a new conversation.
+    pub fresh: bool,
     pub flag: Option<bool>,
     /// `focus`: return to the previous pane when the named one already has focus.
     pub toggle: bool,
@@ -1823,6 +1795,19 @@ mod tests {
                 Ok(Command::Restart {
                     session: "s1".into(),
                     if_missing: false,
+                    fresh: false,
+                }),
+            ),
+            (
+                "restart",
+                Args {
+                    fresh: true,
+                    ..session("s1")
+                },
+                Ok(Command::Restart {
+                    session: "s1".into(),
+                    if_missing: false,
+                    fresh: true,
                 }),
             ),
             (
@@ -2597,6 +2582,43 @@ mod tests {
             .find(|item| item.id == id)
             .expect("a failure stays visible");
         assert_eq!(item.error.as_deref(), Some("no such pane"));
+    }
+
+    /// A repair that relaunched nothing leaves the list like any success, and
+    /// the loop can still learn that it did nothing, once. Without that, the
+    /// interface announced "restarted" for a session a driver had just deleted.
+    #[test]
+    fn a_command_that_did_nothing_says_so_once() {
+        let mut bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
+        let (quiet, done) = (
+            bus.dispatch(Command::Focus {
+                plugin: "agent".into(),
+                toggle: false,
+            }),
+            bus.dispatch(Command::Focus {
+                plugin: "other".into(),
+                toggle: false,
+            }),
+        );
+        bus.finish_doing_nothing_for_test(quiet);
+        bus.finish_for_test(done, None);
+        assert!(bus.poll());
+
+        assert!(
+            !bus.inflight()
+                .iter()
+                .any(|item| item.id == quiet || item.id == done),
+            "both left the list as successes"
+        );
+        assert!(
+            bus.take_did_nothing(quiet),
+            "the one that did nothing says so"
+        );
+        assert!(!bus.take_did_nothing(quiet), "and only once");
+        assert!(
+            !bus.take_did_nothing(done),
+            "a command that did its work does not"
+        );
     }
 
     // ── a plugin's program is not a session ────────────────────────────────

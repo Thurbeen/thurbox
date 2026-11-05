@@ -123,6 +123,24 @@ fn a_live_change_on_disk_applies_without_a_restart() {
 }
 
 #[test]
+fn a_clipboard_change_on_disk_is_taken_into_force() {
+    // Issue #1638: the reload said `Live` and kept the booted `[clipboard]`, so
+    // the next copy still went through the old provider.
+    let _home = isolate();
+    write_settings("[clipboard]\nprovider = \"auto\"\ncopy_on_select = true\n");
+    let (mut config, _) = Config::load();
+
+    write_settings("[clipboard]\nprovider = \"osc52\"\ncopy_on_select = false\n");
+    let (fresh, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    assert_eq!(config.adopt(fresh), Reloaded::Live);
+    assert_eq!(
+        config.in_force().clipboard.provider,
+        thurbox::session::settings::ClipboardProvider::Osc52
+    );
+    assert!(!config.in_force().clipboard.copy_on_select);
+}
+
+#[test]
 fn a_restart_only_change_is_reported_rather_than_implied() {
     let _home = isolate();
     write_settings("scrollback_lines = 10000\n");

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use super::execute::execute;
+use super::execute::{execute, Outcome};
 use super::Command;
 
 /// How far along a command is.
@@ -79,6 +79,25 @@ pub(super) struct Progress {
 struct Done {
     id: u64,
     error: Option<String>,
+    /// Succeeded having done nothing ([`Outcome::Nothing`]).
+    did_nothing: bool,
+}
+
+impl Done {
+    fn from_result(id: u64, result: Result<Outcome, String>) -> Self {
+        match result {
+            Ok(outcome) => Self {
+                id,
+                error: None,
+                did_nothing: outcome == Outcome::Nothing,
+            },
+            Err(error) => Self {
+                id,
+                error: Some(error),
+                did_nothing: false,
+            },
+        }
+    }
 }
 
 /// How long a failed command stays readable before being swept.
@@ -97,6 +116,10 @@ pub struct CommandBus {
     pending: Arc<Mutex<SessionQueues>>,
     /// When each failure was recorded, so it can be swept after lingering.
     failed_at: Vec<(u64, std::time::Instant)>,
+    /// Commands that succeeded having done nothing, until the loop asks
+    /// ([`Self::take_did_nothing`]). A success leaves the in-flight list at
+    /// once, so this is the only place that fact survives to be reported.
+    did_nothing: std::collections::HashSet<u64>,
     /// The process's one registry, which every command's worker drives the
     /// session's backend through.
     backends: Arc<crate::backend::BackendRegistry>,
@@ -115,6 +138,7 @@ impl CommandBus {
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             failed_at: Vec::new(),
+            did_nothing: std::collections::HashSet::new(),
             backends,
         }
     }
@@ -167,11 +191,11 @@ impl CommandBus {
                     }
                 }
                 // A panic must not strand the remaining commands for this session.
-                let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    execute(&command, &backends, id, &progress).err()
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    execute(&command, &backends, id, &progress)
                 }))
-                .unwrap_or_else(|_| Some("command worker panicked".into()));
-                let _ = finished.send(Done { id, error });
+                .unwrap_or_else(|_| Err("command worker panicked".into()));
+                let _ = finished.send(Done::from_result(id, result));
                 if session.is_empty() {
                     break;
                 }
@@ -211,7 +235,27 @@ impl CommandBus {
     /// thread.
     #[doc(hidden)]
     pub fn finish_for_test(&self, id: u64, error: Option<String>) {
-        let _ = self.finished_tx.send(Done { id, error });
+        let _ = self.finished_tx.send(Done {
+            id,
+            error,
+            did_nothing: false,
+        });
+    }
+
+    /// [`Self::finish_for_test`] for a command that succeeded having done
+    /// nothing.
+    #[doc(hidden)]
+    pub fn finish_doing_nothing_for_test(&self, id: u64) {
+        let _ = self
+            .finished_tx
+            .send(Done::from_result(id, Ok(Outcome::Nothing)));
+    }
+
+    /// Whether a finished command succeeded having done nothing — a repair
+    /// whose session was deleted, or that stood down. Answered once: the fact
+    /// is forgotten as it is read.
+    pub fn take_did_nothing(&mut self, id: u64) -> bool {
+        self.did_nothing.remove(&id)
     }
 
     /// Fold finished commands into the in-flight list.
@@ -255,7 +299,12 @@ impl CommandBus {
             match done.error {
                 // Success: the effect is in the database now, so the row has
                 // nothing left to say.
-                None => list.retain(|entry| entry.id != done.id),
+                None => {
+                    list.retain(|entry| entry.id != done.id);
+                    if done.did_nothing {
+                        self.did_nothing.insert(done.id);
+                    }
+                }
                 Some(error) => {
                     if let Some(entry) = list.iter_mut().find(|entry| entry.id == done.id) {
                         entry.phase = Phase::Failed;

@@ -13,7 +13,8 @@
 //!
 //! This module is pure data (no local crate imports beyond `super`), matching
 //! the architecture rule for `session`. Persistence lives in `storage::tasks`;
-//! dispatch lives in the `app` layer.
+//! the verbs that create, edit, delete and dispatch one live in
+//! `session_ops::tasks`.
 
 use super::AutomationAction;
 
@@ -50,13 +51,10 @@ impl TaskStatus {
     }
 
     /// Parse a status stored in the database, defaulting unknown values to
-    /// `Todo`.
+    /// `Todo`: a row is read, not refused. Input from a person or a plugin goes
+    /// through [`FromStr`](std::str::FromStr), which does refuse.
     pub fn from_db(s: &str) -> Self {
-        match s {
-            "in_progress" => Self::InProgress,
-            "done" => Self::Done,
-            _ => Self::Todo,
-        }
+        s.parse().unwrap_or_default()
     }
 
     /// Advance to the next status, wrapping `Todo → InProgress → Done → Todo`.
@@ -66,6 +64,23 @@ impl TaskStatus {
             Self::Todo => Self::InProgress,
             Self::InProgress => Self::Done,
             Self::Done => Self::Todo,
+        }
+    }
+}
+
+/// The one parser for a status typed by a person or a plugin: the names
+/// [`TaskStatus::as_str`] stores, and nothing else.
+impl std::str::FromStr for TaskStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "todo" => Ok(Self::Todo),
+            "in_progress" => Ok(Self::InProgress),
+            "done" => Ok(Self::Done),
+            other => Err(format!(
+                "not a task status: {other:?} — try todo, in_progress or done"
+            )),
         }
     }
 }
@@ -206,6 +221,16 @@ mod tests {
         for s in [TaskStatus::Todo, TaskStatus::InProgress, TaskStatus::Done] {
             assert_eq!(TaskStatus::from_db(s.as_str()), s);
         }
+    }
+
+    #[test]
+    fn typed_status_parses_the_stored_names_and_refuses_the_rest() {
+        for s in [TaskStatus::Todo, TaskStatus::InProgress, TaskStatus::Done] {
+            assert_eq!(s.as_str().parse::<TaskStatus>(), Ok(s));
+        }
+        // The label's spelling is for display, not input.
+        assert!("in progress".parse::<TaskStatus>().is_err());
+        assert!("garbage".parse::<TaskStatus>().is_err());
     }
 
     #[test]

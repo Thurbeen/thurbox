@@ -345,6 +345,14 @@ defaults and this instance's locations (config dir, data dir, socket), with no
 session identity. Always a **fresh** launch — continuing a
 conversation is `session start`/`restart`.
 
+`session restart --fresh [--wait]` is the other way round: the same session on
+a **new** conversation (no resume group, new `agent_session_id` written to the
+row), refused with exit 5 while the session reports `working`/`blocked`/
+`background` unless `--wait`. `--json` `outcome` is `cleared`, `waited` or
+`refused`. One owner, `session_ops::restart::restart_fresh`, behind the CLI and
+the interface's `restart` command (`fresh = true`, never waits);
+docs/ORCHESTRATION.md → *Clearing a worker's conversation*.
+
 ### Session keys — the address a driver finds its sessions by
 
 One opaque **key** per session (issue #1408, ADR-35): `session create --key K`
@@ -1156,6 +1164,9 @@ once the agent was shown the prompt: one left only in the mailbox fails the disp
 `session_ops::tasks::dispatch` is the one implementation (#1468): `task run` and the
 interface's `dispatch` command both call it, so they name, reuse and refuse alike; the
 command additionally takes a session to send to instead of the task's action.
+Creating, editing and deleting go the same way (#1637): `session_ops::tasks::{create,
+edit, delete}` return `OpError`, `TaskStatus: FromStr` is the one status parser, and a
+missing task is `tasks::not_found` ("Task not found: <id>") from either caller.
 
 - **Data** (`session/task.rs`): `Task` (`id`, `title`, `description:
   Option<String>`, `status: TaskStatus` {`Todo`/`InProgress`/`Done`}, `action:

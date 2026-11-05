@@ -9,6 +9,17 @@ use crate::kernel::snapshot;
 use crate::session::SessionId;
 use crate::storage::Database;
 
+/// What a command that succeeded did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Outcome {
+    /// What it was asked to do.
+    Done,
+    /// Nothing, and rightly: a repair whose session was deleted, or that stood
+    /// down for another operation on the row. The interface announces it as
+    /// neither a success nor a failure.
+    Nothing,
+}
+
 /// Run one command on a worker, never the UI thread.
 ///
 /// Only the outcome travels back. A creation and a fork each mint a session id,
@@ -19,18 +30,64 @@ pub(super) fn execute(
     backends: &crate::backend::BackendRegistry,
     id: u64,
     progress: &Sender<Progress>,
-) -> Result<(), String> {
+) -> Result<Outcome, String> {
     // Handled by the loop before dispatch, because they mutate in-process state
     // the worker cannot reach. Reaching here means a caller bypassed that.
     if command.applied_on_ui_thread() {
         return Err("applied on the UI thread, not dispatched".to_string());
     }
+    if let Command::Guarded { inner, .. } = command {
+        confirm_guard(command)?;
+        return execute(inner, backends, id, progress);
+    }
+    // The one command that can rightly do nothing: a repair (the interface's
+    // respawn of a pane-less row) whose session was deleted meanwhile, or
+    // that stood down for a delete or restart holding the row.
+    if let Command::Restart {
+        fresh: false,
+        if_missing,
+        ..
+    } = command
+    {
+        return restart(command, backends, *if_missing);
+    }
+    perform(command, backends, id, progress).map(|()| Outcome::Done)
+}
+
+/// A plain restart, and whether it relaunched anything.
+fn restart(
+    command: &Command,
+    backends: &crate::backend::BackendRegistry,
+    if_missing: bool,
+) -> Result<Outcome, String> {
+    let id: SessionId = command
+        .session()
+        .parse()
+        .map_err(|_| format!("not a session id: {}", command.session()))?;
+    let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
+    let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
+    let report =
+        crate::session_ops::restart::restart_session_headless_with(&db, backends, id, if_missing)
+            .map_err(|e| e.to_string())?;
+    if report.relaunched_nothing() {
+        return Ok(Outcome::Nothing);
+    }
+    // A failed post-restart hook is already in the log; the restart stands.
+    // A relaunch held back for a crash loop does not, and fails with why.
+    report
+        .into_outcome()
+        .map(|()| Outcome::Done)
+        .map_err(|e| e.to_string())
+}
+
+/// Refuse a confirmed command whose target is no longer what was confirmed.
+fn confirm_guard(command: &Command) -> Result<(), String> {
     if let Command::Guarded {
-        inner,
         session,
         backend_id,
         cwd,
         member_dirs,
+        ..
     } = command
     {
         let session_id: SessionId = session.parse().map_err(|_| "invalid confirmation target")?;
@@ -60,9 +117,17 @@ pub(super) fn execute(
         {
             return Err("confirmation target changed".into());
         }
-        return execute(inner, backends, id, progress);
     }
+    Ok(())
+}
 
+/// Every command but the two [`execute`] answers itself.
+fn perform(
+    command: &Command,
+    backends: &crate::backend::BackendRegistry,
+    id: u64,
+    progress: &Sender<Progress>,
+) -> Result<(), String> {
     // Creation names a repository rather than a session, so it runs before the
     // id is parsed — there is nothing to parse yet.
     if let Command::Create {
@@ -193,18 +258,17 @@ pub(super) fn execute(
                 })
                 .map_err(|e| e.to_string())
         }
-        // A failed post-restart hook is already in the log; the restart stands.
-        // A relaunch held back for a crash loop does not, and fails with why.
-        Command::Restart { if_missing, .. } => {
-            crate::session_ops::restart::restart_session_headless_with(
-                &db,
-                backends,
-                id,
-                *if_missing,
-            )
-            .and_then(crate::session_ops::restart::RestartReport::into_outcome)
-            .map_err(|e| e.to_string())
-        }
+        // Fresh is refused mid-turn: the interface never blocks a worker
+        // waiting for a turn to end, and the refusal says why.
+        Command::Restart { fresh: true, .. } => crate::session_ops::restart::restart_fresh(
+            &db,
+            backends,
+            id,
+            crate::session_ops::restart::WhenBusy::Refuse,
+        )
+        .and_then(crate::session_ops::restart::FreshReport::into_outcome)
+        .map_err(|e| e.to_string()),
+        Command::Restart { .. } => unreachable!("a plain restart is run by `execute`"),
         Command::Send { text, .. } => {
             let session = db
                 .get_session_by_id(id)
@@ -541,7 +605,8 @@ pub(super) fn sync(db: &Database, id: SessionId) -> Result<(), String> {
     Ok(())
 }
 
-/// Create, edit, retitle or delete a task.
+/// Create, edit, retitle or delete a task, through the verbs `thurbox-cli task`
+/// shares.
 fn task(
     db: &Database,
     id: Option<i64>,
@@ -549,51 +614,31 @@ fn task(
     status: &Option<String>,
     delete: bool,
 ) -> Result<(), String> {
-    use crate::session::task::TaskStatus;
-    use crate::storage::tasks::NewTask;
+    use crate::session_ops::tasks;
 
+    let status: Option<crate::session::TaskStatus> =
+        status.as_deref().map(str::parse).transpose()?;
     let Some(id) = id else {
         let title = title.clone().ok_or("a new task needs a title")?;
-        return db
-            .create_task(&NewTask::local(title))
-            .map(|_| ())
-            .map_err(|e| format!("create task: {e}"));
-    };
-
-    if delete {
-        return db
-            .soft_delete_task(id)
-            .map(|_| ())
-            .map_err(|e| format!("delete task: {e}"));
-    }
-
-    if let Some(status) = status {
-        // The same three names `thurbox-cli task edit --status` accepts, so a
-        // plugin and a script speak one vocabulary.
-        let status = match status.as_str() {
-            "todo" => TaskStatus::Todo,
-            "in_progress" => TaskStatus::InProgress,
-            "done" => TaskStatus::Done,
-            other => {
-                return Err(format!(
-                    "not a task status: {other:?} — try todo, in_progress or done"
-                ))
-            }
+        let new = crate::storage::tasks::NewTask {
+            status: status.unwrap_or_default(),
+            ..crate::storage::tasks::NewTask::local(title)
         };
-        db.set_task_status(id, status)
+        return tasks::create(db, new)
             .map(|_| ())
-            .map_err(|e| format!("set status: {e}"))?;
+            .map_err(|e| e.to_string());
+    };
+    if delete {
+        return tasks::delete(db, id).map_err(|e| e.to_string());
     }
-    if let Some(title) = title {
-        let mut existing = db
-            .get_task(id)
-            .map_err(|e| format!("get task: {e}"))?
-            .ok_or_else(|| format!("no task #{id}"))?;
-        existing.title = title.clone();
-        db.update_task(&existing)
-            .map_err(|e| format!("update task: {e}"))?;
-    }
-    Ok(())
+    let changes = tasks::TaskEdit {
+        title: title.clone(),
+        status,
+        ..Default::default()
+    };
+    tasks::edit(db, id, changes)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Hand a task to an agent, through the verb `thurbox-cli task run` shares.
@@ -607,10 +652,7 @@ fn dispatch_task(
     session: Option<&str>,
 ) -> Result<(), String> {
     use crate::session_ops::tasks::{dispatch, Dispatched};
-    let task = db
-        .get_task(task_id)
-        .map_err(|e| format!("get task: {e}"))?
-        .ok_or_else(|| format!("no task #{task_id}"))?;
+    let task = crate::session_ops::tasks::get(db, task_id).map_err(|e| e.to_string())?;
     let session = session
         .map(|s| {
             s.parse::<SessionId>()
@@ -807,6 +849,101 @@ mod tests {
             let db = Database::open_in_memory().expect("db");
             let error = automation(&db, 404, None, true, false).unwrap_err();
             assert_eq!(error, "automation #404 no longer exists");
+        }
+    }
+
+    /// The interface's respawn is `Command::Restart { if_missing: true }`. One
+    /// that relaunched nothing must come back as [`Outcome::Nothing`], which
+    /// the interface reports as neither "restarted" nor "could not restart".
+    mod repairs {
+        use super::super::{execute, Outcome};
+        use crate::kernel::command::Command;
+        use crate::session::SessionId;
+        use crate::storage::Database;
+        use crate::sync::SharedSession;
+
+        struct Rig {
+            _temp: tempfile::TempDir,
+            _guard: crate::paths::TestPathGuard,
+            db: Database,
+            id: SessionId,
+        }
+
+        /// A local session row on the database `execute` opens, with no window.
+        fn rig() -> Rig {
+            let temp = tempfile::TempDir::new().unwrap();
+            let guard = crate::paths::TestPathGuard::new(temp.path());
+            let path = crate::paths::database_file().unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let db = Database::open(&path).unwrap();
+            let id = SessionId::default();
+            db.upsert_session(&SharedSession {
+                id,
+                name: "probe".into(),
+                agent: "shell".into(),
+                backend_id: String::new(),
+                backend_type: "local-tmux".into(),
+                agent_session_id: None,
+                cwd: None,
+                additional_dirs: Vec::new(),
+                worktrees: Vec::new(),
+                shell_backend_id: None,
+                parent_session_id: None,
+                display_order: None,
+                tombstone: false,
+                tombstone_at: None,
+                key: None,
+            })
+            .unwrap();
+            Rig {
+                _temp: temp,
+                _guard: guard,
+                db,
+                id,
+            }
+        }
+
+        fn restart(id: SessionId, if_missing: bool) -> Result<Outcome, String> {
+            let (progress, _) = std::sync::mpsc::channel();
+            execute(
+                &Command::Restart {
+                    session: id.to_string(),
+                    if_missing,
+                    fresh: false,
+                },
+                &crate::backend::registry::inert(),
+                1,
+                &progress,
+            )
+        }
+
+        #[test]
+        fn a_repair_that_stands_down_for_a_held_row_did_nothing() {
+            let rig = rig();
+            // A delete (or a restart) holding the row, as the race had it.
+            let _held = crate::session_ops::lock::lock(
+                &rig.db,
+                crate::session_ops::lock::Subject::Session(rig.id),
+                "delete",
+            )
+            .unwrap()
+            .expect("the row is free to hold");
+            assert_eq!(restart(rig.id, true), Ok(Outcome::Nothing));
+        }
+
+        #[test]
+        fn a_repair_of_a_session_deleted_meanwhile_did_nothing() {
+            let rig = rig();
+            rig.db.soft_delete_session(rig.id).unwrap();
+            assert_eq!(restart(rig.id, true), Ok(Outcome::Nothing));
+        }
+
+        #[test]
+        fn an_asked_restart_of_a_deleted_session_still_fails() {
+            let rig = rig();
+            rig.db.soft_delete_session(rig.id).unwrap();
+            let error = restart(rig.id, false).expect_err("asked restarts report it");
+            assert!(error.contains("Session not found"), "{error}");
         }
     }
 }

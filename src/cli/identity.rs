@@ -3,6 +3,7 @@
 //! `session signal` (the hook callback's identity).
 
 use crate::session::SessionId;
+use crate::session_ops::delivery::Sender;
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
@@ -61,6 +62,16 @@ pub(crate) fn caller(db: &Database) -> Result<Caller, String> {
         .get_session_by_id(id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .map_or(Caller::Unknown(raw), |s| Caller::Known(Box::new(s))))
+}
+
+/// [`caller`] as the sender of a message or a send. A `THURBOX_SESSION` that
+/// cannot be looked up is still a session's, so a DB error reads as unknown.
+pub(crate) fn sender(db: &Database) -> Sender {
+    match caller(db) {
+        Ok(Caller::Known(s)) => Sender::Session(s.id),
+        Ok(Caller::Unknown(_)) | Err(_) => Sender::UnknownSession,
+        Ok(Caller::Unset) => Sender::Outside,
+    }
 }
 
 /// [`caller`] for provenance, which is best-effort: `None` unless the id maps to

@@ -220,7 +220,7 @@ pub fn load_or_seed_with_warnings() -> (Settings, Vec<String>) {
                 );
             }
         }
-        if let Err(e) = std::fs::write(&path, SEED_SETTINGS_TOML) {
+        if let Err(e) = crate::paths::write_atomically(&path, SEED_SETTINGS_TOML) {
             return (
                 Settings::default(),
                 vec![format!("Failed to seed settings.toml: {e}")],
@@ -401,7 +401,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         notifications["backend"] = value(backend);
     }
 
-    crate::paths::write_atomically(&path, &doc.to_string())
+    crate::paths::write_atomically(&path, doc.to_string())
 }
 
 #[cfg(test)]
