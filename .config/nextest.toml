@@ -46,9 +46,9 @@ test-group = 'e2e-pty'
 filter = 'binary_id(thurbox::tui_e2e)'
 test-group = 'e2e-pty'
 # One thread works through this group's ~200 tests back to back, so it is the
-# longest chain in the run. Nextest starts binaries roughly in name order, so
-# without a priority `tui_e2e` began only after the rest of the suite was
-# mostly done and ran as a single-threaded tail. Starting it first lets the
+# longest chain in the run. Without a priority `tui_e2e` began only after the
+# rest of the suite was mostly done (its first test was #4401 of 4608) and ran
+# as a single-threaded tail. Starting it first lets the
 # remaining threads finish everything else alongside it.
 priority = 100
 

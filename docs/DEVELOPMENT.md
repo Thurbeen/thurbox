@@ -188,9 +188,10 @@ PTY measurements.
 A cache saved by a `pull_request` run is scoped to that PR's merge ref. No
 other PR can restore it, and before the change below there was no cache on
 `main` at all, so every PR's first run built its dependencies from scratch.
-Over 39 successful runs (November 2026), 22 Nextest jobs and 19 Windows test
-jobs started with no cache. Building took 8.7 min instead of 3.8 min for Nextest,
-and 12.6 min instead of 6.3 min for the Windows tests. CI now also runs on push
+Over the 39 successful runs from 1 to 5 November 2026, 22 Nextest jobs and 19
+Windows test jobs started with no cache. The median build took 8.7 min cold
+against 3.8 min warm for Nextest, and 13.9 min against 6.9 min for the Windows
+tests. CI now also runs on push
 to `main`, which is the only scope every PR can read, and only `main` saves the
 Rust caches. Pull-request saves could not be shared, and they kept the
 repository over its 10 GB cache quota.
@@ -201,8 +202,9 @@ chain in the run. Before the priority it started only after the rest of the
 suite, and finished as a single-threaded tail: a 510 s test phase for 934
 test-seconds on four cores. `host_probe_deadline` takes about 135 s on Windows,
 and that run used to finish by waiting on it alone. With the priorities both
-start first. On four threads locally, the full suite went from 545 s to 384–386 s
-without changing which tests run, their group or their timeouts.
+start first. On four threads locally, the full suite went from 545 s to
+384–402 s over three runs, without changing which tests run, their group or
+their timeouts.
 
 ### Debug information and disk usage
 

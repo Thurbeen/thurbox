@@ -7,8 +7,8 @@ on:
   # saved by a pull_request run is scoped to that PR's merge ref, so no other
   # PR can restore it. Only a cache saved on `main` is visible to every PR.
   # Without this trigger there was none, and every PR's first run compiled
-  # all dependencies from scratch: Windows (tests) took 12.6 min to build cold
-  # against 6.3 min warm, Nextest 8.7 min against 3.8 min.
+  # all dependencies from scratch: the median Windows (tests) build took 13.9
+  # min cold against 6.9 min warm, and Nextest 8.7 min against 3.8 min.
   push:
     branches: [main]
 
@@ -17,9 +17,10 @@ env:
   RUST_BACKTRACE: 1
 
 # Cancel a superseded run when a new commit is pushed to the same PR, so rapid
-# re-pushes don't pile up parallel runs of the (heavy) Rust matrix. Runs on
-# `main` are never cancelled: a cancelled run skips its cache save, and a burst
-# of merges would leave the cache stale.
+# re-pushes don't pile up parallel runs of the (heavy) Rust matrix. A run on
+# `main` already in progress is not cancelled: a cancelled run skips its cache
+# save, so a burst of merges would leave the cache stale. (A newer `main` run
+# still replaces one that is only queued, which is the one to keep anyway.)
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -202,7 +203,7 @@ jobs:
         with:
           components: clippy
       # Saved only from `main` (see the push trigger). A PR-saved copy
-      # duplicated main's yet no other PR could restore it, and at about 2.3 GB
+      # duplicated main's yet no other PR could restore it, and at about 2 GB
       # of Rust caches per PR they kept the repository over its 10 GB quota,
       # which evicts the very entries every PR restores. Every other
       # rust-cache step below does the same.
