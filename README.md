@@ -13,7 +13,7 @@ sends the brief once, records the worker's result, and releases the session
 when you delete the Task. Fleet v2 is one native binary with a bundled
 [VEGA](https://github.com/Thurbeen/vega) starter.
 
-![Animated diagram: VEGA as Mission Control, the fleet up reconcile loop and the kinds it drives](media/fleet-flow-doom.svg)
+![Animated diagram: Fleet target architecture, with views on one Fleet API, the reconcile engine, ports and runtime adapters, and Thurbox attached to a live session](media/fleet-architecture-doom.svg)
 
 ## Setup
 
