@@ -5876,8 +5876,6 @@ mod tests {
         assert_eq!(asked(), 2);
     }
 
-    /// Over control mode an answer that is not a version may be a reply that
-    /// belonged to another command, so it admits nothing.
     /// A stand-in control-mode server for [`TestMux`] that answers `%error`
     /// with `reply` to any line containing `refuse`, and `%end` otherwise.
     #[cfg(unix)]
@@ -5948,6 +5946,8 @@ mod tests {
         assert_eq!(kind(error), "refused");
     }
 
+    /// Over control mode an answer that is not a version may be a reply that
+    /// belonged to another command, so it admits nothing.
     #[cfg(unix)]
     #[test]
     fn a_connection_that_answers_no_version_names_no_pane() {
