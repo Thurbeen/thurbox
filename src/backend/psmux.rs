@@ -1114,7 +1114,9 @@ impl PsmuxPaste {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{PaneIo, StatusChannel, WindowLifecycle};
+    use crate::backend::StatusChannel;
+    #[cfg(unix)]
+    use crate::backend::{PaneIo, WindowLifecycle};
 
     #[cfg(unix)]
     fn cold_start_backend(root: &tempfile::TempDir, scenario: &str) -> PsmuxBackend {
