@@ -1675,8 +1675,9 @@ impl<M: TmuxCompatible> Server<M> {
     /// A multiplexer without window options (ADR-13) stamps nothing, so
     /// local recovery can select the sole fresh live namesake, but multiple live
     /// names stay unknown. A restarted server can reissue a remembered pane id
-    /// to another same-name window. Locally, one stamp on two
-    /// windows is repairable, and here is where repairing it matters:
+    /// to another same-name window. One stamp on two windows is repairable,
+    /// on a host as on this machine (issue #1635), and here is where repairing
+    /// it matters:
     /// `stamped_match` refuses the pair by design, so without this nothing
     /// would ever look again and the session stayed unaddressable for good
     /// (issue #1207). The refusal itself is untouched — the choice is made by
@@ -1694,10 +1695,9 @@ impl<M: TmuxCompatible> Server<M> {
             }
             return Ok(Located::Unknown);
         }
-        if self.transport.is_remote()
-            || self
-                .retire_duplicate_windows(owner.session_id, role)
-                .is_none()
+        if self
+            .retire_duplicate_windows(owner.session_id, role)
+            .is_none()
         {
             return Ok(Located::Unknown);
         }
@@ -3157,11 +3157,7 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
                 };
             }
         }
-        let retired = if remote {
-            Vec::new()
-        } else {
-            self.retire_windows_in(&listing, spec.owner.session_id, spec.role)
-        };
+        let retired = self.retire_windows_in(&listing, spec.owner.session_id, spec.role);
         if retired.iter().any(|window| {
             listing.lines().any(|line| {
                 let fields: Vec<_> = line.split('|').collect();
@@ -3276,12 +3272,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         }
         // As at creation, and for the same reason: the invariant a stamp is only
         // meaningful under is enforced where the stamp is written, rather than
-        // left to a resolver that is required to refuse the pair. The sweep is
-        // a local one-shot, so a host's server is left to the teardown that
-        // can reach it.
-        if !self.transport.is_remote() {
-            let _ = self.retire_duplicate_windows(session_id, role);
-        }
+        // left to a resolver that is required to refuse the pair.
+        let _ = self.retire_duplicate_windows(session_id, role);
         Ok(())
     }
 
@@ -4898,7 +4890,10 @@ impl<M: TmuxCompatible> Server<M> {
     /// A newest window whose pane has already exited is kept and stays on screen
     /// (`remain-on-exit`), which is how the operator gets to see why it exited.
     ///
-    /// This machine's server only, and only one with window options: a server
+    /// Over the control connection where there is one, so a host's sweep costs
+    /// no ssh handshake of its own; one-shot otherwise, as every other verb a
+    /// caller with no connection runs (issue #1635). Only a server with window
+    /// options, though: a server
     /// that keeps `@` options in one server-global map (psmux, ADR-13) hands the
     /// same value back for every window, so every window there would read as
     /// stamped for whoever was stamped last; the stamp is withheld at both ends for
@@ -4908,21 +4903,34 @@ impl<M: TmuxCompatible> Server<M> {
         if !M::WINDOW_OPTIONS || session_id.is_empty() {
             return None;
         }
-        let output = self
-            .mux_command(&["list-windows", "-t", &self.session, "-F", RETIRE_FORMAT])
-            .ok()?
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let listing = String::from_utf8_lossy(&output.stdout);
+        let listing = self.retire_listing()?;
         let windows = stamped_windows_in(&listing, session_id, role);
         let keep = windows.last()?.clone();
         (!self
             .retire_windows_in(&listing, session_id, role)
             .is_empty())
         .then_some(keep)
+    }
+
+    /// The [`RETIRE_FORMAT`] listing, or `None` when the server did not answer.
+    fn retire_listing(&self) -> Option<String> {
+        if self.attached() {
+            return self
+                .ctrl_command(&format!(
+                    "list-windows -t {} -F '{RETIRE_FORMAT}'",
+                    self.session
+                ))
+                .ok();
+        }
+        let output = self
+            .mux_command(&["list-windows", "-t", &self.session, "-F", RETIRE_FORMAT])
+            .ok()?
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     fn retire_windows_in(&self, listing: &str, session_id: &str, role: WindowRole) -> Vec<String> {
@@ -4935,7 +4943,7 @@ impl<M: TmuxCompatible> Server<M> {
         };
         let mut retired = Vec::new();
         for window in retire {
-            match self.kill_window_at(window) {
+            match self.retire_window(window) {
                 Ok(()) => {
                     retired.push(window.clone());
                     warn!(
@@ -4951,8 +4959,21 @@ impl<M: TmuxCompatible> Server<M> {
         retired
     }
 
-    /// Kill the window `target` is in on this machine's server, with a
-    /// one-shot command. One already gone is not an error.
+    /// Kill a duplicate's window through the control connection where there
+    /// is one, one-shot otherwise. One already gone is not an error.
+    fn retire_window(&self, window: &str) -> Result<()> {
+        if !self.attached() {
+            return self.kill_window_at(window);
+        }
+        let (verb, target) = self.kill_command(window)?;
+        match self.ctrl_command(&format!("{verb} -t {target}")) {
+            Err(e) if !typed_absence(&e) => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// Kill the window `target` is in, with a one-shot command. One already
+    /// gone is not an error.
     fn kill_window_at(&self, target: &str) -> Result<()> {
         let (verb, target) = self.kill_command(target)?;
         let output = self

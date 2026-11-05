@@ -322,7 +322,7 @@ fn deliver(
             report.removed.push(relative.to_string());
         }
         Action::Preserve => report.preserved.push(relative.to_string()),
-        Action::Write | Action::Update => match std::fs::write(&path, contents) {
+        Action::Write | Action::Update => match crate::paths::write_atomically(&path, contents) {
             Ok(()) => {
                 manifest.insert(relative.to_string(), Record::Written(digest(contents)));
                 if action == Action::Write {
@@ -634,7 +634,7 @@ pub fn restore(dir: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
-    if let Err(e) = std::fs::write(&path, contents) {
+    if let Err(e) = crate::paths::write_atomically(&path, contents) {
         // A restore that cannot write must leave the edit where it was, not
         // leave the interface with no arrangement at all.
         if let Some(backup) = &backup {
@@ -777,7 +777,7 @@ fn read_manifest(dir: &Path) -> BTreeMap<String, Record> {
 
 fn write_manifest(dir: &Path, manifest: &BTreeMap<String, Record>) -> Result<(), String> {
     let text = serde_json::to_string_pretty(manifest).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(MANIFEST), text)
+    crate::paths::write_atomically(&dir.join(MANIFEST), text)
         .map_err(|e| format!("{}: {e}", dir.join(MANIFEST).display()))
 }
 

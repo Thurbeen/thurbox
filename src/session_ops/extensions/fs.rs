@@ -93,6 +93,44 @@ pub(super) fn set_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `a` and `b` are one file on disk — two hard links to it, which is
+/// what [`make_symlink`] leaves on Windows without symlink rights. Equal
+/// contents are not enough: a user's own copy of a payload is theirs.
+#[cfg(unix)]
+pub(super) fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    fn identity(path: &Path) -> Option<(u32, u32, u32)> {
+        let file = std::fs::File::open(path).ok()?;
+        // SAFETY: an all-zero BY_HANDLE_FILE_INFORMATION is a valid value of
+        // that plain-data struct, and the handle stays open for the call.
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let read = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+        (read != 0).then_some((
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        ))
+    }
+    matches!((identity(a), identity(b)), (Some(a), Some(b)) if a == b)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) fn same_file(_a: &Path, _b: &Path) -> bool {
+    false
+}
+
 #[cfg(unix)]
 pub(super) fn make_symlink(target: &str, link: &Path) -> Result<(), String> {
     std::os::unix::fs::symlink(target, link)

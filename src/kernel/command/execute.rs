@@ -195,6 +195,16 @@ pub(super) fn execute(
         }
         // A failed post-restart hook is already in the log; the restart stands.
         // A relaunch held back for a crash loop does not, and fails with why.
+        // Fresh is refused mid-turn: the interface never blocks a worker
+        // waiting for a turn to end, and the refusal says why.
+        Command::Restart { fresh: true, .. } => crate::session_ops::restart::restart_fresh(
+            &db,
+            backends,
+            id,
+            crate::session_ops::restart::WhenBusy::Refuse,
+        )
+        .and_then(crate::session_ops::restart::FreshReport::into_outcome)
+        .map_err(|e| e.to_string()),
         Command::Restart { if_missing, .. } => {
             crate::session_ops::restart::restart_session_headless_with(
                 &db,
@@ -541,7 +551,8 @@ pub(super) fn sync(db: &Database, id: SessionId) -> Result<(), String> {
     Ok(())
 }
 
-/// Create, edit, retitle or delete a task.
+/// Create, edit, retitle or delete a task, through the verbs `thurbox-cli task`
+/// shares.
 fn task(
     db: &Database,
     id: Option<i64>,
@@ -549,51 +560,31 @@ fn task(
     status: &Option<String>,
     delete: bool,
 ) -> Result<(), String> {
-    use crate::session::task::TaskStatus;
-    use crate::storage::tasks::NewTask;
+    use crate::session_ops::tasks;
 
+    let status: Option<crate::session::TaskStatus> =
+        status.as_deref().map(str::parse).transpose()?;
     let Some(id) = id else {
         let title = title.clone().ok_or("a new task needs a title")?;
-        return db
-            .create_task(&NewTask::local(title))
-            .map(|_| ())
-            .map_err(|e| format!("create task: {e}"));
-    };
-
-    if delete {
-        return db
-            .soft_delete_task(id)
-            .map(|_| ())
-            .map_err(|e| format!("delete task: {e}"));
-    }
-
-    if let Some(status) = status {
-        // The same three names `thurbox-cli task edit --status` accepts, so a
-        // plugin and a script speak one vocabulary.
-        let status = match status.as_str() {
-            "todo" => TaskStatus::Todo,
-            "in_progress" => TaskStatus::InProgress,
-            "done" => TaskStatus::Done,
-            other => {
-                return Err(format!(
-                    "not a task status: {other:?} — try todo, in_progress or done"
-                ))
-            }
+        let new = crate::storage::tasks::NewTask {
+            status: status.unwrap_or_default(),
+            ..crate::storage::tasks::NewTask::local(title)
         };
-        db.set_task_status(id, status)
+        return tasks::create(db, new)
             .map(|_| ())
-            .map_err(|e| format!("set status: {e}"))?;
+            .map_err(|e| e.to_string());
+    };
+    if delete {
+        return tasks::delete(db, id).map_err(|e| e.to_string());
     }
-    if let Some(title) = title {
-        let mut existing = db
-            .get_task(id)
-            .map_err(|e| format!("get task: {e}"))?
-            .ok_or_else(|| format!("no task #{id}"))?;
-        existing.title = title.clone();
-        db.update_task(&existing)
-            .map_err(|e| format!("update task: {e}"))?;
-    }
-    Ok(())
+    let changes = tasks::TaskEdit {
+        title: title.clone(),
+        status,
+        ..Default::default()
+    };
+    tasks::edit(db, id, changes)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Hand a task to an agent, through the verb `thurbox-cli task run` shares.
@@ -607,10 +598,7 @@ fn dispatch_task(
     session: Option<&str>,
 ) -> Result<(), String> {
     use crate::session_ops::tasks::{dispatch, Dispatched};
-    let task = db
-        .get_task(task_id)
-        .map_err(|e| format!("get task: {e}"))?
-        .ok_or_else(|| format!("no task #{task_id}"))?;
+    let task = crate::session_ops::tasks::get(db, task_id).map_err(|e| e.to_string())?;
     let session = session
         .map(|s| {
             s.parse::<SessionId>()

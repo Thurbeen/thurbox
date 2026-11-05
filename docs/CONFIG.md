@@ -47,8 +47,8 @@ leaves the last good registry in force and reports the error; correcting it is p
 up by the next poll. Existing session records are not changed.
 The `ui/` directory reloads live too, but on a **filesystem watcher**
 (120 ms debounce) rather than a poll, and `F10` forces one. For
-`settings.toml` the flags that apply live are `shell_pane`, `perf_hud`
-and `soft_delete`; the restart-only values stay
+`settings.toml` the values that apply live are the `shell_pane`, `perf_hud`
+and `soft_delete` flags, `[clipboard]` and `[remote]`; the restart-only values stay
 published through a write-once global (so they can't drift mid-frame),
 and the reload toast says when a restart is needed. `hosts.toml` (SSH
 backends register at startup) and `themes.toml` need a restart.
@@ -66,14 +66,24 @@ the panel — set it only by hand-editing `settings.toml`. Hand-editing
 the file (or the panel in another instance) is picked up the same way,
 via the live mtime poll.
 
-TUI saves of `settings.toml`, `ui.json` and `plugin-state.json` stage a complete file beside the
-destination and replace it with one native same-directory rename, so a reader
-never observes a truncated intermediate file and a failed staged write leaves
-the previous decisions intact. On Unix this is `rename`; native Windows uses
-`MoveFileExW` with replacement. An existing config-file symlink is preserved and
-its target is replaced. This protects the process-interruption boundary, not
-storage failure: the staged file and parent directory are not explicitly synced
-to stable storage.
+Every file thurbox writes that a user edits or thurbox reads back — `settings.toml`,
+`ui.json`, `plugin-state.json`, `agents.toml` (and the other seeded config files),
+extension manifests and payloads, the keybindings JSON, the interface's plugin
+lock, spec and bundled files, and the heartbeat's state — is written through
+one writer, `paths::write_atomically`. It stages a complete file beside the
+destination and replaces it with one native same-directory rename, so a reader
+never observes a truncated intermediate file and a failed staged write (a
+crash, a full disk) leaves the previous file intact. The rename is
+`std::fs::rename`, which on Windows replaces even while a reader holds the old
+file open. An existing symlink is preserved and its target is replaced, a
+replaced file keeps its permissions, and a file made read-only is refused
+rather than replaced. This
+protects the process-interruption boundary, not storage failure: the staged
+file and parent directory are not explicitly synced to stable storage.
+`tests/architecture_rules.rs`
+(`files_thurbox_reads_back_are_written_atomically`) fails on any other
+production write, apart from an allow-list of logs, a cache, the control
+socket's privately staged files and the self-update's staged binary.
 
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 

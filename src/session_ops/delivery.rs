@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::session::SessionMessage;
+use crate::session::{SessionId, SessionMessage};
 use crate::storage::Database;
 use crate::sync::SharedSession;
 
@@ -501,14 +501,54 @@ fn claude_envelope(text: &str) -> String {
 ///
 /// Deliberately no instruction to run `message inbox`: the body *is* the
 /// delivery, and the row is marked read so a drain does not repeat it.
-pub(crate) fn delivery_text(message: &SessionMessage, sender: Option<&str>) -> String {
+pub(crate) fn delivery_text(message: &SessionMessage, sender: &str) -> String {
     format!(
-        "[thurbox message #{} · kind: {} · from: {}]\n\n{}",
-        message.id,
-        message.kind,
-        sender.unwrap_or("unknown sender"),
-        message.body
+        "[thurbox message #{} · kind: {} · from: {sender}]\n\n{}",
+        message.id, message.kind, message.body
     )
+}
+
+/// Who sent a message. The caller says, because only it knows: a send with no
+/// sending session may be thurbox's own or a process outside it, and the
+/// difference decides how the recipient's agent reads the message.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Sender {
+    /// A session this database has a row for, at least when it sent.
+    Session(SessionId),
+    /// A session this database has no row for, such as a remote peer's.
+    UnknownSession,
+    /// thurbox itself: the interface's send, a task dispatch, an automation.
+    #[default]
+    Thurbox,
+    /// A process outside any thurbox session: a script, a control plane.
+    Outside,
+}
+
+impl Sender {
+    /// The id the message row records as its sender.
+    pub fn session_id(self) -> Option<SessionId> {
+        match self {
+            Sender::Session(id) => Some(id),
+            Sender::UnknownSession | Sender::Thurbox | Sender::Outside => None,
+        }
+    }
+
+    /// The sender as the recipient's agent reads it. Claude Code frames every
+    /// socket message as coming from another Claude session, so a sender that
+    /// is not a session says so outright; a vaguer "unknown sender" reads as an
+    /// unidentified peer agent.
+    fn label(self, db: &Database) -> String {
+        match self {
+            Sender::Session(id) => db
+                .get_session_by_id(id)
+                .ok()
+                .flatten()
+                .map_or_else(|| "a session that no longer exists".into(), |s| s.name),
+            Sender::UnknownSession => "a session this thurbox has no record of".into(),
+            Sender::Thurbox => "thurbox itself, not a session".into(),
+            Sender::Outside => "a process outside thurbox, not a session".into(),
+        }
+    }
 }
 
 /// How a delivery went, for the command output.
@@ -632,16 +672,19 @@ pub struct Handed {
     pub outcome: Outcome,
 }
 
-/// Enqueue `new` for `recipient` and hand it to the recipient agent's own
-/// inbox, unless `no_wake`. The mailbox row is the durable copy either way;
+/// Enqueue `new` from `from` for `recipient` and hand it to the recipient
+/// agent's own inbox, unless `no_wake`. `new.from_session_id` is `from`'s.
+/// The mailbox row is the durable copy either way;
 /// `message send`/`reply` and a `session send` that met a busy composer all
 /// come through here.
 pub(crate) fn enqueue_and_deliver(
     db: &Database,
     recipient: &SharedSession,
     new: crate::storage::messages::NewMessage,
+    from: Sender,
     no_wake: bool,
 ) -> Result<Handed, crate::session_ops::OpError> {
+    debug_assert_eq!(new.from_session_id, from.session_id());
     let id = db
         .enqueue_message(&new)
         .map_err(|e| format!("enqueue_message: {e}"))?;
@@ -655,11 +698,7 @@ pub(crate) fn enqueue_and_deliver(
         .get_message(id)
         .map_err(|e| format!("get_message: {e}"))?
         .ok_or_else(|| format!("message #{id} vanished after enqueue"))?;
-    let sender = new
-        .from_session_id
-        .and_then(|from| db.get_session_by_id(from).ok().flatten())
-        .map(|s| s.name);
-    let text = delivery_text(&message, sender.as_deref());
+    let text = delivery_text(&message, &from.label(db));
     let evidence = gather(db, recipient);
     let outcome = deliver(db, &message, &text, &evidence, &Native);
     Ok(Handed { id, outcome })
@@ -670,7 +709,6 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
-    use crate::session::SessionId;
     use crate::storage::messages::NewMessage;
 
     /// Records every send and fails the routes it is told to.
@@ -983,11 +1021,41 @@ mod tests {
         assert!(fake.sent.borrow().is_empty());
     }
 
+    /// A sender session deleted since it sent is named as gone, not dropped to
+    /// a label that reads as no session at all.
+    #[test]
+    fn a_sender_session_is_named_while_it_exists_and_called_gone_after() {
+        let db = Database::open_in_memory().unwrap();
+        let sender = SharedSession {
+            id: SessionId::default(),
+            name: "coder-x".into(),
+            agent: "claude".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        db.upsert_session(&sender).unwrap();
+        assert_eq!(Sender::Session(sender.id).label(&db), "coder-x");
+        assert_eq!(
+            Sender::Session(SessionId::default()).label(&db),
+            "a session that no longer exists"
+        );
+    }
+
     #[test]
     fn delivery_text_is_provenance_then_the_body_verbatim() {
         let db = Database::open_in_memory().unwrap();
         let msg = enqueued(&db);
-        let text = delivery_text(&msg, Some("coder-x"));
+        let text = delivery_text(&msg, "coder-x");
         let (head, body) = text.split_once("\n\n").unwrap();
         assert_eq!(
             head,

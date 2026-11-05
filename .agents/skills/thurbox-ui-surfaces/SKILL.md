@@ -167,7 +167,8 @@ Two halves on one screen:
   `DocumentMut` so the seed's documentation comments survive.
 
 Whether a core row applies live or waits for a restart is **asked of
-`Settings::restart_only_differs`**, the same function `Config::adopt` consults —
+`Settings::restart_only_differs`**, which with what `Config::adopt` takes into
+force is derived from the one per-field table `session::settings::FIELDS` —
 never a second list beside the field. A hand-written copy had already drifted from
 it, promising both panel-width scalars applied live while `adopt` froze them and
 reported `NeedsRestart`. Restart-only rows are marked `⟳`.

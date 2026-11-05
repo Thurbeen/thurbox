@@ -534,7 +534,8 @@ pub fn ensure_agents_registered(agents: &[AgentDef]) -> Result<Vec<String>, Stri
     }
     text.push('\n');
     text.push_str(&block);
-    std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
+    crate::paths::write_atomically(&path, text)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
 
     Ok(missing.iter().map(|a| a.name.clone()).collect())
 }
@@ -570,7 +571,8 @@ pub fn remove_agents_from_toml(names: &[String]) -> Result<Vec<String>, String> 
     if text.ends_with('\n') {
         new_text.push('\n');
     }
-    std::fs::write(&path, new_text).map_err(|e| format!("write {}: {e}", path.display()))?;
+    crate::paths::write_atomically(&path, new_text)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(removed)
 }
 
@@ -628,7 +630,7 @@ fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, 
     }
 
     if !changed.is_empty() {
-        std::fs::write(&path, doc.to_string())
+        crate::paths::write_atomically(&path, doc.to_string())
             .map_err(|e| format!("write {}: {e}", path.display()))?;
     }
     Ok(changed)
@@ -844,7 +846,8 @@ pub fn write_manifest(def: &ExtensionDef) -> Result<PathBuf, String> {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let text = toml::to_string(def).map_err(|e| format!("serialize manifest: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
+    crate::paths::write_atomically(&path, text)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(path)
 }
 

@@ -198,7 +198,7 @@ pub fn load_or_seed_with_warnings() -> (HooksFile, Vec<String>) {
                 );
             }
         }
-        if let Err(e) = std::fs::write(&path, SEED_HOOKS_TOML) {
+        if let Err(e) = crate::paths::write_atomically(&path, SEED_HOOKS_TOML) {
             return (
                 HooksFile::default(),
                 vec![format!("Failed to seed hooks.toml: {e}")],

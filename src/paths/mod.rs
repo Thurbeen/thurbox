@@ -61,14 +61,24 @@ pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os(var).map(PathBuf::from)
 }
 
-/// Write a config file beside its destination, then replace the destination.
+/// Write a file beside its destination, then replace the destination.
+///
+/// The one writer for every file a user edits or thurbox reads back;
+/// `tests/architecture_rules.rs` holds production code outside `paths` to it.
 ///
 /// Keeping the staged file in the same directory makes the final rename a
 /// same-filesystem operation: readers see either the previous complete file or
 /// the new complete file. A failed staged write leaves the destination alone.
+/// A replaced file keeps its permissions — a `chmod 600` config stays private
+/// and an executable stays executable — which a bare rename would reset. A
+/// read-only one is refused, as `fs::write` refused it: the rename needs only
+/// the directory to be writable, and would otherwise undo the user's lock.
+/// The rename is `std::fs::rename` on every platform: on Windows it replaces
+/// with POSIX semantics, so a reader holding the old file open does not make
+/// the save fail, where `MoveFileExW` answers "Access is denied".
 /// This does not promise durability across storage or operating-system failure;
 /// neither the file nor its parent directory is synced explicitly.
-pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = write_destination(path)?;
     let staged = path.with_extension(format!(
@@ -76,11 +86,51 @@ pub(crate) fn write_atomically(path: &Path, contents: &str) -> std::io::Result<(
         std::process::id(),
         SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    std::fs::write(&staged, contents)
-        .and_then(|()| replace_file(&staged, &path))
+    let kept = match std::fs::metadata(&path) {
+        Ok(existing) if existing.permissions().readonly() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{} is read-only", path.display()),
+            ));
+        }
+        Ok(existing) => Some(existing.permissions()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    open_staged(&staged, kept.as_ref())
+        .and_then(|mut file| std::io::Write::write_all(&mut file, contents.as_ref()))
+        .and_then(|()| kept.map_or(Ok(()), |mode| std::fs::set_permissions(&staged, mode)))
+        .and_then(|()| std::fs::rename(&staged, &path))
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&staged);
         })
+}
+
+/// Create the staged file, on Unix already no more open than the file it will
+/// replace: a crash before [`write_atomically`] applies the final permissions
+/// must not leave a readable copy of a private file. The umask can only narrow
+/// the mode, so the exact one is applied after the write.
+///
+/// A file already at the staged name is a leftover of a crashed process that
+/// had this pid, so it is removed rather than reopened with its own mode.
+fn open_staged(
+    staged: &Path,
+    kept: Option<&std::fs::Permissions>,
+) -> std::io::Result<std::fs::File> {
+    match std::fs::remove_file(staged) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if let Some(kept) = kept {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(kept.mode() & 0o7777);
+    }
+    #[cfg(not(unix))]
+    let _ = kept;
+    options.open(staged)
 }
 
 /// Resolve the file itself separately from its parent so an existing config
@@ -119,36 +169,6 @@ fn write_destination(path: &Path) -> std::io::Result<PathBuf> {
         }
     }
     Err(std::io::Error::other("too many config file symlinks"))
-}
-
-#[cfg(not(windows))]
-fn replace_file(staged: &Path, path: &Path) -> std::io::Result<()> {
-    std::fs::rename(staged, path)
-}
-
-#[cfg(windows)]
-fn replace_file(staged: &Path, path: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let staged: Vec<u16> = staged.as_os_str().encode_wide().chain(Some(0)).collect();
-    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: both arguments are valid, NUL-terminated UTF-16 paths and remain
-    // alive for the duration of the call.
-    let moved = unsafe {
-        MoveFileExW(
-            staged.as_ptr(),
-            path.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
 }
 
 /// Whether `exe` resolves on `PATH`. A minimal lookup that avoids pulling in a
