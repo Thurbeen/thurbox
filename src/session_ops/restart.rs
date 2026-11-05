@@ -1342,8 +1342,8 @@ mod tests {
         assert!(!db.load_lost_sessions().unwrap().contains_key(&row.id));
     }
 
-    /// Review of #1390: the guard was counted from the event log, which every
-    /// database open prunes on the audit retention — zero included — and a
+    /// Review of #1390: the guard was counted from the event log, which the
+    /// startup sweep prunes on the audit retention — zero included — and a
     /// hold anchored there was released once its relaunches aged out of it.
     #[test]
     fn a_hold_survives_a_pruned_event_log_and_an_aged_window() {
