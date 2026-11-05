@@ -2432,7 +2432,8 @@ impl<M: TmuxCompatible> Server<M> {
             &self.session,
             &self.sizer,
             &M::control_policy(&self.transport, &self.session),
-        )?;
+        )
+        .map_err(|e| self.classified(e))?;
         self.install(fresh)
     }
 
@@ -2466,6 +2467,7 @@ impl<M: TmuxCompatible> Server<M> {
                 &self.sizer,
                 &M::control_policy(&self.transport, &self.session),
             )
+            .map_err(|e| self.classified(e))
         };
         // A connection that cannot be made again may be a server whose socket
         // went while the old connection held on: look for it once more.
@@ -5876,6 +5878,76 @@ mod tests {
 
     /// Over control mode an answer that is not a version may be a reply that
     /// belonged to another command, so it admits nothing.
+    /// A stand-in control-mode server for [`TestMux`] that answers `%error`
+    /// with `reply` to any line containing `refuse`, and `%end` otherwise.
+    #[cfg(unix)]
+    fn refusing_mux(root: &std::path::Path, refuse: &str, reply: &str) -> TestBackend {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mux = root.join("refusing-mux");
+        std::fs::write(
+            &mux,
+            format!(
+                "#!/bin/sh\nreply=\"{reply}\"\nprintf '%%begin 1 1 0\\n%%end 1 1 0\\n'\n\
+                 while IFS= read -r line; do\n\
+                   case \"$line\" in\n\
+                     *'{refuse}'*) printf '%%begin 2 2 0\\n%s\\n%%error 2 2 0\\n' \"$reply\" ;;\n\
+                     *) printf '%%begin 2 2 0\\n%%end 2 2 0\\n' ;;\n\
+                   esac\n\
+                 done\n"
+            ),
+        )
+        .expect("write fake mux");
+        std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        TestBackend::with_transport(
+            TmuxTransport::local(mux.to_string_lossy()),
+            "unused",
+            "unused",
+            "local:tmux",
+        )
+    }
+
+    /// A control-mode `%error` is typed by the adapter's words, both on a
+    /// command and on the flow-control command sent while the connection
+    /// starts.
+    #[cfg(unix)]
+    #[test]
+    fn a_control_mode_error_is_typed_by_the_adapter() {
+        use crate::backend::contract::BackendError;
+
+        let kind = |error: anyhow::Error| match error.downcast::<BackendError>() {
+            Ok(BackendError::Absent(_)) => "absent",
+            Ok(BackendError::Refused(_)) => "refused",
+            Ok(BackendError::Busy(_)) => "busy",
+            other => panic!("untyped: {other:?}"),
+        };
+        let roots: Vec<_> = (0..3)
+            .map(|_| tempfile::tempdir().expect("tempdir"))
+            .collect();
+
+        let backend = refusing_mux(roots[0].path(), "pause-after", "can't find session: unused");
+        let error = backend.ensure_control().expect_err("flow control refused");
+        assert_eq!(kind(error), "absent");
+
+        let backend = refusing_mux(roots[1].path(), "kill-window", "can't find window: @9");
+        backend.ensure_control().expect("control client");
+        let error = backend
+            .ctrl_command("kill-window -t @9")
+            .expect_err("refused");
+        assert_eq!(kind(error), "absent");
+
+        let backend = refusing_mux(
+            roots[2].path(),
+            "kill-window",
+            "unknown command: kill-window",
+        );
+        backend.ensure_control().expect("control client");
+        let error = backend
+            .ctrl_command("kill-window -t @9")
+            .expect_err("refused");
+        assert_eq!(kind(error), "refused");
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_connection_that_answers_no_version_names_no_pane() {
