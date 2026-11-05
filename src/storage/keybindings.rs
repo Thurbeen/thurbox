@@ -27,7 +27,8 @@ pub fn save_keybindings_json(json: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    fs::write(&path, json).map_err(|e| format!("write {}: {e}", path.display()))
+    crate::paths::write_atomically(&path, json)
+        .map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /// Remove the keybindings JSON file (resets to defaults). Returns `Ok(())`

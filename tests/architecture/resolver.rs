@@ -464,6 +464,37 @@ impl Tree {
     pub fn has_module(&self, node: &str) -> bool {
         self.is_module(&segments(node))
     }
+
+    /// Every production call written as one of `calls` (`fs::write`), outside
+    /// comments, strings and `#[cfg(test)]` code: file relative to the root,
+    /// line, and the call matched. A longer path ending in the call
+    /// (`std::fs::write`) counts; a different name that merely ends the same
+    /// way (`myfs::write`) does not.
+    pub fn production_calls<'a>(&self, calls: &[&'a str]) -> Vec<(PathBuf, usize, &'a str)> {
+        let mut found = Vec::new();
+        for file in &self.files {
+            if self.is_test_module(&file.module) {
+                continue;
+            }
+            let rel = file.path.strip_prefix(&self.root).unwrap_or(&file.path);
+            for call in calls {
+                let needle = format!("{call}(");
+                for (offset, _) in file.stripped.match_indices(&needle) {
+                    let bounded =
+                        offset == 0 || !is_ident_char(file.stripped.as_bytes()[offset - 1]);
+                    if !bounded
+                        || file.in_test_span(offset)
+                        || self.is_test_module(&file.scope_at(offset))
+                    {
+                        continue;
+                    }
+                    let line = file.stripped[..offset].matches('\n').count() + 1;
+                    found.push((rel.to_path_buf(), line, *call));
+                }
+            }
+        }
+        found
+    }
 }
 
 impl SourceFile {

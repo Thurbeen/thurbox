@@ -350,7 +350,7 @@ fn seed_agents_toml(path: &std::path::Path) -> (AgentRegistry, Vec<String>) {
             );
         }
     }
-    if let Err(e) = std::fs::write(path, builtin_agents_toml()) {
+    if let Err(e) = crate::paths::write_atomically(path, builtin_agents_toml()) {
         return (
             builtin_registry(),
             vec![format!("Failed to seed agents.toml: {e}")],

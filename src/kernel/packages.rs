@@ -82,7 +82,8 @@ pub fn write_lock(dir: &Path, lock: &PluginLock) -> Result<(), String> {
         };
     }
     let text = lock.to_toml()?;
-    std::fs::write(lock_path(dir), text).map_err(|e| format!("{}: {e}", lock_path(dir).display()))
+    crate::paths::write_atomically(&lock_path(dir), text)
+        .map_err(|e| format!("{}: {e}", lock_path(dir).display()))
 }
 
 /// Record an entry in the spec, keeping every comment already in the file.
@@ -100,7 +101,8 @@ pub fn remove_from_spec(dir: &Path, key: &str) -> Result<PluginEntry, String> {
 }
 
 fn write_spec(dir: &Path, text: &str) -> Result<(), String> {
-    std::fs::write(spec_path(dir), text).map_err(|e| format!("{}: {e}", spec_path(dir).display()))
+    crate::paths::write_atomically(&spec_path(dir), text)
+        .map_err(|e| format!("{}: {e}", spec_path(dir).display()))
 }
 
 /// What one file of a package is, and what it should contain.
@@ -270,7 +272,7 @@ fn deliver_payload(
 
     match decide(existing.as_deref(), delivered, &payload.contents) {
         action @ (Action::Write | Action::Update) => {
-            std::fs::write(&path, &payload.contents)
+            crate::paths::write_atomically(&path, &payload.contents)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             let outcome = match action == Action::Write {
                 true => Outcome::Installed,
