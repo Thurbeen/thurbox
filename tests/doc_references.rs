@@ -38,7 +38,7 @@ const RETIRED: &[(&str, &str)] = &[
         "the registry's default backend (backend::wiring)",
     ),
     ("LOCAL_TMUX_BACKEND_TYPE", "Route::local"),
-    ("RemoteSignalTarget", "Capabilities::hook_signal_command"),
+    ("RemoteSignalTarget", "StatusChannel::hook_signal_command"),
 ];
 
 /// `src/` paths that Markdown cites from another project's tree, not this one.

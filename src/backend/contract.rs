@@ -932,9 +932,23 @@ pub trait PaneIo: Send + Sync {
 /// Status delivery and the heartbeat, behind the contract (ADR-32): a hook's
 /// state recorded on a pane and read back, and the one heartbeat window the
 /// server keeps. Where the backend has no status channel
-/// ([`Capabilities::hook_signal_command`] is `None`), recording and listing
+/// ([`Self::hook_signal_command`] is `None`), recording and listing
 /// are refused.
 pub trait StatusChannel: Send + Sync {
+    /// The command a hook running in one of this backend's panes runs, with
+    /// the state word appended, to report that state **through this backend**
+    /// — in place of `thurbox-cli session signal --state`, which cannot reach
+    /// this instance's database from a pane on another machine. Shell text,
+    /// free of `"` and `\` so it can be spliced into a JSON, TOML or JS hook
+    /// file as it stands.
+    ///
+    /// `None`: this backend has no status channel a hook can reach. The hook
+    /// files are then not shipped and the session reports no status — which a
+    /// reader sees as unknown, never as idle. Each backend answers for its own
+    /// channel; nothing about it is read from the multiplexer's name or the
+    /// host's OS.
+    fn hook_signal_command(&self) -> Option<String>;
+
     /// Record `state` as `pane`'s hook state in this backend's status channel,
     /// where [`Self::take_hook_state_events`] and [`Self::hook_states`] read
     /// it: what `session signal` does after writing the database, so a peer
@@ -980,7 +994,7 @@ pub trait StatusChannel: Send + Sync {
 /// What a backend's multiplexer can do, as one value: the facts consumers
 /// branch on, each answered by the adapter for its own multiplexer — never
 /// read off the multiplexer's name or the host's OS.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capabilities {
     /// Whether a pane's stream may outlive its deleted window, so attached
     /// sessions are found gone by periodic discovery. tmux reports a close in
@@ -1000,30 +1014,15 @@ pub struct Capabilities {
     /// there is recorded and a crash loop is held back
     /// (`session_ops::restart`).
     pub keeps_exited_windows: bool,
-    /// The command a hook running in one of this backend's panes runs, with
-    /// the state word appended, to report that state **through this backend**
-    /// — in place of `thurbox-cli session signal --state`, which cannot reach
-    /// this instance's database from a pane on another machine. Shell text,
-    /// free of `"` and `\` so it can be spliced into a JSON, TOML or JS hook
-    /// file as it stands.
-    ///
-    /// `None`: this backend has no status channel a hook can reach. The hook
-    /// files are then not shipped and the session reports no status — which a
-    /// reader sees as unknown, never as idle. Each backend answers for its own
-    /// channel; nothing about it is read from the multiplexer's name or the
-    /// host's OS.
-    pub hook_signal_command: Option<String>,
 }
 
 impl Capabilities {
     /// What a backend that can promise nothing answers: its sessions are
-    /// polled, keep their grids, hold an exited window, and have no status
-    /// channel.
+    /// polled, keep their grids, and hold an exited window.
     pub const NONE: Self = Self {
         needs_liveness_poll: true,
         supports_snapshots: false,
         keeps_exited_windows: true,
-        hook_signal_command: None,
     };
 }
 
@@ -1035,9 +1034,8 @@ pub trait SessionBackend: PaneStream + WindowLifecycle + PaneIo + StatusChannel 
     /// `ssh:<host>:psmux`), as logs and `runtime status` name it.
     fn name(&self) -> &str;
 
-    /// What this backend's multiplexer can do. Built on each call, so an
-    /// answer that depends on the server (the hook command names its socket)
-    /// is current.
+    /// What this backend's multiplexer can do. Read on the frame path
+    /// (`Terminals::sync`), so it is plain flags and costs nothing to build.
     fn capabilities(&self) -> Capabilities;
 }
 

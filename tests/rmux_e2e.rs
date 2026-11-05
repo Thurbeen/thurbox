@@ -135,10 +135,7 @@ fn rmux_create_restart_rename_restore_relaunch_and_delete() {
     let original = created.backend_id;
 
     let backend = backends.get(&rmux_route).expect("RMUX backend");
-    let hook = backend
-        .capabilities()
-        .hook_signal_command
-        .expect("RMUX hook command");
+    let hook = backend.hook_signal_command().expect("RMUX hook command");
     assert!(
         !hook.contains('$'),
         "Grok rejects bare shell variables: {hook}"

@@ -3925,6 +3925,12 @@ impl<M: TmuxCompatible> PaneIo for Server<M> {
 }
 
 impl<M: TmuxCompatible> StatusChannel for Server<M> {
+    /// Only where a hook can report through the pane option
+    /// ([`TmuxCompatible::HOOK_STATUS`]).
+    fn hook_signal_command(&self) -> Option<String> {
+        M::HOOK_STATUS.then(|| M::hook_signal_command(self))
+    }
+
     fn take_hook_state_events(&self) -> Vec<(String, String)> {
         // `try_lock`, not `lock`: this runs on the UI thread every tick, and a
         // skipped drain only defers queued events to the next tick.
@@ -4082,15 +4088,12 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
     /// queues behind the pane output ahead of it
     /// ([`TmuxCompatible::SNAPSHOTS`]); an exited agent's window stays only
     /// where the window can be told to keep its dead pane
-    /// ([`TmuxCompatible::WINDOW_SETTINGS`], `remain-on-exit`); and a hook
-    /// reports through the pane option only where
-    /// [`TmuxCompatible::HOOK_STATUS`] says it can.
+    /// ([`TmuxCompatible::WINDOW_SETTINGS`], `remain-on-exit`).
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             needs_liveness_poll: !M::WINDOW_EVENTS,
             supports_snapshots: M::SNAPSHOTS,
             keeps_exited_windows: M::WINDOW_SETTINGS,
-            hook_signal_command: M::HOOK_STATUS.then(|| M::hook_signal_command(self)),
         }
     }
 }

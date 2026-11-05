@@ -61,8 +61,8 @@ fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
     }
 }
 
-/// What a multiplexer can report is its adapter's answer, read off one
-/// `Capabilities` value: tmux announces a window's close and answers a
+/// What a multiplexer can report is its adapter's answer, read off its
+/// `Capabilities` and its status channel: tmux announces a window's close and answers a
 /// snapshot in step with the pane's output, psmux does neither (ADR-13), RMUX
 /// answers a snapshot but is polled — on any OS, since none of it is a fact
 /// about one. Only a server that keeps a dead pane can hold an exited window,
@@ -89,14 +89,13 @@ fn what_each_multiplexer_can_report_is_its_own_adapters_answer() {
             needs_liveness_poll,
             supports_snapshots,
             keeps_exited_windows,
-            hook_signal_command,
         } = backend.capabilities();
         assert_eq!(
             [
                 needs_liveness_poll,
                 supports_snapshots,
                 keeps_exited_windows,
-                hook_signal_command.is_some(),
+                backend.hook_signal_command().is_some(),
             ],
             *expected,
             "{}",

@@ -293,6 +293,10 @@ impl crate::backend::PaneIo for Recorder {
 }
 
 impl crate::backend::StatusChannel for Recorder {
+    fn hook_signal_command(&self) -> Option<String> {
+        None
+    }
+
     fn record_hook_state(&self, _: &str, _: &str) -> crate::backend::contract::BackendResult<()> {
         Err(anyhow::anyhow!("this stub has no status channel").into())
     }

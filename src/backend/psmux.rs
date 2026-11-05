@@ -2847,7 +2847,7 @@ mod tests {
             ..Default::default()
         };
         for backend in [PsmuxBackend::local(), PsmuxBackend::for_host(&host)] {
-            assert_eq!(backend.capabilities().hook_signal_command, None);
+            assert_eq!(backend.hook_signal_command(), None);
             assert!(backend.record_hook_state("%1", "working").is_err());
             assert!(backend.hook_states().is_err());
         }

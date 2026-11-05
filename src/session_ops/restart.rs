@@ -907,7 +907,7 @@ fn restart_for(
         db,
         &session,
         host.as_ref(),
-        backend.capabilities().hook_signal_command.as_deref(),
+        backend.hook_signal_command().as_deref(),
         hooks_enabled,
         recipe.as_ref(),
         &env,

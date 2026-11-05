@@ -44,7 +44,7 @@ pub fn run(action: Action, backends: &super::Backends<'_>) -> CommandOutput {
                 .map(|(route, backend)| {
                     (
                         route.format(),
-                        json!(backend.capabilities().hook_signal_command.is_some()),
+                        json!(backend.hook_signal_command().is_some()),
                     )
                 })
                 .collect();

@@ -173,6 +173,7 @@ fn check_min_version(version_output: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::StatusChannel;
 
     #[test]
     fn a_tmux_banner_names_its_version() {
@@ -357,8 +358,7 @@ mod tests {
     #[test]
     fn the_hook_command_needs_no_socket_or_pane() {
         let command = TmuxBackend::local()
-            .capabilities()
-            .hook_signal_command
+            .hook_signal_command()
             .expect("tmux has a status channel");
         assert_eq!(command, "tmux set-option -p @thurbox_state ");
     }

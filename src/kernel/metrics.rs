@@ -528,6 +528,10 @@ mod tests {
     }
 
     impl crate::backend::StatusChannel for Panes {
+        fn hook_signal_command(&self) -> Option<String> {
+            None
+        }
+
         fn record_hook_state(
             &self,
             _: &str,

@@ -461,15 +461,19 @@ does not send control-mode commands.
 - `PaneIo` (ADR-30) — a pane by its id, as a keyboard and a screen:
   `send_text`, `send_key`, `capture`, `text_before_cursor`;
 - `StatusChannel` (ADR-32) — hook status and the heartbeat:
-  `record_hook_state`, `hook_states`, `take_hook_state_events`,
-  `ensure_heartbeat`, `heartbeat_running`, `stop_heartbeat`.
+  `hook_signal_command`, `record_hook_state`, `hook_states`,
+  `take_hook_state_events`, `ensure_heartbeat`, `heartbeat_running`,
+  `stop_heartbeat`.
 
-`Capabilities` holds what consumers branch on, each answered by the adapter for
-its own multiplexer: `needs_liveness_poll`, `supports_snapshots`,
-`keeps_exited_windows` and `hook_signal_command`. One value rather than four
-methods scattered through the trait, so what an adapter can do is read in one
-place and a stub declares all of it (`Capabilities::NONE` is the backend that
-promises nothing). A consumer holds `dyn SessionBackend`; one that needs a
+`Capabilities` holds the flags consumers branch on, each answered by the
+adapter for its own multiplexer: `needs_liveness_poll`, `supports_snapshots`
+and `keeps_exited_windows`. One value rather than three methods with defaults
+scattered through the trait, so what an adapter can do is read in one place and
+a stub declares all of it (`Capabilities::NONE` is the backend that promises
+nothing). It is plain `Copy` flags because `Terminals::sync` reads it every
+frame. The hook command is not among them: it names the server's socket, which
+a host can learn after the backend is built, so it is a `StatusChannel` method
+built when asked. A consumer holds `dyn SessionBackend`; one that needs a
 single role can take just that trait.
 
 A `backend_id` crossing the trait is the multiplexer's **pane id** (for example,
@@ -2995,12 +2999,12 @@ installation, selection, and the verified version table.
 
 **Choice**: how a hook in a session's pane reports its state, how that state is
 read back with no interface attached, and what keeps the automation heartbeat
-running are all verbs of `SessionBackend` (its `StatusChannel` role and its
-`Capabilities`), answered by the backend serving the row's route:
+running are all verbs of `SessionBackend`'s `StatusChannel` role, answered by
+the backend serving the row's route:
 
-- `Capabilities::hook_signal_command` — the command a hook in this backend's panes runs, the
-  state word appended, in place of `thurbox-cli session signal` where that CLI
-  cannot reach this instance's database (a pane on a host). Spawn, restart and
+- `StatusChannel::hook_signal_command` — the command a hook in this backend's
+  panes runs, the state word appended, in place of `thurbox-cli session signal`
+  where that CLI cannot reach this instance's database (a pane on a host). Spawn, restart and
   `agent launch-args` rewrite the shipped hook files and literal args to it;
   `None` means no channel, and then no hook config is shipped at all. A
   Windows host ships none either, whatever serves the row: an agent config

@@ -778,6 +778,10 @@ impl PaneIo for RecordingBackend {
 }
 
 impl StatusChannel for RecordingBackend {
+    fn hook_signal_command(&self) -> Option<String> {
+        Some(format!("{SIGNAL_COMMAND} "))
+    }
+
     fn record_hook_state(
         &self,
         pane: &str,
@@ -843,9 +847,6 @@ impl SessionBackend for RecordingBackend {
         &self.name
     }
     fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            hook_signal_command: Some(format!("{SIGNAL_COMMAND} ")),
-            ..Capabilities::NONE
-        }
+        Capabilities::NONE
     }
 }

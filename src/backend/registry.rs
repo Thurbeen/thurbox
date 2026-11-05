@@ -369,6 +369,10 @@ pub(crate) mod tests {
     }
 
     impl StatusChannel for StubBackend {
+        fn hook_signal_command(&self) -> Option<String> {
+            None
+        }
+
         fn record_hook_state(
             &self,
             _: &str,

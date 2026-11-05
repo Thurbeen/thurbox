@@ -2978,6 +2978,10 @@ mod tests {
     }
 
     impl crate::backend::StatusChannel for FakeLivenessBackend {
+        fn hook_signal_command(&self) -> Option<String> {
+            None
+        }
+
         fn record_hook_state(
             &self,
             _: &str,
@@ -3314,6 +3318,10 @@ mod tests {
     }
 
     impl crate::backend::StatusChannel for RefusingLocal {
+        fn hook_signal_command(&self) -> Option<String> {
+            None
+        }
+
         fn record_hook_state(
             &self,
             _: &str,
