@@ -10,8 +10,6 @@
 use clap::Args;
 use serde_json::json;
 
-use crate::session::settings;
-
 use super::output::{kv, CommandOutput};
 
 /// `version` subcommand arguments.
@@ -24,14 +22,9 @@ pub struct VersionArgs {
 
 /// Run the `version` command. Takes no database — it only reads the compiled-in
 /// version and (with `--check`) the network.
-pub fn run(args: VersionArgs) -> CommandOutput {
-    run_with(args, settings::global().features.version_check)
-}
-
-/// Same as [`run`] but with the `version_check` flag passed explicitly, so the
-/// disabled path is testable without depending on the process-global default
-/// (the flag is on by default for 1.0).
-fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
+///
+/// `enabled` is `[features] version_check` as the process loaded it.
+pub fn run(args: VersionArgs, enabled: bool) -> CommandOutput {
     let current = crate::update::version_check::current_version();
 
     if !args.check {
@@ -155,7 +148,7 @@ mod tests {
 
     #[test]
     fn version_without_check_prints_current_version() {
-        let out = run(VersionArgs { check: false });
+        let out = run(VersionArgs { check: false }, true);
         assert!(out["version"].is_string(), "version field present");
         assert_eq!(out["multiplexer_choice"], true);
         assert_eq!(out["soft_delete_choice"], true);
@@ -173,8 +166,8 @@ mod tests {
     #[test]
     fn version_check_when_flag_disabled_prints_enable_hint() {
         // The flag is on by default for 1.0, so exercise the disabled path
-        // directly via `run_with` — no process-global settings, no network.
-        let out = run_with(VersionArgs { check: true }, false);
+        // directly, with the flag passed in — no network.
+        let out = run(VersionArgs { check: true }, false);
         assert_eq!(out["check_enabled"], false);
         assert!(out.human.contains("disabled"), "got: {}", out.human);
         assert!(

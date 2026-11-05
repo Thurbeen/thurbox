@@ -23,7 +23,8 @@ exactly one line here, and each line is the rule `tests/architecture_rules.rs`
 asserts for it (`[path-only: …]` marks the crossings described below):
 
 ```text
-session              (no crate-internal references — the dependency sink)
+session              (no crate-internal references — the dependency sink;
+                     no process state, env read or rendering crate either)
 agent                → agent::{generic, provider}       (re-exports only)
 agent::agent_config  → session, shell, config::file
 agent::extension_config → session, paths, agent::agent_config, config::file
@@ -31,7 +32,7 @@ agent::generic       → session, agent::provider
 agent::host_path     → session, shell
 agent::input         (no crate-internal references)
 agent::json_merge    (no crate-internal references)
-agent::preflight     → session, paths, agent::agent_config
+agent::preflight     → session, paths, shell, agent::agent_config
 agent::provider      → session
 agent::toml_merge    (no crate-internal references)
 config               (declares the modules below — no references)
@@ -39,7 +40,7 @@ config::file         → paths                (the one loader: seed, parse, save
 config::hooks        → session, config::file
 config::hosts        → session, paths, shell, config::file
 config::settings     → session, config::file
-config::themes       → session, config::file
+config::themes       → theme, config::file
 update               (declares the modules below — no references)
 update::self_update  → session, paths, shell, agent::extension_config,
                        update::version_check
@@ -68,23 +69,22 @@ backend::psmux       → session, shell, backend::{contract, instance},
 backend::rmux        → session, shell, backend::contract,
                        backend::tmux_compat::{control_mode, server, transport}
 git                  → session, paths, shell
-storage              → session, sync, paths
-sync                 → session
+storage              → session, paths
 telemetry            → session, storage           (ADR-37/38 OTLP export)
-session_ops          → session, storage, git, sync, paths, workspace, shell
+session_ops          → session, storage, git, paths, workspace, shell
                        [path-only: agent::{agent_config, extension_config,
                         generic, host_path, json_merge, preflight, provider,
                         toml_merge}, backend::{contract, identity, instance,
                         registry}, config::{hooks, hosts, settings},
                         update::{self_update, version_check}]
-kernel               → session, storage, sync, paths, session_ops, git,
-                       notifications, shell
+kernel               → session, storage, paths, session_ops, git,
+                       notifications, shell, theme
                        [path-only: agent::{agent_config, extension_config,
                         host_path, preflight}, backend::{contract, identity,
                         pane, registry}, config::{hosts, settings, themes},
                         update::{self_update, version_check}]
-cli                  → session, storage, session_ops, sync, paths,
-                       notifications, ui_control, telemetry
+cli                  → session, storage, session_ops, paths,
+                       notifications, ui_control, telemetry, theme
                        [path-only: agent::{agent_config, extension_config,
                         preflight}, backend::{contract, instance, registry},
                         config::{file, hooks, hosts, settings, themes},
@@ -94,7 +94,9 @@ clipboard            → session, paths
 workspace            → paths
 paths                (leaf utility — no crate-internal references)
 ui_control           → paths
-shell                → session                 (a host entry → its launcher)
+shell                → session                 (a host entry → its launcher,
+                                                the local platform)
+theme                (no crate-internal references — the presets)
 coordinator          → agent::input, backend::{instance, output_wake, wiring},
                        clipboard, config::settings, kernel, paths, session,
                        session_ops, shell, storage, telemetry, ui_control

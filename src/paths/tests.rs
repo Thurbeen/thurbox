@@ -866,3 +866,13 @@ fn a_leftover_staged_file_does_not_block_the_next_save() {
 
     assert_eq!(std::fs::read_to_string(&staged).unwrap(), "");
 }
+
+#[test]
+fn the_wsl_distro_is_read_trimmed_and_an_empty_one_is_none() {
+    with_wsl_distro(Some("Ubuntu"), || {
+        assert_eq!(current_wsl_distro().as_deref(), Some("Ubuntu"));
+    });
+    with_wsl_distro(None, || assert_eq!(current_wsl_distro(), None));
+    // A distro that set the variable empty is no distro at all.
+    with_wsl_distro(Some("  "), || assert_eq!(current_wsl_distro(), None));
+}

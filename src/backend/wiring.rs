@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use crate::backend::registry::BackendRegistry;
 use crate::backend::SessionBackend;
+use crate::session::settings::Settings;
 use crate::session::{HostDef, HostRegistry, Multiplexer, Platform, Route};
 use crate::shell::HostLauncher;
 
@@ -23,6 +24,9 @@ pub struct BackendSpec {
     pub platform: Platform,
     /// The host as configured, or `None` for this machine.
     pub host: Option<HostDef>,
+    /// Lines a terminal on this backend keeps (`settings.toml`
+    /// `scrollback_lines`), which bounds the history it captures.
+    pub scrollback_lines: usize,
 }
 
 /// Builds the backend serving a [`BackendSpec`].
@@ -39,28 +43,37 @@ const ADAPTERS: &[(Multiplexer, AdapterFactory)] = &[
 
 fn tmux(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
     match (&spec.host, &spec.launcher) {
-        (Some(host), Some(launcher)) => {
-            crate::backend::tmux::on_host(host, launcher.clone(), spec.platform)
-        }
-        _ => crate::backend::tmux::local(),
+        (Some(host), Some(launcher)) => crate::backend::tmux::on_host(
+            host,
+            launcher.clone(),
+            spec.platform,
+            spec.scrollback_lines,
+        ),
+        _ => crate::backend::tmux::local(spec.scrollback_lines),
     }
 }
 
 fn psmux(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
     match (&spec.host, &spec.launcher) {
-        (Some(host), Some(launcher)) => {
-            crate::backend::psmux::on_host(host, launcher.clone(), spec.platform)
-        }
-        _ => crate::backend::psmux::local(),
+        (Some(host), Some(launcher)) => crate::backend::psmux::on_host(
+            host,
+            launcher.clone(),
+            spec.platform,
+            spec.scrollback_lines,
+        ),
+        _ => crate::backend::psmux::local(spec.scrollback_lines),
     }
 }
 
 fn rmux(spec: &BackendSpec) -> Arc<dyn SessionBackend> {
     match (&spec.host, &spec.launcher) {
-        (Some(host), Some(launcher)) => {
-            crate::backend::rmux::on_host(host, launcher.clone(), spec.platform)
-        }
-        _ => crate::backend::rmux::local(),
+        (Some(host), Some(launcher)) => crate::backend::rmux::on_host(
+            host,
+            launcher.clone(),
+            spec.platform,
+            spec.scrollback_lines,
+        ),
+        _ => crate::backend::rmux::local(spec.scrollback_lines),
     }
 }
 
@@ -80,22 +93,22 @@ pub fn implements(mux: Multiplexer) -> bool {
 /// pane needs more than a connection — a remote session's launch directory
 /// resolves against its `HostDef` — and both halves must come from the same
 /// read of `hosts.toml`. The warnings are that read's, for callers that
-/// surface them.
-pub fn configured() -> (BackendRegistry, HostRegistry, Vec<String>) {
+/// surface them. `settings` are the ones the process loaded.
+pub fn configured(settings: &Settings) -> (BackendRegistry, HostRegistry, Vec<String>) {
     let (hosts, warnings) = crate::config::hosts::cached_registry();
-    (for_hosts(hosts), hosts.clone(), warnings.clone())
+    (for_hosts(hosts, settings), hosts.clone(), warnings.clone())
 }
 
 /// Every adapter for this machine and no host: what a command acting only on
 /// a local row needs, without reading `hosts.toml` or discovering WSL
 /// distros.
-pub fn local_only() -> BackendRegistry {
-    for_hosts(&HostRegistry::default())
+pub fn local_only(settings: &Settings) -> BackendRegistry {
+    for_hosts(&HostRegistry::default(), settings)
 }
 
 /// The registry for `hosts`, from [`ADAPTERS`].
-fn for_hosts(hosts: &HostRegistry) -> BackendRegistry {
-    registry_from(ADAPTERS, hosts)
+fn for_hosts(hosts: &HostRegistry, settings: &Settings) -> BackendRegistry {
+    registry_from(ADAPTERS, hosts, settings.scrollback_lines)
 }
 
 /// Every adapter in `table`, for this machine and for each of `hosts`.
@@ -109,8 +122,12 @@ fn for_hosts(hosts: &HostRegistry) -> BackendRegistry {
 ///
 /// `table` must serve this platform's default multiplexer, which the registry
 /// is never without.
-fn registry_from(table: &[(Multiplexer, AdapterFactory)], hosts: &HostRegistry) -> BackendRegistry {
-    let platform = Platform::local();
+fn registry_from(
+    table: &[(Multiplexer, AdapterFactory)],
+    hosts: &HostRegistry,
+    scrollback_lines: usize,
+) -> BackendRegistry {
+    let platform = crate::shell::local_platform();
     let default = Multiplexer::default_for(platform);
     let build = |mux: Multiplexer, host: Option<&HostDef>| {
         let factory = table
@@ -123,12 +140,14 @@ fn registry_from(table: &[(Multiplexer, AdapterFactory)], hosts: &HostRegistry) 
                 launcher: None,
                 platform,
                 host: None,
+                scrollback_lines,
             },
             Some(host) => BackendSpec {
                 route: host.route(Some(mux)),
                 launcher: Some(HostLauncher::for_host(host)),
                 platform: host.platform(),
                 host: Some(host.clone()),
+                scrollback_lines,
             },
         };
         Some((spec.route.clone(), factory(&spec)))
@@ -179,7 +198,7 @@ mod tests {
             ("moved", Some("rmux")),
             ("herd", Some("herdr")),
         ]);
-        let registry = for_hosts(&hosts);
+        let registry = for_hosts(&hosts, &Settings::default());
         for host in &hosts.hosts {
             let meant = hosts.qualify(&host.route(None));
             assert!(registry.supports(&meant), "{}", meant.format());
@@ -197,7 +216,10 @@ mod tests {
 
     #[test]
     fn a_backend_is_named_by_the_route_it_serves() {
-        let registry = for_hosts(&hosts(&[("plain", None), ("win", Some("psmux"))]));
+        let registry = for_hosts(
+            &hosts(&[("plain", None), ("win", Some("psmux"))]),
+            &Settings::default(),
+        );
         for (route, backend) in registry.all_backends() {
             assert_eq!(backend.name(), route.format());
         }
@@ -212,11 +234,14 @@ mod tests {
     /// is, and the platform only picks what an unqualified route means.
     #[test]
     fn every_adapter_is_registered_whatever_the_platform() {
-        use crate::session::platform::simulate_local;
         use crate::session::{Platform, Via};
+        use crate::shell::simulate_local;
         for platform in Platform::ALL {
             simulate_local(platform, || {
-                let registry = for_hosts(&hosts(&[("plain", None), ("win", Some("psmux"))]));
+                let registry = for_hosts(
+                    &hosts(&[("plain", None), ("win", Some("psmux"))]),
+                    &Settings::default(),
+                );
                 for mux in [Multiplexer::Tmux, Multiplexer::Psmux, Multiplexer::Rmux] {
                     assert!(
                         registry.supports(&Route::local(Some(mux))),
@@ -262,8 +287,8 @@ mod tests {
         use std::cell::RefCell;
 
         use super::*;
-        use crate::session::platform::simulate_local;
         use crate::session::{HostKind, Platform};
+        use crate::shell::simulate_local;
         use crate::shell::HostLauncher;
 
         thread_local! {
@@ -349,7 +374,7 @@ mod tests {
             for local in Platform::ALL {
                 simulate_local(local, || {
                     BUILT.with(|built| built.borrow_mut().clear());
-                    let registry = registry_from(PROBES, &hosts);
+                    let registry = registry_from(PROBES, &hosts, 0);
                     let mut routes: Vec<(Route, Option<&HostDef>)> = Multiplexer::ALL
                         .into_iter()
                         .map(|mux| (Route::local(Some(mux)), None))
@@ -420,7 +445,7 @@ mod tests {
             let hosts = placements();
             let registered = |local| {
                 simulate_local(local, || {
-                    let mut routes: Vec<String> = registry_from(PROBES, &hosts)
+                    let mut routes: Vec<String> = registry_from(PROBES, &hosts, 0)
                         .routes()
                         .map(Route::format)
                         .collect();

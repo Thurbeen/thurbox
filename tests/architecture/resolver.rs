@@ -471,20 +471,34 @@ impl Tree {
     /// (`std::fs::write`) counts; a different name that merely ends the same
     /// way (`myfs::write`) does not.
     pub fn production_calls<'a>(&self, calls: &[&'a str]) -> Vec<(PathBuf, usize, &'a str)> {
+        self.mentions(calls, "(", false)
+    }
+
+    /// Every place one of `needles` is written, outside comments and strings,
+    /// with the same file/line/needle shape and the same boundary rule as
+    /// [`Self::production_calls`]. `with_tests` also counts `#[cfg(test)]`
+    /// code, for a property that must hold of a module's tests as well.
+    pub fn mentions<'a>(
+        &self,
+        needles: &[&'a str],
+        suffix: &str,
+        with_tests: bool,
+    ) -> Vec<(PathBuf, usize, &'a str)> {
         let mut found = Vec::new();
         for file in &self.files {
-            if self.is_test_module(&file.module) {
+            if !with_tests && self.is_test_module(&file.module) {
                 continue;
             }
             let rel = file.path.strip_prefix(&self.root).unwrap_or(&file.path);
-            for call in calls {
-                let needle = format!("{call}(");
+            for call in needles {
+                let needle = format!("{call}{suffix}");
                 for (offset, _) in file.stripped.match_indices(&needle) {
                     let bounded =
                         offset == 0 || !is_ident_char(file.stripped.as_bytes()[offset - 1]);
                     if !bounded
-                        || file.in_test_span(offset)
-                        || self.is_test_module(&file.scope_at(offset))
+                        || (!with_tests
+                            && (file.in_test_span(offset)
+                                || self.is_test_module(&file.scope_at(offset))))
                     {
                         continue;
                     }

@@ -79,7 +79,7 @@ pub fn record(tick: &LastTick) {
 /// A tick that failed with `error`, now.
 pub fn failed(error: &str) -> LastTick {
     LastTick {
-        at: crate::sync::current_time_millis(),
+        at: crate::storage::current_time_millis(),
         ok: false,
         error: Some(error.to_string()),
         fired: 0,

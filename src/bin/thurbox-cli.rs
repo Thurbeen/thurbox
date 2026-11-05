@@ -66,11 +66,9 @@ fn main() {
         }));
     }
 
-    // Publish settings before Database::open (audit pruning reads retention).
-    // Warnings go to the WARN-level stderr logger; `config validate` is the
-    // loud path.
+    // Loaded once and handed to everything that reads one. Warnings go to the
+    // WARN-level stderr logger; `config validate` is the loud path.
     let (settings, _) = thurbox::config::settings::load_or_seed_with_warnings();
-    thurbox::session::settings::init(settings);
 
     let Some(db_path) = thurbox::paths::database_file() else {
         if ticking {
@@ -84,12 +82,13 @@ fn main() {
         );
     };
 
-    let open = if matches!(
+    let signal = matches!(
         &cli.command,
         Some(cli::Command::Session {
             action: cli::sessions::Action::Signal { .. }
         })
-    ) {
+    );
+    let open = if signal {
         thurbox::storage::Database::open_for_signal
     } else {
         thurbox::storage::Database::open
@@ -124,17 +123,22 @@ fn main() {
     for notice in thurbox::session_ops::repair_wsl_loopback_rows(&db) {
         tracing::warn!("{notice}");
     }
+    // Every agent hook runs `session signal`, which skips the retention sweep
+    // for the same reason `open_for_signal` skips the schema pass.
+    if !signal {
+        db.prune_history(settings.audit_retention_days);
+    }
 
     // The one registry this process drives backends through, built here at its
     // composition root — on the first command that acts on a session, and
     // never for the ones that do not. Registration only: nothing connects
     // until a backend is asked something.
-    let build = || thurbox::backend::wiring::configured().0;
+    let build = || thurbox::backend::wiring::configured(&settings).0;
     // This machine's backends alone, for `session signal` — run by every
     // agent hook, so it must not pay for reading every host.
-    let build_local = thurbox::backend::wiring::local_only;
+    let build_local = || thurbox::backend::wiring::local_only(&settings);
     let backends = cli::Backends::lazy(&build).with_local(&build_local);
-    let outcome = cli::run(cli, &db, &backends);
+    let outcome = cli::run(cli, &db, &backends, &settings);
     // Before any exit below, which runs no destructor.
     for registry in backends.built() {
         registry.shutdown_all();

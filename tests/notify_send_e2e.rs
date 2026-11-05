@@ -482,7 +482,7 @@ fn a_late_failure_keeps_a_newer_hold() {
 
 #[cfg(target_os = "linux")]
 fn seed_session(instance: &Instance, name: &str) -> String {
-    let row = thurbox::sync::SharedSession {
+    let row = thurbox::session::SharedSession {
         id: thurbox::session::SessionId::default(),
         name: name.into(),
         agent: "claude".into(),

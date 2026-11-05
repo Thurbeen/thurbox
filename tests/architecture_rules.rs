@@ -101,7 +101,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "agent::preflight",
-        allowed: &["session", "paths", "agent::agent_config"],
+        allowed: &["session", "paths", "shell", "agent::agent_config"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -150,7 +150,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "config::themes",
-        allowed: &["session", "config::file"],
+        allowed: &["theme", "config::file"],
         allowed_path_only: &[],
     },
     // Self-update: whether a newer release exists, and installing it.
@@ -339,12 +339,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "storage",
-        allowed: &["session", "sync", "paths"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "sync",
-        allowed: &["session"],
+        allowed: &["session", "paths"],
         allowed_path_only: &[],
     },
     // thurbox's own OTLP export (ADR-37): reads the event log and the cursor
@@ -352,6 +347,13 @@ const MODULE_RULES: &[ModuleRules] = &[
     // session counts it is handed are assessed by its caller, `cli`. The
     // interface's diagnostic-log bridge (ADR-38) is built by `coordinator`,
     // which hands it the identity it exports under.
+    // The theme presets and the user's overrides, in `ratatui` colours: data,
+    // but rendering data, which `session_is_pure_data` keeps out of the sink.
+    ModuleRules {
+        name: "theme",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
     ModuleRules {
         name: "telemetry",
         allowed: &["session", "storage"],
@@ -365,15 +367,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     // home (`shell::posix_quote` / `powershell_quote`).
     ModuleRules {
         name: "session_ops",
-        allowed: &[
-            "session",
-            "storage",
-            "git",
-            "sync",
-            "paths",
-            "workspace",
-            "shell",
-        ],
+        allowed: &["session", "storage", "git", "paths", "workspace", "shell"],
         allowed_path_only: &[
             "agent::agent_config",
             "agent::extension_config",
@@ -401,11 +395,11 @@ const MODULE_RULES: &[ModuleRules] = &[
             "session",
             "storage",
             "session_ops",
-            "sync",
             "paths",
             "notifications",
             "ui_control",
             "telemetry",
+            "theme",
         ],
         // `kernel` for the two subcommands that drive the *interface's* own
         // files — `plugin` (`check` loads the real host: the failures worth
@@ -435,9 +429,9 @@ const MODULE_RULES: &[ModuleRules] = &[
         ],
     },
     // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
-    // session engine to build the snapshot plugins render from (`storage` +
-    // `sync` for the rows, `session` for the types, `paths` for the DB and
-    // plugin directories).
+    // session engine to build the snapshot plugins render from (`storage` for
+    // the rows, `session` for the types, `paths` for the DB and plugin
+    // directories).
     //
     // `git` IS allowed, and the rule is about *where*: the worker-backed stores
     // (`diff`, `repos`, `packages`, `command`) shell out to it off-thread, which
@@ -453,12 +447,12 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[
             "session",
             "storage",
-            "sync",
             "paths",
             "session_ops",
             "git",
             "notifications",
             "shell",
+            "theme",
         ],
         // Live agent terminals: `kernel::terminal` adopts a session's real pane
         // through the backend contract and paints its vt100 screen. All are
@@ -1562,24 +1556,24 @@ fn the_transitional_table_fails_on_a_new_and_on_a_stale_crossing() {
 }
 
 /// The declared graph is checked for what it permits, not what is used:
-/// `storage` and `sync` allowed to reach each other are a cycle.
+/// `storage` and `telemetry` allowed to reach each other are a cycle.
 #[test]
 fn the_declared_check_sees_a_mutual_allowance() {
     let rules = [
         ModuleRules {
             name: "storage",
-            allowed: &["sync"],
+            allowed: &["telemetry"],
             allowed_path_only: &[],
         },
         ModuleRules {
-            name: "sync",
+            name: "telemetry",
             allowed: &[],
             allowed_path_only: &["storage"],
         },
     ];
     assert_eq!(
         cycles(&declared_edges(&rules)),
-        vec![vec!["storage".to_string(), "sync".to_string()]]
+        vec![vec!["storage".to_string(), "telemetry".to_string()]]
     );
 }
 
@@ -1726,6 +1720,101 @@ fn files_thurbox_reads_back_are_written_atomically() {
         "write these through paths::write_atomically, or correct IN_PLACE_ALLOWED with why:\n  {}",
         problems.join("\n  ")
     );
+}
+
+/// The external crates `session` may name: data formats and value types. A
+/// palette in `ratatui` colours is a rendering decision, a `tokio` handle or a
+/// `rusqlite` row is someone else's runtime, and none of them belongs in the
+/// sink every other node depends on. `architecture_rules` resolves only
+/// crate-internal edges, so this is how an external one is governed (#1477).
+const SESSION_CRATES: &[&str] = &[
+    "chrono",
+    "chrono_tz",
+    "cron",
+    "serde",
+    "serde_json",
+    "toml",
+    "toml_edit",
+    "unicode_width",
+    "uuid",
+];
+
+/// Process state `session` may not hold, in its tests either: a value it
+/// answers from somewhere other than its arguments makes the sink an owner of
+/// the process. Settings are passed in by whoever loaded them, the local
+/// platform's simulation lives with the code that decides by it, and an
+/// environment variable is read by the caller (#1477).
+const SESSION_STATE: &[&str] = &["thread_local!", "OnceLock", "LazyLock", "static mut"];
+const SESSION_ENV: &[&str] = &["env::"];
+
+/// Every crate `Cargo.toml` depends on, spelled as a path names it.
+fn dependency_crates() -> Vec<String> {
+    let manifest: toml::Table =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("read Cargo.toml")
+            .parse()
+            .expect("parse Cargo.toml");
+    let mut tables = vec![manifest.get("dependencies")];
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        tables.extend(targets.values().map(|t| t.get("dependencies")));
+    }
+    let mut crates: Vec<String> = tables
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table)
+        .flat_map(|t| t.keys().map(|k| k.replace('-', "_")))
+        .collect();
+    crates.sort();
+    crates.dedup();
+    crates
+}
+
+fn in_session(found: Vec<(PathBuf, usize, &str)>) -> Vec<String> {
+    found
+        .into_iter()
+        .filter(|(file, _, _)| file.starts_with("session"))
+        .map(|(file, line, what)| format!("{}:{line} {what}", file.display()))
+        .collect()
+}
+
+/// `session` is the dependency sink and documented as pure data: it names
+/// only the external crates [`SESSION_CRATES`] lists, holds no process state
+/// and reads no environment.
+#[test]
+fn session_is_pure_data() {
+    let crates = dependency_crates();
+    assert!(
+        crates.iter().any(|c| c == "ratatui"),
+        "read the manifest: {crates:?}"
+    );
+    let foreign: Vec<&str> = crates
+        .iter()
+        .map(String::as_str)
+        .filter(|c| !SESSION_CRATES.contains(c))
+        .collect();
+    let mut problems = in_session(src_tree().mentions(&foreign, "::", true));
+    problems.extend(in_session(src_tree().mentions(SESSION_STATE, "", true)));
+    problems.extend(in_session(src_tree().mentions(SESSION_ENV, "", false)));
+    assert!(
+        problems.is_empty(),
+        "session must stay pure data — move these out, or extend SESSION_CRATES with why:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// The scan behind [`session_is_pure_data`] counts `#[cfg(test)]` code only
+/// when asked to: state a module's tests hold is still state that module holds.
+#[test]
+fn the_mention_scan_takes_test_code_only_when_asked() {
+    let tree = fixture("in_place_writes");
+    let sites = |with_tests| -> Vec<String> {
+        tree.mentions(&["fs::write"], "(", with_tests)
+            .iter()
+            .map(|(file, line, _)| format!("{}:{line}", file.display()))
+            .collect()
+    };
+    assert_eq!(sites(false), ["config.rs:5", "config.rs:9"]);
+    assert_eq!(sites(true), ["config.rs:5", "config.rs:9", "config.rs:15"]);
 }
 
 /// The scan behind [`files_thurbox_reads_back_are_written_atomically`] sees the

@@ -13,8 +13,8 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 #[path = "support/codex_hook.rs"]
 mod codex_hook;

@@ -29,7 +29,11 @@ pub enum Action {
     AcceptInterface,
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
+pub fn run(
+    action: Action,
+    db: &Database,
+    settings: &crate::session::settings::Settings,
+) -> Result<CommandOutput, String> {
     match action {
         Action::Validate => {
             let (report, failed) = validate();
@@ -46,7 +50,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             }
         }
         Action::Show => {
-            let report = show(db)?;
+            let report = show(db, settings)?;
             let human = render_show(&report);
             Ok(CommandOutput::new(report, human))
         }
@@ -164,7 +168,7 @@ fn validate() -> (Value, Vec<String>) {
         crate::config::settings::settings_config_path(),
         "settings.toml",
     );
-    let (themes, themes_ok) = validate_toml::<crate::session::theme_config::ThemesFile>(
+    let (themes, themes_ok) = validate_toml::<crate::theme::ThemesFile>(
         crate::config::themes::themes_config_path(),
         "themes.toml",
     );
@@ -330,13 +334,12 @@ fn render_show(report: &Value) -> String {
     sections.join("\n\n")
 }
 
-fn show(db: &Database) -> Result<Value, String> {
+fn show(db: &Database, settings: &crate::session::settings::Settings) -> Result<Value, String> {
     let agents = crate::agent::agent_config::load_or_seed();
     // The *effective* host set: configured SSH/WSL hosts plus auto-discovered
     // WSL distros — matching what `--host` and the TUI picker actually offer
     // (`config validate` stays file-only).
     let hosts = crate::config::hosts::load_all();
-    let settings = crate::session::settings::global();
     let (custom_themes, _) = crate::config::themes::load_or_seed_with_warnings();
     let (hooks, _) = crate::config::hooks::load_or_seed_with_warnings();
 
@@ -599,7 +602,7 @@ mod tests {
         )
         .unwrap();
 
-        let v = show(&db).unwrap();
+        let v = show(&db, &Default::default()).unwrap();
         assert_eq!(v["hooks"][0]["event"], json!("session.pre_create"));
         assert_eq!(v["hooks"][0]["command"], json!("check"));
         assert_eq!(v["hooks"][1]["timeout_secs"], json!(5));
@@ -616,7 +619,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         db.set_editor_command("code --wait").unwrap();
 
-        let v = show(&db).unwrap();
+        let v = show(&db, &Default::default()).unwrap();
         assert_eq!(v["editor"]["command"], json!("code --wait"));
         assert_eq!(v["editor"]["source"], json!("database (editor_command)"));
         assert!(v["settings"]["scrollback_lines"].is_number());

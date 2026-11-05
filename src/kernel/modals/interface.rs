@@ -1221,7 +1221,7 @@ mod tests {
     /// The tab as the settings modal draws it — the list with its details, then
     /// the footer on the last line — one string per screen row.
     fn paint(tab: &mut InterfaceTab, rows: &[Row], width: u16, height: u16) -> Vec<String> {
-        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let palette = crate::theme::ThemePreset::Default.palette();
         let chrome = Chrome::new(&palette);
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
@@ -1501,7 +1501,7 @@ mod tests {
         let rows = [long];
         let mut tab = InterfaceTab::default();
         tab.on_key(&press(KeyCode::Char('t')), &rows, &Hits::default());
-        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let palette = crate::theme::ThemePreset::Default.palette();
         let text: String = tab
             .footer(&rows, 48, Chrome::new(&palette))
             .spans
@@ -1747,7 +1747,7 @@ mod tests {
 
     /// The footer of a tab whose cursor is on `rows[0]`.
     fn footer(tab: &InterfaceTab, rows: &[Row]) -> String {
-        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let palette = crate::theme::ThemePreset::Default.palette();
         tab.footer(rows, 200, Chrome::new(&palette))
             .spans
             .iter()

@@ -1,8 +1,8 @@
 //! What `settings.toml` controls in v2.
 //!
 //! The bug this file exists to prevent is not a wrong value — it is a setting
-//! that is *read nowhere*. `thurbox2` used to never call `settings::init`, so
-//! `settings::global()` handed out defaults and the entire file was ignored
+//! that is *read nowhere*. `thurbox2` used to never publish what it loaded, so
+//! a process-wide copy handed out defaults and the entire file was ignored
 //! however carefully it had been written. Nothing about that failure was visible:
 //! every switch looked honoured because every default matched.
 //!
@@ -66,34 +66,27 @@ fn the_file_is_what_is_in_force() {
 }
 
 #[test]
-fn loading_publishes_the_settings_process_wide() {
-    // The half of the failure that was invisible: everything reading
-    // `settings::global()` — including `Database::open`, which prunes the audit
-    // log to `audit_retention_days` — sees defaults until this is done.
+fn a_restart_only_value_is_in_force_as_loaded() {
+    // What every consumer of a restart-only value is built with: there is no
+    // process-wide copy to fall back on, so the loaded document is the answer.
     let _home = isolate();
     write_settings("audit_retention_days = 7\n");
 
     let (config, _) = Config::load();
     assert_eq!(config.in_force().audit_retention_days, 7);
-    assert_eq!(
-        thurbox::session::settings::global().audit_retention_days,
-        7,
-        "a restart-only value has to be readable through the global, or the \
-         callers that read it there are still on defaults"
-    );
 }
 
 #[test]
 fn audit_history_is_pruned_to_the_configured_retention() {
-    // `Database::open` prunes, reading the retention from the published settings —
-    // which is why publishing them before the first open is load-bearing.
+    // Each binary prunes once it has loaded its settings, with the retention
+    // they name — `Database::open` knows no setting.
     let _home = isolate();
     write_settings("audit_retention_days = 1\n");
-    let (_config, _) = Config::load();
+    let (config, _) = Config::load();
 
     let path = thurbox::paths::database_file().expect("db path");
     let db = thurbox::storage::Database::open(&path).expect("open");
-    let old = thurbox::sync::current_time_millis() - 5 * 24 * 60 * 60 * 1000;
+    let old = thurbox::storage::current_time_millis() - 5 * 24 * 60 * 60 * 1000;
     db.conn_ref()
         .execute(
             "INSERT INTO audit_log (timestamp, entity_type, entity_id, action) \
@@ -102,7 +95,11 @@ fn audit_history_is_pruned_to_the_configured_retention() {
         )
         .expect("insert");
 
-    assert_eq!(db.prune_audit_log().expect("prune"), 1);
+    assert_eq!(
+        db.prune_audit_log(config.in_force().audit_retention_days)
+            .expect("prune"),
+        1
+    );
 }
 
 // ── Reload ─────────────────────────────────────────────────────────────────
@@ -408,9 +405,12 @@ fn confirmation(host: &thurbox::kernel::host::LuaHost, settings: &Settings) -> O
                 frame,
                 ratatui::layout::Rect::new(0, 0, width, rows),
                 &rendered.node,
-                &thurbox::kernel::terminal::Terminals::with_registry(std::sync::Arc::new(
-                    thurbox::backend::wiring::configured().0,
-                )),
+                &thurbox::kernel::terminal::Terminals::with_registry(
+                    std::sync::Arc::new(
+                        thurbox::backend::wiring::configured(&Default::default()).0,
+                    ),
+                    &Default::default(),
+                ),
                 &mut Vec::new(),
             );
         })

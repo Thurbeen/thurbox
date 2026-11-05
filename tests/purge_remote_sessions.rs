@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use thurbox::backend::{BackendRegistry, WindowRole};
+use thurbox::session::SharedSession;
 use thurbox::session::{Multiplexer, Route, SessionId};
 use thurbox::session_ops::purge::{purge_deleted, Age};
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 #[path = "support/recording_backend.rs"]
 mod recording_backend;
@@ -116,7 +116,7 @@ fn purge_preserves_a_remote_delete_renewed_during_fallback_lookup() {
 fn timed_reap_preserves_a_remote_delete_renewed_during_fallback_lookup() {
     let env = Env::new();
     env.renew_during_lookup();
-    let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&env.db, &env.registry);
+    let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&env.db, &env.registry, 0);
     assert!(reaped.is_empty(), "{reaped:?}");
     env.assert_fresh_delete_kept();
 }

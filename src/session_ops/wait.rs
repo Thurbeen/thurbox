@@ -1,8 +1,7 @@
 //! A process-local event cursor; no keeper, UI, or subscription to supervise.
 use crate::{
-    session::{AgentRegistry, SessionId},
+    session::{AgentRegistry, SessionId, SharedSession},
     storage::{Database, HookRow},
-    sync::SharedSession,
 };
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};

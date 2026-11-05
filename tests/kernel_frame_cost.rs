@@ -17,7 +17,11 @@ fn a_snapshot_refresh_moves_the_version() {
     // built last time. If a refresh left it still, every such reader would keep
     // showing what the database said before.
     let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(db, &thurbox::backend::wiring::configured().0);
+    let mut store = SnapshotStore::with_database(
+        db,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
 
     let before = store.version();
     store.refresh();
@@ -33,7 +37,11 @@ fn every_refresh_moves_it_again() {
     // An explicit refresh replaces the rows. The clock-only idle path has
     // its own signal, tested separately below and in the snapshot tests.
     let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(db, &thurbox::backend::wiring::configured().0);
+    let mut store = SnapshotStore::with_database(
+        db,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
 
     let mut seen = store.version();
     for _ in 0..5 {
@@ -49,7 +57,11 @@ fn reading_the_snapshot_leaves_the_version_alone() {
     // The other half, and the one that makes gating worth anything: if merely
     // looking moved the signal, nothing could ever be reused.
     let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(db, &thurbox::backend::wiring::configured().0);
+    let mut store = SnapshotStore::with_database(
+        db,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
     store.refresh();
 
     let settled = store.version();
@@ -71,7 +83,11 @@ fn quiescence_moves_the_version_only_when_it_re_derives_something() {
     // stuck-`working` fallback would invalidate every cached tree ~40 times a
     // second for nothing.
     let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(db, &thurbox::backend::wiring::configured().0);
+    let mut store = SnapshotStore::with_database(
+        db,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
     store.refresh();
 
     let settled = store.version();
@@ -838,7 +854,11 @@ fn a_re_stamped_snapshot_does_not_move_the_version_within_a_second() {
     // 2.5 times a second, which capped how long any pure pane could be cached
     // and was the dominant reason an idle interface kept re-rendering.
     let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(db, &thurbox::backend::wiring::configured().0);
+    let mut store = SnapshotStore::with_database(
+        db,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
     store.refresh();
 
     let settled = store.version();
@@ -864,7 +884,11 @@ fn the_published_instant_is_whole_seconds() {
     // field means "when these rows were read, to the second", and every reader
     // of it floors to seconds anyway.
     let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(db, &thurbox::backend::wiring::configured().0);
+    let mut store = SnapshotStore::with_database(
+        db,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
     store.refresh();
     assert_eq!(
         store.current().taken_at_ms % 1000,
@@ -918,9 +942,10 @@ fn asking_terminals_for_metadata_is_not_itself_a_change() {
     // frame. If merely asking counted as a change it would move the version ~40
     // times a second and invalidate every cached tree — the exact failure that
     // made the `store` write comparison worth 27%.
-    let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
 
     let settled = terminals.meta_version();
     for _ in 0..50 {
@@ -939,9 +964,10 @@ fn reading_attach_failures_is_not_itself_a_change() {
     // map on every publish, so — like `meta` above — the read must not be
     // mistaken for a write. (`failures` takes `&self` today, so this also
     // guards the day someone needs it to sync something first — as `meta` does.)
-    let terminals = thurbox::kernel::terminal::Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let terminals = thurbox::kernel::terminal::Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let settled = terminals.failed_version();
 
     for _ in 0..50 {

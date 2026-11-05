@@ -21,7 +21,7 @@ use rusqlite::params;
 
 use crate::session::message::validate_kind_body;
 use crate::session::{SessionId, SessionMessage};
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::Database;
 

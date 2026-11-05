@@ -16,7 +16,7 @@
 use rusqlite::params;
 
 use crate::session::SessionId;
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::Database;
 
@@ -263,11 +263,10 @@ impl Database {
         Ok(out)
     }
 
-    /// Drop events older than the audit log's retention (`settings.toml`
-    /// `audit_retention_days`). Returns the number of rows removed. Cheap
-    /// thanks to `idx_session_events_at`.
-    pub fn prune_session_events(&self) -> rusqlite::Result<usize> {
-        let retention_days = crate::session::settings::global().audit_retention_days;
+    /// Drop events older than `retention_days`, the audit log's retention
+    /// (`settings.toml` `audit_retention_days`). Returns the number of rows
+    /// removed. Cheap thanks to `idx_session_events_at`.
+    pub fn prune_session_events(&self, retention_days: u64) -> rusqlite::Result<usize> {
         let cutoff = current_time_millis().saturating_sub(retention_days * MS_PER_DAY);
         self.delete_if_any("session_events WHERE at_ms < ?1", params![cutoff as i64])
     }
@@ -276,7 +275,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     fn row(name: &str) -> SharedSession {
         SharedSession {
@@ -356,7 +355,7 @@ mod tests {
         let session = row("worker");
         db.upsert_session(&session).unwrap();
 
-        let retention_days = crate::session::settings::global().audit_retention_days;
+        let retention_days = 90;
         let stale = current_time_millis() - (retention_days + 1) * MS_PER_DAY;
         db.conn_ref()
             .execute(
@@ -366,7 +365,7 @@ mod tests {
             .unwrap();
         db.set_hook_state(session.id, "working").unwrap();
 
-        assert_eq!(db.prune_session_events().unwrap(), 1);
+        assert_eq!(db.prune_session_events(retention_days).unwrap(), 1);
         assert_eq!(db.session_events_since(0, None, 100).unwrap().len(), 1);
     }
 

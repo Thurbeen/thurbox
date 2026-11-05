@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::Database;
 
@@ -86,12 +86,11 @@ impl Database {
         Ok(())
     }
 
-    /// Delete audit entries older than the configured retention (settings.toml
+    /// Delete audit entries older than `retention_days` (settings.toml
     /// `audit_retention_days`, default 90 — they are debugging breadcrumbs,
     /// not compliance data). Returns the number of rows removed. Cheap thanks
     /// to `idx_audit_log_timestamp`.
-    pub fn prune_audit_log(&self) -> rusqlite::Result<usize> {
-        let retention_days = crate::session::settings::global().audit_retention_days;
+    pub fn prune_audit_log(&self, retention_days: u64) -> rusqlite::Result<usize> {
         let cutoff = current_time_millis().saturating_sub(retention_days * MS_PER_DAY);
         let expired: bool = self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sessions WHERE purged_at IS NOT NULL AND purged_at < ?1)",
@@ -299,7 +298,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
 
         let now = current_time_millis();
-        let retention_days = crate::session::settings::global().audit_retention_days;
+        let retention_days = 90;
         let stale = now - (retention_days + 1) * MS_PER_DAY;
         let insert = |timestamp: u64, entity_id: &str| {
             db.conn_ref()
@@ -313,7 +312,7 @@ mod tests {
         insert(stale, "old");
         insert(now, "fresh");
 
-        assert_eq!(db.prune_audit_log().unwrap(), 1);
+        assert_eq!(db.prune_audit_log(retention_days).unwrap(), 1);
 
         let entries = db.get_audit_log(None, None, 10).unwrap();
         assert_eq!(entries.len(), 1);

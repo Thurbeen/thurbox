@@ -64,7 +64,7 @@ ROWS="${ROWS:-44}"
 FONT_SIZE="${FONT_SIZE:-20}"
 FPS="${FPS:-25}"
 # The theme the clip is recorded in, persisted as metadata.active_theme (see
-# src/session/theme_config/mod.rs). `doom` for the obvious reason, and it is what
+# src/theme/mod.rs). `doom` for the obvious reason, and it is what
 # scripts/demo/record.sh puts every other clip in.
 THEME="${THEME:-doom}"
 # Where the plugin comes from. A `git+` prefix is one of the three spellings that

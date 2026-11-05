@@ -1,8 +1,7 @@
 //! The heartbeat's at-least-once consumer of the state-edge log.
 use crate::{
     session::{HookContext, HookEvent},
-    storage::{Database, HookRow},
-    sync::current_time_millis,
+    storage::{current_time_millis, Database, HookRow},
 };
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -149,8 +148,8 @@ fn drain(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::session::SharedSession;
     use crate::session::{LifecycleHook, SessionId};
-    use crate::sync::SharedSession;
 
     fn hook(command: String) -> LifecycleHook {
         LifecycleHook {

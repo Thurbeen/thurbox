@@ -6,8 +6,8 @@
 
 use thurbox::cli::sessions::{run, Action};
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 fn db() -> (tempfile::TempDir, Database) {
     let dir = tempfile::TempDir::new().expect("tempdir");
@@ -52,7 +52,8 @@ fn reparent(db: &Database, session: &str, parent: Option<&str>) -> Result<(), St
             clear: parent.is_none(),
         },
         db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .map(|_| ())
     .map_err(|e| e.message.clone())

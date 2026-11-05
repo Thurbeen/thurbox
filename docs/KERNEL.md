@@ -317,14 +317,15 @@ restart-only change lands in the file and is deliberately withheld from what is
 running, so seeding an edit from what is running silently proposes undoing it —
 the next save of any row reverted it.
 
-`settings::global()` is still a write-once `OnceLock`, shared with `thurbox-cli`
-and v1, and it stays that way: it is what makes those callers safe. The live half
-lives in `kernel::config` instead. Publishing at startup is load-bearing rather
-than tidy — `Database::open` prunes the audit log to `audit_retention_days`, so a
-kernel that has not published its settings prunes to the default. (v2 shipped
-that way for a while: the kernel's `main` never called `settings::init`, so the whole file
-was silently ignored while every switch looked honoured, because every default
-matched.)
+There is no process-wide copy of the settings: `session` holds no state
+(#1477). The live half lives in `kernel::config`; the restart-only half is handed,
+as loaded, to whatever is built with it — the backends (history depth), the
+terminals (scrollback, how long a hidden grid stays), the snapshot store (git
+cadence, configured multiplexer), the command bus (deleted retention) — and the
+binary runs the audit-log prune itself (`Database::prune_history`). Loading
+first is load-bearing rather than tidy. (v2 once shipped with a process-wide copy
+its `main` never filled, so the whole file was silently ignored while every
+switch looked honoured, because every default matched.)
 
 ## System chrome is not a pane
 
@@ -401,8 +402,8 @@ were found by running it, not by reading the spec.
 
 ## Where the boundary sits
 
-`kernel` may reference `session`, `storage`, `sync`, `paths`, `session_ops`,
-`git`, `notifications` and `shell`, plus `agent` and the backend contract by
+`kernel` may reference `session`, `storage`, `paths`, `session_ops`,
+`git`, `notifications`, `shell` and `theme`, plus `agent` and the backend contract by
 fully-qualified path only — enforced by
 `tests/architecture_rules.rs`. It may never reference `ui` or `app`: it is their
 replacement, not their peer.

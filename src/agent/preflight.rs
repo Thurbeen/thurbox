@@ -328,7 +328,7 @@ pub fn local_multiplexers() -> Vec<Multiplexer> {
         .into_iter()
         .filter(|mux| look_up(mux.name()) == Presence::Present)
         .collect();
-    Multiplexer::available_on(crate::session::Platform::local(), Some(&found), None)
+    Multiplexer::available_on(crate::shell::local_platform(), Some(&found), None)
 }
 
 /// The multiplexer a local session would run in on this platform.

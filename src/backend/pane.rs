@@ -454,12 +454,23 @@ struct Residency {
     changes: AtomicU64,
     /// Wakes a caller waiting on a snapshot ([`WiredPane::wait_resident`]).
     landed: (Mutex<()>, std::sync::Condvar),
+    /// Lines of scrollback a grid of this pane keeps, given at construction:
+    /// the reader thread rebuilds the grid from a snapshot with it.
+    scrollback: usize,
 }
 
 impl Residency {
-    fn dormant() -> Self {
+    fn resident(scrollback: usize) -> Self {
+        Self {
+            scrollback,
+            ..Self::default()
+        }
+    }
+
+    fn dormant(scrollback: usize) -> Self {
         Self {
             dormant: AtomicBool::new(true),
+            scrollback,
             ..Self::default()
         }
     }
@@ -521,7 +532,7 @@ pub fn snapshot_seed(snapshot: &PaneSnapshot, dormant: &vt100::Screen) -> Vec<u8
 
 /// A parser holding the pane `snapshot` describes, for a reader that wants it
 /// as it stands (the content search) and not as the pane's own grid.
-pub fn parser_from_snapshot(snapshot: &PaneSnapshot) -> SessionParser {
+pub fn parser_from_snapshot(snapshot: &PaneSnapshot, scrollback: usize) -> SessionParser {
     let (rows, cols) = vt_floor(snapshot.rows, snapshot.cols);
     let blank = vt100::Parser::new(
         DORMANT_GRID.0.try_into().unwrap(),
@@ -531,7 +542,7 @@ pub fn parser_from_snapshot(snapshot: &PaneSnapshot) -> SessionParser {
     let mut parser = vt100::Parser::new_with_callbacks(
         rows.try_into().unwrap(),
         cols.try_into().unwrap(),
-        crate::session::settings::global().scrollback_lines,
+        scrollback,
         TermSignals::default(),
     );
     parser.process(&snapshot_seed(snapshot, blank.screen()));
@@ -872,6 +883,7 @@ impl ProgramPane {
         env: &HashMap<String, String>,
         rows: u16,
         cols: u16,
+        scrollback: usize,
     ) -> Result<Self> {
         let spawned = backend.spawn(window_name, program, args, cwd, env, rows, cols)?;
         // No session id: a program belongs to a plugin, and the role is what
@@ -879,8 +891,14 @@ impl ProgramPane {
         if let Err(e) = backend.stamp_window(&spawned.backend_id, "", WindowRole::Program) {
             debug!("could not stamp the program window {window_name}: {e:#}");
         }
-        let (wired, _signals) =
-            Session::wire_up(rows, cols, SessionIo::spawned(spawned), &backend, "Program");
+        let (wired, _signals) = Session::wire_up(
+            rows,
+            cols,
+            SessionIo::spawned(spawned),
+            &backend,
+            "Program",
+            scrollback,
+        );
         debug!(program, window_name, "spawned a plugin's program pane");
         Ok(Self {
             wired,
@@ -897,6 +915,7 @@ impl ProgramPane {
         program: &str,
         rows: u16,
         cols: u16,
+        scrollback: usize,
     ) -> Result<Self> {
         let adopted = backend.adopt(backend_id, rows, cols, None)?;
         let (wired, _signals) = Session::wire_up(
@@ -905,6 +924,7 @@ impl ProgramPane {
             SessionIo::adopted(adopted, backend_id),
             &backend,
             "Program",
+            scrollback,
         );
         debug!(program, backend_id, "adopted a plugin's program pane");
         Ok(Self {
@@ -1015,6 +1035,7 @@ impl Session {
         backend: &Arc<dyn SessionBackend>,
         env: HashMap<String, String>,
         seed: Option<Vec<u8>>,
+        scrollback: usize,
     ) -> Result<Self> {
         let adopted = backend.adopt(backend_id, rows, cols, seed)?;
 
@@ -1036,6 +1057,7 @@ impl Session {
             SessionIo::adopted(adopted, backend_id),
             backend,
             env,
+            scrollback,
         ))
     }
 
@@ -1053,6 +1075,7 @@ impl Session {
         backend_id: &str,
         backend: &Arc<dyn SessionBackend>,
         env: HashMap<String, String>,
+        scrollback: usize,
     ) -> Result<Self> {
         // Only the title and modes, not `None`: `None` is the backend capturing
         // the whole history itself. The seed goes through the stream like any
@@ -1072,6 +1095,7 @@ impl Session {
             },
             backend,
             "Session",
+            scrollback,
         );
         backend.hide_output(backend_id);
         Ok(Self {
@@ -1132,6 +1156,7 @@ impl Session {
         io: SessionIo,
         backend: &Arc<dyn SessionBackend>,
         label: &'static str,
+        scrollback: usize,
     ) -> (WiredPane, SignalCells) {
         let signals = SignalCells::new();
         // The floor applies at construction too: a session first painted into a
@@ -1144,20 +1169,16 @@ impl Session {
         // the rect, so no paint resizes the pane to correct it, and a claim
         // would size it to the dormant grid.
         let wanted = pack_size(rows, cols);
-        let (residency, (rows, cols), scrollback) = if io.resident {
-            (
-                Residency::default(),
-                (rows, cols),
-                crate::session::settings::global().scrollback_lines,
-            )
+        let (residency, (rows, cols), kept) = if io.resident {
+            (Residency::resident(scrollback), (rows, cols), scrollback)
         } else {
-            (Residency::dormant(), DORMANT_GRID, 0)
+            (Residency::dormant(scrollback), DORMANT_GRID, 0)
         };
         let residency = Arc::new(residency);
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows.try_into().unwrap(),
             cols.try_into().unwrap(),
-            scrollback,
+            kept,
             signals.term_signals(),
         )));
 
@@ -1213,8 +1234,9 @@ impl Session {
         io: SessionIo,
         backend: &Arc<dyn SessionBackend>,
         env: HashMap<String, String>,
+        scrollback: usize,
     ) -> Self {
-        let (wired, signals) = Self::wire_up(rows, cols, io, backend, "Session");
+        let (wired, signals) = Self::wire_up(rows, cols, io, backend, "Session", scrollback);
         Self {
             info,
             wired,
@@ -1243,6 +1265,7 @@ impl Session {
         cols: u16,
         backend: &Arc<dyn SessionBackend>,
         env: HashMap<String, String>,
+        scrollback: usize,
     ) -> Self {
         info.backend_id = None;
 
@@ -1251,7 +1274,7 @@ impl Session {
         let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
             rows.try_into().unwrap(),
             cols.try_into().unwrap(),
-            crate::session::settings::global().scrollback_lines,
+            scrollback,
             signals.term_signals(),
         )));
         let host = info.remote_host.clone().unwrap_or_else(|| "?".into());
@@ -1278,7 +1301,7 @@ impl Session {
                 last_output_at: Arc::new(AtomicU64::new(0)),
                 output_seq: Arc::new(AtomicU64::new(0)),
                 label: "Session",
-                residency: Arc::default(),
+                residency: Arc::new(Residency::resident(scrollback)),
                 backend: None,
                 size: None,
                 wanted: AtomicU32::new(0),
@@ -1441,7 +1464,7 @@ impl Session {
                 let mut rebuilt = vt100::Parser::new_with_callbacks(
                     rows.try_into().unwrap(),
                     cols.try_into().unwrap(),
-                    crate::session::settings::global().scrollback_lines,
+                    residency.scrollback,
                     signals,
                 );
                 rebuilt.process(&seed);
@@ -1731,6 +1754,7 @@ impl Session {
         let cwd = cwd
             .or(self.info.cwd.as_deref())
             .map(std::path::Path::to_path_buf);
+        let scrollback = self.wired.residency.scrollback;
         Some(move || {
             let shell_cmd = backend.default_shell();
             let spawned = backend.spawn(
@@ -1746,7 +1770,7 @@ impl Session {
             // The shell can print before the backend connects its output reader.
             // Its first view needs the complete screen, including that prefix.
             io.resident = !backend.capabilities().supports_snapshots;
-            let (wired, _) = Self::wire_up(rows, cols, io, &backend, "Shell");
+            let (wired, _) = Self::wire_up(rows, cols, io, &backend, "Shell", scrollback);
             stamp(&backend, &wired.backend_id, id, WindowRole::Shell);
             Ok(ShellPane { wired })
         })
@@ -1783,6 +1807,7 @@ impl Session {
     ) -> impl FnOnce() -> Result<ShellPane> + Send + 'static {
         let backend = Arc::clone(&self.backend);
         let backend_id = backend_id.to_string();
+        let scrollback = self.wired.residency.scrollback;
         move || {
             if let Ok(listed) = backend.pane_ids() {
                 if !listed.contains(&backend_id) {
@@ -1796,6 +1821,7 @@ impl Session {
                 SessionIo::adopted(adopted, &backend_id),
                 &backend,
                 "Shell",
+                scrollback,
             );
             Ok(ShellPane { wired })
         }

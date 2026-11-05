@@ -34,7 +34,7 @@ fn cli(db: &Database, backends: &thurbox::cli::Backends<'_>, args: &[&str]) -> R
     let parsed =
         thurbox::cli::Cli::try_parse_from(["thurbox-cli", "--json"].iter().chain(args).copied())
             .map_err(|e| format!("parse {args:?}: {e}"))?;
-    match thurbox::cli::run(parsed, db, backends) {
+    match thurbox::cli::run(parsed, db, backends, &settings()) {
         Ok(thurbox::cli::Outcome::Ok) => Ok(()),
         Ok(thurbox::cli::Outcome::Failed { message, .. }) => Err(message),
         Err(e) => Err(e.message),
@@ -106,13 +106,13 @@ fn shell_on_windows_host(variant: bool) {
     }
     let mut settings = thurbox::session::settings::Settings::default();
     settings.features.automations = false;
-    thurbox::session::settings::init(settings);
+    thurbox::config::settings::save_settings(&settings).expect("settings.toml");
 
     let repo = tempfile::tempdir().expect("tempdir");
     git(repo.path(), &["init", "-q", "-b", "main"]);
 
     let registry = |far: &Arc<RecordingBackend>| {
-        let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+        let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured(&settings);
         backends.register(
             Route::remote(Via::Ssh, "winhost", Some(Multiplexer::Psmux)),
             far.clone(),
@@ -163,4 +163,10 @@ fn shell_on_windows_host(variant: bool) {
         (plan.command.as_str(), plan.args.as_slice()),
         ("powershell", ["-NoLogo".to_string()].as_slice())
     );
+}
+
+/// The settings this instance runs with, read from its `settings.toml` the way
+/// `thurbox-cli` loads them at startup.
+fn settings() -> thurbox::session::settings::Settings {
+    thurbox::config::settings::load_or_seed_with_warnings().0
 }

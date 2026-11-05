@@ -21,8 +21,8 @@ use serde_json::{json, Value};
 
 use super::host_cli::{self, CliInfo, Usable};
 use crate::session::{Assessment, HostDef, SessionId};
+use crate::session::{SharedSession, SharedWorktree};
 use crate::storage::Database;
-use crate::sync::{SharedSession, SharedWorktree};
 
 /// What one mirror pass did for one host.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

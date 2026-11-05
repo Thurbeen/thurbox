@@ -3,9 +3,9 @@
 //! `session signal` (the hook callback's identity).
 
 use crate::session::SessionId;
+use crate::session::SharedSession;
 use crate::session_ops::delivery::Sender;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 /// Who is calling, as far as this database can tell. "Set but unknown here" is
 /// its own case because it is a real one — a remote peer spawned the session,

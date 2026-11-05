@@ -18,10 +18,10 @@ use std::process::Command;
 use serde_json::Value;
 use thurbox::cli::automations::{run as run_automation, Action as AutomationCommand};
 use thurbox::cli::sessions::{run, Action};
+use thurbox::session::SharedSession;
 use thurbox::session::{AutomationAction, AutomationSchedule, SessionId};
 use thurbox::storage::automations::NewAutomation;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -150,7 +150,8 @@ fn get(db: &Database, id: SessionId, verify: bool) -> thurbox::cli::output::Comm
             no_verify: !verify,
         },
         db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("session get")
 }
@@ -242,7 +243,8 @@ fn doctor(db: &Database, id: SessionId) -> thurbox::cli::output::CommandOutput {
             uuid: Some(id.to_string()),
         },
         db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("doctor runs")
 }
@@ -423,7 +425,8 @@ fn a_session_on_a_host_recorded_as_down_reads_unreachable_not_its_stale_state() 
             key_prefix: None,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("session list");
     let state_of = |name: &str| {
@@ -555,7 +558,8 @@ fn get_through(
     id: SessionId,
     backend: &std::sync::Arc<RecordingBackend>,
 ) -> thurbox::cli::output::CommandOutput {
-    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    let (mut backends, _hosts, _warnings) =
+        thurbox::backend::wiring::configured(&Default::default());
     backends.register(
         thurbox::session::Route::local(Some(thurbox::session::Multiplexer::Rmux)),
         backend.clone(),
@@ -567,6 +571,7 @@ fn get_through(
         },
         db,
         &thurbox::cli::Backends::ready(backends),
+        &Default::default(),
     )
     .expect("session get")
 }
@@ -858,7 +863,8 @@ fn silent_codex_submission(variant: bool) {
             wait: Default::default(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("type without submitting");
     assert_eq!(get(&db, row.id, false)["state"], "idle");
@@ -869,7 +875,8 @@ fn silent_codex_submission(variant: bool) {
             key: "enter".into(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("submit drafted prompt");
     assert_eq!(get(&db, row.id, false)["state"], "unreported");
@@ -884,7 +891,8 @@ fn silent_codex_submission(variant: bool) {
             wait: Default::default(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("submit prompt");
     let out = get_when_pane_settles(&db, row.id, "agent");
@@ -907,7 +915,8 @@ fn silent_codex_submission(variant: bool) {
             key_prefix: None,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("session list");
     let found = listed
@@ -994,7 +1003,8 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
     let out = run_automation(
         AutomationCommand::Tick,
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("automation tick");
     assert_eq!(out["fired"][0]["status"], "success", "{out}");
@@ -1122,7 +1132,8 @@ fn a_parked_session_says_so_on_get_and_on_list() {
             session: row.id.to_string(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("session stop");
 
@@ -1152,7 +1163,8 @@ fn a_parked_session_says_so_on_get_and_on_list() {
             key_prefix: None,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("session list");
     let rows = listed.json.as_array().expect("rows");
@@ -1181,7 +1193,8 @@ fn the_pane_verbs_refuse_a_parked_session_by_name() {
             session: row.id.to_string(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("session stop");
 
@@ -1206,7 +1219,10 @@ fn the_pane_verbs_refuse_a_parked_session_by_name() {
         let err = run(
             action,
             &db,
-            &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+            &thurbox::cli::Backends::ready(
+                thurbox::backend::wiring::configured(&Default::default()).0,
+            ),
+            &Default::default(),
         )
         .expect_err("a parked session has no pane");
         assert!(err.contains("stopped"), "got {err}");
@@ -1249,7 +1265,8 @@ fn a_parked_sessions_doctor_report_is_clean_not_a_warning() {
             session: row.id.to_string(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("session stop");
 

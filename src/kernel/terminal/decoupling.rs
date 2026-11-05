@@ -368,14 +368,17 @@ impl Harness {
             &backend,
             HashMap::new(),
             None,
+            1000,
         )
         .expect("adopt the agent pane");
         session
             .ensure_shell_pane(rows, cols, None)
             .expect("open the companion shell");
 
-        let mut terminals =
-            Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
+        let mut terminals = Terminals::with_registry(
+            std::sync::Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
         let id = "probe-0000".to_string();
         terminals.live.insert(
             id.clone(),
@@ -989,10 +992,13 @@ async fn a_grid_that_never_arrives_does_not_stall_any_frame() {
         AGENT_PANE,
         &backend,
         HashMap::new(),
+        1000,
     )
     .expect("adopt");
-    let mut terminals =
-        Terminals::with_registry(std::sync::Arc::new(crate::backend::registry::inert()));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(crate::backend::registry::inert()),
+        &crate::session::settings::Settings::default(),
+    );
     let id = "probe-0000".to_string();
     terminals.live.insert(
         id.clone(),

@@ -25,8 +25,8 @@ pub struct Tmux;
 pub type TmuxBackend = Server<Tmux>;
 
 /// tmux on this machine, whatever OS it is.
-pub fn local() -> Arc<dyn SessionBackend> {
-    Arc::new(TmuxBackend::local())
+pub fn local(scrollback_lines: usize) -> Arc<dyn SessionBackend> {
+    Arc::new(TmuxBackend::local().with_scrollback(scrollback_lines))
 }
 
 /// tmux on `host`, reached through `launcher` on a machine of `platform`.
@@ -34,8 +34,9 @@ pub fn on_host(
     host: &HostDef,
     launcher: HostLauncher,
     platform: Platform,
+    scrollback_lines: usize,
 ) -> Arc<dyn SessionBackend> {
-    Arc::new(TmuxBackend::on_host(host, launcher, platform))
+    Arc::new(TmuxBackend::on_host(host, launcher, platform).with_scrollback(scrollback_lines))
 }
 
 impl TmuxCompatible for Tmux {
@@ -260,7 +261,7 @@ mod tests {
     /// thurbox was built for, nor the host's.
     #[test]
     fn liveness_polling_follows_close_events_not_the_build_os() {
-        use crate::session::platform::simulate_local;
+        use crate::shell::simulate_local;
         for local in Platform::ALL {
             simulate_local(local, || {
                 assert!(

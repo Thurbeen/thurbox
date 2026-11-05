@@ -102,8 +102,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::session::agent_def::ID_PLACEHOLDER;
 use crate::session::SessionConfig;
+use crate::session::SharedSession;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 /// Whether a registered agent belongs to a hook family. A built-in's own
 /// name remains recognizable even after its entry is removed from the registry.
@@ -716,7 +716,7 @@ pub fn agent_launch_plan(
     db: &crate::storage::Database,
     backends: &crate::backend::BackendRegistry,
     agent: &str,
-    session: Option<&crate::sync::SharedSession>,
+    session: Option<&crate::session::SharedSession>,
 ) -> Result<LaunchPlan, crate::session_ops::OpError> {
     let registry = crate::agent::agent_config::load_or_seed();
     let def = registry
@@ -825,7 +825,7 @@ pub fn agent_launch_plan(
 /// one would read as a conversation id rather than as the absence of one.
 pub fn session_process_env(
     db: &crate::storage::Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
 ) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
     // A command session has no registry defaults to contribute.
     let def = crate::agent::agent_config::load_for_launch()
@@ -847,7 +847,7 @@ pub fn session_process_env(
 // as if they were session overrides.
 fn session_process_env_for_agent(
     db: &crate::storage::Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     def: &crate::session::AgentDef,
 ) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
     let telemetry_settings = crate::config::settings::load_quiet().telemetry;
@@ -946,7 +946,7 @@ pub fn fork_session_headless(
 fn fork_on_backend(
     db: &crate::storage::Database,
     backends: &crate::backend::BackendRegistry,
-    source: &crate::sync::SharedSession,
+    source: &crate::session::SharedSession,
     name: &str,
 ) -> Result<spawn::SpawnResult, crate::session_ops::OpError> {
     let id = source.id;
@@ -993,7 +993,7 @@ fn fork_on_backend(
         .map_err(|e| format!("read the launch env: {e}"))?;
 
     let codex_builtin = recipe.is_none()
-        && resolve_agent_def(Some(&source.agent), crate::session::Platform::local())
+        && resolve_agent_def(Some(&source.agent), crate::shell::local_platform())
             .is_ok_and(|d| d.is_family("codex") && d.resume_args == ["resume", "{id}"]);
     let fork_session_id = if codex_builtin {
         Some(
@@ -1285,7 +1285,7 @@ impl Executor {
     /// [`for_backend`](Self::for_backend), refusing a host `hosts.toml` no
     /// longer describes: the verb has no machine to reach, and doing it here
     /// would act on the wrong one.
-    pub fn for_session(session: &crate::sync::SharedSession) -> Result<Self, OpError> {
+    pub fn for_session(session: &crate::session::SharedSession) -> Result<Self, OpError> {
         Self::for_backend(&session.backend_type).ok_or_else(|| {
             OpError::Other(format!(
                 "Session '{}' runs on backend '{}', which is not in hosts.toml — \

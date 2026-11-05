@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::session::SharedSession;
 use crate::storage::messages::NewMessage;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 use super::delivery::{DeliveredVia, Handed, Sender};
 use super::{Executor, OpError, SendOutcome};

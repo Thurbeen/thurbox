@@ -432,9 +432,7 @@ impl ImageProbe {
     /// the gate's whole cost for a question that cannot be answered, on every
     /// paste, for as long as the session lasts.
     pub fn applies() -> bool {
-        cfg!(unix)
-            && !powershell_is_absent()
-            && crate::session::host_def::current_wsl_distro().is_some()
+        cfg!(unix) && !powershell_is_absent() && crate::paths::current_wsl_distro().is_some()
     }
 
     /// Ask Windows, on a thread. The answer arrives at a later [`Self::poll`].
@@ -636,7 +634,7 @@ mod tests {
     /// third-of-a-second added to every `Ctrl+V` on every platform.
     #[test]
     fn only_a_wsl_distro_asks_windows() {
-        use crate::session::host_def::with_wsl_distro;
+        use crate::paths::with_wsl_distro;
 
         forget_powershell_absence();
 
@@ -664,7 +662,7 @@ mod tests {
     /// above already do.
     #[test]
     fn only_a_machine_without_powershell_stops_being_asked() {
-        use crate::session::host_def::with_wsl_distro;
+        use crate::paths::with_wsl_distro;
         use std::io::ErrorKind;
 
         forget_powershell_absence();

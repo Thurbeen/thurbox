@@ -815,12 +815,11 @@ const SEND_KEYS_ENTER_DELAY: std::time::Duration = std::time::Duration::from_mil
 /// Hard cap on the number of scrollback lines a capture returns.
 const MAX_CAPTURE_LINES: u32 = 10_000;
 
-/// Rows of history a snapshot carries: as many as the rebuilt terminal keeps,
-/// under the same ceiling every capture here has.
-fn snapshot_history() -> usize {
-    crate::session::settings::global()
-        .scrollback_lines
-        .min(MAX_CAPTURE_LINES as usize)
+/// Rows of history a capture or a snapshot carries for a terminal that keeps
+/// `scrollback_lines`: as many as it keeps, under the ceiling every capture
+/// here has.
+fn history_lines(scrollback_lines: usize) -> usize {
+    scrollback_lines.min(MAX_CAPTURE_LINES as usize)
 }
 
 /// A server of the tmux-compatible multiplexer `M` — sessions persist in `<mux>
@@ -877,6 +876,10 @@ pub struct Server<M: TmuxCompatible> {
     questions: std::sync::atomic::AtomicU64,
     /// This backend's name in [`SIZER_OPTION`] — see [`Self::resize`].
     pub(in crate::backend) sizer: String,
+    /// Rows of history an adopt captures and a snapshot carries: what the
+    /// terminal rebuilt from them keeps, from the settings the composition root
+    /// built this backend with ([`Self::with_scrollback`]).
+    history_lines: usize,
     /// The host an off-local backend was built from, for the agent `PATH`
     /// its windows get ([`crate::agent::host_path`]). `None` locally.
     pub(in crate::backend) host: Option<HostDef>,
@@ -926,7 +929,7 @@ impl<M: TmuxCompatible> Server<M> {
         let name = crate::session::Route::local(Some(M::MULTIPLEXER)).format();
         let socket = local_socket();
         let mut transport = TmuxTransport::local(M::MULTIPLEXER.name());
-        if M::SOCKET_DIR && Platform::local() == Platform::Posix {
+        if M::SOCKET_DIR && crate::shell::local_platform() == Platform::Posix {
             if let Some(dir) = crate::backend::instance::local_socket_dir(&socket) {
                 transport = transport.with_socket_dir(SocketDir::Dir(dir.display().to_string()));
             }
@@ -945,7 +948,7 @@ impl<M: TmuxCompatible> Server<M> {
         let platform = if transport.is_remote() {
             Platform::Posix
         } else {
-            Platform::local()
+            crate::shell::local_platform()
         };
         Self {
             transport,
@@ -961,6 +964,9 @@ impl<M: TmuxCompatible> Server<M> {
             admitting: Mutex::new(None),
             questions: std::sync::atomic::AtomicU64::new(0),
             sizer: sizer_name(),
+            history_lines: history_lines(
+                crate::session::settings::Settings::default().scrollback_lines,
+            ),
             host: None,
             platform,
             multiplexer: PhantomData,
@@ -1001,6 +1007,13 @@ impl<M: TmuxCompatible> Server<M> {
         backend.host = Some(host.clone());
         backend.platform = platform;
         backend
+    }
+
+    /// This backend, capturing as much history as a terminal keeping
+    /// `scrollback_lines` holds.
+    pub fn with_scrollback(mut self, scrollback_lines: usize) -> Self {
+        self.history_lines = history_lines(scrollback_lines);
+        self
     }
 
     /// The socket this backend talks to: the configured one, unless the host's
@@ -1670,6 +1683,7 @@ impl<M: TmuxCompatible> Server<M> {
             admitting: Mutex::new(None),
             questions: std::sync::atomic::AtomicU64::new(0),
             sizer: sizer_name(),
+            history_lines: self.history_lines,
             host: self.host.clone(),
             platform: self.platform,
             multiplexer: PhantomData,
@@ -2685,7 +2699,8 @@ impl<M: TmuxCompatible> Server<M> {
         let (reader, size) = self.with_control(|ctrl| {
             // A pane whose output overflowed its channel is caught up by a
             // snapshot, where one can be taken.
-            let (tx, reader) = ctrl.pane_channel(pane_id, M::SNAPSHOTS.then(snapshot_history));
+            let (tx, reader) =
+                ctrl.pane_channel(pane_id, M::SNAPSHOTS.then_some(self.history_lines));
             let size = reports.then(|| reader.size());
             let mut senders = ctrl
                 .pane_senders
@@ -2813,10 +2828,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// modes ride along because the capture cannot carry them — see
     /// [`Self::pane_state_seed`].
     fn capture_history_seed(&self, pane_id: &str) -> Result<Vec<u8>> {
-        let lines = crate::session::settings::global()
-            .scrollback_lines
-            .min(MAX_CAPTURE_LINES as usize);
-        let start = format!("-{lines}");
+        let start = format!("-{}", self.history_lines);
         let output = self.run_tmux(&[
             "capture-pane",
             "-e",
@@ -3089,7 +3101,7 @@ impl<M: TmuxCompatible> PaneStream for Server<M> {
         // ahead of everything it does not already show.
         Ok(self.with_control(|ctrl| {
             ctrl.show_pane(backend_id)?;
-            ctrl.request_snapshot(backend_id, snapshot_history())
+            ctrl.request_snapshot(backend_id, self.history_lines)
         })?)
     }
 
@@ -3123,7 +3135,7 @@ impl<M: TmuxCompatible> PaneStream for Server<M> {
         // Asked, then waited for apart from the asking, so several searches'
         // round trips overlap: a search reads many panes at once.
         Ok(self
-            .with_control(|ctrl| ctrl.ask_snapshot(backend_id, snapshot_history()))?
+            .with_control(|ctrl| ctrl.ask_snapshot(backend_id, self.history_lines))?
             .wait()
             .map_err(|e| self.classified(e))?)
     }
@@ -4815,7 +4827,7 @@ const WINDOW_OPTS: &[(&str, &str)] = &[
 /// did before: resolution is an improvement where it succeeds, never a new way
 /// to fail.
 pub(crate) fn resolve_local_program(command: &str) -> String {
-    if Platform::local() == Platform::Windows {
+    if crate::shell::local_platform() == Platform::Windows {
         return command.to_string();
     }
     match crate::paths::resolve_on_path(command) {
@@ -6724,11 +6736,12 @@ done
 
     /// A WSL distro is Linux whatever machine drives it, so its server gets
     /// `/bin/sh` as `default-command` from a Windows thurbox as from a Linux
-    /// one. Simulated: the build OS is replaced by `Platform::local`'s test
+    /// one. Simulated: the build OS is replaced by `shell::local_platform`'s test
     /// override, which is the only way a Linux run reaches the Windows branch.
     #[test]
     fn a_windows_thurbox_pins_posix_default_command_on_a_wsl_host() {
-        use crate::session::{platform::simulate_local, HostDef, Platform};
+        use crate::session::{HostDef, Platform};
+        use crate::shell::simulate_local;
         for local in Platform::ALL {
             let pinned = simulate_local(local, || {
                 pinned_default_command(&TestBackend::for_host(&HostDef::wsl("Ubuntu")))
@@ -6742,7 +6755,8 @@ done
     /// wrap — the platform is the host's, never inferred from `psmux`.
     #[test]
     fn a_windows_host_on_a_non_psmux_multiplexer_keeps_native_shell_semantics() {
-        use crate::session::{platform::simulate_local, Platform};
+        use crate::session::Platform;
+        use crate::shell::simulate_local;
         for local in Platform::ALL {
             simulate_local(local, || {
                 let backend = TestBackend::for_host(&windows_host("tmux"));
@@ -6786,7 +6800,8 @@ done
     /// by the OS thurbox is built for.
     #[test]
     fn a_backend_keeps_platform_launcher_and_multiplexer_apart() {
-        use crate::session::{platform::simulate_local, HostDef, HostKind, Multiplexer, Platform};
+        use crate::session::{HostDef, HostKind, Multiplexer, Platform};
+        use crate::shell::simulate_local;
         for local in Platform::ALL {
             for kind in [HostKind::Ssh, HostKind::Wsl] {
                 for platform in [Platform::Posix, Platform::Windows] {

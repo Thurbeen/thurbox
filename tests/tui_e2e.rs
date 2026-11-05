@@ -5467,7 +5467,7 @@ esac
     )
     .unwrap();
     let db = thurbox::storage::Database::open(&profile.path("data/thurbox.db")).unwrap();
-    let session = thurbox::sync::SharedSession {
+    let session = thurbox::session::SharedSession {
         id: thurbox::session::SessionId::default(),
         name: "hold-probe".into(),
         agent: "shell".into(),

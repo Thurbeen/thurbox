@@ -101,7 +101,7 @@ fn the_registered_rmux_backend_keeps_the_contract() {
         }
     }
     let _cleanup = Cleanup(socket);
-    let registry = thurbox::backend::wiring::local_only();
+    let registry = thurbox::backend::wiring::local_only(&Default::default());
     let route = Route::local(Some(Multiplexer::Rmux));
     let backend = registry.get(&route).expect("rmux route must be registered");
     backend_contract::suite(backend.as_ref());

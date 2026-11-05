@@ -12,7 +12,7 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 use thurbox::session::SessionId;
-use thurbox::sync::SharedSession;
+use thurbox::session::SharedSession;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]

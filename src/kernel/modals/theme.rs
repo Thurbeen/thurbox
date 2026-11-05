@@ -20,7 +20,7 @@ use ratatui::Frame;
 
 use super::chrome::{self, Chrome, Hits, Pill, Replay};
 use crate::kernel::theme::{ThemeChoice, Themes};
-use crate::session::theme_config::ThemePalette;
+use crate::theme::ThemePalette;
 
 /// Non-list rows the modal always spends: both borders, the filter line, the
 /// theme-id line, the footer, and one spacer. v1's `CHROME`.
@@ -758,7 +758,7 @@ mod tests {
         // Same decision as the settings edit: the caret is a glyph, so it
         // survives the modal being drawn over and needs no arbitration with the
         // panes underneath.
-        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let palette = crate::theme::ThemePreset::Default.palette();
         let mut themes = Themes::load(None);
         let mut modal = ThemeModal::default();
         modal.on_key(

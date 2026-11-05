@@ -12,7 +12,7 @@ use crate::session::{
     Automation, AutomationAction, AutomationRun, AutomationRunStatus, AutomationSchedule,
     RunSettings, SessionId,
 };
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::Database;
 

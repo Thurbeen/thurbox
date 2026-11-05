@@ -4,10 +4,10 @@ use std::sync::Arc;
 use thurbox::backend::WindowLifecycle;
 
 use thurbox::backend::{BackendRegistry, WindowRole};
+use thurbox::session::SharedSession;
 use thurbox::session::{Multiplexer, Route, SessionId};
 use thurbox::session_ops::purge::{purge_deleted, Age};
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 #[path = "support/recording_backend.rs"]
 mod recording_backend;

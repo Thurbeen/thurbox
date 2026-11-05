@@ -13,10 +13,11 @@ use crate::cli::action;
 use crate::cli::notify;
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::{CommandError, EXIT_AMBIGUOUS, EXIT_CONFLICT, EXIT_GONE, EXIT_TIMEOUT};
+use crate::session::settings::Settings;
 use crate::session::{Automation, AutomationRun, AutomationRunStatus};
 use crate::session_ops::automations::{self as ops, Draft, RefError, RunNowError, SaveError};
+use crate::storage::current_time_millis;
 use crate::storage::Database;
-use crate::sync::current_time_millis;
 
 /// What `create --key` does when the key is already taken.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -209,6 +210,7 @@ pub fn run(
     action: Action,
     db: &Database,
     backends: &super::Backends<'_>,
+    settings: &Settings,
 ) -> Result<CommandOutput, CommandError> {
     match action {
         Action::Create {
@@ -251,7 +253,14 @@ pub fn run(
                 cwd,
                 env: env_flags(&env)?,
             };
-            create(db, backends.get(), &draft, key.as_deref(), on_existing)
+            create(
+                db,
+                backends.get(),
+                settings,
+                &draft,
+                key.as_deref(),
+                on_existing,
+            )
         }
         Action::List { key, name } => list(db, key.as_deref(), name.as_deref()),
         Action::Show { reference } => {
@@ -305,7 +314,7 @@ pub fn run(
             ops::edit(db, id, &draft, current_time_millis())?;
             let auto = load(db, id)?;
             if auto.enabled {
-                arm_heartbeat(backends.get());
+                arm_heartbeat(backends.get(), settings);
             }
             Ok(CommandOutput::new(
                 automation_to_json(&auto),
@@ -358,7 +367,7 @@ pub fn run(
             Ok(CommandOutput::new(json, render_run_history(id, &runs)))
         }
         Action::Tick => {
-            let json = match tick(db, backends.get()) {
+            let json = match tick(db, backends.get(), settings) {
                 Ok(json) => json,
                 Err(e) => {
                     ops::tick_log::record(&ops::tick_log::failed(&e));
@@ -424,6 +433,7 @@ fn resolve(db: &Database, reference: &str) -> Result<Automation, CommandError> {
 fn create(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
     draft: &Draft,
     key: Option<&str>,
     on_existing: OnExisting,
@@ -436,7 +446,7 @@ fn create(
     )?;
     let auto = load(db, saved.id())?;
     if auto.enabled {
-        arm_heartbeat(backends);
+        arm_heartbeat(backends, settings);
     }
     let verb = match saved {
         ops::Saved::Created(_) => "Created",
@@ -593,12 +603,17 @@ fn render_tick(v: &Value) -> String {
 /// Fire every due automation headlessly — claimed by compare-and-set, so this
 /// is safe beside other tickers — and run the housekeeping a headless machine
 /// needs while the due execs run.
-fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Value, String> {
+fn tick(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
+) -> Result<Value, String> {
     // Self-heal active extensions before firing: this runs from the
     // heartbeat every 60s, so an extension's deleted session/automation is
     // recreated even with the TUI closed. Best-effort — heal messages are
     // reported but never abort the due-automation pass below.
-    let healed = crate::session_ops::heal_active_extensions(db, backends);
+    let healed =
+        crate::session_ops::heal_active_extensions(db, backends, settings.features.auto_update);
     for m in &healed {
         tracing::info!("{m}");
     }
@@ -613,7 +628,7 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
         tracing::debug!("prune_old_messages: {e}");
     }
     let (pass, housekeeping) = ops::tick(db, backends, current_time_millis(), || {
-        housekeeping(db, backends)
+        housekeeping(db, backends, settings)
     })?;
     let fired: Vec<Value> = pass
         .fired
@@ -631,13 +646,7 @@ fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Result<Val
             entry
         })
         .collect();
-    let alerts = failure_alerts(
-        db,
-        &pass,
-        crate::session::settings::global()
-            .notifications
-            .on_automation_failure,
-    );
+    let alerts = failure_alerts(db, &pass, settings);
     let skipped: Vec<Value> = pass
         .skipped
         .iter()
@@ -666,7 +675,8 @@ const FAILURE_ALERT_INTERVAL_SECS: u64 = 24 * 60 * 60;
 /// deduplicated by the same lease. A success forgets the streak, so the next
 /// failure alerts again. A run that is no longer the automation's latest is
 /// skipped either way.
-fn failure_alerts(db: &Database, pass: &ops::DuePass, enabled: bool) -> Vec<Value> {
+fn failure_alerts(db: &Database, pass: &ops::DuePass, settings: &Settings) -> Vec<Value> {
+    let enabled = settings.notifications.on_automation_failure;
     if !enabled {
         return Vec::new();
     }
@@ -703,6 +713,7 @@ fn failure_alerts(db: &Database, pass: &ops::DuePass, enabled: bool) -> Vec<Valu
                         session: None,
                         dedupe: Some((key, FAILURE_ALERT_INTERVAL_SECS)),
                     },
+                    settings,
                 );
                 let mut alert = sent.to_json();
                 alert["id"] = json!(fired.automation_id);
@@ -716,7 +727,11 @@ fn failure_alerts(db: &Database, pass: &ops::DuePass, enabled: bool) -> Vec<Valu
 
 /// What the tick does besides firing, run while the due execs run so a hung
 /// one holds none of it up.
-fn housekeeping(db: &Database, backends: &crate::backend::BackendRegistry) -> Value {
+fn housekeeping(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
+) -> Value {
     // Headless status poll: the live channels ride an attached interface and
     // die with it, so this keeps every route's hook states flowing at the
     // heartbeat's cadence — each read from the backend that serves the route,
@@ -742,7 +757,8 @@ fn housekeeping(db: &Database, backends: &crate::backend::BackendRegistry) -> Va
     };
     // A soft delete asked for headlessly — from a peer, or from this CLI —
     // has no interface here to reap it once the undo window has closed.
-    let lifecycle = crate::session_ops::reconcile::tick(db, backends);
+    let lifecycle =
+        crate::session_ops::reconcile::tick(db, backends, settings.deleted_retention_days);
     let reaped = lifecycle.reaped;
     // And a force delete whose teardown never reached its host: this is the
     // pass that finishes it, so an agent orphaned by a machine that was down
@@ -752,7 +768,7 @@ fn housekeeping(db: &Database, backends: &crate::backend::BackendRegistry) -> Va
     let teardowns = lifecycle.teardowns;
     // Last: a collector that is down costs a request timeout, and nothing
     // above may wait on it.
-    let telemetry = export_telemetry(db);
+    let telemetry = export_telemetry(db, &settings.telemetry);
     let hooks = match crate::session_ops::state_hooks::tick(db) {
         Ok(report) => report,
         Err(e) => {
@@ -774,8 +790,10 @@ fn housekeeping(db: &Database, backends: &crate::backend::BackendRegistry) -> Va
 /// Export thurbox's own session metrics and session event logs (ADR-37),
 /// reporting what went — `null` while `[telemetry]` exports nothing. A failure
 /// is logged and reported, never returned: the rows wait for the next tick.
-fn export_telemetry(db: &Database) -> Value {
-    let settings = &crate::session::settings::global().telemetry;
+fn export_telemetry(
+    db: &Database,
+    settings: &crate::session::settings::TelemetrySettings,
+) -> Value {
     if !settings.exports_thurbox() {
         return Value::Null;
     }
@@ -861,8 +879,8 @@ fn automation_to_json(a: &Automation) -> Value {
 ///
 /// Gated on `[features] automations`, which turns heartbeat arming off for the
 /// interface and the CLI alike.
-pub(crate) fn arm_heartbeat(backends: &crate::backend::BackendRegistry) {
-    if !crate::session::settings::global().features.automations {
+pub(crate) fn arm_heartbeat(backends: &crate::backend::BackendRegistry, settings: &Settings) {
+    if !settings.features.automations {
         return;
     }
     if let Err(e) = crate::session_ops::arm_heartbeat(backends) {
@@ -916,7 +934,12 @@ mod tests {
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let db = Database::open_in_memory().unwrap();
         opt_out_builtins(&db);
-        let v = tick(&db, &crate::backend::registry::inert()).unwrap();
+        let v = tick(
+            &db,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        )
+        .unwrap();
         assert_eq!(v["fired"], json!([]));
         assert_eq!(v["skipped"], json!([]));
         // The mirror pass and the overdue reap report too, empty here: no
@@ -956,7 +979,12 @@ mod tests {
             )
             .unwrap();
 
-        let v = tick(&db, &crate::backend::registry::inert()).unwrap();
+        let v = tick(
+            &db,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        )
+        .unwrap();
         let fired = &v["fired"][0];
         assert_eq!(fired["id"], id);
         assert_eq!(fired["status"], "success", "{v}");
@@ -1009,7 +1037,9 @@ mod tests {
             ..ops::DuePass::default()
         };
 
-        assert_eq!(failure_alerts(&db, &pass, true), Vec::<Value>::new());
+        let mut alerting = Settings::default();
+        alerting.notifications.on_automation_failure = true;
+        assert_eq!(failure_alerts(&db, &pass, &alerting), Vec::<Value>::new());
     }
 
     #[test]
@@ -1043,6 +1073,7 @@ mod tests {
         let err = create(
             &db,
             &crate::backend::registry::inert(),
+            &Settings::default(),
             &draft,
             None,
             OnExisting::Fail,
@@ -1110,7 +1141,12 @@ mod tests {
                  BEGIN SELECT RAISE(ABORT, 'refused'); END;",
             )
             .unwrap();
-        let v = tick(&db, &crate::backend::registry::inert()).unwrap();
+        let v = tick(
+            &db,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        )
+        .unwrap();
         let recorded = last_tick(&v);
         assert!(recorded.ok);
         assert_eq!(recorded.errors.len(), 1, "{v}");

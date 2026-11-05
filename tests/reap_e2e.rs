@@ -171,7 +171,7 @@ fn spawn(
 ) -> Option<thurbox::session_ops::SpawnResult> {
     let result = thurbox::session_ops::spawn_session_headless(
         db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         thurbox::session_ops::SpawnRequest {
             name: name.into(),
             telemetry_attrs: Default::default(),
@@ -232,7 +232,7 @@ fn reaping_a_stale_row_spares_the_live_window_of_the_same_name() {
     // 2. Soft-deleted: the row is kept for undo, the window is left alone.
     let report = thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
         false,
     )
@@ -262,7 +262,7 @@ fn reaping_a_stale_row_spares_the_live_window_of_the_same_name() {
     // 5. The undo window closes and the reaper collects the stale row.
     let reaped = thurbox::session_ops::reap_soft_deleted(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
     )
     .expect("reap");
@@ -309,7 +309,7 @@ fn reaping_a_stale_row_spares_an_unstamped_live_namesake() {
     };
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
         false,
     )
@@ -330,7 +330,7 @@ fn reaping_a_stale_row_spares_an_unstamped_live_namesake() {
 
     let reaped = thurbox::session_ops::reap_soft_deleted(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
     )
     .expect("reap");
@@ -372,7 +372,7 @@ fn reaping_still_kills_the_row_its_own_window() {
 
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         session.session_id,
         false,
     )
@@ -382,7 +382,7 @@ fn reaping_still_kills_the_row_its_own_window() {
     // is exactly what the reap should collect.
     let reaped = thurbox::session_ops::reap_soft_deleted(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         session.session_id,
     )
     .expect("reap");
@@ -428,7 +428,7 @@ fn reaping_collects_its_window_when_the_pane_id_resolves_to_nothing() {
     );
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         session.session_id,
         false,
     )
@@ -436,7 +436,7 @@ fn reaping_collects_its_window_when_the_pane_id_resolves_to_nothing() {
 
     let reaped = thurbox::session_ops::reap_soft_deleted(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         session.session_id,
     )
     .expect("reap");
@@ -481,7 +481,7 @@ fn reaping_spares_a_namesakes_pane_the_stale_row_remembers() {
     };
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
         false,
     )
@@ -509,7 +509,7 @@ fn reaping_spares_a_namesakes_pane_the_stale_row_remembers() {
 
     let reaped = thurbox::session_ops::reap_soft_deleted(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
     )
     .expect("reap");
@@ -548,7 +548,7 @@ fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
     };
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
         false,
     )
@@ -562,7 +562,7 @@ fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
     };
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         undoable.session_id,
         false,
     )
@@ -574,7 +574,7 @@ fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
 
     let stale_reaped = thurbox::session_ops::reap_soft_deleted(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
     )
     .expect("reap stale");
@@ -584,7 +584,7 @@ fn reaping_spares_a_soft_deleted_namesake_still_inside_its_undo_window() {
     // turn comes, takes its window down.
     let own_reaped = thurbox::session_ops::reap_soft_deleted(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         undoable.session_id,
     )
     .expect("reap own");
@@ -632,7 +632,7 @@ fn reaping_spares_a_live_window_whose_name_only_collides_once_sanitized() {
     };
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
         false,
     )
@@ -657,7 +657,7 @@ fn reaping_spares_a_live_window_whose_name_only_collides_once_sanitized() {
 
     let reaped = thurbox::session_ops::reap_soft_deleted(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
     )
     .expect("reap");
@@ -713,7 +713,7 @@ fn force_delete_stop_and_restart_all_spare_a_live_namesakes_window() {
 
     let forced = thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         cases[0].0.session_id,
         true,
     );
@@ -721,14 +721,14 @@ fn force_delete_stop_and_restart_all_spare_a_live_namesakes_window() {
 
     let stopped = thurbox::session_ops::restart::stop_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         cases[1].0.session_id,
     );
     let after_stop = pane_alive(&cases[1].1.backend_id);
 
     let restarted = thurbox::session_ops::restart_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         cases[2].0.session_id,
     );
     let after_restart = pane_alive(&cases[2].1.backend_id);
@@ -769,7 +769,7 @@ fn force_delete_still_kills_the_rows_own_window() {
     };
     let report = thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         session.session_id,
         true,
     )
@@ -852,7 +852,7 @@ fn restoring_a_session_never_joins_a_live_namesake_on_its_name() {
     };
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
         false,
     )
@@ -868,7 +868,7 @@ fn restoring_a_session_never_joins_a_live_namesake_on_its_name() {
     // and a name two rows would answer to is not about loss.
     let restored = thurbox::session_ops::restore_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
         true,
     );
@@ -922,7 +922,7 @@ fn force_delete_and_reap_both_collect_the_companion_shell() {
 
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         forced.session_id,
         true,
     )
@@ -931,14 +931,14 @@ fn force_delete_and_reap_both_collect_the_companion_shell() {
 
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         reaped.session_id,
         false,
     )
     .expect("delete");
     thurbox::session_ops::reap_soft_deleted(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         reaped.session_id,
     )
     .expect("reap");
@@ -985,7 +985,7 @@ fn a_teardown_spares_a_live_namesakes_companion_shell() {
 
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         stale.session_id,
         true,
     )
@@ -1028,8 +1028,11 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
         &backend,
         thurbox::backend::Owner::new(&id.to_string(), "ghost"),
     );
-    let _ =
-        thurbox::session_ops::reap_soft_deleted(&db, &thurbox::backend::wiring::configured().0, id);
+    let _ = thurbox::session_ops::reap_soft_deleted(
+        &db,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        id,
+    );
 
     let started = tmux(&["has-session"]).status.success();
     assert!(!started, "a teardown started a tmux server on the socket");
@@ -1058,7 +1061,7 @@ fn the_sweep_collects_a_row_deleted_while_nothing_was_watching() {
     };
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         session.session_id,
         false,
     )
@@ -1068,7 +1071,8 @@ fn the_sweep_collects_a_row_deleted_while_nothing_was_watching() {
     assert!(
         thurbox::session_ops::reap_overdue_soft_deletes(
             &db,
-            &thurbox::backend::wiring::configured().0
+            &thurbox::backend::wiring::configured(&Default::default()).0,
+            0
         )
         .is_empty(),
         "a delete still inside its undo window is not overdue"
@@ -1084,14 +1088,16 @@ fn the_sweep_collects_a_row_deleted_while_nothing_was_watching() {
         .expect("backdate the delete");
     let reaped = thurbox::session_ops::reap_overdue_soft_deletes(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        0,
     );
     let collected = !pane_alive(&session.backend_id);
     // Idempotent: the row owns nothing on the next pass, so it is not reported
     // again on every tick for as long as it stays deleted.
     let second = thurbox::session_ops::reap_overdue_soft_deletes(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        0,
     );
 
     assert!(untouched, "the agent runs on until the undo window closes");

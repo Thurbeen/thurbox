@@ -3,8 +3,8 @@
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+use crate::session::SharedSession;
 use crate::session::{LaunchRecipe, SessionId};
-use crate::sync::SharedSession;
 
 use super::Database;
 
@@ -79,7 +79,7 @@ impl Database {
             || !self.owns_lease(
                 &super::event_cursors::LockSubject::Session(id),
                 token,
-                crate::sync::current_time_millis(),
+                crate::storage::current_time_millis(),
             )?
         {
             return Err(rusqlite::Error::QueryReturnedNoRows);
@@ -229,7 +229,7 @@ impl Database {
     /// A peer may first learn an id after it was purged. Reserve it without
     /// inventing a live row or overwriting an id another route already owns.
     pub fn insert_purge_tombstone(&self, id: SessionId, backend: &str) -> rusqlite::Result<()> {
-        let now = crate::sync::current_time_millis() as i64;
+        let now = crate::storage::current_time_millis() as i64;
         self.conn.execute("INSERT OR IGNORE INTO sessions (id, name, backend_type, created_at, updated_at, deleted_at, purged_at, force_deleted)
             VALUES (?1, ?1, ?2, ?3, ?3, ?3, ?3, 1)", params![id.to_string(), backend, now])?;
         Ok(())

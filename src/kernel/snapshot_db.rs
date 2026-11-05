@@ -17,9 +17,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use super::snapshot::{AutomationRow, DeletedRow, RunRow, TaskRow};
 use crate::session::background_work::ReportFrom;
 use crate::session::SessionId;
+use crate::session::SharedSession;
 use crate::session_ops::signals;
 use crate::storage::{Database, HookRow};
-use crate::sync::SharedSession;
 
 /// What the store asks of the worker. Answered in the order sent.
 pub(crate) enum Job {

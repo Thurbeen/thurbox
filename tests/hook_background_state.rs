@@ -26,9 +26,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::session_ops::signals::Reported;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 /// The subagent of the issue's reproduction.
 const SUBAGENT: &str = "a2a3df31469ca24ca";

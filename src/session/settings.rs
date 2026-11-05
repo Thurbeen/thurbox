@@ -4,11 +4,8 @@
 //! Pure data + parsing, per the `session/` architecture rule; the file IO and
 //! seeding live in `crate::config::settings`. Only knobs a user
 //! plausibly wants to change are exposed — timing/buffer internals stay
-//! hardcoded. The loaded value is published process-wide via [`init`] /
-//! [`global`] because the consumers span modules that must not know about each
-//! other (terminal wiring, layout, storage retention).
-
-use std::sync::OnceLock;
+//! hardcoded. There is no process-wide copy: each binary loads the file once
+//! and hands the value to what it builds (`session` holds no state, #1477).
 
 use serde::{Deserialize, Serialize};
 
@@ -610,20 +607,6 @@ impl Default for Settings {
     }
 }
 
-static GLOBAL: OnceLock<Settings> = OnceLock::new();
-
-/// Publish the loaded settings process-wide. Call once at startup, before the
-/// first [`global`] read; later calls are ignored (first writer wins).
-pub fn init(settings: Settings) {
-    let _ = GLOBAL.set(settings);
-}
-
-/// The process-wide settings; defaults when [`init`] was never called (tests,
-/// or library use outside the binaries).
-pub fn global() -> &'static Settings {
-    GLOBAL.get_or_init(Settings::default)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,11 +977,5 @@ mod tests {
         }
         assert!(base.restart_only_differs(&other));
         assert!(!adopted.restart_only_differs(&base));
-    }
-
-    #[test]
-    fn global_defaults_when_uninitialized() {
-        // Note: other tests may have init()'d already; both paths are default.
-        assert_eq!(global().two_panel_min_cols, 80);
     }
 }

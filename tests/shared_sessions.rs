@@ -13,9 +13,9 @@ use serde_json::{json, Value};
 use thurbox::cli::sessions::{run, Action};
 use thurbox::kernel::command::{Args, Command};
 use thurbox::session::{HostDef, SessionId};
+use thurbox::session::{SharedSession, SharedWorktree};
 use thurbox::session_ops::mirror::{self, HostDeletedRow, MirrorReport, Transitive};
 use thurbox::storage::Database;
-use thurbox::sync::{SharedSession, SharedWorktree};
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[cfg(unix)]
@@ -82,7 +82,8 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
             key_prefix: None,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap();
     let rows = out.as_array().unwrap();
@@ -107,7 +108,8 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
             key_prefix: None,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap();
     let only = &active.as_array().unwrap()[0];
@@ -209,7 +211,8 @@ fn register_records_only_a_window_that_is_running() {
             json_row: body.to_string(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("no live window"), "{err}");
@@ -220,7 +223,8 @@ fn register_records_only_a_window_that_is_running() {
             json_row: "{not json".into(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("--json-row"), "{err}");
@@ -255,6 +259,7 @@ fn register(
         },
         db,
         backends,
+        &Default::default(),
     )
     .map_err(|e| e.to_string())
 }
@@ -315,6 +320,7 @@ fn register_takes_only_a_state_from_the_host() {
         },
         &db,
         &backends,
+        &Default::default(),
     )
     .expect("registered");
     assert_eq!(db.load_hook_state(session.id).unwrap().unwrap().state, None);
@@ -331,7 +337,8 @@ fn register_refuses_an_id_or_a_name_already_here() {
             json_row: same_id.to_string(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("already registered"), "{err}");
@@ -346,7 +353,8 @@ fn register_refuses_an_id_or_a_name_already_here() {
             json_row: same_name.to_string(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("already exists"), "{err}");
@@ -363,7 +371,8 @@ fn sync_with_no_shareable_host_configured_is_an_empty_report() {
             adopt: false,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(out.as_array().map(Vec::len), Some(0));
@@ -529,7 +538,8 @@ fn listing(db: &Database, deleted: bool) -> Value {
             key_prefix: None,
         },
         db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap()
     .json
@@ -1229,8 +1239,9 @@ mod delegated_create {
         for var in ["THURBOX_SESSION", "THURBOX_SESSION_ID"] {
             std::env::remove_var(var);
         }
-        let (backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
-        let mut bus = CommandBus::new(Arc::new(backends));
+        let (backends, _hosts, _warnings) =
+            thurbox::backend::wiring::configured(&Default::default());
+        let mut bus = CommandBus::new(Arc::new(backends), &Default::default());
 
         let sends = |log: &str| {
             log.lines()
@@ -1305,7 +1316,8 @@ mod delegated_create {
         for var in ["THURBOX_SESSION", "THURBOX_SESSION_ID"] {
             std::env::remove_var(var);
         }
-        let (backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+        let (backends, _hosts, _warnings) =
+            thurbox::backend::wiring::configured(&Default::default());
         let db = pair.caller_db();
         let session = db.get_session_by_id(id).unwrap().expect("the mirror row");
 

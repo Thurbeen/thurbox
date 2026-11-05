@@ -7,7 +7,7 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::session::review::{Classification, CommentAnchor, ReviewComment, Side};
 use crate::session::SessionId;
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::Database;
 

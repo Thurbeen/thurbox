@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use thurbox::session::SessionId;
-use thurbox::sync::SharedSession;
+use thurbox::session::SharedSession;
 
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
@@ -273,7 +273,7 @@ fn explicit_disables_while_suspended_survive_undo() {
         &env.db(),
         interface.parse().unwrap(),
         false,
-        thurbox::sync::current_time_millis(),
+        thurbox::storage::current_time_millis(),
     )
     .unwrap();
     env.ok(&["automation", "edit", &renamed, "--name", "kept"]);
@@ -432,6 +432,7 @@ fn purge_accepts_a_deleted_reference_and_refuses_an_active_one() {
         },
         &env.db(),
         &backends,
+        &Default::default(),
     )
     .unwrap()
     .json;
@@ -528,7 +529,7 @@ fn a_run_is_recorded_when_it_starts() {
     assert_eq!(auto, "1");
 
     env.ok(&["automation", "run", &auto]);
-    let before = thurbox::sync::current_time_millis();
+    let before = thurbox::storage::current_time_millis();
     let tick = env.ok(&["automation", "tick"]);
     assert_eq!(tick["fired"][0]["status"], "success", "{tick}");
 
@@ -1202,7 +1203,7 @@ cwd = "work"
 #[test]
 fn a_keyed_one_shot_retry_preserves_its_pending_fire() {
     let env = Env::new();
-    let at = thurbox::sync::current_time_millis() + 3_600_000;
+    let at = thurbox::storage::current_time_millis() + 3_600_000;
     let trigger = format!("at:{at}");
     let args = [
         "automation",
@@ -1218,7 +1219,7 @@ fn a_keyed_one_shot_retry_preserves_its_pending_fire() {
     ];
     let id = id_of(&env.ok(&args));
     // Move the existing slot into the past without waiting for wall time.
-    let past = thurbox::sync::current_time_millis() - 10_000;
+    let past = thurbox::storage::current_time_millis() - 10_000;
     env.db()
         .conn_ref()
         .execute(

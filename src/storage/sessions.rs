@@ -4,9 +4,10 @@ use std::path::PathBuf;
 
 use rusqlite::{params, OptionalExtension};
 
+use super::current_time_millis;
 use crate::session::background_work::ReportFrom;
 use crate::session::SessionId;
-use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
+use crate::session::{SharedSession, SharedWorktree};
 
 use super::audit::{AuditAction, EntityType};
 use super::session_events::{EventReason, SessionEventKind};

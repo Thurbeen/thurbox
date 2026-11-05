@@ -8,8 +8,8 @@
 //! operations on one subject contend whatever they are; `op` only names the
 //! holder in what the lock logs.
 
+use crate::storage::current_time_millis;
 use crate::storage::Database;
-use crate::sync::current_time_millis;
 
 pub use crate::storage::event_cursors::LockSubject as Subject;
 
@@ -200,7 +200,7 @@ pub(crate) fn worktree_key(backend_type: &str, path: &std::path::Path) -> std::p
 
 /// Whether removing a directory would remove one of this session's live paths.
 pub(crate) fn claims_directory(
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     backend_type: &str,
     directory: &std::path::Path,
 ) -> bool {

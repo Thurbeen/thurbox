@@ -3306,7 +3306,7 @@ historical output.
 ![Theme switcher](../media/thurbox-theme.gif)
 
 All UI colors are centralized via a semantic palette:
-`session::theme_config` holds the presets and the user's overrides,
+`theme` holds the presets and the user's overrides,
 `kernel::theme::Themes` resolves one and publishes **roles** to Lua
 (`ui/lib/theme.lua`). A plugin asks for `theme.accent` or `theme.muted`
 rather than a colour, which is what lets one plugin look right under all

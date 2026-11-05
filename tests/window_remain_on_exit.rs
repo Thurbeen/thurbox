@@ -126,9 +126,10 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
 
     // The plugin's program, through the control-mode path.
     let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
-    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     if let Err(e) = terminals.start_program(
         &key,
         "sh",
@@ -182,9 +183,10 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
 
     let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
     let args = ["-c".to_string(), "sleep 300".to_string()];
-    let mut first = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut first = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     if let Err(e) = first.start_program(&key, "sh", &args, Some(dir.path()), 24, 80) {
         panic!("the program pane could not be started: {e}");
     }
@@ -203,9 +205,10 @@ async fn adopting_a_program_window_normalises_what_it_finds() {
     // A second interface over the same tmux: the window is found by name and
     // adopted, exactly as a restart does.
     drop(first);
-    let mut second = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut second = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let started = second.start_program(&key, "sh", &args, Some(dir.path()), 24, 80);
     let after = remain_on_exit(&pane);
 

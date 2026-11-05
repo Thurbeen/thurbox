@@ -14,10 +14,11 @@ use crate::cli::identity::{caller, sender};
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
 use crate::session::SessionMessage;
+use crate::session::SharedSession;
 use crate::session_ops::delivery::{self, DeliveredVia, Handed, Sender};
+use crate::storage::current_time_millis;
 use crate::storage::messages::{NewMessage, DEFAULT_RETENTION_DAYS};
 use crate::storage::Database;
-use crate::sync::{current_time_millis, SharedSession};
 
 const MS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
 

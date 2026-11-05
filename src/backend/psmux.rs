@@ -41,8 +41,8 @@ pub struct Psmux;
 pub type PsmuxBackend = Server<Psmux>;
 
 /// psmux on this machine, whatever OS it is.
-pub fn local() -> Arc<dyn SessionBackend> {
-    Arc::new(PsmuxBackend::local())
+pub fn local(scrollback_lines: usize) -> Arc<dyn SessionBackend> {
+    Arc::new(PsmuxBackend::local().with_scrollback(scrollback_lines))
 }
 
 /// psmux on `host`, reached through `launcher` on a machine of `platform`.
@@ -50,8 +50,9 @@ pub fn on_host(
     host: &HostDef,
     launcher: HostLauncher,
     platform: Platform,
+    scrollback_lines: usize,
 ) -> Arc<dyn SessionBackend> {
-    Arc::new(PsmuxBackend::on_host(host, launcher, platform))
+    Arc::new(PsmuxBackend::on_host(host, launcher, platform).with_scrollback(scrollback_lines))
 }
 
 impl TmuxCompatible for Psmux {

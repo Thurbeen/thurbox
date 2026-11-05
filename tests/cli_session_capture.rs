@@ -14,8 +14,8 @@ use std::process::Command;
 use serde_json::Value;
 use thurbox::cli::sessions::{run, Action};
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -111,7 +111,10 @@ fn capture_when_ready(
                 ansi,
             },
             db,
-            &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+            &thurbox::cli::Backends::ready(
+                thurbox::backend::wiring::configured(&Default::default()).0,
+            ),
+            &Default::default(),
         )
         .expect("capture should succeed for a live local pane");
         if out["output"].as_str().unwrap_or_default().contains(MARKER)
@@ -247,7 +250,8 @@ fn capture_of_a_remote_session_goes_to_its_host_or_says_why_it_cannot() {
             ansi: false,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect_err("no hosts.toml entry means there is nowhere to delegate to");
     assert!(err.contains("ssh:devbox"), "got {err}");
@@ -271,7 +275,10 @@ fn capture_still_rejects_an_unusable_uuid() {
                     ansi: false,
                 },
                 &db,
-                &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+                &thurbox::cli::Backends::ready(
+                    thurbox::backend::wiring::configured(&Default::default()).0
+                ),
+                &Default::default(),
             )
             .is_err(),
             "{uuid} should not capture"

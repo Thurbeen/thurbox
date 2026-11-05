@@ -136,6 +136,15 @@ pub(super) fn action_from_columns(kind: &str, cols: ActionColumns) -> Automation
     }
 }
 
+/// Milliseconds since the Unix epoch: the clock every stored timestamp is
+/// written in.
+pub fn current_time_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// SQLite-backed database for application state.
 pub struct Database {
     conn: Connection,
@@ -157,16 +166,24 @@ impl Database {
             instance_id: Uuid::new_v4().to_string(),
         };
         // Best-effort retention; opening the DB must not fail over old breadcrumbs.
-        if let Err(e) = db.prune_audit_log() {
-            tracing::warn!("Failed to prune audit log: {e}");
-        }
         if let Err(e) = db.prune_old_messages() {
             tracing::warn!("Failed to prune session messages: {e}");
         }
-        if let Err(e) = db.prune_session_events() {
+        Ok(db)
+    }
+
+    /// The startup retention sweep over the audit log and the session event
+    /// log, both kept for `audit_retention_days` (`settings.toml`). Run by each
+    /// binary once it has loaded its settings, not by [`Self::open`]: a
+    /// connection is not where a user setting is known. Best-effort — old
+    /// breadcrumbs left in place are no reason to fail.
+    pub fn prune_history(&self, audit_retention_days: u64) {
+        if let Err(e) = self.prune_audit_log(audit_retention_days) {
+            tracing::warn!("Failed to prune audit log: {e}");
+        }
+        if let Err(e) = self.prune_session_events(audit_retention_days) {
             tracing::warn!("Failed to prune the session event log: {e}");
         }
-        Ok(db)
     }
 
     /// Open a database whose schema is already in place, skipping the schema
@@ -343,8 +360,8 @@ mod tests {
         assert_ne!(db1.instance_id, db2.instance_id);
     }
 
-    fn session_row(name: &str) -> crate::sync::SharedSession {
-        crate::sync::SharedSession {
+    fn session_row(name: &str) -> crate::session::SharedSession {
+        crate::session::SharedSession {
             id: crate::session::SessionId::default(),
             name: name.to_string(),
             agent: "claude".to_string(),

@@ -111,7 +111,7 @@ fn last_tick_json(tick: &crate::session_ops::automations::tick_log::LastTick) ->
 }
 
 fn age_secs(at: u64) -> u64 {
-    crate::sync::current_time_millis().saturating_sub(at) / 1000
+    crate::storage::current_time_millis().saturating_sub(at) / 1000
 }
 
 fn describe(tick: &crate::session_ops::automations::tick_log::LastTick) -> String {

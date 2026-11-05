@@ -190,7 +190,7 @@ impl Field {
 /// Every theme role, named as a plugin names it — `theme::palette_roles` is the
 /// field set, so a role added there is declared here without a second edit.
 pub fn roles() -> Vec<&'static str> {
-    let palette = crate::session::theme_config::ThemePreset::all()[0].palette();
+    let palette = crate::theme::ThemePreset::all()[0].palette();
     crate::kernel::theme::palette_roles(&palette)
         .into_keys()
         .collect()

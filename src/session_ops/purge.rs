@@ -95,7 +95,7 @@ fn purge_selected_limited(
         db.require_lifecycle_generation(id, Some(expected))
             .map_err(|_| super::OpError::Conflict("session lifecycle changed".into()))?;
     }
-    let now = crate::sync::current_time_millis();
+    let now = crate::storage::current_time_millis();
     let selected = |row: &DeletedSessionInfo| match age {
         Age::All => true,
         Age::OlderThanDays(days) => {
@@ -394,14 +394,19 @@ fn ambiguous_windows(
 }
 
 /// The `deleted_retention_days` sweep: purge what has been deleted for longer
-/// than the setting allows. Off at `0`, and one indexed probe on a pass with
-/// nothing that old, so it can ride the reaper's five-second cadence.
-pub fn purge_expired(db: &Database, backends: &crate::backend::BackendRegistry) -> PurgeReport {
-    let days = crate::session::settings::global().deleted_retention_days;
+/// than `days`, the setting as the caller loaded it. Off at `0`, and one
+/// indexed probe on a pass with nothing that old, so it can ride the reaper's
+/// five-second cadence.
+pub fn purge_expired(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    days: u64,
+) -> PurgeReport {
     if days == 0 {
         return PurgeReport::default();
     }
-    let cutoff = crate::sync::current_time_millis().saturating_sub(days.saturating_mul(MS_PER_DAY));
+    let cutoff =
+        crate::storage::current_time_millis().saturating_sub(days.saturating_mul(MS_PER_DAY));
     if !db.any_deleted_before(cutoff).unwrap_or(false) {
         return PurgeReport::default();
     }
@@ -433,7 +438,7 @@ pub fn purge_expired(db: &Database, backends: &crate::backend::BackendRegistry) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     fn deleted(db: &Database, name: &str, backend_type: &str, days_ago: u64) -> SessionId {
         let row = SharedSession {
@@ -455,7 +460,7 @@ mod tests {
         };
         db.upsert_session(&row).unwrap();
         db.soft_delete_session(row.id).unwrap();
-        let at = crate::sync::current_time_millis().saturating_sub(days_ago * MS_PER_DAY);
+        let at = crate::storage::current_time_millis().saturating_sub(days_ago * MS_PER_DAY);
         db.conn_ref()
             .execute(
                 "UPDATE sessions SET deleted_at = ?1 WHERE id = ?2",

@@ -326,9 +326,10 @@ async fn a_session_nobody_has_looked_at_holds_no_screen() {
         tmux_text(&pane).contains("early prompt>")
     });
 
-    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     settle(&terminals, false).await;
@@ -407,9 +408,10 @@ async fn a_grid_dropped_and_rebuilt_while_its_pane_prints_loses_and_repeats_noth
     ));
     wait_for("the pane to start", || tmux_text(&pane).contains(""));
 
-    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     terminals.keep_hidden_for(Some(Duration::ZERO));
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
@@ -491,9 +493,10 @@ async fn the_rebuilt_terminal_is_the_one_that_was_never_dropped() {
         tmux_text(&pane).contains("before prompt>")
     });
 
-    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
 
@@ -557,9 +560,10 @@ async fn a_search_finds_history_in_a_session_nobody_is_looking_at() {
         tmux_text(&pane).contains("filler prompt>")
     });
 
-    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     settle(&terminals, false).await;
@@ -614,9 +618,10 @@ async fn a_session_off_screen_still_reports_its_title_and_its_output() {
     ));
     wait_for("the pane to start", || tmux_text(&pane).contains("ready"));
 
-    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     settle(&terminals, false).await;
@@ -662,9 +667,10 @@ async fn a_title_set_before_the_interface_attached_is_still_reported() {
             == "reviewing the diff"
     });
 
-    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     assert!(grid_size(&terminals) <= (2, 2), "attached without a grid");
@@ -721,9 +727,10 @@ async fn non_ascii_printed_while_the_grid_is_live_loses_no_character() {
         go = go.display()
     ));
 
-    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let snap = snapshot(&pane);
     attach(&mut terminals, &snap).await;
     wait_for("the grid", || {
@@ -931,9 +938,16 @@ mod remote {
 
         let backend = host_backend(server.socket());
         backend.ensure_ready().expect("attach over ssh");
-        let session =
-            Session::adopt_dormant("hidden".into(), 24, 80, &pane, &backend, HashMap::new())
-                .expect("adopt");
+        let session = Session::adopt_dormant(
+            "hidden".into(),
+            24,
+            80,
+            &pane,
+            &backend,
+            HashMap::new(),
+            thurbox::session::settings::Settings::default().scrollback_lines,
+        )
+        .expect("adopt");
         assert!(!session.is_resident(), "adopted without a grid");
 
         // The pane goes on printing; what reaches the interface for it must not.
@@ -1033,11 +1047,20 @@ mod remote {
         let server = TmuxServer::pin("tbx-hidden-local");
         let dir = tempfile::tempdir().expect("tempdir");
         let pane = busy_pane(&server, dir.path(), SESSION);
-        let backend = thurbox::backend::tmux::local();
+        let backend = thurbox::backend::tmux::local(
+            thurbox::session::settings::Settings::default().scrollback_lines,
+        );
         backend.ensure_ready().expect("attach");
-        let session =
-            Session::adopt_dormant("local".into(), 24, 80, &pane, &backend, HashMap::new())
-                .expect("adopt");
+        let session = Session::adopt_dormant(
+            "local".into(),
+            24,
+            80,
+            &pane,
+            &backend,
+            HashMap::new(),
+            thurbox::session::settings::Settings::default().scrollback_lines,
+        )
+        .expect("adopt");
         wait_within("the title set while hidden", 10, || {
             session.agent_title().as_deref() == Some("hidden-title")
         })

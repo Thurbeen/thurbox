@@ -141,9 +141,10 @@ fn repo(at: &Path) {
 #[test]
 fn a_path_that_does_not_exist_is_refused_and_not_remembered() {
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let missing = _home.path().join("nope");
 
     let error = run(&mut bus, add(&missing.display().to_string()));
@@ -163,9 +164,10 @@ fn a_path_that_does_not_exist_is_refused_and_not_remembered() {
 #[test]
 fn an_added_repository_is_remembered_with_its_git_ness() {
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let checkout = _home.path().join("thing");
     std::fs::create_dir_all(&checkout).expect("mkdir");
     repo(&checkout);
@@ -186,9 +188,10 @@ fn a_plain_directory_is_remembered_as_one() {
     // Not a repository, but still a valid member of a multi-repo session — v1
     // renders it `(dir)` and refuses only the worktree toggle.
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let plain = _home.path().join("reference");
     std::fs::create_dir_all(&plain).expect("mkdir");
 
@@ -216,9 +219,10 @@ fn a_path_that_does_not_exist_yet_can_be_made_and_remembered() {
     // empty, make it a repository, or clone one into it. Each is remembered
     // with the git-ness actually observed.
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let empty = _home.path().join("code/empty");
     let fresh = _home.path().join("code/fresh");
     let source = _home.path().join("source");
@@ -252,9 +256,10 @@ fn a_path_that_does_not_exist_yet_can_be_made_and_remembered() {
 #[test]
 fn making_a_path_that_holds_something_is_refused_and_not_remembered() {
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let taken = _home.path().join("taken");
     std::fs::create_dir_all(&taken).expect("mkdir");
     std::fs::write(taken.join("notes.txt"), "mine").expect("write");
@@ -271,9 +276,10 @@ fn making_a_path_that_holds_something_is_refused_and_not_remembered() {
 #[test]
 fn a_failed_clone_leaves_neither_a_directory_nor_a_memory() {
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let target = _home.path().join("cloned");
     let nowhere = _home.path().join("no-such-repo");
 
@@ -294,9 +300,10 @@ fn adding_a_remembered_path_again_touches_it_rather_than_duplicating_it() {
     // This is what makes "select the newest row" identify the row that was just
     // added, which is how the flow re-selects a path it already knew.
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let first = _home.path().join("one");
     let second = _home.path().join("two");
     for path in [&first, &second] {
@@ -320,9 +327,10 @@ fn adding_a_remembered_path_again_touches_it_rather_than_duplicating_it() {
 #[test]
 fn importing_a_folder_remembers_its_repositories_and_reports_an_empty_one() {
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let folder = _home.path().join("src");
     let inside = folder.join("thing");
     std::fs::create_dir_all(&inside).expect("mkdir");
@@ -365,9 +373,10 @@ fn importing_a_folder_remembers_its_repositories_and_reports_an_empty_one() {
 #[test]
 fn forgetting_a_folder_takes_its_members_with_it() {
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let folder = _home.path().join("src");
     let inside = folder.join("thing");
     std::fs::create_dir_all(&inside).expect("mkdir");
@@ -392,9 +401,10 @@ fn a_bookmark_can_be_forgotten_after_its_host_is_gone() {
     // filesystem nor the host — which is what lets a leftover row be cleaned up
     // after the host was taken out of `hosts.toml`.
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let path = std::path::Path::new("/srv/thing");
     database()
         .upsert_repo_bookmark("ssh:gone", path)
@@ -423,9 +433,10 @@ fn adding_for_a_host_that_is_gone_is_refused_by_name() {
     // tilde and to establish what the path is, so an unknown one is refused
     // rather than silently treated as local.
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let add_remote = Command::parse(
         "bookmark",
         Args {
@@ -449,9 +460,10 @@ fn adding_for_a_host_that_is_gone_is_refused_by_name() {
 #[test]
 fn forgetting_something_never_remembered_says_so() {
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let error = run(&mut bus, edit("/nowhere/at/all", "remove"));
     assert!(
         error
@@ -552,9 +564,10 @@ fn imported_folder(bus: &mut CommandBus, home: &Path, names: &[&str]) -> std::pa
 #[test]
 fn a_folder_offers_a_repository_cloned_into_it_after_the_import() {
     let home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let folder = imported_folder(&mut bus, home.path(), &["one"]);
 
     // Cloned after the import, which is the whole point: nobody re-imports a
@@ -573,9 +586,10 @@ fn a_folder_offers_a_repository_cloned_into_it_after_the_import() {
 #[test]
 fn a_folder_stops_offering_a_repository_that_has_gone() {
     let home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let folder = imported_folder(&mut bus, home.path(), &["one", "two"]);
 
     std::fs::remove_dir_all(folder.join("two")).expect("rmdir");

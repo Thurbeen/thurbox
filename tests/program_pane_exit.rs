@@ -119,6 +119,7 @@ async fn a_program_that_ends_reports_that_it_ended() {
         &HashMap::new(),
         24,
         80,
+        thurbox::session::settings::Settings::default().scrollback_lines,
     );
     let pane = match pane {
         Ok(pane) => pane,

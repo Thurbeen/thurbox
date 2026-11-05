@@ -1,15 +1,15 @@
 //! Loading and seeding of the custom-themes config file.
 //!
 //! `~/.config/thurbox/themes.toml` defines user themes as a base preset plus
-//! per-colour overrides (see [`crate::session::theme_config::CustomThemeDef`]).
+//! per-colour overrides (see [`crate::theme::CustomThemeDef`]).
 //! Seeded with a fully commented-out example, so a fresh install ships only
 //! the built-in presets. Resolution problems (bad colours, name collisions)
 //! degrade to warnings, never to a startup failure.
 
 use std::path::PathBuf;
 
-use crate::session::theme_config::{ThemeEntry, ThemesFile};
-use crate::session::ThemePreset;
+use crate::theme::ThemePreset;
+use crate::theme::{ThemeEntry, ThemesFile};
 
 /// Seed contents for `themes.toml` on first run.
 pub const SEED_THEMES_TOML: &str = r##"# Thurbox custom themes  —  ~/.config/thurbox/themes.toml

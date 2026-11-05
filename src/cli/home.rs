@@ -196,8 +196,8 @@ fn human(rows: &[Value], unread: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SharedSession;
     use crate::session::{SessionId, SessionState};
-    use crate::sync::SharedSession;
 
     fn session(name: &str, agent: &str) -> SharedSession {
         SharedSession {
@@ -235,6 +235,7 @@ mod tests {
             },
             db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Default::default(),
         )
         .unwrap();
         out.json
