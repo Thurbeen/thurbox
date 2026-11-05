@@ -2140,7 +2140,28 @@ fn run_register(
                 .map_err(|e| format!("--json-row telemetry_attrs: {e}"))
         })
         .transpose()?;
-    register_running_session(db, backends, row, telemetry_attrs)
+    let crate::session_ops::mirror::Registered {
+        session,
+        key_dropped,
+    } = crate::session_ops::mirror::register_running(db, backends, row, telemetry_attrs.as_ref())?;
+    let human = format!(
+        "Registered running session '{}' ({})",
+        session.name, session.id
+    );
+    Ok(CommandOutput::new(
+        json!({
+            "registered": true,
+            "id": session.id.to_string(),
+            "name": session.name,
+            "key": session.key,
+            "key_dropped": key_dropped,
+            "backend_id": session.backend_id,
+        }),
+        match &key_dropped {
+            Some(why) => format!("{human}\n  {why}"),
+            None => human,
+        },
+    ))
 }
 
 fn run_stop(
@@ -3731,96 +3752,6 @@ fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String 
             },
         ),
     }
-}
-
-/// `session register`: a row for an agent window that is already running on
-/// this machine's server. The window must exist — this records, it never
-/// launches — and neither the id nor the name may already be a session here.
-fn register_running_session(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    row: crate::session_ops::mirror::HostRow,
-    telemetry_attrs: Option<std::collections::BTreeMap<String, String>>,
-) -> Result<CommandOutput, CommandError> {
-    let mut session = row.session;
-    if db
-        .get_session_by_id(session.id)
-        .map_err(|e| format!("get_session_by_id: {e}"))?
-        .is_some()
-    {
-        return Err(format!("session {} is already registered here", session.id).into());
-    }
-    if let Some(existing) = db
-        .get_session_by_name(&session.name)
-        .map_err(|e| format!("get_session_by_name: {e}"))?
-    {
-        return Err(format!(
-            "a session named '{}' already exists here ({})",
-            session.name, existing.id
-        )
-        .into());
-    }
-    // The row is being adopted onto this machine, so no window can be stamped
-    // for its id yet; passing the real id (rather than "") still lets the
-    // by-name fallback require the sole match to be unstamped, refusing to
-    // steal a window already stamped for a different, live session. Claimed,
-    // it is stamped: the row then owns that window by id rather than by a name
-    // a later namesake could take.
-    let pane = crate::session_ops::windows::claim_running_window(
-        backends,
-        &session.backend_type,
-        &session.id.to_string(),
-        &session.name,
-    )?;
-    session.backend_id = pane;
-    // A key comes along only when nobody on this machine has it: the row is
-    // being recorded either way — its window is already running, and refusing
-    // would leave `sync --adopt` retrying it every pass — so a taken key is
-    // dropped and said so, the way a restore drops one.
-    let (key_claim, key_dropped) = crate::session_ops::names::admit_key(
-        db,
-        session.key.as_deref(),
-        &session.backend_type,
-        "register",
-    )?;
-    let key_dropped = key_dropped.map(|why| format!("registered without its key: {why}"));
-    if key_dropped.is_some() {
-        session.key = None;
-    }
-    db.upsert_session_with_launch_metadata(
-        &session,
-        crate::storage::EventReason::Registered,
-        row.agent_args.as_deref(),
-        telemetry_attrs.as_ref(),
-    )
-    .map_err(|e| format!("upsert_session: {e}"))?;
-    drop(key_claim);
-    if let Some(state) = row.hook_state.as_deref() {
-        let _ = db.set_hook_state(session.id, state);
-    }
-    if let Some(base) = row.base_branch.as_deref() {
-        let _ = db.set_session_base_branch(session.id, base);
-    }
-    Ok(CommandOutput::new(
-        json!({
-            "registered": true,
-            "id": session.id.to_string(),
-            "name": session.name,
-            "key": session.key,
-            "key_dropped": key_dropped,
-            "backend_id": session.backend_id,
-        }),
-        match &key_dropped {
-            Some(why) => format!(
-                "Registered running session '{}' ({})\n  {why}",
-                session.name, session.id
-            ),
-            None => format!(
-                "Registered running session '{}' ({})",
-                session.name, session.id
-            ),
-        },
-    ))
 }
 
 #[cfg(test)]
