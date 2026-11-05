@@ -93,8 +93,8 @@ typed mutations described under [Inbox](#inbox).
 | `observedGeneration` | The spec generation the controller last acted on. |
 | `conditions` | One entry per [condition type](../controllers/task/state-machine.md#conditions), with `status`, `reason`, `message` and `lastTransitionTime`. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
-| `session` | The session's runtime id, host and key, once spawned or adopted. A Task owns at most one session, from its spawn to its release; see [Sessions and the runtime port](../ARCHITECTURE.md#sessions-and-the-runtime-port). |
-| `sessionState` | What the runtime last proved about the session: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. Absent until a pass proved something. A pass whose answers are Unknown keeps the last state. Nothing decides on it; `fleet status` prints it. |
+| `session` | The session's runtime id, host and key, once spawned or adopted. A Task owns at most one session, from its spawn to its release; see [Session](session.md). |
+| `sessionState` | What the runtime last proved about the session: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. Absent until a pass proved something. A pass whose answers are Unknown keeps the last state. Nothing decides on it; `fleet status` prints it. [Session](session.md#states) defines each state and how it is proved. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
 | `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. A spawn refused for an unmapped repository does not count. |
 | `briefProbeFailures`, `releaseAttempts` | Three failures raise `NeedsAttention`; reads and releases continue after each wait. |

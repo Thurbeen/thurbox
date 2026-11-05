@@ -7,6 +7,7 @@ that decision through the store and runtime ports.
 | Read | Answers |
 | --- | --- |
 | [Task](../../resources/task.md) | What do I apply, inspect and report as a worker? |
+| [Session](../../resources/session.md) | What is the agent a Task runs, and what does `sessionState` say about it? |
 | [TaskConfig](../../resources/task-config.md) | How do reusable defaults and frozen launches work? |
 | [EnvProvider](../../resources/env-provider.md) | How do stored/file/command environment sources work? |
 | [Native config](../../configuration/fleet-toml.md) | How do I configure the store, runtime and model variables? |

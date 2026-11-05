@@ -148,7 +148,8 @@ See [execution configuration](resources/task-config.md).
 
 A Session is one running agent: the unit the runtime port starts,
 observes, briefs, sends to and releases. Fleet defines it in
-[fleet-api's session module](../crates/fleet-api/src/session.rs). A
+[fleet-api's session module](../crates/fleet-api/src/session.rs) and
+documents it on the [Session page](resources/session.md). A
 Session is not a stored kind. One Task owns at most one Session, from the
 Task's spawn to the Task's release, and names it in `status.session`.
 

@@ -108,6 +108,8 @@ fleet --config examples/fleet.toml list task
   interface, such as the [Task controller](docs/controllers/task/README.md).
 - [Task resource](docs/resources/task.md): every Task field, including
   repository workspaces and structured outputs.
+- [Session](docs/resources/session.md): the agent a Task runs, its identity
+  and the states the runtime proves about it.
 - [Native Fleet TOML](docs/configuration/fleet-toml.md): config fields, the
   thurbox runtime, forges and plugins.
 - [Initialization and the VEGA starter](docs/configuration/init.md): config
