@@ -451,6 +451,19 @@ fn a_session_on_a_host_recorded_as_down_reads_unreachable_not_its_stale_state() 
         get(&db, down.id, false)["state"],
         Value::String("idle".into())
     );
+
+    // A host that answered and refused to start its CLI is up: a fresh `No`
+    // for any reason other than not answering leaves the stored state alone.
+    std::fs::write(
+        &verdicts,
+        format!(
+            r#"{{"ssh:down-box":{{"reason":"the host refused to run thurbox-cli","at":{now},"failures":3}}}}"#
+        ),
+    )
+    .expect("record a refusal");
+    let out = get(&db, down.id, false);
+    assert_eq!(out["state"], Value::String("idle".into()));
+    assert_eq!(out["ready"], Value::Bool(true));
 }
 
 #[test]

@@ -363,7 +363,10 @@ died before the agent reported anything — see *Launch failures*) or
 `running` (an agent holds the pane and has not signalled — `session get`'s
 probe only), or `unreachable` (a remote session whose host the last probe
 recorded as not answering — `state_source: "host"`; `hook_state` keeps the
-report from before it went quiet). None of those is a state an agent can
+report from before it went quiet). That verdict counts only while its
+backoff runs: once it expires with no new probe — no interface running to
+re-ask — the row reads its stored state again, which is *not* evidence
+that the host came back. None of those is a state an agent can
 signal, and `state_source` is null for the first four. The piped (TOON) `session list` shows this
 column, and so does the interface — its session list derives through the
 same `Assessment`, so a driver reconciling the screen with a `session
@@ -379,9 +382,10 @@ the other would make a passing process permanent.
 A finished turn reads `done` until somebody looks at it and `idle`
 after: the interface stamps `seen_at` when focus moves off, and every
 read verb folds that in. It is a stored fact, not a guessed timeout —
-the two folds that *are* timing (a `working` session gone quiet, an
-unreachable host) need a live terminal, so headless answers never
-invent them.
+the fold that *is* timing (a `working` session gone quiet) needs a live
+terminal, so headless answers never invent it. An unreachable host is
+the interface's live attach failure there, and a recorded probe verdict
+here (above).
 
 A **parked** session (`session stop`: pane killed, row and checkout
 kept) stays in `session list` and is told apart there — `stopped: true`
@@ -431,7 +435,7 @@ knowledge of its own to read it:
 | `ready` | when |
 |---|---|
 | `true` | the last hook report is `idle` or `done`; or **no hook has reported yet** (`state: "running"`, `state_source: "process"`), an agent holds the pane, and its input line shows an empty, drawn composer — one prompt glyph with the cursor after it |
-| `false` | `working`, `blocked` or `background`; parked (`stopped`); `failed`; the pane holds no agent (`shell`, `dead`, `missing`) or contradicts the report; or a fresh agent whose composer is not drawn yet |
+| `false` | `working`, `blocked` or `background`; parked (`stopped`); `failed`; `unreachable`; the pane holds no agent (`shell`, `dead`, `missing`) or contradicts the report; or a fresh agent whose composer is not drawn yet |
 | `null` | nothing can say: the pane was not looked at (`session list` without `--verify`, before any report), it is remote and unreported, or its input line could not be read |
 
 The composer read covers the window between launch and the first hook, which
