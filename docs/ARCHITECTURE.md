@@ -2187,9 +2187,10 @@ follow from the host owning the record, none of which the first cut had:
   through another. A transitive row drops its pane id (a pane on the further
   host's server, which on this host's server names someone else's agent) and
   marks its checkouts borrowed; everything done to it goes through the host's
-  CLI, which delegates to the owner. Showing them is the default;
-  `settings.toml` `[remote] transitive_sessions = false` shows only each
-  host's own, and *forgets* the rows already taken (`Database::forget_session`,
+  CLI, which delegates to the owner. Showing them is opt-in
+  (`settings.toml` `[remote] transitive_sessions = true`): by default a host's
+  list here is its own sessions, not a remote's remotes, and a pass *forgets*
+  the transitive rows already taken (`Database::forget_session`,
   the one path that removes a session row) — a tombstone there would be
   pushed to the host as a delete of a live session that is not ours.
 - **"The host does not know this row" is not a failure to delete.** The host

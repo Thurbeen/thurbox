@@ -872,8 +872,12 @@ has the rationale; the shape:
   sharing) is kept. A `hosts.toml` that does not parse, or WSL distros
   that cannot be listed, forget nothing.
 - **Hosts of hosts.** A host that mirrors hosts of its own lists their
-  sessions too, under *its* `ssh:`/`wsl:` names — so A reaching B, with
-  B reaching C, sees C's sessions through B. A session keeps its id on
+  sessions too, under *its* `ssh:`/`wsl:` names. By default this instance
+  lists only each host's own sessions — A reaching B, with B reaching C,
+  does not see C's sessions through B, and a pass forgets any it took on
+  earlier (dropped, not deleted, so nothing reaches the session's owner).
+  `[remote] transitive_sessions = true` in `settings.toml` shows them. A
+  session keeps its id on
   every hop, so the id is its identity and each row is one path to it:
   a session is listed **once**, and a pass through B only takes a
   session this instance holds on no other path. A → C directly wins —
@@ -885,10 +889,6 @@ has the rationale; the shape:
   reports is a pane on C's server, and on B's it would be another
   agent), so its terminal is not attached here; its checkouts are
   listed but marked borrowed, so no teardown run on B removes them.
-  `[remote] transitive_sessions = false` in `settings.toml` lists only
-  each host's own sessions, and the next pass forgets the rows it took
-  on — dropped, not deleted, so nothing reaches the session's owner and
-  turning it back on brings them back.
 - **Delegation.** Create, delete (soft or forced), restart, restore and fork
   on a shareable host run `thurbox-cli session …` *on the host*, which
   does the worktree, the hooks and the launch with the host's own

@@ -655,8 +655,9 @@ session), never on the loop, ADR-P12).
   transitive row gets `backend_id = ""` (the far host's pane id names another
   agent on B's server; remote rows attach to their stored id unsurveyed) and
   borrowed worktrees (`created_by_thurbox = false`, so a fallback teardown on
-  B removes nothing). `settings.toml` `[remote] transitive_sessions = false`
-  (`Transitive::Hide`, read per pass by `settings_config::load_quiet`) takes
+  B removes nothing) — but only under `settings.toml` `[remote]
+  transitive_sessions = true` (`Transitive::Show`). The default, `false`
+  (`Transitive::Hide`, read per pass by `settings_config::load_quiet`), takes
   only own rows and **forgets** the transitive ones held on that backend
   (`Database::forget_session`, event reason `forgotten`) — never a tombstone,
   which the next pass would push to B as a delete of a live session.

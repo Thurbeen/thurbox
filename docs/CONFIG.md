@@ -1010,7 +1010,7 @@ provider       = "auto"        # auto | native | osc52 | none
 copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies a selection
 
 [remote]
-transitive_sessions = true     # list sessions a host mirrors from hosts of its own
+transitive_sessions = false    # true = also list sessions a host mirrors from hosts of its own
 ```
 
 ### `hidden_terminal_secs` — how much memory a session off screen holds
@@ -1263,13 +1263,14 @@ shown and you update extensions by hand.
 
 A shareable host (see [hosts.toml](#hoststoml)) lists its own sessions and,
 when it mirrors hosts of its own, theirs. `transitive_sessions` (default
-`true`) keeps those: each session is listed once, on the most direct path this
-instance has to it — a host reached directly wins over the same session seen
-through another — and every action on it reaches the host that owns it. A row
-seen through another host has no terminal attached here. `false` lists only
-each host's own sessions and drops the rows already taken on, without deleting
-anything anywhere. Read by every mirror pass, so a change applies on the next
-one (within 10 s in the TUI). [FEATURES.md](FEATURES.md) → *Shared sessions*
+`false`) lists only each host's own sessions — a remote's remotes are not
+shown — and drops the rows an earlier pass took on, without deleting anything
+anywhere. `true` keeps them: each session is listed once, on the most direct
+path this instance has to it — a host reached directly wins over the same
+session seen through another — and every action on it reaches the host that
+owns it. A row seen through another host has no terminal attached here. Read
+by every mirror pass, so a change applies on the next one (within 10 s in the
+TUI). [FEATURES.md](FEATURES.md) → *Shared sessions*
 has the rule.
 
 ### `[telemetry]` — OpenTelemetry for sessions

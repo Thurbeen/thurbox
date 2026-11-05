@@ -779,6 +779,73 @@ fn an_idle_host_is_not_listed_again() {
     assert!(listings(root) > after_first);
 }
 
+/// A → B → C over a real `ssh` round trip, with no `settings.toml` here: A
+/// lists B's own session and none of the ones B only mirrors from C. A remote
+/// session of a remote session is shown only on an explicit
+/// `[remote] transitive_sessions = true`.
+#[cfg(unix)]
+#[test]
+fn a_hosts_mirror_of_its_own_host_is_not_listed_by_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    for dir in [
+        "bin",
+        "home",
+        "config",
+        "data",
+        "host-home",
+        "host-config",
+        "host-data",
+    ] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    write_ssh(&root.join("bin"), root);
+    std::env::set_var("HOME", root.join("home"));
+    std::env::set_var("THURBOX_CONFIG_DIR", root.join("config"));
+    std::env::set_var("THURBOX_DATA_DIR", root.join("data"));
+    std::env::set_var(
+        "PATH",
+        format!(
+            "{}:{}",
+            root.join("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        ),
+    );
+
+    // B: one session of its own, and its mirror of one on its host C.
+    let host_db = Database::open(&root.join("host-data/thurbox.db")).unwrap();
+    let on_b = SessionId::default();
+    host_db
+        .upsert_session(&host_row(on_b, "bravo-own"))
+        .unwrap();
+    let on_c = SessionId::default();
+    let mut mirrored = host_row(on_c, "charlie-own");
+    mirrored.backend_type = "ssh:charlie".into();
+    host_db.upsert_session(&mirrored).unwrap();
+
+    let host = HostDef {
+        name: "bravo".into(),
+        destination: "bravo".into(),
+        ..Default::default()
+    };
+    let cli = match thurbox::session_ops::host_cli::usable(&host) {
+        thurbox::session_ops::host_cli::Usable::Yes(cli) => cli,
+        thurbox::session_ops::host_cli::Usable::No(why) => {
+            panic!("the stand-in host is not usable: {why}")
+        }
+    };
+    let db = Database::open(&root.join("data/thurbox.db")).unwrap();
+
+    let report = mirror::mirror_host(&db, &host, &cli).unwrap();
+    assert_eq!(report.adopted, vec![on_b], "{report:?}");
+    assert_eq!(listed_on(&db, on_b), vec!["ssh:bravo"]);
+    assert!(
+        listed_on(&db, on_c).is_empty(),
+        "C's session, seen only through B, is listed here: {:?}",
+        listed_on(&db, on_c)
+    );
+}
+
 /// A host that upgraded first is still shared with (#1429). Its CLI is a minor
 /// release ahead — same major, one schema ahead — and an exact schema match
 /// rejected it, so the peer tried to provision its own older CLI over the
