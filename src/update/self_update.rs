@@ -38,7 +38,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::agent::version_check::{
+use crate::update::version_check::{
     crosses_major, current_version, decide_update, fetch_latest_release,
 };
 
@@ -732,7 +732,7 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
 mod tests {
     use super::*;
 
-    const SCRATCH_CHILD: &str = "agent::self_update::tests::scratch_lifecycle_child";
+    const SCRATCH_CHILD: &str = "update::self_update::tests::scratch_lifecycle_child";
 
     #[test]
     fn scratch_lifecycle_child() {

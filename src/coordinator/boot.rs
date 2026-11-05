@@ -144,7 +144,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         || {
             // Before the load, so a key v2.32.0 wrote is noted once here rather
             // than reported as unknown on every start.
-            let layout_note = thurbox::agent::settings_config::retire_layout_preset();
+            let layout_note = thurbox::config::settings::retire_layout_preset();
             (layout_note, thurbox::kernel::config::Config::load())
         },
     );

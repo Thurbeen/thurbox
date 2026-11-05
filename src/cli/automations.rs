@@ -779,7 +779,7 @@ fn export_telemetry(db: &Database) -> Value {
     if !settings.exports_thurbox() {
         return Value::Null;
     }
-    let shared_hosts: std::collections::HashSet<String> = crate::agent::host_config::load_all()
+    let shared_hosts: std::collections::HashSet<String> = crate::config::hosts::load_all()
         .hosts
         .iter()
         .filter(|h| h.shareable())
@@ -803,7 +803,7 @@ fn export_telemetry(db: &Database) -> Value {
         })
         .collect();
     let identity = crate::telemetry::Identity {
-        version: crate::agent::version_check::current_version().to_string(),
+        version: crate::update::version_check::current_version().to_string(),
         instance: crate::backend::instance::local_socket_name(),
     };
     match crate::telemetry::export(db, settings, &identity, &counts, &shared_hosts) {

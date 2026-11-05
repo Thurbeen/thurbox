@@ -927,11 +927,8 @@ pub fn run(
             soft,
             if_generation,
         } => {
-            let force = force
-                || (!soft
-                    && !crate::agent::settings_config::load_quiet()
-                        .features
-                        .soft_delete);
+            let force =
+                force || (!soft && !crate::config::settings::load_quiet().features.soft_delete);
             delete_session_if_generation(db, backends.get(), &uuid, force, if_generation)
         }
         Action::Restore {

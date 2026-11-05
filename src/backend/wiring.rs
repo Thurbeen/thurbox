@@ -82,7 +82,7 @@ pub fn implements(mux: Multiplexer) -> bool {
 /// read of `hosts.toml`. The warnings are that read's, for callers that
 /// surface them.
 pub fn configured() -> (BackendRegistry, HostRegistry, Vec<String>) {
-    let (hosts, warnings) = crate::agent::host_config::cached_registry();
+    let (hosts, warnings) = crate::config::hosts::cached_registry();
     (for_hosts(hosts), hosts.clone(), warnings.clone())
 }
 

@@ -355,10 +355,7 @@ fn deactivate_extension(
     }
     // Tear down whatever the manifest declares. If the manifest is gone
     // we can't know the resources, but still clear the active-set entry.
-    let force = force
-        || !crate::agent::settings_config::load_quiet()
-            .features
-            .soft_delete;
+    let force = force || !crate::config::settings::load_quiet().features.soft_delete;
     let report = match crate::agent::extension_config::load_manifest(&name) {
         Some(def) => crate::session_ops::deactivate_extension(db, backends, &def, force)?,
         None => {

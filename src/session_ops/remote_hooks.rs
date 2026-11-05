@@ -601,7 +601,7 @@ pub(crate) fn poll_hook_states(
     let Ok(sessions) = db.list_active_sessions() else {
         return 0;
     };
-    let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+    let (hosts, _warnings) = crate::config::hosts::cached_registry();
     // By the server a row's route settles to, not by its spelling: a legacy
     // `ssh:box` row and a new `ssh:box:tmux` one are one listing.
     let mut by_route: HashMap<crate::session::Route, Vec<&crate::sync::SharedSession>> =

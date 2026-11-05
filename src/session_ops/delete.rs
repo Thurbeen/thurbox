@@ -497,7 +497,7 @@ fn teardown_runtime_resources_inner(
     if crate::session::Route::is_remote_key(&session.backend_type) {
         // Off-local session: kill the pane + remove worktrees on the host. An
         // unresolvable/unreachable host is expected — record it, never abort.
-        let registry = crate::agent::host_config::load_all();
+        let registry = crate::config::hosts::load_all();
         match remote_host_in(&registry, &session.backend_type) {
             Some(host) => {
                 // The window through the backend the row's route names; a row
@@ -613,7 +613,7 @@ pub fn retry_owed_remote_teardowns(
     // windows are killed through the process's registry, which was built from
     // the `hosts.toml` of its start: the headless heartbeat runs each tick as
     // a new process, so an edit reaches the kill by the next one.
-    let registry = crate::agent::host_config::load_all();
+    let registry = crate::config::hosts::load_all();
     let mut finished = Vec::new();
     let mut silent: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut attempts = 0;
@@ -2366,7 +2366,7 @@ mod tests {
     fn configured_host() -> (tempfile::TempDir, crate::paths::TestPathGuard) {
         let temp = tempfile::TempDir::new().unwrap();
         let guard = crate::paths::TestPathGuard::new(temp.path());
-        let path = crate::agent::host_config::hosts_config_path().unwrap();
+        let path = crate::config::hosts::hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,

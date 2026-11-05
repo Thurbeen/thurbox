@@ -573,7 +573,7 @@ impl Terminals {
     /// kernel's; the hosts are the same cached read of `hosts.toml` it was
     /// built from.
     pub fn with_registry(backends: std::sync::Arc<crate::backend::BackendRegistry>) -> Self {
-        let hosts = crate::agent::host_config::cached_registry().0.clone();
+        let hosts = crate::config::hosts::cached_registry().0.clone();
 
         Self {
             backends,

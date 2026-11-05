@@ -783,7 +783,7 @@ pub fn agent_launch_plan(
         &def,
         session.map_or("", |s| s.name.as_str()),
         host.as_ref(),
-        &crate::agent::settings_config::load_quiet().telemetry,
+        &crate::config::settings::load_quiet().telemetry,
     );
     let member_dirs = session
         .and_then(|s| s.cwd.as_ref().map(|primary| (s, primary)))
@@ -850,7 +850,7 @@ fn session_process_env_for_agent(
     session: &crate::sync::SharedSession,
     def: &crate::session::AgentDef,
 ) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
-    let telemetry_settings = crate::agent::settings_config::load_quiet().telemetry;
+    let telemetry_settings = crate::config::settings::load_quiet().telemetry;
     let mut config = SessionConfig {
         session_id: Some(session.id),
         session_name: session.name.clone(),
@@ -1029,7 +1029,7 @@ fn fork_on_backend(
         multiplexer: crate::session::Route::parse(&source.backend_type)
             .ok()
             .and_then(|route| {
-                let (hosts, _) = crate::agent::host_config::cached_registry();
+                let (hosts, _) = crate::config::hosts::cached_registry();
                 hosts.qualify(&route).mux
             })
             .map(|mux| mux.name().to_string()),
@@ -1313,7 +1313,7 @@ impl Executor {
 pub fn resolve_host(backend_type: &str) -> Option<Option<crate::session::HostDef>> {
     // The cached registry: this runs on the UI thread per diff request, and a
     // fresh load walks $PATH for WSL discovery every time.
-    let (registry, _warnings) = crate::agent::host_config::cached_registry();
+    let (registry, _warnings) = crate::config::hosts::cached_registry();
     let route = crate::session::Route::parse(backend_type).ok()?;
     match route.host() {
         None => Some(None),
@@ -1324,10 +1324,7 @@ pub fn resolve_host(backend_type: &str) -> Option<Option<crate::session::HostDef
 /// Look up an exact configured/discovered host name in the process registry.
 /// Host config is refreshed by restarting the process, not per request.
 pub fn configured_host(name: &str) -> Option<crate::session::HostDef> {
-    crate::agent::host_config::cached_registry()
-        .0
-        .get(name)
-        .cloned()
+    crate::config::hosts::cached_registry().0.get(name).cloned()
 }
 
 /// The multiplexer server a row's windows live on, as a comparison key: its
@@ -1340,7 +1337,7 @@ pub fn configured_host(name: &str) -> Option<crate::session::HostDef> {
 pub fn server_key(backend_type: &str) -> String {
     match crate::session::Route::parse(backend_type) {
         Ok(route) => {
-            let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+            let (hosts, _warnings) = crate::config::hosts::cached_registry();
             hosts.qualify(&route).format()
         }
         Err(_) => backend_type.to_string(),

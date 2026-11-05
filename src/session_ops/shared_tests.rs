@@ -91,7 +91,7 @@ fn rig() -> Rig {
     mirror::forget_lists();
     let temp = tempfile::TempDir::new().unwrap();
     let guard = crate::paths::TestPathGuard::new(temp.path());
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
@@ -323,7 +323,7 @@ fn the_hosts_refusal_is_the_callers_error_verbatim() {
 #[test]
 fn a_local_pre_hook_veto_prevents_the_delegation() {
     let rig = rig();
-    let hooks = crate::agent::hooks_config::hooks_config_path().unwrap();
+    let hooks = crate::config::hooks::hooks_config_path().unwrap();
     std::fs::write(
         &hooks,
         "[[hooks]]\nevent = \"session.pre_create\"\ncommand = \"exit 3\"\n",
@@ -522,7 +522,7 @@ fn a_repairer_the_host_answers_gone_reports_gone_and_fires_no_hooks() {
         }
     }));
     let fired = rig._temp.path().join("post-restart-fired");
-    let hooks = crate::agent::hooks_config::hooks_config_path().unwrap();
+    let hooks = crate::config::hooks::hooks_config_path().unwrap();
     std::fs::create_dir_all(hooks.parent().unwrap()).unwrap();
     std::fs::write(
         &hooks,
@@ -781,7 +781,7 @@ fn adoption_preserves_telemetry_attributes_or_reports_an_unsupported_host() {
 fn telemetry_owner_reads_refuse_peers_without_forwarding_support() {
     let rig = rig();
     std::fs::write(
-        crate::agent::settings_config::settings_config_path().unwrap(),
+        crate::config::settings::settings_config_path().unwrap(),
         "[telemetry]\nenabled = true\n",
     )
     .unwrap();
@@ -805,7 +805,7 @@ fn an_unknown_host_name_is_the_one_hard_failure_of_sync() {
 #[test]
 fn a_host_with_sharing_off_is_used_the_old_way() {
     let rig = rig();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(
         &path,
         format!(
@@ -813,7 +813,7 @@ fn a_host_with_sharing_off_is_used_the_old_way() {
         ),
     )
     .unwrap();
-    let hosts = crate::agent::host_config::load_all();
+    let hosts = crate::config::hosts::load_all();
     let host = hosts.get(HOST).unwrap();
     // The forced verdict is bypassed by the config switch, before any probe.
     assert!(matches!(host_cli::usable(host), Usable::No(_)));
@@ -1101,9 +1101,9 @@ fn sync_after_hosts_toml(config: &str) -> (Rig, SessionId, Vec<Vec<String>>) {
     mirror::sync(&rig.db, None, false).unwrap();
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
     let before = fake::calls().len();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(path, config).unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     let calls = fake::calls().split_off(before);
@@ -1130,9 +1130,9 @@ fn a_removed_hosts_deleted_rows_are_forgotten_too() {
     rig.db.upsert_session(&row).unwrap();
     rig.db.set_host_updated_at(id, 1).unwrap();
     rig.db.soft_delete_session(id).unwrap();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(path, "").unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_deleted_session_by_id(id).unwrap().is_none());
@@ -1156,7 +1156,7 @@ fn local_rows_and_a_configured_hosts_rows_are_kept() {
     let mut row = host_session(local, "here");
     row.backend_type = "local:tmux".into();
     rig.db.upsert_session(&row).unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
@@ -1171,14 +1171,14 @@ fn distros_that_could_not_be_listed_forget_nothing() {
     row.backend_type = "wsl:Ubuntu".into();
     rig.db.upsert_session(&row).unwrap();
     rig.db.set_host_updated_at(id, 1).unwrap();
-    crate::agent::host_config::with_discovered_wsl(Err("wsl.exe timed out".into()), || {
+    crate::config::hosts::with_discovered_wsl(Err("wsl.exe timed out".into()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(
         rig.db.get_session_by_id(id).unwrap().is_some(),
         "an unlisted distro is unknown, not removed"
     );
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_session_by_id(id).unwrap().is_none());
@@ -1217,9 +1217,9 @@ fn a_removed_hosts_rows_this_database_owns_are_kept() {
     let mut row = host_session(id, "only-recorded-here");
     row.backend_type = BACKEND.into();
     rig.db.upsert_session(&row).unwrap();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(path, "").unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
@@ -1237,7 +1237,7 @@ fn a_loopback_entrys_rows_are_left_to_the_wsl_repair() {
     row.backend_type = "wsl:self".into();
     rig.db.upsert_session(&row).unwrap();
     rig.db.set_host_updated_at(id, 1).unwrap();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(
         path,
         "[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n",
@@ -1252,7 +1252,7 @@ fn a_loopback_entrys_rows_are_left_to_the_wsl_repair() {
     std::fs::set_permissions(&wsl, std::fs::Permissions::from_mode(0o755)).unwrap();
     crate::paths::with_path(&bin, || {
         crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
-            crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+            crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
                 mirror::sync(&rig.db, None, false).unwrap();
             });
         });
@@ -1280,9 +1280,9 @@ fn a_mirror_from_before_the_hosts_clock_is_forgotten_with_its_host() {
     mirror::forget_lists();
     mirror::sync(&rig.db, None, false).unwrap();
 
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(path, "").unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_session_by_id(id).unwrap().is_none());

@@ -860,8 +860,8 @@ the pre-create hooks run, so the placeholder row says so.
   as the dotted names), `LifecycleHook`, `HooksFile`, and `HookContext` with
   `env()` (the `THURBOX_*` set, `THURBOX_SESSION_KEY` included — unset, never empty, for an unknown fact),
   `json()` (the stdin document) and `workdir()`.
-- **File**: `agent::hooks_config` mirrors `host_config` — seed, strict
-  parse through `parse_toml_reporting_unknown`, empty-with-warning on
+- **File**: `config::hooks` loads through `config::file::load_or_seed` — seed, strict
+  parse reporting unknown keys, empty-with-warning on
   failure; `hooks_for(event)` in file order. `config validate`/`show` cover
   it.
 - **Runner**: `session_ops::lifecycle_hooks::run_hook` — `platform_shell`,

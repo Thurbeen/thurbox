@@ -74,9 +74,15 @@ Empty session queues retire on the worker, without needing the UI to poll.
 node                 may reference                     [fully-qualified path only]
 session              nothing — pure data, the dependency sink
 agent                agent::{generic,provider} (re-exports only)
-agent::*             every file a node: session, paths, shell and the other
-                     agent::* files each declares (NEVER git, NEVER backend)
-agent::host_config   session, paths, shell, agent::agent_config
+agent::*             every file a node: session, paths, shell, config::file
+                     and the other agent::* files each declares (NEVER git,
+                     NEVER backend)
+config               config::* (declarations only)
+config::*            every file a node: config::file (the one loader, over
+                     paths) plus session, and for hosts paths and shell
+update               update::* (declarations only)
+update::*            session, paths, shell, agent::extension_config,
+                     update::version_check
 backend              backend::{contract,pane,registry} (re-exports only)
 backend::contract    nothing — the role traits and the values crossing them
 backend::identity    backend::contract
@@ -86,7 +92,7 @@ backend::osc8        session
 backend::output_wake nothing
 backend::registry    session, backend::contract        (a container, no factory)
 backend::wiring      session, shell,                   (the factory: the only
-                     agent::host_config,                node naming an adapter)
+                     config::hosts,                     node naming an adapter)
                      backend::{contract,registry,
                      tmux,psmux,rmux}
 backend::tmux_compat nothing — declares the three below (tmux protocol helper)
@@ -113,13 +119,13 @@ git                  session, paths, shell
 storage              session, sync, paths
 sync                 session
 telemetry            session, storage                  (ADR-37/38 OTLP export)
-session_ops          session, storage, git, sync,      [agent::<the config it reads>,
+session_ops          session, storage, git, sync,      [agent|config|update::<file>,
                      paths, workspace, shell            backend::{contract,identity,
                                                         instance,registry}]
-kernel               session, storage, sync, paths,    [agent::<the config it reads>,
+kernel               session, storage, sync, paths,    [agent|config|update::<file>,
                      session_ops, git, notifications,   backend::{contract,identity,
                      shell                              pane,registry}]
-cli                  session, storage, session_ops,    [agent::<the config it reads>,
+cli                  session, storage, session_ops,    [agent|config|update::<file>,
                      sync, paths, notifications,        backend::{contract,instance,
                      ui_control, telemetry              registry}, kernel]
 notifications        session, paths, shell             [storage]
@@ -128,7 +134,7 @@ workspace            paths
 paths                nothing — leaf utility
 ui_control           paths
 shell                session (HostLauncher::for_host)
-coordinator          agent::{input,settings_config},   (main's body: the loop,
+coordinator          agent::input, config::settings,   (main's body: the loop,
                      backend::{instance,output_wake,    the workers, the chrome)
                      wiring}, clipboard, kernel,
                      paths, session, session_ops,
@@ -197,10 +203,17 @@ alias and re-export laundering, and test-only edges.
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
   `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
   install/converge/withdraw operations — sharing `bundled`'s decision matrix).
-- **`agent/`** — the agent and host config layer. `AgentProvider`
-  - `GenericProvider` build the CLI invocation from a declarative `AgentDef`;
-  the other files read thurbox's config (agents, hosts, hooks, settings,
-  themes) and run the preflight and self-update.
+- **`agent/`** — the coding agents. `AgentProvider` + `GenericProvider`
+  build the CLI invocation from a declarative `AgentDef`; `agent_config` loads
+  `agents.toml`, `extension_config` the extension manifests, and `preflight`
+  and `host_path` check and translate what a launch needs.
+- **`config/`** — thurbox's own config files beside `config.toml` (`hooks`,
+  `hosts`, `settings`, `themes`). `config::file` is the one loader every config
+  file goes through, `agents.toml` and the manifests included: its path,
+  seeding it on first run, parsing it with unknown keys reported, degrading to
+  a fallback with a warning, and writing it back with `paths::write_atomically`.
+- **`update/`** — self-update: `version_check` (is a newer release out) and
+  `self_update` (install it).
 - **`backend/`** — the session-backend boundary. `contract` is the
   `SessionBackend` trait every consumer names — the `PaneStream`,
   `WindowLifecycle`, `PaneIo` and `StatusChannel` roles plus a `Capabilities`

@@ -85,6 +85,15 @@ file and parent directory are not explicitly synced to stable storage.
 production write, apart from an allow-list of logs, a cache, the control
 socket's privately staged files and the self-update's staged binary.
 
+The config files beside `config.toml` — `agents.toml`, `settings.toml`,
+`themes.toml`, `hooks.toml`, `hosts.toml` and the extension manifests — are
+read and written by one loader, `config::file`. It seeds an absent file with
+its documented defaults, parses it reporting every unknown key as a warning,
+writes through `paths::write_atomically`, and on any failure (no path, a seed
+it could not write, an unreadable or malformed file) keeps thurbox starting:
+the file's fallback is used and a warning names the file and what it fell
+back to (`hooks.toml: …; no lifecycle hooks`).
+
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 
 ### Which file do I edit?
@@ -1240,7 +1249,7 @@ version numbers — 2.x replaced v1's compiled-in interface with the Lua plugin
 kernel, so a silent crossing would hand someone a different program under the
 same binary name. `thurbox-cli update --force` is the deliberate way across, and
 the first v2 launch of a profile with v1 history still asks before anything
-changes. The guard is `agent::version_check::crosses_major`, and it applies to
+changes. The guard is `update::version_check::crosses_major`, and it applies to
 every future major too.
 
 > Only a binary that *carries* the guard is protected by it. Releases up to

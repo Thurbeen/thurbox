@@ -69,7 +69,7 @@ fn main() {
     // Publish settings before Database::open (audit pruning reads retention).
     // Warnings go to the WARN-level stderr logger; `config validate` is the
     // loud path.
-    let (settings, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    let (settings, _) = thurbox::config::settings::load_or_seed_with_warnings();
     thurbox::session::settings::init(settings);
 
     let Some(db_path) = thurbox::paths::database_file() else {

@@ -3151,7 +3151,7 @@ fn telemetry_probe(
         env.insert("OTEL_RESOURCE_ATTRIBUTES".into(), session.into());
     }
     std::fs::write(
-        thurbox::agent::settings_config::settings_config_path().unwrap(),
+        thurbox::config::settings::settings_config_path().unwrap(),
         settings,
     )
     .unwrap();
@@ -3385,7 +3385,7 @@ fn remote_telemetry_probe(
     std::fs::write(config.join("agents.toml"), TELEMETRY_PROBE_AGENT).unwrap();
     std::fs::write(config.join("hosts.toml"), TELEMETRY_HOSTS_TOML).unwrap();
     std::fs::write(
-        thurbox::agent::settings_config::settings_config_path().unwrap(),
+        thurbox::config::settings::settings_config_path().unwrap(),
         TELEMETRY_ON,
     )
     .unwrap();

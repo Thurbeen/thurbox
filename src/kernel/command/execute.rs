@@ -166,7 +166,7 @@ fn perform(
 
     // The settings file names nothing at all.
     if let Command::Configure { settings } = command {
-        return crate::agent::settings_config::save_settings(settings)
+        return crate::config::settings::save_settings(settings)
             .map_err(|e| format!("write settings.toml: {e}"));
     }
 
@@ -403,7 +403,7 @@ fn bookmark(host: &str, path: &str, edit: &BookmarkEdit) -> Result<(), String> {
     let remote = match host.is_empty() {
         true => None,
         false => {
-            let (registry, _warnings) = crate::agent::host_config::cached_registry();
+            let (registry, _warnings) = crate::config::hosts::cached_registry();
             Some(
                 registry
                     .resolve(host)

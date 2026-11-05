@@ -1,7 +1,7 @@
 //! Running the user's session lifecycle hooks (`hooks.toml`).
 //!
 //! The data is [`crate::session::hook_def`], the file is
-//! [`crate::agent::hooks_config`]; this is the process. Each of the four
+//! [`crate::config::hooks`]; this is the process. Each of the four
 //! session pipelines in this module (`spawn`, `delete`, `restart`, `restore`)
 //! calls [`fire_pre`] before its first side effect and [`fire_post`] after its
 //! last, so a hook fires once per operation whichever interface asked — the
@@ -42,7 +42,7 @@ fn fire_pre_on(
     host: Option<&crate::session::HostDef>,
 ) -> Result<(), super::OpError> {
     debug_assert!(event.is_pre(), "{event} is not a pre-event");
-    for hook in crate::agent::hooks_config::hooks_for(event) {
+    for hook in crate::config::hooks::hooks_for(event) {
         if !hook.matches_agent(&ctx.agent) {
             continue;
         }
@@ -62,7 +62,7 @@ fn fire_pre_on(
 pub fn fire_post(event: HookEvent, ctx: &HookContext) -> Vec<String> {
     debug_assert!(!event.is_pre(), "{event} is not a post-event");
     let mut failures = Vec::new();
-    for hook in crate::agent::hooks_config::hooks_for(event) {
+    for hook in crate::config::hooks::hooks_for(event) {
         if !hook.matches_agent(&ctx.agent) {
             continue;
         }
@@ -282,7 +282,7 @@ mod tests {
     }
 
     fn write_hooks_file(dir: &std::path::Path, body: &str) {
-        let path = crate::agent::hooks_config::hooks_config_path().unwrap();
+        let path = crate::config::hooks::hooks_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body.replace("{dir}", &dir.display().to_string())).unwrap();
     }

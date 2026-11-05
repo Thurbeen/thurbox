@@ -378,7 +378,7 @@ fn protect_user_hooks(path: &Path) -> Result<(), String> {
             "extension destinations may not contain '..' (user hooks.toml is protected)".into(),
         );
     }
-    let Some(hooks) = crate::agent::hooks_config::hooks_config_path() else {
+    let Some(hooks) = crate::config::hooks::hooks_config_path() else {
         return Err("cannot locate the user's hooks.toml; refusing extension writes".into());
     };
     let same = if cfg!(windows) {

@@ -175,7 +175,7 @@ fn agent_finding(agent: &crate::session::AgentDef) -> Finding {
 /// appear. That costs one round trip per shareable host, bounded by the ssh
 /// connect timeout.
 fn host_findings() -> Vec<Finding> {
-    let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+    let (hosts, _warnings) = crate::config::hosts::cached_registry();
     let mut findings = Vec::new();
     for host in &hosts.hosts {
         let launcher = if host.is_wsl() { "wsl.exe" } else { "ssh" };
@@ -382,7 +382,7 @@ mod tests {
     fn cli(schema: u32) -> crate::session_ops::host_cli::CliInfo {
         crate::session_ops::host_cli::CliInfo {
             path: "thurbox-cli".into(),
-            version: crate::agent::version_check::current_version().into(),
+            version: crate::update::version_check::current_version().into(),
             tmux_socket: None,
             data_dir: None,
             tmux_tmpdir: None,

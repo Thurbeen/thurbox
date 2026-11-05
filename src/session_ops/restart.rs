@@ -124,7 +124,7 @@ fn build_plan(
         &def,
         &session.name,
         host,
-        &crate::agent::settings_config::load_quiet().telemetry,
+        &crate::config::settings::load_quiet().telemetry,
     );
     let codex_builtin = def.is_family("codex") && def.resume_args == ["resume", "{id}"];
     let codex_id = if codex_builtin && !fresh {
