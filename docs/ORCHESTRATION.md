@@ -227,6 +227,12 @@ waits for an operator's `session restart`. That `restart --if-missing` answers
 `"held_back": true`. Sessions on tmux keep their dead pane and never produce
 either event.
 
+A `restart --if-missing` of a session that has been deleted since the caller
+last looked has nothing to repair. It succeeds with `"gone": true` and
+`"restarted": false` instead of failing with "Session not found". An id this
+machine never held still fails, as does a plain `session restart` of a deleted
+session.
+
 ### `--parent`
 
 Spawn workers with `--parent "$THURBOX_SESSION"` and the lead/worker

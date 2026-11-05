@@ -1690,32 +1690,81 @@ fn run_restart(
     uuid: String,
     if_missing: bool,
 ) -> Result<CommandOutput, CommandError> {
+    if if_missing {
+        if let Some(output) = restart_of_a_deleted_session(db, &uuid)? {
+            return Ok(output);
+        }
+    }
     let session = resolve(db, &uuid)?;
     crate::session_ops::deliver::ensure_hooks_wired(db, backends);
     let report = crate::session_ops::restart::restart_session_headless_with(
         db, backends, session.id, if_missing,
     )?;
-    let mut human = match report.held_back {
-        true => format!(
+    let mut human = match (report.held_back, report.gone) {
+        (true, _) => format!(
             "Not relaunching '{}' ({}): {}. `thurbox-cli session restart {}` brings it back.",
             session.name,
             session.id,
             crate::session_ops::restart::held_back_reason(),
             session.id
         ),
-        false => format!("Restarted session '{}' ({})", session.name, session.id),
+        // Deleted between the lookup above and the repair, here or on its
+        // host. The same answer as `restart_of_a_deleted_session`.
+        (false, true) => format!(
+            "'{}' ({}) has been deleted; nothing to relaunch",
+            session.name, session.id
+        ),
+        (false, false) => format!("Restarted session '{}' ({})", session.name, session.id),
     };
     push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
         json!({
-            "restarted": !report.held_back,
+            "restarted": !report.held_back && !report.gone,
             "held_back": report.held_back,
+            "gone": report.gone,
             "session_id": session.id.to_string(),
             "session_name": session.name,
             "hook_failures": report.hook_failures,
         }),
         human,
     ))
+}
+
+/// `restart --if-missing` of a session this database holds as deleted.
+///
+/// A repairer acts on a survey taken before it ran, and a session deleted
+/// since has no window to put back. So the repair is a no-op (`gone`), not a
+/// "Session not found" failure that blames the delete. Only a UUID of a known
+/// deleted row qualifies: a reference that names nothing, such as a typo,
+/// still fails, as does a restart asked for without `--if-missing`.
+fn restart_of_a_deleted_session(
+    db: &Database,
+    reference: &str,
+) -> Result<Option<CommandOutput>, CommandError> {
+    let Ok(id) = reference.parse::<crate::session::SessionId>() else {
+        return Ok(None);
+    };
+    let read = |e: rusqlite::Error| CommandError::from(format!("read session {id}: {e}"));
+    if db.get_session_by_id(id).map_err(read)?.is_some() {
+        return Ok(None);
+    }
+    let Some(gone) = db.get_deleted_session_by_id(id).map_err(read)? else {
+        return Ok(None);
+    };
+    Ok(Some(CommandOutput::new(
+        json!({
+            "restarted": false,
+            "held_back": false,
+            "gone": true,
+            "session_id": id.to_string(),
+            "session_name": gone.name,
+            "hook_failures": [],
+        }),
+        format!(
+            "'{}' ({id}) has been deleted; nothing to relaunch",
+            gone.name
+        ),
+    )))
 }
 
 fn run_restart_fresh(

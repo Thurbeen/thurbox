@@ -401,6 +401,14 @@ impl App {
             if tracked.failed {
                 continue;
             }
+            // A repair that relaunched nothing — its session deleted meanwhile,
+            // or a delete or restart holding the row — replaced no pane and
+            // has nothing to announce. "restarted <name>" and a
+            // `session.post_restart` for a session a driver just deleted would
+            // be as wrong as the error this used to be.
+            if self.commands.take_did_nothing(id) {
+                continue;
+            }
             // A command that replaced the session's pane must be followed by
             // letting go of the old one, or the interface keeps painting a pane
             // that no longer exists — a session that looks restarted and takes no

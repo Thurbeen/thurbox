@@ -387,6 +387,39 @@ pub struct RestartReport {
     /// A relaunch refused because the agent is crash-looping
     /// ([`CRASH_LOOP_RELAUNCHES`]); the session is marked lost instead.
     pub held_back: bool,
+    /// A repair of a session that has been deleted, here or on its host:
+    /// nothing was relaunched, and nothing failed either.
+    pub gone: bool,
+    /// A repair that stood down: another lifecycle operation holds the row (a
+    /// restart replacing its window, a delete taking it away), or the window
+    /// is there after all. Nothing was relaunched. The CLI still answers
+    /// `restarted` for it, as it always has; the interface stays silent.
+    pub stood_down: bool,
+}
+
+impl RestartReport {
+    /// A repair that found the session deleted ([`Self::gone`]).
+    fn gone() -> Self {
+        Self {
+            gone: true,
+            ..Self::default()
+        }
+    }
+
+    /// A repair that stood down ([`Self::stood_down`]).
+    fn stood_down() -> Self {
+        Self {
+            stood_down: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the window was left as it was: a repair that stood down or
+    /// found the session gone. Neither replaced a pane, so the interface has
+    /// nothing to announce and nothing to let go of.
+    pub fn relaunched_nothing(&self) -> bool {
+        self.gone || self.stood_down
+    }
 }
 
 impl RestartReport {
@@ -733,12 +766,25 @@ fn restart_for(
     why: Relaunch,
     fresh: bool,
 ) -> Result<RestartReport, crate::session_ops::OpError> {
-    let session = db
+    let session = match db
         .get_session_by_id(session_id)
         .map_err(|e| format!("Failed to load session: {e}"))?
-        .ok_or_else(|| {
-            crate::session_ops::OpError::NotFound(format!("Session not found: {session_id}"))
-        })?;
+    {
+        Some(session) => session,
+        // A repairer acts on a listing taken before it ran: the interface's
+        // snapshot, or a peer's survey. A session deleted since has no window
+        // to put back, so there is nothing to repair; reporting it as a failed
+        // restart blamed a delete for something it did on purpose.
+        None if why.is_a_repairer() => {
+            tracing::debug!("{session_id} is gone; nothing to relaunch");
+            return Ok(RestartReport::gone());
+        }
+        None => {
+            return Err(crate::session_ops::OpError::NotFound(format!(
+                "Session not found: {session_id}"
+            )))
+        }
+    };
 
     // A remote session's window lives on its host, so both halves have to go
     // there — restarting it locally would leave the real window running and add
@@ -748,6 +794,22 @@ fn restart_for(
     // kills and relaunches where the agent runs, with the host's own
     // configuration; the local row is then mirrored from the host's.
     if let super::Executor::HostCli { host, cli } = super::Executor::for_session(&session)? {
+        // The hold here is somebody else's lifecycle operation on this row.
+        // A delegated delete, for one, holds it while the host kills the
+        // window and drops its row, and only then marks the row here. A
+        // repairer that saw the window go in that gap would otherwise ask
+        // the host to relaunch a session it has just deleted. Checked and
+        // let go rather than held: the mirror after the restart skips a held
+        // row, and it is what brings the new pane back here. A delete that
+        // starts after this check gets a "not found" from the host, which
+        // `restart_delegated` reads the same way.
+        if why.is_a_repairer() && hold_restart(db, session_id).is_none() {
+            tracing::debug!(
+                "'{}' is held by another lifecycle operation; not relaunching",
+                session.name
+            );
+            return Ok(RestartReport::stood_down());
+        }
         // `--if-missing` is "I am a repairer", and the host reads both halves
         // out of it: put a window back only if one is gone, and stand down for
         // a hold somebody there already has. An unpark is neither — the
@@ -779,7 +841,7 @@ fn restart_for(
             "'{}' is already being restarted; not relaunching",
             session.name
         );
-        return Ok(RestartReport::default());
+        return Ok(RestartReport::stood_down());
     }
 
     // The backend the row's route names: what the windows are killed, listed
@@ -788,7 +850,7 @@ fn restart_for(
         .map_err(|e| format!("cannot restart '{}': {e}", session.name))?;
 
     if why.only_if_missing() && !relaunch_is_owed(db, backend.as_ref(), &session)? {
-        return Ok(RestartReport::default());
+        return Ok(RestartReport::stood_down());
     }
 
     // Where an exit takes its window with it, "missing" is also what an agent
@@ -948,7 +1010,23 @@ fn restart_delegated(
     let id = session.id.to_string();
     let mut args = vec!["session", "restart", &id];
     args.extend_from_slice(flags);
-    let result = super::host_cli::run(host, cli, &args)?;
+    // `--if-missing` is the repairer's flag; every other restart was asked for.
+    let repairing = flags.contains(&"--if-missing");
+    let result = match super::host_cli::run(host, cli, &args) {
+        Ok(result) => result,
+        // The host has deleted the session, so there is no window to put
+        // back. Its row here is marked by the delete that did it, or by the
+        // next mirror pass. A restart somebody asked for still fails.
+        Err(crate::session_ops::OpError::NotFound(why)) if repairing => {
+            tracing::debug!(
+                "'{}' is gone on '{}' ({why}); nothing to relaunch",
+                session.name,
+                host.name
+            );
+            return Ok((RestartReport::gone(), serde_json::Value::Null));
+        }
+        Err(e) => return Err(e),
+    };
     if let Err(e) = super::mirror::mirror_host(db, host, cli) {
         tracing::warn!("mirror of '{}' after restart failed: {e}", host.name);
     }
@@ -958,6 +1036,12 @@ fn restart_delegated(
             ..RestartReport::default()
         };
         return Ok((report, result));
+    }
+    // A host on this build answers a repair of a session it has deleted with
+    // `gone` rather than "not found". Nothing was relaunched, so the
+    // post-restart hooks are not told otherwise.
+    if result["gone"].as_bool().unwrap_or(false) {
+        return Ok((RestartReport::gone(), result));
     }
     hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session.id);
     // A fresh restart on the host moved the session to a new conversation.
@@ -1186,8 +1270,8 @@ mod tests {
         // is asked anything, so this needs no server.
         assert_eq!(
             restart_session_headless_with(&db, &crate::backend::registry::inert(), row.id, true),
-            Ok(RestartReport::default()),
-            "a relaunch of a row being restarted is not owed"
+            Ok(RestartReport::stood_down()),
+            "a relaunch of a row being restarted is not owed, and says it stood down"
         );
 
         drop(held);
