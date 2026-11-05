@@ -28,7 +28,10 @@ that decision through the store and runtime ports.
 5. The worker reports through `fleet result`. The controller concludes the
    Task, retaining the session until deletion; messages sent afterwards are
    still delivered.
-6. Deletion enters Releasing. The finalizer holds the record until the
+6. With `pauseAfterMs` set, the controller pauses an idle session through
+   the runtime. The next inbox entry resumes it. See
+   [pausing an idle session](state-machine.md#pausing-an-idle-session).
+7. Deletion enters Releasing. The finalizer holds the record until the
    recorded session is released, once proven at rest or gone.
 
 `fleet reconcile` is a bounded command. It repeats passes while changes are
@@ -51,6 +54,7 @@ for the distinction between bounded sends and continuing recovery attempts.
 | Lease, status, intent and receipt ordering | [Manager](../../../crates/fleet-manager/src/lib.rs) | [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
 | Session identity and delivery journal | [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Runtime E2E](../../../crates/fleet-cli/tests/e2e_runtime.rs) |
 | Workspace trust before the brief | [Runtime port](../../../crates/fleet-api/src/runtime.rs), [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Workspace trust E2E](../../../crates/fleet-cli/tests/e2e_workspace_trust.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
+| Pausing an idle session and resuming it | [TaskController](../../../crates/fleet-controllers/src/task.rs), [runtime port](../../../crates/fleet-api/src/runtime.rs), [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Pause E2E](../../../crates/fleet-cli/tests/e2e_task_pause.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 | Inbox: `fleet send`, typed mutations and delivery | [Inbox types](../../../crates/fleet-api/src/inbox.rs), [verbs](../../../crates/fleet-manager/src/verbs.rs), [store](../../../crates/fleet-store/src/lib.rs) | [Inbox E2E](../../../crates/fleet-cli/tests/e2e_inbox.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 
 The lifecycle E2E suite drives the built CLI from apply to result and release,

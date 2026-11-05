@@ -30,9 +30,12 @@ Neither method reads the clock, disk, environment or runtime itself.
 The manager starts with empty observations, asks `probes`, performs those
 probes through `Runtime`, then calls `reconcile` with their answers. It skips
 Tasks with a future `status.notBefore` before asking for any probe. It also
-skips a Concluded Task whose inbox is empty, unless the Task is being
-deleted or its session recheck is due. A session recheck is due when
-`status.sessionCheckedAt` is absent or 5 minutes old.
+skips a Concluded Task whose inbox is empty, unless one of these holds:
+
+- The Task is being deleted.
+- Its session recheck is due: `status.sessionCheckedAt` is absent or 5
+  minutes old.
+- Its session may be paused, or a pause or resume waits for its outcome.
 
 ### Requested probes
 
@@ -42,19 +45,24 @@ deleted or its session recheck is due. A session recheck is due when
 | Pending, `dispatch: true` | `Host { host }`. |
 | Spawning | `Find { host, key }`. |
 | Spawned | `Find`; `Lost`, `WorkspaceTrust` and `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
-| Briefed, no worker result for `status.brief.generation` | `Find`; `Lost`; the delivery probes below. |
-| Concluded, an inbox entry to deliver | `Find`; `Lost`; the delivery probes below. |
+| Briefed, no worker result for `status.brief.generation` | `Find`; `Lost`; `Paused`; the delivery probes below; `Activity` when the session may be paused. |
+| Concluded, an inbox entry to deliver | `Find`; `Lost`; `Paused`; the delivery probes below. |
 | Concluded, session recheck due | `Find`. |
+| Concluded, session may be paused or a pause or resume in flight | `Find` when the recheck is due; `Lost`; `Paused`; `Activity` when the session may be paused. |
 | Concluded otherwise, or Stalled | None. |
 | Deleting, regardless of phase | `Find`; `AtRest` when a session is recorded. |
 
 The inbox probes, for the oldest entry not given up on: `Ready` for the
 recorded session, and `BriefDelivered` under the entry's key when it was
 sent without a known receipt. The delivery probes are the same probes for
-the resume note while one is owed, and the inbox probes otherwise.
+the catch-up note while one is owed, and the inbox probes otherwise. A
+session may be paused when the conditions in
+[pausing an idle session](state-machine.md#pausing-an-idle-session) hold,
+apart from its activity.
 
 `Observations` holds `host`, `find`, `ready`, `workspace_trust`,
-`brief_delivered`, `at_rest` and `lost`.
+`brief_delivered`, `at_rest`, `lost`, `paused` and `activity`. The manager
+answers `Activity` with Unknown on a runtime that cannot pause.
 Each is optional: `None` means no answer was supplied, not a negative answer.
 Each supplied answer is an [Observation](../../../crates/fleet-api/src/observation.rs):
 
@@ -84,7 +92,8 @@ pub struct Plan {
 | `delivery` | An inbox entry proven delivered: `{key, at, recovered, deliveredVia, mayHold}`. `deliveredVia` is the runtime's route, when the send named one. `mayHold` is true when that route can hold the text behind an approval dialog; it raises no attention. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
 
 An action is `Spawn(SpawnSpec)`, `Brief { session, text }`,
-`Release { session }` or `Revive { session }`. SpawnSpec carries `host`,
+`Release { session }`, `Revive { session }`, `Pause { session }` or
+`Resume { session }`. SpawnSpec carries `host`,
 `key`, `harness`, `dir`, optional `model`, the private environment map and
 `environmentFrozen`. The
 manager injects frozen values and prevents model-variable remapping before
@@ -155,6 +164,11 @@ return `Observation<T>`; a refused effect is
 | `release` | `SessionRef` | `Released` if deleted or proven absent, or Failed/Unknown. Repeating a completed release is a no-op. |
 | `lost` | `SessionRef` | Known true only when the runtime holds the session and proves its agent's window gone, and nobody stopped it. Known false for a running or stopped session. |
 | `revive` | `SessionRef` | `Revived` after the runtime started the lost session's agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
+| `can_pause` | None | Whether the runtime can pause and resume a session. False by default. Fleet never pauses on a runtime that cannot. |
+| `activity` | `SessionRef` | `Active` or `Idle`, or Unknown. Known `Idle` only when the runtime proves that the agent waits with no background work. Unknown never pauses. |
+| `paused` | `SessionRef` | Known true when the runtime holds the session with its agent stopped, by Fleet or anyone else. Known false for a running or lost session. |
+| `pause` | `SessionRef` | `Paused` after the runtime stopped the agent and kept its row, workspace and conversation, or Failed/Unknown. A stopped session is left alone. |
+| `resume` | `SessionRef` | `Resumed` after the runtime started the stopped agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
 
 The thurbox adapter executes bounded `thurbox-cli` calls via `fleet-exec`.
 Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
@@ -183,6 +197,19 @@ not deleted.
 `lost` reads `session get`: `hook_corroboration` `missing` is lost. Any
 window that is there, even a dead one, is not lost. `revive` runs
 `session restart --if-missing`. A session with no window is at rest.
+`paused` reads `stopped` and `activity` from `session get`: either one
+saying stopped is Known true. `activity` reads the `activity` field:
+`active`, `idle`, `unknown` or `stopped`. Only `idle` is Idle. A missing
+field, `unknown` or `stopped` is Unknown. The adapter never derives Idle
+from `state` or `hook_state`: they read `done` while background shells,
+Monitors or crons are still pending. `pause` runs `session stop` and
+`resume` runs `session start`. Both first check that the key still belongs
+to the recorded id, as `release` does. A stopped session is at rest.
+
+No released thurbox reports the `activity` field yet:
+[Thurbeen/thurbox#1665](https://github.com/Thurbeen/thurbox/pull/1665)
+adds it. Thurbox 2.83.1, the latest release, does not have it. Without the
+field, `activity` is Unknown, and Fleet never pauses a session.
 The fake adapter provides persisted sessions and faults without starting an
 agent. Explicit provider commands still run through the same bounded executor
 with either adapter; command resolution requires a lease above 20000 ms and

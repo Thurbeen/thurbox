@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use fleet_api::Observation;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
-use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
+use fleet_api::runtime::{Activity, Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::task::{
     LOCAL_HOST as LOCAL, RepositoriesWorkspace, Repository, SessionRef, Workspace,
     uid_of_session_key,
@@ -597,6 +597,34 @@ impl ThurboxRuntime {
         )
     }
 
+    /// The session's own row: Unknown when it cannot be read, or when the
+    /// row under its id is another session's.
+    fn own_row(&self, session: &SessionRef) -> Observation<Value> {
+        match self.get(session) {
+            Observation::Known(row)
+                if row["id"] != session.id || row["key"] != self.thurbox_key(&session.key) =>
+            {
+                Observation::unknown("the session row is not this session's")
+            }
+            other => other,
+        }
+    }
+
+    /// Before an effect on `session`: the answer when its key is no longer
+    /// held by this exact session, as for a release.
+    fn not_this_session(&self, session: &SessionRef) -> Option<Observation<EffectOutcome>> {
+        match self.find(&session.host, &session.key) {
+            Observation::Known(Some(s)) if s.id == session.id => None,
+            Observation::Known(Some(_)) => Some(Observation::unknown(
+                "the session key now belongs to a different session",
+            )),
+            Observation::Known(None) => Some(Observation::Known(EffectOutcome::Failed {
+                why: "no session holds the key".into(),
+            })),
+            Observation::Unknown { why } => Some(Observation::Unknown { why }),
+        }
+    }
+
     /// The session's state word. A session with no window runs nothing, so
     /// its last report, kept across a reboot, is not its state: it is
     /// `stopped`, as one parked on purpose.
@@ -726,6 +754,31 @@ fn is_absolute(dir: &str) -> bool {
             && b[0].is_ascii_alphabetic()
             && b[1] == b':'
             && matches!(b[2], b'\\' | b'/'))
+}
+
+/// Whether a `session get` row shows its agent stopped: `stopped: true`,
+/// or `activity: "stopped"`.
+fn row_stopped(row: &Value) -> Observation<bool> {
+    if row["stopped"] == true || row["activity"] == "stopped" {
+        return Observation::Known(true);
+    }
+    match row["stopped"].as_bool() {
+        Some(stopped) => Observation::Known(stopped),
+        None => Observation::unknown("thurbox does not say whether the session is stopped"),
+    }
+}
+
+/// What a `session get` row says the agent is doing. A stopped session is
+/// never Idle; `unknown`, any other word or no field is Unknown.
+fn row_activity(row: &Value) -> Observation<Activity> {
+    if matches!(row_stopped(row), Observation::Known(true)) {
+        return Observation::unknown("a stopped session reports no activity");
+    }
+    match row["activity"].as_str() {
+        Some("active") => Observation::Known(Activity::Active),
+        Some("idle") => Observation::Known(Activity::Idle),
+        other => Observation::unknown(format!("thurbox reports activity {other:?}")),
+    }
 }
 
 fn row_host(row: &Value) -> &str {
@@ -1226,6 +1279,55 @@ impl Runtime for ThurboxRuntime {
             Answer::Unknown(why) => Observation::unknown(why),
         }
     }
+
+    fn can_pause(&self) -> bool {
+        true
+    }
+
+    /// thurbox reports `activity` on `get`: `active`, `idle`, `unknown` or
+    /// `stopped`. Only `idle` is Idle. Its `state` words are no proof of
+    /// idleness: they read `done` while background shells, Monitors or
+    /// crons are still pending. A thurbox without the field is Unknown, so
+    /// it never pauses.
+    fn activity(&self, session: &SessionRef) -> Observation<Activity> {
+        match self.own_row(session) {
+            Observation::Known(row) => row_activity(&row),
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
+    }
+
+    fn paused(&self, session: &SessionRef) -> Observation<bool> {
+        match self.own_row(session) {
+            Observation::Known(row) => row_stopped(&row),
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
+    }
+
+    /// `session stop`: thurbox kills the pane and keeps the row, the
+    /// checkout and the conversation.
+    fn pause(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        if let Some(refused) = self.not_this_session(session) {
+            return refused;
+        }
+        match self.call(&["session", "stop", &session.id, "--json"]) {
+            Answer::Ok(_) => Observation::Known(EffectOutcome::Paused),
+            Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
+            Answer::Unknown(why) => Observation::unknown(why),
+        }
+    }
+
+    /// `session start`: thurbox puts the pane back and resumes the
+    /// conversation, and leaves a running session alone.
+    fn resume(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        if let Some(refused) = self.not_this_session(session) {
+            return refused;
+        }
+        match self.call(&["session", "start", &session.id, "--json"]) {
+            Answer::Ok(_) => Observation::Known(EffectOutcome::Resumed),
+            Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
+            Answer::Unknown(why) => Observation::unknown(why),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1443,5 +1545,52 @@ mod tests {
         let mut imports = dialog(5);
         imports["output"] = " External imports:\n ❯ No, disable external imports\n   Yes, allow external imports\n Enter to confirm · Esc to cancel\n".into();
         assert!(!claude_trust_dialog(&s, &imports), "another dialog");
+    }
+
+    #[test]
+    fn only_an_idle_activity_is_idle_and_a_stopped_one_is_paused() {
+        use serde_json::json;
+        let row = |v: Value| v;
+        for (fields, activity, stopped) in [
+            (
+                json!({"stopped": false, "activity": "idle"}),
+                Some(Activity::Idle),
+                Some(false),
+            ),
+            (
+                json!({"stopped": false, "activity": "active"}),
+                Some(Activity::Active),
+                Some(false),
+            ),
+            (
+                json!({"stopped": false, "activity": "unknown"}),
+                None,
+                Some(false),
+            ),
+            (json!({"stopped": false}), None, Some(false)),
+            (
+                json!({"stopped": false, "activity": "stopped"}),
+                None,
+                Some(true),
+            ),
+            (
+                json!({"stopped": true, "activity": "idle"}),
+                None,
+                Some(true),
+            ),
+            (json!({"activity": "idle"}), Some(Activity::Idle), None),
+        ] {
+            let r = row(fields.clone());
+            match (row_activity(&r), activity) {
+                (Observation::Known(a), Some(want)) => assert_eq!(a, want, "{fields}"),
+                (Observation::Unknown { .. }, None) => {}
+                (got, want) => panic!("{fields}: activity {got:?}, want {want:?}"),
+            }
+            match (row_stopped(&r), stopped) {
+                (Observation::Known(s), Some(want)) => assert_eq!(s, want, "{fields}"),
+                (Observation::Unknown { .. }, None) => {}
+                (got, want) => panic!("{fields}: stopped {got:?}, want {want:?}"),
+            }
+        }
     }
 }

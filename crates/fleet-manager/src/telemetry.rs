@@ -181,6 +181,8 @@ fn effect_outcome(outcome: &Observation<EffectOutcome>) -> &'static str {
             EffectOutcome::Queued { .. } => "queued",
             EffectOutcome::Released => "released",
             EffectOutcome::Revived => "revived",
+            EffectOutcome::Paused => "paused",
+            EffectOutcome::Resumed => "resumed",
             EffectOutcome::MarkedReady { .. } => "markedReady",
             EffectOutcome::Moved { .. } => "moved",
             EffectOutcome::Opened { .. } => "opened",

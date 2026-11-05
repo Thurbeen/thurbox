@@ -26,6 +26,10 @@ pub struct TaskConfigSpec {
     pub env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_from: Vec<ConfigRef>,
+    /// Pause a Task's session once its agent was idle this long. Absent
+    /// means never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_after_ms: Option<crate::Millis>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +52,8 @@ pub struct Execution {
     pub env: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<ConfigSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_after_ms: Option<crate::Millis>,
 }
 
 /// Later sources override earlier spelling variants consistently on every host.
@@ -92,6 +98,8 @@ pub struct ExecutionIdentity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub sources: Vec<ConfigSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_after_ms: Option<crate::Millis>,
 }
 
 impl Execution {
@@ -101,6 +109,7 @@ impl Execution {
             host: self.host.clone(),
             model: self.model.clone(),
             sources: self.sources.clone(),
+            pause_after_ms: self.pause_after_ms,
         }
     }
 }

@@ -41,6 +41,16 @@ impl TrustGap {
     }
 }
 
+/// What the agent in a running session is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    /// The agent works on a turn, or holds background work that a stop
+    /// would end.
+    Active,
+    /// The agent waits for input, with no background work to lose.
+    Idle,
+}
+
 pub trait Runtime {
     /// Resolve runtime model-variable selection into the frozen private environment.
     fn prepare_execution(
@@ -114,4 +124,37 @@ pub trait Runtime {
     /// conversation under the same identity. A running session is left
     /// alone, so repeating it is harmless.
     fn revive(&self, session: &SessionRef) -> Observation<EffectOutcome>;
+    /// Whether this runtime can pause a session and resume it. Fleet never
+    /// pauses a session on a runtime that cannot.
+    fn can_pause(&self) -> bool {
+        false
+    }
+    /// What the agent in `session` is doing. Known(Idle) only when the
+    /// runtime proves that the agent waits with no background work.
+    /// Unknown when it cannot tell, and Unknown never pauses.
+    fn activity(&self, _session: &SessionRef) -> Observation<Activity> {
+        Observation::unknown("this runtime does not report activity")
+    }
+    /// Known(true) when the runtime holds the session and its agent is
+    /// stopped, by Fleet or by anyone else. A running or lost session is
+    /// Known(false).
+    fn paused(&self, _session: &SessionRef) -> Observation<bool> {
+        Observation::unknown("this runtime cannot tell a stopped session")
+    }
+    /// Stop the agent of `session`, and keep its row, workspace and
+    /// conversation. A stopped session is left alone, so repeating it is
+    /// harmless.
+    fn pause(&self, _session: &SessionRef) -> Observation<EffectOutcome> {
+        Observation::Known(EffectOutcome::Failed {
+            why: "this runtime cannot pause a session".into(),
+        })
+    }
+    /// Start the stopped agent of `session` again in its own workspace,
+    /// resuming its conversation under the same identity. A running session
+    /// is left alone, so repeating it is harmless.
+    fn resume(&self, _session: &SessionRef) -> Observation<EffectOutcome> {
+        Observation::Known(EffectOutcome::Failed {
+            why: "this runtime cannot resume a session".into(),
+        })
+    }
 }

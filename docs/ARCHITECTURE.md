@@ -133,6 +133,12 @@ bounded processes; the fake runtime provides persisted fault injection for
 isolated tests. Runtime operations report their worst-case duration so the
 CLI can reject a lease too short to outlast them.
 
+The runtime reports what an agent is doing, Active or Idle, and pauses or
+resumes a session on request. It decides nothing. TaskController decides
+when to pause an idle session and when to resume it. A runtime that cannot
+pause answers Unknown, and Unknown never pauses. See
+[pausing an idle session](controllers/task/state-machine.md#pausing-an-idle-session).
+
 TaskConfig and EnvProvider are passive data; the manager resolves providers
 through the existing runtime port and bounded executor before freezing a
 private launch snapshot. TaskController stays pure and owns the lifecycle.

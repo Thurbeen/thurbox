@@ -40,6 +40,7 @@ except `dispatch` and `forge`. `amendments` grows only through
 | `model` | no | The model the harness runs; it reaches the harness through the variable `runtime.modelEnv` names for it. |
 | `configRef` | no | `{"name":"config"}` references passive execution defaults. |
 | `env` | no | Explicit string environment map; overrides inherited values. |
+| `pauseAfterMs` | no | Pause the session once its agent was idle this long, in milliseconds; at least 1. Overrides the TaskConfig's value. Absent inherits it; with neither, the session is never paused. See [pausing an idle session](../controllers/task/state-machine.md#pausing-an-idle-session). |
 | `brief` | yes | The brief, sent once to the ready session. It never changes. |
 | `amendments` | no | Additions to the brief, oldest first, each `{text, reason?, outputs?, from, at, generation}`. Only `fleet amend` appends one. See [Amendments](#amendments). |
 | `workspace` | yes | What the session works in: `{"dir": PATH}`, a directory that exists before the Task (the thurbox runtime needs an absolute path on the host), or `{"repositories": [{"name", "url", "ref"?}]}`, repositories the runtime materializes for this Task. The first repository is the primary, where the agent starts. Fleet never interprets `ref`; the runtime decides what it means. Deleting the session cleans the workspace up as the runtime is configured to. See [Workspaces](#workspaces). |
@@ -97,7 +98,9 @@ typed mutations described under [Inbox](#inbox).
 | `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. A spawn refused for an unmapped repository does not count. |
 | `briefProbeFailures`, `releaseAttempts` | Three failures raise `NeedsAttention`; reads and releases continue after each wait. |
 | `revivals`, `reviveAttempts` | Revives over the Task's life, which number their keys, and revives since the session was last seen not lost. Three revives raise `NeedsAttention/ReviveFailed`; revives continue after each wait. |
-| `resumes`, `resume` | Resume notes over the Task's life, which number their keys, and the key of the note owed to a revived session until its delivery is known. |
+| `pauses`, `resumes`, `resumeAttempts` | Pause and resume effects over the Task's life, which number their keys, and resumes since the session was last seen running. Three resumes raise `NeedsAttention/ResumeFailed`; resumes continue after each wait. A record from before catch-up notes counts its old resume notes in `resumes`, so a resume key never repeats a note's key. |
+| `idleSince` | When the agent was first seen Idle in the current unbroken run of Idle answers, in Unix milliseconds. Active, Unknown or a send clears it. |
+| `catchUps`, `catchUp` | Catch-up notes over the Task's life, which number their keys, and the key of the note owed to a revived or resumed session until its delivery is known. A record from before the rename holds the key as `resume`, under `resume/<n>`; it is read and sent the same way. |
 | `notBefore` | Earliest next reconcile after a failed attempt, in Unix milliseconds. The fixed retry delay is 30 seconds and survives manager restarts. |
 | `sessionCheckedAt` | When a Concluded Task's session was last looked up, in Unix milliseconds. At rest, the next lookup is due 5 minutes later. |
 | `brief` | The key and generation of the newest brief or amendment the worker received, once it has a receipt. A result names this generation. |
@@ -256,7 +259,9 @@ state machine](../controllers/task/state-machine.md#transition-rules) describes;
 a readable lookup that no longer shows its session is `WorkerGone` and
 `NeedsAttention`, never a respawn. A session that is still there without its
 window, as after a host reboot, is revived to read its inbox. See [after a host
-reboot](../controllers/task/state-machine.md#after-a-host-reboot). A Stalled or
+reboot](../controllers/task/state-machine.md#after-a-host-reboot). A paused
+session, stopped by Fleet or by anyone else, is resumed to read its inbox.
+See [pausing an idle session](../controllers/task/state-machine.md#pausing-an-idle-session). A Stalled or
 deleting Task delivers nothing: a deleting Task refuses `fleet send` and
 releases its session as before.
 

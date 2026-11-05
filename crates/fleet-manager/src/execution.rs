@@ -72,6 +72,7 @@ pub(crate) fn resolve(
     } else {
         defaults.model
     };
+    let pause_after_ms = spec.pause_after_ms.or(defaults.pause_after_ms);
     validate_execution(Some(&harness), Some(&host), model.as_deref())?;
     let mut env = std::collections::BTreeMap::new();
     for (name, provider) in providers {
@@ -105,6 +106,7 @@ pub(crate) fn resolve(
         model,
         env,
         sources,
+        pause_after_ms,
     }) {
         Observation::Known(e) => Ok(e),
         Observation::Unknown { why } => Err(StoreError::Unknown(why)),

@@ -64,6 +64,7 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
         TASK_CONFIG => {
             let s: TaskConfigSpec = typed(kind, spec)?;
             validate_execution(s.harness.as_deref(), s.host.as_deref(), s.model.as_deref())?;
+            validate_pause_after(s.pause_after_ms)?;
             validate_env(&s.env)?;
             for r in &s.env_from {
                 validate_name(&r.name)?;
@@ -112,6 +113,7 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
         validate_name(&r.name)?;
     }
     validate_env(&s.env)?;
+    validate_pause_after(s.pause_after_ms)?;
     validate_execution(
         if s.config_ref.is_some() && !spec.as_object().is_some_and(|m| m.contains_key("harness")) {
             None
@@ -300,6 +302,16 @@ fn validate_conversation_spec(spec: &Value) -> Result<(), StoreError> {
     }
     if s.poll_ms == Some(0) {
         return Err(StoreError::Invalid("spec.pollMs must be at least 1".into()));
+    }
+    Ok(())
+}
+
+/// `pauseAfterMs`, where it is set, is at least 1.
+pub fn validate_pause_after(ms: Option<crate::Millis>) -> Result<(), StoreError> {
+    if ms == Some(0) {
+        return Err(StoreError::Invalid(
+            "pauseAfterMs must be at least 1".into(),
+        ));
     }
     Ok(())
 }

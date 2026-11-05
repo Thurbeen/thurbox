@@ -1508,6 +1508,28 @@ fn answer(
                       "session_id": id, "session_name": name}),
             )
         }
+        "start" => {
+            // As thurbox does it: put a stopped session's pane back,
+            // resuming its conversation; a running session is left alone.
+            let id = args.get(2).cloned().unwrap_or_default();
+            let Some(i) = find_index(state, &id) else {
+                return err(format!("Session not found: {id}"));
+            };
+            if state["sessions"][i]["stopped"] == true {
+                let after = state_after_restart(state);
+                let s = &mut state["sessions"][i];
+                s["stopped"] = json!(false);
+                s["state"] = json!(after);
+                s["hook_corroboration"] = json!("agent");
+                // The resumed agent has not reported its activity yet.
+                if let Some(o) = s.as_object_mut() {
+                    o.remove("activity");
+                }
+                let s = state["sessions"][i].clone();
+                event(state, "state", &s);
+            }
+            ok(json!({"ok": true}))
+        }
         "delete" | "stop" => {
             let id = args.get(2).cloned().unwrap_or_default();
             let Some(i) = find_index(state, &id) else {
@@ -1519,6 +1541,7 @@ fn answer(
             } else {
                 state["sessions"][i]["stopped"] = json!(true);
                 state["sessions"][i]["state"] = json!("stopped");
+                state["sessions"][i]["activity"] = json!("stopped");
                 let s = state["sessions"][i].clone();
                 event(state, "state", &s);
             }

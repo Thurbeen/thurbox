@@ -1020,9 +1020,9 @@ fn a_reboot_revives_the_session_and_resumes_the_brief_once() {
         session.briefs,
         vec![
             format!("task/t1/{uid}/brief"),
-            format!("task/t1/{uid}/resume/1")
+            format!("task/t1/{uid}/catchup/1")
         ],
-        "the brief once, then one resume note"
+        "the brief once, then one catch-up note"
     );
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");

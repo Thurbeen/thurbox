@@ -1,19 +1,22 @@
 //! TaskController: spawns one agent session for one brief, briefs it once,
 //! delivers what is queued in the Task's inbox (amendments to the brief
-//! among it), records the worker's answer, and releases the session when
-//! the Task is deleted.
+//! among it), records the worker's answer, pauses the session while its
+//! agent is idle and resumes it when work arrives, and releases the session
+//! when the Task is deleted.
 //!
 //! Pure: it reads the Task and what the probes saw, and returns a Plan. The
 //! manager performs the plan.
 
-use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_transitions};
+use fleet_api::condition::{
+    ConditionStatus, condition, is_true, set_condition, settle_transitions,
+};
 use fleet_api::inbox::{DeliveryAttempt, DeliveryReceipt, InboxEntry, MAX_INBOX};
 use fleet_api::meta::{Millis, Object};
 use fleet_api::plan::{
     Action, Effect, EffectOutcome, Intent, Observations, Plan, Probe, Receipt, SpawnSpec,
     effect_key,
 };
-use fleet_api::runtime::WorkspaceTrust;
+use fleet_api::runtime::{Activity, WorkspaceTrust};
 use fleet_api::store::FieldManager;
 use fleet_api::task::{self, BriefRecord, Phase, SessionRef, TaskSpec, TaskStatus};
 use fleet_api::validate::typed;
@@ -63,6 +66,9 @@ pub mod conditions {
     /// Something only a person can decide: a stall, a vanished worker, a
     /// release that kept failing.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
+    /// The runtime holds the session with its agent stopped: Fleet paused
+    /// it while it was idle, or someone else stopped it.
+    pub const PAUSED: &str = "Paused";
 }
 use conditions::*;
 
@@ -78,9 +84,14 @@ const BRIEF: &str = "brief";
 const BRIEF_UNDELIVERED: &str = "BriefUndelivered";
 const RELEASE: &str = "release";
 const REVIVE: &str = "revive";
+const PAUSE: &str = "pause";
 const RESUME: &str = "resume";
+/// The note owed to a revived or resumed session, before its inbox.
+const CATCH_UP: &str = "catchup";
 /// The NeedsAttention reason once revives keep leaving the session lost.
 const REVIVE_FAILED: &str = "ReviveFailed";
+/// The NeedsAttention reason once resumes keep leaving the session stopped.
+const RESUME_FAILED: &str = "ResumeFailed";
 
 /// What one keyed send came to on this pass.
 enum Sent {
@@ -150,23 +161,36 @@ impl TaskController {
                 let mut probes = vec![find];
                 if let Some(s) = &st.session {
                     probes.push(Probe::Lost { session: s.clone() });
+                    probes.push(Probe::Paused { session: s.clone() });
                     delivery_probes(&st, s, &mut probes);
+                    activity_probe(input, &spec, &st, s, &mut probes);
                 }
                 probes
             }
             // A Concluded Task is due for delivery, and at rest once per
             // recheck interval; its session is looked up, so a vanished
             // worker is reported, never respawned. Only a delivery revives a
-            // lost session: a concluded worker at rest stays at rest.
+            // lost session: a concluded worker at rest stays at rest. A
+            // session that may be paused has its activity watched.
             Phase::Concluded
-                if next_entry(&st).is_some() || session_recheck_due(&st, input.now) =>
+                if next_entry(&st).is_some()
+                    || session_recheck_due(&st, input.now)
+                    || watched(input.task, &spec, &st) =>
             {
-                let mut probes = vec![find];
-                if let Some(s) = &st.session
-                    && (next_entry(&st).is_some() || st.resume.is_some())
-                {
-                    probes.push(Probe::Lost { session: s.clone() });
-                    delivery_probes(&st, s, &mut probes);
+                let mut probes = Vec::new();
+                if next_entry(&st).is_some() || session_recheck_due(&st, input.now) {
+                    probes.push(find);
+                }
+                if let Some(s) = &st.session {
+                    let delivering = next_entry(&st).is_some() || st.catch_up.is_some();
+                    if delivering || watched(input.task, &spec, &st) {
+                        probes.push(Probe::Lost { session: s.clone() });
+                        probes.push(Probe::Paused { session: s.clone() });
+                    }
+                    if delivering {
+                        delivery_probes(&st, s, &mut probes);
+                    }
+                    activity_probe(input, &spec, &st, s, &mut probes);
                 }
                 probes
             }
@@ -293,6 +317,8 @@ impl Pass<'_, '_> {
         if let Some(result) = self.st.result.as_ref().filter(|_| result_current(&self.st)) {
             let outcome = format!("{:?}", result.outcome);
             self.st.phase = Phase::Concluded;
+            // Reporting a result is work: the idle time starts again.
+            self.st.idle_since = None;
             self.cond(
                 CONCLUDED,
                 ConditionStatus::True,
@@ -704,34 +730,55 @@ impl Pass<'_, '_> {
         let Some(session) = self.st.session.clone() else {
             return;
         };
-        if self.worker_gone() || self.lost(&session) || self.resume(session.clone()) {
+        if self.worker_gone()
+            || self.lost(&session)
+            || self.pause_state(&session)
+            || self.catch_up(session.clone())
+        {
             return;
         }
-        self.deliver(session);
+        self.deliver(session.clone());
+        self.pause_step(session);
     }
 
     /// Concluded is terminal, and delivery goes on: a message for a worker
     /// that has reported is still a message. A readable list that no longer
     /// shows the session is WorkerGone and attention, never a respawn.
     fn concluded(&mut self) {
+        if next_entry(&self.st).is_some() {
+            // A delivery breaks the idle time: it starts again at rest.
+            self.st.idle_since = None;
+        }
         if next_entry(&self.st).is_none() {
             // At rest: a recheck. Only an answered lookup counts as one.
             if self.input.observations.find.is_some() {
                 self.st.session_checked_at = Some(self.now());
-                self.worker_gone();
+                if self.worker_gone() {
+                    return;
+                }
+            }
+            // A worker at rest is never revived, but it may be paused. A
+            // pass that does not watch it breaks its idle time.
+            match self.st.session.clone() {
+                Some(session) if watched(self.input.task, self.spec, &self.st) => {
+                    if !self.pause_state(&session) {
+                        self.pause_step(session);
+                    }
+                }
+                _ => self.st.idle_since = None,
             }
             return;
         }
         let Some(session) = self.st.session.clone() else {
             return;
         };
-        if self.worker_gone() || self.lost(&session) {
+        if self.worker_gone() || self.lost(&session) || self.pause_state(&session) {
             return;
         }
         if self.st.not_before.is_some_and(|t| t > self.now()) {
             return;
         }
-        if !self.resume(session.clone()) {
+        if !self.catch_up(session.clone()) {
             self.deliver(session);
         }
     }
@@ -826,7 +873,7 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// The brief protocol under one key, for an inbox entry or a resume
+    /// The brief protocol under one key, for an inbox entry or a catch-up
     /// note: a Known receipt decides, else the session's journal does after
     /// a send; a send needs the session observed ready on this pass, at most
     /// [`MAX_ATTEMPTS`] times. `what` names it in attention messages.
@@ -1090,7 +1137,7 @@ impl Pass<'_, '_> {
     }
 
     /// The session's window is there. After it was lost, a briefed worker
-    /// is owed a resume note, sent before anything else.
+    /// is owed a catch-up note, sent before anything else.
     fn found_again(&mut self) {
         self.st.revive_attempts = 0;
         let was_lost = condition(&self.st.conditions, SESSION_LOST)
@@ -1106,27 +1153,34 @@ impl Pass<'_, '_> {
             "the session's window is back",
         );
         self.settle_attention(REVIVE_FAILED);
-        if self.st.brief.is_some() && self.st.resume.is_none() {
-            self.st.resumes += 1;
-            self.st.resume = Some(self.key(RESUME, Some(self.st.resumes)));
+        self.owe_catch_up();
+    }
+
+    /// A briefed worker whose agent was started again is owed a catch-up
+    /// note, once, before anything else is delivered.
+    fn owe_catch_up(&mut self) {
+        if self.st.brief.is_some() && self.st.catch_up.is_none() {
+            self.st.catch_ups += 1;
+            self.st.catch_up = Some(self.key(CATCH_UP, Some(self.st.catch_ups)));
         }
     }
 
-    /// Send the resume note owed to a revived session, under its own key,
-    /// as an inbox entry is sent. Returns true while it is owed: nothing
-    /// else is delivered before it.
-    fn resume(&mut self, session: SessionRef) -> bool {
-        let Some(key) = self.st.resume.clone() else {
+    /// Send the catch-up note owed to a revived or resumed session, under
+    /// its own key, as an inbox entry is sent. Returns true while it is
+    /// owed: nothing else is delivered before it. A note a record kept
+    /// under an older `resume/<n>` key is sent under that key.
+    fn catch_up(&mut self, session: SessionRef) -> bool {
+        let Some(key) = self.st.catch_up.clone() else {
             return false;
         };
         if !self.effects.is_empty() || self.st.not_before.is_some_and(|t| t > self.now()) {
             return true;
         }
-        let what = format!("resume note {key}");
-        match self.keyed_send(session, &key, self.resume_text(), &what) {
+        let what = format!("catch-up note {key}");
+        match self.keyed_send(session, &key, self.catch_up_text(), &what) {
             Sent::Pending => true,
             Sent::Delivered { .. } | Sent::GivenUp => {
-                self.st.resume = None;
+                self.st.catch_up = None;
                 self.st.intents.remove(&key);
                 self.st.receipts.remove(&key);
                 self.st.delivery_attempts.remove(&key);
@@ -1135,16 +1189,19 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// What a revived worker is told. A worker still on its brief is given
-    /// the brief again, under the generation it was briefed for.
-    fn resume_text(&self) -> String {
+    /// What a revived or resumed worker is told. A worker still on its
+    /// brief is given the brief again, under the generation it was briefed
+    /// for.
+    fn catch_up_text(&self) -> String {
         let generation = self
             .st
             .brief
             .as_ref()
             .map_or(self.generation, |b| b.generation);
-        let head = "Fleet: your session was restarted after its host went down, and your \
-                    conversation was resumed. Work you did not commit, push or declare may \
+        let head = "Fleet: your session was restarted, after its host went down or after \
+                    Fleet paused it while it was idle, and your conversation was resumed. \
+                    Background shells, Monitors and loops you started did not survive; start \
+                    again any you still need. Work you did not commit, push or declare may \
                     be lost. Re-read your worktree, the changes you declared and your inbox";
         if self.st.phase == Phase::Concluded {
             format!(
@@ -1159,6 +1216,211 @@ impl Pass<'_, '_> {
                     .assignment(&self.input.task.metadata.name, generation)
             )
         }
+    }
+
+    /// Where the session stands on pausing, from what is in flight and what
+    /// the runtime shows:
+    ///
+    /// - a pause in flight is settled by its receipt, else by the session;
+    /// - a resume in flight likewise, and is tried again while the session
+    ///   is proven stopped;
+    /// - a session found stopped is Paused, `External` when Fleet did not
+    ///   stop it, and an entry to deliver resumes it;
+    /// - a paused session found running again is resumed.
+    ///
+    /// Returns true while the session is paused or a pause is in flight:
+    /// nothing is sent to it meanwhile.
+    fn pause_state(&mut self, session: &SessionRef) -> bool {
+        let observed = self.input.observations.paused.clone();
+        let pause = self.key(PAUSE, Some(self.st.pauses));
+        if effect_in_flight(&self.st, &pause, PAUSE) {
+            match self.st.receipts.get(&pause).map(|r| r.outcome.clone()) {
+                Some(Observation::Known(EffectOutcome::Paused)) => self.paused_by_fleet(&pause),
+                Some(Observation::Known(other)) => {
+                    let why = match other {
+                        EffectOutcome::Failed { why } => why,
+                        other => format!("unexpected outcome {other:?}"),
+                    };
+                    self.pause_refused(&pause, why);
+                    return false;
+                }
+                // No Known receipt: the session decides, never a second stop.
+                Some(Observation::Unknown { .. }) | None => match observed {
+                    Some(Observation::Known(true)) => self.paused_by_fleet(&pause),
+                    Some(Observation::Known(false)) => {
+                        self.pause_refused(&pause, "the session is still running".into());
+                        return false;
+                    }
+                    _ => return true,
+                },
+            }
+            return true;
+        }
+        let resume = self.key(RESUME, Some(self.st.resumes));
+        if effect_in_flight(&self.st, &resume, RESUME) {
+            match self.st.receipts.get(&resume).map(|r| r.outcome.clone()) {
+                Some(Observation::Known(EffectOutcome::Resumed)) => {
+                    self.resumed(Some(&resume));
+                    return false;
+                }
+                // Refused: tried again after a wait.
+                Some(Observation::Known(_)) => {
+                    self.resume_again(&resume);
+                    return true;
+                }
+                // No Known receipt: a running session is resumed; one still
+                // stopped is resumed again after a wait, which is harmless.
+                Some(Observation::Unknown { .. }) | None => match observed {
+                    Some(Observation::Known(false)) => {
+                        self.resumed(Some(&resume));
+                        return false;
+                    }
+                    Some(Observation::Known(true)) => {
+                        self.resume_again(&resume);
+                        return true;
+                    }
+                    _ => return true,
+                },
+            }
+        }
+        let paused = is_true(&self.st.conditions, PAUSED);
+        match observed {
+            Some(Observation::Known(true)) => {
+                self.st.idle_since = None;
+                if !paused {
+                    self.cond(
+                        PAUSED,
+                        ConditionStatus::True,
+                        "External",
+                        "the session was found stopped, and Fleet did not stop it",
+                    );
+                }
+                if next_entry(&self.st).is_some() && self.spec.dispatch {
+                    self.resume_now(session);
+                }
+                true
+            }
+            Some(Observation::Known(false)) => {
+                if paused {
+                    self.resumed(None);
+                }
+                false
+            }
+            // Unknown proves nothing: a paused session stays paused.
+            _ => paused,
+        }
+    }
+
+    fn paused_by_fleet(&mut self, key: &str) {
+        self.st.intents.remove(key);
+        self.st.receipts.remove(key);
+        self.st.idle_since = None;
+        self.cond(
+            PAUSED,
+            ConditionStatus::True,
+            "Idle",
+            "Fleet paused the session while its agent was idle",
+        );
+    }
+
+    /// The pause did not happen. The idle time starts again from the next
+    /// Idle observation.
+    fn pause_refused(&mut self, key: &str, why: String) {
+        self.st.intents.remove(key);
+        self.st.receipts.remove(key);
+        self.st.idle_since = None;
+        self.cond(PAUSED, ConditionStatus::False, "PauseFailed", why);
+    }
+
+    /// Plan one resume. A held, stalled or deleting Task never comes here.
+    /// Resumes wait [`RETRY_DELAY_MS`] between attempts and raise
+    /// NeedsAttention after [`MAX_ATTEMPTS`], but go on: a resume of a
+    /// running session does nothing.
+    fn resume_now(&mut self, session: &SessionRef) {
+        if !self.effects.is_empty() || self.st.not_before.is_some_and(|t| t > self.now()) {
+            return;
+        }
+        self.st.not_before = None;
+        if self.st.resume_attempts >= MAX_ATTEMPTS {
+            self.needs_attention(
+                RESUME_FAILED,
+                format!(
+                    "{} resumes left the session stopped",
+                    self.st.resume_attempts
+                ),
+            );
+        }
+        self.st.resumes += 1;
+        self.st.resume_attempts += 1;
+        let key = self.key(RESUME, Some(self.st.resumes));
+        self.intend(
+            key,
+            Action::Resume {
+                session: session.clone(),
+            },
+        );
+    }
+
+    /// The resume under `key` left the session stopped: drop it, and wait
+    /// from its last word before the next one.
+    fn resume_again(&mut self, key: &str) {
+        let at = self
+            .st
+            .receipts
+            .get(key)
+            .map(|r| r.at)
+            .or_else(|| self.st.intents.get(key).map(|i| i.at))
+            .unwrap_or(0);
+        self.st.intents.remove(key);
+        self.st.receipts.remove(key);
+        self.wait_from(at);
+    }
+
+    /// The session runs again, after Fleet's resume under `key` or after
+    /// someone else started it. The worker is owed a catch-up note.
+    fn resumed(&mut self, key: Option<&str>) {
+        if let Some(key) = key {
+            self.st.intents.remove(key);
+            self.st.receipts.remove(key);
+        }
+        self.st.resume_attempts = 0;
+        self.st.idle_since = None;
+        self.cond(
+            PAUSED,
+            ConditionStatus::False,
+            "Resumed",
+            "the session's agent runs again",
+        );
+        self.settle_attention(RESUME_FAILED);
+        self.owe_catch_up();
+    }
+
+    /// Pause the session once its agent was seen Idle, without a break,
+    /// for `pauseAfterMs`. The pass that plans the pause read the activity
+    /// fresh, and proved the session running and not lost. Any
+    /// other answer, or a pass that sent something, starts the idle time
+    /// again.
+    fn pause_step(&mut self, session: SessionRef) {
+        let o = &self.input.observations;
+        let idle = pause_candidate(self.spec, &self.st)
+            && self.effects.is_empty()
+            && self.delivery.is_none()
+            && !self.st.not_before.is_some_and(|t| t > self.now())
+            && o.activity == Some(Observation::Known(Activity::Idle))
+            && o.lost != Some(Observation::Known(true))
+            && o.paused == Some(Observation::Known(false));
+        if !idle {
+            self.st.idle_since = None;
+            return;
+        }
+        let since = *self.st.idle_since.get_or_insert(self.input.now);
+        let after = self.spec.pause_after_ms.unwrap_or(Millis::MAX);
+        if since.saturating_add(after) > self.now() {
+            return;
+        }
+        self.st.pauses += 1;
+        let key = self.key(PAUSE, Some(self.st.pauses));
+        self.intend(key, Action::Pause { session });
     }
 
     /// The finalizer: the session is deleted only once it is proven at rest
@@ -1297,8 +1559,71 @@ fn decode(obj: &Object) -> Result<(TaskSpec, TaskStatus), StoreError> {
         spec.harness = execution.harness.clone();
         spec.host = execution.host.clone();
         spec.model = execution.model.clone();
+        spec.pause_after_ms = execution.pause_after_ms;
     }
     Ok((spec, st))
+}
+
+/// Whether the session may be paused, apart from its activity: a pause
+/// setting, dispatch on, Briefed or Concluded, and nothing in flight that a
+/// pause would cut short.
+fn pause_candidate(spec: &TaskSpec, st: &TaskStatus) -> bool {
+    spec.pause_after_ms.is_some()
+        && spec.dispatch
+        && (st.phase == Phase::Concluded || (st.phase == Phase::Briefed && !result_current(st)))
+        && st.session.is_some()
+        && st.brief.is_some()
+        && next_entry(st).is_none()
+        && st.catch_up.is_none()
+        && st.revive_attempts == 0
+        && st.resume_attempts == 0
+        && ![PAUSED, SESSION_LOST, WORKER_GONE]
+            .iter()
+            .any(|c| is_true(&st.conditions, c))
+}
+
+/// Whether a pause or a resume waits for its outcome.
+fn in_flight(obj: &Object, st: &TaskStatus) -> bool {
+    let m = &obj.metadata;
+    let key = |action, n| effect_key(task::KIND, &m.name, &m.uid, action, Some(n));
+    effect_in_flight(st, &key(PAUSE, st.pauses), PAUSE)
+        || effect_in_flight(st, &key(RESUME, st.resumes), RESUME)
+}
+
+/// Whether `key` holds an intent of the effect `action`. A record from
+/// before catch-up notes keeps its note's Brief intent under a
+/// `resume/<n>` key: that is a note, never a resume effect.
+fn effect_in_flight(st: &TaskStatus, key: &str, action: &str) -> bool {
+    st.intents.get(key).is_some_and(|i| i.action == action)
+}
+
+fn watched(obj: &Object, spec: &TaskSpec, st: &TaskStatus) -> bool {
+    !obj.is_deleting() && (pause_candidate(spec, st) || in_flight(obj, st))
+}
+
+/// Whether a Task's session activity is watched: it may be paused, or a
+/// pause or resume waits for its outcome. The manager reconciles such a
+/// Concluded Task on every sweep. An undecodable Task is not watched.
+pub fn watches_activity(obj: &Object) -> bool {
+    decode(obj).is_ok_and(|(spec, st)| watched(obj, &spec, &st))
+}
+
+/// The activity probe, asked only of a session that may be paused.
+fn activity_probe(
+    input: &TaskInput<'_>,
+    spec: &TaskSpec,
+    st: &TaskStatus,
+    session: &SessionRef,
+    probes: &mut Vec<Probe>,
+) {
+    if pause_candidate(spec, st)
+        && !input.task.is_deleting()
+        && !st.not_before.is_some_and(|t| t > input.now)
+    {
+        probes.push(Probe::Activity {
+            session: session.clone(),
+        });
+    }
 }
 
 fn session_key(obj: &Object) -> String {
@@ -1347,10 +1672,10 @@ pub fn session_recheck_due(st: &TaskStatus, now: Millis) -> bool {
         .is_none_or(|t| t.saturating_add(SESSION_RECHECK_MS) <= now)
 }
 
-/// What the next delivery needs observed: the resume note's, while one is
-/// owed, and the inbox's otherwise.
+/// What the next delivery needs observed: the catch-up note's, while one
+/// is owed, and the inbox's otherwise.
 fn delivery_probes(st: &TaskStatus, session: &SessionRef, probes: &mut Vec<Probe>) {
-    let Some(key) = &st.resume else {
+    let Some(key) = &st.catch_up else {
         return inbox_probes(st, session, probes);
     };
     if !probes.iter().any(|p| matches!(p, Probe::Ready { .. })) {

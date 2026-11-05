@@ -40,6 +40,11 @@ pub struct TaskSpec {
     pub config_ref: Option<crate::config::ConfigRef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Pause the session once its agent was idle this long; overrides the
+    /// TaskConfig's. Absent means the TaskConfig decides, and without one,
+    /// never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_after_ms: Option<Millis>,
     /// The brief, sent once and never changed.
     pub brief: String,
     /// Additions to the brief, oldest first; appended only by `fleet amend`,
@@ -334,13 +339,30 @@ pub struct TaskStatus {
     /// NeedsAttention.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub revive_attempts: u32,
-    /// Resume notes queued over the Task's life; the next one's key.
+    /// Pause effects planned over the Task's life; the next one's key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pauses: u32,
+    /// Resume effects planned over the Task's life; the next one's key. A
+    /// record from before catch-up notes had their own counter counts its
+    /// notes here as well, so a resume key never repeats a note's key.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub resumes: u32,
-    /// The key of the resume note owed to a revived session, until its
-    /// delivery is known.
+    /// Resume effects since the session was last seen running; three raise
+    /// NeedsAttention.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub resume_attempts: u32,
+    /// When the agent was first seen Idle in the current unbroken run of
+    /// Idle observations. Active or Unknown clears it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume: Option<String>,
+    pub idle_since: Option<Millis>,
+    /// Catch-up notes queued over the Task's life; the next one's key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub catch_ups: u32,
+    /// The key of the catch-up note owed to a revived or resumed session,
+    /// until its delivery is known. A record from before the rename holds
+    /// it as `resume`, under a `resume/<n>` key, and is read the same way.
+    #[serde(default, alias = "resume", skip_serializing_if = "Option::is_none")]
+    pub catch_up: Option<String>,
     /// After a failed or unknown attempt: the manager does not reconcile
     /// this Task again before then.
     #[serde(default, skip_serializing_if = "Option::is_none")]

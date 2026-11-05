@@ -437,10 +437,13 @@ In scope:
 - marking a relayed message with a working reaction, and with a replied
   reaction once Fleet posted in the thread.
 
+The Task controller pauses a conversation Task's idle session when the
+Task's TaskConfig sets `pauseAfterMs`. The next message for the Task resumes
+it. See [pausing an idle session](../task/state-machine.md#pausing-an-idle-session).
+
 Out of scope, deliberately:
 
 - merging, as for the Forge controller,
-- suspending and resuming idle sessions,
 - any judgement about the worth of a message: an intake model, a planner or
   a nudging heartbeat,
 - implementing the Telegram or Teams adapters,

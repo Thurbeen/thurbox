@@ -1767,7 +1767,8 @@ impl Manager<'_> {
     /// not looked at again until then, in this run or the next. A Concluded
     /// Task is at rest, and due again while its inbox holds something to
     /// deliver, once it is being deleted, or when its session is due to be
-    /// looked up again.
+    /// looked up again. A Concluded Task whose session may be paused is
+    /// due on every sweep, so that its activity is watched.
     fn due(&self, obj: &Object) -> bool {
         let waiting = obj
             .status
@@ -1788,7 +1789,11 @@ impl Manager<'_> {
             .get("sessionCheckedAt")
             .and_then(Value::as_u64)
             .is_none_or(|t| t.saturating_add(SESSION_RECHECK_MS) <= self.clock.now());
-        !(concluded && inbox_empty && !obj.is_deleting() && !recheck_due)
+        !(concluded
+            && inbox_empty
+            && !obj.is_deleting()
+            && !recheck_due
+            && !fleet_controllers::task::watches_activity(obj))
     }
 
     fn tally(
@@ -2026,6 +2031,22 @@ impl Manager<'_> {
                 note("lost", o.why());
                 obs.lost = Some(o);
             }
+            Probe::Paused { session } => {
+                let o = rt.paused(session);
+                note("paused", o.why());
+                obs.paused = Some(o);
+            }
+            // A runtime that cannot pause never answers Idle, so Fleet
+            // never pauses on it.
+            Probe::Activity { session } => {
+                let o = if rt.can_pause() {
+                    rt.activity(session)
+                } else {
+                    Observation::unknown("the runtime cannot pause a session")
+                };
+                note("activity", o.why());
+                obs.activity = Some(o);
+            }
             // Not TaskController's probes: it never asks them.
             Probe::Change { .. }
             | Probe::Object { .. }
@@ -2043,6 +2064,8 @@ impl Manager<'_> {
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
             Action::Release { session } => self.runtime.release(session),
             Action::Revive { session } => self.runtime.revive(session),
+            Action::Pause { session } => self.runtime.pause(session),
+            Action::Resume { session } => self.runtime.resume(session),
             // The Forge, Conversation and Gateway controllers' effects,
             // performed by their own steps; TaskController never plans them.
             Action::MarkReady { .. }

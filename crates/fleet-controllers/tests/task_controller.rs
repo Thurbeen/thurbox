@@ -4,7 +4,7 @@
 
 use fleet_api::condition::ConditionStatus;
 use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt};
-use fleet_api::runtime::{TrustGap, WorkspaceTrust};
+use fleet_api::runtime::{Activity, TrustGap, WorkspaceTrust};
 use fleet_api::task::{Phase, SessionRef, TaskStatus};
 use fleet_api::{Object, Observation};
 use fleet_controllers::{
@@ -713,6 +713,7 @@ fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
                 key: "t.u7".into()
             },
             Probe::Lost { session: session() },
+            Probe::Paused { session: session() },
             Probe::Ready { session: session() }
         ]
     );
@@ -1035,6 +1036,7 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
                 key: "t.u7".into()
             },
             Probe::Lost { session: session() },
+            Probe::Paused { session: session() },
             Probe::Ready { session: session() }
         ]
     );
@@ -1319,7 +1321,7 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
     assert_eq!(cond(&st, "SessionLost").status, ConditionStatus::True);
     assert!(st.intents.contains_key("task/t/u7/revive/1"));
 
-    // Back: the resume note goes before the inbox, under its own key.
+    // Back: the catch-up note goes before the inbox, under its own key.
     let mut st = st;
     st.receipts.insert(
         "task/t/u7/revive/1".into(),
@@ -1327,10 +1329,10 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
     );
     let (plan, st) = run(&with_status(&obj, &st), lost_obs(false));
     assert_eq!(cond(&st, "SessionLost").reason, "Revived");
-    assert_eq!(st.resume.as_deref(), Some("task/t/u7/resume/1"));
+    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/catchup/1"));
     assert_eq!(st.revive_attempts, 0);
     assert_eq!(plan.effects.len(), 1, "{plan:#?}");
-    assert_eq!(plan.effects[0].key, "task/t/u7/resume/1");
+    assert_eq!(plan.effects[0].key, "task/t/u7/catchup/1");
     let Action::Brief { text, .. } = &plan.effects[0].action else {
         panic!("{plan:#?}")
     };
@@ -1344,7 +1346,7 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
     // Delivered: the note is done and the inbox goes next.
     let mut st = st;
     st.receipts.insert(
-        "task/t/u7/resume/1".into(),
+        "task/t/u7/catchup/1".into(),
         receipt(
             "brief",
             Observation::Known(EffectOutcome::Delivered {
@@ -1355,8 +1357,8 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
         ),
     );
     let (plan, st) = run(&with_status(&obj, &st), lost_obs(false));
-    assert_eq!(st.resume, None);
-    assert!(!st.receipts.contains_key("task/t/u7/resume/1"));
+    assert_eq!(st.catch_up, None);
+    assert!(!st.receipts.contains_key("task/t/u7/catchup/1"));
     assert_eq!(plan.effects.len(), 1, "{plan:#?}");
     assert_eq!(plan.effects[0].key, "task/t/u7/send/1");
     assert_eq!(st.brief.as_ref().unwrap().generation, 1);
@@ -1434,7 +1436,344 @@ fn a_session_lost_before_its_brief_is_revived_and_briefed_once() {
             ..lost_obs(false)
         },
     );
-    assert_eq!(st.resume, None, "no note: the brief itself is still owed");
+    assert_eq!(st.catch_up, None, "no note: the brief itself is still owed");
     assert_eq!(plan.effects.len(), 1);
     assert_eq!(plan.effects[0].key, "task/t/u7/brief");
+}
+
+// Pausing an idle session and resuming it when work arrives.
+
+const PAUSE_AFTER: u64 = 60_000;
+
+/// A Briefed Task whose session may be paused.
+fn pausable(inbox: &[&str], extra: impl FnOnce(&mut TaskStatus)) -> Object {
+    let mut obj = briefed_with(inbox, |st| {
+        st.brief = Some(fleet_api::task::BriefRecord {
+            key: "task/t/u7/brief".into(),
+            generation: 1,
+            recovered: false,
+        });
+        extra(st);
+    });
+    obj.spec["pauseAfterMs"] = json!(PAUSE_AFTER);
+    obj
+}
+
+fn set_paused(st: &mut TaskStatus, reason: &str) {
+    fleet_api::condition::set_condition(
+        &mut st.conditions,
+        "Paused",
+        ConditionStatus::True,
+        reason,
+        "",
+        1,
+        NOW - 100,
+    );
+}
+
+fn pause_obs(activity: Observation<Activity>, paused: Observation<bool>) -> Observations {
+    Observations {
+        find: live(),
+        lost: Some(Observation::Known(false)),
+        paused: Some(paused),
+        activity: Some(activity),
+        ready: Some(Observation::Known(true)),
+        ..Default::default()
+    }
+}
+
+fn idle() -> Observation<Activity> {
+    Observation::Known(Activity::Idle)
+}
+
+fn not_asked<T>() -> Observation<T> {
+    Observation::unknown("not asked")
+}
+
+fn effect_intent(action: &str) -> fleet_api::plan::Intent {
+    fleet_api::plan::Intent {
+        action: action.into(),
+        at: NOW - 10,
+        generation: 1,
+    }
+}
+
+#[test]
+fn only_a_known_idle_lasting_pause_after_ms_pauses() {
+    let obj = pausable(&[], |_| {});
+    assert!(probes(&obj).contains(&Probe::Activity { session: session() }));
+    // The first Idle starts the idle time.
+    let (plan, st) = run(&obj, pause_obs(idle(), Observation::Known(false)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(st.idle_since, Some(NOW));
+
+    // Unknown and Active never pause, and start the idle time again.
+    for activity in [
+        Observation::unknown("cannot tell"),
+        Observation::Known(Activity::Active),
+    ] {
+        let later = NOW + PAUSE_AFTER;
+        let (plan, after) = run_at(
+            &with_status(&obj, &st),
+            pause_obs(activity, Observation::Known(false)),
+            later,
+        );
+        assert!(plan.effects.is_empty(), "{plan:#?}");
+        assert_eq!(after.idle_since, None);
+    }
+
+    // Idle without a break for pauseAfterMs, read fresh: one pause.
+    let (plan, st) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(idle(), Observation::Known(false)),
+        NOW + PAUSE_AFTER,
+    );
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/pause/1");
+    assert_eq!(plan.effects[0].action, Action::Pause { session: session() });
+    assert!(st.intents.contains_key("task/t/u7/pause/1"));
+
+    // A session not proven running is never paused.
+    let (plan, _) = run(
+        &pausable(&[], |st| st.idle_since = Some(0)),
+        pause_obs(idle(), Observation::unknown("cannot tell")),
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    // Nor is a Task with no pause setting.
+    let plain = briefed_with(&[], |st| st.idle_since = Some(0));
+    assert!(!probes(&plain).contains(&Probe::Activity { session: session() }));
+    let (plan, _) = run(&plain, pause_obs(idle(), Observation::Known(false)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+}
+
+#[test]
+fn a_pause_without_its_receipt_is_read_back_and_never_repeated() {
+    let obj = pausable(&[], |st| {
+        st.pauses = 1;
+        st.intents
+            .insert("task/t/u7/pause/1".into(), effect_intent("pause"));
+    });
+
+    // Unknown: wait, and do nothing.
+    let (plan, st) = run(&obj, pause_obs(idle(), Observation::unknown("cannot tell")));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert!(st.intents.contains_key("task/t/u7/pause/1"));
+
+    // Stopped: the pause happened.
+    let (plan, st) = run(&obj, pause_obs(idle(), Observation::Known(true)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(cond(&st, "Paused").status, ConditionStatus::True);
+    assert_eq!(cond(&st, "Paused").reason, "Idle");
+    assert!(!st.intents.contains_key("task/t/u7/pause/1"));
+    assert!(
+        st.conditions
+            .iter()
+            .all(|c| c.type_ != "WorkerGone" && c.type_ != "SessionLost")
+    );
+
+    // Running: it did not, and the idle time starts again.
+    let (plan, st) = run(&obj, pause_obs(idle(), Observation::Known(false)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(cond(&st, "Paused").reason, "PauseFailed");
+    assert!(!st.intents.contains_key("task/t/u7/pause/1"));
+    assert_eq!(st.idle_since, Some(NOW), "counted again from this Idle");
+}
+
+#[test]
+fn a_resume_without_its_receipt_is_read_back_and_retried_only_while_stopped() {
+    let obj = pausable(&["task/t/u7/send/1"], |st| {
+        set_paused(st, "Idle");
+        st.resumes = 1;
+        st.resume_attempts = 1;
+        st.intents
+            .insert("task/t/u7/resume/1".into(), effect_intent("resume"));
+    });
+
+    // Running: resumed; the catch-up note goes before the entry.
+    let (plan, st) = run(&obj, pause_obs(not_asked(), Observation::Known(false)));
+    assert_eq!(cond(&st, "Paused").status, ConditionStatus::False);
+    assert_eq!(cond(&st, "Paused").reason, "Resumed");
+    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/catchup/1"));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/catchup/1");
+    let Action::Brief { text, .. } = &plan.effects[0].action else {
+        panic!("{plan:#?}")
+    };
+    assert!(text.contains("paused") && text.ends_with("do it"), "{text}");
+
+    // Still stopped: a new resume, after a wait from the last one.
+    let (plan, st) = run(&obj, pause_obs(not_asked(), Observation::Known(true)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert_eq!(st.not_before, Some(NOW - 10 + RETRY_DELAY_MS));
+    let (plan, _) = run_at(
+        &with_status(&obj, &st),
+        pause_obs(not_asked(), Observation::Known(true)),
+        NOW + RETRY_DELAY_MS,
+    );
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/resume/2");
+    assert_eq!(
+        plan.effects[0].action,
+        Action::Resume { session: session() }
+    );
+
+    // Unknown: wait, and do nothing.
+    let (plan, st) = run(
+        &obj,
+        pause_obs(not_asked(), Observation::unknown("cannot tell")),
+    );
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+    assert!(st.intents.contains_key("task/t/u7/resume/1"));
+}
+
+#[test]
+fn stalled_held_and_deleting_tasks_are_never_resumed() {
+    let mut held = pausable(&["task/t/u7/send/1"], |st| set_paused(st, "Idle"));
+    held.spec["dispatch"] = json!(false);
+    let (plan, _) = run(&held, pause_obs(not_asked(), Observation::Known(true)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+
+    let stalled = pausable(&["task/t/u7/send/1"], |st| {
+        set_paused(st, "Idle");
+        st.phase = Phase::Stalled;
+    });
+    let (plan, _) = run(&stalled, pause_obs(not_asked(), Observation::Known(true)));
+    assert!(plan.effects.is_empty(), "{plan:#?}");
+
+    // A stopped session is at rest: deleting the Task releases it.
+    let mut deleting = pausable(&["task/t/u7/send/1"], |st| set_paused(st, "Idle"));
+    deleting.metadata.deletion_timestamp = Some(NOW);
+    let (plan, _) = run(
+        &deleting,
+        Observations {
+            find: live(),
+            at_rest: Some(Observation::Known(true)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(
+        plan.effects[0].action,
+        Action::Release { session: session() }
+    );
+}
+
+#[test]
+fn a_note_kept_under_an_old_resume_key_is_still_delivered_first() {
+    // A record written before the catch-up note was renamed.
+    let mut obj = pausable(&["task/t/u7/send/1"], |_| {});
+    obj.status["resume"] = json!("task/t/u7/resume/1");
+    obj.status["resumes"] = json!(1);
+    let (plan, st) = run(&obj, pause_obs(not_asked(), Observation::Known(false)));
+    assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/resume/1"));
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/resume/1");
+    assert!(matches!(plan.effects[0].action, Action::Brief { .. }));
+    let written = plan.status.unwrap();
+    assert_eq!(written["catchUp"], "task/t/u7/resume/1");
+    assert!(written.get("resume").is_none());
+
+    // A later resume effect never reuses that note's key.
+    let obj = pausable(&["task/t/u7/send/1"], |st| {
+        set_paused(st, "External");
+        st.resumes = 1;
+    });
+    let (plan, _) = run(&obj, pause_obs(not_asked(), Observation::Known(true)));
+    assert_eq!(plan.effects[0].key, "task/t/u7/resume/2");
+}
+
+#[test]
+fn an_old_resume_note_in_flight_is_never_taken_for_a_resume_effect() {
+    // Written before the rename: the note `resume/3` was sent, and its
+    // answer is not Known yet. Its intent is a Brief.
+    let mut obj = pausable(&["task/t/u7/send/1"], |st| {
+        st.intents
+            .insert("task/t/u7/resume/3".into(), effect_intent("brief"));
+        st.receipts.insert(
+            "task/t/u7/resume/3".into(),
+            receipt("brief", Observation::unknown("answer lost")),
+        );
+    });
+    obj.status["resume"] = json!("task/t/u7/resume/3");
+    obj.status["resumes"] = json!(3);
+    assert!(probes(&obj).contains(&Probe::BriefDelivered {
+        session: session(),
+        key: "task/t/u7/resume/3".into()
+    }));
+    let mut obs = pause_obs(not_asked(), Observation::Known(false));
+    obs.brief_delivered = Some(Observation::unknown("journal unreadable"));
+    let (plan, st) = run(&obj, obs);
+    assert!(
+        plan.effects.is_empty(),
+        "never sent again blindly: {plan:#?}"
+    );
+    assert!(st.intents.contains_key("task/t/u7/resume/3"));
+    assert!(st.conditions.iter().all(|c| c.type_ != "Paused"));
+
+    // The journal says it arrived: recorded, and the entry goes next.
+    let mut obs = pause_obs(not_asked(), Observation::Known(false));
+    obs.brief_delivered = Some(Observation::Known(true));
+    let (plan, st) = run(&obj, obs);
+    assert_eq!(st.catch_up, None);
+    assert_eq!(plan.effects.len(), 1, "{plan:#?}");
+    assert_eq!(plan.effects[0].key, "task/t/u7/send/1");
+}
+
+#[test]
+fn a_delivery_to_a_concluded_task_starts_its_idle_time_again() {
+    let obj = pausable(&["task/t/u7/send/1"], |st| {
+        st.phase = Phase::Concluded;
+        st.idle_since = Some(NOW - PAUSE_AFTER);
+    });
+    let (_, st) = run(&obj, pause_obs(idle(), Observation::Known(false)));
+    assert_eq!(st.idle_since, None);
+}
+
+#[test]
+fn a_concluded_task_at_rest_that_is_not_watched_loses_its_idle_time() {
+    // Held at rest: unwatched passes leave no stale idle time behind, so a
+    // later dispatch never pauses on a single Idle answer.
+    let mut obj = pausable(&[], |st| {
+        st.phase = Phase::Concluded;
+        st.idle_since = Some(NOW - PAUSE_AFTER);
+    });
+    obj.spec["dispatch"] = json!(false);
+    let (_, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(st.idle_since, None);
+}
+
+#[test]
+fn a_recorded_result_starts_the_idle_time_again() {
+    let obj = pausable(&[], |st| {
+        st.idle_since = Some(NOW - PAUSE_AFTER);
+        st.result = Some(
+            serde_json::from_value(json!({
+                "outcome": "shipped", "generation": 1, "summary": "done"
+            }))
+            .unwrap(),
+        );
+    });
+    let (_, st) = run(&obj, pause_obs(idle(), Observation::Known(false)));
+    assert_eq!(st.phase, Phase::Concluded);
+    assert_eq!(st.idle_since, None);
+}
+
+#[test]
+fn a_concluded_session_found_stopped_is_external_even_while_waiting() {
+    let obj = pausable(&["task/t/u7/send/1"], |st| {
+        st.phase = Phase::Concluded;
+        st.not_before = Some(NOW + RETRY_DELAY_MS);
+    });
+    let (plan, st) = run(&obj, pause_obs(not_asked(), Observation::Known(true)));
+    assert_eq!(cond(&st, "Paused").reason, "External");
+    assert!(
+        plan.effects.is_empty(),
+        "the wait holds the resume: {plan:#?}"
+    );
 }

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 pub struct Fault {
     /// `host`, `createDir`, `removeDir`, `spawn`, `find`, `list`, `events`, `ready`,
     /// `workspaceTrust`, `brief`, `briefDelivered`, `atRest`, `release`,
-    /// `lost`, `revive`.
+    /// `lost`, `revive`, `activity`, `paused`, `pause`, `resume`.
     pub call: String,
     /// `unknown`, `fail` or `abort`.
     pub outcome: String,
@@ -105,6 +105,14 @@ pub struct FakeSession {
     /// Set once the Task released (deleted) it.
     #[serde(default)]
     pub released: bool,
+    /// Set while its agent is stopped and the row is kept; a resume clears
+    /// it.
+    #[serde(default)]
+    pub paused: bool,
+    /// `active` or `idle` as the agent reports it; anything else, or none,
+    /// is Unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -468,6 +476,8 @@ impl Runtime for FakeRuntime {
                 gone: false,
                 lost: false,
                 released: false,
+                paused: false,
+                activity: None,
             };
             s.log.push(format!("spawn {}", spec.key));
             let r = session_ref(&x);
@@ -526,7 +536,7 @@ impl Runtime for FakeRuntime {
                     why: "session gone".into(),
                 };
             };
-            if x.lost {
+            if x.lost || x.paused {
                 return EffectOutcome::Failed {
                     why: "the session has no window".into(),
                 };
@@ -602,6 +612,67 @@ impl Runtime for FakeRuntime {
                 s.log.push(format!("revive {key}"));
             }
             EffectOutcome::Revived
+        })
+    }
+
+    fn can_pause(&self) -> bool {
+        true
+    }
+
+    fn activity(&self, session: &SessionRef) -> Observation<fleet_api::runtime::Activity> {
+        use fleet_api::runtime::Activity;
+        self.probe("activity", |s| match live(s, &session.key) {
+            Some(x) => match x.activity.as_deref() {
+                Some("active") => Observation::Known(Activity::Active),
+                Some("idle") => Observation::Known(Activity::Idle),
+                other => Observation::unknown(format!("activity {other:?} does not say")),
+            },
+            None => Observation::unknown("no such session to look at"),
+        })
+    }
+
+    fn paused(&self, session: &SessionRef) -> Observation<bool> {
+        self.probe("paused", |s| match live(s, &session.key) {
+            Some(x) => Observation::Known(x.paused),
+            None => Observation::unknown("no such session to look at"),
+        })
+    }
+
+    fn pause(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        let key = session.key.clone();
+        self.effect("pause", move |s| {
+            let Some(x) = s.sessions.get_mut(&key).filter(|x| !x.gone) else {
+                return EffectOutcome::Failed {
+                    why: "session gone".into(),
+                };
+            };
+            if !x.paused {
+                x.paused = true;
+                x.ready = false;
+                x.at_rest = true;
+                s.log.push(format!("pause {key}"));
+            }
+            EffectOutcome::Paused
+        })
+    }
+
+    fn resume(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        let key = session.key.clone();
+        self.effect("resume", move |s| {
+            let ready = !s.spawn_not_ready;
+            let Some(x) = s.sessions.get_mut(&key).filter(|x| !x.gone) else {
+                return EffectOutcome::Failed {
+                    why: "session gone".into(),
+                };
+            };
+            if x.paused {
+                x.paused = false;
+                x.ready = ready;
+                x.at_rest = false;
+                x.activity = None;
+                s.log.push(format!("resume {key}"));
+            }
+            EffectOutcome::Resumed
         })
     }
 }

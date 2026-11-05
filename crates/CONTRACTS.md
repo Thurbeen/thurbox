@@ -254,11 +254,28 @@ Guarantees, each with its test:
   A dispatched Task plans `Revive` under `revive/<n>`, at once and then
   after each `RETRY_DELAY_MS`; three revives raise
   `NeedsAttention/ReviveFailed`, and revives continue. Back, a briefed
-  worker is owed one resume note under `resume/<n>`, sent before its inbox
+  worker is owed one catch-up note under `catchup/<n>`, sent before its inbox
   as an entry is sent. In Briefed the note repeats the brief and its
   generation. Only Spawned, Briefed and Concluded-with-delivery Tasks are
   looked at, so a concluded worker at rest stays at rest. Unknown revives
   nothing, and a revive never makes a second session.
+- **Pause.** With `pauseAfterMs` set, a Briefed or Concluded Task whose
+  agent the runtime reports Known Idle on every pass for `pauseAfterMs`,
+  and on the pass that plans it, plans `Pause` under `pause/<n>`. The
+  session must be observed running, its inbox empty, and no brief, entry,
+  catch-up note, revive or resume in flight. Active or Unknown starts the
+  idle time again from `status.idleSince`. Unknown never pauses, and a
+  runtime that cannot pause answers Unknown. `Paused=True/Idle` changes no
+  phase and raises no `WorkerGone`, `SessionLost` or revive.
+- **Resume.** An inbox entry for a paused Task plans one `Resume` under
+  `resume/<n>`; entries that arrive meanwhile wait in the inbox. Back
+  (`Paused=False/Resumed`), the worker is owed the catch-up note before its
+  inbox. A session found stopped by someone else is `Paused=True/External`
+  and is resumed by the next entry. Stalled, held and deleting Tasks are
+  never resumed. A missing or Unknown pause or resume receipt is settled by
+  observing whether the session is stopped, never by a blind repeat. A
+  catch-up note an older record keeps under `resume/<n>` is still sent
+  under that key; new resume keys continue past it.
 - **Release.** The `fleet.dev/release` finalizer holds a deleted Task until
   its session is deleted, only once the session is proven at rest or gone.
 - **Inbox.** `fleet send TASK TEXT` appends `{key, from, text, queuedAt}` to
@@ -286,7 +303,7 @@ Guarantees, each with its test:
   nothing and the manager goes idle.
 
 Conditions: `HostReachable`, `Spawned`, `WorkspaceTrusted`, `Briefed`,
-`Stalled`, `WorkerGone`, `SessionLost`, `Concluded`, `Released`,
+`Stalled`, `WorkerGone`, `SessionLost`, `Paused`, `Concluded`, `Released`,
 `NeedsAttention`.
 
 ## Following declared changes
@@ -772,9 +789,10 @@ refused.
 
 `fleet_api::runtime::Runtime`: `host`, `create_dir`, `remove_dir`,
 `spawn`, `find`, `ready`, `workspace_trust`, `brief`, `brief_delivered`,
-`at_rest`, `release`, `lost` and `revive`, each answering Known or
-Unknown. `create_dir` makes a directory with its missing parents on a
-host and says whether it made it; `remove_dir` removes one and what it
+`at_rest`, `release`, `lost`, `revive`, `activity`, `paused`, `pause` and
+`resume`, each answering Known or Unknown, and `can_pause`. `create_dir`
+makes a directory with its missing parents on a host and says whether it
+made it; `remove_dir` removes one and what it
 holds, a directory already gone included. The thurbox adapter does both
 on the local host and refuses any other, since thurbox has no verb that
 makes or removes a directory on a remote host.
@@ -784,7 +802,7 @@ Each adapter reports its longest single operation (`operation_bound`), and
 - **thurbox:** every call is one bounded `thurbox-cli … --json`. A session's
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key. The brief's delivery
-  is journaled in the session's own metadata. Every brief, amendment, resume
+  is journaled in the session's own metadata. Every brief, amendment, catch-up
   note and inbox entry goes to the agent's own inbox through `message send`,
   never into the terminal composer, so a working turn takes it. Thurbox
   picks the route and reports it; the receipt records it as `deliveredVia`.
@@ -803,7 +821,12 @@ Each adapter reports its longest single operation (`operation_bound`), and
   thurbox keeps a session's row across a reboot. `lost` is `session get`
   reporting `hook_corroboration: "missing"`, and `revive` is `session
   restart --if-missing`, which resumes the conversation in the same row and
-  worktree. A session with no window is at rest.
+  worktree. A session with no window is at rest. `paused` reads `stopped`
+  and `activity: "stopped"` from `session get`. Only `activity: "idle"` is
+  Idle; `unknown`, `stopped` or a missing field is Unknown, and `state`
+  words never prove Idle. `pause` is
+  `session stop` and `resume` is `session start`, each after checking that
+  the key still belongs to the recorded id. `e2e_task_pause` covers both.
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process.
 

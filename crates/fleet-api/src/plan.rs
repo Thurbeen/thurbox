@@ -89,6 +89,17 @@ pub enum Action {
     Revive {
         session: SessionRef,
     },
+    /// Stop the agent of an idle session and keep its row, its workspace
+    /// and its conversation. A stopped session is left alone.
+    Pause {
+        session: SessionRef,
+    },
+    /// Start the agent of a stopped session again, in its own workspace and
+    /// conversation, under the same identity. A running session is left
+    /// alone.
+    Resume {
+        session: SessionRef,
+    },
     /// Take a draft change out of draft, through the Forge port: the only
     /// forge write Fleet performs. `expect` is the head and state the
     /// decision was made against; the adapter re-reads both immediately
@@ -174,6 +185,8 @@ impl Action {
             Action::Brief { .. } => "brief",
             Action::Release { .. } => "release",
             Action::Revive { .. } => "revive",
+            Action::Pause { .. } => "pause",
+            Action::Resume { .. } => "resume",
             Action::MarkReady { .. } => "markReady",
             Action::Post { .. } => "post",
             Action::Open { .. } => "open",
@@ -254,6 +267,11 @@ pub enum EffectOutcome {
     Released,
     /// The runtime started the session's agent again, or found it running.
     Revived,
+    /// The runtime stopped the session's agent, or found it stopped.
+    Paused,
+    /// The runtime started the stopped session's agent again, or found it
+    /// running.
+    Resumed,
     /// The change is out of draft; `already` when the forge said it was no
     /// longer a draft by the time the mutation ran, inside the window
     /// between the adapter's fresh read and the mutation.
@@ -356,6 +374,14 @@ pub enum Probe {
     Lost {
         session: SessionRef,
     },
+    /// Whether the session's agent is stopped, its row kept.
+    Paused {
+        session: SessionRef,
+    },
+    /// Whether the session's agent is working or idle.
+    Activity {
+        session: SessionRef,
+    },
     /// One complete observation of a change, through the Forge port.
     Change {
         change: ChangeRef,
@@ -410,6 +436,8 @@ pub struct Observations {
     pub brief_delivered: Option<Observation<bool>>,
     pub at_rest: Option<Observation<bool>>,
     pub lost: Option<Observation<bool>>,
+    pub paused: Option<Observation<bool>>,
+    pub activity: Option<Observation<crate::runtime::Activity>>,
 }
 
 /// `task/<name>/<uid>/<action>[/<attempt>]`: deterministic, so a repeat is

@@ -31,6 +31,7 @@ Save this manifest as `task-config.json`:
 | `model` | no | Default model; requires a matching harness variable in native `runtime.modelEnv`. |
 | `envFrom` | no | Ordered references to [EnvProvider](env-provider.md), each `{"name":"provider"}`. |
 | `env` | no | String environment map; overrides all referenced provider values. |
+| `pauseAfterMs` | no | Pause a Task's session once its agent was idle this long, in milliseconds; at least 1. Absent means never. A thurbox that does not report activity never pauses either. See [pausing an idle session](../controllers/task/state-machine.md#pausing-an-idle-session). |
 
 All fields are optional; unknown fields are refused. Harness/host/model must
 be nonempty, contain no NUL and not start with `-`. References use the same
@@ -59,9 +60,10 @@ no `[taskConfig]` section in that file and no implicit global TaskConfig.
 }
 ```
 
-An explicitly present Task harness, host or model overrides the corresponding
-config default. Explicit `model: null` disables an inherited model. Explicit
-`host: "local"` overrides a remote default; omitting host inherits it.
+An explicitly present Task harness, host, model or `pauseAfterMs` overrides
+the corresponding config default. Explicit `model: null` disables an
+inherited model. Explicit `host: "local"` overrides a remote default;
+omitting host inherits it.
 The Task spec, including its reference and whether these fields were present,
 is immutable except `dispatch`. Existing Tasks need no reference and retain
 their original behavior. To dispatch the example, apply the same Task with
@@ -95,8 +97,9 @@ Task dispatch enabled
 
 Undispatched Tasks consume current defaults when enabled. The first successful
 resolution is frozen before runtime probes/effects. `status.execution` records
-harness, host, model, and every source kind/name/UID/generation, without
-resolved environment values. A missing, deleting, corrupt or invalid reference
+harness, host, model, `pauseAfterMs`, and every source
+kind/name/UID/generation, without resolved environment values. A missing,
+deleting, corrupt or invalid reference
 blocks launch observably in `fleet reconcile`; correcting the input allows
 retry. Fleet never launches a partial/defaulted wrong worker.
 

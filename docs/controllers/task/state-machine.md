@@ -16,6 +16,9 @@ reconciles a Concluded Task only in these cases:
 - It is being deleted.
 - Its session recheck is due: `status.sessionCheckedAt` is absent or 5
   minutes old.
+- Its session may be paused: see
+  [pausing an idle session](#pausing-an-idle-session). The manager then
+  reconciles it on every sweep, so that its activity is watched.
 
 Deletion takes precedence over normal progress, including Stalled and
 Concluded. With no deletion, Stalled is terminal. Concluded is terminal
@@ -51,13 +54,20 @@ concludes nothing.
 | Briefed | No result for `status.brief.generation`; readable lookup lacks recorded identity | Briefed | Raise WorkerGone and NeedsAttention; never abandon or respawn. |
 | Spawned, Briefed, or Concluded with a delivery due | Session lost: the runtime holds the session, but its agent's window is gone | unchanged | Set `SessionLost=True/WindowGone`. Send nothing. With `dispatch: true`, persist a revive intent and plan `Revive` under `revive/<n>`. A held Task is not revived. |
 | Spawned, Briefed, or Concluded with a delivery due | Still lost after a revive | unchanged | Wait 30 seconds from the last revive, then revive again. From the third revive on, also raise `NeedsAttention/ReviveFailed`. |
-| Spawned, Briefed, or Concluded with a delivery due | Not lost while `SessionLost` is True | unchanged | Set `SessionLost=False/Revived`. When the brief has a receipt, owe a resume note under `resume/<n>`. In Spawned, the brief protocol continues. |
-| Briefed or Concluded | A resume note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. |
+| Spawned, Briefed, or Concluded with a delivery due | Not lost while `SessionLost` is True | unchanged | Set `SessionLost=False/Revived`. When the brief has a receipt, owe a catch-up note under `catchup/<n>`. In Spawned, the brief protocol continues. |
+| Briefed or Concluded | A catch-up note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. |
+| Briefed, or Concluded and watched | A pause setting; activity Known Idle without a break for `pauseAfterMs`; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing an idle session](#pausing-an-idle-session). |
+| Briefed or Concluded | Known Paused receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Set `Paused=True/Idle`. Raise no WorkerGone, SessionLost or revive. |
+| Briefed or Concluded | Failed pause receipt, or a missing/Unknown receipt with the session observed running | unchanged | Set `Paused=False/PauseFailed`. The idle time starts again. |
+| Briefed, or Concluded with a delivery due or watched | Session observed stopped and Fleet did not stop it | unchanged | Set `Paused=True/External`. |
+| Briefed or Concluded | Paused; an inbox entry to deliver; `dispatch: true` | unchanged | Persist a resume intent and plan `Resume` under `resume/<n>`. Send nothing. |
+| Briefed or Concluded | Known Resumed receipt, a missing/Unknown receipt with the session observed running, or a paused session observed running | unchanged | Set `Paused=False/Resumed`. When the brief has a receipt, owe a catch-up note under `catchup/<n>`. |
+| Briefed or Concluded | Failed resume receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Wait 30 seconds from the last resume, then resume again. From the third resume on, also raise `NeedsAttention/ResumeFailed`. |
 | Active phase | Accepted worker result for `status.brief.generation` is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
 | Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered before the brief was sent, or while a brief send is unconfirmed. |
 | Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
 | Spawned, Briefed or Concluded | Known Delivered receipt, or journal proves delivered | unchanged | Record the receipt in `status.deliveries` with the runtime's route, and remove the entry, in one write; its intent, receipt and attempt records go with it. |
-| Spawned, Briefed or Concluded | Known Queued receipt for an entry or a resume note | unchanged | Mark it failed and raise `NeedsAttention/DeliveryQueued` with the runtime's note. Never send it again. The entry stays in `status.inbox`, and later entries are still delivered. |
+| Spawned, Briefed or Concluded | Known Queued receipt for an entry or a catch-up note | unchanged | Mark it failed and raise `NeedsAttention/DeliveryQueued` with the runtime's note. Never send it again. The entry stays in `status.inbox`, and later entries are still delivered. |
 | Spawned, Briefed or Concluded | Oldest entry is an amendment at or below `status.brief.generation`, or one never sent with a newer amendment queued behind it | unchanged | Record its receipt without a send. The worker has it already, or the newer message carries it. |
 | Briefed | Amendment entry delivered | Briefed | Set `status.brief` to the entry's key and generation. |
 | Concluded | Amendment entry delivered | Briefed | Set `status.brief` to the entry's key and generation, and `Concluded=False/Amended`. Keep the old result. |
@@ -93,7 +103,9 @@ These are controller constants, not extra configuration resources.
 | Release answer missing/Unknown or failed | Recorded session at rest, or key proven absent; adapter preserves exact identity | Wait once per failed attempt, then retry. After 3 attempts raise NeedsAttention but continue; success releases the finalizer. |
 | Session lookup unreadable | A later readable lookup | Unknown is not absence and does not by itself trigger WorkerGone or permit a blind spawn. |
 | Session lost | A Known lost answer; Unknown revives nothing | Revive at once, then wait before each further revive. From the third revive on raise NeedsAttention, and continue: a revive leaves a running session alone. |
-| Resume note send refused or answer missing/Unknown | As for an inbox entry, under the note's key | At most 3 sends, then `DeliveryFailed` naming the note. After 3 unreadable reads, `DeliveryUnconfirmed` naming it. Either way the inbox goes next. |
+| Pause answer missing/Unknown | Whether the session is stopped | Stopped records the pause. Running records a failed pause. Unknown waits; the stop is never repeated blindly. |
+| Resume refused, or answer missing/Unknown | Whether the session is stopped | Running records the resume. Stopped resumes again after a wait. Unknown waits. From the third resume on raise NeedsAttention, and continue: a resume leaves a running session alone. |
+| Catch-up note send refused or answer missing/Unknown | As for an inbox entry, under the note's key | At most 3 sends, then `DeliveryFailed` naming the note. After 3 unreadable reads, `DeliveryUnconfirmed` naming it. Either way the inbox goes next. |
 | Inbox entry send refused or answer missing/Unknown | As for the brief, under the entry's key: a failure receipt, or the journal's answer | Wait before retry; every retry needs fresh readiness; at most 3 sends per entry, then `DeliveryFailed` and the next entry. Unknown journal reads continue after each wait; the third raises `DeliveryUnconfirmed` and the next entry goes. |
 
 A single brief key is reused so retrying a proven-undelivered brief does not
@@ -129,7 +141,8 @@ are last recorded observations; absence of a condition is not a True value.
 | Released | A known release completed, or there was nothing to release. |
 | WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
 | SessionLost | The runtime holds the session, but its agent's window is gone (`WindowGone`). False after a lost session is back (`Revived`). |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, RepositoryUnmapped, TrustUnmapped, WorkspaceUntrusted or ReviveFailed. |
+| Paused | The runtime holds the session with its agent stopped. `Idle` when Fleet paused it; `External` when Fleet found it stopped. False with `Resumed` once the agent runs again, and with `PauseFailed` after a pause that did not happen. The phase does not change. |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, RepositoryUnmapped, TrustUnmapped, WorkspaceUntrusted, ReviveFailed or ResumeFailed. |
 
 WorkerGone clears when the exact recorded session is seen again.
 RepositoryUnmapped clears when a later spawn does not answer Unmapped.
@@ -140,6 +153,7 @@ entry is marked failed. An inbox drained back within its bound clears InboxFull.
 A Trusted answer clears WorkspaceUntrusted.
 BriefUndelivered and DeliveryQueued stay until a person acts on the Task.
 ReviveFailed clears when the session is seen not lost.
+ResumeFailed clears when the session is seen running.
 DeliveryFailed and DeliveryUnconfirmed stay while a failed entry does. A
 successful release removes the Task; a worker result alone is not a general
 reset of previous conditions. NeedsAttention does not universally stop the
@@ -160,8 +174,8 @@ fleet up starts ──> sweep ──> Lost? ─yes─> Revive (same id, same wor
                                 no               v
                                 │          next pass: not lost ──> SessionLost=False/Revived
                                 v                                    │
-                       normal protocol                 Briefed: resume note + brief, generation unchanged
-                                                       Concluded: resume note, then the waiting inbox
+                       normal protocol                 Briefed: catch-up note + brief, generation unchanged
+                                                       Concluded: catch-up note, then the waiting inbox
 ```
 
 - Spawned, Briefed and unconcluded Tasks are revived on the first sweep.
@@ -170,9 +184,10 @@ fleet up starts ──> sweep ──> Lost? ─yes─> Revive (same id, same wor
   arrives as inbox entries.
 - A held Task (`dispatch: false`) is never revived.
 - A revive never creates a second session. The brief key is never sent
-  again. The resume note has its own key and journal entry.
+  again. The catch-up note has its own key and journal entry.
 - The brief record keeps its generation. A result for another generation is
-  still refused. An amendment that waits is delivered after the resume note.
+  still refused. An amendment that waits is delivered after the catch-up
+  note.
 - A deleting Task is released, not revived. A session with no window is at
   rest.
 - A Task whose session row was deleted is `WorkerGone`, as before. Fleet
@@ -180,6 +195,61 @@ fleet up starts ──> sweep ──> Lost? ─yes─> Revive (same id, same wor
 
 The manager must run again after the reboot. See
 [running `fleet up`](../../configuration/init.md#running-fleet-up).
+
+## Pausing an idle session
+
+An idle session costs a process and a terminal while its Task waits. Fleet
+pauses the session through the runtime and resumes it when work arrives. The
+Task, its workspace and the agent's conversation stay.
+
+A pause ends background work in the agent. A resumed agent does not start
+its background shells, Monitors or loops again. For this reason, Fleet
+pauses only on a Known Idle answer from the runtime.
+
+```text
+Briefed/Concluded ──Idle for pauseAfterMs──> Pause ──> Paused=True/Idle
+        ^                                                   │
+        │                                            inbox entry
+        │                                                   v
+  catch-up note, then the inbox <── Paused=False/Resumed <── Resume
+```
+
+The controller plans a pause when all of these hold:
+
+- `pauseAfterMs` is set, on the Task or on its TaskConfig.
+- `dispatch` is true, and the Task is not deleting.
+- The phase is Briefed, or Concluded.
+- The inbox holds no entry to deliver, and no catch-up note is owed.
+- No brief, revive or resume waits for its outcome.
+- The runtime can pause.
+- The runtime reported Known Idle on every pass for `pauseAfterMs`, and on
+  the pass that plans the pause. `status.idleSince` records the first Idle
+  answer. Active, Unknown, a pass that sent something, a recorded result or
+  a pass that does not watch the session clears it.
+- On that pass, the session is observed running and is not known lost.
+
+These rules apply to a paused session:
+
+- An inbox entry plans one resume. Entries that arrive meanwhile wait in the
+  inbox. Delivery then waits for readiness, as before.
+- A resumed worker is owed the catch-up note that a revived worker gets,
+  before its inbox.
+- A session stopped outside Fleet sets `Paused=True/External`. The next
+  inbox entry resumes it.
+- A paused session found running again sets `Paused=False/Resumed`.
+- A pause never raises WorkerGone or SessionLost, and never revives.
+- Stalled, held and deleting Tasks are never resumed.
+- Deleting a paused Task releases it: a stopped session is at rest.
+- A Concluded Task owed a catch-up note is not paused again until its next
+  inbox entry delivers the note. A revived Concluded Task behaves the same
+  way.
+
+`pauseAfterMs` absent means that Fleet never pauses the session.
+
+The Thurbox runtime reports activity only from a thurbox that has
+[Thurbeen/thurbox#1665](https://github.com/Thurbeen/thurbox/pull/1665).
+With an older thurbox, activity is Unknown, so Fleet never pauses. See
+[the runtime port](interface.md#runtime-port).
 
 ## Deletion protocol
 
