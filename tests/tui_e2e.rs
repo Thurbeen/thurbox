@@ -589,6 +589,13 @@ impl Tui {
 
     /// The last lines of the binary's log, for a failure message.
     fn log_tail(&self) -> String {
+        let text = self.log_text();
+        let lines: Vec<&str> = text.lines().collect();
+        lines[lines.len().saturating_sub(30)..].join("\n")
+    }
+
+    /// The binary's whole log.
+    fn log_text(&self) -> String {
         // The appender rolls daily, so the file carries a date suffix.
         let dir = self.log.parent().expect("log dir");
         let stem = self
@@ -597,16 +604,14 @@ impl Tui {
             .expect("log name")
             .to_string_lossy()
             .into_owned();
-        let text = std::fs::read_dir(dir)
+        std::fs::read_dir(dir)
             .ok()
             .into_iter()
             .flatten()
             .flatten()
             .filter(|entry| entry.file_name().to_string_lossy().starts_with(&stem))
             .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-            .collect::<String>();
-        let lines: Vec<&str> = text.lines().collect();
-        lines[lines.len().saturating_sub(30)..].join("\n")
+            .collect()
     }
 
     fn poll_exit(&mut self) -> Option<ExitStatus> {
@@ -8426,6 +8431,32 @@ fn delay_remote_control_command(profile: &Profile, command: &str) {
     std::fs::write(script, delayed).expect("delay shell request");
 }
 
+/// Give the control connection's downlink the depth of a real one.
+///
+/// A real link holds what the host has sent and the client has not read yet:
+/// the ssh channel window and both ends' socket buffers, megabytes between
+/// them. The stand-in's `cat` pump holds one pipe's worth, so a wedged
+/// stand-in pushes back on the multiplexer almost at once and it stops
+/// reading its panes. Here the host's output is spooled to a file instead and
+/// forwarded from it, so wedging the forwarder stops delivery but not the
+/// host — and healing it delivers the whole backlog in one burst.
+///
+/// The forwarder is GNU `tail`, for `--pid`; see `have_tail_pid`.
+fn deepen_remote_downlink(profile: &Profile) {
+    let script = profile.bin.join("ssh");
+    let original = std::fs::read_to_string(&script).expect("ssh stand-in");
+    // The spool exists before `tail` opens it, and `--pid` ends `tail` with
+    // the pump, so the connection still sees its end.
+    let deep = original.replace(
+        "cat < \"$d/down\" &",
+        ": > \"$d/spool\"\n\
+         \x20   cat < \"$d/down\" > \"$d/spool\" &\n\
+         \x20   tail --pid=\"$!\" -c +1 -f \"$d/spool\" &",
+    );
+    assert_ne!(original, deep, "install the deep downlink");
+    std::fs::write(script, deep).expect("deepen the downlink");
+}
+
 #[test]
 fn a_new_shell_recovers_output_written_before_its_reader_connects() {
     use std::os::unix::fs::PermissionsExt;
@@ -9929,6 +9960,341 @@ fn every_session_on_a_host_comes_back_once_a_wedged_link_heals() {
     std::thread::sleep(Duration::from_secs(15));
     link.heal();
     both_sessions_answer(&mut tui, Instant::now());
+    assert!(tui.quit().success());
+}
+
+// --- a remote pane that floods ----------------------------------------------
+
+/// Lines the flood prints. tmux sends them as about 7,000 `%output` chunks,
+/// well past the 4,096 a pane's channel holds (`PANE_CHANNEL_CAPACITY`), so
+/// delivered as one burst they cannot all fit.
+const FLOOD_LINES: usize = 200_000;
+
+/// The log line the control reader writes when a pane's channel overflows —
+/// proof the flood took the resync path rather than fitting.
+const OVERFLOWED: &str = "dropping output until a snapshot catches it up";
+
+/// A remote shell session whose pane will flood once `go` exists, with the
+/// backend logging at debug so an overflow can be seen. `deep` gives the link
+/// a real one's depth (`deepen_remote_downlink`).
+///
+/// Every line is wrapped in escape sequences — colour, underline, erase to
+/// end of line — so a chunk cut out of the stream cuts one of them, and a
+/// grid that parsed across the gap shows it.
+fn armed_flood(deep: bool) -> Option<(Profile, Link, Tui, PathBuf, String)> {
+    if deep && !have_tail_pid() {
+        eprintln!("skipping: this tail has no --pid");
+        return None;
+    }
+    let (profile, link, mut tui) = remote_shell_session_with(|profile, cmd| {
+        plain_remote_shell(profile, cmd);
+        if deep {
+            deepen_remote_downlink(profile);
+        }
+        cmd.env("RUST_LOG", "thurbox::backend=debug");
+    })?;
+    let flood = profile.path("flood");
+    let text: String = (0..FLOOD_LINES)
+        .map(|n| {
+            format!(
+                "\x1b[1;3{}mflood-{n:06}\x1b[0m \x1b[4m{}\x1b[24m\x1b[K\n",
+                n % 8,
+                "=".repeat(n % 41)
+            )
+        })
+        .collect();
+    std::fs::write(&flood, text).expect("write the flood");
+    let go = profile.path("go");
+    tui.send(
+        format!(
+            "echo flood-\"\"armed; while [ ! -e {go} ]; do sleep 0.1; done; cat {flood}; \
+             echo flood-\"\"done\r",
+            go = shell_word(&go),
+            flood = shell_word(&flood),
+        )
+        .as_bytes(),
+    );
+    // The pane is the one running the armed command — not merely showing it
+    // typed, which it does before the whole line has crossed the link.
+    let deadline = Instant::now() + WAIT;
+    let pane = loop {
+        let panes = profile
+            .server
+            .tmux(&["list-panes", "-a", "-F", "#{pane_id}"]);
+        let armed = String::from_utf8_lossy(&panes.stdout)
+            .lines()
+            .find(|pane| {
+                captured_rows(&profile, pane)
+                    .iter()
+                    .any(|row| row == "flood-armed")
+            })
+            .map(str::to_owned);
+        if let Some(pane) = armed {
+            break pane;
+        }
+        assert!(Instant::now() < deadline, "the flood was never armed");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    Some((profile, link, tui, go, pane))
+}
+
+/// Whether `tail` takes `--pid`, which ends a forwarder with its pump. GNU
+/// has it and BSD does not; a forwarder that outlives its pump would hide the
+/// connection's end.
+fn have_tail_pid() -> bool {
+    Command::new("tail")
+        .args(["--pid=1", "-c", "+1", "/dev/null"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// The pane's screen as the multiplexer holds it, one string per row.
+fn captured_rows(profile: &Profile, pane: &str) -> Vec<String> {
+    let out = profile.server.tmux(&["capture-pane", "-p", "-t", pane]);
+    assert!(out.status.success(), "capture-pane {pane}");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|row| row.trim_end().to_owned())
+        .collect()
+}
+
+/// One cell as a comparison sees it: the glyph, and the attributes the flood
+/// sets — so a grid that kept the text but lost or leaked a style differs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Styled {
+    ch: char,
+    fg: vt100::Color,
+    bold: bool,
+    underline: bool,
+}
+
+fn styled_rows(screen: &vt100::Screen) -> Vec<Vec<Styled>> {
+    let (rows, cols) = (screen.size().0.get(), screen.size().1.get());
+    (0..rows)
+        .map(|y| {
+            (0..cols)
+                .map(|x| {
+                    let cell = screen.cell(y, x);
+                    Styled {
+                        // An empty cell is a space, so a column is a cell.
+                        ch: cell
+                            .and_then(|cell| cell.contents().chars().next())
+                            .unwrap_or(' '),
+                        fg: cell.map_or(vt100::Color::Default, vt100::Cell::fgcolor),
+                        bold: cell.is_some_and(vt100::Cell::bold),
+                        underline: cell.is_some_and(vt100::Cell::underline),
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+impl Tui {
+    fn styled_rows(&self) -> Vec<Vec<Styled>> {
+        styled_rows(self.screen.lock().unwrap().screen())
+    }
+}
+
+/// The pane's screen as the multiplexer holds it, styles included
+/// (`capture-pane -e`), parsed onto a grid of the pane's own size.
+fn captured_cells(profile: &Profile, pane: &str) -> Vec<Vec<Styled>> {
+    let size = profile.server.tmux(&[
+        "display-message",
+        "-p",
+        "-t",
+        pane,
+        "#{pane_height} #{pane_width}",
+    ]);
+    let size = String::from_utf8_lossy(&size.stdout);
+    let mut size = size
+        .split_whitespace()
+        .map(|n| n.parse::<u16>().expect("size"));
+    let (rows, cols) = (size.next().expect("rows"), size.next().expect("cols"));
+    let out = profile
+        .server
+        .tmux(&["capture-pane", "-p", "-e", "-t", pane]);
+    assert!(out.status.success(), "capture-pane -e {pane}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parser = vt100::Parser::new(rows.try_into().unwrap(), cols.try_into().unwrap(), 0);
+    let lines: Vec<&str> = text.lines().collect();
+    parser.process(lines.join("\r\n").as_bytes());
+    styled_rows(parser.screen())
+}
+
+/// Whether `captured` is painted somewhere in `frame`, cell for cell: placed
+/// by its first non-blank row's text, every other row read at the same
+/// column, up to the pane's border.
+///
+/// Colour is compared as painted. Text the pane leaves in its default colour
+/// may be painted in a theme's, but in one and the same everywhere — so a
+/// colour leaking onto it still shows.
+fn grid_painted(frame: &[Vec<Styled>], captured: &[Vec<Styled>]) -> bool {
+    let text = |row: &[Styled]| -> String {
+        row.iter()
+            .map(|c| c.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    };
+    let Some(first) = captured.iter().position(|row| !text(row).is_empty()) else {
+        return false;
+    };
+    let needle: Vec<char> = text(&captured[first]).chars().collect();
+    let found = frame.iter().enumerate().find_map(|(y, row)| {
+        let chars: Vec<char> = row.iter().map(|c| c.ch).collect();
+        chars
+            .windows(needle.len())
+            .position(|cells| cells == needle.as_slice())
+            .map(|x| (y, x))
+    });
+    let Some((y, x)) = found else {
+        return false;
+    };
+    let Some(top) = y.checked_sub(first) else {
+        return false;
+    };
+    let mut default_fg = None;
+    captured.iter().enumerate().all(|(i, want)| {
+        let Some(row) = frame.get(top + i) else {
+            return false;
+        };
+        let painted = row.get(x..).unwrap_or_default();
+        let len = text(want).chars().count();
+        painted.len() >= len
+            && want[..len].iter().zip(painted).all(|(want, got)| {
+                let fg = if want.fg == vt100::Color::Default {
+                    *default_fg.get_or_insert(got.fg) == got.fg
+                } else {
+                    want.fg == got.fg
+                };
+                want.ch == got.ch && want.bold == got.bold && want.underline == got.underline && fg
+            })
+            && painted[len..]
+                .iter()
+                .take_while(|cell| !matches!(cell.ch, '│' | '┃' | '║'))
+                // The interface paints the pane's cursor as a block.
+                .all(|cell| matches!(cell.ch, ' ' | '█'))
+    })
+}
+
+/// Wait for the flood to finish and the frame to paint the pane's real screen.
+fn wait_for_true_grid(profile: &Profile, tui: &Tui, pane: &str) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let captured = captured_cells(profile, pane);
+        let done = captured_rows(profile, pane)
+            .iter()
+            .any(|row| row == "flood-done");
+        if done && grid_painted(&tui.styled_rows(), &captured) {
+            return;
+        }
+        if Instant::now() > deadline {
+            tui.give_up(&format!(
+                "the flooded pane to match capture-pane:\n{}",
+                captured_rows(profile, pane).join("\n")
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Wait until the host has printed the flood as far as `row`.
+fn wait_for_host(profile: &Profile, pane: &str, what: &str, row: impl Fn(&str) -> bool) {
+    let deadline = Instant::now() + WAIT;
+    while !captured_rows(profile, pane).iter().any(|r| row(r)) {
+        assert!(Instant::now() < deadline, "{what} on the host");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The palette opens and closes within `RESPONSIVE`. It is drawn from the
+/// kernel's own registry and owes the host nothing, so it can only be late if
+/// the loop is.
+fn palette_answers(tui: &mut Tui, while_: &str) {
+    tui.send(CTRL_P);
+    tui.wait_within(
+        RESPONSIVE,
+        &format!("the palette to open {while_}"),
+        |frame| frame.contains("type to filter commands"),
+    );
+    tui.send(ESC);
+    tui.wait_within(
+        RESPONSIVE,
+        &format!("the palette to close {while_}"),
+        |frame| !frame.contains("type to filter commands"),
+    );
+}
+
+#[test]
+fn a_remote_pane_that_overflows_its_channel_ends_on_its_real_screen() {
+    // A pane that prints faster than its reader drains overflows its channel.
+    // The output dropped there can cut an escape sequence in half, so the grid
+    // is not parsed across the gap: a snapshot catches it up, and what the
+    // interface paints afterwards is what the host's multiplexer holds.
+    //
+    // The host's own multiplexer prints slower than the reader drains, so a
+    // flood straight through never overflows. A real link is what makes it:
+    // stalled with the host's output already in flight, it delivers all of it
+    // at once when it moves again. So the link is held until the host has
+    // printed the whole flood, and the burst is the flood.
+    let Some((profile, link, mut tui, go, pane)) = armed_flood(true) else {
+        return;
+    };
+
+    link.wedge();
+    std::fs::write(&go, "").expect("release the flood");
+    wait_for_host(&profile, &pane, "the flood never finished", |row| {
+        row == "flood-done"
+    });
+    palette_answers(&mut tui, "while a flood waits on a wedged link");
+
+    link.heal();
+    palette_answers(&mut tui, "while the flood lands");
+    wait_for_true_grid(&profile, &tui, &pane);
+    assert!(
+        tui.log_text().contains(OVERFLOWED),
+        "the burst never overflowed the pane's channel, so it tested nothing"
+    );
+
+    tui.send(b"echo after-\"\"flood\r");
+    tui.wait_for("after-flood");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_remote_pane_flooded_on_a_wedged_link_ends_on_its_real_screen_once_it_heals() {
+    // The stand-in's own shallow link: the host's multiplexer is pushed back
+    // on as soon as the link stops carrying, and holds the flood mid-print
+    // until it heals. The interface stays the user's meanwhile — it paints a
+    // new size and answers a chord — and once the link moves the flood runs
+    // to its end and the pane shows the host's screen.
+    let Some((profile, link, mut tui, go, pane)) = armed_flood(false) else {
+        return;
+    };
+
+    link.wedge();
+    std::fs::write(&go, "").expect("release the flood");
+    wait_for_host(&profile, &pane, "the flood never started", |row| {
+        row.starts_with("flood-0")
+    });
+    palette_answers(&mut tui, "while a flood is held by a wedged link");
+    // Narrowed, the header's right-hand end drops out of the grid, so
+    // `Default` is back only once a whole frame was painted at the new width.
+    tui.resize(30, 100);
+    tui.wait_within(
+        RESPONSIVE,
+        "the interface to repaint at the new width while a flood is held",
+        |frame| frame.contains("Default"),
+    );
+
+    link.heal();
+    wait_for_true_grid(&profile, &tui, &pane);
+
+    tui.send(b"echo after-\"\"flood\r");
+    tui.wait_for("after-flood");
     assert!(tui.quit().success());
 }
 

@@ -136,6 +136,12 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   scenarios assert only on a kernel-owned overlay, never on the session list:
   the list returns on a snapshot tick, seconds even on a healthy link, so it
   cannot tell a frozen interface from a patient one. See ADR-P24.
+  Two more **flood** a remote pane and compare its painted grid with
+  `capture-pane`. A shallow pipe relay lets tmux push back and stop printing, so
+  the one that must overflow the pane's channel (#1472's resync) first runs
+  `deepen_remote_downlink`, which spools the host's output while the link is
+  wedged and delivers it all at once on heal, and asserts the overflow's debug
+  line in the log.
 - **`tests/self_update_scratch.rs`** (unix) — the real update CLI with private
   config/data/home and bounded fake downloaders, terminated in its own process
   group mid-download. The leader stays unreaped until group teardown so the
