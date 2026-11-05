@@ -1462,6 +1462,35 @@ mod tests {
         ));
     }
 
+    /// A pinned agent gets the same argv fresh or not once its id is new; the
+    /// guard is for the agents that resume without one — the latest session in
+    /// the directory (opencode) or a bound conversation id (codex).
+    #[test]
+    fn a_fresh_plan_carries_no_resume_group_for_agents_that_resume_without_the_id() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let plan = |agent: &str, fresh: bool| {
+            let mut sess = session(Some("sid"), Some(temp.path().to_path_buf()));
+            sess.agent = agent.into();
+            db.upsert_session(&sess).unwrap();
+            db.set_session_meta(
+                sess.id,
+                "thurbox.codex_conversation_id",
+                "0199a213-81c0-7800-8aa1-bbab2a035a53",
+            )
+            .unwrap();
+            let env = Default::default();
+            build_plan(&db, &sess, None, None, true, None, &env, fresh)
+                .unwrap()
+                .args
+        };
+        assert!(plan("opencode", false).contains(&"--continue".to_string()));
+        assert!(!plan("opencode", true).contains(&"--continue".to_string()));
+        assert!(plan("codex", false).contains(&"resume".to_string()));
+        assert!(!plan("codex", true).contains(&"resume".to_string()));
+    }
+
     #[test]
     fn restart_plan_requires_agent_session_id() {
         let temp = tempfile::TempDir::new().unwrap();
