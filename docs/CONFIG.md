@@ -73,10 +73,11 @@ lock, spec and bundled files, and the heartbeat's state — is written through
 one writer, `paths::write_atomically`. It stages a complete file beside the
 destination and replaces it with one native same-directory rename, so a reader
 never observes a truncated intermediate file and a failed staged write (a
-crash, a full disk) leaves the previous file intact. On Unix this is `rename`;
-native Windows uses `MoveFileExW` with replacement. An existing symlink is
-preserved and its target is replaced, a replaced file keeps its
-permissions, and a file made read-only is refused rather than replaced. This
+crash, a full disk) leaves the previous file intact. The rename is
+`std::fs::rename`, which on Windows replaces even while a reader holds the old
+file open. An existing symlink is preserved and its target is replaced, a
+replaced file keeps its permissions, and a file made read-only is refused
+rather than replaced. This
 protects the process-interruption boundary, not storage failure: the staged
 file and parent directory are not explicitly synced to stable storage.
 `tests/architecture_rules.rs`

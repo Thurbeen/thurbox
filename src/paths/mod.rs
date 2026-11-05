@@ -73,6 +73,9 @@ pub fn home_dir() -> Option<PathBuf> {
 /// and an executable stays executable — which a bare rename would reset. A
 /// read-only one is refused, as `fs::write` refused it: the rename needs only
 /// the directory to be writable, and would otherwise undo the user's lock.
+/// The rename is `std::fs::rename` on every platform: on Windows it replaces
+/// with POSIX semantics, so a reader holding the old file open does not make
+/// the save fail, where `MoveFileExW` answers "Access is denied".
 /// This does not promise durability across storage or operating-system failure;
 /// neither the file nor its parent directory is synced explicitly.
 pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
@@ -97,7 +100,7 @@ pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::
     open_staged(&staged, kept.as_ref())
         .and_then(|mut file| std::io::Write::write_all(&mut file, contents.as_ref()))
         .and_then(|()| kept.map_or(Ok(()), |mode| std::fs::set_permissions(&staged, mode)))
-        .and_then(|()| replace_file(&staged, &path))
+        .and_then(|()| std::fs::rename(&staged, &path))
         .inspect_err(|_| {
             let _ = std::fs::remove_file(&staged);
         })
@@ -166,36 +169,6 @@ fn write_destination(path: &Path) -> std::io::Result<PathBuf> {
         }
     }
     Err(std::io::Error::other("too many config file symlinks"))
-}
-
-#[cfg(not(windows))]
-fn replace_file(staged: &Path, path: &Path) -> std::io::Result<()> {
-    std::fs::rename(staged, path)
-}
-
-#[cfg(windows)]
-fn replace_file(staged: &Path, path: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let staged: Vec<u16> = staged.as_os_str().encode_wide().chain(Some(0)).collect();
-    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: both arguments are valid, NUL-terminated UTF-16 paths and remain
-    // alive for the duration of the call.
-    let moved = unsafe {
-        MoveFileExW(
-            staged.as_ptr(),
-            path.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
 }
 
 /// Whether `exe` resolves on `PATH`. A minimal lookup that avoids pulling in a
