@@ -66,7 +66,7 @@ gate:
 
 ci:
   required: true
-  # ci.yml sets `cancel-in-progress: true`, so a cancelled check here almost
+  # ci.yml cancels a superseded pull request run, so a cancelled check here almost
   # always means a newer push superseded it, not provider-side flakiness.
   # Read the failing job rather than re-running the pipeline on the theory
   # that it passes next time.

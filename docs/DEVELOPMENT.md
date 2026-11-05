@@ -174,13 +174,37 @@ The responder optimization retains the gate commands, features, timeouts,
 assertions, CI selectors and platform lanes: Linux x86-64 and ARM checks, native
 Windows checks/tests, Nix,
 security, docs, shell, Lua, website, installer/packaging probes and SonarQube.
-The only nextest configuration change corrects a comment; scheduling is unchanged.
+The only nextest configuration change in that work corrected a comment; scheduling
+changed later (see CI cache scope and test scheduling).
 The two added cases cover fragmented replies and the silent-terminal fallback.
 The separately integrated refusal fixture from PR #1539 uses a closed input
 channel with a still-live program to check error forwarding; the existing
 non-draining-receiver unit test retains deterministic full-channel coverage.
 Native Windows runtime evidence comes from CI; these local measurements are Unix
 PTY measurements.
+
+### CI cache scope and test scheduling
+
+A cache saved by a `pull_request` run is scoped to that PR's merge ref. No
+other PR can restore it, and before the change below there was no cache on
+`main` at all, so every PR's first run built its dependencies from scratch.
+Over the 39 successful runs from 1 to 5 November 2026, 22 Nextest jobs and 19
+Windows test jobs started with no cache. The median build took 8.7 min cold
+against 3.8 min warm for Nextest, and 13.9 min against 6.9 min for the Windows
+tests. CI now also runs on push
+to `main`, which is the only scope every PR can read, and only `main` saves the
+Rust caches. Pull-request saves could not be shared, and they kept the
+repository over its 10 GB cache quota.
+
+The CI nextest profile gives two binaries a priority. `tui_e2e` runs on one
+thread (the `e2e-pty` group), so its roughly 370 s of tests form the longest
+chain in the run. Before the priority it started only after the rest of the
+suite, and finished as a single-threaded tail: a 510 s test phase for 934
+test-seconds on four cores. `host_probe_deadline` takes about 135 s on Windows,
+and that run used to finish by waiting on it alone. With the priorities both
+start first. On four threads locally, the full suite went from 545 s to
+384–402 s over three runs, without changing which tests run, their group or
+their timeouts.
 
 ### Debug information and disk usage
 
