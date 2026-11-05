@@ -387,6 +387,19 @@ pub struct RestartReport {
     /// A relaunch refused because the agent is crash-looping
     /// ([`CRASH_LOOP_RELAUNCHES`]); the session is marked lost instead.
     pub held_back: bool,
+    /// A repair of a session that has been deleted, here or on its host:
+    /// nothing was relaunched, and nothing failed either.
+    pub gone: bool,
+}
+
+impl RestartReport {
+    /// A repair that found the session deleted ([`Self::gone`]).
+    fn gone() -> Self {
+        Self {
+            gone: true,
+            ..Self::default()
+        }
+    }
 }
 
 impl RestartReport {
@@ -744,7 +757,7 @@ fn restart_for(
         // restart blamed a delete for something it did on purpose.
         None if why.is_a_repairer() => {
             tracing::debug!("{session_id} is gone; nothing to relaunch");
-            return Ok(RestartReport::default());
+            return Ok(RestartReport::gone());
         }
         None => {
             return Err(crate::session_ops::OpError::NotFound(format!(
@@ -990,7 +1003,7 @@ fn restart_delegated(
                 session.name,
                 host.name
             );
-            return Ok((RestartReport::default(), serde_json::Value::Null));
+            return Ok((RestartReport::gone(), serde_json::Value::Null));
         }
         Err(e) => return Err(e),
     };
@@ -1008,7 +1021,7 @@ fn restart_delegated(
     // `gone` rather than "not found". Nothing was relaunched, so the
     // post-restart hooks are not told otherwise.
     if result["gone"].as_bool().unwrap_or(false) {
-        return Ok((RestartReport::default(), result));
+        return Ok((RestartReport::gone(), result));
     }
     hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session.id);
     // A fresh restart on the host moved the session to a new conversation.

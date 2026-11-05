@@ -468,11 +468,9 @@ fn a_repairer_for_a_session_deleted_since_its_snapshot_is_a_no_op() {
 
     let outcome = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true);
 
-    assert!(
-        outcome.is_ok(),
-        "a repairer must not fail on a session already deleted: {:?}",
-        outcome.err().map(|e| e.to_string())
-    );
+    let report = outcome
+        .unwrap_or_else(|e| panic!("a repairer must not fail on a session already deleted: {e}"));
+    assert!(report.gone, "and it says nothing was relaunched");
 }
 
 /// A delete that began after the repairer checked the hold: the host has
@@ -488,10 +486,11 @@ fn a_repairer_the_host_answers_not_found_is_a_no_op() {
 
     let outcome = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true);
 
+    let report = outcome
+        .unwrap_or_else(|e| panic!("a repairer must not fail on a session its host deleted: {e}"));
     assert!(
-        outcome.is_ok(),
-        "a repairer must not fail on a session its host deleted: {:?}",
-        outcome.err().map(|e| e.to_string())
+        report.gone,
+        "a driver is not told a deleted session was restarted"
     );
     assert!(
         fake::calls()
@@ -499,6 +498,62 @@ fn a_repairer_the_host_answers_not_found_is_a_no_op() {
             .any(|c| c.get(1).map(String::as_str) == Some("restart")),
         "with no hold here, the host is still the one asked"
     );
+}
+
+/// The same race against a host on this build, which answers a repair of a
+/// session it has deleted with `gone` instead of "not found". Nothing was
+/// relaunched, so the report says so and no post-restart hook runs.
+#[test]
+fn a_repairer_the_host_answers_gone_reports_gone_and_fires_no_hooks() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-gone-there");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    fake::install_runner(Box::new(move |_, args| {
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        match words.as_slice() {
+            ["session", "restart", _, "--if-missing"] => Ok(json!({
+                "restarted": false, "held_back": false, "gone": true,
+            })),
+            ["session", "list", ..] => Ok(json!([])),
+            other => Err(fake::answered(&format!("unscripted: {}", other.join(" ")))),
+        }
+    }));
+    let fired = rig._temp.path().join("post-restart-fired");
+    let hooks = crate::agent::hooks_config::hooks_config_path().unwrap();
+    std::fs::create_dir_all(hooks.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hooks,
+        format!(
+            "[[hooks]]\nevent = 'session.post_restart'\ncommand = 'touch {}'\n",
+            fired.display()
+        ),
+    )
+    .unwrap();
+
+    let report = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true)
+        .unwrap_or_else(|e| panic!("a repair the host answers gone succeeds: {e}"));
+
+    assert!(report.gone, "the host's gone reaches the caller");
+    assert!(
+        !fired.exists(),
+        "no post-restart hook for a relaunch that never happened"
+    );
+
+    // The control: the same rig does fire the hook for a restart that happened.
+    fake::install_runner(Box::new(move |_, args| {
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        match words.as_slice() {
+            ["session", "restart", ..] => Ok(json!({ "restarted": true })),
+            ["session", "list", ..] => Ok(json!([])),
+            other => Err(fake::answered(&format!("unscripted: {}", other.join(" ")))),
+        }
+    }));
+    let report = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, false)
+        .unwrap_or_else(|e| panic!("an asked restart the host takes succeeds: {e}"));
+    assert!(!report.gone);
+    assert!(fired.exists(), "the hook fires for a real restart");
 }
 
 /// A restart somebody asked for by name is not a repair, so a session that is

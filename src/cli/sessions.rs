@@ -1700,21 +1700,28 @@ fn run_restart(
     let report = crate::session_ops::restart::restart_session_headless_with(
         db, backends, session.id, if_missing,
     )?;
-    let mut human = match report.held_back {
-        true => format!(
+    let mut human = match (report.held_back, report.gone) {
+        (true, _) => format!(
             "Not relaunching '{}' ({}): {}. `thurbox-cli session restart {}` brings it back.",
             session.name,
             session.id,
             crate::session_ops::restart::held_back_reason(),
             session.id
         ),
-        false => format!("Restarted session '{}' ({})", session.name, session.id),
+        // Deleted between the lookup above and the repair, here or on its
+        // host. The same answer as `restart_of_a_deleted_session`.
+        (false, true) => format!(
+            "'{}' ({}) has been deleted; nothing to relaunch",
+            session.name, session.id
+        ),
+        (false, false) => format!("Restarted session '{}' ({})", session.name, session.id),
     };
     push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
         json!({
-            "restarted": !report.held_back,
+            "restarted": !report.held_back && !report.gone,
             "held_back": report.held_back,
+            "gone": report.gone,
             "session_id": session.id.to_string(),
             "session_name": session.name,
             "hook_failures": report.hook_failures,
