@@ -3640,17 +3640,14 @@ impl SessionFacts {
         if self.parked.contains(&s.id) {
             return hook.parked();
         }
-        let mut hook = hook.with_launch_failure(self.launch_failures.get(&s.id).cloned());
-        let remote = crate::session::Route::is_remote_key(&s.backend_type);
-        // What the interface shows as `unreachable` from a failed attach; here
-        // the evidence is the verdict the last probe of that host recorded.
-        if remote && crate::session_ops::host_cli::recorded_down(&s.backend_type) {
-            hook = hook.host_unreachable();
-        }
+        let hook = crate::session_ops::host_cli::with_host_verdict(
+            hook.with_launch_failure(self.launch_failures.get(&s.id).cloned()),
+            &s.backend_type,
+        );
         let Some(backends) = probe else {
             return hook;
         };
-        if remote {
+        if crate::session::Route::is_remote_key(&s.backend_type) {
             return hook.pane_unavailable();
         }
         probe_pane(hook, registry, agent, backends, s)
