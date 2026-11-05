@@ -1503,6 +1503,9 @@ impl SnapshotStore {
             row.hook_state = None;
             row.status = SessionState::Running;
             self.hook_state_at.remove(session);
+            // The report this retires may still be waiting for its answer,
+            // which must not put it back.
+            self.hook_corrections.remove(session);
             self.mark_changed();
         }
     }
@@ -2948,6 +2951,9 @@ mod tests {
             None,
             "the report Enter superseded survived its retirement"
         );
+        // Nor may the hook write's late answer show it again.
+        assert_eq!(store.current().session(&id).unwrap().hook_state, None);
+        assert_eq!(status_of(&store, &id), SessionState::Running);
     }
 
     /// The local path: an agent's own `thurbox-cli session signal` writes the
