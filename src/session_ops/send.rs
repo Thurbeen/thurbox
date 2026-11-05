@@ -234,7 +234,7 @@ fn hand_over(
         kind: "session-send".into(),
         body: text.to_string(),
     };
-    super::delivery::enqueue_and_deliver(db, session, new, policy.from, false)
+    super::delivery::enqueue_and_deliver(db, session, new, policy.from, false, None)
 }
 
 fn failure(delivery: &Delivery, session: &SharedSession, strict: bool) -> Option<OpError> {

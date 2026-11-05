@@ -2148,7 +2148,8 @@ laptop-driven remote path shrank to a fallback.
 **Consequences**: the id is the host's, so `THURBOX_SESSION` inside the agent
 matches a row in whichever database a `thurbox-cli` on that machine reaches —
 `session signal` and `message send` work natively on the host for a session
-created from afar, and the psmux status gate (`Psmux::HOOK_STATUS`, ADR-32) is not consulted
+created from afar — and a peer's `message send` to one is run by the host's
+CLI for that reason (#1643), and the psmux status gate (`Psmux::HOOK_STATUS`, ADR-32) is not consulted
 for a shared Windows host. Relaunch after a reboot is the host's
 (`session restart --if-missing`, idempotent across observers). The mirror
 writes nothing when nothing changed. Status keeps its sub-second channel on

@@ -660,3 +660,236 @@ fn a_send_from_a_session_unknown_here_is_not_called_outside_thurbox() {
         "{line}"
     );
 }
+
+/// `message send` with `args` and `--json` against the isolated database,
+/// whatever it exits with.
+fn send_with(to: &str, args: &[&str], path: &std::ffi::OsStr, log: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["message", "send", "--to", to, "--kind", "note", "--json"])
+        .args(args)
+        .env("PATH", path)
+        .env("FAKE_CODEX_LOG", log)
+        .env_remove("THURBOX_SESSION")
+        .output()
+        .expect("run message send")
+}
+
+/// A send that reached only the mailbox says so in a field of its own (issue
+/// #1643): a sender must not have to know that one value of `delivered_via`
+/// means nobody was told. `--require-native` makes it a failed command, with
+/// the message still enqueued for a retry or a drain.
+#[test]
+fn a_send_that_reached_only_the_mailbox_says_it_was_not_delivered() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = isolate(home.path());
+    let log = home.path().join("codex-queue.log");
+    let path = fake_codex(&home.path().join("bin"));
+    let row = codex_row("aaaaaaaa-1111-4111-8111-111111111111");
+    db.upsert_session(&row).expect("insert row");
+
+    let plain = send(&row, "nobody reads this", &path, &log);
+    assert_eq!(plain["delivered"], false, "{plain}");
+
+    let out = send_with(
+        &row.name,
+        &["--body", "or this", "--require-native"],
+        &path,
+        &log,
+    );
+    assert!(
+        !out.status.success(),
+        "a mailbox-only send must fail under --require-native"
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("the answer is still printed");
+    assert_eq!(doc["delivered"], false, "{doc}");
+    assert_eq!(doc["enqueued"], true, "{doc}");
+    let unread = db.list_messages(row.id, true, None).expect("list unread");
+    assert_eq!(unread.len(), 2, "both bodies wait in the mailbox");
+
+    codex_session_start(&row, "bbbbbbbb-2222-4222-8222-222222222222", "startup");
+    let out = send_with(
+        &row.name,
+        &["--body", "now bound", "--require-native"],
+        &path,
+        &log,
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["delivered"], true, "{doc}");
+}
+
+/// A Codex session is sent its first prompt moments after it is spawned,
+/// before its `SessionStart` hook has bound a thread. `--wait-bound` holds the
+/// send until the binding lands and then queues it on that thread, instead of
+/// leaving the brief in a mailbox nobody reads.
+#[test]
+fn a_send_waiting_for_the_binding_reaches_a_codex_session_that_binds_later() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let db = isolate(home.path());
+    let log = home.path().join("codex-queue.log");
+    let path = fake_codex(&home.path().join("bin"));
+    let row = codex_row("cccccccc-3333-4333-8333-333333333333");
+    db.upsert_session(&row).expect("insert row");
+
+    let sender = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["message", "send", "--to", &row.name, "--kind", "brief"])
+        .args(["--body", "your first job", "--wait-bound", "30", "--json"])
+        .env("PATH", &path)
+        .env("FAKE_CODEX_LOG", &log)
+        .env_remove("THURBOX_SESSION")
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn message send");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let thread = "dddddddd-4444-4444-8444-444444444444";
+    codex_session_start(&row, thread, "startup");
+
+    let out = sender.wait_with_output().expect("message send");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("send --json");
+    assert_eq!(doc["delivered_via"], "codex-queue", "{doc}");
+    assert_eq!(doc["delivered"], true, "{doc}");
+    let queued = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(queued.lines().collect::<Vec<_>>(), [thread]);
+}
+
+/// A session on a host that shares its sessions is reached through the host's
+/// own `thurbox-cli` (ADR-24): its agent's inbox, and the mailbox it drains, are
+/// on that host, where the binding was recorded. Nothing is faked but `ssh`,
+/// which runs the real CLI against the host's data directory, and `codex`.
+#[test]
+fn a_send_to_a_session_on_a_sharing_host_is_delivered_there() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = |sub: &str| root.path().join(sub);
+    for sub in [
+        "bin",
+        "home",
+        "config",
+        "data",
+        "host-bin",
+        "host-home",
+        "host-config",
+        "host-data",
+    ] {
+        std::fs::create_dir_all(path(sub)).expect("mkdir");
+    }
+    let settings = "[features]\nautomations = false\nversion_check = false\nauto_update = false\n";
+    std::fs::write(path("config/settings.toml"), settings).unwrap();
+    std::fs::write(path("host-config/settings.toml"), settings).unwrap();
+    std::fs::write(
+        path("config/hosts.toml"),
+        "[[hosts]]\nname = 'probe'\ndestination = 'probe'\nshare_sessions = true\n",
+    )
+    .unwrap();
+    let cli_dir = Path::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .parent()
+        .unwrap();
+    let ssh = path("bin/ssh");
+    std::fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o) shift 2 ;; -*) shift ;; *) shift; break ;; esac; done\n\
+             printf '%s\\n' \"$*\" >> '{root}/ssh.log'\n\
+             export HOME='{root}/host-home' THURBOX_CONFIG_DIR='{root}/host-config' THURBOX_DATA_DIR='{root}/host-data'\n\
+             export CLAUDE_CONFIG_DIR='{root}/host-home/claude'\n\
+             export PATH='{root}/host-bin':'{cli}':/usr/bin:/bin\n\
+             unset THURBOX_SESSION THURBOX_SESSION_ID THURBOX_SOCKET THURBOX_SOCKET_FOR\n\
+             exec sh -c \"$*\"\n",
+            root = root.path().display(),
+            cli = cli_dir.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let log = path("host-codex.log");
+    let codex = path("host-bin/codex");
+    std::fs::write(
+        &codex,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // The host's record, bound by its own hook; the caller's mirror of it.
+    let thread = "eeeeeeee-5555-4555-8555-555555555555";
+    let on_host = codex_row("ffffffff-6666-4666-8666-666666666666");
+    let host_db = Database::open(&path("host-data/thurbox.db")).expect("host db");
+    host_db.upsert_session(&on_host).unwrap();
+    host_db
+        .set_session_meta(on_host.id, CODEX_THREAD_META, thread)
+        .unwrap();
+    let caller_db = Database::open(&path("data/thurbox.db")).expect("caller db");
+    caller_db
+        .upsert_session(&SharedSession {
+            backend_type: "ssh:probe".into(),
+            ..on_host.clone()
+        })
+        .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args([
+            "message",
+            "send",
+            "--to",
+            &on_host.id.to_string(),
+            "--kind",
+            "brief",
+        ])
+        .args(["--body=--across the wire", "--require-native", "--json"])
+        .env("HOME", path("home"))
+        .env("THURBOX_CONFIG_DIR", path("config"))
+        .env("THURBOX_DATA_DIR", path("data"))
+        .env("CLAUDE_CONFIG_DIR", path("home/claude"))
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                path("bin").display(),
+                std::env::var("PATH").unwrap()
+            ),
+        )
+        .env_remove("THURBOX_SESSION")
+        .env_remove("THURBOX_SESSION_ID")
+        .output()
+        .expect("run message send");
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "send --json ({e}): {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
+    assert!(out.status.success(), "{doc}");
+    assert_eq!(doc["delivered_via"], "codex-queue", "{doc}");
+    assert_eq!(doc["delivered"], true, "{doc}");
+    assert_eq!(doc["host"], "probe", "{doc}");
+    let queued = std::fs::read_to_string(&log).unwrap_or_default();
+    assert_eq!(queued.lines().collect::<Vec<_>>(), [thread]);
+    // The host's mailbox holds the record; the caller's holds no stray copy.
+    let host_rows = host_db.list_messages(on_host.id, false, None).unwrap();
+    assert_eq!(host_rows.len(), 1);
+    assert_eq!(host_rows[0].delivered_via.as_deref(), Some("codex-queue"));
+    assert_eq!(host_rows[0].body, "--across the wire");
+    // Over stdin, not the command line: a Windows host's shell takes 8191
+    // characters, and `ps` on either machine shows a command line to everyone.
+    let link = std::fs::read_to_string(path("ssh.log")).unwrap_or_default();
+    assert!(
+        !link.contains("across the wire"),
+        "the body crossed as an argument:\n{link}"
+    );
+    assert!(caller_db
+        .list_messages(on_host.id, false, None)
+        .unwrap()
+        .is_empty());
+}

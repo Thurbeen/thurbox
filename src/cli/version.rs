@@ -61,6 +61,7 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
                 "purged_tombstones": true,
                 "lifecycle_preconditions": true,
                 "session_restart_fresh": true,
+                "message_native_send": true,
             }),
             format!("thurbox {current}"),
         );
@@ -164,6 +165,7 @@ mod tests {
         assert_eq!(out["create_parity"], true);
         assert_eq!(out["telemetry_attrs"], true);
         assert_eq!(out["session_restart_fresh"], true);
+        assert_eq!(out["message_native_send"], true);
         assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
         assert!(out.failure.is_none(), "plain version never fails");
     }

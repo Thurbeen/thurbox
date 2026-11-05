@@ -1177,7 +1177,11 @@ fn stripping_keeps_every_line() {
 /// `session_ops/delivery.rs`, which `session send` shares for the text it
 /// leaves in the mailbox (#1468) — and follows every resolved reference into a
 /// sibling `cli` file, so a helper that later grows a pane write is caught too.
-/// `session_ops::delivery` is the one part of `session_ops` the path may name.
+/// `session_ops::delivery` is the one part of `session_ops` the path may name,
+/// save the delegation a session on a sharing host takes (ADR-24, #1643): its
+/// `Executor` and `host_cli`, which run `thurbox-cli message send` on the host
+/// — this same path, under this same rule in the host's binary. They are not
+/// followed: what they reach is the transport to the host, not its panes.
 /// A reference is judged by the node it resolves to, so a multiplexer item
 /// re-exported under another name still counts. `cli/mod.rs` is not followed:
 /// the path reaches it only for `CommandError`, and it is the dispatcher that
@@ -1185,6 +1189,7 @@ fn stripping_keeps_every_line() {
 #[test]
 fn message_delivery_never_reaches_the_multiplexer() {
     const FORBIDDEN: &[&str] = &["agent", "backend", "session_ops", "kernel", "coordinator"];
+    const DELEGATION: &[&str] = &["Executor", "host_cli"];
     let tree = src_tree();
     let references = tree.references(&node_names(MODULE_RULES));
     let root = src_root();
@@ -1207,6 +1212,10 @@ fn message_delivery_never_reaches_the_multiplexer() {
             if let [first, next, ..] = r.path.as_slice() {
                 if first == "session_ops" && next == "delivery" {
                     queue.push(delivery.clone());
+                    continue;
+                }
+                if first == "session_ops" && file == delivery && DELEGATION.contains(&next.as_str())
+                {
                     continue;
                 }
                 if first == "cli" && cli.join(format!("{next}.rs")).is_file() {
