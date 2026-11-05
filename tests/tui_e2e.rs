@@ -8699,6 +8699,107 @@ fn connected_host_markers_keep_arrows_without_a_circle() {
     );
 }
 
+/// Every window on the remote stand-in's server, with the stamp it carries.
+fn stamped_listing(profile: &Profile) -> String {
+    let out = profile.server.tmux(&[
+        "list-windows",
+        "-a",
+        "-F",
+        "#{window_id}|#{@thurbox_session}|#{@thurbox_role}|#{session_name}",
+    ]);
+    assert!(out.status.success(), "list windows: {out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Two windows carrying one session's stamp on a *host* (issue #1635). The
+/// repair of #1207 retires the older one, and a host is where that repair was
+/// never run: `stamped_match` refuses the pair by design, so every pane verb on
+/// the session was refused until someone killed a window by hand.
+///
+/// The pair is planted by hand for the reason `one_window_per_stamp` gives: a
+/// spawn retires the window it would have paired with. The planted window is
+/// the newer, so it keeps the identity, and it records what reaches it — the
+/// send landing there is what "addressable again" means.
+#[test]
+fn a_remote_session_stamped_on_two_windows_is_addressable_again() {
+    let Some((profile, _link, mut tui)) = remote_shell_session() else {
+        return;
+    };
+    let listing = stamped_listing(&profile);
+    let (session_id, tmux_session) = listing
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<_> = line.split('|').collect();
+            (fields.get(2) == Some(&"agent") && !fields[1].is_empty())
+                .then(|| (fields[1].to_string(), fields[3].to_string()))
+        })
+        .unwrap_or_else(|| panic!("the remote agent window is stamped:\n{listing}"));
+
+    let recorded = profile.path("planted-input");
+    let created = profile.server.tmux(&[
+        "new-window",
+        "-d",
+        "-P",
+        "-F",
+        "#{window_id}",
+        "-t",
+        &format!("{tmux_session}:"),
+        "-n",
+        "tb-planted",
+        "sh",
+        "-c",
+        &format!("exec cat > {}", shell_word(&recorded)),
+    ]);
+    assert!(created.status.success(), "plant a window: {created:?}");
+    let planted = String::from_utf8_lossy(&created.stdout).trim().to_string();
+    for (option, value) in [
+        ("@thurbox_session", session_id.as_str()),
+        ("@thurbox_role", "agent"),
+    ] {
+        let out = profile
+            .server
+            .tmux(&["set-option", "-w", "-t", &planted, option, value]);
+        assert!(out.status.success(), "stamp {option}: {out:?}");
+    }
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
+    profile.apply(&mut cmd);
+    let sent = cmd
+        .args(["session", "send", REMOTE_NAME, "reached-the-survivor"])
+        .output()
+        .expect("run thurbox-cli");
+    assert!(
+        sent.status.success(),
+        "a send to the paired remote session was refused:\n{}{}\nserver holds:\n{}",
+        String::from_utf8_lossy(&sent.stdout),
+        String::from_utf8_lossy(&sent.stderr),
+        stamped_listing(&profile)
+    );
+
+    let stamped: Vec<String> = stamped_listing(&profile)
+        .lines()
+        .filter(|line| line.contains(&format!("|{session_id}|agent|")))
+        .filter_map(|line| line.split('|').next().map(str::to_string))
+        .collect();
+    assert_eq!(
+        stamped,
+        vec![planted],
+        "the older window must have been retired on the host"
+    );
+    let deadline = Instant::now() + WAIT;
+    while !std::fs::read_to_string(&recorded)
+        .unwrap_or_default()
+        .contains("reached-the-survivor")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the send never reached the window that kept the stamp"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(tui.quit().success());
+}
+
 /// A remote session whose worktree carries ~100 KB of uncommitted change: the
 /// shape that made one idle remote session cost 1.3 MB/min, all of it the
 /// selected session's working diff fetched again over ssh every few seconds.
