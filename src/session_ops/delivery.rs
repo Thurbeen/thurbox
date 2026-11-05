@@ -35,9 +35,6 @@ pub(crate) const CLAUDE_SOCKET_META: &str = "thurbox.claude_messaging_socket";
 /// `$CLAUDE_CONFIG_DIR`s.
 const CLAUDE_REGISTRY_META: &str = "thurbox.claude_registry_dir";
 
-/// Session-meta key `session bind-codex` records the Codex thread under.
-const CODEX_THREAD_META: &str = "thurbox.codex_conversation_id";
-
 /// The env var Claude Code exports to hooks and its Bash tool.
 const CLAUDE_SOCKET_ENV: &str = "CLAUDE_CODE_MESSAGING_SOCKET";
 
@@ -193,7 +190,7 @@ pub(crate) fn gather(db: &Database, recipient: &SharedSession) -> Evidence {
     Evidence {
         remote: false,
         claude_sockets,
-        codex_thread: meta(CODEX_THREAD_META),
+        codex_thread: meta(crate::session::CODEX_CONVERSATION_META),
     }
 }
 

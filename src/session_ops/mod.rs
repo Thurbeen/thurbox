@@ -67,6 +67,7 @@ pub mod send;
 pub mod set_key;
 #[cfg(test)]
 mod shared_tests;
+pub mod signals;
 pub mod spawn;
 pub mod state_hooks;
 pub mod tasks;
@@ -139,7 +140,7 @@ fn type_into(
         .send_text(pane, text, submit)
         .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))?;
     if let Some(prior) = prior {
-        if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
+        if let Err(e) = signals::retire(db, session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after input: {e}");
         }
     }
@@ -351,7 +352,7 @@ fn press(
         .send_key(pane, key)
         .map_err(|e| OpError::from(e).context(format!("session '{}'", session.name)))?;
     if let Some(prior) = prior {
-        if let Err(e) = db.clear_hook_state_if_unchanged(session.id, &prior) {
+        if let Err(e) = signals::retire(db, session.id, &prior) {
             tracing::warn!(session_id = %session.id, "could not retire Codex status after Enter: {e}");
         }
     }
@@ -996,7 +997,7 @@ fn fork_on_backend(
             .is_ok_and(|d| d.is_family("codex") && d.resume_args == ["resume", "{id}"]);
     let fork_session_id = if codex_builtin {
         Some(
-            db.get_session_meta(source.id, "thurbox.codex_conversation_id")
+            db.get_session_meta(source.id, crate::session::CODEX_CONVERSATION_META)
                 .map_err(|e| format!("read Codex conversation id: {e}"))?
                 .filter(|id| uuid::Uuid::parse_str(id).is_ok())
                 .unwrap_or_default(),

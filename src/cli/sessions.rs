@@ -2291,10 +2291,22 @@ fn run_signal(
                 None if *turn_start => ReportFrom::TurnStart,
                 None => ReportFrom::Agent,
             };
-            let stored = db
-                .signal_hook_state(target.id, state, from)
-                .map_err(|e| format!("set_hook_state: {e}"))?
-                .ok_or_else(parked)?;
+            use crate::session_ops::signals::{report, Reported};
+            let stored = match report(db, target.id, state, from)
+                .map_err(|e| format!("record the state: {e}"))?
+            {
+                Reported::Stored { state, .. } => state,
+                Reported::NotAState => {
+                    return Err(CommandError::with_code(
+                        format!(
+                            "'{state}' is not a state; one of {}",
+                            crate::session::HOOK_STATES.join(", ")
+                        ),
+                        super::EXIT_USAGE,
+                    ))
+                }
+                Reported::NotTaken => return Err(parked()),
+            };
             // A turn means the conversation exists, so a restart must resume
             // it rather than pin its id afresh — see
             // `session_ops::conversation_started`. Recorded only when the
@@ -2542,7 +2554,7 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
             "Cannot prove a pane-local Codex process. No safe live repair is available; see the Codex binding recovery instructions before an operator-controlled relaunch. Do not manually copy a conversation ID.",
         ));
     }
-    const KEY: &str = "thurbox.codex_conversation_id";
+    const KEY: &str = crate::session::CODEX_CONVERSATION_META;
     const PICKER_REQUIRED: &str = crate::session_ops::CODEX_PICKER_REQUIRED;
     let source = payload["source"].as_str().unwrap_or_default();
     match db
@@ -4133,14 +4145,14 @@ mod tests {
         let db = db();
         let session = make_test_session("worker");
         db.upsert_session(&session).unwrap();
-        db.set_session_meta(session.id, "thurbox.codex_conversation_id", "real")
+        db.set_session_meta(session.id, crate::session::CODEX_CONVERSATION_META, "real")
             .unwrap();
 
         let err = run(
             Action::Meta {
                 action: MetaAction::Set {
                     session: "worker".into(),
-                    key: "thurbox.codex_conversation_id".into(),
+                    key: crate::session::CODEX_CONVERSATION_META.into(),
                     value: Some("forged".into()),
                 },
             },
@@ -4154,7 +4166,7 @@ mod tests {
             Action::Meta {
                 action: MetaAction::Unset {
                     session: "worker".into(),
-                    key: "thurbox.codex_conversation_id".into(),
+                    key: crate::session::CODEX_CONVERSATION_META.into(),
                 },
             },
             &db,
@@ -4167,7 +4179,7 @@ mod tests {
             "removing one is refused too"
         );
         assert_eq!(
-            db.get_session_meta(session.id, "thurbox.codex_conversation_id")
+            db.get_session_meta(session.id, crate::session::CODEX_CONVERSATION_META)
                 .unwrap()
                 .as_deref(),
             Some("real")

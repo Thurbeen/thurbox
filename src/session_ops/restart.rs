@@ -128,7 +128,7 @@ fn build_plan(
     );
     let codex_builtin = def.is_family("codex") && def.resume_args == ["resume", "{id}"];
     let codex_id = if codex_builtin && !fresh {
-        db.get_session_meta(session.id, "thurbox.codex_conversation_id")
+        db.get_session_meta(session.id, crate::session::CODEX_CONVERSATION_META)
             .map_err(|e| format!("read Codex conversation id: {e}"))?
             .filter(|id| uuid::Uuid::parse_str(id).is_ok())
     } else {
@@ -940,7 +940,7 @@ fn restart_for(
             return Err(format!("'{}' was deleted while it was restarting", session.name).into());
         }
         // Codex's own conversation id is what a plain restart resumes it by.
-        db.unset_session_meta(session_id, "thurbox.codex_conversation_id")
+        db.unset_session_meta(session_id, crate::session::CODEX_CONVERSATION_META)
             .map_err(|e| {
                 format!(
                     "could not forget the conversation of '{}': {e}",
@@ -1560,7 +1560,7 @@ mod tests {
             db.upsert_session(&sess).unwrap();
             db.set_session_meta(
                 sess.id,
-                "thurbox.codex_conversation_id",
+                crate::session::CODEX_CONVERSATION_META,
                 "0199a213-81c0-7800-8aa1-bbab2a035a53",
             )
             .unwrap();

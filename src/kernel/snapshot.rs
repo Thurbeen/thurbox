@@ -837,6 +837,13 @@ pub struct SnapshotStore {
     /// since printed past, and every other consumer of that stamp already
     /// reads it from the database.
     hook_state_at: std::collections::HashMap<String, i64>,
+    /// The hook report each row was last corrected to in place, by session
+    /// id, numbered from `hook_corrections_made`: only the answer to that one
+    /// may correct the row again. A stamp cannot say which report an answer
+    /// is for — two can share a millisecond, and storage may stamp either
+    /// later than the store did.
+    hook_corrections: std::collections::HashMap<String, u64>,
+    hook_corrections_made: u64,
 }
 
 /// A remote hook event waiting for the session it names to appear.
@@ -903,6 +910,8 @@ impl SnapshotStore {
             pending_focus: None,
             editor: std::sync::mpsc::channel(),
             hook_state_at: std::collections::HashMap::new(),
+            hook_corrections: std::collections::HashMap::new(),
+            hook_corrections_made: 0,
         };
         store.refresh();
         store
@@ -948,6 +957,8 @@ impl SnapshotStore {
             pending_focus: None,
             editor: std::sync::mpsc::channel(),
             hook_state_at: std::collections::HashMap::new(),
+            hook_corrections: std::collections::HashMap::new(),
+            hook_corrections_made: 0,
         };
         store.refresh();
         store
@@ -1236,12 +1247,36 @@ impl SnapshotStore {
                 self.pending_focus = Some(id);
                 false
             }
-            Reply::Stamped(session, stamp) => {
-                match stamp {
-                    Some(stamp) => self.hook_state_at.insert(session, stamp),
-                    None => self.hook_state_at.remove(&session),
+            Reply::Stamped {
+                session,
+                correction,
+                at,
+                state,
+            } => {
+                // A later report corrected the row since: its own answer is
+                // still to come, and until then its stamp and word stand.
+                if self.hook_corrections.get(&session) != Some(&correction) {
+                    return false;
+                }
+                self.hook_corrections.remove(&session);
+                self.hook_state_at.insert(session.clone(), at);
+                // The row was corrected in place to the word reported; storage
+                // may have settled it as another.
+                let Some(row) = self
+                    .current
+                    .sessions
+                    .iter_mut()
+                    .find(|row| row.id == session)
+                else {
+                    return false;
                 };
-                false
+                if row.hook_state.as_deref() == Some(state.as_str()) {
+                    return false;
+                }
+                row.status = derive_state(Some(&state), Some(at), None);
+                row.hook_state = Some(state);
+                self.mark_changed();
+                true
             }
             Reply::Rejected => {
                 self.reread = true;
@@ -1468,6 +1503,9 @@ impl SnapshotStore {
             row.hook_state = None;
             row.status = SessionState::Running;
             self.hook_state_at.remove(session);
+            // The report this retires may still be waiting for its answer,
+            // which must not put it back.
+            self.hook_corrections.remove(session);
             self.mark_changed();
         }
     }
@@ -1523,9 +1561,9 @@ impl SnapshotStore {
 
         let mut applied = 0;
         for event in queue {
-            // Remote-host-controlled free text: allow-list it, never interpret
-            // anything else as a state.
-            if !crate::session::HOOK_STATES.contains(&event.state.as_str()) {
+            // Remote-host-controlled free text: a word that is no state is not
+            // even kept for a pane that appears later.
+            if !crate::session_ops::signals::is_state(&event.state) {
                 continue;
             }
             // A backend reports under the qualified route it serves; the row
@@ -1544,15 +1582,14 @@ impl SnapshotStore {
                 }
                 continue;
             };
-            // The subscription re-reports on every reconnect, so writing an
-            // unchanged state would re-stamp `state_at` and resurrect an
-            // already-acknowledged `done` as unseen.
-            if row.hook_state.as_deref() == Some(event.state.as_str()) {
-                continue;
-            }
-            // A parked session refuses a state it has no process to be in, so
-            // its row is not corrected as though the write had happened.
-            if row.stopped {
+            // Judged as the heartbeat's poll judges it, before the row is
+            // corrected in place: a re-report on reconnect, or a state for a
+            // parked session, must not be shown as though it had been written.
+            if !crate::session_ops::signals::echo_changes(
+                row.hook_state.as_deref(),
+                row.stopped,
+                &event.state,
+            ) {
                 continue;
             }
             let Some(id) = parse_id(&row.id) else {
@@ -1564,13 +1601,23 @@ impl SnapshotStore {
             // is cleared here rather than left to that (absent) refresh, because
             // this path never reaches `assess` at all — it writes the row
             // directly, which is the one case its hook.state gate cannot cover.
-            // Stamped now; the worker answers with the stamp storage chose.
+            // Stamped now; the worker answers with the stamp and the word
+            // storage chose.
             let stamped = crate::sync::current_time_millis() as i64;
             self.hook_state_at.insert(row.id.clone(), stamped);
             row.status = derive_state(Some(&event.state), Some(stamped), None);
             row.hook_state = Some(event.state.clone());
             row.detected_agent = None;
-            writes.push(Write::Hook(id, row.id.clone(), event.state, stamped));
+            self.hook_corrections_made += 1;
+            let correction = self.hook_corrections_made;
+            self.hook_corrections.insert(row.id.clone(), correction);
+            writes.push(Write::Hook {
+                id,
+                row: row.id.clone(),
+                state: event.state,
+                provisional: stamped,
+                correction,
+            });
             applied += 1;
         }
         for write in writes {
@@ -2904,6 +2951,9 @@ mod tests {
             None,
             "the report Enter superseded survived its retirement"
         );
+        // Nor may the hook write's late answer show it again.
+        assert_eq!(store.current().session(&id).unwrap().hook_state, None);
+        assert_eq!(status_of(&store, &id), SessionState::Running);
     }
 
     /// The local path: an agent's own `thurbox-cli session signal` writes the

@@ -1664,25 +1664,8 @@ impl Database {
     /// would see a transition that did not happen.
     pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<bool> {
         Ok(self
-            .write_hook_state(id, state, ReportFrom::Agent, false)?
+            .report_hook_state(id, state, ReportFrom::Agent)?
             .is_some())
-    }
-
-    /// [`Self::set_hook_state`] as `session signal` makes it: `from` says
-    /// whether the report started a turn or came from sub-work. Returns the word
-    /// stored, which the sub-work in flight can make differ from the one
-    /// reported — a `done` with work still running stores `background` (see
-    /// [`crate::session::background_work::settle_report`]) — or `None` when no
-    /// row took it.
-    pub fn signal_hook_state(
-        &self,
-        id: SessionId,
-        state: &str,
-        from: ReportFrom<'_>,
-    ) -> rusqlite::Result<Option<String>> {
-        Ok(self
-            .write_hook_state(id, state, from, false)?
-            .map(|written| written.1))
     }
 
     /// Record one start or end of a session's sub-work (`session signal
@@ -1735,36 +1718,34 @@ impl Database {
         Ok((Some(state.to_string()), true))
     }
 
-    /// [`Self::set_hook_state`] for a report that is news only as a *change*:
-    /// a state the row already holds is left alone, stamp and all, which is
-    /// what keeps a re-delivered `done` the user acknowledged from becoming
-    /// unseen again. Decided under the write lock, so a writer that got there
-    /// first is what it is decided against. Returns the stamp written, or
-    /// `None` when nothing was.
-    ///
-    /// What is read back from a backend's status channel lands here — the
-    /// interface's drain and the heartbeat's status poll alike — read as a
-    /// [`ReportFrom::Echo`]: a late `background` for work that has all ended
-    /// is refused rather than written back over the `done` its end stored.
-    pub fn report_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<Option<i64>> {
-        Ok(self
-            .write_hook_state(id, state, ReportFrom::Echo, true)?
-            .map(|written| written.0))
-    }
-
     /// The one write behind every hook report, returning the stamp and the
-    /// word stored. The sub-work in flight is settled in the same transaction
-    /// as the state it decides, so a report and a work edge racing each other
-    /// are each judged against what the other wrote.
-    fn write_hook_state(
+    /// word stored — which the sub-work in flight can make differ from the one
+    /// reported: a `done` with work still running stores `background` (see
+    /// [`crate::session::background_work::settle_report`]). `None` when no row
+    /// took it. A hook report reaches it through `session_ops::signals::report`,
+    /// which allow-lists the word first.
+    ///
+    /// The sub-work in flight is settled in the same transaction as the state
+    /// it decides, so a report and a work edge racing each other are each
+    /// judged against what the other wrote.
+    ///
+    /// A [`ReportFrom::Echo`] — a word read back from a backend's status
+    /// channel — is news only as a *change*: a state the row already holds is
+    /// left alone, stamp and all, which is what keeps a re-delivered `done` the
+    /// user acknowledged from becoming unseen again. Decided under the write
+    /// lock, so a writer that got there first is what it is decided against.
+    /// It is also read in the order the writers published rather than stored:
+    /// a late `background` for work that has all ended is refused rather than
+    /// written back over the `done` its end stored.
+    pub fn report_hook_state(
         &self,
         id: SessionId,
         reported: &str,
         from: ReportFrom<'_>,
-        only_a_change: bool,
     ) -> rusqlite::Result<Option<(i64, String)>> {
         use crate::session::background_work::{settle_report, InFlight};
 
+        let only_a_change = matches!(from, ReportFrom::Echo);
         let tx = self.write_transaction()?;
         let id_str = id.to_string();
 
