@@ -322,8 +322,11 @@ own, which is the point.
   shared through `host-verdicts.json`, so `session get`/`list` read a remote
   row on a host recorded as not answering as `unreachable` with
   `state_source: "host"`, instead of the last mirrored `idle` (`hook_state`
-  itself stays as stored). A verdict that is not a host failure — sharing
-  off, a CLI the host refuses to start — leaves the state alone.
+  itself stays as stored). Only while that verdict's backoff runs — the
+  interface re-probes and re-stamps it then, so an expired one is a host
+  nobody has re-checked and says nothing. A verdict that is not a host
+  failure — sharing off, a CLI the host refuses to start — leaves the state
+  alone.
   A local session is never unreachable: this is its machine, and a missing pane
   there means the agent was not launched. The rows are read on the snapshot's
   own schedule rather than per frame, gated on `PRAGMA data_version` moving (see

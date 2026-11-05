@@ -386,11 +386,17 @@ fn a_session_on_a_host_recorded_as_down_reads_unreachable_not_its_stale_state() 
         db.upsert_session(row).expect("persist");
         db.set_hook_state(row.id, "idle").expect("signal");
     }
-    std::fs::write(
-        dir.path().join("host-verdicts.json"),
-        r#"{"ssh:down-box":{"reason":"host not answering: ssh: connect to host down-box port 22: Connection timed out","at":1,"failures":3}}"#,
-    )
-    .expect("record the verdict");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let verdict = |at: u64| {
+        format!(
+            r#"{{"ssh:down-box":{{"reason":"host not answering: ssh: connect to host down-box port 22: Connection timed out","at":{at},"failures":3}}}}"#
+        )
+    };
+    let verdicts = dir.path().join("host-verdicts.json");
+    std::fs::write(&verdicts, verdict(now)).expect("record the verdict");
 
     let out = get(&db, down.id, false);
     assert_eq!(out["state"], Value::String("unreachable".into()));
@@ -436,6 +442,14 @@ fn a_session_on_a_host_recorded_as_down_reads_unreachable_not_its_stale_state() 
     assert_eq!(
         state_of("on-other-host"),
         Some(Value::String("idle".into()))
+    );
+
+    // A verdict past its backoff is one nobody has re-checked: the host may be
+    // back, so it says nothing and the stored report stands.
+    std::fs::write(&verdicts, verdict(1)).expect("age the verdict");
+    assert_eq!(
+        get(&db, down.id, false)["state"],
+        Value::String("idle".into())
     );
 }
 

@@ -265,10 +265,11 @@ fn read_stored() -> HashMap<String, StoredNo> {
 const NOT_ANSWERING: &str = "host not answering";
 
 /// Whether the host serving `backend_type` (any route spelling,
-/// `ssh:box:tmux` as well as `ssh:box`) was recorded as not answering by the
-/// last process that asked. A recorded verdict, not a probe: a host that comes
-/// back is cleared by the next probe that reaches it, which the interface's
-/// mirror makes every pass.
+/// `ssh:box:tmux` as well as `ssh:box`) was recorded as not answering, and that
+/// verdict's backoff has not run out. A recorded verdict, not a probe: past
+/// its backoff nobody has asked again — the interface re-probes then and
+/// re-stamps it, a host that answered clears it — so an expired one is no
+/// evidence either way.
 pub fn recorded_down(backend_type: &str) -> bool {
     let Some(key) = crate::session::Route::parse(backend_type)
         .ok()
@@ -283,9 +284,10 @@ pub fn recorded_down(backend_type: &str) -> bool {
     else {
         return false;
     };
-    read_stored()
-        .get(&key)
-        .is_some_and(|stored| stored.reason.starts_with(NOT_ANSWERING))
+    stored_no(&key).is_some_and(|verdict| {
+        is_fresh(&verdict)
+            && matches!(&verdict.usable, Usable::No(reason) if reason.starts_with(NOT_ANSWERING))
+    })
 }
 
 /// The `No` another process stored for `key`, as a verdict.
