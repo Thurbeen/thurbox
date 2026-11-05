@@ -507,6 +507,16 @@ heartbeat, every minute), which is what records it for a plain `session list`.
 A pane that dies within the spawn's 50 ms startup check never becomes a
 session: `session create` itself fails with the pane's output.
 
+A dead pane is read only once the multiplexer has reaped its program and knows
+how it ended; the record is written once, and read before then it would name no
+exit code for good. tmux before 3.7 reads a pane dead as soon as its terminal
+closes, which is before then, and can leave the program unreaped until another
+of its children exits. So a dead pane with neither an exit status nor a signal
+has the server reap (`run-shell true`) and is read again, and one still
+unreaped — a program that closed its terminal and runs on — waits for the next
+look. tmux 3.2 names no signal, so it cannot tell that case from a program a
+signal killed; there the pane is read as it stands.
+
 When it ends. The next launch — `session restart`, `session start`, restore —
 clears it; a record naming a pane the row has since left is never reported.
 A failed session whose window then goes (psmux closes it with the program) is

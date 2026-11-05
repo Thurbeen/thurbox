@@ -3445,6 +3445,17 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
         Ok(Some(cells_before(line.trim_end_matches('\n'), col)))
     }
 
+    fn reap_exited(&self) {
+        if self.known_socket().is_err() {
+            return;
+        }
+        // `run-shell` answers once its own child is reaped, and tmux reaps
+        // every exited child it has in the same pass.
+        if let Err(e) = self.one_shot("run-shell (reap)", &["run-shell", "true"]) {
+            debug!("could not have the server reap its exited panes: {e:#}");
+        }
+    }
+
     fn pane_state(&self, pane: &str) -> crate::backend::contract::BackendResult<PaneState> {
         self.known_socket()?;
         // One `display-message` for everything the multiplexer knows, plus at
@@ -3460,6 +3471,8 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             "#{window_name}",
             "#{pane_id}",
             "#{pane_dead_status}",
+            "#{pane_dead_signal}",
+            "#{version}",
         ]
         .join(&PANE_STATE_SEP.to_string());
         let mut argv = M::DISPLAY_FLAGS.to_vec();
@@ -4432,6 +4445,14 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>, Option<String>) {
     let _ = next();
     // Empty while the pane lives, and for a program killed by a signal.
     let exit_status = next().and_then(|f| f.parse().ok());
+    // Empty while the pane lives, for an exit, and before tmux 3.3.
+    let exit_signal = next();
+    let reaped = match (dead, next()) {
+        (Some(true), _) if exit_status.is_some() || exit_signal.is_some() => Some(true),
+        // tmux 3.2 has no `pane_dead_signal`, and the floor refuses older.
+        (Some(true), Some(version)) if !version.starts_with("3.2") => Some(false),
+        _ => None,
+    };
 
     (
         PaneState {
@@ -4442,6 +4463,7 @@ fn parse_pane_state(raw: &str) -> (PaneState, Option<String>, Option<String>) {
             foreground_cwd: cwd,
             dead,
             exit_status,
+            reaped,
         },
         tty,
         window,
@@ -7676,6 +7698,36 @@ done
         assert_eq!(answer("1"), Some(1));
         assert_eq!(answer("127"), Some(127));
         assert_eq!(answer(""), None);
+    }
+
+    #[test]
+    fn parse_pane_state_reads_whether_a_dead_pane_was_reaped() {
+        let reaped = |dead: &str, status: &str, signal: &str, version: &str| {
+            parse_pane_state(&pane_state_answer(&[
+                "0",
+                "0",
+                "env",
+                "/w",
+                "/dev/pts/2",
+                dead,
+                "tb-demo",
+                "%3",
+                status,
+                signal,
+                version,
+            ]))
+            .0
+            .reaped
+        };
+        assert_eq!(reaped("1", "3", "", "3.4"), Some(true));
+        assert_eq!(reaped("1", "", "KILL", "3.4"), Some(true));
+        assert_eq!(reaped("1", "3", "", "3.2a"), Some(true));
+        // Dead on tmux 3.3–3.6 before its program is reaped.
+        assert_eq!(reaped("1", "", "", "3.4"), Some(false));
+        // tmux 3.2 cannot say whether a signal killed it.
+        assert_eq!(reaped("1", "", "", "3.2a"), None);
+        assert_eq!(reaped("1", "", "", ""), None);
+        assert_eq!(reaped("0", "", "", "3.4"), None);
     }
 
     #[test]
