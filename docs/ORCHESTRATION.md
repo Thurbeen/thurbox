@@ -173,8 +173,10 @@ an inbox before leaving the body in the mailbox.
 A recipient on a host that shares its sessions is sent to by the host's own
 `thurbox-cli` (ADR-24): its inbox socket, its Codex binding and the mailbox
 its agent drains are all on that host. The answer then carries `host`, and
-`message_id` is the host's. A host whose CLI cannot be used keeps the body
-in this machine's mailbox, with `delivered: false`.
+`message_id` is the host's. The host's CLI runs in no session there, so the
+row names no sender and a `message reply` there has nobody to answer. A
+host whose CLI cannot be used keeps the body in this machine's mailbox, with
+`delivered: false`.
 
 `version --json` reports `message_native_send: true` on a build that has
 `delivered`, `--require-native`, `--wait-bound` and delivery on a host.
