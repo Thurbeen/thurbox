@@ -286,7 +286,14 @@ pub fn with_host_verdict(
     hook: crate::session::Assessment,
     backend_type: &str,
 ) -> crate::session::Assessment {
-    if recorded_down(backend_type) {
+    with_host_down(hook, recorded_down(backend_type))
+}
+
+/// [`with_host_verdict`] for a verdict already read: a caller that sampled
+/// [`recorded_down`] once and reports on that sample (`watch`'s host flips)
+/// folds the same value rather than reading a verdict that may have moved.
+pub fn with_host_down(hook: crate::session::Assessment, down: bool) -> crate::session::Assessment {
+    if down {
         hook.host_unreachable()
     } else {
         hook

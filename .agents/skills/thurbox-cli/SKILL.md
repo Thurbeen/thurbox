@@ -418,9 +418,9 @@ Each line carries:
 
 | field | what it says |
 |---|---|
-| `seq` | monotonic, never reused — what `--since` resumes from |
+| `seq` | monotonic, never reused — what `--since` resumes from; `null` on a `host_down`/`host_up` line, which is not in the log |
 | `event` | `present` (baseline) / `created` / `changed` / `gone` |
-| `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated`, `lost`, `exited`, `relaunched` · `soft_deleted`, `force_deleted`, `forgotten` |
+| `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated`, `lost`, `exited`, `relaunched` · `soft_deleted`, `force_deleted`, `forgotten` · `host_down`, `host_up` (the host's recorded verdict flipped; no `from_state`/`to_state`) |
 | `from_state`, `to_state` | the transition itself, for a `changed`/`state` event |
 | `exit_code`, `detail` | an `exited` event's status and the pane's last lines (psmux: the agent window reports them on the way out — `docs/ARCHITECTURE.md` → "A psmux agent reports its own exit") |
 | `state`, `hook_state`, `state_source`, `hook_coverage`, `hook_blocked_is_heuristic`, `hook_state_contradicted`, `detected_agent` | the same gating fields `session get` publishes, so reacting to a `blocked` needs no follow-up call |

@@ -320,7 +320,7 @@ own, which is the point.
   the session's life. The two folds the CLI cannot make it does not fake —
   but a down host is a **stored fact** too: the probe's backoff verdict is
   shared through `host-verdicts.json`, so `session get`/`list` and `watch`
-  (one fold, `host_cli::with_host_verdict`) read a remote
+  (one fold, `host_cli::with_host_verdict`; a flip folds the verdict it sampled, `with_host_down`) read a remote
   row on a host recorded as not answering as `unreachable` with
   `state_source: "host"`, instead of the last mirrored `idle` (`hook_state`
   itself stays as stored). Only while that verdict's backoff runs — the

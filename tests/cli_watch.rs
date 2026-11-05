@@ -855,3 +855,19 @@ fn a_session_on_a_host_recorded_as_down_streams_unreachable() {
     assert_eq!(down["state_source"], Value::String("host".into()));
     assert_eq!(down["hook_state"], Value::String("working".into()));
 }
+
+/// A parked session reads `stopped` whatever its host does, so its host going
+/// down or coming back is no change to report.
+#[test]
+fn a_parked_session_gets_no_host_lines() {
+    let env = Env::new();
+    let db = env.db();
+    let id = seed(&db, "parked-on-a-host");
+    db.set_session_stopped(id, true).expect("park");
+
+    let watch = env.watch(&["--json", "--for-secs", "30"]);
+    settle();
+    record_elsewhere_down(&env, true);
+    // Two sweeps: long enough that a host line would have been written.
+    watch.silent_for(Duration::from_secs(7));
+}

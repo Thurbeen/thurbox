@@ -374,11 +374,27 @@ fn assess(
         &crate::sync::SharedSession,
     )>,
 ) -> Assessment {
+    let down = crate::session_ops::host_cli::recorded_down(&facts.backend_type);
+    assess_sampled(registry, facts, columns, stopped, down, probe)
+}
+
+/// [`assess`] with the host verdict already read, as `down`.
+fn assess_sampled(
+    registry: &crate::session::AgentRegistry,
+    facts: &SessionFacts,
+    columns: &HookRow,
+    stopped: bool,
+    down: bool,
+    probe: Option<(
+        &crate::backend::BackendRegistry,
+        &crate::sync::SharedSession,
+    )>,
+) -> Assessment {
     let hook = crate::session_ops::events::assess(registry, facts, columns, stopped);
     if stopped {
         return hook;
     }
-    let hook = crate::session_ops::host_cli::with_host_verdict(hook, &facts.backend_type);
+    let hook = crate::session_ops::host_cli::with_host_down(hook, down);
     let Some((backends, session)) = probe else {
         return hook;
     };
@@ -403,7 +419,8 @@ struct HostVerdicts {
 impl HostVerdicts {
     /// Look again: every watched remote session whose host went down or came
     /// back since the last look, with the row it was read from and whether it
-    /// is now down. The verdict is read once per host, not once per session.
+    /// is now down. The verdict is read once per route spelling, not once per
+    /// session.
     fn look(
         &mut self,
         db: &Database,
@@ -435,7 +452,9 @@ impl HostVerdicts {
 
 /// One host flip as a stream line. Not in the log, so it has no `seq` of its
 /// own to resume from (`null`), and no hook transition (`from_state` and
-/// `to_state` are `null`): what changed is `state`.
+/// `to_state` are `null`): what changed is `state`. Assessed with the `down`
+/// the sweep sampled, not a second read, so `reason` and `state` cannot
+/// disagree when the verdict moves in between.
 fn host_line(
     db: &Database,
     registry: &crate::session::AgentRegistry,
@@ -448,11 +467,12 @@ fn host_line(
         .ok()?
         .remove(&session.id)?;
     let columns = db.load_hook_state(session.id).ok().flatten()?;
-    let hook = assess(
+    let hook = assess_sampled(
         registry,
         &facts,
         &columns,
         facts.stopped,
+        down,
         backends.map(|b| (b, session)),
     );
     let mut line = crate::session_ops::events::present(0, session.id, &facts, &hook);
@@ -580,4 +600,44 @@ fn human(event: &Value) -> String {
         field("name"),
         field("state"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A host line is one sample of the verdict: its `reason` and its `state`
+    /// say the same thing even when the verdict changed between the sweep's
+    /// look and the line being built — here, cleared before the line is.
+    #[test]
+    fn a_host_line_reads_the_verdict_it_was_sampled_with() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let session = crate::sync::SharedSession {
+            id: SessionId::default(),
+            name: "on-a-host".into(),
+            agent: "claude".into(),
+            backend_id: "%1".into(),
+            backend_type: "ssh:elsewhere:tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        db.upsert_session(&session).unwrap();
+        db.set_hook_state(session.id, "idle").unwrap();
+        let registry = crate::agent::agent_config::load_or_seed();
+
+        // No verdict on file: the host answered again after the look.
+        let down = host_line(&db, &registry, &session, true, None).unwrap();
+        assert_eq!(down["reason"], "host_down");
+        assert_eq!(down["state"], "unreachable", "{down}");
+    }
 }
