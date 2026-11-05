@@ -504,6 +504,42 @@ fn send_to_a_session_with_no_pane_keeps_its_error_on_stdout() {
 /// wrote its own diagnosis straight onto it. Captured, the same sentence is
 /// part of the one document instead of a second stream beside it.
 #[test]
+fn a_repair_of_a_deleted_session_is_a_no_op_but_an_asked_restart_still_fails() {
+    let env = Env::new();
+    let id = env.seed("deleted-meanwhile", None);
+    env.db().soft_delete_session(id).expect("delete the row");
+    let id = id.to_string();
+
+    // A repairer working from a survey taken before the delete: nothing to do.
+    let out = env.run(&["session", "restart", &id, "--if-missing", "--json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a repair of a deleted session succeeds: {}",
+        stdout_of(&out)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
+    assert_eq!(doc["gone"], true, "{doc}");
+    assert_eq!(doc["restarted"], false, "{doc}");
+
+    // Asked for by name, the same restart is still an error worth seeing.
+    let out = env.run(&["session", "restart", &id, "--json"]);
+    assert_ne!(out.status.code(), Some(0), "an asked restart fails");
+    let doc: Value = serde_json::from_slice(&out.stdout).expect("stdout is JSON");
+    assert!(
+        doc["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("Session not found")),
+        "{doc}"
+    );
+
+    // A reference that names nothing is a mistake, not a deletion.
+    let unknown = SessionId::default().to_string();
+    let out = env.run(&["session", "restart", &unknown, "--if-missing", "--json"]);
+    assert_ne!(out.status.code(), Some(0), "an unknown id still fails");
+}
+
+#[test]
 fn a_pane_verb_on_a_missing_window_says_so_on_stdout_alone() {
     let env = Env::new();
     // Not stopped: nothing knows the window is absent until the multiplexer is

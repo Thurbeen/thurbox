@@ -1690,6 +1690,11 @@ fn run_restart(
     uuid: String,
     if_missing: bool,
 ) -> Result<CommandOutput, CommandError> {
+    if if_missing {
+        if let Some(output) = restart_of_a_deleted_session(db, &uuid)? {
+            return Ok(output);
+        }
+    }
     let session = resolve(db, &uuid)?;
     crate::session_ops::deliver::ensure_hooks_wired(db, backends);
     let report = crate::session_ops::restart::restart_session_headless_with(
@@ -1716,6 +1721,43 @@ fn run_restart(
         }),
         human,
     ))
+}
+
+/// `restart --if-missing` of a session this database holds as deleted.
+///
+/// A repairer acts on a survey taken before it ran, and a session deleted
+/// since has no window to put back. So the repair is a no-op (`gone`), not a
+/// "Session not found" failure that blames the delete. Only a UUID of a known
+/// deleted row qualifies: a reference that names nothing, such as a typo,
+/// still fails, as does a restart asked for without `--if-missing`.
+fn restart_of_a_deleted_session(
+    db: &Database,
+    reference: &str,
+) -> Result<Option<CommandOutput>, CommandError> {
+    let Ok(id) = reference.parse::<crate::session::SessionId>() else {
+        return Ok(None);
+    };
+    let read = |e: rusqlite::Error| CommandError::from(format!("read session {id}: {e}"));
+    if db.get_session_by_id(id).map_err(read)?.is_some() {
+        return Ok(None);
+    }
+    let Some(gone) = db.get_deleted_session_by_id(id).map_err(read)? else {
+        return Ok(None);
+    };
+    Ok(Some(CommandOutput::new(
+        json!({
+            "restarted": false,
+            "held_back": false,
+            "gone": true,
+            "session_id": id.to_string(),
+            "session_name": gone.name,
+            "hook_failures": [],
+        }),
+        format!(
+            "'{}' ({id}) has been deleted; nothing to relaunch",
+            gone.name
+        ),
+    )))
 }
 
 fn run_restart_fresh(

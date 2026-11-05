@@ -1004,6 +1004,12 @@ fn restart_delegated(
         };
         return Ok((report, result));
     }
+    // A host on this build answers a repair of a session it has deleted with
+    // `gone` rather than "not found". Nothing was relaunched, so the
+    // post-restart hooks are not told otherwise.
+    if result["gone"].as_bool().unwrap_or(false) {
+        return Ok((RestartReport::default(), result));
+    }
     hook_ctx.backend_id = super::lifecycle_hooks::current_pane(db, session.id);
     // A fresh restart on the host moved the session to a new conversation.
     if let Some(id) = result["agent_session_id"].as_str() {
