@@ -1166,7 +1166,14 @@ impl Terminals {
             let runtime = self.runtime.clone();
             std::thread::spawn(move || {
                 let _guard = runtime.as_ref().map(|handle| handle.enter());
-                let _ = tx.send(discover_windows(&backend, backend_name, already_ready));
+                let done = discover_windows(&backend, backend_name, already_ready);
+                // A host that answered is not down, so a verdict saying it was
+                // must not outlive this: `session list` reads it. Here, on the
+                // worker, because it reads and may rewrite a file.
+                if done.readied && done.panes.is_ok() {
+                    crate::session_ops::host_cli::host_answered(&done.backend);
+                }
+                let _ = tx.send(done);
             });
         }
     }

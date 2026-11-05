@@ -364,9 +364,10 @@ died before the agent reported anything — see *Launch failures*) or
 probe only), or `unreachable` (a remote session whose host the last probe
 recorded as not answering — `state_source: "host"`; `hook_state` keeps the
 report from before it went quiet). That verdict counts only while its
-backoff runs: once it expires with no new probe — no interface running to
-re-ask — the row reads its stored state again, which is *not* evidence
-that the host came back. None of those is a state an agent can
+backoff runs, and an interface that reaches the host again clears it at
+once. Once it expires with no new probe — no interface running to re-ask
+— the row reads its stored state again, which is *not* evidence that the
+host came back. None of those is a state an agent can
 signal, and `state_source` is null for the first four. The piped (TOON) `session list` shows this
 column, and so does the interface — its session list derives through the
 same `Assessment`, so a driver reconciling the screen with a `session
