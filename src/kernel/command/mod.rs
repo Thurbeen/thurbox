@@ -2584,6 +2584,43 @@ mod tests {
         assert_eq!(item.error.as_deref(), Some("no such pane"));
     }
 
+    /// A repair that relaunched nothing leaves the list like any success, and
+    /// the loop can still learn that it did nothing, once. Without that, the
+    /// interface announced "restarted" for a session a driver had just deleted.
+    #[test]
+    fn a_command_that_did_nothing_says_so_once() {
+        let mut bus = CommandBus::new(std::sync::Arc::new(crate::backend::registry::inert()));
+        let (quiet, done) = (
+            bus.dispatch(Command::Focus {
+                plugin: "agent".into(),
+                toggle: false,
+            }),
+            bus.dispatch(Command::Focus {
+                plugin: "other".into(),
+                toggle: false,
+            }),
+        );
+        bus.finish_doing_nothing_for_test(quiet);
+        bus.finish_for_test(done, None);
+        assert!(bus.poll());
+
+        assert!(
+            !bus.inflight()
+                .iter()
+                .any(|item| item.id == quiet || item.id == done),
+            "both left the list as successes"
+        );
+        assert!(
+            bus.take_did_nothing(quiet),
+            "the one that did nothing says so"
+        );
+        assert!(!bus.take_did_nothing(quiet), "and only once");
+        assert!(
+            !bus.take_did_nothing(done),
+            "a command that did its work does not"
+        );
+    }
+
     // ── a plugin's program is not a session ────────────────────────────────
 
     /// The command names no session, which is what keeps a program pane out of

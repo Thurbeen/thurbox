@@ -440,10 +440,11 @@ fn a_repairer_racing_a_delegated_delete_stands_down() {
 
     let outcome = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true);
 
+    let report = outcome
+        .unwrap_or_else(|e| panic!("a repairer must not fail on a session being deleted: {e}"));
     assert!(
-        outcome.is_ok(),
-        "a repairer must not fail on a session being deleted: {:?}",
-        outcome.err().map(|e| e.to_string())
+        report.stood_down,
+        "and it says it relaunched nothing, so the interface stays silent"
     );
     assert!(
         !fake::calls()

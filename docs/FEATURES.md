@@ -2644,6 +2644,11 @@ the row. A `restart --if-missing` for a session that is gone, here or on its
 host, has nothing to repair and is a no-op. An operator's own `session restart`
 of a gone session still fails with "Session not found".
 
+The interface reports a repair that relaunched nothing, whether it stood down
+or found the session gone, as neither: no "restarted" message, no
+`session.post_restart` event, and the pane it was showing is kept. A driver
+deleting a session therefore leaves no trace in the message band.
+
 ### A session's key: the address a driver finds it by
 
 A session may carry one **key** (`session create --key`, `session set-key`,

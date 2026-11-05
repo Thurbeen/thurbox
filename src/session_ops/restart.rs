@@ -390,6 +390,11 @@ pub struct RestartReport {
     /// A repair of a session that has been deleted, here or on its host:
     /// nothing was relaunched, and nothing failed either.
     pub gone: bool,
+    /// A repair that stood down: another lifecycle operation holds the row (a
+    /// restart replacing its window, a delete taking it away), or the window
+    /// is there after all. Nothing was relaunched. The CLI still answers
+    /// `restarted` for it, as it always has; the interface stays silent.
+    pub stood_down: bool,
 }
 
 impl RestartReport {
@@ -399,6 +404,21 @@ impl RestartReport {
             gone: true,
             ..Self::default()
         }
+    }
+
+    /// A repair that stood down ([`Self::stood_down`]).
+    fn stood_down() -> Self {
+        Self {
+            stood_down: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the window was left as it was: a repair that stood down or
+    /// found the session gone. Neither replaced a pane, so the interface has
+    /// nothing to announce and nothing to let go of.
+    pub fn relaunched_nothing(&self) -> bool {
+        self.gone || self.stood_down
     }
 }
 
@@ -788,7 +808,7 @@ fn restart_for(
                 "'{}' is held by another lifecycle operation; not relaunching",
                 session.name
             );
-            return Ok(RestartReport::default());
+            return Ok(RestartReport::stood_down());
         }
         // `--if-missing` is "I am a repairer", and the host reads both halves
         // out of it: put a window back only if one is gone, and stand down for
@@ -821,7 +841,7 @@ fn restart_for(
             "'{}' is already being restarted; not relaunching",
             session.name
         );
-        return Ok(RestartReport::default());
+        return Ok(RestartReport::stood_down());
     }
 
     // The backend the row's route names: what the windows are killed, listed
@@ -830,7 +850,7 @@ fn restart_for(
         .map_err(|e| format!("cannot restart '{}': {e}", session.name))?;
 
     if why.only_if_missing() && !relaunch_is_owed(db, backend.as_ref(), &session)? {
-        return Ok(RestartReport::default());
+        return Ok(RestartReport::stood_down());
     }
 
     // Where an exit takes its window with it, "missing" is also what an agent
@@ -1250,8 +1270,8 @@ mod tests {
         // is asked anything, so this needs no server.
         assert_eq!(
             restart_session_headless_with(&db, &crate::backend::registry::inert(), row.id, true),
-            Ok(RestartReport::default()),
-            "a relaunch of a row being restarted is not owed"
+            Ok(RestartReport::stood_down()),
+            "a relaunch of a row being restarted is not owed, and says it stood down"
         );
 
         drop(held);
