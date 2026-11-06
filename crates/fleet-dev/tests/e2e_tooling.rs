@@ -1302,3 +1302,35 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
     let (ok, out) = step("Parse release decision", &[("PATH", &path)]);
     assert!(!ok && !out.contains("should_release"), "without cog: {out}");
 }
+
+#[test]
+fn claude_code_finds_the_repository_skills_through_a_tracked_link() {
+    // Codex reads project skills from .agents/skills, Claude Code only from
+    // .claude/skills: a session on either harness must find the same skills.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut s = Spec::new("git", Duration::from_secs(10)).args([
+        "ls-files",
+        "--stage",
+        "--",
+        ".claude/skills",
+    ]);
+    s.cwd = Some(root.clone());
+    let o = run(&s);
+    let listing = o.success_text().unwrap_or_else(|| panic!("{o:?}"));
+    assert!(
+        listing.starts_with("120000 "),
+        ".claude/skills is not a tracked symlink: {listing:?}"
+    );
+    assert_eq!(
+        fs::read_link(root.join(".claude/skills")).unwrap(),
+        Path::new("../.agents/skills")
+    );
+    let mut skills = 0;
+    for entry in fs::read_dir(root.join(".agents/skills")).unwrap() {
+        let name = entry.unwrap().file_name();
+        let claude = root.join(".claude/skills").join(&name).join("SKILL.md");
+        assert!(claude.is_file(), "Claude Code finds no {name:?}");
+        skills += 1;
+    }
+    assert!(skills > 0, "the repository has no skills");
+}
