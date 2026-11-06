@@ -4,7 +4,7 @@
 use super::*;
 
 /// `(rows, cols)` within what `resize-window` accepts, so a resize an `if-shell`
-/// runs can never be the one that fails (see `Server::resize`). tmux's
+/// runs can never be the one that fails (see `Server::resize_window`). tmux's
 /// bounds are 1 and `WINDOW_MAXIMUM`, 10000.
 pub(super) fn tmux_size(rows: u16, cols: u16) -> (u16, u16) {
     (rows.clamp(1, 10_000), cols.clamp(1, 10_000))

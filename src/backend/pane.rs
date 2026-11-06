@@ -1522,7 +1522,7 @@ impl Session {
     /// the embedded [`WiredPane`].)
     ///
     /// Reports whether it reached the backend. The command is sent rather than
-    /// asked (see `tmux_compat::Server::resize`), so what can still fail is the sending
+    /// asked (see `tmux_compat::Server::resize_window`), so what can still fail is the sending
     /// — a connection that is gone or not yet started. The render path memoizes
     /// the size it asked for to keep a round trip off every frame, and a
     /// memoized failure would leave the agent wrapping at the old width with
