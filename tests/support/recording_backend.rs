@@ -618,22 +618,6 @@ impl WindowLifecycle for RecordingBackend {
         Ok(state.find(backend_id).map(drop)?)
     }
 
-    fn pane_state(&self, pane: &str) -> thurbox::backend::contract::BackendResult<PaneState> {
-        let callback = self.on_pane_state.lock().unwrap().take();
-        if let Some(callback) = callback {
-            callback();
-        }
-        let state = self.lock(format!("pane_state {pane}"))?;
-        let window = state.find(pane)?;
-        Ok(PaneState {
-            foreground_process: window.command.split_whitespace().next().map(str::to_string),
-            foreground_command: (!window.command.is_empty()).then(|| window.command.clone()),
-            foreground_cwd: window.cwd.clone(),
-            dead: Some(!window.alive),
-            ..PaneState::default()
-        })
-    }
-
     fn pane_path(&self, pane: &str) -> thurbox::backend::contract::BackendResult<Option<String>> {
         let state = self.lock(format!("pane_path {pane}"))?;
         Ok(state.find(pane)?.path.clone())
@@ -774,6 +758,22 @@ impl PaneIo for RecordingBackend {
             callback();
         }
         Ok(Some(row))
+    }
+
+    fn pane_state(&self, pane: &str) -> thurbox::backend::contract::BackendResult<PaneState> {
+        let callback = self.on_pane_state.lock().unwrap().take();
+        if let Some(callback) = callback {
+            callback();
+        }
+        let state = self.lock(format!("pane_state {pane}"))?;
+        let window = state.find(pane)?;
+        Ok(PaneState {
+            foreground_process: window.command.split_whitespace().next().map(str::to_string),
+            foreground_command: (!window.command.is_empty()).then(|| window.command.clone()),
+            foreground_cwd: window.cwd.clone(),
+            dead: Some(!window.alive),
+            ..PaneState::default()
+        })
     }
 }
 

@@ -453,18 +453,22 @@ from each adapter's `ControlPolicy`; a backend without that facility leaves it
 absent. The shared lifecycle asks for outcomes through `SessionBackend` and
 does not send control-mode commands.
 
-**Roles.** `SessionBackend` is four role traits plus a name and a
-`Capabilities` value (the methods themselves are `src/backend/contract.rs`):
+**Roles.** `SessionBackend` is four role traits plus a name, a
+`Capabilities` value and `create_window_observed`, which spans two roles: it
+opens a window and reads its pane. The methods themselves are in
+`src/backend/contract.rs`:
 
 - `PaneStream` — a pane's output stream: `spawn`, `adopt`, history capture,
   snapshots and state seeding (title and mouse modes), `resize`, `claim_size`,
   `detach`;
 - `WindowLifecycle` (ADR-29) — the windows on the server: `check_available`,
   `ensure_ready`, `discover`, `create_window`, `locate`, `rename_windows`,
-  `stamp_window`, `window_panes`, `set_pane_retention`, `pane_state`,
-  `pane_path`, `pane_pid(s)`, `pane_ids`, `is_dead`, `kill`, `shutdown`;
+  `stamp_window`, `window_panes`, `set_pane_retention`, `pane_path`,
+  `pane_pid(s)`, `pane_ids`, `is_dead`, `kill`, `shutdown`;
 - `PaneIo` (ADR-30) — a pane by its id, as a keyboard and a screen:
-  `send_text`, `send_key`, `capture`, `text_before_cursor`;
+  `send_text`, `send_text_after`, `send_key`, `capture`, `text_before_cursor`,
+  `pane_state` — what reading a pane needs, so a consumer of the screen takes
+  this role alone.
 - `StatusChannel` (ADR-32) — hook status and the heartbeat:
   `hook_signal_command`, `record_hook_state`, `hook_states`,
   `take_hook_state_events`, `ensure_heartbeat`, `heartbeat_running`,

@@ -341,7 +341,7 @@ fn the_listing_itself_still_refuses_a_pair() {
 #[test]
 #[cfg(unix)]
 fn observed_unowned_creation_preserves_unrelated_unowned_windows() {
-    use thurbox::backend::WindowLifecycle;
+    use thurbox::backend::SessionBackend;
     if !have_tmux() {
         return;
     }
@@ -374,7 +374,7 @@ fn observed_unowned_creation_preserves_unrelated_unowned_windows() {
 #[cfg(unix)]
 fn remote_startup_observation_rejects_a_foreign_owner() {
     use std::os::unix::fs::PermissionsExt;
-    use thurbox::backend::WindowLifecycle;
+    use thurbox::backend::{SessionBackend, WindowLifecycle};
     if !have_tmux() {
         return;
     }

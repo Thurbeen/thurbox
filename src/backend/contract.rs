@@ -705,48 +705,6 @@ pub trait WindowLifecycle: Send + Sync {
     /// it until an interface does.
     fn create_window(&self, spec: &WindowSpec<'_>) -> BackendResult<PaneId>;
 
-    /// Create a window and observe its startup after `settle`. Backends may
-    /// combine this observation with their post-create identity maintenance.
-    fn create_window_observed(
-        &self,
-        spec: &WindowSpec<'_>,
-        settle: std::time::Duration,
-    ) -> BackendResult<(PaneId, BackendLiveness)> {
-        let pane = self.create_window(spec)?;
-        std::thread::sleep(settle);
-        let state = self.pane_state(pane.as_str())?;
-        let located = match spec.role {
-            WindowRole::Agent => self.locate(spec.owner)?.agent,
-            WindowRole::Shell => self.locate(spec.owner)?.shell,
-            WindowRole::Program => {
-                if self.discover()?.iter().any(|window| {
-                    window.backend_id == pane.as_str()
-                        && window.session == spec.owner.session_id
-                        && window.role == spec.role
-                }) {
-                    Located::At(pane.as_str().to_string())
-                } else {
-                    Located::Unknown
-                }
-            }
-        };
-        match located {
-            Located::At(ref found) if found == pane.as_str() => {}
-            Located::Absent => return Ok((pane, BackendLiveness::Missing)),
-            _ => {
-                return Err(BackendError::Refused(
-                    "created window ownership could not be confirmed".into(),
-                ))
-            }
-        }
-        let liveness = match state.dead {
-            Some(true) => BackendLiveness::Exited,
-            Some(false) => BackendLiveness::Live,
-            None => BackendLiveness::Unknown,
-        };
-        Ok((pane, liveness))
-    }
-
     /// Where `owner`'s two windows are, from one listing the backend
     /// answered — [`crate::backend::identity::WindowIndex`]'s rule (ADR-25),
     /// plus whatever the backend alone can do about an ambiguous answer. `Err`
@@ -802,11 +760,6 @@ pub trait WindowLifecycle: Send + Sync {
     /// Asked only where the answer is already known from the caller's own
     /// naming, so this is one round trip and no lookup.
     fn set_pane_retention(&self, backend_id: &str, keep: bool) -> BackendResult<()>;
-
-    /// What is around a pane's text — see [`PaneState`]. `Err` when the backend
-    /// could not ask; an answer it could not read is a default field, not an
-    /// error.
-    fn pane_state(&self, pane: &str) -> BackendResult<PaneState>;
 
     /// Have the backend collect the exit of every pane program that has ended,
     /// so a [`PaneState::reaped`] read after it is current. Best effort.
@@ -886,7 +839,8 @@ pub trait WindowLifecycle: Send + Sync {
 }
 
 /// Talking to a pane as a person at its keyboard would: typing text, pressing
-/// keys, and reading the screen back.
+/// keys, and reading the screen back with what is around it (cursor, mode,
+/// whether its program is still running).
 pub trait PaneIo: Send + Sync {
     /// Type `text` into a pane, pressing Enter after it when `submit`.
     ///
@@ -927,6 +881,11 @@ pub trait PaneIo: Send + Sync {
     fn text_before_cursor(&self, _pane: &str) -> BackendResult<Option<String>> {
         Ok(None)
     }
+
+    /// What is around a pane's text — see [`PaneState`]. `Err` when the backend
+    /// could not ask; an answer it could not read is a default field, not an
+    /// error.
+    fn pane_state(&self, pane: &str) -> BackendResult<PaneState>;
 }
 
 /// Status delivery and the heartbeat, behind the contract (ADR-32): a hook's
@@ -1027,7 +986,7 @@ impl Capabilities {
 }
 
 /// The whole contract every session backend implements, as its four roles plus
-/// its name and capabilities. The app layer interacts only through this trait
+/// its name, its capabilities and the one verb that spans two roles. The app layer interacts only through this trait
 /// and its roles; a consumer that needs one role may take just that one.
 pub trait SessionBackend: PaneStream + WindowLifecycle + PaneIo + StatusChannel {
     /// The qualified route this backend serves (`local:tmux`,
@@ -1037,6 +996,51 @@ pub trait SessionBackend: PaneStream + WindowLifecycle + PaneIo + StatusChannel 
     /// What this backend's multiplexer can do. Read on the frame path
     /// (`Terminals::sync`), so it is plain flags and costs nothing to build.
     fn capabilities(&self) -> Capabilities;
+
+    /// Create a window and observe its startup after `settle`. Backends may
+    /// combine this observation with their post-create identity maintenance.
+    ///
+    /// On the whole contract rather than a role because it spans two: it opens
+    /// the window ([`WindowLifecycle`]) and reads its pane ([`PaneIo`]).
+    fn create_window_observed(
+        &self,
+        spec: &WindowSpec<'_>,
+        settle: std::time::Duration,
+    ) -> BackendResult<(PaneId, BackendLiveness)> {
+        let pane = self.create_window(spec)?;
+        std::thread::sleep(settle);
+        let state = self.pane_state(pane.as_str())?;
+        let located = match spec.role {
+            WindowRole::Agent => self.locate(spec.owner)?.agent,
+            WindowRole::Shell => self.locate(spec.owner)?.shell,
+            WindowRole::Program => {
+                if self.discover()?.iter().any(|window| {
+                    window.backend_id == pane.as_str()
+                        && window.session == spec.owner.session_id
+                        && window.role == spec.role
+                }) {
+                    Located::At(pane.as_str().to_string())
+                } else {
+                    Located::Unknown
+                }
+            }
+        };
+        match located {
+            Located::At(ref found) if found == pane.as_str() => {}
+            Located::Absent => return Ok((pane, BackendLiveness::Missing)),
+            _ => {
+                return Err(BackendError::Refused(
+                    "created window ownership could not be confirmed".into(),
+                ))
+            }
+        }
+        let liveness = match state.dead {
+            Some(true) => BackendLiveness::Exited,
+            Some(false) => BackendLiveness::Live,
+            None => BackendLiveness::Unknown,
+        };
+        Ok((pane, liveness))
+    }
 }
 
 #[cfg(test)]

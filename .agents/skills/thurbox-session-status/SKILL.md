@@ -142,7 +142,7 @@ own, which is the point.
   here — a turn may run for an hour, so a guessed bound would report live work
   as finished; the age is published and the policy is the consumer's. The
   decisive check is the pane: `session get` resolves the foreground process
-  (`WindowLifecycle::pane_state` on the row's backend — on tmux, one
+  (`PaneIo::pane_state` on the row's backend — on tmux, one
   `display-message` plus one `ps`) and reports
   `hook_corroboration` and `hook_state_contradicted`, **never** overwriting
   `hook_state` with the inference. The listing's three answers stay apart

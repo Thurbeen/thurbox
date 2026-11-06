@@ -384,13 +384,6 @@ mod tests {
     }
 
     impl crate::backend::WindowLifecycle for Panes {
-        fn pane_state(
-            &self,
-            _: &str,
-        ) -> crate::backend::contract::BackendResult<crate::backend::PaneState> {
-            Err(anyhow::anyhow!("this stub has no panes to read").into())
-        }
-
         fn pane_path(&self, _: &str) -> crate::backend::contract::BackendResult<Option<String>> {
             Err(anyhow::anyhow!("this stub has no panes to read").into())
         }
@@ -523,6 +516,13 @@ mod tests {
             _: u32,
             _: bool,
         ) -> crate::backend::contract::BackendResult<String> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
+        }
+
+        fn pane_state(
+            &self,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<crate::backend::PaneState> {
             Err(anyhow::anyhow!("this stub has no panes to read").into())
         }
     }

@@ -3410,74 +3410,6 @@ impl<M: TmuxCompatible> WindowLifecycle for Server<M> {
         Ok(pane_id)
     }
 
-    fn create_window_observed(
-        &self,
-        spec: &WindowSpec<'_>,
-        settle: std::time::Duration,
-    ) -> crate::backend::contract::BackendResult<(PaneId, BackendLiveness)> {
-        let remote = self.transport.is_remote();
-        let pane = if remote || !M::WINDOW_OPTIONS {
-            self.create_window(spec)?
-        } else {
-            PaneId::new(self.create_local_window(spec, false)?)?
-        };
-        std::thread::sleep(settle);
-        let window_name = window_name_for(spec.role, spec.owner.name);
-        if !M::WINDOW_OPTIONS {
-            let panes = self.spawned_panes(&window_name)?;
-            if panes.iter().any(|(id, dead)| id != pane.as_str() && !dead) {
-                return Err(crate::backend::contract::BackendError::Refused(
-                    "created window identity is ambiguous".into(),
-                ));
-            }
-            let state = match panes.iter().find(|(id, _)| id == pane.as_str()) {
-                Some((_, false)) => BackendLiveness::Live,
-                Some((_, true)) => BackendLiveness::Exited,
-                None => BackendLiveness::Missing,
-            };
-            return Ok((pane, state));
-        }
-        let format = format!("{RETIRE_FORMAT}|#{{pane_id}}|#{{pane_dead}}|#{{window_name}}");
-        let output = self
-            .mux_command(&["list-windows", "-t", &self.session, "-F", &format])?
-            .output()
-            .context("observe created window")?;
-        if !output.status.success() {
-            return Err(self.command_failure(&["list-windows"], &output));
-        }
-        let listing = String::from_utf8_lossy(&output.stdout);
-        let mut state = BackendLiveness::Missing;
-        for line in listing.lines() {
-            let fields: Vec<_> = line.split('|').collect();
-            if fields.get(3) == Some(&pane.as_str()) {
-                if fields.get(1) != Some(&spec.owner.session_id)
-                    || fields.get(2) != Some(&spec.role.as_str())
-                    || (spec.owner.session_id.is_empty()
-                        && fields.get(5) != Some(&window_name.as_str()))
-                {
-                    return Err(crate::backend::contract::BackendError::Refused(
-                        "created pane is now owned by another session or role".into(),
-                    ));
-                }
-                state = match fields.get(4).copied() {
-                    Some("0") => BackendLiveness::Live,
-                    Some("1") => BackendLiveness::Exited,
-                    _ => BackendLiveness::Unknown,
-                };
-            }
-        }
-        let retired = self.retire_windows_in(&listing, spec.owner.session_id, spec.role);
-        if retired.iter().any(|window| {
-            listing.lines().any(|line| {
-                let fields: Vec<_> = line.split('|').collect();
-                fields.first() == Some(&window.as_str()) && fields.get(3) == Some(&pane.as_str())
-            })
-        }) {
-            state = BackendLiveness::Missing;
-        }
-        Ok((pane, state))
-    }
-
     fn locate(&self, owner: Owner<'_>) -> crate::backend::contract::BackendResult<Placed> {
         self.known_socket()?;
         // A one-shot `list-windows`, and deliberately nothing more: starting
@@ -3595,49 +3527,6 @@ impl<M: TmuxCompatible> WindowLifecycle for Server<M> {
         if let Err(e) = self.one_shot("run-shell (reap)", &["run-shell", "true"]) {
             debug!("could not have the server reap its exited panes: {e:#}");
         }
-    }
-
-    fn pane_state(&self, pane: &str) -> crate::backend::contract::BackendResult<PaneState> {
-        self.known_socket()?;
-        // One `display-message` for everything the multiplexer knows, plus at
-        // most one `ps` to turn the cheap command *name* into the foreground
-        // process's argv.
-        let format = [
-            "#{cursor_y}",
-            "#{cursor_x}",
-            "#{pane_current_command}",
-            "#{pane_current_path}",
-            "#{pane_tty}",
-            "#{pane_dead}",
-            "#{window_name}",
-            "#{pane_id}",
-            "#{pane_dead_status}",
-            "#{pane_dead_signal}",
-            "#{version}",
-        ]
-        .join(&PANE_STATE_SEP.to_string());
-        let mut argv = M::DISPLAY_FLAGS.to_vec();
-        let target = self.target(pane)?;
-        argv.extend(["display-message", "-p", "-t", &target, &format]);
-        let output = self.one_shot("display-message (pane state)", &argv)?;
-        let raw = String::from_utf8_lossy(&output.stdout);
-
-        let (mut state, tty, window) = parse_pane_state(&raw);
-        if !answered_for(
-            pane,
-            window.as_deref(),
-            pane_answer_field(&raw, 7).as_deref(),
-        ) {
-            return Ok(PaneState::default());
-        }
-        // The tty is the machine the pane runs on; this `ps` reads this one.
-        if !self.transport.is_remote() {
-            if let Some((argv0, command)) = tty.as_deref().and_then(foreground_process_on_tty) {
-                state.foreground_process = Some(argv0);
-                state.foreground_command = Some(command);
-            }
-        }
-        Ok(state)
     }
 
     /// Read off the `env PATH=…` prefix a local spawn writes in front of the
@@ -3922,6 +3811,49 @@ impl<M: TmuxCompatible> PaneIo for Server<M> {
         let line = String::from_utf8_lossy(&output.stdout);
         Ok(Some(cells_before(line.trim_end_matches('\n'), col)))
     }
+
+    fn pane_state(&self, pane: &str) -> crate::backend::contract::BackendResult<PaneState> {
+        self.known_socket()?;
+        // One `display-message` for everything the multiplexer knows, plus at
+        // most one `ps` to turn the cheap command *name* into the foreground
+        // process's argv.
+        let format = [
+            "#{cursor_y}",
+            "#{cursor_x}",
+            "#{pane_current_command}",
+            "#{pane_current_path}",
+            "#{pane_tty}",
+            "#{pane_dead}",
+            "#{window_name}",
+            "#{pane_id}",
+            "#{pane_dead_status}",
+            "#{pane_dead_signal}",
+            "#{version}",
+        ]
+        .join(&PANE_STATE_SEP.to_string());
+        let mut argv = M::DISPLAY_FLAGS.to_vec();
+        let target = self.target(pane)?;
+        argv.extend(["display-message", "-p", "-t", &target, &format]);
+        let output = self.one_shot("display-message (pane state)", &argv)?;
+        let raw = String::from_utf8_lossy(&output.stdout);
+
+        let (mut state, tty, window) = parse_pane_state(&raw);
+        if !answered_for(
+            pane,
+            window.as_deref(),
+            pane_answer_field(&raw, 7).as_deref(),
+        ) {
+            return Ok(PaneState::default());
+        }
+        // The tty is the machine the pane runs on; this `ps` reads this one.
+        if !self.transport.is_remote() {
+            if let Some((argv0, command)) = tty.as_deref().and_then(foreground_process_on_tty) {
+                state.foreground_process = Some(argv0);
+                state.foreground_command = Some(command);
+            }
+        }
+        Ok(state)
+    }
 }
 
 impl<M: TmuxCompatible> StatusChannel for Server<M> {
@@ -4095,6 +4027,74 @@ impl<M: TmuxCompatible> SessionBackend for Server<M> {
             supports_snapshots: M::SNAPSHOTS,
             keeps_exited_windows: M::WINDOW_SETTINGS,
         }
+    }
+
+    fn create_window_observed(
+        &self,
+        spec: &WindowSpec<'_>,
+        settle: std::time::Duration,
+    ) -> crate::backend::contract::BackendResult<(PaneId, BackendLiveness)> {
+        let remote = self.transport.is_remote();
+        let pane = if remote || !M::WINDOW_OPTIONS {
+            self.create_window(spec)?
+        } else {
+            PaneId::new(self.create_local_window(spec, false)?)?
+        };
+        std::thread::sleep(settle);
+        let window_name = window_name_for(spec.role, spec.owner.name);
+        if !M::WINDOW_OPTIONS {
+            let panes = self.spawned_panes(&window_name)?;
+            if panes.iter().any(|(id, dead)| id != pane.as_str() && !dead) {
+                return Err(crate::backend::contract::BackendError::Refused(
+                    "created window identity is ambiguous".into(),
+                ));
+            }
+            let state = match panes.iter().find(|(id, _)| id == pane.as_str()) {
+                Some((_, false)) => BackendLiveness::Live,
+                Some((_, true)) => BackendLiveness::Exited,
+                None => BackendLiveness::Missing,
+            };
+            return Ok((pane, state));
+        }
+        let format = format!("{RETIRE_FORMAT}|#{{pane_id}}|#{{pane_dead}}|#{{window_name}}");
+        let output = self
+            .mux_command(&["list-windows", "-t", &self.session, "-F", &format])?
+            .output()
+            .context("observe created window")?;
+        if !output.status.success() {
+            return Err(self.command_failure(&["list-windows"], &output));
+        }
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let mut state = BackendLiveness::Missing;
+        for line in listing.lines() {
+            let fields: Vec<_> = line.split('|').collect();
+            if fields.get(3) == Some(&pane.as_str()) {
+                if fields.get(1) != Some(&spec.owner.session_id)
+                    || fields.get(2) != Some(&spec.role.as_str())
+                    || (spec.owner.session_id.is_empty()
+                        && fields.get(5) != Some(&window_name.as_str()))
+                {
+                    return Err(crate::backend::contract::BackendError::Refused(
+                        "created pane is now owned by another session or role".into(),
+                    ));
+                }
+                state = match fields.get(4).copied() {
+                    Some("0") => BackendLiveness::Live,
+                    Some("1") => BackendLiveness::Exited,
+                    _ => BackendLiveness::Unknown,
+                };
+            }
+        }
+        let retired = self.retire_windows_in(&listing, spec.owner.session_id, spec.role);
+        if retired.iter().any(|window| {
+            listing.lines().any(|line| {
+                let fields: Vec<_> = line.split('|').collect();
+                fields.first() == Some(&window.as_str()) && fields.get(3) == Some(&pane.as_str())
+            })
+        }) {
+            state = BackendLiveness::Missing;
+        }
+        Ok((pane, state))
     }
 }
 

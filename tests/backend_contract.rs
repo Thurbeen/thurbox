@@ -9,6 +9,7 @@ use thurbox::backend::tmux::TmuxBackend;
 use thurbox::backend::tmux_compat::server::TmuxCompatible;
 #[cfg(unix)]
 use thurbox::backend::PaneStream;
+use thurbox::backend::SessionBackend;
 use thurbox::backend::{BackendLiveness, WindowRole};
 use thurbox::backend::{PaneIo, WindowLifecycle};
 use thurbox::session::{Multiplexer, Route};
