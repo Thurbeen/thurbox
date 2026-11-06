@@ -371,6 +371,7 @@ fn echo(db: &Database, id: SessionId, state: &str) -> Reported {
         id,
         state,
         thurbox::session::background_work::ReportFrom::Echo,
+        None,
     )
     .expect("drain write")
 }
@@ -600,4 +601,215 @@ fn any_agent_can_signal_background_directly() {
     assert_eq!(env.state(), "background");
     signal("done");
     assert_eq!(env.state(), "done");
+}
+
+// ---------------------------------------------------------------------------
+// Activity: whether a session is provably at rest, background work included.
+//
+// Claude Code's `Stop` payload carries `background_tasks[]` and
+// `session_crons[]` (see tests/fixtures/claude_stop/README.md). A turn that
+// ends with a background shell, a Monitor or a cron still pending is not
+// finished, and a consumer pausing idle sessions must never read it as idle:
+// a resumed Claude does not restart that work.
+// ---------------------------------------------------------------------------
+
+/// A `Stop` payload from tests/fixtures/claude_stop.
+fn stop_fixture(name: &str) -> Value {
+    let text = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/claude_stop")
+            .join(name),
+    )
+    .expect("read fixture");
+    serde_json::from_str(&text).expect("fixture is valid JSON")
+}
+
+impl Env {
+    /// `session get --no-verify`, whole.
+    fn get(&self) -> Value {
+        let out = self
+            .command(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(["--json", "session", "get", "worker", "--no-verify"])
+            .output()
+            .expect("session get");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).expect("json")
+    }
+
+    fn signal(&self, args: &[&str]) -> std::process::Output {
+        self.command(env!("CARGO_BIN_EXE_thurbox-cli"))
+            .args(["--json", "session", "signal"])
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("signal")
+    }
+}
+
+/// The regression: a turn that ends with a background shell must not read
+/// idle — not `done`, not `idle`, and not an `activity` of `idle`.
+#[test]
+fn a_turn_that_ends_with_a_background_shell_is_active_not_idle() {
+    let env = Env::new("claude");
+    env.claude("SessionStart", event("SessionStart", json!({})));
+    env.claude("UserPromptSubmit", event("UserPromptSubmit", json!({})));
+    env.claude("PreToolUse", main_tool("PreToolUse", "Bash"));
+    env.claude("PostToolUse", main_tool("PostToolUse", "Bash"));
+    env.claude("Stop", stop_fixture("background_shell.json"));
+
+    assert_eq!(env.hook_state().as_deref(), Some("background"));
+    let got = env.get();
+    assert_eq!(got["state"], "background", "{got}");
+    assert_eq!(got["activity"], "active", "{got}");
+    assert_eq!(got["state_support"], "full", "{got}");
+    assert_eq!(got["idle_proof"], Value::Null, "{got}");
+    let pending = got["pending"].as_array().expect("pending");
+    assert_eq!(pending.len(), 1, "{got}");
+    assert_eq!(pending[0]["type"], "shell");
+    assert_eq!(pending[0]["id"], "bq4k7x2m9");
+    assert_eq!(pending[0]["description"], "Start the dev server");
+
+    // The shell finishes; Claude starts a turn to report it back. That turn
+    // fires no `UserPromptSubmit` — it reports `working` from its first tool
+    // call — and ends with a `Stop` whose lists are empty.
+    env.claude("PreToolUse", main_tool("PreToolUse", "Read"));
+    assert_eq!(env.get()["activity"], "active");
+    env.claude("Stop", stop_fixture("nothing_in_flight.json"));
+    assert_eq!(env.hook_state().as_deref(), Some("done"));
+    let got = env.get();
+    assert_eq!(got["idle_proof"], "stop", "{got}");
+    assert_eq!(got["pending"], json!([]), "{got}");
+    // Proven by the payload, but `--no-verify` did not look at the pane, and
+    // idle is never answered about a pane nobody checked.
+    assert_eq!(got["activity"], "unknown", "{got}");
+
+    // Any later hook takes the proof back.
+    env.claude("PreToolUse", main_tool("PreToolUse", "Read"));
+    assert_eq!(env.get()["idle_proof"], Value::Null);
+}
+
+/// A session cron keeps the session active for as long as it exists: a
+/// recurring `/loop` reports it on every `Stop`, so the session never rests.
+#[test]
+fn a_session_cron_keeps_the_session_active() {
+    let env = Env::new("claude");
+    env.claude("UserPromptSubmit", event("UserPromptSubmit", json!({})));
+    env.claude("Stop", stop_fixture("scheduled_loop.json"));
+    let got = env.get();
+    assert_eq!(got["state"], "background", "{got}");
+    assert_eq!(got["activity"], "active", "{got}");
+    assert_eq!(got["pending"][0]["type"], "cron", "{got}");
+    assert_eq!(got["pending"][0]["schedule"], "*/30 * * * *", "{got}");
+    assert_eq!(got["pending"][0]["recurring"], true, "{got}");
+
+    // The cron fires: a turn with no prompt, ending with the cron still listed.
+    env.claude("PreToolUse", main_tool("PreToolUse", "Bash"));
+    env.claude("Stop", stop_fixture("scheduled_loop.json"));
+    assert_eq!(env.get()["activity"], "active");
+
+    // A subagent ending does not end a background the payload holds open.
+    env.claude("SubagentStart", typed("SubagentStart", SUBAGENT));
+    env.claude("SubagentStop", typed("SubagentStop", SUBAGENT));
+    assert_eq!(env.hook_state().as_deref(), Some("background"));
+}
+
+/// An older Claude sends no lists: the edge counting decides `done` versus
+/// `background` as before, and nothing is proven idle.
+#[test]
+fn a_stop_without_the_lists_falls_back_and_proves_nothing() {
+    let env = Env::new("claude");
+    env.claude("UserPromptSubmit", event("UserPromptSubmit", json!({})));
+    env.claude("Stop", event("Stop", json!({})));
+    let got = env.get();
+    assert_eq!(got["state"], "done", "{got}");
+    assert_eq!(got["idle_proof"], Value::Null, "{got}");
+    assert_eq!(got["activity"], "unknown", "{got}");
+
+    // Only one list present is not proof either.
+    env.claude("UserPromptSubmit", event("UserPromptSubmit", json!({})));
+    env.claude("Stop", event("Stop", json!({ "background_tasks": [] })));
+    assert_eq!(env.get()["idle_proof"], Value::Null);
+}
+
+/// A subagent is listed in `background_tasks` too; a payload proving the
+/// session empty forgets a subagent whose `SubagentStop` was missed.
+#[test]
+fn an_empty_payload_forgets_a_missed_subagent_end() {
+    let env = Env::new("claude");
+    turn_that_starts_a_background_subagent(&env, SUBAGENT);
+    assert_eq!(env.hook_state().as_deref(), Some("background"));
+    env.claude("PreToolUse", main_tool("PreToolUse", "Read"));
+    env.claude("Stop", stop_fixture("nothing_in_flight.json"));
+    assert_eq!(env.hook_state().as_deref(), Some("done"));
+    assert_eq!(env.get()["idle_proof"], "stop");
+}
+
+/// codex ends a turn it was told to end with the idle marker; its `Stop` hook
+/// hands thurbox the payload, and the marker is the claim.
+#[test]
+fn a_codex_turn_that_ends_with_the_idle_marker_is_claimed_idle() {
+    let env = Env::new("codex");
+    env.fire(
+        "codex-hooks.json",
+        "UserPromptSubmit",
+        event("UserPromptSubmit", json!({})),
+    );
+    env.fire(
+        "codex-hooks.json",
+        "Stop",
+        event(
+            "Stop",
+            json!({ "last_assistant_message": "All tests pass.\n\n[thurbox-idle]" }),
+        ),
+    );
+    let got = env.get();
+    assert_eq!(got["state"], "done", "{got}");
+    assert_eq!(got["idle_proof"], "claim", "{got}");
+    assert_eq!(got["state_support"], "partial", "{got}");
+
+    // The claim counts for that turn only.
+    env.fire(
+        "codex-hooks.json",
+        "UserPromptSubmit",
+        event("UserPromptSubmit", json!({})),
+    );
+    assert_eq!(env.get()["idle_proof"], Value::Null);
+    env.fire(
+        "codex-hooks.json",
+        "Stop",
+        event(
+            "Stop",
+            json!({ "last_assistant_message": "Started the watcher." }),
+        ),
+    );
+    assert_eq!(env.get()["idle_proof"], Value::Null);
+}
+
+/// `session signal --idle` is the claim made from outside a turn: accepted on
+/// a turn that has ended, refused on one that has not.
+#[test]
+fn an_idle_claim_needs_a_turn_that_has_ended() {
+    let env = Env::new("codex");
+    assert!(env.signal(&["--state", "working"]).status.success());
+    let refused = env.signal(&["--idle"]);
+    assert!(!refused.status.success());
+    assert_eq!(env.get()["idle_proof"], Value::Null);
+
+    assert!(env.signal(&["--state", "done"]).status.success());
+    let claimed = env.signal(&["--idle"]);
+    assert!(
+        claimed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&claimed.stderr)
+    );
+    let got = env.get();
+    assert_eq!(got["state"], "done", "{got}");
+    assert_eq!(got["idle_proof"], "claim", "{got}");
+
+    assert!(env.signal(&["--state", "working"]).status.success());
+    assert_eq!(env.get()["idle_proof"], Value::Null);
 }

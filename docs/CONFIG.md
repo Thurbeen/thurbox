@@ -1579,9 +1579,18 @@ by **agent hooks** that call `thurbox-cli session signal --state
 <working|blocked|done|idle|background>`. Sub-work a turn may outlive is
 reported by its edges, `--work-start <id>` / `--work-end <id>`; a `done` while
 any is in flight is stored as `background` (see
-[AGENTS.md](AGENTS.md#background-sub-work)). The state is persisted on the `sessions` row
-(`hook_state`, `hook_state_at`, `seen_at` — schema v34) and survives the TUI
-being closed; a hook fired headlessly is picked up via `PRAGMA data_version`.
+[AGENTS.md](AGENTS.md#background-sub-work)). A turn end can hand over the
+agent's `Stop` payload (`--state done --stop-payload -`): claude's lists of
+background tasks and session crons decide `background` and are kept as the
+session's `pending` work, and an empty pair — or a final message ending with
+the line `[thurbox-idle]` — proves the session idle until its next report.
+`session signal --idle` makes that claim once the turn has ended. `session get`
+reads the result as `activity` (see
+[Activity](ORCHESTRATION.md#activity)); the work and the proof live in the row's
+`background_work` column (schema v57), which needs no migration of its own.
+The state is persisted on the `sessions` row (`hook_state`, `hook_state_at`,
+`seen_at` — schema v34) and survives the TUI being closed; a hook fired
+headlessly is picked up via `PRAGMA data_version`.
 Identity comes from the injected `THURBOX_SESSION` env var, so a hook passes
 no id. A finished turn shows `Done` (blue) — for the session you're watching too
 — and becomes `Idle` once you switch focus off it.
@@ -1976,7 +1985,11 @@ from that work names it with `--work <id>` or `THURBOX_SIGNAL_WORK=<id>` in
 the command's environment, and the `working` that starts a turn says so with
 `--turn-start` or `THURBOX_SIGNAL_TURN=start` (it forgets work earlier turns
 left counted). The variables are what the shipped claude hooks use, because a
-remote pane's rewrite keeps a hook to one bare state word.
+remote pane's rewrite keeps a hook to one bare state word. A turn's end may
+carry the agent's `Stop` payload (`--state done --stop-payload <file|->`), and
+`thurbox-cli session signal --idle` claims, once the turn has ended, that it
+left nothing running or scheduled — what `session get` reads as `activity:
+"idle"` ([Activity](ORCHESTRATION.md#activity)).
 That is the supported way to give thurbox agent state for a session it
 did not wire — for instance one created with a bare interactive shell as
 its "agent" because a harness owns the real launch.

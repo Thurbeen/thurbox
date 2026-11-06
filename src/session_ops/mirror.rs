@@ -225,6 +225,23 @@ pub fn session_to_json_assessed(
     // Whether the session can take input now, for every agent alike — the
     // readiness contract (`Assessment::ready`, docs/ORCHESTRATION.md).
     put("ready", json!(hook.ready()));
+    // Whether the session is provably at rest, background work included — the
+    // answer a consumer pausing idle sessions reads (`Assessment::activity`,
+    // docs/ORCHESTRATION.md → Activity). `unknown` is never idle.
+    put("activity", json!(hook.activity().as_str()));
+    // `full`: the agent reports its own background work; `partial`: idleness
+    // rests on its idle claim; null: nothing is wired to report.
+    put(
+        "state_support",
+        json!(hook.state_support().map(|s| s.as_str())),
+    );
+    // What proves the session idle (`stop` or `claim`), and what its agent
+    // last listed still in flight or scheduled.
+    put("idle_proof", json!(hook.idle_proof().map(|p| p.as_str())));
+    put("pending", json!(hook.work.pending()));
+    // How many items that list held past the cap of `pending`; non-zero
+    // still means work remains.
+    put("pending_omitted", json!(hook.work.pending_omitted()));
     // Null unless a driver declared one: the agent the hook fields above were
     // resolved against, when that is not the agent the row was created with.
     // Without it a `--command` session's `hook_coverage: "full"` reads as a
@@ -1305,6 +1322,7 @@ pub fn register_running(
             session.id,
             state,
             crate::session::background_work::ReportFrom::Agent,
+            None,
         );
     }
     if let Some(base) = row.base_branch.as_deref() {

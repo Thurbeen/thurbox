@@ -327,6 +327,8 @@ fn through_session_signal(before: Before, state: &str) -> After {
             work_end: None,
             work: None,
             turn_start: false,
+            stop_payload: None,
+            idle: false,
             session: Some(id.to_string()),
         },
         &database(&home),

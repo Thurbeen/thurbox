@@ -101,6 +101,64 @@ pub struct AgentHookCoverage {
     /// silently when the agent rewords its notifications, so a consumer should
     /// treat a missing `blocked` from these agents as inconclusive.
     pub blocked_is_heuristic: bool,
+    /// Who says when this agent's background work is over — see
+    /// [`StateSupport`].
+    pub state_support: StateSupport,
+}
+
+/// How much of a session's activity its agent reports by itself — the
+/// difference between a `done` that proves the session idle and one that
+/// needs the agent's idle claim to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateSupport {
+    /// The agent reports its background work itself (claude's `Stop` payload
+    /// lists every task and session cron in flight), so a turn end with
+    /// nothing listed proves the session idle.
+    Full,
+    /// The agent reports its turns but not what they left running; idleness
+    /// rests on the agent's idle claim
+    /// ([`crate::session::background_work::IDLE_MARKER`] or `session signal
+    /// --idle`). An agent with no channel to be asked for one reads as never
+    /// proven idle.
+    Partial,
+}
+
+impl StateSupport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StateSupport::Full => "full",
+            StateSupport::Partial => "partial",
+        }
+    }
+}
+
+/// Whether a session can be judged at rest — the answer a consumer deciding to
+/// pause it reads (`session get` → `activity`, docs/ORCHESTRATION.md →
+/// Activity). Never derived from silence: `idle` needs proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    /// Something is running or scheduled: the agent is `working`, `blocked`, or
+    /// rests in `background`.
+    Active,
+    /// The turn ended, nothing is left running or scheduled, and that is
+    /// proven — a `Stop` payload that listed nothing (`full`), or an idle claim
+    /// about that turn (`partial`) — with the agent seen in its pane.
+    Idle,
+    /// Anything else. Never to be read as idle.
+    Unknown,
+    /// Parked by `session stop`: nothing is running.
+    Stopped,
+}
+
+impl Activity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Activity::Active => "active",
+            Activity::Idle => "idle",
+            Activity::Unknown => "unknown",
+            Activity::Stopped => "stopped",
+        }
+    }
 }
 
 impl AgentHookCoverage {
@@ -126,14 +184,16 @@ impl AgentHookCoverage {
 pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
     AgentHookCoverage {
         agent: "claude",
-        // `background` through `SubagentStart`/`SubagentStop`, which bracket an
-        // Agent-tool subagent in the parent session (issue #1510).
+        // `background` from the `Stop` payload's `background_tasks[]` and
+        // `session_crons[]`, and through `SubagentStart`/`SubagentStop`, which
+        // bracket an Agent-tool subagent in the parent session (issue #1510).
         states: &["working", "blocked", "done", "idle", "background"],
         delivery: HookDelivery::Args,
         hook_file: Some("claude.json"),
         // A `Notification`'s `message` is matched against
         // *permission*/*approval* — the words, not a structured event.
         blocked_is_heuristic: true,
+        state_support: StateSupport::Full,
     },
     AgentHookCoverage {
         agent: "aider",
@@ -143,6 +203,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         delivery: HookDelivery::Args,
         hook_file: None,
         blocked_is_heuristic: false,
+        state_support: StateSupport::Partial,
     },
     AgentHookCoverage {
         agent: "codex",
@@ -154,6 +215,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         // `request_user_input` tool (the questions plan mode asks, which fire
         // no approval event). `PostToolUse` clears either one.
         blocked_is_heuristic: false,
+        state_support: StateSupport::Partial,
     },
     AgentHookCoverage {
         agent: "antigravity",
@@ -162,6 +224,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         hook_file: Some("~/.gemini/settings.json"),
         // agy adopted claude's schema, including the text match.
         blocked_is_heuristic: true,
+        state_support: StateSupport::Partial,
     },
     AgentHookCoverage {
         agent: "opencode",
@@ -169,6 +232,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         delivery: HookDelivery::File,
         hook_file: Some("~/.config/opencode/plugin/thurbox-status.js"),
         blocked_is_heuristic: false,
+        state_support: StateSupport::Partial,
     },
     AgentHookCoverage {
         agent: "copilot",
@@ -176,6 +240,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         delivery: HookDelivery::File,
         hook_file: Some("~/.copilot/hooks/thurbox-status.json"),
         blocked_is_heuristic: false,
+        state_support: StateSupport::Partial,
     },
     AgentHookCoverage {
         agent: "vibe",
@@ -183,6 +248,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         delivery: HookDelivery::File,
         hook_file: Some("~/.vibe/hooks.toml"),
         blocked_is_heuristic: false,
+        state_support: StateSupport::Partial,
     },
     AgentHookCoverage {
         agent: "pi",
@@ -190,6 +256,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         delivery: HookDelivery::File,
         hook_file: Some("~/.pi/agent/extensions/thurbox-status.ts"),
         blocked_is_heuristic: false,
+        state_support: StateSupport::Partial,
     },
     AgentHookCoverage {
         agent: "omp",
@@ -197,6 +264,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         delivery: HookDelivery::File,
         hook_file: Some("~/.omp/agent/extensions/thurbox-status.ts"),
         blocked_is_heuristic: false,
+        state_support: StateSupport::Partial,
     },
     AgentHookCoverage {
         agent: "grok",
@@ -205,6 +273,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         hook_file: Some("~/.grok/hooks/thurbox-status.json"),
         // grok is claude-shaped, including the `Notification` text match.
         blocked_is_heuristic: true,
+        state_support: StateSupport::Partial,
     },
     AgentHookCoverage {
         agent: "kimi",
@@ -215,6 +284,7 @@ pub const AGENT_HOOK_COVERAGE: &[AgentHookCoverage] = &[
         // to clear it), so the block edge is structured rather than a text
         // match on a notification body.
         blocked_is_heuristic: false,
+        state_support: StateSupport::Partial,
     },
 ];
 
@@ -1085,6 +1155,12 @@ pub struct Assessment {
     /// reported — what makes [`Self::state`] answer
     /// [`SessionState::Failed`]. Set by [`Self::with_launch_failure`].
     pub launch_failure: Option<super::launch_failure::LaunchFailure>,
+    /// The session's work column: what is in flight or scheduled, and what
+    /// proves the session idle. Set by [`Self::with_work`].
+    pub work: super::background_work::WorkRecord,
+    /// The built-in hooks extension is deactivated, so no agent is wired to
+    /// report anything. Set by [`Self::hooks_deactivated`].
+    pub hooks_off: bool,
     /// The agent every answer above was resolved against.
     ///
     /// Usually the session's own, but a `--command` session whose driver
@@ -1216,7 +1292,68 @@ impl Assessment {
             stopped: false,
             composer_drawn: None,
             launch_failure: None,
+            work: Default::default(),
+            hooks_off: false,
             agent: agent.to_string(),
+        }
+    }
+
+    /// Fold in the session's stored work column (`background_work`).
+    pub fn with_work(mut self, stored: Option<&str>) -> Self {
+        self.work = super::background_work::WorkRecord::parse(stored);
+        self
+    }
+
+    /// Record that the built-in hooks extension is deactivated: nothing is
+    /// wired, so the agent's [`Self::state_support`] is `none`.
+    pub fn hooks_deactivated(mut self) -> Self {
+        self.hooks_off = true;
+        self
+    }
+
+    /// How much of its activity this session's agent reports by itself:
+    /// `full`, `partial`, or `None` when nothing is wired to report — an agent
+    /// the hooks extension does not know, or the extension deactivated.
+    pub fn state_support(&self) -> Option<StateSupport> {
+        if self.hooks_off {
+            return None;
+        }
+        self.covered.map(|c| c.state_support)
+    }
+
+    /// What proves the session idle, if anything does.
+    pub fn idle_proof(&self) -> Option<super::background_work::IdleProof> {
+        self.work.idle_proof()
+    }
+
+    /// Whether the session is provably at rest — see [`Activity`].
+    ///
+    /// Read from the stored word, not the derived one: an acknowledged `done`
+    /// is still a turn end. `idle` needs three things at once: the turn ended
+    /// (`done`/`idle`), proof that it left nothing behind, and the pane looked
+    /// at and found holding the agent — a pane nobody checked, one whose check
+    /// failed, or one where something else is in the foreground is
+    /// `unknown`, as is a remote pane, which cannot be looked at from here.
+    pub fn activity(&self) -> Activity {
+        if self.stopped {
+            return Activity::Stopped;
+        }
+        if self.launch_failure.is_some() || self.contradicted == Some(true) {
+            return Activity::Unknown;
+        }
+        let agent_seen = self
+            .corroboration
+            .as_ref()
+            .and_then(Corroboration::agent_present);
+        if agent_seen == Some(false) {
+            return Activity::Unknown;
+        }
+        match self.hook_state.as_deref() {
+            Some("working" | "blocked" | "background") => Activity::Active,
+            Some("done" | "idle") if self.idle_proof().is_some() && agent_seen == Some(true) => {
+                Activity::Idle
+            }
+            _ => Activity::Unknown,
         }
     }
 
@@ -2186,5 +2323,106 @@ mod tests {
         assert!(!shell("claude", Some("claude --resume")));
         assert!(!shell("node", None));
         assert!(!is_interactive_shell(None, None));
+    }
+
+    fn assessed(agent_name: &str, state: Option<&str>, work: Option<&str>) -> Assessment {
+        let reg = registry(vec![
+            agent("claude", "claude", None),
+            agent("codex", "codex", None),
+        ]);
+        Assessment::from_hooks(&reg, agent_name, state, Some(0), None, 0).with_work(work)
+    }
+
+    const PROVEN_STOP: &str = r#"{"idle":"stop"}"#;
+
+    #[test]
+    fn activity_is_active_while_anything_runs_or_waits() {
+        for state in ["working", "blocked", "background"] {
+            assert_eq!(
+                assessed("claude", Some(state), None).activity(),
+                Activity::Active
+            );
+        }
+    }
+
+    #[test]
+    fn idle_needs_proof_and_the_agent_seen_in_its_pane() {
+        let proven = assessed("claude", Some("done"), Some(PROVEN_STOP));
+        // Nobody looked at the pane.
+        assert_eq!(proven.activity(), Activity::Unknown);
+        assert_eq!(
+            proven
+                .clone()
+                .with_corroboration(Corroboration::Agent)
+                .activity(),
+            Activity::Idle
+        );
+        for unseen in [
+            Corroboration::Unknown,
+            Corroboration::Unavailable,
+            Corroboration::Other,
+            Corroboration::Dead,
+            Corroboration::Missing,
+            Corroboration::Shell,
+        ] {
+            assert_eq!(
+                proven.clone().with_corroboration(unseen.clone()).activity(),
+                Activity::Unknown,
+                "{unseen:?}"
+            );
+        }
+        // A `done` with nothing proving it is unknown, whatever the pane says.
+        assert_eq!(
+            assessed("codex", Some("done"), None)
+                .with_corroboration(Corroboration::Agent)
+                .activity(),
+            Activity::Unknown
+        );
+        // An acknowledged `done` is still the turn end it was.
+        let reg = registry(vec![agent("claude", "claude", None)]);
+        let seen = Assessment::from_hooks(&reg, "claude", Some("done"), Some(1), Some(2), 3)
+            .with_work(Some(PROVEN_STOP))
+            .with_corroboration(Corroboration::Agent);
+        assert_eq!(seen.state(), SessionState::Idle);
+        assert_eq!(seen.activity(), Activity::Idle);
+    }
+
+    #[test]
+    fn a_dead_pane_or_a_failed_launch_is_unknown_and_a_parked_one_stopped() {
+        assert_eq!(
+            assessed("claude", Some("working"), None)
+                .with_corroboration(Corroboration::Dead)
+                .activity(),
+            Activity::Unknown
+        );
+        assert_eq!(
+            assessed("claude", Some("done"), Some(PROVEN_STOP))
+                .parked()
+                .activity(),
+            Activity::Stopped
+        );
+        assert_eq!(assessed("claude", None, None).activity(), Activity::Unknown);
+    }
+
+    #[test]
+    fn state_support_is_full_for_claude_partial_for_the_rest_and_none_unwired() {
+        assert_eq!(
+            assessed("claude", None, None).state_support(),
+            Some(StateSupport::Full)
+        );
+        for c in AGENT_HOOK_COVERAGE.iter().filter(|c| c.agent != "claude") {
+            assert_eq!(c.state_support, StateSupport::Partial, "{}", c.agent);
+        }
+        assert_eq!(
+            assessed("claude", None, None)
+                .hooks_deactivated()
+                .state_support(),
+            None
+        );
+        let reg = registry(vec![agent("mine", "mine", None)]);
+        assert_eq!(
+            Assessment::from_hooks(&reg, "mine", None, None, None, 0).state_support(),
+            None
+        );
     }
 }

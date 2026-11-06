@@ -64,14 +64,33 @@ pub(crate) fn rewrite_hook_signals(contents: &str, command: &str) -> String {
     // `:`: the backend's channel holds one word and cannot count work in
     // flight, so a remote pane reports its turns exactly as it did before
     // `background` existed rather than half of a count.
+    //
+    // A `Stop` that hands over its payload (`--stop-payload -`) is reduced to
+    // the one word the channel holds: `background` when the payload lists any
+    // background task or session cron, `done` otherwise. Neither the list nor
+    // an idle proof crosses — `pending` stays empty for a remote session, and
+    // its `activity` never reads `idle` (the pane cannot be checked from here
+    // either).
     contents
         .replace(
             "thurbox-cli session bind-codex >/dev/null 2>&1 || true; ",
             "",
         )
+        .replace(STOP_PAYLOAD_SIGNAL, REMOTE_STOP_SIGNAL)
         .replace(WORK_EDGE_MARKER, ": --work-")
         .replace(SIGNAL_MARKER, command)
 }
+
+/// A turn end that hands `session signal` its `Stop` payload.
+const STOP_PAYLOAD_SIGNAL: &str = "thurbox-cli session signal --state done --stop-payload -";
+
+/// [`STOP_PAYLOAD_SIGNAL`] for a remote pane, ending in [`SIGNAL_MARKER`] so
+/// the replace after it points it at the backend's channel. Matches the
+/// payload's compact serialisation (`"background_tasks":[{` opens a non-empty
+/// list), and is spelled JSON-escaped because the files carrying it are JSON.
+const REMOTE_STOP_SIGNAL: &str = "p=$(cat); case \\\"$p\\\" in \
+     *'\\\"background_tasks\\\":[{'*|*'\\\"session_crons\\\":[{'*) s=background ;; \
+     *) s=done ;; esac; thurbox-cli session signal --state $s";
 
 /// Prefix of the hook commands that report one edge of a piece of sub-work —
 /// see [`rewrite_hook_signals`] for what a remote pane does with them.
@@ -143,12 +162,70 @@ mod tests {
         rewrite_hook_signals(contents, PANE_OPTION)
     }
 
+    /// A remote `Stop` cannot run `thurbox-cli`, so the payload it would
+    /// have handed over is reduced in the shell to the one word the backend's
+    /// channel holds. Run for real, against the fixtures' payloads.
+    #[cfg(unix)]
+    #[test]
+    fn remote_stop_reduces_the_payload_to_one_word() {
+        let fixture = |name: &str| {
+            std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/claude_stop")
+                    .join(name),
+            )
+            .expect("fixture")
+        };
+        for file in [CLAUDE_SETTINGS, CODEX_HOOKS] {
+            let rewritten = rewrite_hook_signals(file, "w ");
+            assert!(!rewritten.contains("--stop-payload"), "{rewritten}");
+            let json: serde_json::Value = serde_json::from_str(&rewritten).expect("valid JSON");
+            let command = json["hooks"]["Stop"][0]["hooks"][0]["command"]
+                .as_str()
+                .expect("stop command")
+                .to_string();
+            for (payload, word) in [
+                (fixture("background_shell.json"), "background"),
+                (fixture("scheduled_loop.json"), "background"),
+                (fixture("nothing_in_flight.json"), "done"),
+                ("{}".to_string(), "done"),
+            ] {
+                let out = tempfile::NamedTempFile::new().expect("tempfile");
+                let script = format!(
+                    "w() {{ printf %s \"$1\" > '{}'; }}; {command}",
+                    out.path().display()
+                );
+                let mut child = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&script)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .expect("sh");
+                use std::io::Write;
+                child
+                    .stdin
+                    .take()
+                    .expect("stdin")
+                    .write_all(payload.as_bytes())
+                    .expect("write payload");
+                assert!(child.wait().expect("wait").success(), "{command}");
+                assert_eq!(
+                    std::fs::read_to_string(out.path()).expect("read"),
+                    word,
+                    "{payload}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn remote_rewrite_replaces_every_signal_command() {
         let rewritten = rewrite_for_tmux(CLAUDE_SETTINGS);
         // No local CLI reference survives, every state maps to the pane option.
         assert!(!rewritten.contains("thurbox-cli"));
-        for state in ["idle", "working", "blocked", "done"] {
+        // `done` is chosen from the `Stop` payload in the shell, as `$s`.
+        for state in ["idle", "working", "blocked", "$s"] {
             assert!(
                 rewritten.contains(&format!("tmux set-option -p @thurbox_state {state}")),
                 "missing rewritten {state} command"
@@ -274,7 +351,7 @@ mod tests {
         let command = "psmux -L thurbox set-option -p @thurbox_state ";
         let rewritten = rewrite_hook_signals(CLAUDE_SETTINGS, command);
         assert!(!rewritten.contains("thurbox-cli"));
-        for state in ["idle", "working", "blocked", "done"] {
+        for state in ["idle", "working", "blocked", "$s"] {
             assert!(
                 rewritten.contains(&format!("{command}{state}")),
                 "missing rewritten {state} command"

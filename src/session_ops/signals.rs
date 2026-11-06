@@ -12,7 +12,7 @@
 //! superseded. Those are here too, so the snapshot worker writes no session
 //! state of its own.
 
-use crate::session::background_work::ReportFrom;
+use crate::session::background_work::{ReportFrom, StopReport};
 use crate::session::{SessionId, HOOK_STATES};
 use crate::storage::{Database, HookRow};
 
@@ -54,17 +54,19 @@ pub enum Reported {
 /// Record one hook report for session `id`. `from` says where it came from:
 /// [`ReportFrom::Echo`] for a word read back from a status channel, which is
 /// taken only as a change; anything else is the agent itself, whose repeat of
-/// a state is news of its liveness and re-stamps it.
+/// a state is news of its liveness and re-stamps it. `stop` is the agent's
+/// `Stop` payload, read for a `done`.
 pub fn report(
     db: &Database,
     id: SessionId,
     reported: &str,
     from: ReportFrom<'_>,
+    stop: Option<&StopReport>,
 ) -> rusqlite::Result<Reported> {
     if !is_state(reported) {
         return Ok(Reported::NotAState);
     }
-    Ok(match db.report_hook_state(id, reported, from)? {
+    Ok(match db.report_hook_state(id, reported, from, stop)? {
         Some((at, state)) => Reported::Stored { state, at },
         None => Reported::NotTaken,
     })

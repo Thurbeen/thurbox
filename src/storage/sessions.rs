@@ -1670,8 +1670,66 @@ impl Database {
     /// would see a transition that did not happen.
     pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<bool> {
         Ok(self
-            .report_hook_state(id, state, ReportFrom::Agent)?
+            .report_hook_state(id, state, ReportFrom::Agent, None)?
             .is_some())
+    }
+
+    /// Take an idle claim about the turn that ended last (`session signal
+    /// --idle`) — see [`crate::session::background_work::settle_claim`]. The
+    /// state does not move. `Ok(None)` when no active, unparked row has `id`.
+    pub fn claim_idle(
+        &self,
+        id: SessionId,
+    ) -> rusqlite::Result<
+        Option<Result<Option<String>, crate::session::background_work::ClaimRefused>>,
+    > {
+        use crate::session::background_work::{settle_claim, WorkRecord};
+
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let row: Option<(Option<String>, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT hook_state, background_work FROM sessions \
+                 WHERE id = ?1 AND deleted_at IS NULL AND stopped_at IS NULL",
+                params![id_str],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((previous, stored)) = row else {
+            return Ok(None);
+        };
+        let mut work = WorkRecord::parse(stored.as_deref());
+        if let Err(refused) = settle_claim(previous.as_deref(), &mut work) {
+            return Ok(Some(Err(refused)));
+        }
+        self.conn.execute(
+            "UPDATE sessions SET background_work = ?1 WHERE id = ?2",
+            params![work.to_column(), id_str],
+        )?;
+        tx.commit()?;
+        Ok(Some(Ok(previous)))
+    }
+
+    /// Every active session's work column, keyed by id — what `session
+    /// get`/`list` read `pending` and the idle proof from. Rows with nothing
+    /// recorded are omitted.
+    pub fn load_work_records(&self) -> rusqlite::Result<HashMap<SessionId, String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, background_work FROM sessions \
+             WHERE deleted_at IS NULL AND background_work IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (id, work) = row?;
+            if let Ok(id) = id.parse::<SessionId>() {
+                map.insert(id, work);
+            }
+        }
+        Ok(map)
     }
 
     /// Record one start or end of a session's sub-work (`session signal
@@ -1687,7 +1745,7 @@ impl Database {
         edge: crate::session::background_work::WorkEdge,
         work: &str,
     ) -> rusqlite::Result<(Option<String>, bool)> {
-        use crate::session::background_work::{settle_edge, InFlight};
+        use crate::session::background_work::{settle_edge, WorkRecord};
 
         let tx = self.write_transaction()?;
         let id_str = id.to_string();
@@ -1698,7 +1756,7 @@ impl Database {
                 params![id_str],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-        let mut in_flight = InFlight::parse(stored.as_deref());
+        let mut in_flight = WorkRecord::parse(stored.as_deref());
         let moved = settle_edge(previous.as_deref(), &mut in_flight, edge, work);
         self.conn.execute(
             "UPDATE sessions SET background_work = ?1 WHERE id = ?2",
@@ -1748,8 +1806,9 @@ impl Database {
         id: SessionId,
         reported: &str,
         from: ReportFrom<'_>,
+        stop: Option<&crate::session::background_work::StopReport>,
     ) -> rusqlite::Result<Option<(i64, String)>> {
-        use crate::session::background_work::{settle_report, InFlight};
+        use crate::session::background_work::{settle_report, WorkRecord};
 
         let only_a_change = matches!(from, ReportFrom::Echo);
         let tx = self.write_transaction()?;
@@ -1767,9 +1826,9 @@ impl Database {
         let Some((previous, previous_at, stored)) = before else {
             return Ok(None);
         };
-        let before_flight = InFlight::parse(stored.as_deref());
+        let before_flight = WorkRecord::parse(stored.as_deref());
         let mut in_flight = before_flight.clone();
-        let state = settle_report(previous.as_deref(), &mut in_flight, reported, from);
+        let state = settle_report(previous.as_deref(), &mut in_flight, reported, from, stop);
         let state = state.as_str();
         if only_a_change && previous.as_deref() == Some(state) && in_flight == before_flight {
             return Ok(None);
