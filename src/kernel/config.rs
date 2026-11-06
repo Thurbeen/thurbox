@@ -9,18 +9,14 @@
 //!   un-done mid-run: the mouse capture escape the terminal was already sent, the
 //!   notifier thread, the scrollback a parser was built with, the audit prune.
 //!
-//! v1 draws the same line (`Settings::restart_only_differs`) and this holds it:
-//! the live half lives here and is replaced on reload, the restart-only half stays
-//! as it was published at startup and is read through
-//! [`crate::session::settings::global`]. Asking this for a restart-only value and
-//! asking the global for a live one would both be wrong, so
-//! [`Config::in_force`] is the one answer to "what is the user running with" —
-//! and it is what gets published to plugins.
-//!
-//! The reason this module exists at all: `settings::global` is a write-once
-//! `OnceLock` shared with `thurbox-cli` and v1. That is what makes those callers
-//! safe, so it must not become mutable — a live setting needs somewhere else to
-//! live.
+//! Which field is which is one table, [`crate::session::settings::FIELDS`], and
+//! this holds the line it draws: the live half lives here and is replaced on
+//! reload, the restart-only half stays as it was loaded at startup. Whatever
+//! consumes a restart-only value is handed it when it is built — the backends,
+//! the terminals, the snapshot store, the command bus — so [`Config::in_force`]
+//! is the one answer to "what is the user running with", and it is what gets
+//! published to plugins. There is no process-wide copy: `session` holds no
+//! state (#1477).
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -65,19 +61,16 @@ pub struct Config {
 }
 
 impl Config {
-    /// Read the file, publish it process-wide, and keep a live copy.
+    /// Read the file and keep a live copy.
     ///
-    /// Publishing must happen before anything reads a restart-only value — and
-    /// `Database::open` reads one (it prunes the audit log to
-    /// `audit_retention_days`), so this belongs at the very top of `main`. v1
-    /// loads it in exactly the same place, for exactly that reason.
+    /// Before anything that is built with a restart-only value, so at the top
+    /// of `main`: the rest of startup is handed [`Self::in_force`].
     ///
     /// Returns the warnings the loader produced (an unknown key, a value out of
     /// range) so the caller can surface them as startup notices.
     pub fn load() -> (Self, Vec<String>) {
-        let (settings, warnings) = crate::agent::settings_config::load_or_seed_with_warnings();
-        crate::session::settings::init(settings.clone());
-        let path = crate::agent::settings_config::settings_config_path();
+        let (settings, warnings) = crate::config::settings::load_or_seed_with_warnings();
+        let path = crate::config::settings::settings_config_path();
         let stamp = path.as_deref().and_then(modified);
         (
             Self {
@@ -142,7 +135,7 @@ impl Config {
         // on every poll until it is fixed.
         self.stamp = Some(stamp);
 
-        let (fresh, warnings) = crate::agent::settings_config::load_or_seed_with_warnings();
+        let (fresh, warnings) = crate::config::settings::load_or_seed_with_warnings();
         if let Some(first) = warnings.first() {
             // The loader falls back to defaults per bad key rather than failing,
             // so this is a report, not a refusal.
@@ -162,53 +155,8 @@ impl Config {
         // `fresh` is what the file holds — it was either just read from it or is
         // about to be written to it — so it is the whole document that is kept,
         // not only the half taken into force.
-        self.on_disk = fresh.clone();
-        let restart_only = self.in_force.clone();
-        self.in_force = Settings {
-            // Live: the feature switches that only gate whether a surface is
-            // drawn, which is decided per frame.
-            features: crate::session::settings::FeatureFlags {
-                tasks: fresh.features.tasks,
-                file_viewer: fresh.features.file_viewer,
-                info_panel: fresh.features.info_panel,
-                global_search: fresh.features.global_search,
-                shell_pane: fresh.features.shell_pane,
-                code_review: fresh.features.code_review,
-                perf_hud: fresh.features.perf_hud,
-                soft_delete: fresh.features.soft_delete,
-                // Restart-only: capture is an escape already sent, the notifier
-                // is a thread already started (or not), the heartbeat is armed
-                // once, and the update work ran at startup.
-                mouse: restart_only.features.mouse,
-                notifications: restart_only.features.notifications,
-                automations: restart_only.features.automations,
-                version_check: restart_only.features.version_check,
-                auto_update: restart_only.features.auto_update,
-            },
-            // Restart-only wholesale.
-            notifications: restart_only.notifications,
-            clipboard: restart_only.clipboard,
-            // Live: the mirror reads the file itself on every pass.
-            remote: fresh.remote,
-            // Held as booted: the only reader here is the diagnostic-log bridge,
-            // built once at boot (ADR-38), so `restart_only_differs` must keep
-            // comparing against it. Spawns, restarts and the tick read the file
-            // themselves, so the rest of the table still applies live.
-            telemetry: restart_only.telemetry,
-            scrollback_lines: restart_only.scrollback_lines,
-            multiplexer: restart_only.multiplexer,
-            // Restart-only because the terminals read it once, when they are
-            // built.
-            hidden_terminal_secs: restart_only.hidden_terminal_secs,
-            two_panel_min_cols: restart_only.two_panel_min_cols,
-            three_panel_min_cols: restart_only.three_panel_min_cols,
-            audit_retention_days: restart_only.audit_retention_days,
-            deleted_retention_days: restart_only.deleted_retention_days,
-            // Restart-only because the git-stat cache is built with it, and a
-            // cache that re-read it would also have to re-age every entry.
-            git_poll_secs: restart_only.git_poll_secs,
-            config_version: fresh.config_version,
-        };
+        self.in_force = self.in_force.with_live_from(&fresh);
+        self.on_disk = fresh;
         if needs_restart {
             Reloaded::NeedsRestart
         } else {
@@ -294,9 +242,7 @@ mod tests {
 
     #[test]
     fn every_live_flag_survives_a_round_trip() {
-        // The split is spelled out field by field in `adopt`, so a new flag added
-        // to the wrong half is a silent bug. This is the guard: flipping every
-        // live flag must change every one of them.
+        // Flipping every live flag must change every one of them.
         let mut config = Config::detached(settings());
         let mut edited = settings();
         edited.features.tasks = false;
@@ -325,9 +271,8 @@ mod tests {
 
     #[test]
     fn the_split_matches_what_v1_calls_restart_only() {
-        // Two definitions of the same line would drift. `adopt` keeps a value
-        // when `restart_only_differs` names it, so flipping one must always be
-        // reported *and* ignored — checked here against the shared predicate.
+        // `adopt` keeps a value when `restart_only_differs` names it, so
+        // flipping one must always be reported *and* ignored.
         let base = settings();
         let mut edited = settings();
         edited.features.mouse = false;
@@ -345,6 +290,19 @@ mod tests {
         assert_eq!(
             config.in_force().two_panel_min_cols,
             base.two_panel_min_cols
+        );
+    }
+
+    #[test]
+    fn a_clipboard_edit_is_taken_into_force() {
+        // Issue #1638: reported `Live`, and the booted provider stayed in force.
+        let mut config = Config::detached(settings());
+        let mut edited = settings();
+        edited.clipboard.provider = crate::session::settings::ClipboardProvider::Osc52;
+        assert_eq!(config.adopt(edited), Reloaded::Live);
+        assert_eq!(
+            config.in_force().clipboard.provider,
+            crate::session::settings::ClipboardProvider::Osc52
         );
     }
 

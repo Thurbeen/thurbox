@@ -74,8 +74,8 @@ nothing.
 reached **always appears in the list**, tagged `Unreachable`, rather than
 silently vanishing. v2 gets there by derivation rather than by a synthetic row:
 `kernel::terminal` records the attach failure for that session, and
-`snapshot::with_reachability` folds "a remote backend plus a live attach error"
-into the published status. So the row is the ordinary row — no second `Session`
+`kernel::host::publish` folds "a remote backend plus a live attach error"
+into the published status with `session::with_reachability`. So the row is the ordinary row — no second `Session`
 kind, no dead input channel to guard, and nothing on the loop that can block on
 ssh. (v1 inserted a `Session::placeholder`; the constructor is still in
 `src/backend/pane.rs` and has no caller.)
@@ -131,8 +131,9 @@ exactly one group. Only a surface holding the terminals can fill it, so a
 headless reader publishes none and `ui.status` falls back to the static answer —
 the same line the CLI already draws at the folds it cannot make.
 
-The frames are `theme.spinner` in `ui/lib/theme.lua` and the pane picks one from the elapsed
-time it is handed (`status_glyph` in `10_sessions.lua`); the clock behind that is
+The frames are `theme.spinner` in `ui/lib/theme.lua`, and `theme.status` there
+picks one from the elapsed time the sessions pane hands it
+(`ui.status(status, elapsed, printing)` in `ui/plugins/10_sessions.lua`); the clock behind that is
 the kernel's shared **animation tick** (`kernel::host::ANIMATION_HZ` = 8), which
 the loop advances **only while something is actually animating** — a free-running
 one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●`
@@ -154,7 +155,7 @@ own, which is the point.
   here — a turn may run for an hour, so a guessed bound would report live work
   as finished; the age is published and the policy is the consumer's. The
   decisive check is the pane: `session get` resolves the foreground process
-  (`SessionBackend::pane_state` on the row's backend — on tmux, one
+  (`WindowLifecycle::pane_state` on the row's backend — on tmux, one
   `display-message` plus one `ps`) and reports
   `hook_corroboration` and `hook_state_contradicted`, **never** overwriting
   `hook_state` with the inference. The listing's three answers stay apart
@@ -214,7 +215,7 @@ own, which is the point.
   the pane. A missed identity is a blank; a wrong one is on screen.
 - **Reading the pane from the interface.** The probe costs one
   `display-message` plus one `ps`, which the render loop may not pay, so
-  `kernel::snapshot::PaneProbe` runs it on a worker thread and the verdict is
+  `kernel::snapshot::probe::PaneProbe` runs it on a worker thread and the verdict is
   folded in when it lands (`Assessment::with_corroboration`). It is asked
   **only** about rows whose `hook_state` is null, is cached for
   `PANE_PROBE_TTL` (2 s), and a moved verdict forces the snapshot rebuild —
@@ -245,6 +246,15 @@ own, which is the point.
   the materialized hook file sets a tmux pane user option instead, delivered
   over the control-mode subscription into the same hook columns (see the
   Remote-session-status bullet in the Remote SSH & WSL section).
+- **One entry point for a report.** `session signal`, the interface's
+  subscription (`SnapshotStore::apply_hook_states`) and the heartbeat's poll
+  all write through `session_ops::signals::report`, which allow-lists the
+  word, refuses a parked row, and takes an echo only as a change. The two that
+  correct a copy in place first judge it with `signals::echo_changes`, the
+  same rule; the snapshot worker answers with the word storage kept, so a
+  `done` that sub-work settled as `background` is shown as `background`. The
+  seen and retire edges (`signals::mark_seen`, `signals::retire`) are there
+  too: the snapshot worker writes no session state of its own.
 - **The pane has to be able to find the binary.** The callback is a **bare**
   name, so it is only as good as the `PATH` of the thurbox that spawned the
   pane — tmux copies that in by itself (the session environment is replaced
@@ -263,7 +273,7 @@ own, which is the point.
   (verified against tmux 3.5a). `session doctor`'s `cli` finding used to answer
   from the *doctor's* `PATH`, which is why it read `ok` throughout; it now reads
   the pane's own, out of the `env PATH=…` prefix tmux keeps verbatim in
-  `#{pane_start_command}` (`SessionBackend::pane_path`). Not
+  `#{pane_start_command}` (`WindowLifecycle::pane_path`). Not
   `/proc/<pid>/environ`: that needs `PTRACE_MODE_READ`, which Debian and Ubuntu
   restrict to a tracer's own descendants (`kernel.yama.ptrace_scope = 1`), so it
   would answer for a `doctor` run from the TUI and refuse the same question
@@ -320,12 +330,28 @@ own, which is the point.
   | `classify_foreground` → `Assessment::with_corroboration` | the pane's foreground process group | anyone who can run `ps` |
   | `with_output_quiescence` (incl. the latched-`blocked` fold) | terminal output age, against `hook_state_at` | the interface only |
   | `with_reachability` | a live attach error | the interface only |
+  | `Assessment::host_unreachable` | a `host not answering` verdict in `host-verdicts.json` (`session_ops::host_cli::with_host_verdict`) | `session get`/`list`, `watch` |
 
   `seen_at` being a **stored fact** rather than a timeout is why the CLI applies
   it too: the CLI rightly refuses to guess a staleness bound, but this column is
   simply there to be read, and until it was, a turn the interface had already
   acknowledged reported `done` on `session get`/`list`/`watch` for the rest of
-  the session's life. The two folds the CLI cannot make it does not fake.
+  the session's life. The two folds the CLI cannot make it does not fake —
+  but a down host is a **stored fact** too: the probe's backoff verdict is
+  shared through `host-verdicts.json`, so `session get`/`list` and `watch`
+  (one fold, `host_cli::with_host_verdict`; a flip folds the verdict it sampled, `with_host_down`) read a remote
+  row on a host recorded as not answering as `unreachable` with
+  `state_source: "host"`, instead of the last mirrored `idle` (`hook_state`
+  itself stays as stored). Only while that verdict's backoff runs — the
+  interface re-probes and re-stamps it then, so an expired one is a host
+  nobody has re-checked and says nothing — and only until the interface's
+  survey reaches the host again: a survey that readies the backend and lists
+  its panes clears the verdict on its worker (`host_cli::host_answered`), so
+  a host that came back stops reading `unreachable` as soon as it reattaches. A verdict that is not a host
+  failure — sharing off, a CLI the host refuses to start — leaves the state
+  alone. A verdict is a file, not a row, so its flip appends no event: `watch`
+  compares the verdicts on its sweep and reports each flip itself as
+  `changed`/`host_down` or `changed`/`host_up`, with `seq: null`.
   A local session is never unreachable: this is its machine, and a missing pane
   there means the agent was not launched. The rows are read on the snapshot's
   own schedule rather than per frame, gated on `PRAGMA data_version` moving (see
@@ -374,13 +400,13 @@ own, which is the point.
   at the two folds it cannot make.
 - **Per-session only.** Status renders on the session's own row (and in the
   ` Sessions ` panel border title, one dot per session). Repo-group headers
-  (`group_header_line` in `10_sessions.lua`) carry **no** status — a rolled-up
+  (`header_label` in `ui/lib/session_model.lua`) carry **no** status — a rolled-up
   group dot would restate what every member row shows. Status only recolors — it
   **never** reorders rows (the order is status-independent).
 - **Colours** are tunable theme fields: `status_working` / `status_blocked`
   / `status_done` / `status_idle` / `status_unreachable` / `status_running` /
   `status_unknown` / `status_background`
-  (`session::theme_config`, all 36 presets + custom-theme overrides), published
+  (`theme`, all 36 presets + custom-theme overrides), published
   to Lua as theme roles and read by the pane. `status_error` is a separate
   role (a failed *command*, e.g. `bands.rs`'s `Level::Error` — not a session
   state, and untouched by `SessionState` dropping `Error`).
@@ -480,7 +506,7 @@ run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
   report one finished subagent back makes tool calls of its own while others
   still run, and those must stay counted. `idle` (claude's
   `SessionStart`, a new process) forgets all of it; `session stop` and a
-  restart (`clear_hook_state`) clear the column; and `contradicts` lets `session get --verify` report a dead or
+  restart (`clear_hook_state`) clear the column; and `contradicts` lets `session get` (or `session list --verify`) report a dead or
   missing pane against it. `with_output_quiescence` does **not** fold
   `background`: quiet output is not evidence (the work runs out of the pane's
   sight), and a missing quiet answer is not either — an interface that has not
@@ -489,7 +515,7 @@ run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
   the word it stored to the pane option after its transaction, so two hook
   processes can publish out of the order they stored in. The interface's
   drain and the heartbeat's status poll (`remote_hooks::poll_hook_states`,
-  which reads local panes too) both write through `report_hook_state` as
+  which reads local panes too) both write through `signals::report` as
   `ReportFrom::Echo`, which
   refuses a `background` once the session's counted work has all ended — a
   late `Stop` echo cannot undo the `done` the last `SubagentStop` stored. A

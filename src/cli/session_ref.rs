@@ -28,8 +28,8 @@
 
 use crate::cli::{CommandError, EXIT_AMBIGUOUS};
 use crate::session::SessionId;
+use crate::session::SharedSession;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 /// What a reference resolved to, or why it could not.
 pub enum Ambiguity {
@@ -268,7 +268,7 @@ fn ambiguous(reference: &str, found: &[SharedSession]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     fn row(name: &str) -> SharedSession {
         SharedSession {

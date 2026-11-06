@@ -286,7 +286,7 @@ impl App {
                 let outcome = thurbox::clipboard::copy(
                     &text,
                     self.clipboard.as_mut(),
-                    thurbox::session::settings::global().clipboard.provider,
+                    self.config.in_force().clipboard.provider,
                 );
                 self.toast(match outcome {
                     Ok(route) => {
@@ -399,6 +399,14 @@ impl App {
         for (id, tracked) in finished {
             self.tracked_commands.remove(&id);
             if tracked.failed {
+                continue;
+            }
+            // A repair that relaunched nothing — its session deleted meanwhile,
+            // or a delete or restart holding the row — replaced no pane and
+            // has nothing to announce. "restarted <name>" and a
+            // `session.post_restart` for a session a driver just deleted would
+            // be as wrong as the error this used to be.
+            if self.commands.take_did_nothing(id) {
                 continue;
             }
             // A command that replaced the session's pane must be followed by

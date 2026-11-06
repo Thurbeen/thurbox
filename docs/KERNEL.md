@@ -3,8 +3,9 @@
 thurbox is a session engine with a Lua-driven renderer. The kernel owns no
 pane: the session list, the terminal and every other surface that shows *your
 work* is a plugin under `ui/`. The bundled set is currently **three** — the
-session list, the agent pane and the search strip — plus the new-session flow,
-the confirmation and the restore list, which float rather than filling a slot;
+session list, the agent pane and the search strip — plus five floats that fill
+no slot: the new-session flow, the confirmation, the rename field, the context
+menu and the restore list;
 the interface was cut back to its core, and v1's other surfaces are not
 bundled. It does own the **system modals** — help, settings, the theme picker
 and the interface's own file list — which are chrome about thurbox itself
@@ -50,7 +51,7 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
    convert   table <-> node              lib/ui        panel, list, cursor, row…
                                          lib/widgets   measure, window, list…
    paint     node -> ratatui             lib/tree      decoration helper
-   host      VM, reload, isolation       plugins/*     3 panes + 3 floats
+   host      VM, reload, isolation       plugins/*     3 panes + 5 floats
    registry  keys, settings, commands
    modals    help, settings, theme, files, palette
    events    derived from the snapshot
@@ -306,8 +307,9 @@ some of them (mouse capture, the notifier thread, the scrollback a parser was
 built with) were consumed at startup and cannot be un-consumed — so the core
 half is a **draft**: `Ctrl+S` writes it, `Esc` discards it, and `⟳` marks the
 rows that will not take effect until the next launch. `kernel::config` owns that
-split; `Settings::restart_only_differs` is the shared definition of it, asserted
-against in both places so the two cannot drift.
+split; `session::settings::FIELDS` is its one definition, a row per field saying
+`Live` or `NextLaunch`, and both `Config::adopt` and
+`Settings::restart_only_differs` are derived from it so the two cannot drift.
 
 That split has a second edge, and missing it cost the panel its edits: what the
 modal shows and drafts from is `Config::on_disk`, **not** `Config::in_force`. A
@@ -315,14 +317,15 @@ restart-only change lands in the file and is deliberately withheld from what is
 running, so seeding an edit from what is running silently proposes undoing it —
 the next save of any row reverted it.
 
-`settings::global()` is still a write-once `OnceLock`, shared with `thurbox-cli`
-and v1, and it stays that way: it is what makes those callers safe. The live half
-lives in `kernel::config` instead. Publishing at startup is load-bearing rather
-than tidy — `Database::open` prunes the audit log to `audit_retention_days`, so a
-kernel that has not published its settings prunes to the default. (v2 shipped
-that way for a while: the kernel's `main` never called `settings::init`, so the whole file
-was silently ignored while every switch looked honoured, because every default
-matched.)
+There is no process-wide copy of the settings: `session` holds no state
+(#1477). The live half lives in `kernel::config`; the restart-only half is handed,
+as loaded, to whatever is built with it — the backends (history depth), the
+terminals (scrollback, how long a hidden grid stays), the snapshot store (git
+cadence, configured multiplexer), the command bus (deleted retention) — and the
+binary runs the audit-log prune itself (`Database::prune_history`). Loading
+first is load-bearing rather than tidy. (v2 once shipped with a process-wide copy
+its `main` never filled, so the whole file was silently ignored while every
+switch looked honoured, because every default matched.)
 
 ## System chrome is not a pane
 
@@ -366,7 +369,7 @@ the capture lasts one keystroke.
 **The render path must not read the plugin directory.** inotify reports a *read*
 as an event, so a per-frame reader makes the host look like it is editing its own
 plugins — which pushes the reload debounce forward forever, and auto-reload
-silently never fires while `F5` works perfectly. `layout.lua` is loaded once per
+silently never fires while `F10` works perfectly. `layout.lua` is loaded once per
 reload for exactly this reason.
 
 **A click is routed by identity, not by geometry a plugin declares.** The paint
@@ -399,8 +402,8 @@ were found by running it, not by reading the spec.
 
 ## Where the boundary sits
 
-`kernel` may reference `session`, `storage`, `sync`, `paths`, `session_ops`,
-`git`, `notifications` and `shell`, plus `agent` and the backend contract by
+`kernel` may reference `session`, `storage`, `paths`, `session_ops`,
+`git`, `notifications`, `shell` and `theme`, plus `agent` and the backend contract by
 fully-qualified path only — enforced by
 `tests/architecture_rules.rs`. It may never reference `ui` or `app`: it is their
 replacement, not their peer.
@@ -466,9 +469,10 @@ conversion less often:
   `20_agent.lua`'s `chrome()` already does, would take a 30-row list from ~90
   nodes to ~32.
 - **Stop probing closed modals.** Every floating plugin is rendered full-screen
-  each frame purely to discover it is not floating. No bundled plugin floats any
-  more, so this costs nothing today — and is the trap to avoid when the modals
-  come back.
+  each frame purely to discover it is not floating. Five bundled plugins float
+  now (the creation flow, the confirmation, the rename field, the context menu
+  and the restore list), so the probe is paid on every frame unless the float
+  declares `pure = true` — which is the lever ADR-P16 added for it.
 
 Dependencies are built with `opt-level = 3` even in dev builds
 (`[profile.dev.package."*"]`), because `cargo run` is the documented way to run

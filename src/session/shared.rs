@@ -1,36 +1,12 @@
+//! The session row every thurbox process reads and writes: the TUI, `thurbox-cli`
+//! and an automation tick share one SQLite database, and [`SharedSession`] is
+//! the shape a row takes on its way in and out of `storage`.
+
 use std::path::PathBuf;
 
 use crate::session::SessionId;
 
-/// In-memory snapshot of shared state across all thurbox instances.
-///
-/// Used for computing deltas between local and database state.
-#[derive(Debug, Clone)]
-pub struct SharedState {
-    /// Session counter for unique naming across instances.
-    pub session_counter: usize,
-
-    /// Active sessions across all instances.
-    pub sessions: Vec<SharedSession>,
-}
-
-impl SharedState {
-    /// Create a new empty shared state.
-    pub fn new() -> Self {
-        Self {
-            session_counter: 0,
-            sessions: Vec::new(),
-        }
-    }
-}
-
-impl Default for SharedState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// A session known to the shared state.
+/// A session as every instance sees it.
 ///
 /// Tracks essential metadata needed for all instances to see and adopt sessions.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -136,31 +112,9 @@ impl From<SharedWorktree> for crate::session::WorktreeInfo {
     }
 }
 
-/// Get current time in milliseconds since Unix epoch.
-pub fn current_time_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn new_shared_state_is_empty_and_valid() {
-        let state = SharedState::new();
-        assert_eq!(state.session_counter, 0);
-        assert!(state.sessions.is_empty());
-    }
-
-    #[test]
-    fn default_state_equals_new() {
-        let new_state = SharedState::new();
-        let default_state = SharedState::default();
-        assert_eq!(new_state.session_counter, default_state.session_counter);
-    }
 
     #[test]
     fn worktree_info_to_shared_worktree() {

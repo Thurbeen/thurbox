@@ -875,6 +875,7 @@ fn command_for(
                 .as_ref()
                 .and_then(|t| t.get::<Option<i64>>("delta").ok().flatten()),
             force: get_bool("force").unwrap_or(false),
+            fresh: get_bool("fresh").unwrap_or(false),
             toggle: get_bool("toggle").unwrap_or(false),
             flag: get_bool("flag"),
             number: opts

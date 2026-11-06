@@ -73,7 +73,7 @@ impl BackendRegistry {
     }
 
     /// Retire every backend's long-lived resources, all at once: each
-    /// [`SessionBackend::shutdown`] runs on its own thread, so quitting costs
+    /// [`WindowLifecycle::shutdown`](crate::backend::WindowLifecycle::shutdown) runs on its own thread, so quitting costs
     /// the slowest connection rather than their sum. Called once, by the
     /// process that built the registry, as it exits.
     pub fn shutdown_all(&self) {
@@ -112,7 +112,10 @@ pub(crate) mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::backend::{AdoptedSession, DiscoveredSession, SpawnedSession, WindowRole};
+    use crate::backend::{
+        AdoptedSession, DiscoveredSession, PaneIo, PaneStream, SpawnedSession, StatusChannel,
+        WindowLifecycle, WindowRole,
+    };
     use crate::session::{Multiplexer, Via};
 
     struct StubBackend {
@@ -161,68 +164,40 @@ pub(crate) mod tests {
         })
     }
 
-    impl SessionBackend for StubBackend {
-        fn hook_signal_command(&self) -> Option<String> {
-            None
-        }
-        fn record_hook_state(
+    impl PaneStream for StubBackend {
+        fn spawn(
             &self,
             _: &str,
             _: &str,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub has no status channel").into())
-        }
-        fn hook_states(&self) -> crate::backend::contract::BackendResult<Vec<(String, String)>> {
-            Err(anyhow::anyhow!("this stub has no status channel").into())
-        }
-        fn take_hook_state_events(&self) -> Vec<(String, String)> {
-            Vec::new()
-        }
-        fn ensure_heartbeat(
-            &self,
-            _: &std::path::Path,
             _: &[String],
-            _: std::time::Duration,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub keeps no heartbeat").into())
+            _: Option<&Path>,
+            _: &std::collections::HashMap<String, String>,
+            _: u16,
+            _: u16,
+        ) -> crate::backend::contract::BackendResult<SpawnedSession> {
+            Err(anyhow::anyhow!("{}: nothing to spawn on", self.backend_name).into())
         }
-        fn heartbeat_running(&self) -> crate::backend::contract::BackendResult<bool> {
-            Ok(false)
-        }
-        fn stop_heartbeat(&self) -> crate::backend::contract::BackendResult<bool> {
-            Ok(false)
-        }
-        fn send_text(
+
+        fn adopt(
             &self,
             _: &str,
-            _: &str,
-            _: bool,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+            _: u16,
+            _: u16,
+            _: Option<Vec<u8>>,
+        ) -> crate::backend::contract::BackendResult<AdoptedSession> {
+            Err(anyhow::anyhow!("{}: nothing to adopt", self.backend_name).into())
         }
-        fn send_text_after(
-            &self,
-            _: &str,
-            _: &str,
-            _: std::time::Duration,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+
+        fn resize(&self, _: &str, _: u16, _: u16) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
         }
-        fn send_key(
-            &self,
-            _: &str,
-            _: &crate::backend::Key,
-        ) -> crate::backend::contract::BackendResult<String> {
-            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+
+        fn detach(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
         }
-        fn capture(
-            &self,
-            _: &str,
-            _: u32,
-            _: bool,
-        ) -> crate::backend::contract::BackendResult<String> {
-            Err(anyhow::anyhow!("this stub has no panes to read").into())
-        }
+    }
+
+    impl WindowLifecycle for StubBackend {
         fn pane_state(
             &self,
             pane: &str,
@@ -242,9 +217,11 @@ pub(crate) mod tests {
                 Err(anyhow::anyhow!("this stub has no such pane").into())
             }
         }
+
         fn pane_path(&self, _: &str) -> crate::backend::contract::BackendResult<Option<String>> {
             Err(anyhow::anyhow!("this stub has no panes to read").into())
         }
+
         fn create_window(
             &self,
             spec: &crate::backend::WindowSpec<'_>,
@@ -259,6 +236,7 @@ pub(crate) mod tests {
             ));
             Ok(crate::backend::PaneId::new(pane)?)
         }
+
         fn locate(
             &self,
             owner: crate::backend::Owner<'_>,
@@ -268,6 +246,7 @@ pub(crate) mod tests {
                 shell: self.place(&owner, WindowRole::Shell),
             })
         }
+
         fn rename_windows(
             &self,
             owner: crate::backend::Owner<'_>,
@@ -280,6 +259,7 @@ pub(crate) mod tests {
             }
             Ok(())
         }
+
         fn stamp_window(
             &self,
             _: &str,
@@ -288,12 +268,14 @@ pub(crate) mod tests {
         ) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
+
         fn window_panes(
             &self,
             _: &str,
         ) -> crate::backend::contract::BackendResult<Vec<(String, bool)>> {
             Ok(Vec::new())
         }
+
         fn set_pane_retention(
             &self,
             _: &str,
@@ -301,48 +283,24 @@ pub(crate) mod tests {
         ) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
+
         fn shutdown(&self) {
             self.shutdowns
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        fn name(&self) -> &str {
-            &self.backend_name
-        }
-        /// As the multiplexer its route names: psmux's windows close with
-        /// their program.
-        fn keeps_exited_windows(&self) -> bool {
-            !self.backend_name.ends_with(":psmux")
-        }
+
         fn default_shell(&self) -> String {
             "/bin/sh".to_string()
         }
+
         fn check_available(&self) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
+
         fn ensure_ready(&self) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
-        fn spawn(
-            &self,
-            _: &str,
-            _: &str,
-            _: &[String],
-            _: Option<&Path>,
-            _: &std::collections::HashMap<String, String>,
-            _: u16,
-            _: u16,
-        ) -> crate::backend::contract::BackendResult<SpawnedSession> {
-            Err(anyhow::anyhow!("{}: nothing to spawn on", self.backend_name).into())
-        }
-        fn adopt(
-            &self,
-            _: &str,
-            _: u16,
-            _: u16,
-            _: Option<Vec<u8>>,
-        ) -> crate::backend::contract::BackendResult<AdoptedSession> {
-            Err(anyhow::anyhow!("{}: nothing to adopt", self.backend_name).into())
-        }
+
         fn discover(&self) -> crate::backend::contract::BackendResult<Vec<DiscoveredSession>> {
             Ok(self
                 .windows
@@ -358,21 +316,106 @@ pub(crate) mod tests {
                 })
                 .collect())
         }
-        fn resize(&self, _: &str, _: u16, _: u16) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
+
         fn is_dead(&self, _: &str) -> crate::backend::contract::BackendResult<bool> {
             Ok(false)
         }
+
         fn kill(&self, pane: &str) -> crate::backend::contract::BackendResult<()> {
             self.windows.lock().unwrap().retain(|(p, ..)| p != pane);
             Ok(())
         }
-        fn detach(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
+
         fn pane_pid(&self, _: &str) -> crate::backend::contract::BackendResult<Option<u32>> {
             Ok(None)
+        }
+    }
+
+    impl PaneIo for StubBackend {
+        fn send_text(
+            &self,
+            _: &str,
+            _: &str,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+        }
+
+        fn send_text_after(
+            &self,
+            _: &str,
+            _: &str,
+            _: std::time::Duration,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+        }
+
+        fn send_key(
+            &self,
+            _: &str,
+            _: &crate::backend::Key,
+        ) -> crate::backend::contract::BackendResult<String> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+        }
+
+        fn capture(
+            &self,
+            _: &str,
+            _: u32,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<String> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
+        }
+    }
+
+    impl StatusChannel for StubBackend {
+        fn hook_signal_command(&self) -> Option<String> {
+            None
+        }
+
+        fn record_hook_state(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no status channel").into())
+        }
+
+        fn hook_states(&self) -> crate::backend::contract::BackendResult<Vec<(String, String)>> {
+            Err(anyhow::anyhow!("this stub has no status channel").into())
+        }
+
+        fn take_hook_state_events(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+
+        fn ensure_heartbeat(
+            &self,
+            _: &std::path::Path,
+            _: &[String],
+            _: std::time::Duration,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub keeps no heartbeat").into())
+        }
+
+        fn heartbeat_running(&self) -> crate::backend::contract::BackendResult<bool> {
+            Ok(false)
+        }
+
+        fn stop_heartbeat(&self) -> crate::backend::contract::BackendResult<bool> {
+            Ok(false)
+        }
+    }
+
+    impl SessionBackend for StubBackend {
+        fn name(&self) -> &str {
+            &self.backend_name
+        }
+        fn capabilities(&self) -> crate::backend::Capabilities {
+            crate::backend::Capabilities {
+                keeps_exited_windows: !self.backend_name.ends_with(":psmux"),
+                ..crate::backend::Capabilities::NONE
+            }
         }
     }
 

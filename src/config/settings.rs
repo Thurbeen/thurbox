@@ -125,15 +125,14 @@ config_version = 1
 # provider = "auto"             # auto | native | osc52 | none
 # copy_on_select = true
 
-# Sessions on remote hosts (hosts.toml). A shareable host lists its own
-# sessions and, when it mirrors hosts of its own, theirs too. Those transitive
-# sessions are listed here once each, on the most direct path this instance has
-# to them (a host you reach directly wins over the same session seen through
-# another), and every action on one goes to the host that owns it. Set to
-# `false` to list only each host's own sessions. Applies on the next mirror
-# pass.
+# Sessions on remote hosts (hosts.toml). Each host's own sessions are listed
+# here. A shareable host that mirrors hosts of its own also lists theirs; set
+# this to `true` to list those transitive sessions too, once each, on the most
+# direct path this instance has to them (a host you reach directly wins over
+# the same session seen through another), with every action on one going to
+# the host that owns it. Applies on the next mirror pass.
 # [remote]
-# transitive_sessions = true
+# transitive_sessions = false
 
 # OpenTelemetry: turn on each agent's own exporter for the sessions thurbox
 # spawns — the spec's OTEL_EXPORTER_OTLP_* variables, OTEL_RESOURCE_ATTRIBUTES
@@ -194,7 +193,7 @@ config_version = 1
 
 /// Path to the settings file: `~/.config/thurbox/settings.toml`.
 pub fn settings_config_path() -> Option<PathBuf> {
-    crate::paths::config_file().map(|p| p.with_file_name("settings.toml"))
+    super::file::path("settings.toml")
 }
 
 /// Load the settings, seeding the config file with commented-out defaults
@@ -202,55 +201,7 @@ pub fn settings_config_path() -> Option<PathBuf> {
 /// defaults; warnings are returned for the TUI status bar and logged by
 /// headless callers.
 pub fn load_or_seed_with_warnings() -> (Settings, Vec<String>) {
-    let Some(path) = settings_config_path() else {
-        return (
-            Settings::default(),
-            vec!["Could not resolve settings.toml path; using defaults".into()],
-        );
-    };
-
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return (
-                    Settings::default(),
-                    vec![format!(
-                        "Failed to create config dir for settings.toml: {e}"
-                    )],
-                );
-            }
-        }
-        if let Err(e) = std::fs::write(&path, SEED_SETTINGS_TOML) {
-            return (
-                Settings::default(),
-                vec![format!("Failed to seed settings.toml: {e}")],
-            );
-        }
-        tracing::info!(path = %path.display(), "Seeded settings.toml (defaults)");
-        return (Settings::default(), Vec::new());
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            match super::agent_config::parse_toml_reporting_unknown::<Settings>(
-                &contents,
-                "settings.toml",
-            ) {
-                Ok((settings, warnings)) => (settings, warnings),
-                Err(e) => (
-                    Settings::default(),
-                    vec![format!(
-                        "settings.toml: {}; using defaults",
-                        super::agent_config::compact_toml_error(&e.to_string())
-                    )],
-                ),
-            }
-        }
-        Err(e) => (
-            Settings::default(),
-            vec![format!("Failed to read settings.toml: {e}")],
-        ),
-    }
+    super::file::load_or_seed("settings.toml", SEED_SETTINGS_TOML, "using defaults")
 }
 
 /// The settings as the file holds them right now, for a caller that re-reads
@@ -289,7 +240,7 @@ pub fn retire_layout_preset() -> Option<String> {
         .find('\n')
         .map_or(contents.len(), |at| end + at + 1);
     let kept = format!("{}{}", &contents[..line_start], &contents[line_end..]);
-    if let Err(e) = crate::paths::write_atomically(&path, &kept) {
+    if let Err(e) = super::file::save(&path, &kept) {
         return Some(format!(
             "settings.toml: could not remove the withdrawn `layout` key: {e}"
         ));
@@ -330,10 +281,6 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
             "could not resolve settings.toml path",
         ));
     };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => SEED_SETTINGS_TOML.to_string(),
@@ -401,7 +348,7 @@ pub fn save_settings(settings: &Settings) -> std::io::Result<()> {
         notifications["backend"] = value(backend);
     }
 
-    crate::paths::write_atomically(&path, &doc.to_string())
+    super::file::save(&path, doc.to_string())
 }
 
 #[cfg(test)]
@@ -481,7 +428,7 @@ mod tests {
     #[test]
     fn load_or_seed_writes_file_when_absent() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = settings_config_path().unwrap();
         assert!(!path.exists());
@@ -495,7 +442,7 @@ mod tests {
     #[test]
     fn a_withdrawn_layout_preset_is_noted_once_and_removed() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -523,7 +470,7 @@ mod tests {
     #[test]
     fn a_classic_layout_key_is_removed_without_a_note() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -536,7 +483,7 @@ mod tests {
     #[test]
     fn a_layout_key_in_any_toml_spelling_is_removed_whole() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -560,7 +507,7 @@ mod tests {
     #[test]
     fn load_or_seed_falls_back_on_malformed_file_with_warning() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -575,7 +522,7 @@ mod tests {
     #[test]
     fn load_or_seed_reads_overrides() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -591,7 +538,7 @@ mod tests {
     #[test]
     fn save_settings_round_trips() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         // Seed the documented file first, then save mutated settings.
         let (mut s, _) = load_or_seed_with_warnings();
         s.scrollback_lines = 4000;
@@ -628,7 +575,7 @@ mod tests {
     #[test]
     fn save_settings_preserves_comments() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         let (s, _) = load_or_seed_with_warnings();
 
         save_settings(&s).unwrap();
@@ -641,7 +588,7 @@ mod tests {
     #[test]
     fn save_settings_writes_when_file_absent() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         let path = settings_config_path().unwrap();
         assert!(!path.exists());
 
@@ -662,7 +609,7 @@ mod tests {
     #[test]
     fn save_settings_recovers_from_malformed_file() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "garbage = ").unwrap();
@@ -684,7 +631,7 @@ mod tests {
     #[test]
     fn load_or_seed_reads_feature_overrides() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -699,7 +646,7 @@ mod tests {
     #[test]
     fn save_settings_leaves_nothing_staged_beside_the_file() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         save_settings(&Settings::default()).unwrap();
 
         let dir = settings_config_path().unwrap().parent().unwrap().to_owned();
@@ -713,19 +660,19 @@ mod tests {
     #[test]
     fn load_quiet_reads_the_file_without_seeding_it() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         let path = settings_config_path().unwrap();
 
-        assert!(load_quiet().remote.transitive_sessions, "absent = default");
+        assert!(!load_quiet().remote.transitive_sessions, "absent = default");
         assert!(!path.exists(), "and nothing was seeded");
 
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "[remote]\ntransitive_sessions = false\n").unwrap();
-        assert!(!load_quiet().remote.transitive_sessions);
+        std::fs::write(&path, "[remote]\ntransitive_sessions = true\n").unwrap();
+        assert!(load_quiet().remote.transitive_sessions);
 
         std::fs::write(&path, "[remote\n").unwrap();
         assert!(
-            load_quiet().remote.transitive_sessions,
+            !load_quiet().remote.transitive_sessions,
             "malformed = default"
         );
     }

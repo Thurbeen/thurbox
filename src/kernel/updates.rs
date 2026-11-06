@@ -5,15 +5,15 @@
 //! makes a network call, the other makes a network call and writes to disk, so
 //! neither is inferred from the other. Neither crosses a **major** version: the
 //! badge shows a 2.x release to a 1.x install, and the installer half declines
-//! it ([`crate::agent::version_check::crosses_major`]).
+//! it ([`crate::update::version_check::crosses_major`]).
 //!
 //! Sixth instance of the worker pattern, and the one with the longest tail: a
 //! release download can take a minute on a slow link. Nothing here is waited on —
 //! the cached answer is read instantly at startup and the network runs on a
 //! thread, so a machine with no route to GitHub costs the interface nothing.
 //!
-//! The work itself is v1's, unchanged: [`crate::agent::version_check`] for the
-//! check and its cache, [`crate::agent::self_update`] for the install. What is
+//! The work itself is v1's, unchanged: [`crate::update::version_check`] for the
+//! check and its cache, [`crate::update::self_update`] for the install. What is
 //! new is only where the results are kept and when the threads are started.
 
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -51,11 +51,11 @@ impl Updates {
         if features.version_check {
             // Instant, and usually enough: the badge is right from the first
             // frame when the cache is warm.
-            updates.latest = crate::agent::version_check::read_cached_status().map(|s| s.latest);
-            if crate::agent::version_check::cache_is_stale() {
+            updates.latest = crate::update::version_check::read_cached_status().map(|s| s.latest);
+            if crate::update::version_check::cache_is_stale() {
                 let tx = updates.sender();
                 std::thread::spawn(move || {
-                    let latest = match crate::agent::version_check::refresh_cache() {
+                    let latest = match crate::update::version_check::refresh_cache() {
                         Ok((_, status)) => status.map(|s| s.latest),
                         Err(e) => {
                             tracing::warn!("update check failed: {e}");
@@ -70,14 +70,14 @@ impl Updates {
         if features.auto_update {
             let tx = updates.sender();
             std::thread::spawn(move || {
-                match crate::agent::self_update::perform_update(false) {
-                    Ok(crate::agent::self_update::UpdateOutcome::Updated { to, .. }) => {
+                match crate::update::self_update::perform_update(false) {
+                    Ok(crate::update::self_update::UpdateOutcome::Updated { to, .. }) => {
                         // The check's cache is refreshed with it, so the badge
                         // agrees with what is now installed on the next launch.
-                        let _ = crate::agent::version_check::refresh_cache();
+                        let _ = crate::update::version_check::refresh_cache();
                         let _ = tx.send(Done::Installed(to));
                     }
-                    Ok(crate::agent::self_update::UpdateOutcome::SkippedMajor {
+                    Ok(crate::update::self_update::UpdateOutcome::SkippedMajor {
                         current,
                         latest,
                     }) => tracing::info!(
@@ -139,7 +139,11 @@ mod tests {
     #[test]
     fn only_this_module_installs_a_release() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let allowed = ["kernel/updates.rs", "cli/update.rs", "agent/self_update.rs"];
+        let allowed = [
+            "kernel/updates.rs",
+            "cli/update.rs",
+            "update/self_update.rs",
+        ];
         let mut offenders = Vec::new();
 
         let mut stack = vec![root.clone()];

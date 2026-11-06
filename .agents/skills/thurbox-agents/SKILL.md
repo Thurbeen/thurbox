@@ -147,8 +147,8 @@ keeping the same workspace dir).
 - **Launching**: `agent::GenericProvider` wraps an `AgentDef` and
   implements the `AgentProvider` trait (`command()` +
   `build_args(&SessionConfig)`). It is constructed from the session's
-  `AgentDef` at each launch site — `session_ops` for a spawn or restart,
-  `kernel::terminal` when a pane adopts one.
+  `AgentDef` in one place, `session_ops::build_agent_invocation`, which spawn,
+  restart and `agent launch-args` all go through.
 
 A session stores its **agent name** plus opaque per-session `agent_args` from
 `session create --agent NAME --agent-arg ARG`. These are appended literally on
@@ -160,8 +160,8 @@ permission, prompt or tool field is added.
 In `agents.toml`, `extends = "base"` inherits every field except `name`, with
 explicit values (including empty arrays/maps and `false`) replacing the base's.
 `append_args` appends after the resolved `args`; chains resolve in either file
-order, with cycles, unknown bases and more than 32 definitions diagnosed by
-`config validate`. The resolved hook family is inherited, including Codex's
+order, with cycles, unknown bases and a chain deeper than 32 entries diagnosed
+by `config validate`. The resolved hook family is inherited, including Codex's
 conversation binding. Extension patches cover variants too: inherited args carry
 the base's patch once, and a full args replacement keeps the patch before its
 own args. Seed compatibility upgrades apply to standalone bases before merging.
@@ -179,7 +179,7 @@ uninstall reverse) fans each `[[agent_patches]]` out to the built-in named
 `patch.name` **and** every agent with `hook_schema == patch.name`. So
 `hook_schema = "claude"` on `fleet` injects the same `--settings {home}/
 claude.json` claude gets — and, because the remote rewrite
-(`session_ops::spawn::adapt_agent_args_for_remote`) keys off the `--settings`
+(`session_ops::spawn::adapt_agent_args_for_remote_with_report`) keys off the `--settings`
 arg rather than the agent name, remote/WSL wiring follows for free. Only the
 per-arg-patch families (claude, aider) need it; the config-dir agents
 (codex/opencode/antigravity/vibe/copilot/pi/omp/grok/kimi) wire through their own
@@ -239,10 +239,12 @@ gain the group in memory when absent; explicit `[]` opts out. See
 `SessionInfo.cwd` keeps the **primary** repo (display / editor / git context); the
 workspace is a spawn-time process-cwd detail, derived idempotently on every launch
 from the persisted members and never stored. `workspace::ensure_workspace` /
-`remove_workspace` (`src/workspace.rs`) build and tear it down; the member set is
-the single `App::session_member_dirs` list that also feeds the rendered repo
-names, and `App::resolve_process_cwd` picks workspace-vs-primary. Single-repo
-sessions are unchanged (`cwd` = the repo directly).
+`remove_workspace` (`src/workspace.rs`) build and tear it down; the interface's
+member list is `kernel::snapshot::session_members` (it feeds both the rendered
+repo names and `SessionRow.member_dirs`), and
+`session_ops::spawn::resolve_launch_cwd` picks workspace-vs-primary for every
+launch, the TUI's included (its create command builds a `SpawnRequest`).
+Single-repo sessions are unchanged (`cwd` = the repo directly).
 
 **Headless multi-repo.** The same multi-repo shape is reachable without the
 TUI: `SpawnRequest.extra_repos: Vec<ExtraRepo>` (`session/automation.rs`) carries
@@ -250,8 +252,8 @@ each additional repo, where `ExtraRepo { repo_path, worktree: bool, base_branch 
 either gets its **own isolated worktree** on the spawn's shared `worktree_branch`
 (off its own base — the per-repo-PR model flow uses) or is attached **as-is** as
 an additional dir. `session_ops::spawn::resolve_dirs` builds the worktrees +
-additional dirs and `resolve_launch_cwd` mirrors the TUI's `resolve_process_cwd`
-(symlink workspace when ≥2 members). The CLI exposes it on `session create` and
+additional dirs and `resolve_launch_cwd` picks the cwd (symlink workspace when
+≥2 members). The CLI exposes it on `session create` and
 `task create` via repeatable `--add-repo PATH[@BASE]` (worktree) and `--add-dir
 PATH` (as-is); `AutomationAction::Spawn` persists the list as JSON in the
 `action_extra_repos` column (schema v33, on both `tasks` and `automations`;

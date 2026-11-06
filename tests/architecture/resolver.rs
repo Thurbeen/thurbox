@@ -464,6 +464,86 @@ impl Tree {
     pub fn has_module(&self, node: &str) -> bool {
         self.is_module(&segments(node))
     }
+
+    /// Every production call written as one of `calls` (`fs::write`), outside
+    /// comments, strings and `#[cfg(test)]` code: file relative to the root,
+    /// line, and the call matched. A longer path ending in the call
+    /// (`std::fs::write`) counts; a different name that merely ends the same
+    /// way (`myfs::write`) does not.
+    pub fn production_calls<'a>(&self, calls: &[&'a str]) -> Vec<(PathBuf, usize, &'a str)> {
+        self.mentions(calls, "(", false)
+    }
+
+    /// Every place one of `needles` is written, outside comments and strings,
+    /// with the same file/line/needle shape and the same boundary rule as
+    /// [`Self::production_calls`]. `with_tests` also counts `#[cfg(test)]`
+    /// code, for a property that must hold of a module's tests as well.
+    pub fn mentions<'a>(
+        &self,
+        needles: &[&'a str],
+        suffix: &str,
+        with_tests: bool,
+    ) -> Vec<(PathBuf, usize, &'a str)> {
+        let mut found = Vec::new();
+        for file in &self.files {
+            if !with_tests && self.is_test_module(&file.module) {
+                continue;
+            }
+            let rel = file.path.strip_prefix(&self.root).unwrap_or(&file.path);
+            for call in needles {
+                let needle = format!("{call}{suffix}");
+                for (offset, _) in file.stripped.match_indices(&needle) {
+                    let bounded =
+                        offset == 0 || !is_ident_char(file.stripped.as_bytes()[offset - 1]);
+                    if !bounded
+                        || (!with_tests
+                            && (file.in_test_span(offset)
+                                || self.is_test_module(&file.scope_at(offset))))
+                    {
+                        continue;
+                    }
+                    let line = file.stripped[..offset].matches('\n').count() + 1;
+                    found.push((rel.to_path_buf(), line, *call));
+                }
+            }
+        }
+        found
+    }
+
+    /// Every `use` whose first segment is one of `crates`, whatever name it
+    /// binds — `use ratatui as r;` is found though no `ratatui::` follows —
+    /// with the same file/line/needle shape as [`Self::mentions`].
+    pub fn imports<'a>(
+        &self,
+        crates: &[&'a str],
+        with_tests: bool,
+    ) -> Vec<(PathBuf, usize, &'a str)> {
+        let mut found = Vec::new();
+        for file in &self.files {
+            if !with_tests && self.is_test_module(&file.module) {
+                continue;
+            }
+            let rel = file.path.strip_prefix(&self.root).unwrap_or(&file.path);
+            for leaf in &file.uses {
+                let Some(krate) = leaf
+                    .raw
+                    .first()
+                    .and_then(|first| crates.iter().find(|c| **c == first.as_str()))
+                else {
+                    continue;
+                };
+                if !with_tests
+                    && (file.in_test_span(leaf.offset)
+                        || self.is_test_module(&file.scope_at(leaf.offset)))
+                {
+                    continue;
+                }
+                let line = file.stripped[..leaf.offset].matches('\n').count() + 1;
+                found.push((rel.to_path_buf(), line, *krate));
+            }
+        }
+        found
+    }
 }
 
 impl SourceFile {

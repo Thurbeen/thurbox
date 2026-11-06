@@ -14,14 +14,16 @@ keys in their declaration table; the kernel resolves a press to an action and ha
 it back to the plugin that claimed it. There is no hardcoded table to keep in step
 with a help screen, because the help modal renders the registry.
 
-Global chords (kernel-owned):
+Global chords in the shipped interface (the kernel's own, plus the two session
+chords the bundled panes declare — `Ctrl+N` is `70_new_session`'s and
+`Ctrl+J`/`Ctrl+K` are `10_sessions`', so each is an ordinary plugin binding):
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+Q` | Quit (detach sessions) |
-| `Ctrl+N` | New session (the creation flow) |
+| `Ctrl+N` | New session (the creation flow; declared by `70_new_session`) |
 | `Ctrl+H` / `Ctrl+L` | Focus previous / next pane |
-| `Ctrl+J` / `Ctrl+K` | Select next / previous session |
+| `Ctrl+J` / `Ctrl+K` | Select next / previous session (declared by `10_sessions`) |
 | `Ctrl+,` / `F6` | Settings (`]` for the Interface tab) |
 | `Ctrl+Y` / `F4` | Theme picker |
 | `Ctrl+P` | Command palette — every action, filtered as you type |
@@ -120,7 +122,7 @@ itself before thurbox sees the key.
 ## Themes
 
 Thirty-six palettes — twenty-eight dark, eight light; the enumeration is in
-`session::theme_config` and `docs/FEATURES.md`. Users add their own in
+`theme` and `docs/FEATURES.md`. Users add their own in
 `~/.config/thurbox/themes.toml` (a built-in `base` plus per-colour overrides); they
 appear in the picker after the built-ins and persist by name exactly like a preset.
 
@@ -167,7 +169,8 @@ Two halves on one screen:
   `DocumentMut` so the seed's documentation comments survive.
 
 Whether a core row applies live or waits for a restart is **asked of
-`Settings::restart_only_differs`**, the same function `Config::adopt` consults —
+`Settings::restart_only_differs`**, which with what `Config::adopt` takes into
+force is derived from the one per-field table `session::settings::FIELDS` —
 never a second list beside the field. A hand-written copy had already drifted from
 it, promising both panel-width scalars applied live while `adopt` froze them and
 reported `NeedsRestart`. Restart-only rows are marked `⟳`.
@@ -224,9 +227,10 @@ live half and toasts, noting a restart when `restart_only_differs` says so.
 > `[features] code_review`, `file_viewer`, `tasks`, `info_panel` and
 > `global_search` gated surfaces the interface no longer draws, and
 > `three_panel_min_cols` sized a column that no longer exists. None of the six is
-> read by anything: they are parsed so an existing `settings.toml` keeps loading
-> rather than failing on an unknown key, and setting one does nothing in either
-> direction. The settings panel does not offer them.
+> read by the kernel: they are parsed so an existing `settings.toml` keeps loading
+> rather than failing on an unknown key, and published in `thurbox.settings` for a
+> pane to honour, but setting one changes nothing the kernel draws. The settings
+> panel does not offer them.
 
 
 ## Global search

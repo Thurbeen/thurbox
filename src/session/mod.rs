@@ -15,8 +15,8 @@ pub mod plugin_spec;
 pub mod review;
 pub mod route;
 pub mod settings;
+pub mod shared;
 pub mod task;
-pub mod theme_config;
 
 pub use agent_def::{AgentDef, AgentRegistry};
 pub use automation::{
@@ -36,7 +36,7 @@ pub use hook_status::{
     Assessment, Corroboration, Coverage, CoverageSource, HookDelivery, SessionState, StateSource,
     StateSupport, AGENT_HOOK_COVERAGE, WORKING_QUIET_MS,
 };
-pub use host_def::{current_wsl_distro, HostDef, HostKind, HostRegistry, WslRepairPlan};
+pub use host_def::{HostDef, HostKind, HostRegistry, WslRepairPlan};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use launch_failure::{
     LaunchFailure, LaunchFailureReason, LAUNCH_FAILURE_META, LAUNCH_REPORTED_META,
@@ -53,8 +53,8 @@ pub use review::{
     FileStatus, ReviewComment, Side,
 };
 pub use route::{Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
+pub use shared::{SharedSession, SharedWorktree};
 pub use task::{Task, TaskStatus, SOURCE_LOCAL};
-pub use theme_config::{ThemePalette, ThemePreset};
 
 /// The session meta keys published to interface plugins as `session.meta`
 /// (ADR-40). The snapshot reader, `session meta` and `fork` all name this one
@@ -66,6 +66,11 @@ pub const PUBLISHED_META_PREFIX: &str = "ui.";
 /// refuse, since a change from outside would point delivery or a resume at
 /// something else.
 pub const RESERVED_META_PREFIX: &str = "thurbox.";
+
+/// The session meta key `session bind-codex` records a Codex session's
+/// conversation under: what a restart resumes, a fork forks and a message is
+/// delivered to — or `picker-required` when no event proved which one.
+pub const CODEX_CONVERSATION_META: &str = "thurbox.codex_conversation_id";
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -151,7 +156,7 @@ pub struct WorktreeInfo {
     pub worktree_path: PathBuf,
     pub branch: String,
     /// Whether thurbox checked this worktree out itself — see
-    /// [`crate::sync::SharedWorktree::created_by_thurbox`]. Carried here so the
+    /// [`crate::session::SharedWorktree::created_by_thurbox`]. Carried here so the
     /// `SharedWorktree` → `WorktreeInfo` → `SharedWorktree` round trip that
     /// restore performs cannot quietly turn a borrowed worktree into ours.
     pub created_by_thurbox: bool,

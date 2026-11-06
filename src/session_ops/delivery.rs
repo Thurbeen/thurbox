@@ -13,7 +13,9 @@
 //!   `codex queue --thread <id>`; it starts a turn when idle and runs as the
 //!   next turn when one is in flight.
 //!
-//! Anything else keeps the message in the mailbox only. Nothing here touches the
+//! A session on a host that shares its sessions is the host's to deliver to,
+//! through its own `thurbox-cli` (ADR-24). Anything else keeps the message in
+//! the mailbox only, and says so (`Outcome::delivered`). Nothing here touches the
 //! pane: there is no keystroke fallback, by design (`tests/architecture_rules.rs`
 //! keeps the multiplexer out of this path).
 
@@ -22,9 +24,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::session::SessionMessage;
+use crate::session::SharedSession;
+use crate::session::{SessionId, SessionMessage};
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 /// Session-meta key holding the Claude inbox socket, captured from the agent's
 /// own hook environment by `session signal` (see [`remember_claude_socket`]).
@@ -34,9 +36,6 @@ pub(crate) const CLAUDE_SOCKET_META: &str = "thurbox.claude_messaging_socket";
 /// hook saw, which differs from the sender's when the two run with different
 /// `$CLAUDE_CONFIG_DIR`s.
 const CLAUDE_REGISTRY_META: &str = "thurbox.claude_registry_dir";
-
-/// Session-meta key `session bind-codex` records the Codex thread under.
-const CODEX_THREAD_META: &str = "thurbox.codex_conversation_id";
 
 /// The env var Claude Code exports to hooks and its Bash tool.
 const CLAUDE_SOCKET_ENV: &str = "CLAUDE_CODE_MESSAGING_SOCKET";
@@ -77,6 +76,16 @@ impl DeliveredVia {
             Self::Mailbox => "mailbox",
         }
     }
+
+    /// The route a host's `delivered_via` names; anything this build does not
+    /// know reached no inbox it can vouch for.
+    fn parse(name: &str) -> Self {
+        match name {
+            "claude-socket" => Self::ClaudeSocket,
+            "codex-queue" => Self::CodexQueue,
+            _ => Self::Mailbox,
+        }
+    }
 }
 
 /// One way to reach the recipient's agent.
@@ -103,7 +112,9 @@ impl Route {
 /// having announced itself.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Evidence {
-    /// The session runs on another machine, where its agent's inbox is.
+    /// The session runs on another machine, where its agent's inbox is, and
+    /// that machine's own CLI could not be asked to deliver
+    /// ([`enqueue_and_deliver`]).
     pub remote: bool,
     /// Inbox sockets proven to belong to the recipient ([`owned_sockets`]),
     /// the one its hooks last reported first.
@@ -120,7 +131,8 @@ pub(crate) struct Evidence {
 pub(crate) fn routes(evidence: &Evidence) -> Result<Vec<Route>, String> {
     if evidence.remote {
         return Err(
-            "the session runs on a remote host, whose agent inbox is not reachable from here"
+            "the session runs on a remote host that thurbox cannot delegate to (no usable \
+             thurbox-cli there, or sharing off), so its agent inbox is not reachable from here"
                 .into(),
         );
     }
@@ -193,7 +205,7 @@ pub(crate) fn gather(db: &Database, recipient: &SharedSession) -> Evidence {
     Evidence {
         remote: false,
         claude_sockets,
-        codex_thread: meta(CODEX_THREAD_META),
+        codex_thread: meta(crate::session::CODEX_CONVERSATION_META),
     }
 }
 
@@ -501,14 +513,54 @@ fn claude_envelope(text: &str) -> String {
 ///
 /// Deliberately no instruction to run `message inbox`: the body *is* the
 /// delivery, and the row is marked read so a drain does not repeat it.
-pub(crate) fn delivery_text(message: &SessionMessage, sender: Option<&str>) -> String {
+pub(crate) fn delivery_text(message: &SessionMessage, sender: &str) -> String {
     format!(
-        "[thurbox message #{} · kind: {} · from: {}]\n\n{}",
-        message.id,
-        message.kind,
-        sender.unwrap_or("unknown sender"),
-        message.body
+        "[thurbox message #{} · kind: {} · from: {sender}]\n\n{}",
+        message.id, message.kind, message.body
     )
+}
+
+/// Who sent a message. The caller says, because only it knows: a send with no
+/// sending session may be thurbox's own or a process outside it, and the
+/// difference decides how the recipient's agent reads the message.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Sender {
+    /// A session this database has a row for, at least when it sent.
+    Session(SessionId),
+    /// A session this database has no row for, such as a remote peer's.
+    UnknownSession,
+    /// thurbox itself: the interface's send, a task dispatch, an automation.
+    #[default]
+    Thurbox,
+    /// A process outside any thurbox session: a script, a control plane.
+    Outside,
+}
+
+impl Sender {
+    /// The id the message row records as its sender.
+    pub fn session_id(self) -> Option<SessionId> {
+        match self {
+            Sender::Session(id) => Some(id),
+            Sender::UnknownSession | Sender::Thurbox | Sender::Outside => None,
+        }
+    }
+
+    /// The sender as the recipient's agent reads it. Claude Code frames every
+    /// socket message as coming from another Claude session, so a sender that
+    /// is not a session says so outright; a vaguer "unknown sender" reads as an
+    /// unidentified peer agent.
+    fn label(self, db: &Database) -> String {
+        match self {
+            Sender::Session(id) => db
+                .get_session_by_id(id)
+                .ok()
+                .flatten()
+                .map_or_else(|| "a session that no longer exists".into(), |s| s.name),
+            Sender::UnknownSession => "a session this thurbox has no record of".into(),
+            Sender::Thurbox => "thurbox itself, not a session".into(),
+            Sender::Outside => "a process outside thurbox, not a session".into(),
+        }
+    }
 }
 
 /// How a delivery went, for the command output.
@@ -520,6 +572,12 @@ pub struct Outcome {
 }
 
 impl Outcome {
+    /// Whether an agent was handed the body. `false` means it waits in a
+    /// mailbox no agent reads unless told to.
+    pub fn delivered(&self) -> bool {
+        self.via != DeliveredVia::Mailbox
+    }
+
     fn mailbox(why: impl Into<String>) -> Self {
         Self {
             via: DeliveredVia::Mailbox,
@@ -628,41 +686,141 @@ pub(crate) fn deliver(
 /// A message `enqueue_and_deliver` left for its recipient.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handed {
+    /// The row's id in the mailbox that holds it: the host's, when `host`.
     pub id: i64,
     pub outcome: Outcome,
+    /// The host whose own `thurbox-cli` enqueued and delivered it.
+    pub host: Option<String>,
 }
 
-/// Enqueue `new` for `recipient` and hand it to the recipient agent's own
-/// inbox, unless `no_wake`. The mailbox row is the durable copy either way;
+/// How often `--wait-bound` looks again for an inbox to appear.
+const BIND_POLL: Duration = Duration::from_millis(200);
+
+/// Enqueue `new` from `from` for `recipient` and hand it to the recipient
+/// agent's own inbox, unless `no_wake`. `new.from_session_id` is `from`'s.
+/// The mailbox row is the durable copy either way;
 /// `message send`/`reply` and a `session send` that met a busy composer all
 /// come through here.
+///
+/// `wait_bound` gives a recipient that has no native inbox *yet* — a Codex
+/// session before its `SessionStart` hook binds a thread, a Claude session
+/// before it writes its registry entry — that long to grow one before the body
+/// is left in the mailbox.
+///
+/// A recipient on a host that shares its sessions is the host's to deliver to
+/// (ADR-24): its agent's inbox and the mailbox it drains are there, and so is
+/// the binding its hook recorded. Its own `thurbox-cli` does the whole send,
+/// and the row is the host's. A host that cannot be asked keeps today's
+/// answer: the row here, in the mailbox only.
 pub(crate) fn enqueue_and_deliver(
     db: &Database,
     recipient: &SharedSession,
     new: crate::storage::messages::NewMessage,
+    from: Sender,
     no_wake: bool,
+    wait_bound: Option<Duration>,
 ) -> Result<Handed, crate::session_ops::OpError> {
+    debug_assert_eq!(new.from_session_id, from.session_id());
+    let mut host_failure = None;
+    if let Ok(super::Executor::HostCli { host, cli }) = super::Executor::for_session(recipient) {
+        match on_host(&host, &cli, recipient, &new, no_wake, wait_bound) {
+            Ok(handed) => return Ok(handed),
+            Err(why) => {
+                tracing::warn!(
+                    "message to '{}' through '{}': {why}",
+                    recipient.name,
+                    host.name
+                );
+                host_failure = Some(format!("the host's thurbox-cli did not take it: {why}"));
+            }
+        }
+    }
     let id = db
         .enqueue_message(&new)
         .map_err(|e| format!("enqueue_message: {e}"))?;
+    let handed = |outcome| Handed {
+        id,
+        outcome,
+        host: None,
+    };
     if no_wake {
-        return Ok(Handed {
-            id,
-            outcome: Outcome::mailbox("--no-wake: enqueued only"),
-        });
+        return Ok(handed(Outcome::mailbox("--no-wake: enqueued only")));
+    }
+    if let Some(why) = host_failure {
+        return Ok(handed(Outcome::mailbox(why)));
     }
     let message = db
         .get_message(id)
         .map_err(|e| format!("get_message: {e}"))?
         .ok_or_else(|| format!("message #{id} vanished after enqueue"))?;
-    let sender = new
-        .from_session_id
-        .and_then(|from| db.get_session_by_id(from).ok().flatten())
-        .map(|s| s.name);
-    let text = delivery_text(&message, sender.as_deref());
-    let evidence = gather(db, recipient);
-    let outcome = deliver(db, &message, &text, &evidence, &Native);
-    Ok(Handed { id, outcome })
+    let text = delivery_text(&message, &from.label(db));
+    let mut evidence = gather(db, recipient);
+    if let Some(wait) = wait_bound {
+        let deadline = std::time::Instant::now() + wait;
+        while !evidence.remote && routes(&evidence).is_err() && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(BIND_POLL);
+            evidence = gather(db, recipient);
+        }
+    }
+    Ok(handed(deliver(db, &message, &text, &evidence, &Native)))
+}
+
+/// The whole send, done by `host`'s own `thurbox-cli` against its database.
+///
+/// The host labels the sender itself: its CLI runs in no session there, as a
+/// delegated `session send` does. `Err` is a send the host did not take.
+fn on_host(
+    host: &crate::session::HostDef,
+    cli: &super::host_cli::CliInfo,
+    recipient: &SharedSession,
+    new: &crate::storage::messages::NewMessage,
+    no_wake: bool,
+    wait_bound: Option<Duration>,
+) -> Result<Handed, String> {
+    let id = recipient.id.to_string();
+    // `--flag=value` keeps a value that starts with a dash a value.
+    let kind = format!("--kind={}", new.kind);
+    let mut args = vec!["message", "send", "--to", &id, &kind];
+    if no_wake {
+        args.push("--no-wake");
+    }
+    // An older host has no `--wait-bound`; it delivers without waiting.
+    let wait = wait_bound.map(|w| w.as_secs().to_string());
+    if let (Some(wait), true) = (&wait, cli.message_native_send) {
+        args.extend(["--wait-bound", wait]);
+    }
+    // The body goes over stdin to a host that reads it there: a Windows
+    // host's shell takes 8191 characters, and `ps` shows a command line to
+    // every user of both machines. The task tag stays behind: task ids are
+    // this database's, and would name an unrelated task on the host.
+    let body = format!("--body={}", new.body);
+    let stdin = if cli.message_native_send {
+        args.push("--body-stdin");
+        Some(new.body.as_bytes())
+    } else {
+        args.push(&body);
+        None
+    };
+    let answer = super::host_cli::run_classified_with_stdin(host, cli, &args, stdin)
+        .map_err(|e| e.to_string())?;
+    let via = answer["delivered_via"]
+        .as_str()
+        .map_or(DeliveredVia::Mailbox, DeliveredVia::parse);
+    let note = answer["delivery_note"].as_str().map(str::to_string);
+    Ok(Handed {
+        id: answer["message_id"]
+            .as_i64()
+            .ok_or_else(|| format!("its answer names no message_id: {answer}"))?,
+        outcome: Outcome {
+            via,
+            note: match via {
+                DeliveredVia::Mailbox => Some(note.unwrap_or_else(|| "no reason given".into())),
+                _ => None,
+            },
+        },
+        host: Some(host.name.clone()),
+    })
 }
 
 #[cfg(test)]
@@ -670,7 +828,6 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
-    use crate::session::SessionId;
     use crate::storage::messages::NewMessage;
 
     /// Records every send and fails the routes it is told to.
@@ -886,7 +1043,7 @@ mod tests {
 
     impl Transport for LosesTheLease<'_> {
         fn post_to_claude(&self, _socket: &Path, _text: &str) -> Result<(), String> {
-            let stale = crate::sync::current_time_millis() as i64
+            let stale = crate::storage::current_time_millis() as i64
                 - crate::storage::messages::DELIVERY_LEASE_MS
                 - 1;
             self.db
@@ -983,11 +1140,41 @@ mod tests {
         assert!(fake.sent.borrow().is_empty());
     }
 
+    /// A sender session deleted since it sent is named as gone, not dropped to
+    /// a label that reads as no session at all.
+    #[test]
+    fn a_sender_session_is_named_while_it_exists_and_called_gone_after() {
+        let db = Database::open_in_memory().unwrap();
+        let sender = SharedSession {
+            id: SessionId::default(),
+            name: "coder-x".into(),
+            agent: "claude".into(),
+            backend_id: "%7".into(),
+            backend_type: "local-tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        db.upsert_session(&sender).unwrap();
+        assert_eq!(Sender::Session(sender.id).label(&db), "coder-x");
+        assert_eq!(
+            Sender::Session(SessionId::default()).label(&db),
+            "a session that no longer exists"
+        );
+    }
+
     #[test]
     fn delivery_text_is_provenance_then_the_body_verbatim() {
         let db = Database::open_in_memory().unwrap();
         let msg = enqueued(&db);
-        let text = delivery_text(&msg, Some("coder-x"));
+        let text = delivery_text(&msg, "coder-x");
         let (head, body) = text.split_once("\n\n").unwrap();
         assert_eq!(
             head,

@@ -5,7 +5,7 @@
 //! backend names a loopback entry can have written, and which of those a host
 //! thurbox still serves claims — and `storage` may not read `hosts.toml`. The
 //! plan is built by
-//! `agent::host_config::wsl_repair_plan` and handed to
+//! `config::hosts::wsl_repair_plan` and handed to
 //! [`Database::apply_wsl_repair_plan`] by
 //! `session_ops::repair_wsl_loopback_rows`. What stays here is the SQL, which
 //! is this module's job whoever decides the policy.

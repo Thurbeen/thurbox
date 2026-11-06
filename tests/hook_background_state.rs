@@ -26,8 +26,9 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
+use thurbox::session_ops::signals::Reported;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 /// The subagent of the issue's reproduction.
 const SUBAGENT: &str = "a2a3df31469ca24ca";
@@ -362,9 +363,22 @@ fn duplicate_and_out_of_order_edges_do_not_strand_the_session() {
     assert_eq!(done_edges, 1, "{transitions:?}");
 }
 
+/// A word read back from a pane's status channel, written as the interface's
+/// drain writes it.
+fn echo(db: &Database, id: SessionId, state: &str) -> Reported {
+    thurbox::session_ops::signals::report(
+        db,
+        id,
+        state,
+        thurbox::session::background_work::ReportFrom::Echo,
+        None,
+    )
+    .expect("drain write")
+}
+
 /// `session signal` publishes the word it stored to the pane's status channel
 /// after its transaction, and the interface drains that channel back into the
-/// row (`report_hook_state`). The turn's `Stop` (stored `background`) can
+/// row (`session_ops::signals::report`, as an echo). The turn's `Stop` (stored `background`) can
 /// publish late, after the subagent's `SubagentStop` has stored and published
 /// `done`; that stale `background` must not land on a row with nothing left
 /// running.
@@ -375,20 +389,14 @@ fn a_late_background_echo_does_not_undo_the_end_of_the_work() {
     env.claude("SubagentStop", typed("SubagentStop", SUBAGENT));
     assert_eq!(env.hook_state().as_deref(), Some("done"));
 
-    let stored = env
-        .db()
-        .report_hook_state(env.id, "background")
-        .expect("drain write");
-    assert_eq!(stored, None, "the stale echo was written");
+    let stored = echo(&env.db(), env.id, "background");
+    assert_eq!(stored, Reported::NotTaken, "the stale echo was written");
     assert_eq!(env.hook_state().as_deref(), Some("done"));
 
     // A session that counted nothing still takes `background` from its
     // channel: that is how a remote pane, which cannot count, reports it.
     let remote = Env::new("claude");
-    remote
-        .db()
-        .report_hook_state(remote.id, "background")
-        .expect("drain write");
+    echo(&remote.db(), remote.id, "background");
     assert_eq!(remote.hook_state().as_deref(), Some("background"));
 }
 

@@ -236,7 +236,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     fn rows_version(db: &Database) -> i64 {
         db.conn

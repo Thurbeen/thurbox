@@ -39,7 +39,7 @@ cargo build --release                # Release build (LTO, stripped)
 To **run thurbox in an isolated sandbox** use `scripts/dev/sandbox.sh` (a.k.a.
 `just sandbox*`). By default it does **thurbox-only isolation**: redirects only
 thurbox's config/data into the sandbox (via the `THURBOX_CONFIG_DIR`/
-`THURBOX_DATA_DIR` overrides paths.rs honors) while keeping your real `HOME` —
+`THURBOX_DATA_DIR` overrides `src/paths/` honors) while keeping your real `HOME` —
 so your authenticated agent CLIs (claude/codex/…) work — and puts dev
 `target/debug` first on PATH so an agent hook's `thurbox-cli` hits the sandbox DB.
 It also names the sandbox's tmux socket outright (`THURBOX_SOCKET`, `=
@@ -109,8 +109,8 @@ cargo clippy --all-targets --all-features -- -D warnings  # Lint
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features  # Docs
 rumdl check .                        # Markdown lint (.rumdl.toml)
 rumdl fmt .                          # Markdown auto-fix
-selene ui                            # Lua lint (selene.toml + thurbox.yml)
-stylua ui                            # Lua format (stylua.toml); --check in CI
+selene ui examples                   # Lua lint (selene.toml + thurbox.yml)
+stylua ui examples                   # Lua format (stylua.toml); --check in CI
 # A RELATIVE --configpath resolves against the server's own install dir, is
 # silently not found, and then reports every injected global as undefined (79
 # phantom findings). `just lint` passes an absolute one:
@@ -254,13 +254,21 @@ because the squash throws them away.
 
 ```text
 node                 may reference                     [fully-qualified path only]
-session              nothing — pure data, the dependency sink
+session              nothing — pure data, the dependency sink (no
+                     process state, no env reads, no rendering crate)
 agent                agent::{generic,provider} (re-exports only)
-agent::*             every file a node: session, paths, shell and the other
-                     agent::* files each declares (NEVER git, NEVER backend)
-agent::host_config   session, paths, shell, agent::agent_config
+agent::*             every file a node: session, paths, shell, config::file
+                     and the other agent::* files each declares (NEVER git,
+                     NEVER backend)
+config               config::* (declarations only)
+config::*            every file a node: config::file (the one loader, over
+                     paths) plus session (themes: theme instead), and
+                     for hosts paths and shell
+update               update::* (declarations only)
+update::*            session, paths, shell, agent::extension_config,
+                     update::version_check
 backend              backend::{contract,pane,registry} (re-exports only)
-backend::contract    nothing — the trait and the values crossing it
+backend::contract    nothing — the role traits and the values crossing them
 backend::identity    backend::contract
 backend::instance    session, paths                    (ADR-12 socket naming)
 backend::pane        session, backend::{contract,identity,osc8,output_wake}
@@ -268,7 +276,7 @@ backend::osc8        session
 backend::output_wake nothing
 backend::registry    session, backend::contract        (a container, no factory)
 backend::wiring      session, shell,                   (the factory: the only
-                     agent::host_config,                node naming an adapter)
+                     config::hosts,                     node naming an adapter)
                      backend::{contract,registry,
                      tmux,psmux,rmux}
 backend::tmux_compat nothing — declares the three below (tmux protocol helper)
@@ -292,25 +300,25 @@ backend::rmux        session, shell, backend::contract, (the RMUX adapter)
                      backend::tmux_compat::{control_mode,
                      server,transport}
 git                  session, paths, shell
-storage              session, sync, paths
-sync                 session
+storage              session, paths
 telemetry            session, storage                  (ADR-37/38 OTLP export)
-session_ops          session, storage, git, sync,      [agent::<the config it reads>,
-                     paths, workspace, shell            backend::{contract,identity,
+session_ops          session, storage, git, paths,     [agent|config|update::<file>,
+                     workspace, shell                   backend::{contract,identity,
                                                         instance,registry}]
-kernel               session, storage, sync, paths,    [agent::<the config it reads>,
+kernel               session, storage, paths,          [agent|config|update::<file>,
                      session_ops, git, notifications,   backend::{contract,identity,
-                     shell                              pane,registry}]
-cli                  session, storage, session_ops,    [agent::<the config it reads>,
-                     sync, paths, notifications,        backend::{contract,instance,
-                     ui_control, telemetry              registry}, kernel]
+                     shell, theme                       pane,registry}]
+cli                  session, storage, session_ops,    [agent|config|update::<file>,
+                     paths, notifications, ui_control,  backend::{contract,instance,
+                     telemetry, theme                   registry}, kernel]
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
 ui_control           paths
-shell                session (HostLauncher::for_host)
-coordinator          agent::{input,settings_config},   (main's body: the loop,
+shell                session (HostLauncher::for_host, local_platform)
+theme                nothing — the presets, in ratatui colours
+coordinator          agent::input, config::settings,   (main's body: the loop,
                      backend::{instance,output_wake,    the workers, the chrome)
                      wiring}, clipboard, kernel,
                      paths, session, session_ops,
@@ -331,6 +339,8 @@ item by item, in the test's `TRANSITIONAL` table, which must equal what the
 source does — empty since status and the heartbeat went behind the contract
 (ADR-32); `consumers_reach_no_concrete_backend` holds `session_ops`, `cli` and
 `kernel` to reaching no adapter, protocol helper or factory.
+Inside `kernel`, `each_kernel_worker_lives_in_a_file_of_its_own` keeps each
+worker of `kernel::snapshot` and `kernel::terminal` in a file of its own.
 `docs/CONSTITUTION.md` §2 lists the same graph. The full rule, the module
 responsibilities and the event loop are in the `thurbox-kernel` skill.
 

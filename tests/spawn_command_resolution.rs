@@ -30,9 +30,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use thurbox::backend::{PaneStream, WindowLifecycle};
 
 use thurbox::backend::tmux::TmuxBackend;
-use thurbox::backend::SessionBackend;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -204,7 +204,7 @@ fn a_local_spawn_finds_the_agent_the_multiplexer_cannot() {
     );
     std::env::set_var("PATH", &path);
 
-    let backend = TmuxBackend::local();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     if let Err(e) = backend.ensure_ready() {
         eprintln!("skipping: tmux control mode would not start: {e:#}");
         return;

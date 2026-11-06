@@ -87,7 +87,7 @@ fn fallback_fetch_child() {
         return;
     }
     let error =
-        thurbox::agent::self_update::fetch_archive("1.2.3", "x86_64-pc-windows-msvc").unwrap_err();
+        thurbox::update::self_update::fetch_archive("1.2.3", "x86_64-pc-windows-msvc").unwrap_err();
     assert!(error.contains("failed to download"), "{error}");
 }
 

@@ -250,7 +250,7 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 /// Path to the agent-definition config file:
 /// `~/.config/thurbox/agents.toml` (sibling of `config.toml`).
 pub fn agents_config_path() -> Option<PathBuf> {
-    crate::paths::config_file().map(|p| p.with_file_name("agents.toml"))
+    crate::config::file::path("agents.toml")
 }
 
 /// Parse the built-in definitions. Infallible in practice (the const is a
@@ -279,22 +279,12 @@ pub fn load_or_seed() -> AgentRegistry {
 /// [`load_or_seed`], also returning user-facing warnings for anything that
 /// silently degraded (parse error → built-ins, seed failure, …).
 pub fn load_or_seed_with_warnings() -> (AgentRegistry, Vec<String>) {
-    let Some(path) = agents_config_path() else {
-        return (
-            builtin_registry(),
-            vec!["Could not resolve agents.toml path; using built-in agents".into()],
-        );
-    };
-
-    if !path.exists() {
-        return seed_agents_toml(&path);
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => parse_agents_toml(&contents),
+    match crate::config::file::read_or_seed("agents.toml", &builtin_agents_toml()) {
+        Ok(Some(contents)) => parse_agents_toml(&contents),
+        Ok(None) => (builtin_registry(), Vec::new()),
         Err(e) => (
             builtin_registry(),
-            vec![format!("Failed to read agents.toml: {e}")],
+            vec![format!("{e}; using built-in agents")],
         ),
     }
 }
@@ -339,27 +329,6 @@ fn cached_registry() -> Option<AgentRegistry> {
     registry_cache().lock().unwrap().get(&path).cloned()
 }
 
-/// Write the bundled agents.toml on first run, degrading to the built-in
-/// registry (with a warning) if the dir or file can't be created.
-fn seed_agents_toml(path: &std::path::Path) -> (AgentRegistry, Vec<String>) {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            return (
-                builtin_registry(),
-                vec![format!("Failed to create config dir for agents.toml: {e}")],
-            );
-        }
-    }
-    if let Err(e) = std::fs::write(path, builtin_agents_toml()) {
-        return (
-            builtin_registry(),
-            vec![format!("Failed to seed agents.toml: {e}")],
-        );
-    }
-    tracing::info!(path = %path.display(), "Seeded agents.toml with built-in agents");
-    (builtin_registry(), Vec::new())
-}
-
 /// Top-level keys read directly by the resilient parser; anything else at the
 /// document root is reported as an unknown field (typo / stale key).
 const KNOWN_TOP_LEVEL_KEYS: [&str; 3] = ["config_version", "default", "agents"];
@@ -391,7 +360,7 @@ fn parse_agents_toml_checked(contents: &str) -> Result<(AgentRegistry, Vec<Strin
         Err(e) => {
             return Err(vec![format!(
                 "agents.toml: {}",
-                compact_toml_error(&e.to_string())
+                crate::config::file::compact_toml_error(&e.to_string())
             )])
         }
     };
@@ -611,7 +580,7 @@ fn deserialize_agent(
             }
             Ok(agent)
         }
-        Err(e) => Err(compact_toml_error(&e.to_string())),
+        Err(e) => Err(crate::config::file::compact_toml_error(&e.to_string())),
     }
 }
 
@@ -651,39 +620,6 @@ fn upgrade_seeded_omp_args(agent: &mut AgentDef) {
     );
     agent.new_session_args = omp.new_session_args;
     agent.resume_args = omp.resume_args;
-}
-
-/// Parse a TOML config document leniently, reporting every unknown field by
-/// path instead of failing on it. Stale keys from older thurbox versions and
-/// typos both surface as warnings without stranding the user on defaults; a
-/// real syntax/type error still fails the parse.
-pub(crate) fn parse_toml_reporting_unknown<T: serde::de::DeserializeOwned>(
-    contents: &str,
-    file_label: &str,
-) -> Result<(T, Vec<String>), toml::de::Error> {
-    let mut warnings = Vec::new();
-    let de = toml::de::Deserializer::parse(contents)?;
-    let value = serde_ignored::deserialize(de, |path| {
-        warnings.push(format!("{file_label}: unknown field `{path}` (ignored)"));
-    })?;
-    Ok((value, warnings))
-}
-
-/// Collapse a (possibly multi-line) toml error to "<position>: <message>" for
-/// compact status-bar display. toml errors render as a header line with the
-/// position, a source snippet, then the message — keep the first and last
-/// meaningful lines and drop the snippet in between.
-pub(crate) fn compact_toml_error(s: &str) -> String {
-    let lines: Vec<&str> = s
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('|') && !l.starts_with(char::is_numeric))
-        .collect();
-    match (lines.first(), lines.last()) {
-        (Some(first), Some(last)) if first != last => format!("{first}: {last}"),
-        (Some(first), _) => (*first).to_string(),
-        _ => s.to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -1258,7 +1194,7 @@ additional_dir_args = ["--directory={dir}"]
     #[test]
     fn load_or_seed_writes_file_when_absent_then_reads_it() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = agents_config_path().unwrap();
         assert!(!path.exists());
@@ -1275,7 +1211,7 @@ additional_dir_args = ["--directory={dir}"]
     #[test]
     fn load_or_seed_falls_back_on_malformed_file() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = agents_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1288,7 +1224,7 @@ additional_dir_args = ["--directory={dir}"]
     #[test]
     fn load_or_seed_reports_unknown_field_but_keeps_agents() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = agents_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1413,7 +1349,7 @@ command = "missing-name"
     fn compact_toml_error_keeps_position_and_message() {
         // A type error (string field given an integer) still fails the parse.
         let err = toml::from_str::<AgentRegistry>("default = 1\n").unwrap_err();
-        let compact = compact_toml_error(&err.to_string());
+        let compact = crate::config::file::compact_toml_error(&err.to_string());
         assert!(compact.contains("string"), "got: {compact}");
         assert!(!compact.contains('\n'), "must be one line: {compact}");
     }
@@ -1421,7 +1357,7 @@ command = "missing-name"
     #[test]
     fn load_or_seed_reads_custom_agent() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = agents_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

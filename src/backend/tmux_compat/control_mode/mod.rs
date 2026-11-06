@@ -9,42 +9,37 @@
 //! What a server can be expected to do on that wire is its adapter's to say
 //! ([`ControlPolicy`], [`PaneInput`]).
 
-/// A multiplexer answered and refused the command; transport failures never
-/// enter this classifier.
-pub(in crate::backend) fn classify_refusal(
-    reply: &str,
-    message: String,
-) -> crate::backend::contract::BackendError {
-    let reply = reply.trim();
-    if [
-        "can't find pane: ",
-        "can't find window: ",
-        "can't find session: ",
-        "session not found: ",
-    ]
-    .iter()
-    .any(|prefix| reply.starts_with(prefix))
-        && !reply.contains('\n')
-    {
-        return crate::backend::contract::BackendError::Absent(message);
-    }
-    // RMUX wraps its missing-target reply. Match both copies of the target,
-    // rather than searching arbitrary refusal text for "can't find pane".
-    if let Some(wrapped) = reply.strip_prefix("invalid target '") {
-        if let Some((target, detail)) = wrapped.split_once("': ") {
-            if !reply.contains('\n')
-                && (detail == format!("can't find pane: {target}")
-                    || detail == format!("can't find window: {target}"))
-            {
-                return crate::backend::contract::BackendError::Absent(message);
-            }
-        }
-    }
-    if reply.starts_with("duplicate session: ") || reply.starts_with("duplicate window: ") {
-        return crate::backend::contract::BackendError::Busy(message);
-    }
-    crate::backend::contract::BackendError::Refused(message)
+/// What a multiplexer's refusal says is not there, in its adapter's reading
+/// (`TmuxCompatible::answered_absent`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Missing {
+    /// No server on the socket, or no thurbox session on it: the server holds
+    /// nothing, so a listing of it is empty rather than unanswered.
+    Server,
+    /// The server is up, and the pane or window named is not on it.
+    Target,
 }
+
+/// A multiplexer answered a control-mode command with `%error`.
+///
+/// Carried untyped out of control mode, which speaks to every adapter alike:
+/// only the adapter can say what its own words mean, so the backend reads
+/// `reply` (`Server::refusal`) before the error leaves it.
+#[derive(Debug)]
+pub(in crate::backend) struct Refusal {
+    /// The command refused.
+    pub command: String,
+    /// The reply block, as the server printed it.
+    pub reply: String,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} failed: {}", self.command, self.reply)
+    }
+}
+
+impl std::error::Error for Refusal {}
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
@@ -1211,7 +1206,7 @@ pub fn is_valid_window_id(s: &str) -> bool {
 /// `(pane_id, value)` pairs whose option is **set**: one `%<id> [value]` line
 /// per pane; empty values (option unset) and malformed lines are skipped —
 /// wire data never panics. Shared by the hook poller's diff below and the
-/// headless listing (`SessionBackend::hook_states`).
+/// headless listing (`StatusChannel::hook_states`).
 pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
     body.lines()
         .filter_map(|line| {
@@ -1228,7 +1223,7 @@ pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
 
 /// Parse `list-panes -a -F "#{pane_id}"` output into the set of panes the
 /// server has, dead ones included. Malformed lines are skipped. Backs
-/// `SessionBackend::pane_ids`, the existence question a pid cannot answer.
+/// `WindowLifecycle::pane_ids`, the existence question a pid cannot answer.
 pub fn parse_pane_ids(body: &str) -> std::collections::HashSet<String> {
     body.lines()
         .map(str::trim)
@@ -1241,7 +1236,7 @@ pub fn parse_pane_ids(body: &str) -> std::collections::HashSet<String> {
 /// `pane_id → pid` map — the same line shape [`parse_pane_hook_states`] reads,
 /// with a pid where the option value was. Malformed lines and non-numeric pids
 /// are skipped: wire data never panics. Backs the batched
-/// `SessionBackend::pane_pids` the metrics sampler uses.
+/// `WindowLifecycle::pane_pids` the metrics sampler uses.
 pub fn parse_pane_pids(body: &str) -> std::collections::HashMap<String, u32> {
     body.lines()
         .filter_map(|line| {
@@ -1439,7 +1434,12 @@ impl ControlMode {
             // No `tmux`/`ssh`/`wsl.exe` on this machine at all: the message
             // names which, where thurbox looked and the fix, rather than the
             // errno the launcher raised.
-            .map_err(|e| transport.launch_failure("Failed to start tmux control mode", e))?;
+            .map_err(|e| {
+                transport.launch_failure(
+                    &format!("Failed to start {} control mode", transport.mux()),
+                    e,
+                )
+            })?;
 
         let stdin = child
             .stdin
@@ -2198,11 +2198,16 @@ impl ControlMode {
     /// a command tmux answers — and a link slow enough to pause a pane is one
     /// where other commands are in flight to take that answer. Only queued:
     /// the reader must not wait on a write to go on reading.
+    ///
+    /// Only for a pane id as the server names one (`%3`), which is a bare word
+    /// every adapter's tokenizer reads alike, so the command needs no quoting
+    /// this connection could not choose for its server.
     fn resume_pane(outbox: &SharedOutbox, replies: &ResponseQueue, pane_id: &str) {
-        let cmd = format!(
-            "refresh-client -A '{}:continue'",
-            pane_id.replace('\'', "'\\''")
-        );
+        if !is_valid_pane_id(pane_id) {
+            warn!("not resuming output of a paused pane named {pane_id:?}");
+            return;
+        }
+        let cmd = format!("refresh-client -A {pane_id}:continue");
         let _ = Self::write_unanswered(outbox, replies, &[cmd]);
     }
 
@@ -2600,8 +2605,11 @@ impl ControlMode {
 
         if response.is_error {
             let reply = response.lines().join("\n");
-            let message = format!("tmux command failed: {cmd}: {reply}");
-            return Err(classify_refusal(&reply, message).into());
+            return Err(Refusal {
+                command: cmd.to_string(),
+                reply,
+            }
+            .into());
         }
 
         Ok(response)

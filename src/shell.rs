@@ -7,6 +7,41 @@
 
 use std::process::Command;
 
+use crate::session::Platform;
+
+/// The platform of the machine this thurbox runs on: [`Platform::local`], or in
+/// a test the one `simulate_local` pins.
+///
+/// Every decision a test must be able to make as the other OS — which shell,
+/// which multiplexer is the default, whether a socket directory exists — reads
+/// the local platform here rather than off `Platform::local` itself, so a Linux
+/// test run covers what a Windows build decides (and the reverse). Here and not
+/// in `session` because a simulation is process state, and `session` holds none.
+pub fn local_platform() -> Platform {
+    #[cfg(test)]
+    if let Some(simulated) = SIMULATED_LOCAL.with(std::cell::Cell::get) {
+        return simulated;
+    }
+    Platform::local()
+}
+
+#[cfg(test)]
+thread_local! {
+    static SIMULATED_LOCAL: std::cell::Cell<Option<Platform>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` as though this thurbox were built for `platform`. Only
+/// [`local_platform`] answers differently: code gated on `cfg(windows)` itself
+/// is not simulated, which is why no backend decision may be.
+#[cfg(test)]
+pub(crate) fn simulate_local<T>(platform: Platform, f: impl FnOnce() -> T) -> T {
+    let saved = SIMULATED_LOCAL.with(|s| s.replace(Some(platform)));
+    let out = f();
+    SIMULATED_LOCAL.with(|s| s.set(saved));
+    out
+}
+
 /// Characters that never need quoting in a POSIX shell word.
 fn is_safe_shell_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | ',')
@@ -399,7 +434,7 @@ fn start_process_script<S: AsRef<str>>(file_name: &str, args: &[S], extra: &str)
 }
 
 /// The shell a host runs thurbox's own scripts in, decided once from the
-/// host's [`Platform`](crate::session::Platform) (#1473).
+/// host's [`Platform`] (#1473).
 ///
 /// Every place that writes a script for a host, quotes a word for one or
 /// starts a program on one asks this instead of branching on the platform
@@ -431,7 +466,7 @@ impl HostShell {
 
     /// The shell of the machine thurbox runs on.
     pub fn local() -> Self {
-        Self::for_platform(crate::session::Platform::local())
+        Self::for_platform(local_platform())
     }
 
     /// One word as this shell reads it back unchanged.
@@ -826,6 +861,15 @@ fn off_the_terminal(cmd: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_local_platform_is_the_build_os_unless_simulated() {
+        assert_eq!(local_platform(), Platform::local());
+        for platform in Platform::ALL {
+            assert_eq!(simulate_local(platform, local_platform), platform);
+        }
+        assert_eq!(local_platform(), Platform::local());
+    }
 
     #[test]
     fn a_powershell_launch_is_39_plus_the_base64_of_its_utf16_script() {

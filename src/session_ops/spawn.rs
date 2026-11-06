@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::session::{ExtraRepo, HostDef, Platform, SessionConfig, SessionId};
+use crate::session::{SharedSession, SharedWorktree};
 use crate::storage::Database;
-use crate::sync::{SharedSession, SharedWorktree};
 
 /// Default base branch for `--worktree-branch` when none is given.
 const DEFAULT_BASE_BRANCH: &str = "main";
@@ -630,7 +630,7 @@ fn spawn(
         &agent_def,
         &req.name,
         host.as_ref(),
-        &crate::agent::settings_config::load_quiet().telemetry,
+        &crate::config::settings::load_quiet().telemetry,
     );
 
     report(SpawnPhase::Backend);
@@ -2308,11 +2308,11 @@ fn resolve_backend(
     let (_, host_def) = resolve_host_flag(host)?;
     // Nothing named, locally: what is installed here decides, so a machine
     // with only RMUX runs RMUX rather than failing on a missing tmux.
-    let configured = crate::agent::settings_config::load_quiet()
+    let configured = crate::config::settings::load_quiet()
         .multiplexer
         .or_else(|| {
             let installed = crate::agent::preflight::local_multiplexers();
-            crate::session::Multiplexer::preferred(crate::session::Platform::local(), &installed)
+            crate::session::Multiplexer::preferred(crate::shell::local_platform(), &installed)
                 .map(|mux| mux.name().to_string())
         });
     let choice =
@@ -2344,7 +2344,7 @@ fn resolve_host_flag(
     let Some(name) = host_name.filter(|n| !n.is_empty()) else {
         return Ok((crate::session::Route::local(None).format(), None));
     };
-    let registry = crate::agent::host_config::load_all();
+    let registry = crate::config::hosts::load_all();
     match registry.resolve(name) {
         Some(h) => Ok((h.backend_name(), Some(h.clone()))),
         None => {
@@ -2485,7 +2485,7 @@ mod tests {
         let db = empty_db();
         assert!(validate_parent_session(&db, None).is_ok());
 
-        let parent = crate::sync::SharedSession {
+        let parent = crate::session::SharedSession {
             id: SessionId::default(),
             name: "lead".into(),
             agent: "dev".into(),
@@ -2772,7 +2772,8 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         // An explicit, seeded agent wins and its name round-trips.
-        let resolve = |n| super::super::resolve_agent_def(n, Platform::local()).map(|d| d.name);
+        let resolve =
+            |n| super::super::resolve_agent_def(n, crate::shell::local_platform()).map(|d| d.name);
         assert_eq!(resolve(Some("codex")).unwrap(), "codex");
         // Empty/None fall back to the registry default; an unknown name is
         // refused, naming what is defined.
@@ -2790,7 +2791,7 @@ mod tests {
     /// directions, while one the user changed is launched as written.
     #[test]
     fn the_stock_shell_follows_the_host_platform() {
-        use crate::session::platform::simulate_local;
+        use crate::shell::simulate_local;
         let command = |p| {
             let d = super::super::resolve_agent_def(Some("shell"), p).unwrap();
             format!("{} {}", d.command, d.args.join(" "))
@@ -2840,7 +2841,7 @@ mod tests {
     fn resolve_host_flag_reads_configured_host() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let path = crate::agent::host_config::hosts_config_path().unwrap();
+        let path = crate::config::hosts::hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -2862,7 +2863,7 @@ mod tests {
         // one lookup now.
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let path = crate::agent::host_config::hosts_config_path().unwrap();
+        let path = crate::config::hosts::hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -3230,6 +3231,7 @@ mod tests {
             agent_args: false,
             purged_tombstones: false,
             lifecycle_preconditions: false,
+            message_native_send: false,
             ..super::super::host_cli::fake::cli()
         }
     }

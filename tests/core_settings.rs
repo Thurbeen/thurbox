@@ -1,8 +1,8 @@
 //! What `settings.toml` controls in v2.
 //!
 //! The bug this file exists to prevent is not a wrong value — it is a setting
-//! that is *read nowhere*. `thurbox2` used to never call `settings::init`, so
-//! `settings::global()` handed out defaults and the entire file was ignored
+//! that is *read nowhere*. `thurbox2` used to never publish what it loaded, so
+//! a process-wide copy handed out defaults and the entire file was ignored
 //! however carefully it had been written. Nothing about that failure was visible:
 //! every switch looked honoured because every default matched.
 //!
@@ -28,7 +28,7 @@ fn isolate() -> tempfile::TempDir {
 }
 
 fn write_settings(body: &str) {
-    let path = thurbox::agent::settings_config::settings_config_path().expect("settings path");
+    let path = thurbox::config::settings::settings_config_path().expect("settings path");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("mkdir");
     }
@@ -36,7 +36,7 @@ fn write_settings(body: &str) {
 }
 
 fn read_settings() -> String {
-    let path = thurbox::agent::settings_config::settings_config_path().expect("settings path");
+    let path = thurbox::config::settings::settings_config_path().expect("settings path");
     std::fs::read_to_string(path).expect("read settings.toml")
 }
 
@@ -66,34 +66,27 @@ fn the_file_is_what_is_in_force() {
 }
 
 #[test]
-fn loading_publishes_the_settings_process_wide() {
-    // The half of the failure that was invisible: everything reading
-    // `settings::global()` — including `Database::open`, which prunes the audit
-    // log to `audit_retention_days` — sees defaults until this is done.
+fn a_restart_only_value_is_in_force_as_loaded() {
+    // What every consumer of a restart-only value is built with: there is no
+    // process-wide copy to fall back on, so the loaded document is the answer.
     let _home = isolate();
     write_settings("audit_retention_days = 7\n");
 
     let (config, _) = Config::load();
     assert_eq!(config.in_force().audit_retention_days, 7);
-    assert_eq!(
-        thurbox::session::settings::global().audit_retention_days,
-        7,
-        "a restart-only value has to be readable through the global, or the \
-         callers that read it there are still on defaults"
-    );
 }
 
 #[test]
 fn audit_history_is_pruned_to_the_configured_retention() {
-    // `Database::open` prunes, reading the retention from the published settings —
-    // which is why publishing them before the first open is load-bearing.
+    // Each binary prunes once it has loaded its settings, with the retention
+    // they name — `Database::open` knows no setting.
     let _home = isolate();
     write_settings("audit_retention_days = 1\n");
-    let (_config, _) = Config::load();
+    let (config, _) = Config::load();
 
     let path = thurbox::paths::database_file().expect("db path");
     let db = thurbox::storage::Database::open(&path).expect("open");
-    let old = thurbox::sync::current_time_millis() - 5 * 24 * 60 * 60 * 1000;
+    let old = thurbox::storage::current_time_millis() - 5 * 24 * 60 * 60 * 1000;
     db.conn_ref()
         .execute(
             "INSERT INTO audit_log (timestamp, entity_type, entity_id, action) \
@@ -102,7 +95,60 @@ fn audit_history_is_pruned_to_the_configured_retention() {
         )
         .expect("insert");
 
-    assert_eq!(db.prune_audit_log().expect("prune"), 1);
+    assert_eq!(
+        db.prune_audit_log(config.in_force().audit_retention_days)
+            .expect("prune"),
+        1
+    );
+}
+
+#[test]
+fn the_cli_prunes_audit_history_to_the_configured_retention() {
+    // The sweep runs in the binary once it has loaded its settings, so drive
+    // the binary: a setting no startup path reads is the failure this file is
+    // about.
+    // The child resolves its files from THURBOX_CONFIG_DIR/THURBOX_DATA_DIR,
+    // which `isolate` exports; `set_test_dir` steers only this process.
+    let home = isolate();
+    std::fs::write(
+        home.path().join("config/settings.toml"),
+        "audit_retention_days = 1\n",
+    )
+    .expect("write settings.toml");
+    let path = home.path().join("data/thurbox.db");
+    let db = thurbox::storage::Database::open(&path).expect("open");
+    let aged = |days: u64| thurbox::storage::current_time_millis() - days * 24 * 60 * 60 * 1000;
+    for (id, at) in [("aged", aged(5)), ("fresh", aged(0))] {
+        db.conn_ref()
+            .execute(
+                "INSERT INTO audit_log (timestamp, entity_type, entity_id, action) \
+                 VALUES (?1, 'session', ?2, 'created')",
+                rusqlite::params![at as i64, id],
+            )
+            .expect("insert");
+    }
+    drop(db);
+
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_thurbox-cli"))
+        .args(["version", "--json"])
+        .output()
+        .expect("run thurbox-cli");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let db = thurbox::storage::Database::open(&path).expect("reopen");
+    let kept: Vec<String> = db
+        .conn_ref()
+        .prepare("SELECT entity_id FROM audit_log WHERE entity_type = 'session' ORDER BY entity_id")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("rows");
+    assert_eq!(kept, ["fresh"], "the aged entry outlived a 1-day retention");
 }
 
 // ── Reload ─────────────────────────────────────────────────────────────────
@@ -117,9 +163,27 @@ fn a_live_change_on_disk_applies_without_a_restart() {
     write_settings("[features]\nsoft_delete = false\n");
     // The poll is throttled and mtime-based; a fresh read is what the loop would
     // eventually do, so drive `adopt` with what the file now says.
-    let (fresh, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    let (fresh, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert_eq!(config.adopt(fresh), Reloaded::Live);
     assert!(!config.features().soft_delete);
+}
+
+#[test]
+fn a_clipboard_change_on_disk_is_taken_into_force() {
+    // Issue #1638: the reload said `Live` and kept the booted `[clipboard]`, so
+    // the next copy still went through the old provider.
+    let _home = isolate();
+    write_settings("[clipboard]\nprovider = \"auto\"\ncopy_on_select = true\n");
+    let (mut config, _) = Config::load();
+
+    write_settings("[clipboard]\nprovider = \"osc52\"\ncopy_on_select = false\n");
+    let (fresh, _) = thurbox::config::settings::load_or_seed_with_warnings();
+    assert_eq!(config.adopt(fresh), Reloaded::Live);
+    assert_eq!(
+        config.in_force().clipboard.provider,
+        thurbox::session::settings::ClipboardProvider::Osc52
+    );
+    assert!(!config.in_force().clipboard.copy_on_select);
 }
 
 #[test]
@@ -129,7 +193,7 @@ fn a_restart_only_change_is_reported_rather_than_implied() {
     let (mut config, _) = Config::load();
 
     write_settings("scrollback_lines = 50000\n");
-    let (fresh, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    let (fresh, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert_eq!(config.adopt(fresh), Reloaded::NeedsRestart);
     assert_eq!(
         config.in_force().scrollback_lines,
@@ -166,7 +230,7 @@ fn our_own_write_is_not_reported_as_an_outside_edit() {
 
     let mut edited = Settings::default();
     edited.features.soft_delete = false;
-    thurbox::agent::settings_config::save_settings(&edited).expect("save");
+    thurbox::config::settings::save_settings(&edited).expect("save");
     config.mark_saved();
 
     assert_eq!(
@@ -194,7 +258,7 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     let mut draft = config.on_disk().clone();
     draft.features.mouse = false;
     assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
-    thurbox::agent::settings_config::save_settings(&draft).expect("save");
+    thurbox::config::settings::save_settings(&draft).expect("save");
 
     // The next visit, with the modal (and its draft) long since dropped: change
     // something else entirely.
@@ -203,9 +267,9 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     // Still `NeedsRestart`: the earlier change is pending until the next launch,
     // and saying otherwise would report it as applied.
     assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
-    thurbox::agent::settings_config::save_settings(&draft).expect("save");
+    thurbox::config::settings::save_settings(&draft).expect("save");
 
-    let (next_launch, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    let (next_launch, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert!(
         !next_launch.features.mouse,
         "the restart-only change was reverted by an unrelated later save"
@@ -242,7 +306,7 @@ fn saving_preserves_the_files_comments() {
     );
     let mut edited = Settings::default();
     edited.features.soft_delete = false;
-    thurbox::agent::settings_config::save_settings(&edited).expect("save");
+    thurbox::config::settings::save_settings(&edited).expect("save");
 
     let written = read_settings();
     assert!(
@@ -390,9 +454,12 @@ fn confirmation(host: &thurbox::kernel::host::LuaHost, settings: &Settings) -> O
                 frame,
                 ratatui::layout::Rect::new(0, 0, width, rows),
                 &rendered.node,
-                &thurbox::kernel::terminal::Terminals::with_registry(std::sync::Arc::new(
-                    thurbox::backend::wiring::configured().0,
-                )),
+                &thurbox::kernel::terminal::Terminals::with_registry(
+                    std::sync::Arc::new(
+                        thurbox::backend::wiring::configured(&Default::default()).0,
+                    ),
+                    &Default::default(),
+                ),
                 &mut Vec::new(),
             );
         })

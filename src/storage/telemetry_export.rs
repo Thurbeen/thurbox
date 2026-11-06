@@ -113,7 +113,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     fn row(name: &str) -> SharedSession {
         SharedSession {

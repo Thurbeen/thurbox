@@ -10,8 +10,8 @@ use crate::session::{
     Automation, AutomationAction, ExtensionAutomation, ExtensionDef, ExtensionSession, SessionId,
 };
 use crate::storage::automations::NewAutomation;
+use crate::storage::current_time_millis;
 use crate::storage::Database;
-use crate::sync::current_time_millis;
 
 /// What [`ensure_extension`] actually created this pass (empty = everything was
 /// already present). Lets callers toast only on a real (re)creation.
@@ -632,14 +632,17 @@ pub fn deactivate_extension(
 ///
 /// The active set is read from SQLite `metadata`; `activate_extension` /
 /// `deactivate_extension` (i.e. `thurbox-cli extension …`) manage membership.
+/// `auto_update` is `[features] auto_update` as the caller loaded it: whether a
+/// manifest older than this binary is re-activated rather than only reported.
 pub fn heal_active_extensions(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    auto_update: bool,
 ) -> Vec<String> {
     let active = db.get_active_extensions().unwrap_or_default();
     let mut messages = Vec::new();
     for name in active {
-        heal_one_extension(db, backends, &name, &mut messages);
+        heal_one_extension(db, backends, &name, auto_update, &mut messages);
     }
     messages
 }
@@ -651,6 +654,7 @@ fn heal_one_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
     name: &str,
+    auto_update: bool,
     messages: &mut Vec<String>,
 ) {
     // Fully-qualified agent reference (no `use`) per the session_ops →
@@ -667,7 +671,6 @@ fn heal_one_extension(
     // re-ensured its resources — skip the trailing ensure (which would run against
     // the now-stale `def`).
     let current = crate::agent::extension_config::binary_version();
-    let auto_update = crate::session::settings::global().features.auto_update;
     if heal_version_drift(db, backends, &def, name, current, auto_update, messages) {
         return;
     }

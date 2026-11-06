@@ -85,7 +85,9 @@ and writes when they arrive.
 blocking side effect off the UI thread, so neither rendering nor
 `Ctrl+N` ever freezes. Each operation owns an in-flight guard + result
 receiver on `App`, kicks off the blocking work, and applies the result
-when `tick()` polls `try_recv()`:
+when `tick()` polls `try_recv()`. (The names in this list are v1's; the
+kernel keeps the shape as its worker stores and the coordinator's workers,
+ADR-22 and ADR-23.)
 
 - **Worktree sync** (`Ctrl+S`) — `git rebase` per worktree
   (`worktree_sync_rx`, the original instance of the pattern).
@@ -287,12 +289,15 @@ terminal while developing.
 
 | Profile | `opt-level` | LTO | Strip | Debug | Use case |
 |---|---|---|---|---|---|
-| `dev` | 0 | off | no | yes | Fast iteration |
+| `dev` | 1 (dependencies 3) | off | no | yes | Fast iteration |
 | `test` | 1 | off | no | yes | Faster tests, still debuggable |
 | `release` | 3 | full | yes | no | Distribution binary |
 | `release-with-debug` | 3 | full | no | yes | Profiling / flamegraph |
 
-**Why**: `test` at opt-level 1 catches optimization-dependent bugs
+**Why**: `dev` is at opt-level 1, with dependencies at 3, because v2
+renders through an embedded Lua VM on every frame and `cargo run` is the
+documented way to run it (`Cargo.toml` says why). `test` at opt-level 1
+catches optimization-dependent bugs
 earlier while keeping compile times reasonable. The release profile
 strips everything for a minimal binary. `release-with-debug` exists
 specifically for `perf` / `flamegraph` workflows.
@@ -361,7 +366,7 @@ growth would bloat the database over months of use.
 **Choice**: Automations fire from three places that all funnel
 through one headless entry point, `thurbox-cli automation tick`:
 the TUI tick loop, a **heartbeat** this machine's backend keeps
-running (`SessionBackend::ensure_heartbeat`, armed on TUI startup and
+running (`StatusChannel::ensure_heartbeat`, armed on TUI startup and
 on `automation create`, looping `tick` every 60 s — on a tmux-protocol
 server, the detached `automation-heartbeat` window; ADR-32), and
 optional systemd/launchd
@@ -448,18 +453,33 @@ from each adapter's `ControlPolicy`; a backend without that facility leaves it
 absent. The shared lifecycle asks for outcomes through `SessionBackend` and
 does not send control-mode commands.
 
-**Trait methods**, by job (the list itself is `src/backend/contract.rs`):
+**Roles.** `SessionBackend` is four role traits plus a name and a
+`Capabilities` value (the methods themselves are `src/backend/contract.rs`):
 
-- *the attach/render half*: `check_available`, `ensure_ready`, `spawn`,
-  `adopt`, `discover`, `resize`, `claim_size`, `is_dead`, `kill`, `detach`,
-  plus snapshots and state seeding (title and mouse modes);
-- *the headless lifecycle* (ADR-29): `create_window`, `locate`,
-  `rename_windows`, `stamp_window`, `window_panes`, `set_pane_retention`;
-- *pane I/O by pane id* (ADR-30): `send_text`, `send_key`, `capture`,
-  `pane_state`, `pane_path`, `pane_pid(s)`, `pane_ids`;
-- *hook status and the heartbeat* (ADR-32): `hook_signal_command`,
-  `record_hook_state`, `hook_states`, `take_hook_state_events`,
-  `ensure_heartbeat`, `heartbeat_running`, `stop_heartbeat`.
+- `PaneStream` — a pane's output stream: `spawn`, `adopt`, history capture,
+  snapshots and state seeding (title and mouse modes), `resize`, `claim_size`,
+  `detach`;
+- `WindowLifecycle` (ADR-29) — the windows on the server: `check_available`,
+  `ensure_ready`, `discover`, `create_window`, `locate`, `rename_windows`,
+  `stamp_window`, `window_panes`, `set_pane_retention`, `pane_state`,
+  `pane_path`, `pane_pid(s)`, `pane_ids`, `is_dead`, `kill`, `shutdown`;
+- `PaneIo` (ADR-30) — a pane by its id, as a keyboard and a screen:
+  `send_text`, `send_key`, `capture`, `text_before_cursor`;
+- `StatusChannel` (ADR-32) — hook status and the heartbeat:
+  `hook_signal_command`, `record_hook_state`, `hook_states`,
+  `take_hook_state_events`, `ensure_heartbeat`, `heartbeat_running`,
+  `stop_heartbeat`.
+
+`Capabilities` holds the flags consumers branch on, each answered by the
+adapter for its own multiplexer: `needs_liveness_poll`, `supports_snapshots`
+and `keeps_exited_windows`. One value rather than three methods with defaults
+scattered through the trait, so what an adapter can do is read in one place and
+a stub declares all of it (`Capabilities::NONE` is the backend that promises
+nothing). It is plain `Copy` flags because `Terminals::sync` reads it every
+frame. The hook command is not among them: it names the server's socket, which
+a host can learn after the backend is built, so it is a `StatusChannel` method
+built when asked. A consumer holds `dyn SessionBackend`; one that needs a
+single role can take just that trait.
 
 A `backend_id` crossing the trait is the multiplexer's **pane id** (for example,
 tmux's `%N`), not a backend's name: the column predates the contract and keeps
@@ -638,6 +658,16 @@ anything handed to it meanwhile makes the parked one stale and asks again. A
 snapshot that fails puts the reader back in step. A server that cannot snapshot
 a pane (psmux) keeps dropping the chunk.
 
+Pinned end to end in `tests/tui_e2e.rs` on the remote stand-in, comparing the
+painted pane with `capture-pane -e` cell for cell, colour and attributes
+included. A flood straight through a local
+multiplexer never overflows: tmux prints slower than the reader drains. What
+overflows a channel is a link that stalls with the host's output in flight and
+then delivers it in one burst, so that scenario spools the downlink while it is
+wedged and requires the overflow in the log; without the resync it ends on a
+damaged grid. Its twin keeps the stand-in's shallow link, where tmux is pushed
+back on and holds the flood mid-print until the link heals.
+
 **Input**: `send-keys -H <hex>` through the connection's shared outbox,
 wrapped in a `ControlModeWriter` (implements `Write`), which encodes
 the bytes the way its adapter's `PaneInput` says. The **psmux** adapter, whose
@@ -766,8 +796,8 @@ runs on — see "The host's platform is its own dimension" below.
 Hosts are declared as data in `~/.config/thurbox/hosts.toml`
 (`session::HostDef { kind: HostKind {Ssh, Wsl}, … }`/`HostRegistry`),
 and WSL distros are additionally **auto-discovered**
-(`agent::host_config::discover_wsl_hosts` via `wsl.exe -l -q`). The
-combined set is loaded by `agent::host_config::load_all`, and each host
+(`config::hosts::discover_wsl_hosts` via `wsl.exe -l -q`). The
+combined set is loaded by `config::hosts::load_all`, and each host
 gets one backend per adapter, named by its route (`ssh:<host>:<mux>` /
 `wsl:<distro>:<mux>`, `backend::wiring`).
 
@@ -847,7 +877,7 @@ WSL needs no credentials at all.
   database first and a headless install need never launch the
   interface). `storage` may reference `session` but not `agent`, so the
   migration cannot decide what to rewrite: that is
-  `agent::host_config::wsl_repair_plan`, which settles the registry and
+  `config::hosts::wsl_repair_plan`, which settles the registry and
   augments it with discovery in the same order the loader does, so what
   it rewrites and what a session resolves against cannot disagree about
   who owns a spelling. Candidates = `wsl:<us>` plus every dropped
@@ -1300,7 +1330,8 @@ launcher that reaches it and the multiplexer that serves it are four
 independent choices. The route (ADR-28) carries only place and multiplexer;
 the OS is the host's, `HostDef::platform` (`session::Platform`: `Posix` or
 `Windows`), and this machine's is `Platform::local` — the one place the build
-OS is read as a platform.
+OS is read as a platform, read through `shell::local_platform` wherever a test
+must be able to run the other one.
 
 - **Explicit, with the old reading as the default.** `hosts.toml`'s
   `platform = "posix" | "windows"` declares it. An entry that names none reads
@@ -1335,7 +1366,7 @@ OS is read as a platform.
   `session::route` and `backend::contract` free of the launchers, host
   entries, the tmux adapter and its grammar, and of any `cfg(windows)`.
 - **What is simulated.** The Windows-build branches are covered on Linux by
-  `Platform::local`'s test override (`platform::simulate_local`). No
+  `shell::local_platform`'s test override (`shell::simulate_local`). No
   multiplexer decision is behind `cfg(windows)` any more — the local psmux
   spawn path is the psmux adapter's on every OS (ADR-31) — and no test here ran
   against a live Windows host.
@@ -1508,16 +1539,18 @@ I/O coordination.
 **Choice**: Headless automation lives in a separate binary
 (`thurbox-cli`) that shares the same SQLite database as the TUI.
 It exposes `session`, `automation`, `task`, `message`, `editor`,
-`config`, `extension`, `version`, `update`, and `notify` management
-as subcommands, printing JSON results.
+`agent`, `config`, `extension`, `version`, `update`, `notify`, `perf`,
+`watch`, `runtime`, `plugin`, `ui`, `schema` and `doctor` as subcommands
+(`thurbox-cli --help`), printing JSON results.
 
 **Why**: A separate binary keeps scripting/automation out of the
 TUI's event loop. The TUI already polls `PRAGMA data_version`
 on every tick (~10 ms event-loop cadence) (ADR-7b), so changes
 made by `thurbox-cli` appear
 automatically — no new synchronization mechanism is needed. The
-`cli` module imports `storage`, `session`, `session_ops`, `sync`,
-and `backend::tmux`, but never `app` or `ui`, so it can operate
+`cli` module imports `storage`, `session` and `session_ops`,
+reaches the backend contract and registry by fully-qualified path only
+and never an adapter (`tests/architecture_rules.rs`), so it can operate
 without a terminal UI.
 
 **Rejected**:
@@ -1532,6 +1565,11 @@ without a terminal UI.
 ---
 
 ## ADR-14: Centralized Theme Module
+
+> **Superseded by ADR-23.** The constants below were v1's. The kernel publishes
+> theme *roles* to plugins (`thurbox.theme`, `kernel::theme::palette_roles`); the
+> 36 built-in palettes live in `theme`, and a user's own in
+> `~/.config/thurbox/themes.toml`.
 
 **Choice**: All UI colors are defined as associated constants on a
 `Theme` struct in `kernel::theme` (v1 kept it in `src/ui/theme.rs`).
@@ -1568,7 +1606,8 @@ trivially testable. Composite styles (e.g., `focused_title()`) are
 at creation time; each agent runs with its own default config.
 Agents are described as **data** in `~/.config/thurbox/agents.toml`
 (sibling of any other config), seeded with built-ins (claude,
-codex, antigravity, opencode, aider, copilot, vibe, pi, omp) on first run via
+codex, antigravity, opencode, aider, copilot, vibe, pi, omp, and a plain
+`shell` — `docs/AGENTS.md`) on first run via
 `agent::agent_config::load_or_seed`. An `AgentDef` carries a
 `command`, `args` (always passed — bake in flags like a model
 here if you want), and argument-template groups (`resume_args`,
@@ -2138,18 +2177,22 @@ laptop-driven remote path shrank to a fallback.
 **Consequences**: the id is the host's, so `THURBOX_SESSION` inside the agent
 matches a row in whichever database a `thurbox-cli` on that machine reaches —
 `session signal` and `message send` work natively on the host for a session
-created from afar, and the psmux status gate (`Psmux::HOOK_STATUS`, ADR-32) is not consulted
+created from afar — and a peer's `message send` to one is run by the host's
+CLI for that reason (#1643), and the psmux status gate (`Psmux::HOOK_STATUS`, ADR-32) is not consulted
 for a shared Windows host. Relaunch after a reboot is the host's
 (`session restart --if-missing`, idempotent across observers). The mirror
 writes nothing when nothing changed. Status keeps its sub-second channel on
 hosts whose backend has a status channel because `session signal` also records
-the state in the row's backend (`SessionBackend::record_hook_state` — on tmux,
+the state in the row's backend (`StatusChannel::record_hook_state` — on tmux,
 the pane option a peer's subscription reads; ADR-32). A shared-host fork uses
 `session fork` on the owner, keeping the parent's saved account environment,
 conversation selection and checkout together. Older or directly created
 sessions can still be registered on the host by `session sync --adopt`.
 `session register` makes a row for a window that already runs and refuses to
-launch.
+launch. It is `session_ops::mirror::register_running`, beside the
+`register_unknown` that calls it on the host, and takes the session and name
+locks a creator takes (issue #1475), so it never writes a row that a creation
+or restore holding either is about to write.
 
 Reconciliation has a direction, and delegation has a fallback. Three rules
 follow from the host owning the record, none of which the first cut had:
@@ -2187,9 +2230,10 @@ follow from the host owning the record, none of which the first cut had:
   through another. A transitive row drops its pane id (a pane on the further
   host's server, which on this host's server names someone else's agent) and
   marks its checkouts borrowed; everything done to it goes through the host's
-  CLI, which delegates to the owner. Showing them is the default;
-  `settings.toml` `[remote] transitive_sessions = false` shows only each
-  host's own, and *forgets* the rows already taken (`Database::forget_session`,
+  CLI, which delegates to the owner. Showing them is opt-in
+  (`settings.toml` `[remote] transitive_sessions = true`): by default a host's
+  list here is its own sessions, not a remote's remotes, and a pass *forgets*
+  the transitive rows already taken (`Database::forget_session`,
   the one path that removes a session row) — a tombstone there would be
   pushed to the host as a delete of a live session that is not ours.
 - **"The host does not know this row" is not a failure to delete.** The host
@@ -2256,12 +2300,13 @@ follow from the host owning the record, none of which the first cut had:
   passes a remote command's status through untouched (a remote `exit 7` exits
   7), while delegated CLI operation errors use 1 through 6 — so 255 is ssh saying the
   question never arrived, whatever the stderr underneath resembles
-  (`backend::tmux_compat::server::listing_is_absence`, `session_ops::host_cli::classify_failure`).
+  (`backend::tmux_compat::server::mux_answered`, `session_ops::host_cli::classify_failure`).
   `session_ops::host_cli::Reach` names the three answers a failed remote call
   can have — `Unreached`, `Answered`, `Undetermined` — and `Undetermined` is
   deliberately its own answer rather than being rounded to the nearest of the
-  other two. Where a substring test is still the only signal (tmux's own
-  refusals) it is narrowed to the exact answers the tool is documented to give;
+  other two. Where the words are still the only signal (a multiplexer's own
+  refusals) they are each adapter's to read, in the exact answers its tool gives
+  (`TmuxCompatible::answered_absent`, ADR-31);
   widening that list is the trap it looks like a fix, since each new string
   makes the classifier more confidently wrong about the next one nobody
   anticipated. `wsl.exe` has no 255 convention, so a WSL host is never called
@@ -2421,11 +2466,13 @@ mechanisms now, and they answer different halves:
   refusing an operator's own `session restart` would leave the verb answering
   "already restarting" long after the holder died.
 - **A second window carrying a stamp is retired where the stamp is written.**
-  `Server::retire_duplicate_windows` (`backend::tmux_compat::server`) runs after every local stamp
+  `Server::retire_duplicate_windows` (`backend::tmux_compat::server`) runs after every stamp
   (the headless `create_window`, whose stamp rides in `new-window`'s own
   command list, and `stamp_window` for the interface's own spawn,
-  an adopt, a restore and a `session register`) and **the highest window id
-  keeps the identity**.
+  an adopt, a restore, a `session register` and every window created on a
+  host) and **the highest window id keeps the identity**. On a host it lists
+  and kills over the control connection where one is open, so the repair costs
+  no ssh handshake of its own, and one-shot otherwise (issue #1635).
   Not "the window I just made": both racers run the sweep, so "mine wins" has
   each retire the other's and can leave the session no window at all, while a
   key tmux issues in order and never reissues makes every sweep reach the same
@@ -2442,7 +2489,8 @@ that is what reaches a server **already** carrying a pair — no migration does,
 because those windows exist. `WindowIndex` itself is untouched: `stamped_match`
 still refuses two, because the repair is a *write* and reading one of two as the
 answer is the unsound step the pane-id tie-break was rejected for above. Both
-are local tmux only; psmux keeps `@` options in one server-global map, so the
+run wherever the server keeps window options, a host's as well as this
+machine's; psmux keeps `@` options in one server-global map, so the
 stamp is withheld at both ends there (ADR-13) and a sweep that believed a
 listing would retire every window on the server.
 
@@ -2642,7 +2690,8 @@ stays that instance's, or two instances focused on one pane would trade it every
 frame. Before focus counted, a session focused after another instance had sized
 it stayed at that size until the first keystroke. Every instance's vt100 grid
 follows the pane's **real** size, read from `%layout-change` and delivered to
-the pane's reader in the same channel as its output (`PaneEvent`), so the size
+the pane's reader in the same channel as its output (`PaneChunk::Resized`,
+ADR-12), so the size
 changes between the last byte written for the old one and the first written for
 the new. An instance whose rect differs from the grid paints the bottom rows of
 a taller grid and blank margins around a smaller one, and says on its bottom row
@@ -2883,10 +2932,14 @@ multiplexer `M`; each adapter is its multiplexer's answers to that trait: what
 its server can do (`WINDOW_OPTIONS`, `WINDOW_EVENTS`, `SNAPSHOTS`, …), how it
 quotes, how a window's command and environment reach it, how keystrokes and a
 paste are typed (`PaneInput`), what its control-mode connection may expect
-(`ControlPolicy`), and its version floor. The shared code asks what a server
-can do and never which multiplexer it is. POSIX quoting, environment flags,
-and window commands have shared trait defaults; adapters with a different
-tokenizer or launch grammar override them. `ControlPolicy::flow_control_command`
+(`ControlPolicy`), what its own "nothing there" replies are
+(`answered_absent`), and its version floor. The shared code asks what a server
+can do and never which multiplexer it is: every command it builds is quoted
+through `M::quote`, and its error text names `M::MULTIPLEXER`. tmux's own
+answers are the trait defaults — POSIX quoting, environment flags, window
+commands, `-H` keystrokes and bracketed paste, the hook command and listing,
+the banner's version word and the absence replies — so RMUX overrides only its
+words and psmux, with a different tokenizer and launch grammar, what differs. `ControlPolicy::flow_control_command`
 provides an optional startup command to limit buffered output;
 `PANE_MONITORING` gates
 `refresh-client -A` when a server streams attached panes on its own, and
@@ -2961,12 +3014,12 @@ installation, selection, and the verified version table.
 
 **Choice**: how a hook in a session's pane reports its state, how that state is
 read back with no interface attached, and what keeps the automation heartbeat
-running are all verbs of `SessionBackend`, answered by the backend serving the
-row's route:
+running are all verbs of `SessionBackend`'s `StatusChannel` role, answered by
+the backend serving the row's route:
 
-- `hook_signal_command()` — the command a hook in this backend's panes runs, the
-  state word appended, in place of `thurbox-cli session signal` where that CLI
-  cannot reach this instance's database (a pane on a host). Spawn, restart and
+- `StatusChannel::hook_signal_command` — the command a hook in this backend's
+  panes runs, the state word appended, in place of `thurbox-cli session signal`
+  where that CLI cannot reach this instance's database (a pane on a host). Spawn, restart and
   `agent launch-args` rewrite the shipped hook files and literal args to it;
   `None` means no channel, and then no hook config is shipped at all. A
   Windows host ships none either, whatever serves the row: an agent config

@@ -4,8 +4,8 @@
 
 use serde_json::Value;
 
+use crate::session::SharedSession;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 use super::OpError;
 

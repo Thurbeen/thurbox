@@ -90,7 +90,7 @@ impl Skin {
     /// The three conditions `scripts/install.sh` already honours: a TTY, no
     /// `NO_COLOR`, and a `TERM` that is not `dumb`. Piping this screen into a file
     /// or a pager must not fill it with escapes.
-    pub fn detect(palette: &crate::session::theme_config::ThemePalette) -> Self {
+    pub fn detect(palette: &crate::theme::ThemePalette) -> Self {
         let colour = std::io::IsTerminal::is_terminal(&std::io::stdout())
             && std::env::var_os("NO_COLOR").is_none()
             && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(true);
@@ -366,15 +366,15 @@ pub fn consent_gate(db: &Database) -> std::io::Result<Decision> {
 /// callers depend on that distinction — only a change the gate *made* may the
 /// gate later undo, and only a change it *needs* is worth logging.
 ///
-/// Written through `settings_config::save_settings`, which edits the file with
+/// Written through `config::settings::save_settings`, which edits the file with
 /// `toml_edit` and therefore keeps the seed's documentation comments.
 fn set_auto_update(on: bool) -> Result<bool, String> {
-    let (mut settings, _) = crate::agent::settings_config::load_or_seed_with_warnings();
+    let (mut settings, _) = crate::config::settings::load_or_seed_with_warnings();
     if settings.features.auto_update == on {
         return Ok(false);
     }
     settings.features.auto_update = on;
-    crate::agent::settings_config::save_settings(&settings).map_err(|e| e.to_string())?;
+    crate::config::settings::save_settings(&settings).map_err(|e| e.to_string())?;
     Ok(true)
 }
 

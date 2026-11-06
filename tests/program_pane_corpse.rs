@@ -113,9 +113,10 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
     }
 
     let key = ProgramKey::new(OWNER, PANE);
-    let mut first = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut first = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     if let Err(e) = first.start_program(
         &key,
         "sh",
@@ -158,9 +159,10 @@ async fn a_dead_program_window_is_replaced_rather_than_adopted() {
     // The restart: a fresh `Terminals` over the same server, finding that window
     // by its deterministic name.
     drop(first);
-    let mut second = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut second = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     let started_again = second.start_program(
         &key,
         "sh",

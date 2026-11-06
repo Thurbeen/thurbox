@@ -24,7 +24,7 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 use thurbox::session::SessionId;
-use thurbox::sync::SharedSession;
+use thurbox::session::SharedSession;
 
 /// The line codex's injected instruction asks a turn to end with.
 const IDLE_MARKER: &str = thurbox::session::background_work::IDLE_MARKER;

@@ -38,14 +38,14 @@ frame for it (`ECHO_HOLD`), and paints it at once as the last full frame with
 only that surface repainted (`paint_echo_frame`) — rapid keys queue successive
 output sequences rather than replacing one pending wait; one such frame per
 key, and declined whenever anything is drawn over the panes. What marks the screen dirty:
-any input, a resize, a reload, a worker result, and **new agent output** —
+any input, a resize, a reload, a focus change, a worker result, and **new agent output** —
 `Terminals::visible_output_generation` sums only the surfaces painted last
 frame, so visible output is responsive while hidden output owes no frame.
 The all-pane `output_generation` still invalidates content search (ADR-P29). It sums each pane's `output_seq`, bumped
 after the parse, never the millisecond `last_output_at`: that stamp was stored
 before the parse and cannot tell two chunks in one millisecond apart. What does **not**: background housekeeping.
-A command answering `Command::is_housekeeping()` (the 5-second deleted-session
-sweep or a Codex status reset after delivered input) is dispatched to a worker
+A command answering `Command::is_housekeeping()` (`Command::Reap`, the
+5-second deleted-session sweep, and nothing else) is dispatched to a worker
 with no in-flight record, so it reaches neither `thurbox.commands`, nor the
 message band, nor the animation clock — recorded like a command someone
 pressed, the sweep reserved a
@@ -146,13 +146,10 @@ invalidated every pure pane on every idle frame. It is also
 **scoped to its readers**: `ctx.elapsed` is served through the render context's
 metatable rather than set as a field, so the kernel can see which panes asked for
 it, and a pure tree is keyed on the animation tick only if the render that built
-it read the clock (`CachedTree`). Every other TUI gets that coupling for free
-because the animating widget is the one that asks to be redrawn — a Textual
-widget's `set_interval(…, self.refresh)`, a Bubble Tea spinner's own tick command,
-fidget.nvim's `Anime` closure — and thurbox's panes do not ask, so it is observed
-instead. Detected rather than declared on purpose: a declaration defaulting to
-"does not animate" freezes a third-party spinner silently (ADR-P21, +51% down to
-+12% under load). And the loop
+it read the clock (`CachedTree`). Detected rather than declared on purpose: a
+declaration defaulting to "does not animate" freezes a third-party spinner
+silently (ADR-P21 has the prior art and the measurement, +51% down to +12%
+under load). And the loop
 itself slows its input poll to `IDLE_TICK` once nothing has happened for
 `QUIESCENT_AFTER` — free, because `event::poll` returns the instant an event
 arrives, so only things that never wake the thread are delayed.

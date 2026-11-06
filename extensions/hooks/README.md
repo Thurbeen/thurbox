@@ -19,7 +19,8 @@ whole list scans in one pass.
 
 Unlike most extensions, **hooks ships built into thurbox and is auto-activated**
 on first run — the default agent's hook is pre-configured with zero setup.
-(`ui-skill` is the other one built in this way.) Opt out at any time:
+(`ui-skill` and `sessions-skill` are the others built in this way.) Opt out at
+any time:
 
 ```bash
 thurbox-cli extension deactivate hooks   # remove the wiring; won't come back
@@ -28,9 +29,12 @@ thurbox-cli extension activate hooks      # re-enable it
 
 ## How each agent is wired
 
-The hook command is always `thurbox-cli session signal --state <working|blocked|done>`,
-which identifies the calling session from the injected `$THURBOX_SESSION` (no ids
-passed by hand) and is suffixed `|| true` so it can never break the agent.
+The hook command is
+`thurbox-cli session signal --state <working|blocked|done|idle|background>`
+(plus `--work-start`/`--work-end <id>` for sub-work, which claude's payload
+sends), which identifies the calling session from the injected
+`$THURBOX_SESSION` (no ids passed by hand) and is suffixed `|| true` so it can
+never break the agent.
 
 Every command also **redirects its own output away** (`>/dev/null 2>&1`). A hook's
 stdout is a pipe, and down a pipe `thurbox-cli` answers in TOON — which the agent
@@ -96,9 +100,11 @@ below), do the same.
   private server that inherits its `$THURBOX_SESSION`. thurbox does not add it
   itself because opencode 1.x refuses it as an unknown argument.
 - **codex** — codex's `hooks.json` is claude-shaped, loaded from
-  `~/.codex/hooks.json`. We **JSON-merge** our entries in (a `[[config_merges]]`,
-  guarded by `requires_dir`) so your own hooks are preserved; uninstall prunes
-  exactly ours back out. `SessionStart` also binds the reported Codex
+  `$CODEX_HOME/hooks.json` (`~/.codex/hooks.json` by default; an agent whose
+  `env` selects another account gets the same payload merged into that dir at
+  launch). We **JSON-merge** our entries in (a `[[config_merges]]`, guarded by
+  `requires_dir`) so your own hooks are preserved; uninstall prunes exactly
+  ours back out. `SessionStart` also binds the reported Codex
   conversation ID to the Thurbox row, so restart can address that conversation
   exactly. Events: `SessionStart` → idle,
   `UserPromptSubmit`/`PostToolUse` → working, `PermissionRequest` and
@@ -262,8 +268,8 @@ thurbox then applies the `claude` `[[agent_patches]]` to `fleet` as well, so it
 reports working/blocked/done exactly like `claude` (locally and on a remote/WSL
 host). `hook_schema` names the *family* to imitate; today `"claude"` is the
 useful value — it's the family wired via a per-agent arg patch. The
-config-dir-wired families (codex/opencode/antigravity/vibe/copilot/grok/kimi)
-don't need it: a rebrand that runs the same CLI reads the same `~/.<agent>/…`
+config-dir-wired families (codex/opencode/antigravity/vibe/copilot/pi/omp/grok/
+kimi) don't need it: a rebrand that runs the same CLI reads the same `~/.<agent>/…`
 hook file and already reports.
 
 **grok and kimi are wired without being built-in agents.** thurbox ships no
@@ -293,7 +299,7 @@ other agents are wired by a reversible merge into — or a managed file dropped 
 | claude | `~/.config/thurbox/hooks/claude.json` | `--settings` flag on the `claude` agent (claude merges it) |
 | aider | — (no file) | `--notifications-command` flag on the `aider` agent |
 | opencode | `~/.config/opencode/plugin/thurbox-status.js` | managed plugin file (`requires_dir`) |
-| codex | `~/.codex/hooks.json` | reversible JSON-merge of our entries |
+| codex | `$CODEX_HOME/hooks.json` (`~/.codex/hooks.json` by default) | reversible JSON-merge of our entries |
 | vibe | `~/.vibe/hooks.toml` | managed file (refused if you already have one) |
 | copilot | `~/.copilot/hooks/thurbox-status.json` | managed standalone file (`requires_dir`) |
 | antigravity | `~/.gemini/settings.json` | reversible JSON-merge of our entries |
@@ -371,7 +377,7 @@ by design, but not silence.
 
 ## Mechanism
 
-This extension exercises two extension-manifest capabilities (see
+This extension exercises three extension-manifest capabilities (see
 `src/session/extension_def.rs`):
 
 - `[[agent_patches]]` — append args to an **existing** agent in `agents.toml`
@@ -382,12 +388,14 @@ This extension exercises two extension-manifest capabilities (see
   agent's own *shared* config file (antigravity's `~/.gemini/settings.json`,
   kimi's `~/.kimi-code/config.toml`) without clobbering the
   user's other settings: objects/tables recurse, arrays union, and uninstall prunes
-  exactly the entries we shipped. JSON recognises them by the `session signal`
-  marker in their content; TOML by an ownership comment stamped on each entry,
-  which is stricter in both directions — a hook *you* wrote that calls `session
-  signal` is not ours and survives uninstall, and an entry of ours whose event or
-  command changed in a later payload is still ours and gets replaced rather than
-  duplicated. Guarded by `requires_dir`; no-op when
+  exactly the entries we shipped. Both recognise them by an ownership stamp —
+  TOML as a comment above each entry, JSON as a trailing `# managed by thurbox
+  …` inside the command — which is stricter in both directions than matching
+  the `session signal` call: a hook *you* wrote that calls `session signal` is
+  not ours and survives every re-merge (uninstall still takes it, in JSON), and
+  an entry of ours whose event or command changed in a later payload is still
+  ours and gets replaced rather than duplicated. Guarded by `requires_dir`;
+  no-op when
   the merge is already present. A merge whose target is malformed is
   soft-skipped (logged, never aborts the rest of the install). JSON by default;
   `format = "toml"` picks the TOML merge (`agent::toml_merge`, on `toml_edit`,
@@ -407,8 +415,8 @@ control-mode connection. Delivery per agent, at spawn time:
 - **claude** — the `--settings` hooks file is copied to the host (rewritten)
   and the arg substituted.
 - **aider** — its literal `--notifications-command` arg is rewritten in place.
-- **codex / antigravity / opencode / vibe / copilot / grok / kimi** — the rewritten payload
-  is provisioned into the host's agent config dir
+- **codex / antigravity / opencode / vibe / copilot / pi / omp / grok / kimi** —
+  the rewritten payload is provisioned into the host's agent config dir
   (`session_ops::remote_hooks`), with the same safety rules as the local
   install: skipped when the agent isn't installed there (`requires_dir` probed
   over ssh), deep-merge-not-clobber for a shared config (prune-then-merge so

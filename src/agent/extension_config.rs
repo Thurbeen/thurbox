@@ -194,7 +194,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 /// The extension-manifest discovery directory:
 /// `~/.config/thurbox/extensions/` (sibling of `config.toml`).
 pub fn extensions_dir() -> Option<PathBuf> {
-    crate::paths::config_file().map(|p| p.with_file_name("extensions"))
+    crate::config::file::path("extensions")
 }
 
 /// Path to a single extension's manifest: `<extensions_dir>/<name>.toml`.
@@ -232,20 +232,10 @@ pub fn load_manifest_with_warnings(name: &str) -> (Option<ExtensionDef>, Vec<Str
     }
     let label = format!("{name}.toml");
     match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            match super::agent_config::parse_toml_reporting_unknown::<ExtensionDef>(
-                &contents, &label,
-            ) {
-                Ok((def, warnings)) => (Some(def), warnings),
-                Err(e) => (
-                    None,
-                    vec![format!(
-                        "{label}: {}; extension skipped",
-                        super::agent_config::compact_toml_error(&e.to_string())
-                    )],
-                ),
-            }
-        }
+        Ok(contents) => match crate::config::file::parse::<ExtensionDef>(&contents, &label) {
+            Ok((def, warnings)) => (Some(def), warnings),
+            Err(e) => (None, vec![format!("{e}; extension skipped")]),
+        },
         Err(e) => (None, vec![format!("Failed to read {label}: {e}")]),
     }
 }
@@ -488,13 +478,7 @@ pub fn load_manifest_from_source(
     source: &ExtensionSource,
 ) -> Result<(ExtensionDef, Vec<String>), String> {
     let contents = fetch_file(source, "extension.toml")?;
-    super::agent_config::parse_toml_reporting_unknown::<ExtensionDef>(&contents, "extension.toml")
-        .map_err(|e| {
-            format!(
-                "extension.toml: {}",
-                super::agent_config::compact_toml_error(&e.to_string())
-            )
-        })
+    crate::config::file::parse::<ExtensionDef>(&contents, "extension.toml")
 }
 
 /// Register agents in `agents.toml`, appending only the ones whose names aren't
@@ -534,7 +518,7 @@ pub fn ensure_agents_registered(agents: &[AgentDef]) -> Result<Vec<String>, Stri
     }
     text.push('\n');
     text.push_str(&block);
-    std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
+    crate::config::file::save(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
 
     Ok(missing.iter().map(|a| a.name.clone()).collect())
 }
@@ -570,7 +554,8 @@ pub fn remove_agents_from_toml(names: &[String]) -> Result<Vec<String>, String> 
     if text.ends_with('\n') {
         new_text.push('\n');
     }
-    std::fs::write(&path, new_text).map_err(|e| format!("write {}: {e}", path.display()))?;
+    crate::config::file::save(&path, new_text)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(removed)
 }
 
@@ -628,7 +613,7 @@ fn edit_agent_patches(patches: &[AgentPatch], add: bool) -> Result<Vec<String>, 
     }
 
     if !changed.is_empty() {
-        std::fs::write(&path, doc.to_string())
+        crate::config::file::save(&path, doc.to_string())
             .map_err(|e| format!("write {}: {e}", path.display()))?;
     }
     Ok(changed)
@@ -840,11 +825,8 @@ pub fn write_manifest(def: &ExtensionDef) -> Result<PathBuf, String> {
     let Some(path) = manifest_path(&def.name) else {
         return Err("could not resolve extensions directory".into());
     };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
-    }
     let text = toml::to_string(def).map_err(|e| format!("serialize manifest: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
+    crate::config::file::save(&path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(path)
 }
 

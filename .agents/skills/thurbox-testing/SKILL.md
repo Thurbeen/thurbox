@@ -14,8 +14,10 @@ cargo nextest run --all              # Run all tests (preferred runner)
 cargo nextest run -E 'test(name)'    # Run a single test by name
 cargo nextest run --all --profile ci # Run with CI profile
 bats scripts/install.bats             # Test install script (requires bats-core)
-bats extensions/*/scripts/*.bats      # Test the extensions' shell scripts
-just test-scripts                     # Both of the above, the way CI runs them
+just test-scripts                     # The four bats suites CI runs: install.bats,
+                                      # scripts/ci/check-pr-title.bats,
+                                      # packaging/winget/winget.bats and
+                                      # scripts/dev/e2e/windows-vm.bats
 ```
 
 The Nix development shell includes `bashInteractive`, not merely stdenv's
@@ -53,8 +55,10 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   file behind. `tui_e2e`'s
   `legacy_trust_and_disabled_choices_move_to_their_own_store_and_still_apply` pins
   the migration out of a legacy `ui.json` across two starts of the real binary. The native
-  interruption probe is Unix-only; Windows replacement is compile-checked and uses
-  `MoveFileExW`, but is not exercised by that probe. The same file pins config-file
+  interruption probe is Unix-only (`tests/atomic_config_writes.rs` is its Linux twin
+  for `agents.toml`); on Windows the replacement is `std::fs::rename`, and the
+  extensions suite's concurrent-reader test exercises it replacing a file a reader
+  holds open. The same file pins config-file
   symlink preservation on Unix and paths beyond `MAX_PATH` on Windows.
 - **`tests/edited_interface.rs`** — an edited interface keeps working across an
   upgrade. It holds files frozen from old releases with a user's edit
@@ -69,7 +73,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
 - **Lua statics** — `selene ui` (undefined names + the sandbox, via `thurbox.yml`),
   `lua-language-server --check` (types + withheld libraries, via
   `ui/lib/thurbox.d.lua`), `stylua` (format). The three cover different halves;
-  see **Linting & Formatting**.
+  see *Linting & Formatting* in `AGENTS.md`.
 - **`scripts/ci/check-lua-types.sh`** — the definitions' own test. Three panes in
   `tests/fixtures/lua_types/` each misspell one thing the plugin API otherwise
   drops in silence (a node prop, a command option, a theme role) and each must
@@ -134,13 +138,19 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   scenarios assert only on a kernel-owned overlay, never on the session list:
   the list returns on a snapshot tick, seconds even on a healthy link, so it
   cannot tell a frozen interface from a patient one. See ADR-P24.
+  Two more **flood** a remote pane and compare its painted grid with
+  `capture-pane`. A shallow pipe relay lets tmux push back and stop printing, so
+  the one that must overflow the pane's channel (#1472's resync) first runs
+  `deepen_remote_downlink`, which spools the host's output while the link is
+  wedged and delivers it all at once on heal, and asserts the overflow's debug
+  line in the log.
 - **`tests/self_update_scratch.rs`** (unix) — the real update CLI with private
   config/data/home and bounded fake downloaders, terminated in its own process
   group mid-download. The leader stays unreaped until group teardown so the
   harness cannot signal a reused pid. Pins recovery on the next update while
   preserving an aged live owner's staging; no network or installed binary is
   touched. A subprocess probe also pins that the system temp fallback never
-  reserves or sweeps unrelated paths. `agent::self_update::tests` covers the same
+  reserves or sweeps unrelated paths. `update::self_update::tests` covers the same
   staging lifecycle in child processes on Unix and native Windows, including normal
   exit, recent work, legacy names, malformed ownership, and symlinks / Windows junctions.
 - **`tests/reap_e2e.rs`** — window-teardown ownership against a *real* tmux on a

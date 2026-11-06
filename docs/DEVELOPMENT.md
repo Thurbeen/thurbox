@@ -9,7 +9,8 @@ isolated sandbox.
 
 The `flake.nix` provides the tools CI uses — the Rust toolchain (read from
 `rust-toolchain.toml`), interactive Bash, `tmux`, `shellcheck`, `bats`, Node,
-`cargo-nextest`, `cargo-deny`, `cocogitto`, `just`, and the demo stack
+`cargo-nextest`, `cargo-deny`, `cocogitto`, `just`, the three Lua gates
+(`selene`, `stylua`, `lua-language-server`), `sqlite`, `jq`, and the demo stack
 (`vhs`/`ffmpeg`/`ttyd`). Interactive Bash is explicit because the real-pane
 tests exercise Readline's bracketed-paste mode; Nix's stdenv Bash omits those
 interactive builtins.
@@ -28,9 +29,8 @@ nix develop           # enter the pinned shell
 direnv allow          # auto-enters the shell on `cd` (see .envrc)
 ```
 
-A couple of tools aren't packaged in nixpkgs yet (`prek`, `rumdl`, nightly
-`cargo-pup`); the shell prints a hint to install them via
-`scripts/install-dev-tools.sh`.
+Two tools aren't packaged in nixpkgs yet (`prek`, `rumdl`); the shell prints a
+hint to install them via `scripts/install-dev-tools.sh`.
 
 ### Fallback: no Nix
 
@@ -56,15 +56,20 @@ records version evidence and RMUX platform limits.
 |------|--------------|
 | `just build` | build the dev binaries (`thurbox` + `thurbox-cli`) |
 | `just test` | `cargo nextest run --all` |
-| `just test-scripts` | the bats suites: `scripts/install.bats` + the pull-request-title checker (needs `bats`) |
+| `just test-one NAME` | one test by name (`cargo nextest run -E 'test(NAME)'`) |
+| `just test-scripts` | the four bats suites: `scripts/install.bats`, the pull-request-title checker, `packaging/winget/winget.bats`, `scripts/dev/e2e/windows-vm.bats` (needs `bats`) |
 | `just lint` | fmt-check + clippy + cargo-deny + rumdl + shellcheck + selene, stylua and lua-language-server |
-| `just fmt` | format Rust + website |
+| `just fmt` / `just fmt-lua` | format Rust + website / format the Lua interface |
+| `just lua-api` | regenerate `thurbox.d.lua`, `thurbox.yml` and the selene probe from `src/kernel/lua_api.rs` |
 | `just arch` | architecture-rule + rustdoc checks |
 | `just hooks-install` | `prek install` |
 | `just smoke` | black-box TUI test: the real binary on a pty (`tests/tui_e2e.rs`) |
 | `just reap-tmux` | reap orphaned *test* tmux servers a signal left behind (below) |
 | `just bench` | what a frame costs, piece by piece (`benches/frame_cost.rs`) |
+| `just bench-multiplexers` | thurbox against raw tmux and Herdr (`docs/BENCHMARK-MULTIPLEXERS.md`) |
 | `just perf` | what the whole binary costs under load (`scripts/dev/perf-run.sh`) |
+| `just lab HOST` | drive the e2e tests against a real SSH host (`scripts/dev/e2e/real-host.sh`) |
+| `just tui-ui` | run the dev TUI against this checkout's `ui/` (`THURBOX_UI_DIR`) |
 | `just sandbox*` | dev runtime sandbox (below) |
 
 ### `just reap-tmux` — the servers a guard could not reap
@@ -174,13 +179,37 @@ The responder optimization retains the gate commands, features, timeouts,
 assertions, CI selectors and platform lanes: Linux x86-64 and ARM checks, native
 Windows checks/tests, Nix,
 security, docs, shell, Lua, website, installer/packaging probes and SonarQube.
-The only nextest configuration change corrects a comment; scheduling is unchanged.
+The only nextest configuration change in that work corrected a comment; scheduling
+changed later (see CI cache scope and test scheduling).
 The two added cases cover fragmented replies and the silent-terminal fallback.
 The separately integrated refusal fixture from PR #1539 uses a closed input
 channel with a still-live program to check error forwarding; the existing
 non-draining-receiver unit test retains deterministic full-channel coverage.
 Native Windows runtime evidence comes from CI; these local measurements are Unix
 PTY measurements.
+
+### CI cache scope and test scheduling
+
+A cache saved by a `pull_request` run is scoped to that PR's merge ref. No
+other PR can restore it, and before the change below there was no cache on
+`main` at all, so every PR's first run built its dependencies from scratch.
+Over the 39 successful runs from 1 to 5 November 2026, 22 Nextest jobs and 19
+Windows test jobs started with no cache. The median build took 8.7 min cold
+against 3.8 min warm for Nextest, and 13.9 min against 6.9 min for the Windows
+tests. CI now also runs on push
+to `main`, which is the only scope every PR can read, and only `main` saves the
+Rust caches. Pull-request saves could not be shared, and they kept the
+repository over its 10 GB cache quota.
+
+The CI nextest profile gives two binaries a priority. `tui_e2e` runs on one
+thread (the `e2e-pty` group), so its roughly 370 s of tests form the longest
+chain in the run. Before the priority it started only after the rest of the
+suite, and finished as a single-threaded tail: a 510 s test phase for 934
+test-seconds on four cores. `host_probe_deadline` takes about 135 s on Windows,
+and that run used to finish by waiting on it alone. With the priorities both
+start first. On four threads locally, the full suite went from 545 s to
+384–402 s over three runs, without changing which tests run, their group or
+their timeouts.
 
 ### Debug information and disk usage
 
@@ -247,13 +276,15 @@ scripts/dev/sandbox.sh                 # persistent "default" profile, launch th
 scripts/dev/sandbox.sh --fresh         # throwaway env, wiped on exit
 scripts/dev/sandbox.sh --profile foo   # a named persistent profile
 scripts/dev/sandbox.sh --isolate-home  # full hermetic isolation (fresh HOME; agents have NO creds)
+scripts/dev/sandbox.sh --demo          # seed a demo repo + sessions (scripts/dev/demo-repo.sh), then launch
+scripts/dev/sandbox.sh --demo-big      # …and a 400-file repo whose diff is past the 4 MiB cap
 scripts/dev/sandbox.sh --shell         # a shell with the sandbox env (run thurbox-cli by hand)
 scripts/dev/sandbox.sh -- session list # run a thurbox-cli command in the sandbox
 scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile
 ```
 
-Or via `just`: `just sandbox`, `just sandbox-fresh`,
-`just sandbox-shell`, `just sandbox-clean [profile]`.
+Or via `just`: `just sandbox`, `just sandbox-fresh`, `just sandbox-demo`,
+`just sandbox-demo-big`, `just sandbox-shell`, `just sandbox-clean [profile]`.
 
 The sandbox points `THURBOX_CONFIG_DIR` at its own root, so the interface
 materialises at `<sandbox>/thurbox-config/ui/` along with agents, settings and the

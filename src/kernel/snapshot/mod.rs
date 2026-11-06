@@ -14,12 +14,19 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::snapshot_db::{DbWorker, Job, Reply, RowsRead, Write};
+mod db;
+mod git;
+mod probe;
+
+use crate::session::settings::Settings;
 use crate::session::{
     derive_state, with_output_quiescence, AgentRegistry, Assessment, Corroboration, SessionId,
     SessionState,
 };
 use crate::storage::{Database, HookRow};
+use db::{DbWorker, Job, Reply, RowsRead, Write};
+use git::{git_poll_interval, GitStats};
+use probe::PaneProbe;
 
 /// How often the snapshot is rebuilt. A read never waits on this; it only
 /// determines how out of date the answer may be.
@@ -370,381 +377,6 @@ impl Snapshot {
     }
 }
 
-/// What a git-stat worker reports back: the session, its state when the path
-/// turned out to be a repository, and the merge answer that state carries with
-/// the commit it was computed for (`None` when the worktree reached no answer).
-type StatResult = (String, Option<GitState>, Option<(String, bool)>);
-
-/// The base interval a session's git stat is trusted for, from `settings.toml`;
-/// `None` when `git_poll_secs = 0` and the polling is off altogether.
-///
-/// v1 refreshes on the same ~5 s cadence (`GIT_REFRESH_TICKS`) for the same
-/// reason the default is that: `worktree_stats` shells out to `git`, which is
-/// far too expensive per frame — and answered only once, a session's diffstat
-/// freezes at whatever it was the first time it was looked at and never moves
-/// again.
-///
-/// A setting rather than the constant it was, because the number governs a cost
-/// that is **per session**: sixteen of them at five seconds is a `git` burst
-/// every 300ms for as long as the interface runs, most of it about rows nobody
-/// is reading. It is read once, here, so it takes effect on the next launch
-/// (issue #1167).
-fn git_poll_interval() -> Option<Duration> {
-    let secs = crate::session::settings::global().git_poll_secs;
-    (secs > 0).then(|| Duration::from_secs(secs))
-}
-
-/// How far a session's own interval may stretch past the base, once its answer
-/// stops moving.
-///
-/// Twelve — a minute at the default — because that is about how long a diffstat
-/// may lag before it reads as broken rather than as stale, and because the
-/// backoff is what stops the cost tracking the session *list*: a dozen dormant
-/// sessions are statted as often as one active one. Any change at all resets
-/// it, so the session an agent is working in never leaves the base cadence.
-const GIT_STAT_BACKOFF: u32 = 12;
-
-/// How long an *unmerged* answer stands before it is computed again.
-///
-/// The one answer whose staleness is not bounded by HEAD: a branch lands
-/// upstream without the worktree moving at all, so `merged: false` has to be
-/// re-asked on a clock. A minute rather than the poll interval because the
-/// check is seven subprocesses, it is the dominant cost of a session with an
-/// open pull request, and nothing acts on the answer faster than a person can
-/// read it — `at_risk` warns before a delete.
-///
-/// A floor on the cadence, not a deadline. The recheck rides on a poll, so what
-/// actually bounds the answer's age is this **or the session's own interval,
-/// whichever is longer** — the same thing at the default, where the backoff
-/// caps at a minute, and `12 × git_poll_secs` for an operator who raised it.
-/// Deliberately so: raising that knob is asking for fewer subprocesses across
-/// the board, and a recheck forced ahead of the interval would spend the ones
-/// it was raised to save.
-const MERGE_RECHECK: Duration = Duration::from_secs(60);
-
-/// A [`crate::git::merged_into_default`] answer, the commit it was computed
-/// for, and when it was computed.
-struct MergeAnswer {
-    head: String,
-    merged: bool,
-    /// When the answer was last *computed* — not when it was last handed back,
-    /// which is every poll. Only [`MERGE_RECHECK`] reads it, and only for a
-    /// `false`.
-    at: Instant,
-}
-
-/// One session's last git answer, and when it landed.
-struct Stat {
-    /// `None` when the path turned out not to be a repository.
-    ///
-    /// Recorded rather than dropped: a miss nobody remembers is asked again on
-    /// every single refresh, which is a thread and a `git` process per
-    /// non-repository session forever — and *every remote session* is a miss, its
-    /// worktree being on another machine entirely. A miss that keeps coming back
-    /// is also a stable answer, so it backs off like any other.
-    state: Option<GitState>,
-    at: Instant,
-    /// The merge answer this session last reached, kept so the next run can
-    /// skip the check that costs seven subprocesses.
-    merge: Option<MergeAnswer>,
-    /// How long [`Self::state`] is trusted: the base interval, doubled for
-    /// every poll that changed nothing, capped at [`GIT_STAT_BACKOFF`] times it.
-    interval: Duration,
-}
-
-/// Git stats computed off the render path.
-///
-/// `git::worktree_stats` shells out, so it cannot run during a refresh — that
-/// happens on the loop. Fourth instance of the worker pattern: touch the world
-/// on a thread, publish the result.
-struct GitStats {
-    /// The base interval, held rather than read per request: it is a
-    /// restart-only setting, and a cache that reads a global is a cache a test
-    /// cannot put on a clock of its own.
-    poll: Option<Duration>,
-    known: std::collections::HashMap<String, Stat>,
-    inflight: std::collections::HashSet<String>,
-    channel: Option<(
-        std::sync::mpsc::Sender<StatResult>,
-        std::sync::mpsc::Receiver<StatResult>,
-    )>,
-}
-
-impl GitStats {
-    /// `poll` is the base interval; `None` asks for nothing, ever.
-    fn new(poll: Option<Duration>) -> Self {
-        Self {
-            poll,
-            known: std::collections::HashMap::new(),
-            inflight: std::collections::HashSet::new(),
-            channel: None,
-        }
-    }
-
-    fn ensure_channel(&mut self) -> std::sync::mpsc::Sender<StatResult> {
-        if self.channel.is_none() {
-            self.channel = Some(std::sync::mpsc::channel());
-        }
-        self.channel.as_ref().expect("just created").0.clone()
-    }
-
-    /// Ask for a session's stats, unless polling is off, a run is in flight, or
-    /// the last answer is still inside this session's own interval.
-    ///
-    /// `host` is where the worktree lives when that is not this machine: its
-    /// `git` has to run there, since the path exists only there.
-    fn request(&mut self, session: &str, worktree: PathBuf, host: Option<crate::session::HostDef>) {
-        if self.poll.is_none() || self.inflight.contains(session) {
-            return;
-        }
-        // The merge answer to offer the worker, if it is still worth offering.
-        // Withholding one *is* the decision to recheck, which is why the stamp
-        // moves here: the answer that comes back will be a fresh one.
-        let known = match self.known.get_mut(session) {
-            Some(stat) => {
-                if stat.at.elapsed() < stat.interval {
-                    return;
-                }
-                match &mut stat.merge {
-                    // A landed commit never un-lands, so a `true` stands for
-                    // exactly as long as HEAD does.
-                    Some(answer) if answer.merged => Some((answer.head.clone(), true)),
-                    // A `false` is true of a moment as well as of a commit —
-                    // the branch lands without the worktree moving — so it is
-                    // offered only until it ages out.
-                    Some(answer) if answer.at.elapsed() < MERGE_RECHECK => {
-                        Some((answer.head.clone(), false))
-                    }
-                    Some(answer) => {
-                        answer.at = Instant::now();
-                        None
-                    }
-                    None => None,
-                }
-            }
-            None => None,
-        };
-        self.inflight.insert(session.to_string());
-        let tx = self.ensure_channel();
-        let session = session.to_string();
-        std::thread::spawn(move || {
-            let known = known.as_ref().map(|(head, merged)| crate::git::KnownMerge {
-                head,
-                merged: *merged,
-            });
-            let stats = crate::git::worktree_stats_on(host.as_ref(), &worktree, known);
-            // The answer and the commit it belongs to, so the next run can skip
-            // the check. Neither half means anything without the other.
-            let merge = stats.as_ref().and_then(|s| s.head.clone().zip(s.merged));
-            let state = stats.map(|s| GitState {
-                files_changed: s.files_changed,
-                insertions: s.insertions,
-                deletions: s.deletions,
-                untracked: s.untracked,
-                dirty: s.dirty,
-                ahead: s.ahead,
-                behind: s.behind,
-                merged: s.merged,
-            });
-            let _ = tx.send((session, state, merge));
-        });
-    }
-
-    fn drain(&mut self) {
-        let Some(base) = self.poll else { return };
-        let Some((_, rx)) = &self.channel else { return };
-        while let Ok((session, stats, merge)) = rx.try_recv() {
-            self.inflight.remove(&session);
-            let previous = self.known.remove(&session);
-            // An answer that did not move is one this session did not need, so
-            // it is asked for less often until something changes. A miss is an
-            // answer too — see `Stat::state` — and backs off the same way.
-            // Saturating because both operands are reachable from
-            // `settings.toml`: a `git_poll_secs` big enough to overflow a
-            // `Duration` would otherwise panic the loop on the first answer
-            // that came back, which is a config file crashing the interface.
-            let interval = match &previous {
-                Some(prev) if prev.state == stats => prev
-                    .interval
-                    .saturating_mul(2)
-                    .min(base.saturating_mul(GIT_STAT_BACKOFF)),
-                _ => base,
-            };
-            let merge = match (previous.and_then(|prev| prev.merge), merge) {
-                // The same answer about the same commit: keep the stamp it was
-                // computed with, or a `false` re-offered every poll would reset
-                // its own recheck and stand forever.
-                (Some(prev), Some((head, merged)))
-                    if prev.head == head && prev.merged == merged =>
-                {
-                    Some(prev)
-                }
-                (_, Some((head, merged))) => Some(MergeAnswer {
-                    head,
-                    merged,
-                    at: Instant::now(),
-                }),
-                (_, None) => None,
-            };
-            self.known.insert(
-                session,
-                Stat {
-                    state: stats,
-                    at: Instant::now(),
-                    merge,
-                    interval,
-                },
-            );
-        }
-    }
-
-    /// Forget sessions that are no longer in the snapshot, so the cache tracks
-    /// what exists rather than everything that ever did.
-    fn retain(&mut self, present: &std::collections::HashSet<&str>) {
-        self.known.retain(|id, _| present.contains(id.as_str()));
-    }
-}
-
-/// How long a pane verdict stands before it is asked for again.
-///
-/// The probe shells out — one `display-message` plus one `ps` — so it can no
-/// more run on the render path than a git stat can, and this bound is what
-/// stops a session that never reports from paying for one per refresh. Two
-/// seconds is also about the resolution the answer has: it says an agent is
-/// *there*, not what it is doing, and that fact changes when a process starts
-/// or exits.
-const PANE_PROBE_TTL: Duration = Duration::from_secs(2);
-
-/// One worker's answer: the session it probed, and what holds its pane.
-type ProbeResult = (String, Corroboration);
-
-/// One pane's verdict and when it was reached.
-struct Probe {
-    corroboration: Corroboration,
-    at: Instant,
-}
-
-/// What holds each session's pane, computed off the render path.
-///
-/// Another instance of the worker pattern (see [`GitStats`] beside it, and
-/// `kernel::updates`): touch the world on a thread, publish the result.
-///
-/// The interface used to skip this check altogether and derive its dot from
-/// the hook columns alone, which is why a driver-launched agent — nothing
-/// wired, nothing signalled — drew the green hollow `idle` circle while it
-/// worked.
-///
-/// Asked **only** about rows whose `hook_state` is null. An agent that reports
-/// for itself needs no observation ([`crate::session::best_state`] would
-/// discard it anyway), and probing every session every refresh is the cost the
-/// interface declined to pay in the first place.
-#[derive(Default)]
-struct PaneProbe {
-    known: std::collections::HashMap<String, Probe>,
-    inflight: std::collections::HashSet<String>,
-    channel: Option<(
-        std::sync::mpsc::Sender<ProbeResult>,
-        std::sync::mpsc::Receiver<ProbeResult>,
-    )>,
-}
-
-impl PaneProbe {
-    fn ensure_channel(&mut self) -> std::sync::mpsc::Sender<ProbeResult> {
-        if self.channel.is_none() {
-            self.channel = Some(std::sync::mpsc::channel());
-        }
-        self.channel.as_ref().expect("just created").0.clone()
-    }
-
-    /// Ask what holds a session's pane, unless a probe is in flight or the last
-    /// answer is still fresh.
-    fn request(
-        &mut self,
-        backend: std::sync::Arc<dyn crate::backend::SessionBackend>,
-        session: &str,
-        name: &str,
-        agent_command: String,
-        registry: &std::sync::Arc<AgentRegistry>,
-    ) {
-        if self.inflight.contains(session) {
-            return;
-        }
-        if self
-            .known
-            .get(session)
-            .is_some_and(|probe| probe.at.elapsed() < PANE_PROBE_TTL)
-        {
-            return;
-        }
-        self.inflight.insert(session.to_string());
-        let tx = self.ensure_channel();
-        let (session, name) = (session.to_string(), name.to_string());
-        let registry = std::sync::Arc::clone(registry);
-        std::thread::spawn(move || {
-            // Located by the row, then asked about by pane: an answer that
-            // is not this row's pane is no answer.
-            let pane = backend
-                .locate(crate::backend::Owner::new(&session, &name))
-                .ok()
-                .and_then(|placed| placed.agent.pane())
-                .and_then(|pane| backend.pane_state(&pane).ok())
-                .unwrap_or_default();
-            // Classified on the worker rather than at the fold, so the argv the
-            // verdict was read from — a driver's brief runs to kilobytes — never
-            // crosses the channel or lands in the snapshot.
-            let corroboration = crate::session::classify_foreground(
-                &agent_command,
-                &registry,
-                pane.foreground_process.as_deref(),
-                pane.foreground_command.as_deref(),
-                pane.dead,
-            );
-            let _ = tx.send((session, corroboration));
-        });
-    }
-
-    /// Take whatever the workers have answered, reporting whether any verdict
-    /// actually moved — which is what makes the derived rows stale.
-    fn drain(&mut self) -> bool {
-        let Some((_, rx)) = &self.channel else {
-            return false;
-        };
-        let mut moved = false;
-        while let Ok((session, corroboration)) = rx.try_recv() {
-            self.inflight.remove(&session);
-            let changed = self
-                .known
-                .get(&session)
-                .is_none_or(|probe| probe.corroboration != corroboration);
-            self.known.insert(
-                session,
-                Probe {
-                    corroboration,
-                    at: Instant::now(),
-                },
-            );
-            moved |= changed;
-        }
-        moved
-    }
-
-    fn get(&self, session: &str) -> Option<&Corroboration> {
-        self.known.get(session).map(|probe| &probe.corroboration)
-    }
-
-    /// Forget every session this poll is not currently asking about.
-    ///
-    /// Hygiene rather than the correctness guard: this cache tracking a set it
-    /// has stopped asking about would keep answering a question nobody put to
-    /// it, and re-requesting one that never left would waste a subprocess.
-    /// What stops a stale verdict from *publishing* is `assess`'s own gate on
-    /// `hook.state`, which does not depend on this eviction's timing relative
-    /// to a refresh.
-    fn retain(&mut self, probed: &std::collections::HashSet<&str>) {
-        self.known.retain(|id, _| probed.contains(id.as_str()));
-    }
-}
-
 /// An editor request, answered: the session to open it over and the editor
 /// setting as stored (`thurbox-cli editor set` / `editor mode`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -757,7 +389,7 @@ pub struct EditorRequest {
 /// Owns the snapshot and decides when to rebuild it.
 ///
 /// Refresh happens on the kernel's schedule, never inside a plugin call, and
-/// the database itself is only ever touched by the `snapshot_db` worker's thread — so a
+/// the database itself is only ever touched by the `db` worker's thread — so a
 /// slow read or a lock another process holds shows up as stale rows, never as
 /// a loop that stops painting (issue #1474).
 pub struct SnapshotStore {
@@ -799,6 +431,8 @@ pub struct SnapshotStore {
     /// Whether the local multiplexer is installed. Beside `agents` because it
     /// is refreshed with them and for the same reason.
     mux: MuxRow,
+    /// `settings.toml`'s `multiplexer`, as the store was built with it.
+    configured_mux: Option<String>,
     /// When the multiplexer and the agent commands were last looked for.
     /// Gates [`Self::poll_preflight`]; see [`PREFLIGHT_TTL`].
     preflight_at: Instant,
@@ -837,6 +471,13 @@ pub struct SnapshotStore {
     /// since printed past, and every other consumer of that stamp already
     /// reads it from the database.
     hook_state_at: std::collections::HashMap<String, i64>,
+    /// The hook report each row was last corrected to in place, by session
+    /// id, numbered from `hook_corrections_made`: only the answer to that one
+    /// may correct the row again. A stamp cannot say which report an answer
+    /// is for — two can share a millisecond, and storage may stamp either
+    /// later than the store did.
+    hook_corrections: std::collections::HashMap<String, u64>,
+    hook_corrections_made: u64,
 }
 
 /// A remote hook event waiting for the session it names to appear.
@@ -853,26 +494,42 @@ impl SnapshotStore {
     /// A database that will not open is not fatal: the kernel still runs and
     /// every read returns an empty snapshot carrying the error, which a plugin
     /// can render. Losing the UI because the DB is busy would be worse.
-    pub fn open(backends: &crate::backend::BackendRegistry) -> Self {
-        let (database, error) = match crate::paths::database_file() {
-            Some(path) => match Database::open(&path) {
-                Ok(db) => (Some(db), None),
-                Err(e) => (None, Some(format!("open {}: {e}", path.display()))),
-            },
-            None => (
-                None,
-                Some("could not resolve the database path".to_string()),
-            ),
-        };
+    pub fn open(backends: &crate::backend::BackendRegistry, settings: &Settings) -> Self {
+        match DbWorker::open() {
+            Ok((db, path)) => Self::build(Some(db), Some(path), None, backends, settings),
+            Err(error) => Self::build(None, None, Some(error), backends, settings),
+        }
+    }
+
+    /// Build a store over an already-open database (tests, and any caller that
+    /// owns its own connection).
+    pub fn with_database(
+        database: Database,
+        backends: &crate::backend::BackendRegistry,
+        settings: &Settings,
+    ) -> Self {
+        let db_path = db::path_of(&database);
+        Self::build(
+            Some(DbWorker::spawn(database)),
+            db_path,
+            None,
+            backends,
+            settings,
+        )
+    }
+
+    fn build(
+        db: Option<DbWorker>,
+        db_path: Option<PathBuf>,
+        error: Option<String>,
+        backends: &crate::backend::BackendRegistry,
+        settings: &Settings,
+    ) -> Self {
         let registry = read_registry();
         crate::agent::agent_config::publish_registry(&registry);
         let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
-        let db_path = database
-            .is_some()
-            .then(crate::paths::database_file)
-            .flatten();
         let mut store = Self {
-            db: database.map(DbWorker::spawn),
+            db,
             db_path,
             reading: false,
             reread: false,
@@ -880,7 +537,7 @@ impl SnapshotStore {
             reads_sent: 0,
             reads_applied: 0,
             settles: 0,
-            git: GitStats::new(git_poll_interval()),
+            git: GitStats::new(git_poll_interval(settings.git_poll_secs)),
             panes: PaneProbe::default(),
             agents: read_agents(&registry),
             agent_default: registry.default_name().to_string(),
@@ -889,7 +546,8 @@ impl SnapshotStore {
             registry_polled_at: None,
             hosts: read_hosts(&served, false),
             probe_hosts: false,
-            mux: read_mux(&served),
+            mux: read_mux(&served, settings.multiplexer.clone()),
+            configured_mux: settings.multiplexer.clone(),
             served,
             backends: backends.clone(),
             preflight_at: Instant::now(),
@@ -903,51 +561,8 @@ impl SnapshotStore {
             pending_focus: None,
             editor: std::sync::mpsc::channel(),
             hook_state_at: std::collections::HashMap::new(),
-        };
-        store.refresh();
-        store
-    }
-
-    /// Build a store over an already-open database (tests, and any caller that
-    /// owns its own connection).
-    pub fn with_database(database: Database, backends: &crate::backend::BackendRegistry) -> Self {
-        let registry = read_registry();
-        crate::agent::agent_config::publish_registry(&registry);
-        let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
-        let db_path = database
-            .conn_ref()
-            .path()
-            .filter(|path| !path.is_empty())
-            .map(PathBuf::from);
-        let mut store = Self {
-            db: Some(DbWorker::spawn(database)),
-            db_path,
-            reading: false,
-            reread: false,
-            writes: 0,
-            reads_sent: 0,
-            reads_applied: 0,
-            settles: 0,
-            git: GitStats::new(git_poll_interval()),
-            panes: PaneProbe::default(),
-            agents: read_agents(&registry),
-            agent_default: registry.default_name().to_string(),
-            registry,
-            registry_contents: None,
-            registry_polled_at: None,
-            hosts: read_hosts(&served, false),
-            probe_hosts: false,
-            mux: read_mux(&served),
-            served,
-            backends: backends.clone(),
-            preflight_at: Instant::now(),
-            current: Snapshot::default(),
-            last_refresh: None,
-            pending_hooks: Vec::new(),
-            version: 0,
-            pending_focus: None,
-            editor: std::sync::mpsc::channel(),
-            hook_state_at: std::collections::HashMap::new(),
+            hook_corrections: std::collections::HashMap::new(),
+            hook_corrections_made: 0,
         };
         store.refresh();
         store
@@ -1023,30 +638,16 @@ impl SnapshotStore {
     /// Ask for the editor setting, to open the editor over `session` once it
     /// is read ([`Self::take_editor`]).
     ///
-    /// Read on a thread of its own over [`Database::open_existing`], not on
-    /// the worker: the worker's queue can hold a write waiting out another
-    /// process's lock, and the key would then open the editor seconds later,
-    /// over whatever the user had moved on to. A WAL read waits for no writer,
-    /// and `open_existing` skips the prunes that make an open write. Anything
-    /// that cannot be read answers "none stored", so `$VISUAL`/`$EDITOR` still
-    /// apply.
+    /// Read on a thread of its own (`db::read_editor`), not on the worker:
+    /// the worker's queue can hold a write waiting out another process's lock,
+    /// and the key would then open the editor seconds later, over whatever the
+    /// user had moved on to.
     pub fn request_editor(&mut self, session: &str) {
-        let session = session.to_string();
-        let path = self.db_path.clone();
-        let answer = self.editor.0.clone();
-        std::thread::spawn(move || {
-            let db = path.and_then(|path| Database::open_existing(&path).ok());
-            let _ = answer.send(EditorRequest {
-                session,
-                command: db
-                    .as_ref()
-                    .and_then(|db| db.get_editor_command().ok().flatten()),
-                mode: db
-                    .as_ref()
-                    .and_then(|db| db.get_editor_mode().ok())
-                    .unwrap_or_default(),
-            });
-        });
+        db::read_editor(
+            session.to_string(),
+            self.db_path.clone(),
+            self.editor.0.clone(),
+        );
     }
 
     /// An editor setting a [`Self::request_editor`] asked for, once read.
@@ -1236,12 +837,36 @@ impl SnapshotStore {
                 self.pending_focus = Some(id);
                 false
             }
-            Reply::Stamped(session, stamp) => {
-                match stamp {
-                    Some(stamp) => self.hook_state_at.insert(session, stamp),
-                    None => self.hook_state_at.remove(&session),
+            Reply::Stamped {
+                session,
+                correction,
+                at,
+                state,
+            } => {
+                // A later report corrected the row since: its own answer is
+                // still to come, and until then its stamp and word stand.
+                if self.hook_corrections.get(&session) != Some(&correction) {
+                    return false;
+                }
+                self.hook_corrections.remove(&session);
+                self.hook_state_at.insert(session.clone(), at);
+                // The row was corrected in place to the word reported; storage
+                // may have settled it as another.
+                let Some(row) = self
+                    .current
+                    .sessions
+                    .iter_mut()
+                    .find(|row| row.id == session)
+                else {
+                    return false;
                 };
-                false
+                if row.hook_state.as_deref() == Some(state.as_str()) {
+                    return false;
+                }
+                row.status = derive_state(Some(&state), Some(at), None);
+                row.hook_state = Some(state);
+                self.mark_changed();
+                true
             }
             Reply::Rejected => {
                 self.reread = true;
@@ -1373,7 +998,7 @@ impl SnapshotStore {
         let mut wanted: Vec<(String, PathBuf, Option<crate::session::HostDef>)> = Vec::new();
         let mut moved = false;
         for row in &mut self.current.sessions {
-            let stats = self.git.known.get(&row.id).and_then(|stat| stat.state);
+            let stats = self.git.state(&row.id);
             if row.git != stats {
                 row.git = stats;
                 moved = true;
@@ -1468,6 +1093,9 @@ impl SnapshotStore {
             row.hook_state = None;
             row.status = SessionState::Running;
             self.hook_state_at.remove(session);
+            // The report this retires may still be waiting for its answer,
+            // which must not put it back.
+            self.hook_corrections.remove(session);
             self.mark_changed();
         }
     }
@@ -1523,9 +1151,9 @@ impl SnapshotStore {
 
         let mut applied = 0;
         for event in queue {
-            // Remote-host-controlled free text: allow-list it, never interpret
-            // anything else as a state.
-            if !crate::session::HOOK_STATES.contains(&event.state.as_str()) {
+            // Remote-host-controlled free text: a word that is no state is not
+            // even kept for a pane that appears later.
+            if !crate::session_ops::signals::is_state(&event.state) {
                 continue;
             }
             // A backend reports under the qualified route it serves; the row
@@ -1544,15 +1172,14 @@ impl SnapshotStore {
                 }
                 continue;
             };
-            // The subscription re-reports on every reconnect, so writing an
-            // unchanged state would re-stamp `state_at` and resurrect an
-            // already-acknowledged `done` as unseen.
-            if row.hook_state.as_deref() == Some(event.state.as_str()) {
-                continue;
-            }
-            // A parked session refuses a state it has no process to be in, so
-            // its row is not corrected as though the write had happened.
-            if row.stopped {
+            // Judged as the heartbeat's poll judges it, before the row is
+            // corrected in place: a re-report on reconnect, or a state for a
+            // parked session, must not be shown as though it had been written.
+            if !crate::session_ops::signals::echo_changes(
+                row.hook_state.as_deref(),
+                row.stopped,
+                &event.state,
+            ) {
                 continue;
             }
             let Some(id) = parse_id(&row.id) else {
@@ -1564,13 +1191,23 @@ impl SnapshotStore {
             // is cleared here rather than left to that (absent) refresh, because
             // this path never reaches `assess` at all — it writes the row
             // directly, which is the one case its hook.state gate cannot cover.
-            // Stamped now; the worker answers with the stamp storage chose.
-            let stamped = crate::sync::current_time_millis() as i64;
+            // Stamped now; the worker answers with the stamp and the word
+            // storage chose.
+            let stamped = crate::storage::current_time_millis() as i64;
             self.hook_state_at.insert(row.id.clone(), stamped);
             row.status = derive_state(Some(&event.state), Some(stamped), None);
             row.hook_state = Some(event.state.clone());
             row.detected_agent = None;
-            writes.push(Write::Hook(id, row.id.clone(), event.state, stamped));
+            self.hook_corrections_made += 1;
+            let correction = self.hook_corrections_made;
+            self.hook_corrections.insert(row.id.clone(), correction);
+            writes.push(Write::Hook {
+                id,
+                row: row.id.clone(),
+                state: event.state,
+                provisional: stamped,
+                correction,
+            });
             applied += 1;
         }
         for write in writes {
@@ -1606,7 +1243,7 @@ impl SnapshotStore {
     /// would allocate every tick to carry the sessions nobody asked about
     /// (ADR-P10).
     pub fn apply_output_quiescence(&mut self, quiet_for: impl Fn(&str) -> Option<u64>) -> usize {
-        let now = crate::sync::current_time_millis() as i64;
+        let now = crate::storage::current_time_millis() as i64;
         let mut changed = 0;
         for row in &mut self.current.sessions {
             // A parked session has no process to be working or blocked in, and
@@ -1758,7 +1395,7 @@ impl SnapshotStore {
             return false;
         }
         self.preflight_at = Instant::now();
-        let mux = read_mux(&self.served);
+        let mux = read_mux(&self.served, self.configured_mux.clone());
         let mut moved = mux != self.mux;
         self.mux = mux;
         for row in &mut self.agents {
@@ -1854,7 +1491,7 @@ impl SnapshotStore {
             .iter()
             .filter_map(|(id, row)| Some((id.to_string(), row.state_at?)))
             .collect();
-        let now = crate::sync::current_time_millis() as i64;
+        let now = crate::storage::current_time_millis() as i64;
 
         self.git.drain();
 
@@ -2033,9 +1670,11 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
 
 /// Which multiplexers this machine can run sessions in, and the one a create
 /// uses when nothing names one — what to do when there is none.
-fn read_mux(served: &std::collections::HashSet<crate::session::Route>) -> MuxRow {
-    use crate::session::{Multiplexer, Platform, Route};
-    let configured = crate::session::settings::global().multiplexer.clone();
+fn read_mux(
+    served: &std::collections::HashSet<crate::session::Route>,
+    configured: Option<String>,
+) -> MuxRow {
+    use crate::session::{Multiplexer, Route};
     let available: Vec<Multiplexer> = crate::agent::preflight::local_multiplexers()
         .into_iter()
         .filter(|mux| served.contains(&Route::local(Some(*mux))))
@@ -2045,7 +1684,7 @@ fn read_mux(served: &std::collections::HashSet<crate::session::Route>) -> MuxRow
     let binary = configured
         .as_deref()
         .and_then(|name| Multiplexer::parse(name).ok())
-        .or_else(|| Multiplexer::preferred(Platform::local(), &available))
+        .or_else(|| Multiplexer::preferred(crate::shell::local_platform(), &available))
         .unwrap_or_else(Multiplexer::platform_default);
     let presence = crate::agent::preflight::look_up(binary.name());
     MuxRow {
@@ -2066,7 +1705,7 @@ fn read_hosts(
     served: &std::collections::HashSet<crate::session::Route>,
     probe: bool,
 ) -> Vec<HostRow> {
-    let (registry, _warnings) = crate::agent::host_config::cached_registry();
+    let (registry, _warnings) = crate::config::hosts::cached_registry();
     hosts_from(&registry.hosts, served, probe)
 }
 
@@ -2136,7 +1775,7 @@ pub(super) fn remote_host_of(backend: &str) -> Option<String> {
 /// shells out on a cache miss, and this runs on the loop thread.
 fn session_members(
     cwd: Option<&std::path::Path>,
-    worktrees: &[crate::sync::state::SharedWorktree],
+    worktrees: &[crate::session::SharedWorktree],
     additional_dirs: &[PathBuf],
 ) -> Vec<(Option<String>, PathBuf)> {
     let leaf = |path: &std::path::Path| {
@@ -2204,147 +1843,8 @@ pub fn parse_id(raw: &str) -> Option<SessionId> {
 
 #[cfg(test)]
 mod tests {
+    use super::probe::Probe;
     use super::*;
-
-    /// A git answer to hand a cache, distinguishable from the next one by its
-    /// insertion count.
-    fn git_state(insertions: usize) -> GitState {
-        GitState {
-            files_changed: 1,
-            insertions,
-            deletions: 0,
-            untracked: 0,
-            dirty: true,
-            ahead: 1,
-            behind: 0,
-            merged: Some(false),
-        }
-    }
-
-    #[test]
-    fn a_session_whose_answer_stops_moving_is_asked_less_often() {
-        // The scaling issue #1167 reports: the cost of this cache is one
-        // `git` burst per session per interval, so a fixed interval makes an
-        // instance's git load linear in how many sessions it holds — including
-        // the ones nobody has touched in hours. An answer that keeps coming
-        // back identical is one nobody needs at five-second resolution, so the
-        // interval doubles until it caps, and the first change resets it.
-        let base = Duration::from_secs(5);
-        let mut git = GitStats::new(Some(base));
-        let tx = git.ensure_channel();
-        let answer = |git: &mut GitStats, state: GitState| {
-            tx.send(("s1".to_string(), Some(state), None))
-                .expect("send");
-            git.drain();
-            git.known["s1"].interval
-        };
-
-        assert_eq!(answer(&mut git, git_state(1)), base, "a first answer");
-        assert_eq!(answer(&mut git, git_state(1)), base * 2);
-        assert_eq!(answer(&mut git, git_state(1)), base * 4);
-        for _ in 0..6 {
-            answer(&mut git, git_state(1));
-        }
-        assert_eq!(
-            git.known["s1"].interval,
-            base * GIT_STAT_BACKOFF,
-            "a settled session backs off to the cap and stays there"
-        );
-
-        assert_eq!(
-            answer(&mut git, git_state(2)),
-            base,
-            "work landing in the worktree puts it back on the fast cadence"
-        );
-    }
-
-    #[test]
-    fn a_backed_off_session_is_not_asked_again_inside_its_interval() {
-        // The interval above is only a number until `request` honours it: this
-        // is the gate that decides whether a `git` process is spawned at all.
-        let base = Duration::from_secs(5);
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut git = GitStats::new(Some(base));
-        let stale_by = |age: Duration| Stat {
-            state: Some(git_state(1)),
-            at: Instant::now().checked_sub(age).expect("recent enough"),
-            merge: None,
-            interval: base * 4,
-        };
-
-        git.known.insert("s1".to_string(), stale_by(base * 3));
-        git.request("s1", dir.path().to_path_buf(), None);
-        assert!(
-            git.inflight.is_empty(),
-            "the answer is older than the base interval but younger than this session's"
-        );
-
-        git.known.insert("s1".to_string(), stale_by(base * 5));
-        git.request("s1", dir.path().to_path_buf(), None);
-        assert!(
-            git.inflight.contains("s1"),
-            "past its own interval it is asked again"
-        );
-    }
-
-    #[test]
-    fn the_merge_recheck_rides_on_a_poll_rather_than_outpacing_it() {
-        // Deliberate, and asserted so that a later reading of `MERGE_RECHECK`
-        // as a deadline does not "fix" it: the recheck happens on the first
-        // poll that finds the answer stale, so a session polled every six
-        // minutes rechecks every six minutes. An operator who raised
-        // `git_poll_secs` asked for fewer subprocesses, and a recheck forced
-        // ahead of their interval would spend exactly the ones they saved.
-        let base = Duration::from_secs(30);
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut git = GitStats::new(Some(base));
-        let aged = |age: Duration| Stat {
-            state: Some(git_state(1)),
-            at: Instant::now().checked_sub(age).expect("recent enough"),
-            merge: Some(MergeAnswer {
-                head: "0f00".to_string(),
-                merged: false,
-                at: Instant::now().checked_sub(age).expect("recent enough"),
-            }),
-            interval: base * GIT_STAT_BACKOFF,
-        };
-
-        // Well past MERGE_RECHECK, nowhere near this session's own interval.
-        git.known.insert("s1".to_string(), aged(MERGE_RECHECK * 2));
-        git.request("s1", dir.path().to_path_buf(), None);
-        assert!(
-            git.inflight.is_empty(),
-            "an overdue merge answer must not pull the whole stat forward"
-        );
-
-        // And on the poll that is due, the answer is withheld from the worker —
-        // which is the recheck being issued, and is stamped as such.
-        git.known
-            .insert("s1".to_string(), aged(base * GIT_STAT_BACKOFF * 2));
-        git.request("s1", dir.path().to_path_buf(), None);
-        assert!(git.inflight.contains("s1"), "the poll itself is due");
-        let stamp = git.known["s1"]
-            .merge
-            .as_ref()
-            .expect("the answer is still held")
-            .at;
-        assert!(
-            stamp.elapsed() < Duration::from_secs(5),
-            "withholding the answer is the recheck, so it is stamped now"
-        );
-    }
-
-    #[test]
-    fn git_polling_turned_off_asks_for_nothing() {
-        // `git_poll_secs = 0`: the escape hatch for a machine where every
-        // subprocess is scanned by an endpoint-protection agent before it may
-        // run. Nothing is asked, and nothing is remembered to publish.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let mut git = GitStats::new(None);
-        git.request("s1", dir.path().to_path_buf(), None);
-        assert!(git.inflight.is_empty(), "no worker was started");
-        assert!(git.known.is_empty(), "and nothing was recorded");
-    }
 
     #[test]
     fn a_remote_backend_yields_its_host_name() {
@@ -2381,8 +1881,11 @@ mod tests {
 
         crate::paths::with_path(dir.path(), || {
             let database = Database::open_in_memory().expect("in-memory database opens");
-            let mut store =
-                SnapshotStore::with_database(database, &crate::backend::registry::inert());
+            let mut store = SnapshotStore::with_database(
+                database,
+                &crate::backend::registry::inert(),
+                &Settings::default(),
+            );
             assert_eq!(
                 store.current().mux.presence,
                 crate::agent::preflight::Presence::Present,
@@ -2426,12 +1929,12 @@ mod tests {
         .into_iter()
         .collect();
         crate::paths::with_path(dir.path(), || {
-            let none = read_mux(&served);
+            let none = read_mux(&served, None);
             assert!(none.available.is_empty(), "{none:?}");
             assert_eq!(none.presence, crate::agent::preflight::Presence::Missing);
 
             install("rmux");
-            let only_rmux = read_mux(&served);
+            let only_rmux = read_mux(&served, None);
             assert_eq!(only_rmux.available, vec!["rmux"]);
             assert_eq!(only_rmux.binary, "rmux", "the one installed is the default");
             assert_eq!(
@@ -2443,7 +1946,7 @@ mod tests {
             // does not make it a choice here.
             install("psmux");
             install("tmux");
-            let both = read_mux(&served);
+            let both = read_mux(&served, None);
             assert_eq!(both.available, vec!["tmux", "rmux"]);
             assert_eq!(both.binary, "tmux");
         });
@@ -2506,7 +2009,11 @@ mod tests {
         database
             .record_automation_run(id, AutomationRunStatus::Error, "exit 2: boom", None)
             .expect("run");
-        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         let row = &store.current().automations[0];
         assert_eq!(row.schedule, "once", "the old summary is unchanged");
         assert_eq!(row.trigger, "at:4000000000000");
@@ -2524,7 +2031,11 @@ mod tests {
     #[test]
     fn an_in_memory_database_yields_an_empty_but_stamped_snapshot() {
         let database = Database::open_in_memory().expect("in-memory database opens");
-        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         let snapshot = store.current();
         assert!(snapshot.sessions.is_empty());
         assert!(snapshot.taken_at_ms > 0, "snapshot must carry its instant");
@@ -2534,7 +2045,11 @@ mod tests {
     #[test]
     fn a_read_is_immediate_and_repeatable() {
         let database = Database::open_in_memory().expect("in-memory database opens");
-        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         // The property that matters: reading never consults the database.
         for _ in 0..1000 {
             assert!(store.current().sessions.is_empty());
@@ -2554,7 +2069,7 @@ mod tests {
     fn a_member_is_named_for_its_repository_but_points_at_its_checkout() {
         // The distinction the editor depends on: opening the repository root
         // would land on whatever branch that has, not the one being worked.
-        let worktrees = vec![crate::sync::state::SharedWorktree {
+        let worktrees = vec![crate::session::SharedWorktree {
             repo_path: PathBuf::from("/src/thurbox"),
             worktree_path: PathBuf::from("/worktrees/fix-osc52"),
             branch: "fix/osc52".into(),
@@ -2573,13 +2088,13 @@ mod tests {
     #[test]
     fn every_repository_of_a_multi_repo_session_is_a_member() {
         let worktrees = vec![
-            crate::sync::state::SharedWorktree {
+            crate::session::SharedWorktree {
                 repo_path: PathBuf::from("/src/a"),
                 worktree_path: PathBuf::from("/worktrees/a"),
                 branch: "feat/x".into(),
                 created_by_thurbox: true,
             },
-            crate::sync::state::SharedWorktree {
+            crate::session::SharedWorktree {
                 repo_path: PathBuf::from("/src/b"),
                 worktree_path: PathBuf::from("/worktrees/b"),
                 branch: "feat/x".into(),
@@ -2603,9 +2118,9 @@ mod tests {
     /// Seed an in-memory store with one session whose pane probe already found
     /// a foreign agent, so `detected_agent` is published for it — the
     /// "firstmate" scenario: a bare shell with a real agent running in it.
-    fn store_with_a_detected_agent() -> (SnapshotStore, crate::sync::SharedSession) {
+    fn store_with_a_detected_agent() -> (SnapshotStore, crate::session::SharedSession) {
         let database = Database::open_in_memory().expect("in-memory database opens");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "shell".into(),
             agent: "zsh".into(),
@@ -2623,7 +2138,11 @@ mod tests {
             key: None,
         };
         database.upsert_session(&row).expect("upsert");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         store.panes.known.insert(
             row.id.to_string(),
             Probe {
@@ -2705,7 +2224,7 @@ mod tests {
     fn a_block_the_pane_printed_past_stops_being_drawn() {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         let database = Database::open(temp.path()).expect("open store connection");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "crewmate".into(),
             agent: "zsh".into(),
@@ -2724,7 +2243,11 @@ mod tests {
         };
         database.upsert_session(&row).expect("upsert");
         database.set_hook_state(row.id, "blocked").expect("signal");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         store.refresh();
         let id = row.id.to_string();
         assert_eq!(status_of(&store, &id), SessionState::Blocked);
@@ -2736,7 +2259,7 @@ mod tests {
 
         // Age the edge to what the captain saw: stamped 2547s ago, and the
         // pane printed all the way to 17s ago.
-        let stamped = crate::sync::current_time_millis() as i64 - 2_547_000;
+        let stamped = crate::storage::current_time_millis() as i64 - 2_547_000;
         store.hook_state_at.insert(id.clone(), stamped);
 
         assert_eq!(store.apply_output_quiescence(|_| Some(17_000)), 1);
@@ -2790,7 +2313,7 @@ mod tests {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         let database = Database::open(temp.path()).expect("db");
         let driver = Database::open(temp.path()).expect("second connection");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "codex-pane".into(),
             agent: agent.into(),
@@ -2809,7 +2332,11 @@ mod tests {
         };
         database.upsert_session(&row).expect("persist");
         database.set_hook_state(row.id, "idle").expect("idle");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         let (registry, warnings) = crate::agent::agent_config::parse_for_reload(
             "[[agents]]\nname='codex'\ncommand='codex'\n[[agents]]\nname='codex-variant'\nextends='codex'\n",
         )
@@ -2855,7 +2382,7 @@ mod tests {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         let database = Database::open(temp.path()).expect("db");
         let driver = Database::open(temp.path()).expect("second connection");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "remote-codex".into(),
             agent: "codex".into(),
@@ -2876,7 +2403,7 @@ mod tests {
         database.set_hook_state(row.id, "working").expect("working");
         // A future stamp also models repeated reports within one millisecond:
         // set_hook_state keeps each stamp distinct even when the clock has not moved.
-        let future = crate::sync::current_time_millis() as i64 + 60_000;
+        let future = crate::storage::current_time_millis() as i64 + 60_000;
         database
             .conn_ref()
             .execute(
@@ -2884,7 +2411,11 @@ mod tests {
                 rusqlite::params![future, row.id.to_string()],
             )
             .expect("seed later stamp");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         assert_eq!(
             store.apply_hook_states(
                 vec![("ssh:fixture:tmux".into(), "%7".into(), "idle".into())],
@@ -2904,6 +2435,9 @@ mod tests {
             None,
             "the report Enter superseded survived its retirement"
         );
+        // Nor may the hook write's late answer show it again.
+        assert_eq!(store.current().session(&id).unwrap().hook_state, None);
+        assert_eq!(status_of(&store, &id), SessionState::Running);
     }
 
     /// The local path: an agent's own `thurbox-cli session signal` writes the
@@ -2918,7 +2452,7 @@ mod tests {
         let path = temp.path();
 
         let database = Database::open(path).expect("open store connection");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "shell".into(),
             agent: "zsh".into(),
@@ -2936,7 +2470,11 @@ mod tests {
             key: None,
         };
         database.upsert_session(&row).expect("upsert");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
 
         store.panes.known.insert(
             row.id.to_string(),
@@ -3005,7 +2543,7 @@ mod tests {
     ) -> (tempfile::NamedTempFile, Database, SnapshotStore, String) {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         let database = Database::open(temp.path()).expect("db");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "finished".into(),
             agent: "claude".into(),
@@ -3025,7 +2563,11 @@ mod tests {
         database.upsert_session(&row).expect("persist");
         database.set_hook_state(row.id, state).expect("hook state");
         let driver = Database::open(temp.path()).expect("second connection");
-        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         (temp, driver, store, row.id.to_string())
     }
 
@@ -3246,7 +2788,11 @@ mod tests {
     #[test]
     fn idle_clock_does_not_invalidate_snapshot_rows() {
         let database = Database::open_in_memory().unwrap();
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         store.refresh();
         let version = store.version();
         store.current.taken_at_ms = 0;

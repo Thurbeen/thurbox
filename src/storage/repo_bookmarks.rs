@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::Database;
 

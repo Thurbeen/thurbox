@@ -4,9 +4,10 @@ use std::path::PathBuf;
 
 use rusqlite::{params, OptionalExtension};
 
+use super::current_time_millis;
 use crate::session::background_work::ReportFrom;
 use crate::session::SessionId;
-use crate::sync::{current_time_millis, SharedSession, SharedWorktree};
+use crate::session::{SharedSession, SharedWorktree};
 
 use super::audit::{AuditAction, EntityType};
 use super::session_events::{EventReason, SessionEventKind};
@@ -37,6 +38,9 @@ pub struct SessionFacts {
     /// Which agent — what the hook-coverage assessment is decided from.
     pub agent: String,
     pub backend_id: String,
+    /// The route the row runs on (`local-tmux`, `ssh:box:tmux`, …) — what says
+    /// whose host verdict applies to it.
+    pub backend_type: String,
     /// Parked by `session stop`.
     pub stopped: bool,
     /// Epoch ms an interface stamped when the user moved focus off a finished
@@ -52,7 +56,8 @@ pub struct SessionFacts {
 /// The columns [`SessionFacts`] is read from, and the launch-failure meta
 /// beside them.
 const SESSION_FACTS: &str =
-    "SELECT s.id, s.name, s.agent, s.backend_id, s.stopped_at, s.seen_at, m.value FROM sessions s";
+    "SELECT s.id, s.name, s.agent, s.backend_id, s.stopped_at, s.seen_at, m.value, s.backend_type \
+     FROM sessions s";
 const FACTS_FAILURE_JOIN: &str = "LEFT JOIN session_meta m ON m.session_id = s.id \
      AND m.key = 'thurbox.launch_failure'";
 
@@ -1307,6 +1312,7 @@ impl Database {
                     name: row.get(1)?,
                     agent: row.get(2)?,
                     backend_id: row.get(3)?,
+                    backend_type: row.get(7)?,
                     stopped: row.get::<_, Option<i64>>(4)?.is_some(),
                     seen_at: row.get(5)?,
                     launch_failure: None,
@@ -1664,26 +1670,8 @@ impl Database {
     /// would see a transition that did not happen.
     pub fn set_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<bool> {
         Ok(self
-            .write_hook_state(id, state, ReportFrom::Agent, None, false)?
+            .report_hook_state(id, state, ReportFrom::Agent, None)?
             .is_some())
-    }
-
-    /// [`Self::set_hook_state`] as `session signal` makes it: `from` says
-    /// whether the report started a turn or came from sub-work. Returns the word
-    /// stored, which the sub-work in flight can make differ from the one
-    /// reported — a `done` with work still running stores `background` (see
-    /// [`crate::session::background_work::settle_report`]) — or `None` when no
-    /// row took it. `stop` is the agent's `Stop` payload, read for a `done`.
-    pub fn signal_hook_state(
-        &self,
-        id: SessionId,
-        state: &str,
-        from: ReportFrom<'_>,
-        stop: Option<&crate::session::background_work::StopReport>,
-    ) -> rusqlite::Result<Option<String>> {
-        Ok(self
-            .write_hook_state(id, state, from, stop, false)?
-            .map(|written| written.1))
     }
 
     /// Take an idle claim about the turn that ended last (`session signal
@@ -1794,37 +1782,35 @@ impl Database {
         Ok((Some(state.to_string()), true))
     }
 
-    /// [`Self::set_hook_state`] for a report that is news only as a *change*:
-    /// a state the row already holds is left alone, stamp and all, which is
-    /// what keeps a re-delivered `done` the user acknowledged from becoming
-    /// unseen again. Decided under the write lock, so a writer that got there
-    /// first is what it is decided against. Returns the stamp written, or
-    /// `None` when nothing was.
-    ///
-    /// What is read back from a backend's status channel lands here — the
-    /// interface's drain and the heartbeat's status poll alike — read as a
-    /// [`ReportFrom::Echo`]: a late `background` for work that has all ended
-    /// is refused rather than written back over the `done` its end stored.
-    pub fn report_hook_state(&self, id: SessionId, state: &str) -> rusqlite::Result<Option<i64>> {
-        Ok(self
-            .write_hook_state(id, state, ReportFrom::Echo, None, true)?
-            .map(|written| written.0))
-    }
-
     /// The one write behind every hook report, returning the stamp and the
-    /// word stored. The sub-work in flight is settled in the same transaction
-    /// as the state it decides, so a report and a work edge racing each other
-    /// are each judged against what the other wrote.
-    fn write_hook_state(
+    /// word stored — which the sub-work in flight can make differ from the one
+    /// reported: a `done` with work still running stores `background` (see
+    /// [`crate::session::background_work::settle_report`]). `None` when no row
+    /// took it. A hook report reaches it through `session_ops::signals::report`,
+    /// which allow-lists the word first.
+    ///
+    /// The sub-work in flight is settled in the same transaction as the state
+    /// it decides, so a report and a work edge racing each other are each
+    /// judged against what the other wrote.
+    ///
+    /// A [`ReportFrom::Echo`] — a word read back from a backend's status
+    /// channel — is news only as a *change*: a state the row already holds is
+    /// left alone, stamp and all, which is what keeps a re-delivered `done` the
+    /// user acknowledged from becoming unseen again. Decided under the write
+    /// lock, so a writer that got there first is what it is decided against.
+    /// It is also read in the order the writers published rather than stored:
+    /// a late `background` for work that has all ended is refused rather than
+    /// written back over the `done` its end stored.
+    pub fn report_hook_state(
         &self,
         id: SessionId,
         reported: &str,
         from: ReportFrom<'_>,
         stop: Option<&crate::session::background_work::StopReport>,
-        only_a_change: bool,
     ) -> rusqlite::Result<Option<(i64, String)>> {
         use crate::session::background_work::{settle_report, WorkRecord};
 
+        let only_a_change = matches!(from, ReportFrom::Echo);
         let tx = self.write_transaction()?;
         let id_str = id.to_string();
 
@@ -1921,6 +1907,51 @@ impl Database {
             Some("name"),
             Some(&before),
             Some(name),
+        )?;
+        self.record_session_event(
+            id,
+            SessionEventKind::Changed,
+            EventReason::Updated,
+            None,
+            None,
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Give an active session a new agent conversation id — what `session
+    /// restart --fresh` launches the agent on. A targeted write like
+    /// [`Self::rename_session`], so a deleted row stays deleted. Returns whether
+    /// a row took it.
+    pub fn set_agent_session_id(
+        &self,
+        id: SessionId,
+        agent_session_id: &str,
+    ) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let id_str = id.to_string();
+        let Some(before) = self
+            .conn
+            .query_row(
+                "SELECT agent_session_id FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
+                params![id_str],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+        else {
+            return Ok(false);
+        };
+        self.conn.execute(
+            "UPDATE sessions SET agent_session_id = ?1, updated_at = ?2 WHERE id = ?3",
+            params![agent_session_id, current_time_millis() as i64, id_str],
+        )?;
+        self.log_audit(
+            EntityType::Session,
+            &id_str,
+            AuditAction::Updated,
+            Some("agent_session_id"),
+            before.as_deref(),
+            Some(agent_session_id),
         )?;
         self.record_session_event(
             id,

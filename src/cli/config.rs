@@ -29,7 +29,11 @@ pub enum Action {
     AcceptInterface,
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
+pub fn run(
+    action: Action,
+    db: &Database,
+    settings: &crate::session::settings::Settings,
+) -> Result<CommandOutput, String> {
     match action {
         Action::Validate => {
             let (report, failed) = validate();
@@ -46,7 +50,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
             }
         }
         Action::Show => {
-            let report = show(db)?;
+            let report = show(db, settings)?;
             let human = render_show(&report);
             Ok(CommandOutput::new(report, human))
         }
@@ -79,7 +83,7 @@ fn validate_toml<T: serde::de::DeserializeOwned>(
     label: &str,
 ) -> (Value, bool) {
     validate_file(path, |contents| {
-        crate::agent::agent_config::parse_toml_reporting_unknown::<T>(contents, label)
+        crate::config::file::parse_toml_reporting_unknown::<T>(contents, label)
             .map(|(_, warnings)| warnings)
             .map_err(|e| e.to_string())
     })
@@ -157,19 +161,19 @@ fn validate() -> (Value, Vec<String>) {
     );
     // Through the loader's own parse, so an entry the load refuses — a host
     // name holding `:` — fails validation rather than vanishing silently.
-    let (hosts, hosts_ok) = validate_file(crate::agent::host_config::hosts_config_path(), |c| {
-        crate::agent::host_config::parse_hosts(c).map(|(_, warnings)| warnings)
+    let (hosts, hosts_ok) = validate_file(crate::config::hosts::hosts_config_path(), |c| {
+        crate::config::hosts::parse_hosts(c).map(|(_, warnings)| warnings)
     });
     let (settings, settings_ok) = validate_toml::<crate::session::settings::Settings>(
-        crate::agent::settings_config::settings_config_path(),
+        crate::config::settings::settings_config_path(),
         "settings.toml",
     );
-    let (themes, themes_ok) = validate_toml::<crate::session::theme_config::ThemesFile>(
-        crate::agent::themes_config::themes_config_path(),
+    let (themes, themes_ok) = validate_toml::<crate::theme::ThemesFile>(
+        crate::config::themes::themes_config_path(),
         "themes.toml",
     );
     let (hooks, hooks_ok) = validate_toml::<crate::session::HooksFile>(
-        crate::agent::hooks_config::hooks_config_path(),
+        crate::config::hooks::hooks_config_path(),
         "hooks.toml",
     );
     let (ui_json, ui_ok) = validate_ui_json();
@@ -330,15 +334,14 @@ fn render_show(report: &Value) -> String {
     sections.join("\n\n")
 }
 
-fn show(db: &Database) -> Result<Value, String> {
+fn show(db: &Database, settings: &crate::session::settings::Settings) -> Result<Value, String> {
     let agents = crate::agent::agent_config::load_or_seed();
     // The *effective* host set: configured SSH/WSL hosts plus auto-discovered
     // WSL distros — matching what `--host` and the TUI picker actually offer
     // (`config validate` stays file-only).
-    let hosts = crate::agent::host_config::load_all();
-    let settings = crate::session::settings::global();
-    let (custom_themes, _) = crate::agent::themes_config::load_or_seed_with_warnings();
-    let (hooks, _) = crate::agent::hooks_config::load_or_seed_with_warnings();
+    let hosts = crate::config::hosts::load_all();
+    let (custom_themes, _) = crate::config::themes::load_or_seed_with_warnings();
+    let (hooks, _) = crate::config::hooks::load_or_seed_with_warnings();
 
     // Editor resolution mirrors the TUI's Ctrl+O chain: DB → $VISUAL → $EDITOR.
     let (editor, editor_source) = resolve_editor(db);
@@ -349,13 +352,13 @@ fn show(db: &Database) -> Result<Value, String> {
         "paths": {
             "agents_toml": crate::agent::agent_config::agents_config_path()
                 .map(|p| p.display().to_string()),
-            "hosts_toml": crate::agent::host_config::hosts_config_path()
+            "hosts_toml": crate::config::hosts::hosts_config_path()
                 .map(|p| p.display().to_string()),
-            "settings_toml": crate::agent::settings_config::settings_config_path()
+            "settings_toml": crate::config::settings::settings_config_path()
                 .map(|p| p.display().to_string()),
-            "themes_toml": crate::agent::themes_config::themes_config_path()
+            "themes_toml": crate::config::themes::themes_config_path()
                 .map(|p| p.display().to_string()),
-            "hooks_toml": crate::agent::hooks_config::hooks_config_path()
+            "hooks_toml": crate::config::hooks::hooks_config_path()
                 .map(|p| p.display().to_string()),
             // The interface is config like the rest of it, and it was the one
             // thing this command could not tell you the location of — which is
@@ -551,7 +554,7 @@ mod tests {
     fn validate_fails_on_unknown_feature_flag() {
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
-        let path = crate::agent::settings_config::settings_config_path().unwrap();
+        let path = crate::config::settings::settings_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "[features]\nbogus = true\n").unwrap();
 
@@ -566,7 +569,7 @@ mod tests {
     fn validate_fails_on_a_misspelt_hook_field_naming_the_file() {
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
-        let path = crate::agent::hooks_config::hooks_config_path().unwrap();
+        let path = crate::config::hooks::hooks_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -590,7 +593,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let _g = TestPathGuard::new(tmp.path());
         let db = Database::open_in_memory().unwrap();
-        let path = crate::agent::hooks_config::hooks_config_path().unwrap();
+        let path = crate::config::hooks::hooks_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -599,7 +602,7 @@ mod tests {
         )
         .unwrap();
 
-        let v = show(&db).unwrap();
+        let v = show(&db, &Default::default()).unwrap();
         assert_eq!(v["hooks"][0]["event"], json!("session.pre_create"));
         assert_eq!(v["hooks"][0]["command"], json!("check"));
         assert_eq!(v["hooks"][1]["timeout_secs"], json!(5));
@@ -616,7 +619,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         db.set_editor_command("code --wait").unwrap();
 
-        let v = show(&db).unwrap();
+        let v = show(&db, &Default::default()).unwrap();
         assert_eq!(v["editor"]["command"], json!("code --wait"));
         assert_eq!(v["editor"]["source"], json!("database (editor_command)"));
         assert!(v["settings"]["scrollback_lines"].is_number());

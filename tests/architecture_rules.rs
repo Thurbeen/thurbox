@@ -56,14 +56,14 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
-    // Coding-agent definitions and their config: agents.toml, extensions,
-    // hooks, settings, themes, preflight, self-update. Never a session
-    // backend: those live in their own nodes below, and a backend may read an
-    // agent's config, so the reverse would be a cycle.
+    // Coding-agent definitions: the agents.toml registry, extensions,
+    // preflight and the host-path translation every launch goes through.
+    // Never a session backend: those live in their own nodes below, and a
+    // backend may read an agent's config, so the reverse would be a cycle.
     //
     // Every file is a node of its own (`SUBMODULE_GOVERNED`), so a grant names
-    // the config it reads and a file added here is reachable by nobody until
-    // that is decided. The root only re-exports the provider types.
+    // what it reads and a file added here is reachable by nobody until that is
+    // decided. The root only re-exports the provider types.
     ModuleRules {
         name: "agent",
         allowed: &["agent::generic", "agent::provider"],
@@ -71,31 +71,17 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "agent::agent_config",
-        allowed: &["session", "paths", "shell"],
+        allowed: &["session", "shell", "config::file"],
         allowed_path_only: &[],
     },
     ModuleRules {
         name: "agent::extension_config",
-        allowed: &["session", "paths", "agent::agent_config"],
+        allowed: &["session", "paths", "agent::agent_config", "config::file"],
         allowed_path_only: &[],
     },
     ModuleRules {
         name: "agent::generic",
         allowed: &["session", "agent::provider"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::hooks_config",
-        allowed: &["session", "paths", "agent::agent_config"],
-        allowed_path_only: &[],
-    },
-    // hosts.toml, and the cached registry of it every process shares. Its own
-    // node so that reading global host config is a visible decision: the
-    // backend contract and the pure registry must not. `shell` for the one
-    // `wsl.exe` constructor every launch goes through (`shell::wsl_exe`).
-    ModuleRules {
-        name: "agent::host_config",
-        allowed: &["session", "paths", "shell", "agent::agent_config"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -115,7 +101,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "agent::preflight",
-        allowed: &["session", "paths", "agent::agent_config"],
+        allowed: &["session", "paths", "shell", "agent::agent_config"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -124,33 +110,68 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::self_update",
+        name: "agent::toml_merge",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    // thurbox's own config files beside config.toml. `config::file` is the one
+    // loader: where a file lives, seeding it, parsing it with unknown keys
+    // reported, and writing it back atomically. Each file is a node of its own
+    // so a consumer names the config it reads; none reaches another, so a
+    // file's degradation is its own.
+    ModuleRules {
+        name: "config",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "config::file",
+        allowed: &["paths"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "config::hooks",
+        allowed: &["session", "config::file"],
+        allowed_path_only: &[],
+    },
+    // hosts.toml, and the cached registry of it every process shares. Its own
+    // node so that reading global host config is a visible decision: the
+    // backend contract and the pure registry must not. `shell` for the one
+    // `wsl.exe` constructor every launch goes through (`shell::wsl_exe`).
+    ModuleRules {
+        name: "config::hosts",
+        allowed: &["session", "paths", "shell", "config::file"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "config::settings",
+        allowed: &["session", "config::file"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "config::themes",
+        allowed: &["theme", "config::file"],
+        allowed_path_only: &[],
+    },
+    // Self-update: whether a newer release exists, and installing it.
+    ModuleRules {
+        name: "update",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "update::self_update",
         allowed: &[
             "session",
             "paths",
             "shell",
             "agent::extension_config",
-            "agent::version_check",
+            "update::version_check",
         ],
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::settings_config",
-        allowed: &["session", "paths", "agent::agent_config"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::themes_config",
-        allowed: &["session", "paths", "agent::agent_config"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::toml_merge",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::version_check",
+        name: "update::version_check",
         allowed: &["session", "paths", "agent::extension_config"],
         allowed_path_only: &[],
     },
@@ -214,12 +235,12 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[
             "session",
             "shell",
-            "agent::host_config",
             "backend::contract",
-            "backend::registry",
-            "backend::tmux",
             "backend::psmux",
+            "backend::registry",
             "backend::rmux",
+            "backend::tmux",
+            "config::hosts",
         ],
         allowed_path_only: &[],
     },
@@ -318,12 +339,7 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "storage",
-        allowed: &["session", "sync", "paths"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "sync",
-        allowed: &["session"],
+        allowed: &["session", "paths"],
         allowed_path_only: &[],
     },
     // thurbox's own OTLP export (ADR-37): reads the event log and the cursor
@@ -331,6 +347,13 @@ const MODULE_RULES: &[ModuleRules] = &[
     // session counts it is handed are assessed by its caller, `cli`. The
     // interface's diagnostic-log bridge (ADR-38) is built by `coordinator`,
     // which hands it the identity it exports under.
+    // The theme presets and the user's overrides, in `ratatui` colours: data,
+    // but rendering data, which `session_is_pure_data` keeps out of the sink.
+    ModuleRules {
+        name: "theme",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
     ModuleRules {
         name: "telemetry",
         allowed: &["session", "storage"],
@@ -344,33 +367,25 @@ const MODULE_RULES: &[ModuleRules] = &[
     // home (`shell::posix_quote` / `powershell_quote`).
     ModuleRules {
         name: "session_ops",
-        allowed: &[
-            "session",
-            "storage",
-            "git",
-            "sync",
-            "paths",
-            "workspace",
-            "shell",
-        ],
+        allowed: &["session", "storage", "git", "paths", "workspace", "shell"],
         allowed_path_only: &[
             "agent::agent_config",
             "agent::extension_config",
             "agent::generic",
-            "agent::hooks_config",
-            "agent::host_config",
             "agent::host_path",
             "agent::json_merge",
             "agent::preflight",
             "agent::provider",
-            "agent::self_update",
-            "agent::settings_config",
             "agent::toml_merge",
-            "agent::version_check",
             "backend::contract",
             "backend::identity",
             "backend::instance",
             "backend::registry",
+            "config::hooks",
+            "config::hosts",
+            "config::settings",
+            "update::self_update",
+            "update::version_check",
         ],
     },
     // Thin headless dispatch — must not depend on TUI or the live backend.
@@ -380,11 +395,11 @@ const MODULE_RULES: &[ModuleRules] = &[
             "session",
             "storage",
             "session_ops",
-            "sync",
             "paths",
             "notifications",
             "ui_control",
             "telemetry",
+            "theme",
         ],
         // `kernel` for the two subcommands that drive the *interface's* own
         // files — `plugin` (`check` loads the real host: the failures worth
@@ -397,25 +412,26 @@ const MODULE_RULES: &[ModuleRules] = &[
         // Path-only, like the agent config, so the crossing stays visible at each call
         // site.
         allowed_path_only: &[
+            "kernel",
             "agent::agent_config",
             "agent::extension_config",
-            "agent::hooks_config",
-            "agent::host_config",
             "agent::preflight",
-            "agent::self_update",
-            "agent::settings_config",
-            "agent::themes_config",
-            "agent::version_check",
             "backend::contract",
             "backend::instance",
             "backend::registry",
-            "kernel",
+            "config::file",
+            "config::hooks",
+            "config::hosts",
+            "config::settings",
+            "config::themes",
+            "update::self_update",
+            "update::version_check",
         ],
     },
     // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
-    // session engine to build the snapshot plugins render from (`storage` +
-    // `sync` for the rows, `session` for the types, `paths` for the DB and
-    // plugin directories).
+    // session engine to build the snapshot plugins render from (`storage` for
+    // the rows, `session` for the types, `paths` for the DB and plugin
+    // directories).
     //
     // `git` IS allowed, and the rule is about *where*: the worker-backed stores
     // (`diff`, `repos`, `packages`, `command`) shell out to it off-thread, which
@@ -431,12 +447,12 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[
             "session",
             "storage",
-            "sync",
             "paths",
             "session_ops",
             "git",
             "notifications",
             "shell",
+            "theme",
         ],
         // Live agent terminals: `kernel::terminal` adopts a session's real pane
         // through the backend contract and paints its vt100 screen. All are
@@ -446,17 +462,17 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[
             "agent::agent_config",
             "agent::extension_config",
-            "agent::host_config",
             "agent::host_path",
             "agent::preflight",
-            "agent::self_update",
-            "agent::settings_config",
-            "agent::themes_config",
-            "agent::version_check",
             "backend::contract",
             "backend::identity",
             "backend::pane",
             "backend::registry",
+            "config::hosts",
+            "config::settings",
+            "config::themes",
+            "update::self_update",
+            "update::version_check",
         ],
     },
     // Leaf utilities.
@@ -491,11 +507,6 @@ const MODULE_RULES: &[ModuleRules] = &[
     ModuleRules {
         name: "coordinator",
         allowed: &[
-            "agent::input",
-            "agent::settings_config",
-            "backend::instance",
-            "backend::output_wake",
-            "backend::wiring",
             "clipboard",
             "kernel",
             "paths",
@@ -505,6 +516,11 @@ const MODULE_RULES: &[ModuleRules] = &[
             "storage",
             "telemetry",
             "ui_control",
+            "agent::input",
+            "backend::instance",
+            "backend::output_wake",
+            "backend::wiring",
+            "config::settings",
         ],
         allowed_path_only: &[],
     },
@@ -544,7 +560,7 @@ const EXEMPT: &[&str] = &["bin", "lib", "main"];
 /// its own, so a new file there is a decision rather than something its
 /// parent's rule silently covers. An inline `mod x { … }` belongs to the file
 /// that holds it.
-const SUBMODULE_GOVERNED: &[&str] = &["backend", "agent"];
+const SUBMODULE_GOVERNED: &[&str] = &["backend", "agent", "config", "update"];
 
 /// A crossing that breaks a rule today, is known, and is scheduled to go.
 ///
@@ -995,7 +1011,7 @@ const NEUTRAL_FILES: &[&str] = &["session/route.rs", "backend/contract.rs"];
 const HOST_OR_MUX_SPECIFIC: &[&str] = &[
     "shell",
     "session::host_def",
-    "agent::host_config",
+    "config::hosts",
     "backend::tmux",
     "backend::psmux",
     "backend::tmux_compat",
@@ -1177,7 +1193,11 @@ fn stripping_keeps_every_line() {
 /// `session_ops/delivery.rs`, which `session send` shares for the text it
 /// leaves in the mailbox (#1468) — and follows every resolved reference into a
 /// sibling `cli` file, so a helper that later grows a pane write is caught too.
-/// `session_ops::delivery` is the one part of `session_ops` the path may name.
+/// `session_ops::delivery` is the one part of `session_ops` the path may name,
+/// save the delegation a session on a sharing host takes (ADR-24, #1643): its
+/// `Executor` and `host_cli`, which run `thurbox-cli message send` on the host
+/// — this same path, under this same rule in the host's binary. They are not
+/// followed: what they reach is the transport to the host, not its panes.
 /// A reference is judged by the node it resolves to, so a multiplexer item
 /// re-exported under another name still counts. `cli/mod.rs` is not followed:
 /// the path reaches it only for `CommandError`, and it is the dispatcher that
@@ -1185,6 +1205,7 @@ fn stripping_keeps_every_line() {
 #[test]
 fn message_delivery_never_reaches_the_multiplexer() {
     const FORBIDDEN: &[&str] = &["agent", "backend", "session_ops", "kernel", "coordinator"];
+    const DELEGATION: &[&str] = &["Executor", "host_cli"];
     let tree = src_tree();
     let references = tree.references(&node_names(MODULE_RULES));
     let root = src_root();
@@ -1207,6 +1228,10 @@ fn message_delivery_never_reaches_the_multiplexer() {
             if let [first, next, ..] = r.path.as_slice() {
                 if first == "session_ops" && next == "delivery" {
                     queue.push(delivery.clone());
+                    continue;
+                }
+                if first == "session_ops" && file == delivery && DELEGATION.contains(&next.as_str())
+                {
                     continue;
                 }
                 if first == "cli" && cli.join(format!("{next}.rs")).is_file() {
@@ -1531,24 +1556,24 @@ fn the_transitional_table_fails_on_a_new_and_on_a_stale_crossing() {
 }
 
 /// The declared graph is checked for what it permits, not what is used:
-/// `storage` and `sync` allowed to reach each other are a cycle.
+/// `storage` and `telemetry` allowed to reach each other are a cycle.
 #[test]
 fn the_declared_check_sees_a_mutual_allowance() {
     let rules = [
         ModuleRules {
             name: "storage",
-            allowed: &["sync"],
+            allowed: &["telemetry"],
             allowed_path_only: &[],
         },
         ModuleRules {
-            name: "sync",
+            name: "telemetry",
             allowed: &[],
             allowed_path_only: &["storage"],
         },
     ];
     assert_eq!(
         cycles(&declared_edges(&rules)),
-        vec![vec!["storage".to_string(), "sync".to_string()]]
+        vec![vec!["storage".to_string(), "telemetry".to_string()]]
     );
 }
 
@@ -1575,6 +1600,292 @@ fn the_declared_check_sees_a_mutual_allowance() {
 /// rename.
 ///
 /// This is the check that a wide rename needs and that nothing else provides.
+/// The calls that create or truncate a file in place.
+const IN_PLACE_WRITES: &[&str] = &["fs::write", "fs::copy", "File::create", "OpenOptions::new"];
+
+/// Production calls in one file allowed to write in place, how many, and why.
+/// Everything else a user edits or thurbox reads back goes through
+/// `paths::write_atomically`, which a crash, a full disk or a second writer
+/// cannot leave half-written. The count is exact, so a further write in an
+/// allowed file needs its own reason.
+struct InPlaceWrite {
+    file: &'static str,
+    call: &'static str,
+    sites: usize,
+    why: &'static str,
+}
+
+const IN_PLACE_ALLOWED: &[InPlaceWrite] = &[
+    InPlaceWrite {
+        file: "update/self_update.rs",
+        call: "fs::copy",
+        sites: 1,
+        why: "copies the new binary onto a staged .new file that is renamed into place",
+    },
+    InPlaceWrite {
+        file: "update/version_check.rs",
+        call: "fs::write",
+        sites: 1,
+        why: "a cache: one that fails to parse is fetched again",
+    },
+    InPlaceWrite {
+        file: "clipboard.rs",
+        call: "OpenOptions::new",
+        sites: 1,
+        why: "opens /dev/tty to send an OSC 52 sequence, not a file",
+    },
+    InPlaceWrite {
+        file: "session_ops/automations/tick_log.rs",
+        call: "OpenOptions::new",
+        sites: 1,
+        why: "appends a line to the heartbeat log",
+    },
+    InPlaceWrite {
+        file: "ui_control.rs",
+        call: "OpenOptions::new",
+        sites: 2,
+        why: "appends to the control audit log, on Unix and on Windows",
+    },
+    InPlaceWrite {
+        file: "ui_control.rs",
+        call: "File::create",
+        sites: 1,
+        why: "creates the empty audit log on Windows so its ACL is set before the first append",
+    },
+    InPlaceWrite {
+        file: "ui_control.rs",
+        call: "fs::write",
+        sites: 2,
+        why: "stages the instance file under a private mode (Unix) or owner ACL (Windows), then renames it",
+    },
+];
+
+/// What [`files_thurbox_reads_back_are_written_atomically`] reports: every site
+/// of a call no entry allows or that outnumbers its entry, and every entry that
+/// outnumbers what is left of it. Files are compared with `/` separators, as
+/// the entries spell them, so the rule holds on Windows too.
+fn unlisted_in_place_writes(
+    found: &[(PathBuf, usize, &str)],
+    allowed: &[InPlaceWrite],
+) -> Vec<String> {
+    let mut sites: BTreeMap<(String, &str), Vec<usize>> = BTreeMap::new();
+    for (file, line, call) in found {
+        sites
+            .entry((file.to_string_lossy().replace('\\', "/"), *call))
+            .or_default()
+            .push(*line);
+    }
+    let mut problems = Vec::new();
+    for ((file, call), lines) in &sites {
+        let listed = allowed
+            .iter()
+            .find(|a| a.file == file && a.call == *call)
+            .map_or(0, |a| a.sites);
+        if lines.len() > listed {
+            for line in lines {
+                problems.push(format!(
+                    "{file}:{line} {call} ({} found, {listed} allowed)",
+                    lines.len()
+                ));
+            }
+        }
+    }
+    for a in allowed {
+        let left = sites.get(&(a.file.to_string(), a.call)).map_or(0, Vec::len);
+        if left < a.sites {
+            problems.push(format!(
+                "{} {} is allowed {} but {left} remain ({})",
+                a.file, a.call, a.sites, a.why
+            ));
+        }
+    }
+    problems
+}
+
+/// Production code outside `paths` writes no file in place unless
+/// [`IN_PLACE_ALLOWED`] says why (#1634): a truncated `agents.toml`, manifest
+/// or plugin lock is a broken install, while a cut log line or a stale cache
+/// is not. Every entry must still match, so a write that moves to the atomic
+/// writer takes its exception with it.
+#[test]
+fn files_thurbox_reads_back_are_written_atomically() {
+    let found: Vec<_> = src_tree()
+        .production_calls(IN_PLACE_WRITES)
+        .into_iter()
+        .filter(|(file, _, _)| !file.starts_with("paths"))
+        .collect();
+    let problems = unlisted_in_place_writes(&found, IN_PLACE_ALLOWED);
+    assert!(
+        problems.is_empty(),
+        "write these through paths::write_atomically, or correct IN_PLACE_ALLOWED with why:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// The external crates `session` may name: data formats and value types. A
+/// palette in `ratatui` colours is a rendering decision, a `tokio` handle or a
+/// `rusqlite` row is someone else's runtime, and none of them belongs in the
+/// sink every other node depends on. `architecture_rules` resolves only
+/// crate-internal edges, so this is how an external one is governed (#1477).
+const SESSION_CRATES: &[&str] = &[
+    "chrono",
+    "chrono_tz",
+    "cron",
+    "serde",
+    "serde_json",
+    "toml",
+    "toml_edit",
+    "unicode_width",
+    "uuid",
+];
+
+/// Process state `session` may not hold, in its tests either: a value it
+/// answers from somewhere other than its arguments makes the sink an owner of
+/// the process. Settings are passed in by whoever loaded them, the local
+/// platform's simulation lives with the code that decides by it, and an
+/// environment variable is read by the caller (#1477).
+const SESSION_STATE: &[&str] = &["thread_local!", "OnceLock", "LazyLock", "static mut"];
+const SESSION_ENV: &[&str] = &["env::"];
+
+/// Every crate `Cargo.toml` depends on, spelled as a path names it.
+fn dependency_crates() -> Vec<String> {
+    let manifest: toml::Table =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("read Cargo.toml")
+            .parse()
+            .expect("parse Cargo.toml");
+    let mut tables = vec![manifest.get("dependencies")];
+    if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
+        tables.extend(targets.values().map(|t| t.get("dependencies")));
+    }
+    let mut crates: Vec<String> = tables
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table)
+        .flat_map(|t| t.keys().map(|k| k.replace('-', "_")))
+        .collect();
+    crates.sort();
+    crates.dedup();
+    crates
+}
+
+/// Each site in `session`, as `dir/file.rs:line what` with `/` on every
+/// platform, so a fixture's expectation reads the same on Windows.
+fn in_session(found: Vec<(PathBuf, usize, &str)>) -> Vec<String> {
+    found
+        .into_iter()
+        .filter(|(file, _, _)| file.starts_with("session"))
+        .map(|(file, line, what)| {
+            let file: Vec<_> = file.iter().map(|part| part.to_string_lossy()).collect();
+            format!("{}:{line} {what}", file.join("/"))
+        })
+        .collect()
+}
+
+/// What keeps `session` from being pure data in `tree`: a crate of `foreign`
+/// named by path or imported under any name, process state, or an environment
+/// read.
+fn session_impurities(tree: &Tree, foreign: &[&str]) -> Vec<String> {
+    let mut problems = in_session(tree.mentions(foreign, "::", true));
+    problems.extend(in_session(tree.imports(foreign, true)));
+    problems.extend(in_session(tree.mentions(SESSION_STATE, "", true)));
+    problems.extend(in_session(tree.mentions(SESSION_ENV, "", false)));
+    problems.sort();
+    problems.dedup();
+    problems
+}
+
+/// `session` is the dependency sink and documented as pure data: it names
+/// only the external crates [`SESSION_CRATES`] lists, holds no process state
+/// and reads no environment.
+#[test]
+fn session_is_pure_data() {
+    let crates = dependency_crates();
+    assert!(
+        crates.iter().any(|c| c == "ratatui"),
+        "read the manifest: {crates:?}"
+    );
+    let foreign: Vec<&str> = crates
+        .iter()
+        .map(String::as_str)
+        .filter(|c| !SESSION_CRATES.contains(c))
+        .collect();
+    let problems = session_impurities(src_tree(), &foreign);
+    assert!(
+        problems.is_empty(),
+        "session must stay pure data — move these out, or extend SESSION_CRATES with why:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// A crate imported under another name is still that crate: `use ratatui as
+/// rendering;` leaves no `ratatui::` behind for the path scan to find.
+#[test]
+fn session_purity_sees_a_renamed_import() {
+    assert_eq!(
+        session_impurities(&fixture("session_imports"), &["ratatui"]),
+        [
+            "session/mod.rs:1 ratatui",
+            "session/mod.rs:8 ratatui",
+            "session/mod.rs:9 ratatui"
+        ]
+    );
+}
+
+/// The scan behind [`session_is_pure_data`] counts `#[cfg(test)]` code only
+/// when asked to: state a module's tests hold is still state that module holds.
+#[test]
+fn the_mention_scan_takes_test_code_only_when_asked() {
+    let tree = fixture("in_place_writes");
+    let sites = |with_tests| -> Vec<String> {
+        tree.mentions(&["fs::write"], "(", with_tests)
+            .iter()
+            .map(|(file, line, _)| format!("{}:{line}", file.display()))
+            .collect()
+    };
+    assert_eq!(sites(false), ["config.rs:5", "config.rs:9"]);
+    assert_eq!(sites(true), ["config.rs:5", "config.rs:9", "config.rs:15"]);
+}
+
+/// The scan behind [`files_thurbox_reads_back_are_written_atomically`] sees the
+/// production writes and none of their lookalikes: a comment, a string,
+/// another module's `write`, a `#[cfg(test)]` module inline or in a file of its
+/// own. An allowance covers exactly its count: one write past it fails, and one
+/// short of it is stale.
+#[test]
+fn the_in_place_write_scan_sees_only_production_calls() {
+    let found = fixture("in_place_writes").production_calls(IN_PLACE_WRITES);
+    let sites: Vec<_> = found
+        .iter()
+        .map(|(file, line, call)| format!("{}:{line} {call}", file.display()))
+        .collect();
+    assert_eq!(sites, ["config.rs:5 fs::write", "config.rs:9 fs::write"]);
+
+    let allow = |sites| {
+        [InPlaceWrite {
+            file: "config.rs",
+            call: "fs::write",
+            sites,
+            why: "fixture",
+        }]
+    };
+    assert_eq!(
+        unlisted_in_place_writes(&found, &allow(2)),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        unlisted_in_place_writes(&found, &allow(1)),
+        [
+            "config.rs:5 fs::write (2 found, 1 allowed)",
+            "config.rs:9 fs::write (2 found, 1 allowed)"
+        ]
+    );
+    assert_eq!(
+        unlisted_in_place_writes(&found, &allow(3)),
+        ["config.rs fs::write is allowed 3 but 2 remain (fixture)"]
+    );
+}
+
 #[test]
 fn every_proptest_seed_still_names_a_live_source_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1648,4 +1959,138 @@ fn collect_files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// Where each off-loop job of the kernel's two runtime stores may start a
+/// thread: the directory, and the files under it allowed to name `thread::` in
+/// production code. The store and the paint side never block, so neither
+/// starts one of its own — each worker is a file, and a job that reaches the
+/// world without one shows up here rather than as a frozen frame (#1474,
+/// #1477). A text scan, because `std` is outside the crate graph the resolver
+/// follows.
+const KERNEL_THREADS: &[(&str, &[&str])] = &[
+    (
+        "kernel/snapshot",
+        &[
+            "kernel/snapshot/db.rs",
+            "kernel/snapshot/git.rs",
+            "kernel/snapshot/probe.rs",
+        ],
+    ),
+    (
+        "kernel/terminal",
+        &[
+            "kernel/terminal/attach.rs",
+            "kernel/terminal/discovery.rs",
+            "kernel/terminal/shells.rs",
+        ],
+    ),
+];
+
+/// What one worker alone may reach, resolved through imports and aliases: the
+/// directory, the resolved path the reach starts with, and the one file allowed
+/// to make it. The database is opened and read only by its worker, so a lock
+/// held elsewhere delays a write and never a frame; naming the type to hand a
+/// connection over is not a reach.
+const KERNEL_REACHES: &[(&str, &str, &str)] = &[
+    (
+        "kernel/snapshot",
+        "storage::Database::",
+        "kernel/snapshot/db.rs",
+    ),
+    ("kernel/snapshot", "git::", "kernel/snapshot/git.rs"),
+];
+
+/// `file` relative to `root`, with `/` on every platform.
+fn relative(root: &Path, file: &Path) -> String {
+    let file = file.strip_prefix(root).unwrap_or(file);
+    let parts: Vec<_> = file.iter().map(|p| p.to_string_lossy()).collect();
+    parts.join("/")
+}
+
+/// Every production site breaking [`KERNEL_THREADS`] or [`KERNEL_REACHES`] in
+/// `tree`, as `dir/file.rs:line what`, and every production glob import under
+/// those directories.
+fn misplaced_kernel_work(tree: &Tree) -> Vec<String> {
+    let mut found = Vec::new();
+    for (file, line, needle) in tree.mentions(&["thread::"], "", false) {
+        let file = relative(Path::new(""), &file);
+        let allowed = KERNEL_THREADS
+            .iter()
+            .find(|(dir, _)| file.starts_with(&format!("{dir}/")))
+            .map(|(_, allowed)| *allowed);
+        if allowed.is_some_and(|allowed| !allowed.contains(&file.as_str())) {
+            found.push(format!("{file}:{line} {needle}"));
+        }
+    }
+    // A glob import binds nothing the resolver can follow, so a reach through
+    // one would never reach the check below.
+    for (file, line, _) in tree.mentions(&["*;", "*}"], "", false) {
+        let file = relative(Path::new(""), &file);
+        if KERNEL_THREADS
+            .iter()
+            .any(|(dir, _)| file.starts_with(&format!("{dir}/")))
+        {
+            found.push(format!("{file}:{line} glob import"));
+        }
+    }
+    for reference in tree.references(&["kernel", "git", "storage"]) {
+        if reference.test {
+            continue;
+        }
+        let file = relative(&tree.root, &reference.file);
+        let path = reference.path.join("::");
+        for (dir, reach, allowed) in KERNEL_REACHES {
+            if file.starts_with(&format!("{dir}/")) && path.starts_with(reach) && file != *allowed {
+                found.push(format!("{file}:{} {path}", reference.line));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The snapshot store is split by worker — git stats, pane probes, the
+/// database — and `Terminals` by attach, discovery and paint, so each worker's
+/// reach into the world is in a file of its own and the read model and the
+/// paint path start none.
+#[test]
+fn each_kernel_worker_lives_in_a_file_of_its_own() {
+    let named = KERNEL_THREADS
+        .iter()
+        .flat_map(|(_, allowed)| allowed.iter())
+        .chain(KERNEL_REACHES.iter().map(|(_, _, allowed)| allowed));
+    for file in named {
+        assert!(
+            src_root().join(file).is_file(),
+            "{file} is named in KERNEL_THREADS or KERNEL_REACHES but does not exist"
+        );
+    }
+    let problems = misplaced_kernel_work(src_tree());
+    assert!(
+        problems.is_empty(),
+        "move these into the worker that owns them, or extend KERNEL_THREADS or KERNEL_REACHES \
+         with why:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// The scans behind [`each_kernel_worker_lives_in_a_file_of_its_own`] find a
+/// worker's reach outside its file — through a `Builder`, an alias or a renamed
+/// import too, and the glob import a reach could hide behind — and none of its lookalikes: a comment, a string, test code,
+/// the type named to pass a connection on, or the worker's own file.
+#[test]
+fn the_kernel_worker_scan_sees_only_misplaced_production_reaches() {
+    assert_eq!(
+        misplaced_kernel_work(&fixture("kernel_workers")),
+        [
+            "kernel/snapshot/mod.rs:14 thread::",
+            "kernel/snapshot/mod.rs:15 git::stats",
+            "kernel/snapshot/mod.rs:16 storage::Database::open",
+            "kernel/snapshot/probe.rs:1 glob import",
+            "kernel/terminal/mod.rs:4 thread::",
+            "kernel/terminal/paint.rs:2 thread::",
+        ]
+    );
 }

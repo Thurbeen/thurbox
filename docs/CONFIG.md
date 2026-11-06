@@ -47,8 +47,8 @@ leaves the last good registry in force and reports the error; correcting it is p
 up by the next poll. Existing session records are not changed.
 The `ui/` directory reloads live too, but on a **filesystem watcher**
 (120 ms debounce) rather than a poll, and `F10` forces one. For
-`settings.toml` the flags that apply live are `shell_pane`, `perf_hud`
-and `soft_delete`; the restart-only values stay
+`settings.toml` the values that apply live are the `shell_pane`, `perf_hud`
+and `soft_delete` flags, `[clipboard]` and `[remote]`; the restart-only values stay
 published through a write-once global (so they can't drift mid-frame),
 and the reload toast says when a restart is needed. `hosts.toml` (SSH
 backends register at startup) and `themes.toml` need a restart.
@@ -66,14 +66,34 @@ the panel — set it only by hand-editing `settings.toml`. Hand-editing
 the file (or the panel in another instance) is picked up the same way,
 via the live mtime poll.
 
-TUI saves of `settings.toml`, `ui.json` and `plugin-state.json` stage a complete file beside the
-destination and replace it with one native same-directory rename, so a reader
-never observes a truncated intermediate file and a failed staged write leaves
-the previous decisions intact. On Unix this is `rename`; native Windows uses
-`MoveFileExW` with replacement. An existing config-file symlink is preserved and
-its target is replaced. This protects the process-interruption boundary, not
-storage failure: the staged file and parent directory are not explicitly synced
-to stable storage.
+Every file thurbox writes that a user edits or thurbox reads back — `settings.toml`,
+`ui.json`, `plugin-state.json`, `agents.toml` (and the other seeded config files),
+extension manifests and payloads, the keybindings JSON, the interface's plugin
+lock, spec and bundled files, and the heartbeat's state — is written through
+one writer, `paths::write_atomically`. It stages a complete file beside the
+destination and replaces it with one native same-directory rename, so a reader
+never observes a truncated intermediate file and a failed staged write (a
+crash, a full disk) leaves the previous file intact. The rename is
+`std::fs::rename`, which on Windows replaces even while a reader holds the old
+file open. An existing symlink is preserved and its target is replaced, a
+replaced file keeps its permissions, and a file made read-only is refused
+rather than replaced. This
+protects the process-interruption boundary, not storage failure: the staged
+file and parent directory are not explicitly synced to stable storage.
+`tests/architecture_rules.rs`
+(`files_thurbox_reads_back_are_written_atomically`) fails on any other
+production write, apart from an allow-list of logs, a cache, the control
+socket's privately staged files and the self-update's staged binary.
+
+The config files beside `config.toml` — `agents.toml`, `settings.toml`,
+`themes.toml`, `hooks.toml`, `hosts.toml` and the extension manifests — are
+read and written by one loader, `config::file`. It seeds an absent file with
+its documented defaults (a manifest is never seeded: absent means the
+extension is not installed), parses it reporting every unknown key as a warning,
+writes through `paths::write_atomically`, and on any failure (no path, a seed
+it could not write, an unreadable or malformed file) keeps thurbox starting:
+the file's fallback is used and a warning names the file and what it fell
+back to (`hooks.toml: …; no lifecycle hooks`).
 
 All paths respect `$XDG_CONFIG_HOME` / `$XDG_DATA_HOME`.
 
@@ -91,7 +111,7 @@ the right knob:
 | Change when/how OS notifications fire | `settings.toml` `[notifications]` | [`[notifications]`](#notifications--os-notification-settings) |
 | Add or recolour a TUI theme | `themes.toml` | [themes.toml](#themestoml) |
 | Run my own command when a session is created/deleted/restarted/restored, or refuse one | `hooks.toml` | [hooks.toml](#hookstoml) |
-| Rebind a key | `keybindings.json` (or the F1 editor) | [keybindings.json](#keybindingsjson) |
+| Rebind a key | `ui.json` `bindings` (the `F1` editor writes it) | [Files at a glance](#files-at-a-glance) |
 | Reorder the action band's buttons | `ui.json` `pills` | [Files at a glance](#files-at-a-glance) |
 | Set the `Ctrl+O` editor, pick a theme | (runtime — SQLite) | [SQLite-backed settings](#sqlite-backed-settings) |
 
@@ -920,7 +940,8 @@ only their tail (500 chars) is reported, so a hook can neither draw on
 nor read from the TUI's screen. A hook for a **remote** (SSH/WSL)
 session still runs **locally**; `THURBOX_HOST` names the host and the
 paths are the host's — `ssh "$THURBOX_HOST" …` from the hook is your
-call.
+call. The one exception is `session.pre_launch`, above: its cwd is the
+launch directory, and for a remote session it runs on that host.
 
 `thurbox-cli config validate` strict-parses the file; `config show`
 lists the hooks in force.
@@ -933,7 +954,7 @@ lists the hooks in force.
 > comments below survive.
 >
 > Four flags gate surfaces the interface **no longer draws**: `code_review`,
-> `file_viewer`, `info_panel` and `tasks` (which still gates its CLI). They
+> `file_viewer`, `info_panel` and `tasks`. They
 > are accepted and preserved untouched so an existing file does not fail
 > `thurbox-cli config validate`, and simply not listed in the panel, since a
 > row that gates nothing reads as broken. `automations` is honoured, but it
@@ -1000,7 +1021,7 @@ provider       = "auto"        # auto | native | osc52 | none
 copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies a selection
 
 [remote]
-transitive_sessions = true     # list sessions a host mirrors from hosts of its own
+transitive_sessions = false    # true = also list sessions a host mirrors from hosts of its own
 ```
 
 ### `hidden_terminal_secs` — how much memory a session off screen holds
@@ -1229,7 +1250,7 @@ version numbers — 2.x replaced v1's compiled-in interface with the Lua plugin
 kernel, so a silent crossing would hand someone a different program under the
 same binary name. `thurbox-cli update --force` is the deliberate way across, and
 the first v2 launch of a profile with v1 history still asks before anything
-changes. The guard is `agent::version_check::crosses_major`, and it applies to
+changes. The guard is `update::version_check::crosses_major`, and it applies to
 every future major too.
 
 > Only a binary that *carries* the guard is protected by it. Releases up to
@@ -1253,13 +1274,14 @@ shown and you update extensions by hand.
 
 A shareable host (see [hosts.toml](#hoststoml)) lists its own sessions and,
 when it mirrors hosts of its own, theirs. `transitive_sessions` (default
-`true`) keeps those: each session is listed once, on the most direct path this
-instance has to it — a host reached directly wins over the same session seen
-through another — and every action on it reaches the host that owns it. A row
-seen through another host has no terminal attached here. `false` lists only
-each host's own sessions and drops the rows already taken on, without deleting
-anything anywhere. Read by every mirror pass, so a change applies on the next
-one (within 10 s in the TUI). [FEATURES.md](FEATURES.md) → *Shared sessions*
+`false`) lists only each host's own sessions — a remote's remotes are not
+shown — and drops the rows an earlier pass took on, without deleting anything
+anywhere. `true` keeps them: each session is listed once, on the most direct
+path this instance has to it — a host reached directly wins over the same
+session seen through another — and every action on it reaches the host that
+owns it. A row seen through another host has no terminal attached here. Read
+by every mirror pass, so a change applies on the next one (within 10 s in the
+TUI). [FEATURES.md](FEATURES.md) → *Shared sessions*
 has the rule.
 
 ### `[telemetry]` — OpenTelemetry for sessions
@@ -1468,7 +1490,7 @@ both explicitly: `thurbox-cli notify send` and the opt-in failing-run alert
 |---------|------|----------------|
 | `dbus` | normal Linux desktop with a running notification daemon (`org.freedesktop.Notifications`) | **yes** — clicking the banner writes a focus request the running TUI reads next tick and switches to that session |
 | `windows` (toast) | **native Windows**, or **WSL** / any Linux with no dbus daemon — delivers a Windows toast via `powershell.exe` (WSL needs interop, on by default) | no (a Windows toast can't call back into the thurbox process) |
-| `macos` | macOS native banner. Uses **`terminal-notifier`** when it's in `PATH` (own bundle + icon, looks like a real app notification — `brew install terminal-notifier`), otherwise the built-in **`osascript`** `display notification` (attributed to Apple's Script Editor). The `UNUserNotificationCenter` click API needs a signed `.app` bundle, which thurbox is not, so the `osascript` path is informational | **with `terminal-notifier`** — clicking the banner runs `thurbox-cli session focus <id>`, which writes the same metadata row the dbus path does and the TUI picks it up next tick. Without `terminal-notifier` (osascript fallback): no |
+| macOS banner (what `auto` selects on macOS; not a `backend` value) | macOS native banner. Uses **`terminal-notifier`** when it's in `PATH` (own bundle + icon, looks like a real app notification — `brew install terminal-notifier`), otherwise the built-in **`osascript`** `display notification` (attributed to Apple's Script Editor). The `UNUserNotificationCenter` click API needs a signed `.app` bundle, which thurbox is not, so the `osascript` path is informational | **with `terminal-notifier`** — clicking the banner runs `thurbox-cli session focus <id>`, which writes the same metadata row the dbus path does and the TUI picks it up next tick. Without `terminal-notifier` (osascript fallback): no |
 
 `auto` prefers `dbus` whenever a daemon answers, and only falls back to
 the Windows toast when no dbus service is reachable. Force a specific
@@ -1590,16 +1612,9 @@ The wiring is applied **only to agents thurbox launches** — it never edits you
 own global agent config (e.g. your personal `~/.claude/settings.json`). thurbox's
 managed hook config lives per agent, applied by injecting a flag into
 `agents.toml` or by a reversible merge into / managed file in the agent's own
-config dir:
-
-| Agent | On-disk location | How it's applied |
-|-------|------------------|------------------|
-| claude | `~/.config/thurbox/hooks/claude.json` | `--settings` flag (claude merges it with your own settings) |
-| aider | — (no file) | `--notifications-command` flag |
-| opencode | `~/.config/opencode/plugin/thurbox-status.js` | managed plugin file |
-| codex | `~/.codex/hooks.json` | reversible JSON-merge of thurbox's entries |
-| vibe | `~/.vibe/hooks.toml` | managed file (refused if you already have one) |
-| antigravity | `~/.gemini/settings.json` | reversible JSON-merge of thurbox's entries |
+config dir. Which mechanism and file each agent uses is
+[AGENTS.md → Status hook mechanisms](AGENTS.md#status-hook-mechanisms); claude's
+is the `--settings` flag naming `~/.config/thurbox/hooks/claude.json`.
 
 The home dir is `~/.config/thurbox/hooks` on a release build and
 `~/.config/thurbox-dev/hooks` on a dev build. Because claude *merges* the
@@ -1637,14 +1652,16 @@ effect).
 
 ## keybindings.json
 
-Maps `Action` names to one or more chord strings:
-
-```json
-{ "QuitApp": ["ctrl+a"], "OpenThemePicker": ["ctrl+y", "f4"] }
-```
+v1's file: `Action` names mapped to one or more chord strings
+(`{ "QuitApp": ["ctrl+a"] }`). **Nothing reads it for bindings any more**:
+the first v2 launch carries the six actions with an obvious v2 equivalent
+into `ui.json`'s `bindings` (action id → one chord,
+`kernel::registry::migrate_v1_bindings`, which names the rest rather than
+guessing), and the file is then left alone so going back to 1.x still finds
+it. `thurbox-cli config validate` checks `ui.json`, not this file.
 
 - Preferred editing path is the **F1 panel** (live capture, conflict
-  stealing, immediate persistence). Hand-edits are read at startup.
+  stealing, immediate persistence), which writes `ui.json`.
 - Chord syntax: `[ctrl+][alt+][shift+][cmd+]<key>` where `<key>` is a
   letter, `f1`–`f12`, or a named key (`enter`, `esc`, `tab`, arrows,
   `home`, `end`, `pageup`, `pagedown`, `backspace`, `delete`,
@@ -1663,7 +1680,8 @@ Maps `Action` names to one or more chord strings:
   agent CLI** instead of triggering their thurbox command, so your terminal
   muscle memory works inside a session. Those thurbox commands stay reachable
   from the **session list** (focus it with `Ctrl+H`) and via their `F`-key
-  alternates (`F2` info panel, `F3` file viewer, `F5` tasks). Rebinding such an
+  alternates (`F4` theme picker, `F6` settings, `F8` shell tab, `F9` session
+  list). Rebinding such an
   action to a key that isn't a bare `Ctrl+<letter>` makes it work in the
   terminal too. Navigation/quit chords (`Ctrl+H/J/K/L`, `Ctrl+Q`, `Ctrl+N`) are
   **never** forwarded — they're how you leave the terminal.
@@ -1872,7 +1890,7 @@ thurbox process reads it when it next starts.
 
 | Key | Set via | Purpose |
 |-----|---------|---------|
-| `active_theme` | `Ctrl+Y` / `F4` picker | TUI palette (fifteen built-ins) |
+| `active_theme` | `Ctrl+Y` / `F4` picker | TUI palette (thirty-six built-ins) |
 | `editor_command` | `thurbox-cli editor set "<cmd>"` | what `Ctrl+O` runs |
 | `editor_mode` | `thurbox-cli editor mode <auto\|terminal\|gui>` | how `Ctrl+O` runs the editor: `auto` (default) detects terminal vs GUI and gives terminal editors a real TTY (tmux popup / TUI suspend); `terminal` forces the TTY path; `gui` forces detached |
 | `active_extensions` | `thurbox-cli extension activate/deactivate` | JSON array of active extensions to self-heal |

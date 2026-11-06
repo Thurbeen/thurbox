@@ -1,8 +1,7 @@
 //! The heartbeat's at-least-once consumer of the state-edge log.
 use crate::{
     session::{HookContext, HookEvent},
-    storage::{Database, HookRow},
-    sync::current_time_millis,
+    storage::{current_time_millis, Database, HookRow},
 };
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -17,14 +16,14 @@ const BUDGET: Duration = Duration::from_secs(30);
 const MIN_LEFT: Duration = Duration::from_millis(100);
 
 pub fn configured() -> bool {
-    !crate::agent::hooks_config::hooks_for(HookEvent::StateChanged).is_empty()
+    !crate::config::hooks::hooks_for(HookEvent::StateChanged).is_empty()
 }
 
 /// One bounded batch. The cursor advances only after all hooks for a row were
 /// attempted. A failure is informational; a crash before the advance replays
 /// the batch, so scripts must deduplicate external side effects by `seq`.
 pub fn tick(db: &Database) -> Result<Value, String> {
-    let hooks = crate::agent::hooks_config::hooks_for(HookEvent::StateChanged);
+    let hooks = crate::config::hooks::hooks_for(HookEvent::StateChanged);
     if hooks.is_empty() {
         return Ok(Value::Null);
     }
@@ -149,8 +148,8 @@ fn drain(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::session::SharedSession;
     use crate::session::{LifecycleHook, SessionId};
-    use crate::sync::SharedSession;
 
     fn hook(command: String) -> LifecycleHook {
         LifecycleHook {

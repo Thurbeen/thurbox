@@ -14,8 +14,8 @@
 
 use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -66,7 +66,8 @@ fn store_with_working_session() -> (tempfile::TempDir, SnapshotStore, String) {
     database.set_hook_state(row.id, "working").expect("signal");
     let mut store = SnapshotStore::with_database(
         Database::open(&path).expect("db"),
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
     );
     store.refresh();
     (home, store, row.id.to_string())
@@ -295,7 +296,8 @@ fn an_agent_a_driver_started_is_seen_and_named_by_the_interface() {
 
     let mut store = SnapshotStore::with_database(
         Database::open(&path).expect("db"),
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
     );
     let id = row.id.to_string();
 

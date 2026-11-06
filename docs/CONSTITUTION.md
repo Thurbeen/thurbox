@@ -23,24 +23,28 @@ exactly one line here, and each line is the rule `tests/architecture_rules.rs`
 asserts for it (`[path-only: …]` marks the crossings described below):
 
 ```text
-session              (no crate-internal references — the dependency sink)
+session              (no crate-internal references — the dependency sink;
+                     no process state, env read or rendering crate either)
 agent                → agent::{generic, provider}       (re-exports only)
-agent::agent_config  → session, paths
-agent::extension_config → session, paths, agent::agent_config
+agent::agent_config  → session, shell, config::file
+agent::extension_config → session, paths, agent::agent_config, config::file
 agent::generic       → session, agent::provider
-agent::hooks_config  → session, paths, agent::agent_config
-agent::host_config   → session, paths, shell, agent::agent_config
 agent::host_path     → session, shell
 agent::input         (no crate-internal references)
 agent::json_merge    (no crate-internal references)
-agent::preflight     → session, paths, agent::agent_config
+agent::preflight     → session, paths, shell, agent::agent_config
 agent::provider      → session
-agent::self_update   → session, paths, shell,
-                       agent::{extension_config, version_check}
-agent::settings_config → session, paths, agent::agent_config
-agent::themes_config → session, paths, agent::agent_config
 agent::toml_merge    (no crate-internal references)
-agent::version_check → session, paths, agent::extension_config
+config               (declares the modules below — no references)
+config::file         → paths                (the one loader: seed, parse, save)
+config::hooks        → session, config::file
+config::hosts        → session, paths, shell, config::file
+config::settings     → session, config::file
+config::themes       → theme, config::file
+update               (declares the modules below — no references)
+update::self_update  → session, paths, shell, agent::extension_config,
+                       update::version_check
+update::version_check → session, paths, agent::extension_config
 backend              → backend::{contract, pane, registry}   (re-exports only)
 backend::contract    (no crate-internal references)
 backend::identity    → backend::contract
@@ -49,7 +53,7 @@ backend::pane        → session, backend::{contract, identity, osc8, output_wak
 backend::osc8        → session
 backend::output_wake (no crate-internal references)
 backend::registry    → session, backend::contract
-backend::wiring      → session, shell, agent::host_config,
+backend::wiring      → session, shell, config::hosts,
                        backend::{contract, registry, tmux, psmux, rmux}
 backend::tmux_compat (declares the modules below — no references)
   ::control_mode     → shell, backend::contract,
@@ -65,41 +69,43 @@ backend::psmux       → session, shell, backend::{contract, instance},
 backend::rmux        → session, shell, backend::contract,
                        backend::tmux_compat::{control_mode, server, transport}
 git                  → session, paths, shell
-storage              → session, sync, paths
-sync                 → session
+storage              → session, paths
 telemetry            → session, storage           (ADR-37/38 OTLP export)
-session_ops          → session, storage, git, sync, paths, workspace, shell
+session_ops          → session, storage, git, paths, workspace, shell
                        [path-only: agent::{agent_config, extension_config,
-                        generic, hooks_config, host_config, host_path,
-                        json_merge, preflight, provider, self_update,
-                        settings_config, toml_merge, version_check},
-                        backend::{contract, identity, instance, registry}]
-kernel               → session, storage, sync, paths, session_ops, git,
-                       notifications, shell
+                        generic, host_path, json_merge, preflight, provider,
+                        toml_merge}, backend::{contract, identity, instance,
+                        registry}, config::{hooks, hosts, settings},
+                        update::{self_update, version_check}]
+kernel               → session, storage, paths, session_ops, git,
+                       notifications, shell, theme
                        [path-only: agent::{agent_config, extension_config,
-                        host_config, host_path, preflight, self_update,
-                        settings_config, themes_config, version_check},
-                        backend::{contract, identity, pane, registry}]
-cli                  → session, storage, session_ops, sync, paths,
-                       notifications, ui_control, telemetry
+                        host_path, preflight}, backend::{contract, identity,
+                        pane, registry}, config::{hosts, settings, themes},
+                        update::{self_update, version_check}]
+cli                  → session, storage, session_ops, paths,
+                       notifications, ui_control, telemetry, theme
                        [path-only: agent::{agent_config, extension_config,
-                        hooks_config, host_config, preflight, self_update,
-                        settings_config, themes_config, version_check},
-                        backend::{contract, instance, registry}, kernel]
+                        preflight}, backend::{contract, instance, registry},
+                        config::{file, hooks, hosts, settings, themes},
+                        update::{self_update, version_check}, kernel]
 notifications        → session, paths, shell    [path-only: storage]
 clipboard            → session, paths
 workspace            → paths
 paths                (leaf utility — no crate-internal references)
 ui_control           → paths
-shell                → session                 (a host entry → its launcher)
-coordinator          → agent::{input, settings_config},
-                       backend::{instance, output_wake, wiring}, clipboard,
-                       kernel, paths, session, session_ops, shell, storage,
-                       telemetry, ui_control
+shell                → session                 (a host entry → its launcher,
+                                                the local platform)
+theme                (no crate-internal references — the presets)
+coordinator          → agent::input, backend::{instance, output_wake, wiring},
+                       clipboard, config::settings, kernel, paths, session,
+                       session_ops, shell, storage, telemetry, ui_control
 ```
 
-`agent` holds coding-agent definitions and their config and never touches
-`git`, `storage`, `kernel` or `backend`; `session` holds plain data and
+`agent` holds coding-agent definitions and never touches `git`, `storage`,
+`kernel` or `backend`; `config` holds thurbox's own config files, each read
+and written through the one loader `config::file`, and `update` the
+self-update; `session` holds plain data and
 references nothing, which is what lets every other module depend on it.
 `backend` is the session-backend boundary: consumers name its contract
 (`backend::contract`, `backend::identity`, `backend::pane`,
@@ -109,8 +115,8 @@ RMUX adapters are peers: none reaches another, and `backend::tmux_compat`, the
 protocol they speak, reaches none (ADR-31). `session_ops`, `cli` and
 `kernel` reach no adapter, protocol helper or factory at all — not by
 reference, alias or re-export, and not through anything they are granted —
-status and the heartbeat included (ADR-32). Every file of `agent` is a node
-of its own, so a grant names the config it reads.
+status and the heartbeat included (ADR-32). Every file of `agent`, `config`
+and `update` is a node of its own, so a grant names the file it reads.
 
 Some crossings are permitted **by fully-qualified path only**, never by
 `use` — not even a function-local `use` or an alias. The restriction is
@@ -194,7 +200,9 @@ No ad-hoc event handlers, no component-local state, no callback chains.
 
 ### 8. Backend-first session model
 
-Coding-agent sessions run via a `SessionBackend` trait, one backend per route
+Coding-agent sessions run via a `SessionBackend` trait (four roles —
+`PaneStream`, `WindowLifecycle`, `PaneIo`, `StatusChannel` — plus a
+`Capabilities` value), one backend per route
 in the registry (ADR-29). The default is the platform's multiplexer run
 locally (`tmux -L thurbox`; `psmux` on native Windows). Each adapter —
 `TmuxBackend`, `PsmuxBackend`, `RmuxBackend`, peers over one tmux-protocol server (ADR-31) —
@@ -251,7 +259,7 @@ binaries have correct versions while keeping the source tree clean.
 
 **Mechanism:**
 
-1. Release workflow (`release.yml`) analyzes commits via `cog bump --auto --dry-run`
+1. Release workflow (`cd.yml`) analyzes commits via `cog bump --auto --dry-run`
 2. Workflow creates lightweight tag (v{version}) and passes version via environment variable
 3. `build.rs` reads `THURBOX_RELEASE_VERSION` and injects into binary
 4. Cargo.toml version remains `0.0.0-dev` (development marker only)
@@ -276,4 +284,4 @@ binaries have correct versions while keeping the source tree clean.
 | Logging off stdout | Code review | — |
 | TDD (Red/Green/Refactor) | `cargo-nextest` + code review | `.config/nextest.toml` |
 | Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |
-| Tag-based versioning | `build.rs` + `release.yml` | `build.rs` + `.github/workflows/release.yml` |
+| Tag-based versioning | `build.rs` + `cd.yml` | `build.rs` + `.github/workflows/cd.yml` |

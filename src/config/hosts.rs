@@ -178,7 +178,7 @@ config_version = 1
 /// Path to the remote-host config file: `~/.config/thurbox/hosts.toml`
 /// (sibling of `config.toml`).
 pub fn hosts_config_path() -> Option<PathBuf> {
-    crate::paths::config_file().map(|p| p.with_file_name("hosts.toml"))
+    super::file::path("hosts.toml")
 }
 
 /// Load the remote-host registry, seeding the config file with a commented-out
@@ -215,38 +215,18 @@ pub fn load_or_seed_with_warnings() -> (HostRegistry, Vec<String>) {
 /// genuinely remote session — silently, once, and unrecoverably. Everything
 /// else wants the degraded registry and a warning.
 fn load_or_seed_result() -> Result<(HostRegistry, Vec<String>), String> {
-    let Some(path) = hosts_config_path() else {
-        return Err("Could not resolve hosts.toml path; no remote hosts".into());
-    };
-
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create config dir for hosts.toml: {e}"))?;
-        }
-        std::fs::write(&path, SEED_HOSTS_TOML)
-            .map_err(|e| format!("Failed to seed hosts.toml: {e}"))?;
-        tracing::info!(path = %path.display(), "Seeded hosts.toml (no active hosts)");
-        return Ok((HostRegistry::default(), Vec::new()));
+    let degraded = |e: String| format!("{e}; no remote hosts");
+    match super::file::read_or_seed("hosts.toml", SEED_HOSTS_TOML).map_err(degraded)? {
+        Some(contents) => parse_hosts(&contents).map_err(degraded),
+        None => Ok((HostRegistry::default(), Vec::new())),
     }
-
-    let contents =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read hosts.toml: {e}"))?;
-    parse_hosts(&contents).map_err(|e| format!("{e}; no remote hosts"))
 }
 
 /// `hosts.toml`'s contents as the registry thurbox serves, and every warning
 /// owed about them: unknown keys, and any entry refused outright. `Err` is a
 /// file that does not parse.
 pub fn parse_hosts(contents: &str) -> Result<(HostRegistry, Vec<String>), String> {
-    let (mut registry, mut warnings) =
-        super::agent_config::parse_toml_reporting_unknown::<HostRegistry>(contents, "hosts.toml")
-            .map_err(|e| {
-            format!(
-                "hosts.toml: {}",
-                super::agent_config::compact_toml_error(&e.to_string())
-            )
-        })?;
+    let (mut registry, mut warnings) = super::file::parse::<HostRegistry>(contents, "hosts.toml")?;
     warnings.extend(registry.refuse_unroutable_names());
     Ok((registry, warnings))
 }
@@ -326,13 +306,15 @@ fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, Vec<String>) {
 
     // The base case, owed before any entry is read: the backend name
     // auto-discovery offered for the current distro until it was filtered.
-    if let Some(distro) = crate::session::current_wsl_distro() {
+    if let Some(distro) = crate::paths::current_wsl_distro() {
         candidates.push(format!("{}{distro}", crate::session::WSL_PREFIX));
     }
 
+    let current = crate::paths::current_wsl_distro();
+    let current = current.as_deref();
     let mut settled = Vec::with_capacity(reg.hosts.len());
     for host in std::mem::take(&mut reg.hosts) {
-        if host.is_wsl_loopback() {
+        if host.is_wsl_loopback(current) {
             warnings.push(format!(
                 "hosts.toml: ignoring host '{}' — it names the WSL distro thurbox \
                  is running in ('{}'), so sessions on it are local, not remote. \
@@ -343,7 +325,7 @@ fn settle_wsl_self_hosts(reg: &mut HostRegistry) -> (Vec<String>, Vec<String>) {
             candidates.push(host.backend_name());
             continue;
         }
-        if host.shadows_current_wsl_distro() {
+        if host.shadows_current_wsl_distro(current) {
             warnings.push(format!(
                 "hosts.toml: host '{}' is named after the WSL distro thurbox runs in, \
                  so it records its sessions on '{}' — the same name an older \
@@ -386,7 +368,7 @@ pub fn wsl_repair_plan() -> Result<WslRepairPlan, String> {
     // whatever `hosts.toml` says — and a failure only defers when the answer
     // depends on what failed, or an unrelated typo in that file would defer
     // this forever and re-parse it on every invocation.
-    if crate::session::current_wsl_distro().is_none() {
+    if crate::paths::current_wsl_distro().is_none() {
         return Ok(WslRepairPlan::default());
     }
     let (mut reg, _) = load_or_seed_result()?;
@@ -409,7 +391,7 @@ pub fn wsl_repair_plan() -> Result<WslRepairPlan, String> {
 /// machine has a working one.
 fn any_candidate_a_sibling_could_claim(candidates: &[String]) -> bool {
     let ours =
-        crate::session::current_wsl_distro().map(|d| format!("{}{d}", crate::session::WSL_PREFIX));
+        crate::paths::current_wsl_distro().map(|d| format!("{}{d}", crate::session::WSL_PREFIX));
     candidates
         .iter()
         .any(|c| !ours.as_deref().is_some_and(|o| o.eq_ignore_ascii_case(c)))
@@ -456,7 +438,7 @@ fn wsl_repair_plan_for(candidates: Vec<String>, serving: &HostRegistry) -> WslRe
 /// A loopback entry's spellings count as served: the rows it wrote are the WSL
 /// repair's to relabel local, not that sweep's to drop.
 pub fn served_host_names() -> Result<HashSet<String>, String> {
-    if crate::session::current_wsl_distro().is_some() && !wsl_exe_available() {
+    if crate::paths::current_wsl_distro().is_some() && !wsl_exe_available() {
         return Err("running inside WSL with no wsl.exe on PATH, so the other \
                     distros cannot be listed"
             .into());
@@ -519,7 +501,7 @@ static DISCOVERY_STUB: std::sync::Mutex<Option<Result<Vec<HostDef>, String>>> =
 /// machine's own `wsl.exe`, restoring what was there before.
 ///
 /// Serialized on a process-wide lock, and the **only** way a test may set it,
-/// for the reason `session::host_def::with_wsl_distro` gives: under plain
+/// for the reason `paths::with_wsl_distro` gives: under plain
 /// `cargo test` these tests share one process. Nest it *inside*
 /// `with_wsl_distro` when a test needs both, so the two locks are always taken
 /// in one order.
@@ -581,10 +563,11 @@ pub(crate) fn discover_wsl_hosts() -> Result<Vec<HostDef>, String> {
 /// loopback. Split out from [`discover_wsl_hosts`] so the exclusion is testable
 /// without a live `wsl.exe`.
 fn wsl_hosts_from(distros: Vec<String>) -> Vec<HostDef> {
+    let current = crate::paths::current_wsl_distro();
     distros
         .into_iter()
         .map(HostDef::wsl)
-        .filter(|h| !h.is_wsl_loopback())
+        .filter(|h| !h.is_wsl_loopback(current.as_deref()))
         .collect()
 }
 
@@ -699,7 +682,7 @@ mod tests {
 
     #[test]
     fn discovery_offers_every_distro_but_the_one_we_are_in() {
-        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+        crate::paths::with_wsl_distro(Some("MagicDebian"), || {
             let hosts = wsl_hosts_from(vec![
                 "Ubuntu".to_string(),
                 "MagicDebian".to_string(),
@@ -712,7 +695,7 @@ mod tests {
             );
         });
         // Off WSL there is nothing to exclude.
-        crate::session::host_def::with_wsl_distro(None, || {
+        crate::paths::with_wsl_distro(None, || {
             assert_eq!(wsl_hosts_from(vec!["Ubuntu".to_string()]).len(), 1);
         });
     }
@@ -748,7 +731,7 @@ mod tests {
 
     #[test]
     fn a_configured_loopback_is_dropped_and_its_rows_healed() {
-        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+        crate::paths::with_wsl_distro(Some("MagicDebian"), || {
             let mut reg = registry(vec![
                 wsl("self", "MagicDebian"),
                 HostDef::wsl("Ubuntu"),
@@ -783,7 +766,7 @@ mod tests {
     /// would send every attach, diff and delete to the local tmux server.
     #[test]
     fn a_loopbacks_own_name_is_withheld_when_a_discovered_sibling_claims_it() {
-        crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+        crate::paths::with_wsl_distro(Some("Ubuntu"), || {
             let mut reg = registry(vec![wsl("Debian", "Ubuntu")]);
 
             let (_, plan) = settle_and_plan(&mut reg, vec![HostDef::wsl("Debian")]);
@@ -803,7 +786,7 @@ mod tests {
     /// spelling, so the repair must not claim its rows are this machine's.
     #[test]
     fn a_loopbacks_own_name_is_withheld_when_a_configured_host_survives_on_it() {
-        crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+        crate::paths::with_wsl_distro(Some("Ubuntu"), || {
             let mut reg = registry(vec![wsl("dev", "Ubuntu"), wsl("dev", "Debian")]);
 
             let (_, plan) = settle_and_plan(&mut reg, Vec::new());
@@ -820,7 +803,7 @@ mod tests {
     /// reason.
     #[test]
     fn a_bare_name_held_by_an_ssh_host_does_not_withhold_the_wsl_spelling() {
-        crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+        crate::paths::with_wsl_distro(Some("Ubuntu"), || {
             let mut reg = registry(vec![
                 wsl("Debian", "Ubuntu"),
                 HostDef {
@@ -843,7 +826,7 @@ mod tests {
     #[test]
     fn an_unenumerable_wsl_yields_no_plan_at_all() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         let path = hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
@@ -852,7 +835,7 @@ mod tests {
         )
         .unwrap();
 
-        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+        crate::paths::with_wsl_distro(Some("MagicDebian"), || {
             with_discovered_wsl(Err("wsl.exe -l -q failed".to_string()), || {
                 assert!(
                     wsl_repair_plan().is_err(),
@@ -882,7 +865,7 @@ mod tests {
     /// bug's at once and none of them is rewritten.
     #[test]
     fn a_configured_shadow_is_kept_as_written_and_its_rows_are_left_alone() {
-        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+        crate::paths::with_wsl_distro(Some("MagicDebian"), || {
             let mut reg = registry(vec![
                 HostDef {
                     worktrees_dir: Some("/srv/wt".into()),
@@ -917,7 +900,7 @@ mod tests {
     /// one unreadable spelling is still the only thing withheld.
     #[test]
     fn other_entries_do_not_change_what_a_shadow_settles_to() {
-        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+        crate::paths::with_wsl_distro(Some("MagicDebian"), || {
             let mut reg = registry(vec![
                 wsl("MagicDebian", "MagicDebianPerso"),
                 wsl("MagicDebian", "Debian-12"),
@@ -949,7 +932,7 @@ mod tests {
     /// withheld.
     #[test]
     fn a_loopback_is_still_healed_alongside_a_shadow() {
-        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+        crate::paths::with_wsl_distro(Some("MagicDebian"), || {
             let mut reg = registry(vec![
                 wsl("MagicDebianPerso", "MagicDebian"),
                 wsl("MagicDebian", "MagicDebianPerso"),
@@ -965,7 +948,7 @@ mod tests {
 
     #[test]
     fn off_wsl_nothing_is_settled_and_nothing_is_owed() {
-        crate::session::host_def::with_wsl_distro(None, || {
+        crate::paths::with_wsl_distro(None, || {
             let mut reg = registry(vec![HostDef::wsl("Ubuntu"), wsl("work", "Debian")]);
 
             let (warnings, plan) = settle_and_plan(&mut reg, Vec::new());
@@ -982,12 +965,12 @@ mod tests {
     #[test]
     fn an_unparseable_hosts_toml_yields_no_plan_at_all() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         let path = hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "[[hosts]\nname = \"MagicDebian\"\n").unwrap();
 
-        crate::session::host_def::with_wsl_distro(Some("MagicDebian"), || {
+        crate::paths::with_wsl_distro(Some("MagicDebian"), || {
             assert!(
                 wsl_repair_plan().is_err(),
                 "an unreadable file is a failure, not an empty registry"
@@ -1046,7 +1029,7 @@ mod tests {
     #[test]
     fn load_or_seed_writes_file_when_absent_and_stays_empty() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hosts_config_path().unwrap();
         assert!(!path.exists());
@@ -1062,7 +1045,7 @@ mod tests {
     #[test]
     fn load_or_seed_falls_back_on_malformed_file() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1074,7 +1057,7 @@ mod tests {
     #[test]
     fn load_or_seed_reads_configured_host() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

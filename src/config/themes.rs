@@ -1,15 +1,15 @@
 //! Loading and seeding of the custom-themes config file.
 //!
 //! `~/.config/thurbox/themes.toml` defines user themes as a base preset plus
-//! per-colour overrides (see [`crate::session::theme_config::CustomThemeDef`]).
+//! per-colour overrides (see [`crate::theme::CustomThemeDef`]).
 //! Seeded with a fully commented-out example, so a fresh install ships only
 //! the built-in presets. Resolution problems (bad colours, name collisions)
 //! degrade to warnings, never to a startup failure.
 
 use std::path::PathBuf;
 
-use crate::session::theme_config::{ThemeEntry, ThemesFile};
-use crate::session::ThemePreset;
+use crate::theme::ThemePreset;
+use crate::theme::{ThemeEntry, ThemesFile};
 
 /// Seed contents for `themes.toml` on first run.
 pub const SEED_THEMES_TOML: &str = r##"# Thurbox custom themes  —  ~/.config/thurbox/themes.toml
@@ -81,7 +81,7 @@ config_version = 1
 
 /// Path to the custom-themes file: `~/.config/thurbox/themes.toml`.
 pub fn themes_config_path() -> Option<PathBuf> {
-    crate::paths::config_file().map(|p| p.with_file_name("themes.toml"))
+    super::file::path("themes.toml")
 }
 
 /// Load and resolve the custom themes, seeding the file when absent.
@@ -89,47 +89,12 @@ pub fn themes_config_path() -> Option<PathBuf> {
 /// skipped with a warning (the persisted `active_theme` must stay
 /// unambiguous).
 pub fn load_or_seed_with_warnings() -> (Vec<ThemeEntry>, Vec<String>) {
-    let Some(path) = themes_config_path() else {
-        return (
-            Vec::new(),
-            vec!["Could not resolve themes.toml path; no custom themes".into()],
-        );
-    };
-
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return (
-                    Vec::new(),
-                    vec![format!("Failed to create config dir for themes.toml: {e}")],
-                );
-            }
-        }
-        if let Err(e) = std::fs::write(&path, SEED_THEMES_TOML) {
-            return (Vec::new(), vec![format!("Failed to seed themes.toml: {e}")]);
-        }
-        tracing::info!(path = %path.display(), "Seeded themes.toml (no custom themes)");
-        return (Vec::new(), Vec::new());
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            match super::agent_config::parse_toml_reporting_unknown::<ThemesFile>(
-                &contents,
-                "themes.toml",
-            ) {
-                Ok((file, warnings)) => return_resolved(file, warnings),
-                Err(e) => (
-                    Vec::new(),
-                    vec![format!(
-                        "themes.toml: {}; no custom themes",
-                        super::agent_config::compact_toml_error(&e.to_string())
-                    )],
-                ),
-            }
-        }
-        Err(e) => (Vec::new(), vec![format!("Failed to read themes.toml: {e}")]),
-    }
+    let (file, warnings) = super::file::load_or_seed::<ThemesFile>(
+        "themes.toml",
+        SEED_THEMES_TOML,
+        "no custom themes",
+    );
+    return_resolved(file, warnings)
 }
 
 fn return_resolved(file: ThemesFile, mut warnings: Vec<String>) -> (Vec<ThemeEntry>, Vec<String>) {
@@ -234,7 +199,7 @@ mod tests {
     #[test]
     fn load_or_seed_writes_file_when_absent() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = themes_config_path().unwrap();
         assert!(!path.exists());
@@ -248,7 +213,7 @@ mod tests {
     #[test]
     fn load_resolves_custom_theme_with_base_and_overrides() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = themes_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -276,7 +241,7 @@ mod tests {
     #[test]
     fn load_skips_builtin_shadow_and_warns_on_bad_colour() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = themes_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

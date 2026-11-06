@@ -153,6 +153,35 @@ both `--from` and `inbox --for` default to it, so neither side needs ids.
 `send` wakes the recipient unless given `--no-wake`; Fleet's reconciler
 uses `--no-wake` to leave Mission Control a note it cannot type in.
 
+Waking means handing the body to the agent's own inbox: a Claude Code
+inbox socket, or `codex queue` on the thread the Codex session bound. When
+there is none, the body waits in the mailbox, which no agent reads unless
+told to. A sender that needs the agent to have it reads one field:
+
+| `delivered` | meaning |
+|---|---|
+| `true` | the agent was handed the body; `delivered_via` names the inbox |
+| `false` | only the mailbox has it; `delivery_note` says why |
+
+`--require-native` makes `delivered: false` a failed command (exit 1), with
+the answer still printed and the message still enqueued, so the sender can
+retry or act on it. A Codex session cannot be reached until its first hook
+binds a thread, which is the moment a freshly spawned one is sent its first
+prompt; `--wait-bound <seconds>` waits that long for the recipient to have
+an inbox before leaving the body in the mailbox.
+
+A recipient on a host that shares its sessions is sent to by the host's own
+`thurbox-cli` (ADR-24): its inbox socket, its Codex binding and the mailbox
+its agent drains are all on that host. The answer then carries `host`, and
+`message_id` is the host's. The host's CLI runs in no session there, so the
+row names no sender and a `message reply` there has nobody to answer. It
+carries no task tag either: task ids belong to one database, so this
+machine's would name an unrelated task there. A host whose CLI cannot be
+used keeps the body in this machine's mailbox, with `delivered: false`.
+
+`version --json` reports `message_native_send: true` on a build that has
+`delivered`, `--require-native`, `--wait-bound` and delivery on a host.
+
 **Why not poll `gh pr list`?** Either report beats it:
 
 - It is **exact**. The report comes from a worker that knows it
@@ -186,7 +215,8 @@ Each line carries a `seq` (monotonic, never reused), the `event`
 (`present`/`created`/`changed`/`gone`), a `reason` saying which kind it was —
 `spawned`/`registered`/`restored`,
 `state`/`stopped`/`started`/`updated`/`lost`/`exited`/`relaunched`,
-`soft_deleted`/`force_deleted`/`forgotten` — the `from_state` → `to_state` of the
+`soft_deleted`/`force_deleted`/`forgotten`, `host_down`/`host_up` — the
+`from_state` → `to_state` of the
 transition, an `exited` event's `exit_code` and pane tail (`detail`), and the
 same gating fields the table above lists, so acting on a `blocked` needs no
 follow-up `session get`. `hook_state_contradicted` is `null`
@@ -218,6 +248,15 @@ with the environment the sessions were created in — a watcher that resolves a
 different tmux socket (another `TMUX_TMPDIR`, a private `/tmp`) finds no server
 and reports every local session lost.
 
+`host_down` and `host_up` are a remote session's host being recorded as not
+answering, and that verdict clearing (see `unreachable` under *The status
+field is not a completion signal*). A verdict is not a row, so nothing appends them to the log: `watch`
+compares the verdicts every few seconds and reports a flip itself, as
+`changed` with the new `state`, `seq: null` (there is nothing to resume from)
+and no `from_state`/`to_state` — the hook report did not change. A `--since`
+resume does not replay them; `--initial`, and every event's `state`, already
+read the verdict as it stands. A parked session gets neither.
+
 `exited` and `relaunched` come from a multiplexer whose windows close with their
 agent (psmux), where a vanished window is otherwise all anyone sees. The agent's
 window reports its own exit status and last screen on the way out. A relaunch by
@@ -226,6 +265,12 @@ within ten minutes the session is not relaunched again: it is marked `lost` and
 waits for an operator's `session restart`. That `restart --if-missing` answers
 `"held_back": true`. Sessions on tmux keep their dead pane and never produce
 either event.
+
+A `restart --if-missing` of a session that has been deleted since the caller
+last looked has nothing to repair. It succeeds with `"gone": true` and
+`"restarted": false` instead of failing with "Session not found". An id this
+machine never held still fails, as does a plain `session restart` of a deleted
+session.
 
 ### `--parent`
 
@@ -356,8 +401,14 @@ one row. Besides the five an agent can signal it can read `unreported`
 to report nothing), `stopped` (the session is parked), `failed` (its launch
 died before the agent reported anything — see *Launch failures*) or
 `running` (an agent holds the pane and has not signalled — `session get`'s
-probe only). None of those five is a state an agent can signal, and
-`state_source` is null for the first four. The piped (TOON) `session list` shows this
+probe only), or `unreachable` (a remote session whose host the last probe
+recorded as not answering — `state_source: "host"`; `hook_state` keeps the
+report from before it went quiet). That verdict counts only while its
+backoff runs, and an interface that reaches the host again clears it at
+once. Once it expires with no new probe — no interface running to re-ask
+— the row reads its stored state again, which is *not* evidence that the
+host came back. None of those is a state an agent can
+signal, and `state_source` is null for the first four. The piped (TOON) `session list` shows this
 column, and so does the interface — its session list derives through the
 same `Assessment`, so a driver reconciling the screen with a `session
 get` never has to reconcile two vocabularies.
@@ -372,9 +423,10 @@ the other would make a passing process permanent.
 A finished turn reads `done` until somebody looks at it and `idle`
 after: the interface stamps `seen_at` when focus moves off, and every
 read verb folds that in. It is a stored fact, not a guessed timeout —
-the two folds that *are* timing (a `working` session gone quiet, an
-unreachable host) need a live terminal, so headless answers never
-invent them.
+the fold that *is* timing (a `working` session gone quiet) needs a live
+terminal, so headless answers never invent it. An unreachable host is
+the interface's live attach failure there, and a recorded probe verdict
+here (above).
 
 A **parked** session (`session stop`: pane killed, row and checkout
 kept) stays in `session list` and is told apart there — `stopped: true`
@@ -424,7 +476,7 @@ knowledge of its own to read it:
 | `ready` | when |
 |---|---|
 | `true` | the last hook report is `idle` or `done`; or **no hook has reported yet** (`state: "running"`, `state_source: "process"`), an agent holds the pane, and its input line shows an empty, drawn composer — one prompt glyph with the cursor after it |
-| `false` | `working`, `blocked` or `background`; parked (`stopped`); `failed`; the pane holds no agent (`shell`, `dead`, `missing`) or contradicts the report; or a fresh agent whose composer is not drawn yet |
+| `false` | `working`, `blocked` or `background`; parked (`stopped`); `failed`; `unreachable`; the pane holds no agent (`shell`, `dead`, `missing`) or contradicts the report; or a fresh agent whose composer is not drawn yet |
 | `null` | nothing can say: the pane was not looked at (`session list` without `--verify`, before any report), it is remote and unreported, or its input line could not be read |
 
 The composer read covers the window between launch and the first hook, which
@@ -546,10 +598,21 @@ Codex session whose report was retired by submitted input.
 When it is noticed. `session get` (unless `--no-verify`) looks at the pane of
 the session it reads, so a driver polling `get` sees `failed` on its first poll
 after the death; `session list --verify`, `session wait` and `watch` look too,
-and so does the reconcile tick (the interface's worker and the headless
-heartbeat, every minute), which is what records it for a plain `session list`.
+and so does the reconcile tick (the interface's worker every few seconds, the
+headless heartbeat every minute), which is what records it for a plain
+`session list`.
 A pane that dies within the spawn's 50 ms startup check never becomes a
 session: `session create` itself fails with the pane's output.
+
+A dead pane is read only once the multiplexer has reaped its program and knows
+how it ended; the record is written once, and read before then it would name no
+exit code for good. tmux before 3.7 reads a pane dead as soon as its terminal
+closes, which is before then, and can leave the program unreaped until another
+of its children exits. So a dead pane with neither an exit status nor a signal
+has the server reap (`run-shell true`) and is read again, and one still
+unreaped — a program that closed its terminal and runs on — waits for the next
+look. tmux 3.2 names no signal, so it cannot tell that case from a program a
+signal killed; there the pane is read as it stands.
 
 When it ends. The next launch — `session restart`, `session start`, restore —
 clears it; a record naming a pane the row has since left is never reported.
@@ -565,6 +628,32 @@ by the host's own thurbox, and the host's `session get` reports it.
 `foreground_cwd` — which is what a lead reading a worker's screen needs
 to tell "waiting at a prompt" from "still printing", and which agent CLI
 is actually in the foreground.
+
+### Clearing a worker's conversation
+
+A worker reused across jobs wants a new conversation for each, and typing
+an agent's own `/clear` into it is composer scraping: delivered as a
+message it is just text. `thurbox-cli session restart <ref> --fresh` does it
+from the runtime and stays agent-neutral. The session keeps its id, name,
+worktree, parent and mailbox; its agent is relaunched without its resume
+group, on a new agent session id, so a pinned agent (`--session-id {id}`)
+starts a new transcript rather than refusing the old one. The old
+conversation is left where the agent keeps it.
+
+It never cuts a turn off. A session whose readiness is `false` because it
+reported `working`, `blocked` or `background` is refused (exit 5); with
+`--wait` the restart waits until the session reads `idle` or `done`, then
+clears it. `--json` says which:
+
+| `outcome` | meaning |
+|---|---|
+| `cleared` | it was between turns and now runs a new conversation; `agent_session_id` is the new id |
+| `waited` | a turn was in progress, ended, and then it was cleared |
+| `refused` | a turn is in progress and nothing was touched; `reason` says which state |
+
+`version --json` reports `session_restart_fresh: true` on a build that has it.
+The interface's `restart` command takes the same switch (`fresh = true`) and
+refuses mid-turn the same way; it does not wait.
 
 ### A driver that launches its own agent can still report state
 
@@ -673,7 +762,9 @@ Fetch and fast-forward before `session create`, and verify
 **[Fleet](https://github.com/Thurbeen/fleet)** is all of the above,
 maintained. It is also the worked example of a thurbox extension — the one
 the rest of the documentation points at, since `extensions/` in the thurbox
-repo holds only the built-ins.
+repo holds only the built-ins. The manifest that example reads is the one at
+fleet's `v1.0.0` tag (`extension.toml.in`); the `main` installer below sets up
+no extension, so read the manifest at that tag.
 
 ```sh
 curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh

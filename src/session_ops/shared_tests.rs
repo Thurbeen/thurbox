@@ -12,8 +12,8 @@ use super::host_cli::{self, fake, Usable};
 use super::mirror;
 use super::spawn::SpawnRequest;
 use crate::session::SessionId;
+use crate::session::SharedSession;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 const HOST: &str = "devbox";
 const BACKEND: &str = "ssh:devbox";
@@ -63,6 +63,13 @@ struct Rig {
     _guard: crate::paths::TestPathGuard,
     db: Database,
     host: Rc<RefCell<Host>>,
+    /// Held for the rig's life, and dropped last (fields drop in order, after
+    /// `Drop::drop`). The mirror's listing caches are process-wide and keyed by
+    /// backend name, every rig here is `ssh:devbox`, and `forget_lists` clears
+    /// them all. Run side by side, one test's teardown emptied another's
+    /// deleted history between its two passes, so the second read the whole
+    /// list instead of asking `--since`.
+    _serial: std::sync::MutexGuard<'static, ()>,
 }
 
 impl Drop for Rig {
@@ -72,10 +79,19 @@ impl Drop for Rig {
     }
 }
 
+/// One rig at a time: see [`Rig::_serial`].
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn rig() -> Rig {
+    // A test that failed while holding the lock poisons it, and that failure
+    // has already been reported; the next test only needs its turn.
+    let serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    mirror::forget_lists();
     let temp = tempfile::TempDir::new().unwrap();
     let guard = crate::paths::TestPathGuard::new(temp.path());
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
@@ -162,7 +178,14 @@ fn rig() -> Rig {
                 let known = host.deleted.iter().any(|(gone, _)| *gone == id);
                 Ok(json!({ "reaped": known, "id": id.to_string() }))
             }
-            ["session", "restart", _id, ..] => Ok(json!({ "restarted": true })),
+            ["session", "restart", id, ..] => {
+                let id: SessionId = id.parse().unwrap();
+                if !host.active.iter().any(|s| s.id == id) {
+                    // What the host's resolver answers for a row it has deleted.
+                    return Err(fake::not_found(&format!("Session not found: {id}")));
+                }
+                Ok(json!({ "restarted": true }))
+            }
             ["session", "reparent", id, parent] => {
                 let id: SessionId = id.parse().unwrap();
                 let parent = (*parent != "--clear").then(|| parent.parse().unwrap());
@@ -193,6 +216,7 @@ fn rig() -> Rig {
         _guard: guard,
         db: Database::open_in_memory().unwrap(),
         host,
+        _serial: serial,
     }
 }
 
@@ -299,7 +323,7 @@ fn the_hosts_refusal_is_the_callers_error_verbatim() {
 #[test]
 fn a_local_pre_hook_veto_prevents_the_delegation() {
     let rig = rig();
-    let hooks = crate::agent::hooks_config::hooks_config_path().unwrap();
+    let hooks = crate::config::hooks::hooks_config_path().unwrap();
     std::fs::write(
         &hooks,
         "[[hooks]]\nevent = \"session.pre_create\"\ncommand = \"exit 3\"\n",
@@ -332,7 +356,7 @@ fn a_fork_without_a_pinned_conversation_is_not_delegated_either() {
     // what make it a fork, so it stays on this side as well.
     let rig = rig();
     let mut req = create_request("forked-bare");
-    req.inherit_worktrees = vec![crate::sync::SharedWorktree {
+    req.inherit_worktrees = vec![crate::session::SharedWorktree {
         repo_path: PathBuf::from("/srv/repo"),
         worktree_path: PathBuf::from("/srv/worktrees/parent"),
         branch: "parent".into(),
@@ -394,6 +418,169 @@ fn a_restart_asks_the_host_and_a_relaunch_says_if_missing() {
         .nth(1)
         .unwrap();
     assert_eq!(relaunch.last().map(String::as_str), Some("--if-missing"));
+}
+
+/// The interface's repairer (`respawn_missing_agents` → `Command::Restart {
+/// if_missing: true }`) running inside a delegated delete. The host has already
+/// killed the window and dropped its row, the local row is not marked yet, and
+/// the delete still holds the row's lease. The repairer must stand down as it
+/// does for a local session, not ask the host and surface "Session not found"
+/// as "could not restart <name>".
+#[test]
+fn a_repairer_racing_a_delegated_delete_stands_down() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-deleting");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    // Mid-delete: gone on the host, still active here, the delete's lease held.
+    let _delete = super::lock::lock(&rig.db, super::lock::Subject::Session(id), "delete")
+        .unwrap()
+        .expect("the delete holds the row");
+
+    let outcome = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true);
+
+    let report = outcome
+        .unwrap_or_else(|e| panic!("a repairer must not fail on a session being deleted: {e}"));
+    assert!(
+        report.stood_down,
+        "and it says it relaunched nothing, so the interface stays silent"
+    );
+    assert!(
+        !fake::calls()
+            .iter()
+            .any(|c| c.get(1).map(String::as_str) == Some("restart")),
+        "a row another operation holds is not relaunched on the host"
+    );
+}
+
+/// The same repairer one beat later: the delete has finished and marked the row
+/// here, but the interface's snapshot still listed it when it dispatched. A
+/// relaunch "if missing" of a session that no longer exists has nothing to
+/// repair, so it is a no-op rather than an error.
+#[test]
+fn a_repairer_for_a_session_deleted_since_its_snapshot_is_a_no_op() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-deleted");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    rig.db.soft_delete_session(id).unwrap();
+
+    let outcome = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true);
+
+    let report = outcome
+        .unwrap_or_else(|e| panic!("a repairer must not fail on a session already deleted: {e}"));
+    assert!(report.gone, "and it says nothing was relaunched");
+}
+
+/// A delete that began after the repairer checked the hold: the host has
+/// dropped the row, and nothing here holds it any more. The host's "not
+/// found" means there is nothing to relaunch.
+#[test]
+fn a_repairer_the_host_answers_not_found_is_a_no_op() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-gone-there");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+
+    let outcome = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true);
+
+    let report = outcome
+        .unwrap_or_else(|e| panic!("a repairer must not fail on a session its host deleted: {e}"));
+    assert!(
+        report.gone,
+        "a driver is not told a deleted session was restarted"
+    );
+    assert!(
+        fake::calls()
+            .iter()
+            .any(|c| c.get(1).map(String::as_str) == Some("restart")),
+        "with no hold here, the host is still the one asked"
+    );
+}
+
+/// The same race against a host on this build, which answers a repair of a
+/// session it has deleted with `gone` instead of "not found". Nothing was
+/// relaunched, so the report says so and no post-restart hook runs.
+#[test]
+fn a_repairer_the_host_answers_gone_reports_gone_and_fires_no_hooks() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-gone-there");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+    fake::install_runner(Box::new(move |_, args| {
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        match words.as_slice() {
+            ["session", "restart", _, "--if-missing"] => Ok(json!({
+                "restarted": false, "held_back": false, "gone": true,
+            })),
+            ["session", "list", ..] => Ok(json!([])),
+            other => Err(fake::answered(&format!("unscripted: {}", other.join(" ")))),
+        }
+    }));
+    let fired = rig._temp.path().join("post-restart-fired");
+    let hooks = crate::config::hooks::hooks_config_path().unwrap();
+    std::fs::create_dir_all(hooks.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hooks,
+        format!(
+            "[[hooks]]\nevent = 'session.post_restart'\ncommand = 'touch {}'\n",
+            fired.display()
+        ),
+    )
+    .unwrap();
+
+    let report = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, true)
+        .unwrap_or_else(|e| panic!("a repair the host answers gone succeeds: {e}"));
+
+    assert!(report.gone, "the host's gone reaches the caller");
+    assert!(
+        !fired.exists(),
+        "no post-restart hook for a relaunch that never happened"
+    );
+
+    // The control: the same rig does fire the hook for a restart that happened.
+    fake::install_runner(Box::new(move |_, args| {
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        match words.as_slice() {
+            ["session", "restart", ..] => Ok(json!({ "restarted": true })),
+            ["session", "list", ..] => Ok(json!([])),
+            other => Err(fake::answered(&format!("unscripted: {}", other.join(" ")))),
+        }
+    }));
+    let report = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, false)
+        .unwrap_or_else(|e| panic!("an asked restart the host takes succeeds: {e}"));
+    assert!(!report.gone);
+    assert!(fired.exists(), "the hook fires for a real restart");
+}
+
+/// A restart somebody asked for by name is not a repair, so a session that is
+/// gone, here or on its host, is still an error they need to see.
+#[test]
+fn an_asked_restart_of_a_gone_session_still_fails() {
+    let rig = rig();
+    let id = SessionId::default();
+    let mut row = host_session(id, "conv-gone-there");
+    row.backend_type = BACKEND.into();
+    rig.db.upsert_session(&row).unwrap();
+
+    let on_host = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, false);
+    assert!(
+        matches!(on_host, Err(super::OpError::NotFound(_))),
+        "the host's not-found reaches the caller: {:?}",
+        on_host.err().map(|e| e.to_string())
+    );
+
+    rig.db.soft_delete_session(id).unwrap();
+    let here = super::restart::restart_session_headless_with(&rig.db, &rig.backends, id, false);
+    assert!(
+        matches!(here, Err(super::OpError::NotFound(_))),
+        "a row gone here is not found: {:?}",
+        here.err().map(|e| e.to_string())
+    );
 }
 
 /// `--if-missing` is "I am a repairer" on the wire, and a host reads both halves
@@ -594,7 +781,7 @@ fn adoption_preserves_telemetry_attributes_or_reports_an_unsupported_host() {
 fn telemetry_owner_reads_refuse_peers_without_forwarding_support() {
     let rig = rig();
     std::fs::write(
-        crate::agent::settings_config::settings_config_path().unwrap(),
+        crate::config::settings::settings_config_path().unwrap(),
         "[telemetry]\nenabled = true\n",
     )
     .unwrap();
@@ -618,7 +805,7 @@ fn an_unknown_host_name_is_the_one_hard_failure_of_sync() {
 #[test]
 fn a_host_with_sharing_off_is_used_the_old_way() {
     let rig = rig();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(
         &path,
         format!(
@@ -626,7 +813,7 @@ fn a_host_with_sharing_off_is_used_the_old_way() {
         ),
     )
     .unwrap();
-    let hosts = crate::agent::host_config::load_all();
+    let hosts = crate::config::hosts::load_all();
     let host = hosts.get(HOST).unwrap();
     // The forced verdict is bypassed by the config switch, before any probe.
     assert!(matches!(host_cli::usable(host), Usable::No(_)));
@@ -914,9 +1101,9 @@ fn sync_after_hosts_toml(config: &str) -> (Rig, SessionId, Vec<Vec<String>>) {
     mirror::sync(&rig.db, None, false).unwrap();
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
     let before = fake::calls().len();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(path, config).unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     let calls = fake::calls().split_off(before);
@@ -943,9 +1130,9 @@ fn a_removed_hosts_deleted_rows_are_forgotten_too() {
     rig.db.upsert_session(&row).unwrap();
     rig.db.set_host_updated_at(id, 1).unwrap();
     rig.db.soft_delete_session(id).unwrap();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(path, "").unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_deleted_session_by_id(id).unwrap().is_none());
@@ -969,7 +1156,7 @@ fn local_rows_and_a_configured_hosts_rows_are_kept() {
     let mut row = host_session(local, "here");
     row.backend_type = "local:tmux".into();
     rig.db.upsert_session(&row).unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
@@ -984,14 +1171,14 @@ fn distros_that_could_not_be_listed_forget_nothing() {
     row.backend_type = "wsl:Ubuntu".into();
     rig.db.upsert_session(&row).unwrap();
     rig.db.set_host_updated_at(id, 1).unwrap();
-    crate::agent::host_config::with_discovered_wsl(Err("wsl.exe timed out".into()), || {
+    crate::config::hosts::with_discovered_wsl(Err("wsl.exe timed out".into()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(
         rig.db.get_session_by_id(id).unwrap().is_some(),
         "an unlisted distro is unknown, not removed"
     );
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_session_by_id(id).unwrap().is_none());
@@ -1011,7 +1198,7 @@ fn inside_wsl_without_wsl_exe_sibling_distros_are_not_forgotten() {
     rig.db.set_host_updated_at(id, 1).unwrap();
     // Interop off (`appendWindowsPath = false`): no `wsl.exe` on PATH, which
     // discovery reads as "no distros" — true off WSL, not inside it.
-    crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+    crate::paths::with_wsl_distro(Some("Ubuntu"), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(
@@ -1030,9 +1217,9 @@ fn a_removed_hosts_rows_this_database_owns_are_kept() {
     let mut row = host_session(id, "only-recorded-here");
     row.backend_type = BACKEND.into();
     rig.db.upsert_session(&row).unwrap();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(path, "").unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_session_by_id(id).unwrap().is_some());
@@ -1050,7 +1237,7 @@ fn a_loopback_entrys_rows_are_left_to_the_wsl_repair() {
     row.backend_type = "wsl:self".into();
     rig.db.upsert_session(&row).unwrap();
     rig.db.set_host_updated_at(id, 1).unwrap();
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(
         path,
         "[[hosts]]\nname = \"self\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n",
@@ -1064,8 +1251,8 @@ fn a_loopback_entrys_rows_are_left_to_the_wsl_repair() {
     std::fs::write(&wsl, "#!/bin/sh\n").unwrap();
     std::fs::set_permissions(&wsl, std::fs::Permissions::from_mode(0o755)).unwrap();
     crate::paths::with_path(&bin, || {
-        crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
-            crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+        crate::paths::with_wsl_distro(Some("Ubuntu"), || {
+            crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
                 mirror::sync(&rig.db, None, false).unwrap();
             });
         });
@@ -1093,9 +1280,9 @@ fn a_mirror_from_before_the_hosts_clock_is_forgotten_with_its_host() {
     mirror::forget_lists();
     mirror::sync(&rig.db, None, false).unwrap();
 
-    let path = crate::agent::host_config::hosts_config_path().unwrap();
+    let path = crate::config::hosts::hosts_config_path().unwrap();
     std::fs::write(path, "").unwrap();
-    crate::agent::host_config::with_discovered_wsl(Ok(Vec::new()), || {
+    crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(rig.db.get_session_by_id(id).unwrap().is_none());

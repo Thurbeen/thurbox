@@ -53,7 +53,7 @@ socket = "thurbox"            # optional (default "thurbox") — host `tmux -L` 
 session = "thurbox"           # optional (default "thurbox") — host tmux session name
 worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
                               # optional — abs worktrees dir on the host
-multiplexer = "tmux"          # optional (default "tmux") — set "psmux" for a Windows SSH host
+multiplexer = "tmux"          # optional (default: the host platform's — tmux on POSIX, psmux on Windows); set "psmux" for a Windows SSH host
 platform = "windows"          # optional — "posix"/"windows"; unset = windows iff multiplexer is psmux
 otel_endpoint = "http://localhost:4318"
                               # optional — the host's OTLP collector, as the host reaches it (ADR-36);
@@ -176,7 +176,7 @@ distro is always POSIX). `default_shell`, the `default-command` pin and the
 `/bin/sh -lc` login wrap follow the platform, never `cfg(windows)` or the
 multiplexer's name; `needs_liveness_poll` follows whether its control stream
 closes pane readers on window deletion (tmux yes, psmux and RMUX no). Tests simulate the Windows build
-with `session::platform::simulate_local`. A Windows host has no POSIX shell. So
+with `shell::simulate_local`. A Windows host has no POSIX shell. So
 each remote probe ships **two scripts emitting one line protocol** —
 `git::host_probe` picks `sh -c` or `powershell -EncodedCommand`
 (`shell::HostShell::run_script`; UTF-16LE base64, because ssh space-joins its args for a
@@ -198,7 +198,7 @@ real host by `scripts/dev/e2e/real-host.sh <host> transfer-test`.
 Each host registers one backend per adapter, named by its route
 (`ssh:<name>:<mux>` / `wsl:<name>:<mux>`, `backend::wiring`'s table, built from a
 `BackendSpec` of route, launcher, platform and host), registered lazily from
-`host_config::load_all_with_warnings`: discovery/down hosts must
+`config::hosts::load_all_with_warnings`: discovery/down hosts must
 not block startup, so `check_available`/`ensure_ready` are deferred to first use
 — looking a backend up is a map read, and the blocking `ensure_ready` runs on the
 attach worker in `kernel::terminal` (and on the spawn worker for a fresh
@@ -215,7 +215,7 @@ session), never on the loop, ADR-P12).
   the injected registry, refusing a route none serves (ADR-29);
   `session_ops::server_key`
   compares two rows' servers whatever spelling each carries. A host name may
-  not contain `:` (refused at load). **Loading**: `agent::host_config::load_all{,_with_warnings}`
+  not contain `:` (refused at load). **Loading**: `config::hosts::load_all{,_with_warnings}`
   = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry
   wins), with every entry claiming the current distro settled first
   (`settle_wsl_self_hosts` / `wsl_hosts_from`): a loopback dropped, a
@@ -227,7 +227,7 @@ session), never on the loop, ADR-P12).
   **both** startups that open the database (`coordinator::boot` and
   `bin/thurbox-cli`), because the mark is written by whichever gets there first.
   What it rewrites is a `session::WslRepairPlan` decided by the registry as
-  callers *see* it — `agent::host_config::wsl_repair_plan` settles then
+  callers *see* it — `config::hosts::wsl_repair_plan` settles then
   augments with discovery, the loader's own two steps in order:
   - Candidates = `wsl:$WSL_DISTRO_NAME` **plus** each dropped loopback's own
     `backend_name()` (a hand-written `name = "self", distro = "<us>"` wrote
@@ -320,7 +320,7 @@ session), never on the loop, ADR-P12).
   are forgotten, never tombstoned — a tombstone would be pushed back as a
   delete once the host is configured again (`mirror::forget_removed_hosts`,
   from `mirror::sync` and the TUI boot). Rows only this database records are
-  kept. `host_config::served_host_names` is `Err`, and nothing is forgotten,
+  kept. `config::hosts::served_host_names` is `Err`, and nothing is forgotten,
   when `hosts.toml` does not parse, WSL cannot be listed, or thurbox runs
   inside WSL with no `wsl.exe` on `PATH`; a loopback entry's rows are left to
   the WSL repair.
@@ -411,7 +411,7 @@ session), never on the loop, ADR-P12).
   `\` honoured as a separator **only** for such a root (it is a legal POSIX
   filename char) since the injected arg mixes them (`C:\…\hooks/claude.json`).
   On a route whose backend reports no status channel
-  (`SessionBackend::hook_signal_command` is `None` — psmux today) or a failed
+  (`StatusChannel::hook_signal_command` is `None` — psmux today) or a failed
   home lookup/copy the **flag+path pair is stripped** so the agent launches
   clean — surfaced as a `Hooks: degraded` row in the info panel
   (`SessionInfo.hook_wiring`). Literal signal commands carried directly in
@@ -570,16 +570,18 @@ session), never on the loop, ADR-P12).
   message lands in the wrong branch silently. `ssh` exits **255** for its own
   failures and passes a remote command's status through untouched, and
   `thurbox-cli` only ever exits 1 to 6 — so 255 means the question never
-  arrived, whatever stderr says (`listing_is_absence`,
+  arrived, whatever stderr says (`mux_answered`,
   `host_cli::classify_failure`). `host_cli::Reach` names the three answers —
   `Unreached` / `Answered` / `Undetermined` — and the third is its own answer,
   never rounded to the nearest of the other two. `wsl.exe` has no 255
   convention, so a WSL host is never `Unreached` on a status alone.
-  **Do not widen `mux_answered_absent`**: it is narrowed to the exact answers
-  tmux and psmux are documented to give, and each extra string makes it more
-  confidently wrong about the next one nobody anticipated. In particular
-  `error connecting to` is not a prefix match — only `(No such file or
-  directory)` is absence; `(Permission denied)` / `(Connection refused)` /
+  **Do not widen `TmuxCompatible::answered_absent`**: each adapter answers it
+  in its own multiplexer's exact words, matched from the first byte (tmux's
+  are the default, `tmux_answered_absent`), and it is the one classifier a
+  one-shot's stderr, a control-mode `%error` and a status-zero `ERROR:` all go
+  through. Each extra string makes it more confidently wrong about the next
+  one nobody anticipated. In particular `error connecting to` is not a prefix
+  match — only `(No such file or directory)` is absence; `(Permission denied)` / `(Connection refused)` /
   `(Connection reset by peer)` are a server that may be alive behind a socket
   that cannot be opened right now.
 - **An unclassifiable failure takes whichever branch destroys nothing**, which
@@ -655,8 +657,9 @@ session), never on the loop, ADR-P12).
   transitive row gets `backend_id = ""` (the far host's pane id names another
   agent on B's server; remote rows attach to their stored id unsurveyed) and
   borrowed worktrees (`created_by_thurbox = false`, so a fallback teardown on
-  B removes nothing). `settings.toml` `[remote] transitive_sessions = false`
-  (`Transitive::Hide`, read per pass by `settings_config::load_quiet`) takes
+  B removes nothing) — but only under `settings.toml` `[remote]
+  transitive_sessions = true` (`Transitive::Show`). The default, `false`
+  (`Transitive::Hide`, read per pass by `config::settings::load_quiet`), takes
   only own rows and **forgets** the transitive ones held on that backend
   (`Database::forget_session`, event reason `forgotten`) — never a tombstone,
   which the next pass would push to B as a delete of a live session.

@@ -79,7 +79,7 @@ pub fn record(tick: &LastTick) {
 /// A tick that failed with `error`, now.
 pub fn failed(error: &str) -> LastTick {
     LastTick {
-        at: crate::sync::current_time_millis(),
+        at: crate::storage::current_time_millis(),
         ok: false,
         error: Some(error.to_string()),
         fired: 0,
@@ -94,14 +94,10 @@ pub fn last() -> Option<LastTick> {
     serde_json::from_str(&raw).ok()
 }
 
-/// Written beside the target and renamed over it, so a reader never sees half
-/// a document.
 fn write_state(tick: &LastTick) -> std::io::Result<()> {
     let path = state_path().ok_or_else(no_data_dir)?;
     let json = serde_json::to_string(tick).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension(format!("json.{}", std::process::id()));
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, &path)
+    crate::paths::write_atomically(&path, json)
 }
 
 fn append_log(at: u64, line: &str) -> std::io::Result<()> {
@@ -134,7 +130,7 @@ fn trim(path: &std::path::Path) -> std::io::Result<()> {
         .iter()
         .position(|&b| b == b'\n')
         .map_or(bytes.len(), |i| cut + i + 1);
-    std::fs::write(path, &bytes[start..])
+    crate::paths::write_atomically(path, &bytes[start..])
 }
 
 fn no_data_dir() -> std::io::Error {

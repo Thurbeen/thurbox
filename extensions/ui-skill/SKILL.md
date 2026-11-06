@@ -163,7 +163,7 @@ it is **stops reloading at all**. Generated files belong in
 
 ## Performance: make the pane cost what changed, not what exists
 
-`render` runs on the UI thread up to thirty times a second, so the kernel gives
+`render` runs on the UI thread up to sixty times a second, so the kernel gives
 every pane three levers — and a custom pane that skips them is the one thing
 that can make the whole interface feel slow.
 

@@ -10,8 +10,6 @@
 use clap::Args;
 use serde_json::json;
 
-use crate::session::settings;
-
 use super::output::{kv, CommandOutput};
 
 /// `version` subcommand arguments.
@@ -24,15 +22,10 @@ pub struct VersionArgs {
 
 /// Run the `version` command. Takes no database — it only reads the compiled-in
 /// version and (with `--check`) the network.
-pub fn run(args: VersionArgs) -> CommandOutput {
-    run_with(args, settings::global().features.version_check)
-}
-
-/// Same as [`run`] but with the `version_check` flag passed explicitly, so the
-/// disabled path is testable without depending on the process-global default
-/// (the flag is on by default for 1.0).
-fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
-    let current = crate::agent::version_check::current_version();
+///
+/// `enabled` is `[features] version_check` as the process loaded it.
+pub fn run(args: VersionArgs, enabled: bool) -> CommandOutput {
+    let current = crate::update::version_check::current_version();
 
     if !args.check {
         // The extra facts are what a *peer* thurbox reads when it probes this
@@ -60,6 +53,8 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
                 "telemetry_attrs": true,
                 "purged_tombstones": true,
                 "lifecycle_preconditions": true,
+                "session_restart_fresh": true,
+                "message_native_send": true,
             }),
             format!("thurbox {current}"),
         );
@@ -78,13 +73,13 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
         );
     }
 
-    match crate::agent::version_check::refresh_cache() {
+    match crate::update::version_check::refresh_cache() {
         Ok((_, Some(status))) => {
             // A new major is reported but never installed for you, so the two
             // cases need different advice — pointing a 1.x user at the plain
             // installer would hand them the 2.x line it is warning them about.
             let latest = &status.latest;
-            let is_major = crate::agent::version_check::crosses_major(current, latest);
+            let is_major = crate::update::version_check::crosses_major(current, latest);
             let (label, upgrade, summary) = if is_major {
                 (
                     "available (new major)",
@@ -153,7 +148,7 @@ mod tests {
 
     #[test]
     fn version_without_check_prints_current_version() {
-        let out = run(VersionArgs { check: false });
+        let out = run(VersionArgs { check: false }, true);
         assert!(out["version"].is_string(), "version field present");
         assert_eq!(out["multiplexer_choice"], true);
         assert_eq!(out["soft_delete_choice"], true);
@@ -162,6 +157,8 @@ mod tests {
         assert_eq!(out["deleted_changes_since"], true);
         assert_eq!(out["create_parity"], true);
         assert_eq!(out["telemetry_attrs"], true);
+        assert_eq!(out["session_restart_fresh"], true);
+        assert_eq!(out["message_native_send"], true);
         assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
         assert!(out.failure.is_none(), "plain version never fails");
     }
@@ -169,8 +166,8 @@ mod tests {
     #[test]
     fn version_check_when_flag_disabled_prints_enable_hint() {
         // The flag is on by default for 1.0, so exercise the disabled path
-        // directly via `run_with` — no process-global settings, no network.
-        let out = run_with(VersionArgs { check: true }, false);
+        // directly, with the flag passed in — no network.
+        let out = run(VersionArgs { check: true }, false);
         assert_eq!(out["check_enabled"], false);
         assert!(out.human.contains("disabled"), "got: {}", out.human);
         assert!(

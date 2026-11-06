@@ -9,7 +9,7 @@
 use rusqlite::{params, OptionalExtension};
 
 use crate::session::{AutomationAction, Task, TaskStatus, SOURCE_LOCAL};
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::audit::{AuditAction, EntityType};
 use super::Database;
@@ -176,6 +176,24 @@ impl Database {
             Some(&task.title),
         )?;
         Ok(())
+    }
+
+    /// Read active task `id`, let `change` edit it, and write it back, all
+    /// inside one `BEGIN IMMEDIATE` transaction. Returns whether there was a
+    /// task to change.
+    ///
+    /// The read happens under the write lock, so a peer's write committed while
+    /// this one waited is in the row `change` sees rather than overwritten by a
+    /// copy read before it.
+    pub fn modify_task(&self, id: i64, change: impl FnOnce(&mut Task)) -> rusqlite::Result<bool> {
+        let tx = self.write_transaction()?;
+        let Some(mut task) = self.get_task(id)? else {
+            return Ok(false);
+        };
+        change(&mut task);
+        self.update_task(&task)?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Update only a task's status. Returns whether a row changed.

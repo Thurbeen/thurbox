@@ -73,7 +73,7 @@ Each release includes:
   - `thurbox-v{ver}-x86_64-unknown-linux-musl.tar.gz`
   - `thurbox-v{ver}-aarch64-unknown-linux-musl.tar.gz` (Graviton, Ampere,
     Raspberry Pi, Asahi; built with `cross` like the x86_64 musl leg, and
-    pinned before release by CI's `arm-clippy` job on `ubuntu-24.04-arm`)
+    pinned before release by CI's `arm-clippy` job on `ubuntu-26.04-arm`)
   - `thurbox-v{ver}-aarch64-apple-darwin.tar.gz`
   - `thurbox-v{ver}-x86_64-pc-windows-msvc.zip` (the Windows artifact
     extracted by `install.ps1` / packaged by Chocolatey + winget)
@@ -217,7 +217,7 @@ ARM64 Windows installs the x86_64 build (runs under x64 emulation).
 - No external deps beyond standard tools (curl/wget, tar, sha256sum/shasum)
 - Env vars: `VERSION=v1.0.0`, `INSTALL_DIR=/path` (default `~/.local/bin`)
 - Non-interactive (safe pipe-to-shell), cleanup via `trap`
-- Tested by `scripts/install.bats` (bats-core, ~28 tests; CI `install-script` job)
+- Tested by `scripts/install.bats` (bats-core, ~30 tests; CI `install-script` job)
 
 **`install.ps1` (PowerShell 5.1+) specifics:**
 

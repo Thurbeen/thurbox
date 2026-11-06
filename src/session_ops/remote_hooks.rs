@@ -40,6 +40,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
+use crate::session::background_work::ReportFrom;
 use crate::session::{HostDef, SessionId};
 
 use super::builtin_hooks;
@@ -552,22 +553,17 @@ fn merged_remote_toml_doc(
     Ok(Some(after))
 }
 
-/// The hook states a headless poll may write — the same allow-list the
-/// interface's live drain applies (`Terminals::drain_hook_events`): the polled
-/// value is pane-controlled free text, so it is matched, never interpolated.
-const VALID_POLL_STATES: [&str; 5] = crate::session::HOOK_STATES;
+/// One row a poll may write to: its id, its pane, the state it holds and
+/// whether it is parked.
+type PollRow<'a> = (SessionId, &'a str, Option<&'a str>, bool);
 
 /// Join one backend's polled `(pane_id, state)` pairs against the sessions on
-/// its route, returning the `(session, state)` writes that change anything.
-/// Pure — the backend/DB plumbing lives in [`poll_hook_states`].
-///
-/// Comparing against the **stored** state is the resurrection guard: an
-/// acknowledged `done` still stores `done` (`seen_at` is a separate column),
-/// so a steady-state re-report compares equal and is dropped — the headless
-/// equivalent of the interface drain's dedup against its cache.
+/// its route, returning the `(session, state)` writes that change anything —
+/// judged by [`super::signals::echo_changes`], as the interface's subscription
+/// judges them. Pure — the backend/DB plumbing lives in [`poll_hook_states`].
 fn hook_status_updates(
     polled: &[(String, String)],
-    sessions: &[(SessionId, &str, Option<&str>)],
+    sessions: &[PollRow<'_>],
 ) -> Vec<(SessionId, String)> {
     let states: HashMap<&str, &str> = polled
         .iter()
@@ -575,19 +571,16 @@ fn hook_status_updates(
         .collect();
     sessions
         .iter()
-        .filter_map(|(id, backend_id, stored)| {
+        .filter_map(|&(id, backend_id, held, stopped)| {
             let state = states.get(backend_id)?;
-            if !VALID_POLL_STATES.contains(state) {
-                return None;
-            }
-            (*stored != Some(*state)).then(|| (*id, state.to_string()))
+            super::signals::echo_changes(held, stopped, state).then(|| (id, state.to_string()))
         })
         .collect()
 }
 
 /// Headless counterpart of the interface's live status channels: ask the
 /// backend serving each route that has **live sessions in the DB** for its
-/// panes' hook states ([`crate::backend::SessionBackend::hook_states`]), and
+/// panes' hook states ([`crate::backend::StatusChannel::hook_states`]), and
 /// write the changed ones into the same hook columns `session signal` uses.
 /// Returns the number of states written.
 ///
@@ -612,10 +605,10 @@ pub(crate) fn poll_hook_states(
     let Ok(sessions) = db.list_active_sessions() else {
         return 0;
     };
-    let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+    let (hosts, _warnings) = crate::config::hosts::cached_registry();
     // By the server a row's route settles to, not by its spelling: a legacy
     // `ssh:box` row and a new `ssh:box:tmux` one are one listing.
-    let mut by_route: HashMap<crate::session::Route, Vec<&crate::sync::SharedSession>> =
+    let mut by_route: HashMap<crate::session::Route, Vec<&crate::session::SharedSession>> =
         HashMap::new();
     for s in &sessions {
         match crate::session::Route::parse(&s.backend_type) {
@@ -627,6 +620,7 @@ pub(crate) fn poll_hook_states(
         return 0;
     }
     let hook_rows = db.load_hook_states().unwrap_or_default();
+    let stopped = db.load_stopped_sessions().unwrap_or_default();
     let mut written = 0;
     for (route, group) in by_route {
         if route.host().is_some() && hosts.host_of(&route).is_none() {
@@ -644,24 +638,26 @@ pub(crate) fn poll_hook_states(
                 continue;
             }
         };
-        let rows: Vec<(SessionId, &str, Option<&str>)> = group
+        let rows: Vec<PollRow<'_>> = group
             .iter()
             .map(|s| {
                 (
                     s.id,
                     s.backend_id.as_str(),
                     hook_rows.get(&s.id).and_then(|r| r.state.as_deref()),
+                    stopped.contains(&s.id),
                 )
             })
             .collect();
         for (id, state) in hook_status_updates(&polled, &rows) {
             // An echo of what `session signal` published, in the order its
-            // writers published rather than stored: `report_hook_state` refuses
+            // writers published rather than stored: `signals::report` refuses
             // a late `background` for work that has all ended (issue #1510).
-            match db.report_hook_state(id, &state) {
-                // A parked session takes nothing, and that is not a failure:
-                // `session stop` killed the pane the backend still reports.
-                Ok(taken) => written += usize::from(taken.is_some()),
+            match super::signals::report(db, id, &state, ReportFrom::Echo, None) {
+                Ok(reported) => {
+                    written +=
+                        usize::from(matches!(reported, super::signals::Reported::Stored { .. }))
+                }
                 Err(e) => tracing::debug!("status poll write failed for {id}: {e}"),
             }
         }
@@ -740,15 +736,18 @@ mod tests {
             ("%9".to_string(), "blocked".to_string()), // no matching session
         ];
         let sessions = [
-            (a, "%1", None),         // first report → write
-            (b, "%2", Some("done")), // unchanged (incl. an acknowledged done) → silent
+            (a, "%1", None, false),         // first report → write
+            (b, "%2", Some("done"), false), // unchanged (incl. an acknowledged done) → silent
         ];
         assert_eq!(
             hook_status_updates(&polled, &sessions),
             vec![(a, "working".to_string())]
         );
         // A change writes; a pane whose option is unset stays untouched.
-        let sessions = [(a, "%1", Some("working")), (b, "%3", Some("done"))];
+        let sessions = [
+            (a, "%1", Some("working"), false),
+            (b, "%3", Some("done"), false),
+        ];
         let polled = vec![("%1".to_string(), "done".to_string())];
         assert_eq!(
             hook_status_updates(&polled, &sessions),
@@ -765,7 +764,15 @@ mod tests {
             ("%1".to_string(), "pwned; DROP TABLE".to_string()),
             ("%1".to_string(), "Working".to_string()), // case-sensitive
         ];
-        assert!(hook_status_updates(&polled, &[(a, "%1", None)]).is_empty());
+        assert!(hook_status_updates(&polled, &[(a, "%1", None, false)]).is_empty());
+    }
+
+    #[test]
+    fn a_parked_session_takes_no_polled_state() {
+        // `session stop` killed the pane; the backend may still report it.
+        let a = SessionId::default();
+        let polled = vec![("%1".to_string(), "working".to_string())];
+        assert!(hook_status_updates(&polled, &[(a, "%1", Some("done"), true)]).is_empty());
     }
 
     /// Every config-dir wiring in the embedded manifest must have a matching

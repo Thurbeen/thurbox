@@ -37,6 +37,7 @@
 
 use clap::{Parser, Subcommand};
 
+use crate::session::settings::Settings;
 use crate::storage::Database;
 
 #[cfg(test)]
@@ -188,7 +189,7 @@ impl std::fmt::Display for CommandError {
 #[derive(Parser, Debug)]
 #[command(
     name = "thurbox-cli",
-    version = crate::agent::version_check::current_version(),
+    version = crate::update::version_check::current_version(),
     about,
     after_help = EXAMPLES
 )]
@@ -484,7 +485,14 @@ impl<'a> Backends<'a> {
 ///
 /// `Err` means nothing was printed. A command that rendered normally and still
 /// wants a non-zero exit comes back as [`Outcome::Failed`].
-pub fn run(cli: Cli, db: &Database, backends: &Backends<'_>) -> Result<Outcome, CommandError> {
+/// `settings` are the ones this process loaded: every value a command reads
+/// from `settings.toml` comes from here, never from process state.
+pub fn run(
+    cli: Cli,
+    db: &Database,
+    backends: &Backends<'_>,
+    settings: &Settings,
+) -> Result<Outcome, CommandError> {
     // A peer probing this machine looks for its CLI under the data dir; keep
     // that pointer true (a readlink when it already is).
     crate::session_ops::host_cli::advertise_running_cli();
@@ -533,7 +541,7 @@ pub fn run(cli: Cli, db: &Database, backends: &Backends<'_>) -> Result<Outcome, 
                     *soft = true;
                 }
             }
-            let output = dispatch(command, db, backends)?;
+            let output = dispatch(command, db, backends, settings)?;
             if kept_soft {
                 eprintln!(
                     "warning: a flagless `session delete --json` is a soft delete (restorable, \
@@ -589,29 +597,30 @@ fn dispatch(
     command: Command,
     db: &Database,
     backends: &Backends<'_>,
+    settings: &Settings,
 ) -> Result<CommandOutput, CommandError> {
     Ok(match command {
         Command::Editor { action } => editor::run(action, db)?,
         Command::Agent { action } => agents::run(action, db, backends)?,
-        Command::Session { action } => sessions::run(action, db, backends)?,
-        Command::Automation { action } => automations::run(action, db, backends)?,
+        Command::Session { action } => sessions::run(action, db, backends, settings)?,
+        Command::Automation { action } => automations::run(action, db, backends, settings)?,
         Command::Task { action } => tasks::run(action, db, backends)?,
         Command::Message { action } => messages::run(action, db)?,
         Command::Config { action } => {
             let validating = matches!(action, config::Action::Validate);
-            let output = config::run(action, db)?;
+            let output = config::run(action, db, settings)?;
             if validating
                 && output.failure.is_none()
                 && crate::session_ops::state_hooks::configured()
             {
-                automations::arm_heartbeat(backends.local());
+                automations::arm_heartbeat(backends.local(), settings);
             }
             output
         }
-        Command::Extension { action } => extensions::run(action, db, backends)?,
-        Command::Version(args) => version::run(args),
-        Command::Update(args) => update::run(args),
-        Command::Notify(args) => notify::run(args, db)?,
+        Command::Extension { action } => extensions::run(action, db, backends, settings)?,
+        Command::Version(args) => version::run(args, settings.features.version_check),
+        Command::Update(args) => update::run(args, settings.features.auto_update),
+        Command::Notify(args) => notify::run(args, db, settings)?,
         Command::Perf(args) => perf::run(db, args.plugins)?,
         // Never returns a document: it *is* the document, one line at a time,
         // written as each change lands. Handled before dispatch for that

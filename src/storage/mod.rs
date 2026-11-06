@@ -136,6 +136,15 @@ pub(super) fn action_from_columns(kind: &str, cols: ActionColumns) -> Automation
     }
 }
 
+/// Milliseconds since the Unix epoch: the clock every stored timestamp is
+/// written in.
+pub fn current_time_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// SQLite-backed database for application state.
 pub struct Database {
     conn: Connection,
@@ -157,16 +166,24 @@ impl Database {
             instance_id: Uuid::new_v4().to_string(),
         };
         // Best-effort retention; opening the DB must not fail over old breadcrumbs.
-        if let Err(e) = db.prune_audit_log() {
-            tracing::warn!("Failed to prune audit log: {e}");
-        }
         if let Err(e) = db.prune_old_messages() {
             tracing::warn!("Failed to prune session messages: {e}");
         }
-        if let Err(e) = db.prune_session_events() {
+        Ok(db)
+    }
+
+    /// The startup retention sweep over the audit log and the session event
+    /// log, both kept for `audit_retention_days` (`settings.toml`). Run by each
+    /// binary once it has loaded its settings, not by [`Self::open`]: a
+    /// connection is not where a user setting is known. Best-effort — old
+    /// breadcrumbs left in place are no reason to fail.
+    pub fn prune_history(&self, audit_retention_days: u64) {
+        if let Err(e) = self.prune_audit_log(audit_retention_days) {
+            tracing::warn!("Failed to prune audit log: {e}");
+        }
+        if let Err(e) = self.prune_session_events(audit_retention_days) {
             tracing::warn!("Failed to prune the session event log: {e}");
         }
-        Ok(db)
     }
 
     /// Open a database whose schema is already in place, skipping the schema
@@ -343,8 +360,8 @@ mod tests {
         assert_ne!(db1.instance_id, db2.instance_id);
     }
 
-    fn session_row(name: &str) -> crate::sync::SharedSession {
-        crate::sync::SharedSession {
+    fn session_row(name: &str) -> crate::session::SharedSession {
+        crate::session::SharedSession {
             id: crate::session::SessionId::default(),
             name: name.to_string(),
             agent: "claude".to_string(),
@@ -475,10 +492,17 @@ mod tests {
         let peer_stop = Arc::clone(&stop);
         let peer_path = path.clone();
         let peer_id = peer_row.id;
-        // What every agent hook does: `thurbox-cli session signal`, on its own
-        // connection, as often as the agent changes state.
+        // What every agent hook does: `thurbox-cli session signal`, one
+        // process per report, so a connection opened for that one write — as
+        // often as the agent changes state.
+        //
+        // Not one connection writing back to back: that peer re-takes the
+        // write lock within microseconds of releasing it, and SQLite's busy
+        // handler polls on a backoff up to 100 ms rather than queueing, so a
+        // waiter can miss every gap for all of `BUSY_TIMEOUT` (1 run in ~20).
+        // No writer of this database holds the lock like that; a hook pays a
+        // connection open between two reports.
         let peer = std::thread::spawn(move || {
-            let db = Database::open_existing(&peer_path).unwrap();
             let mut n = 0u64;
             let mut refused = 0u64;
             while !peer_stop.load(Ordering::Relaxed) {
@@ -487,7 +511,9 @@ mod tests {
                 } else {
                     "done"
                 };
-                if db.set_hook_state(peer_id, state).is_err() {
+                let reported = Database::open_for_signal(&peer_path)
+                    .and_then(|db| db.set_hook_state(peer_id, state));
+                if reported.is_err() {
                     refused += 1;
                 }
                 n += 1;

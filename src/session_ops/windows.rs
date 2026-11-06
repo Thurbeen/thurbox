@@ -21,7 +21,7 @@ pub(crate) fn backend_for<'r>(
     backend_type: &str,
 ) -> Result<&'r std::sync::Arc<dyn crate::backend::SessionBackend>, crate::session_ops::OpError> {
     let route = crate::session::Route::parse(backend_type).map_err(|e| e.to_string())?;
-    let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+    let (hosts, _warnings) = crate::config::hosts::cached_registry();
     if let Some(name) = route.host() {
         if hosts.host_of(&route).is_none() {
             return Err(format!("host '{name}' is not in hosts.toml").into());
@@ -48,7 +48,7 @@ pub type BackendPane<'r> = (
 /// session's agent reads as its own.
 pub fn agent_pane<'r>(
     backends: &'r crate::backend::BackendRegistry,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
 ) -> Result<Option<BackendPane<'r>>, crate::session_ops::OpError> {
     let backend = backend_for(backends, &session.backend_type)?;
     let id = session.id.to_string();
@@ -76,7 +76,7 @@ pub fn agent_pane<'r>(
 /// verb that must reach the agent wants.
 pub fn require_agent_pane<'r>(
     backends: &'r crate::backend::BackendRegistry,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
 ) -> Result<BackendPane<'r>, crate::session_ops::OpError> {
     agent_pane(backends, session)?.ok_or_else(|| {
         crate::session_ops::OpError::NotFound(format!(

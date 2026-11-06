@@ -16,7 +16,7 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 use thurbox::session::SessionId;
-use thurbox::sync::SharedSession;
+use thurbox::session::SharedSession;
 
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
@@ -520,7 +520,7 @@ fn assert_purge_outcomes(env: &Env, listable: bool) {
             )
             .unwrap();
     }
-    let forty_days_ago = thurbox::sync::current_time_millis() - 40 * 24 * 60 * 60 * 1000;
+    let forty_days_ago = thurbox::storage::current_time_millis() - 40 * 24 * 60 * 60 * 1000;
     db.conn_ref()
         .execute(
             "UPDATE sessions SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2",

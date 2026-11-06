@@ -306,7 +306,7 @@ next tick), and the restart path's `clear_hook_state` calls
 `data_version`, so they're picked up on the next tick as before.
 
 **The v2 gate**: `SnapshotStore` polls `data_version` on its 400 ms cadence,
-through the one thread that owns its connection (`kernel::snapshot_db`, from
+through the one thread that owns its connection (`kernel::snapshot::db`, from
 issue #1474): the event loop sends the poll and applies the answer when it
 lands, so a write lock another process holds stalls that thread's busy wait,
 never a frame. The loop's own writes — acknowledging a `done`, recording a
@@ -525,10 +525,10 @@ attach, serialized by the connection mutex — inherently sequential). Restore
 now runs all matched panes' captures **in parallel** up front
 (`App::prefetch_capture_seeds`, a bounded `std::thread::scope` fan-out capped
 at 8 concurrent subprocesses) and passes each seed into the adopt:
-`SessionBackend::adopt` takes `seed: Option<Vec<u8>>` (`None` = capture
+`PaneStream::adopt` takes `seed: Option<Vec<u8>>` (`None` = capture
 inline, exactly the old behavior — used by mid-run adopts, shell-pane
 re-adoption, and the remote restore path) and the new
-`SessionBackend::capture_history` exposes the capture as its own trait method.
+`PaneStream::capture_history` exposes the capture as its own trait method.
 With N sessions the restore's capture cost drops from `N × capture_ms` to
 roughly one `capture_ms`; `adopt_split` now logs `capture_ms ≈ 0` on the
 startup path, and a `restore_capture_prefetch` line (`sessions`,
@@ -1097,7 +1097,7 @@ the work wasted only after paying for it.
 **Four things the implementation taught, each caught by a test rather than by
 review:**
 
-- **`taken_at_ms` is published**, and `widgets.relative_time` renders it, so the
+- **`taken_at_ms` is published**, and `widgets.time_ago` renders it, so the
   clock has to advance or "5s ago" freezes. ADR-P29 separates that signal
   from the row generation and scopes it to the panes that read it.
 - **A pure render may read `store`/`state`**, which handlers write. Without that
@@ -1222,7 +1222,7 @@ resets the frame buffer before every draw, so there is nothing stale to erase
 across frames, and a live terminal covers its own rect — the `Clear` was a second
 full-grid write of ~9,000 cells for a frame about to overwrite them. It is kept
 for the branches that do *not* cover their rect, each owning its own clear rather
-than being cleared by the caller: `kernel::terminal::clear_uncovered` for a grid
+than being cleared by the caller: `kernel::terminal::links::clear_uncovered` for a grid
 still smaller than its rect a frame after a resize, and the detached and notice
 widgets for themselves. `normalize_ambiguous_width` also rejects a cell on a
 length compare (`VARIATION_SELECTOR_16_LEN`, derived from the selector rather

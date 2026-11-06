@@ -10,14 +10,15 @@
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::cli::identity::{caller, calling_session};
+use crate::cli::identity::{caller, sender};
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
-use crate::session::{SessionId, SessionMessage};
-use crate::session_ops::delivery::{self, DeliveredVia, Handed};
+use crate::session::SessionMessage;
+use crate::session::SharedSession;
+use crate::session_ops::delivery::{self, DeliveredVia, Handed, Sender};
+use crate::storage::current_time_millis;
 use crate::storage::messages::{NewMessage, DEFAULT_RETENTION_DAYS};
 use crate::storage::Database;
-use crate::sync::{current_time_millis, SharedSession};
 
 const MS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
 
@@ -37,6 +38,11 @@ pub enum Action {
     /// fact about the route: thurbox cannot see whether a dialog was shown or
     /// answered. A delivered row is marked read, so `message inbox --all`
     /// still shows it while it waits.
+    ///
+    /// A session on a host that shares its sessions is sent to by that host's
+    /// own thurbox-cli, whose mailbox the agent there reads. `delivered` says
+    /// whether an agent was handed the body; `false` means it waits in the
+    /// mailbox only.
     Send {
         /// Recipient session (UUID or name).
         #[arg(long)]
@@ -45,8 +51,13 @@ pub enum Action {
         #[arg(long)]
         kind: String,
         /// Message body.
-        #[arg(long)]
-        body: String,
+        #[arg(long, required_unless_present = "body_stdin")]
+        body: Option<String>,
+        /// Read the body from stdin instead: what a peer thurbox uses, so the
+        /// body is on no command line (a Windows shell takes 8191 characters,
+        /// and `ps` shows one to every user).
+        #[arg(long, conflicts_with = "body")]
+        body_stdin: bool,
         /// Originating task id. Defaults to the caller's `THURBOX_TASK` when run
         /// inside a task-spawned session; pass explicitly to override.
         #[arg(long)]
@@ -58,6 +69,8 @@ pub enum Action {
         /// Only enqueue: don't deliver into the recipient agent's inbox.
         #[arg(long = "no-wake")]
         no_wake: bool,
+        #[command(flatten)]
+        native: NativeArgs,
     },
     /// Reply to a message: enqueue back to its original sender and deliver it
     /// to their agent's inbox, as `send` does.
@@ -77,6 +90,8 @@ pub enum Action {
         /// Only enqueue: don't deliver into the recipient agent's inbox.
         #[arg(long = "no-wake")]
         no_wake: bool,
+        #[command(flatten)]
+        native: NativeArgs,
     },
     /// Read a session's inbox. Peeks unread by default; `--claim` drains them.
     Inbox {
@@ -105,23 +120,57 @@ pub enum Action {
     },
 }
 
+/// How hard `send` and `reply` insist on reaching the agent itself.
+#[derive(clap::Args, Debug, Default, Clone, Copy)]
+pub struct NativeArgs {
+    /// Fail (exit 1) when the body reached only the mailbox. The message stays
+    /// enqueued either way, and the answer is printed either way.
+    #[arg(long, conflicts_with = "no_wake")]
+    pub require_native: bool,
+    /// Seconds to wait for the recipient to have an agent inbox before leaving
+    /// the body in the mailbox: a Codex session is unreachable until its first
+    /// hook binds a thread, which is the moment it is sent its first prompt.
+    #[arg(long, value_name = "SECONDS", conflicts_with = "no_wake")]
+    pub wait_bound: Option<u64>,
+}
+
 pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError> {
     match action {
         Action::Send {
             to,
             kind,
             body,
+            body_stdin,
             task,
             from,
             no_wake,
-        } => send_message(db, to, kind, body, task, from, no_wake),
+            native,
+        } => {
+            let body = match body {
+                Some(body) => body,
+                None if body_stdin => {
+                    let mut body = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut body)
+                        .map_err(|e| format!("read the body from stdin: {e}"))?;
+                    body
+                }
+                None => {
+                    return Err(crate::session_ops::OpError::Usage(
+                        "--body or --body-stdin is required".into(),
+                    )
+                    .into())
+                }
+            };
+            send_message(db, to, kind, body, task, from, no_wake, native)
+        }
         Action::Reply {
             message_id,
             body,
             kind,
             from,
             no_wake,
-        } => reply_message(db, message_id, body, kind, from, no_wake),
+            native,
+        } => reply_message(db, message_id, body, kind, from, no_wake, native),
         Action::Inbox {
             for_session,
             claim,
@@ -136,6 +185,7 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, CommandError>
 }
 
 /// Handle `message send`: enqueue a message addressed to a session.
+#[allow(clippy::too_many_arguments)]
 fn send_message(
     db: &Database,
     to: String,
@@ -144,21 +194,22 @@ fn send_message(
     task: Option<i64>,
     from: Option<String>,
     no_wake: bool,
+    native: NativeArgs,
 ) -> Result<CommandOutput, CommandError> {
     let recipient = resolve_uuid_or_name(db, &to)?;
     // Provenance + task tag default to the calling session's injected
     // identity (`THURBOX_SESSION` / `THURBOX_TASK`), so an agent never has
     // to know or pass its own ids. Explicit flags override.
-    let from_session_id = resolve_from(db, from.as_deref())?;
+    let from = resolve_from(db, from.as_deref())?;
     let from_task_id = task.or_else(calling_task_id);
     let new = NewMessage {
         to_session_id: recipient.id,
-        from_session_id,
+        from_session_id: from.session_id(),
         from_task_id,
         kind,
         body,
     };
-    enqueue_and_deliver(db, &recipient, new, no_wake)
+    enqueue_and_deliver(db, &recipient, new, from, no_wake, native)
 }
 
 /// Handle `message reply`: enqueue back to the original message's sender.
@@ -169,6 +220,7 @@ fn reply_message(
     kind: String,
     from: Option<String>,
     no_wake: bool,
+    native: NativeArgs,
 ) -> Result<CommandOutput, CommandError> {
     let original = db
         .get_message(message_id)
@@ -181,24 +233,24 @@ fn reply_message(
         .get_session_by_id(sender_id)
         .map_err(|e| format!("get_session_by_id: {e}"))?
         .ok_or_else(|| format!("Sender of message #{message_id} ({sender_id}) no longer exists"))?;
-    let from_session_id = resolve_from(db, from.as_deref())?;
+    let from = resolve_from(db, from.as_deref())?;
     // Carry the originating task tag through so the reply stays threaded.
     let new = NewMessage {
         to_session_id: recipient.id,
-        from_session_id,
+        from_session_id: from.session_id(),
         from_task_id: original.from_task_id,
         kind,
         body,
     };
-    enqueue_and_deliver(db, &recipient, new, no_wake)
+    enqueue_and_deliver(db, &recipient, new, from, no_wake, native)
 }
 
-/// Resolve the `--from` provenance: an explicit reference, else the calling
-/// session's injected id (`THURBOX_SESSION`).
-fn resolve_from(db: &Database, from: Option<&str>) -> Result<Option<SessionId>, CommandError> {
+/// Resolve the `--from` provenance: an explicit reference, else the caller
+/// named by its injected `THURBOX_SESSION`.
+fn resolve_from(db: &Database, from: Option<&str>) -> Result<Sender, CommandError> {
     match from {
-        Some(f) => Ok(Some(resolve_uuid_or_name(db, f)?.id)),
-        None => Ok(calling_session_id(db)),
+        Some(f) => Ok(Sender::Session(resolve_uuid_or_name(db, f)?.id)),
+        None => Ok(sender(db)),
     }
 }
 
@@ -313,11 +365,24 @@ fn enqueue_and_deliver(
     db: &Database,
     recipient: &SharedSession,
     new: NewMessage,
+    from: Sender,
     no_wake: bool,
+    native: NativeArgs,
 ) -> Result<CommandOutput, CommandError> {
-    let handed = delivery::enqueue_and_deliver(db, recipient, new, no_wake)?;
+    let wait = native.wait_bound.map(std::time::Duration::from_secs);
+    let handed = delivery::enqueue_and_deliver(db, recipient, new, from, no_wake, wait)?;
     let human = handed_human(recipient, &handed);
-    Ok(CommandOutput::new(handed_json(recipient, &handed), human))
+    let json = handed_json(recipient, &handed);
+    if native.require_native && !handed.outcome.delivered() {
+        let why = format!(
+            "message #{} to '{}' reached only the mailbox: {}",
+            handed.id,
+            recipient.name,
+            handed.outcome.note.as_deref().unwrap_or("no reason given")
+        );
+        return Ok(CommandOutput::failed(json, human, why));
+    }
+    Ok(CommandOutput::new(json, human))
 }
 
 /// The document a message left for `recipient` is reported as.
@@ -328,22 +393,29 @@ pub(crate) fn handed_json(recipient: &SharedSession, handed: &Handed) -> Value {
         "message_id": handed.id,
         "to_session_id": recipient.id.to_string(),
         "to_session_name": recipient.name,
+        "delivered": outcome.delivered(),
         "delivered_via": outcome.via.as_str(),
         "delivery_note": outcome.note,
+        "host": handed.host,
         "may_hold": outcome.via.may_hold(),
     })
 }
 
 fn handed_human(recipient: &SharedSession, handed: &Handed) -> String {
     let (id, outcome) = (handed.id, &handed.outcome);
+    let on = handed
+        .host
+        .as_ref()
+        .map(|host| format!(" on host '{host}'"))
+        .unwrap_or_default();
     let human = match (&outcome.via, &outcome.note) {
         (DeliveredVia::Mailbox, Some(why)) => format!(
-            "Enqueued message #{id} to '{}' in the mailbox only; nothing was typed into \
-             its pane. Why: {why}.",
+            "Enqueued message #{id} to '{}'{on} in the mailbox only: NOT delivered to its \
+             agent, and nothing was typed into its pane. Why: {why}.",
             recipient.name
         ),
         (via, _) => format!(
-            "Enqueued message #{id} to '{}' and delivered it via {}.",
+            "Enqueued message #{id} to '{}'{on} and delivered it via {}.",
             recipient.name,
             via.as_str()
         ),
@@ -356,11 +428,6 @@ fn handed_human(recipient: &SharedSession, handed: &Handed) -> String {
     } else {
         human
     }
-}
-
-/// The calling session's id from `THURBOX_SESSION` (used for provenance).
-fn calling_session_id(db: &Database) -> Option<SessionId> {
-    calling_session(db).map(|s| s.id)
 }
 
 /// The calling session's originating task id from the injected `THURBOX_TASK`.
@@ -394,6 +461,7 @@ fn message_to_json(m: &SessionMessage) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::SessionId;
 
     fn db() -> Database {
         Database::open_in_memory().unwrap()
@@ -431,10 +499,12 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "questions".into(),
-                body: "q1?".into(),
+                body: Some("q1?".into()),
+                body_stdin: false,
                 task: Some(5),
                 from: None,
                 no_wake: true,
+                native: NativeArgs::default(),
             },
             &db,
         )
@@ -490,10 +560,12 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "result".into(),
-                body: "done".into(),
+                body: Some("done".into()),
+                body_stdin: false,
                 task: None,
                 from: Some("worker".into()),
                 no_wake: true,
+                native: NativeArgs::default(),
             },
             &db,
         )
@@ -525,10 +597,12 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "questions".into(),
-                body: "Q1?".into(),
+                body: Some("Q1?".into()),
+                body_stdin: false,
                 task: Some(7),
                 from: Some("worker".into()),
                 no_wake: true,
+                native: NativeArgs::default(),
             },
             &db,
         )
@@ -543,6 +617,7 @@ mod tests {
                 kind: "reply".into(),
                 from: Some("flow".into()),
                 no_wake: true,
+                native: NativeArgs::default(),
             },
             &db,
         )
@@ -577,10 +652,12 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "note".into(),
-                body: "anon".into(),
+                body: Some("anon".into()),
+                body_stdin: false,
                 task: None,
                 from: None,
                 no_wake: true,
+                native: NativeArgs::default(),
             },
             &db,
         )
@@ -593,6 +670,7 @@ mod tests {
                 kind: "reply".into(),
                 from: None,
                 no_wake: true,
+                native: NativeArgs::default(),
             },
             &db,
         )
@@ -610,6 +688,7 @@ mod tests {
                 kind: "reply".into(),
                 from: None,
                 no_wake: true,
+                native: NativeArgs::default(),
             },
             &db,
         )
@@ -643,10 +722,12 @@ mod tests {
                 Action::Send {
                     to: "flow".into(),
                     kind: "note".into(),
-                    body: body.into(),
+                    body: Some(body.into()),
+                    body_stdin: false,
                     task: None,
                     from: None,
                     no_wake: true,
+                    native: NativeArgs::default(),
                 },
                 &db,
             )
@@ -700,10 +781,12 @@ mod tests {
             Action::Send {
                 to: "flow".into(),
                 kind: "note".into(),
-                body: String::new(),
+                body: Some(String::new()),
+                body_stdin: false,
                 task: None,
                 from: None,
                 no_wake: true,
+                native: NativeArgs::default(),
             },
             &db,
         )
@@ -718,10 +801,12 @@ mod tests {
             Action::Send {
                 to: "ghost".into(),
                 kind: "note".into(),
-                body: "hi".into(),
+                body: Some("hi".into()),
+                body_stdin: false,
                 task: None,
                 from: None,
                 no_wake: true,
+                native: NativeArgs::default(),
             },
             &db,
         )

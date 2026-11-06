@@ -15,7 +15,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::session::theme_config::ThemePalette;
+use crate::theme::ThemePalette;
 
 /// The palette, exposed as the named styles a modal actually asks for.
 ///

@@ -85,7 +85,7 @@ fn the_inventory_view_draws_what_the_kernel_computed() {
         &rows,
     );
 
-    let palette = thurbox::session::theme_config::ThemePreset::Default.palette();
+    let palette = thurbox::theme::ThemePreset::Default.palette();
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 26)).expect("terminal");
     terminal

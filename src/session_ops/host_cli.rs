@@ -150,6 +150,8 @@ pub struct CliInfo {
     pub telemetry_attrs: bool,
     pub purged_tombstones: bool,
     pub lifecycle_preconditions: bool,
+    /// Whether `message send` takes `--wait-bound` and reports `delivered`.
+    pub message_native_send: bool,
 }
 
 /// Whether a host can be shared with, and how.
@@ -258,6 +260,81 @@ fn read_stored() -> HashMap<String, StoredNo> {
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
+}
+
+/// How a `No` for a host that did not answer begins — the one verdict that
+/// says the host itself is down, rather than that its CLI cannot be shared.
+const NOT_ANSWERING: &str = "host not answering";
+
+/// Whether the host serving `backend_type` (any route spelling,
+/// `ssh:box:tmux` as well as `ssh:box`) was recorded as not answering, and that
+/// verdict's backoff has not run out. A recorded verdict, not a probe: past
+/// its backoff nobody has asked again — the interface re-probes then and
+/// re-stamps it, a host that answered clears it — so an expired one is no
+/// evidence either way.
+pub fn recorded_down(backend_type: &str) -> bool {
+    verdict_key(backend_type)
+        .and_then(|key| stored_no(&key))
+        .is_some_and(|verdict| is_fresh(&verdict) && is_not_answering(&verdict.usable))
+}
+
+/// Fold the host's recorded verdict into `hook`: `unreachable` while
+/// [`recorded_down`] holds for the route the session runs on, untouched
+/// otherwise (a local route never has one). What the interface shows from a
+/// failed attach, read here from the verdict the last probe recorded — the one
+/// place `session get`/`list` and `watch` take it from, so they cannot answer
+/// differently for one row.
+pub fn with_host_verdict(
+    hook: crate::session::Assessment,
+    backend_type: &str,
+) -> crate::session::Assessment {
+    with_host_down(hook, recorded_down(backend_type))
+}
+
+/// [`with_host_verdict`] for a verdict already read: a caller that sampled
+/// [`recorded_down`] once and reports on that sample (`watch`'s host flips)
+/// folds the same value rather than reading a verdict that may have moved.
+pub fn with_host_down(hook: crate::session::Assessment, down: bool) -> crate::session::Assessment {
+    if down {
+        hook.host_unreachable()
+    } else {
+        hook
+    }
+}
+
+/// Drop a stored "not answering" verdict for the host behind `backend_type`
+/// — here and in `host-verdicts.json` — because something just reached it: the
+/// interface's survey of that host. Without this a host that came back reads
+/// [`recorded_down`] until the backoff runs out, while the interface already
+/// shows its sessions live. Any other `No` was decided on a host that answered,
+/// so reaching it again says nothing new and the backoff stands.
+pub fn host_answered(backend_type: &str) {
+    let Some(key) = verdict_key(backend_type) else {
+        return;
+    };
+    if let Ok(mut cache) = verdicts().lock() {
+        if cache
+            .get(&key)
+            .is_some_and(|verdict| is_not_answering(&verdict.usable))
+        {
+            cache.remove(&key);
+        }
+    }
+    if stored_no(&key).is_some_and(|verdict| is_not_answering(&verdict.usable)) {
+        store(&key, None);
+    }
+}
+
+/// The key a verdict for the host behind `backend_type` is stored under — its
+/// unqualified route, as [`HostDef::backend_name`] spells it — or `None` for a
+/// local route.
+fn verdict_key(backend_type: &str) -> Option<String> {
+    let route = crate::session::Route::parse(backend_type).ok()?;
+    Some(crate::session::Route::remote(route.via()?, route.host()?, None).format())
+}
+
+fn is_not_answering(usable: &Usable) -> bool {
+    matches!(usable, Usable::No(reason) if reason.starts_with(NOT_ANSWERING))
 }
 
 /// The `No` another process stored for `key`, as a verdict.
@@ -523,7 +600,7 @@ fn establish(host: &HostDef) -> Usable {
         }
         // A host that did not answer is the other state, and the only one
         // waiting helps. It keeps its backoff untouched.
-        Err(e) => return Usable::No(format!("host not answering: {e}")),
+        Err(e) => return Usable::No(format!("{NOT_ANSWERING}: {e}")),
     };
     if let Some(cli) = &found {
         if let Err(mismatch) = compatible(cli) {
@@ -564,7 +641,7 @@ fn establish(host: &HostDef) -> Usable {
 /// host schema is still refused: it may not know what we send, and
 /// provisioning our version is what upgrades it.
 pub fn compatible(cli: &CliInfo) -> Result<(), String> {
-    let ours = crate::agent::version_check::current_version();
+    let ours = crate::update::version_check::current_version();
     let (ours_major, theirs_major) = (major_of(ours), major_of(&cli.version));
     if ours_major != theirs_major {
         return Err(format!(
@@ -936,6 +1013,10 @@ pub(crate) fn parse_probe(stdout: &str) -> Result<Option<CliInfo>, ProbeFailure>
             .unwrap_or(false),
         create_parity: json
             .get("create_parity")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        message_native_send: json
+            .get("message_native_send")
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }))
@@ -1354,7 +1435,7 @@ fn legacy_absence(message: &str) -> bool {
 }
 
 /// `(os, arch)` as the host's shell spells them (`uname -sm`, or
-/// `windows <PROCESSOR_ARCHITECTURE>`), for [`crate::agent::self_update::target_triple`].
+/// `windows <PROCESSOR_ARCHITECTURE>`), for [`crate::update::self_update::target_triple`].
 fn host_platform(host: &HostDef) -> Result<(String, String), String> {
     let script = match HostShell::for_host(host) {
         HostShell::PowerShell => "Write-Output \"windows $env:PROCESSOR_ARCHITECTURE\"",
@@ -1446,7 +1527,7 @@ fn install(host: &HostDef) -> Result<String, String> {
         return dest;
     }
     let (os, arch) = host_platform(host)?;
-    let target = crate::agent::self_update::target_triple(&os, &arch)?;
+    let target = crate::update::self_update::target_triple(&os, &arch)?;
     let bin_dir = format!("{}/{HOST_BIN_DIR}", host_data_dir(host)?);
     let shell = HostShell::for_host(host);
     let cli_name = match shell {
@@ -1456,7 +1537,7 @@ fn install(host: &HostDef) -> Result<String, String> {
     let dest = format!("{bin_dir}/{cli_name}");
 
     if crate::agent::extension_config::is_dev_build() {
-        let ours = crate::agent::self_update::current_target()?;
+        let ours = crate::update::self_update::current_target()?;
         if ours != target {
             return Err(format!(
                 "development build: no release archive to provision a {target} host with \
@@ -1478,8 +1559,8 @@ fn install(host: &HostDef) -> Result<String, String> {
         return Ok(dest);
     }
 
-    let version = crate::agent::version_check::current_version();
-    let archive = crate::agent::self_update::fetch_archive(version, target)?;
+    let version = crate::update::version_check::current_version();
+    let archive = crate::update::self_update::fetch_archive(version, target)?;
     let bytes = std::fs::read(&archive.path)
         .map_err(|e| format!("read {}: {e}", archive.path.display()))?;
     let remote_archive = format!("{bin_dir}/{}", archive.name);
@@ -1709,7 +1790,7 @@ pub(crate) mod fake {
     pub fn cli() -> super::CliInfo {
         super::CliInfo {
             path: "/home/me/.local/share/thurbox/bin/thurbox-cli".into(),
-            version: crate::agent::version_check::current_version().into(),
+            version: crate::update::version_check::current_version().into(),
             tmux_socket: Some("thurbox".into()),
             data_dir: Some("/home/me/.local/share/thurbox".into()),
             tmux_tmpdir: Some("/home/me/.local/share/thurbox/tmux".into()),
@@ -1723,6 +1804,7 @@ pub(crate) mod fake {
             telemetry_attrs: false,
             purged_tombstones: false,
             lifecycle_preconditions: false,
+            message_native_send: false,
         }
     }
 }
@@ -1860,6 +1942,7 @@ mod tests {
             telemetry_attrs: false,
             purged_tombstones: false,
             lifecycle_preconditions: false,
+            message_native_send: false,
         }
     }
 
@@ -2046,7 +2129,7 @@ mod tests {
 
     #[test]
     fn compatibility_needs_the_same_major_and_a_schema_no_older() {
-        let ours = crate::agent::version_check::current_version();
+        let ours = crate::update::version_check::current_version();
         let schema = crate::storage::SCHEMA_VERSION;
         assert!(compatible(&cli(ours, Some(schema))).is_ok());
         // A host that upgraded first (#1429).
@@ -2329,7 +2412,7 @@ mod tests {
         format!(
             "#!/bin/sh\necho '{{\"version\":\"{}\",\"tmux_socket\":\"thurbox\",\
              \"schema_version\":{}}}'\n",
-            crate::agent::version_check::current_version(),
+            crate::update::version_check::current_version(),
             crate::storage::SCHEMA_VERSION
         )
     }
@@ -2459,7 +2542,7 @@ mod tests {
             Usable::Yes(found) => {
                 assert_eq!(
                     found.version,
-                    crate::agent::version_check::current_version()
+                    crate::update::version_check::current_version()
                 )
             }
             Usable::No(reason) => panic!("locked out by its own broken CLI: {reason}"),
@@ -2569,6 +2652,35 @@ mod tests {
         .unwrap();
 
         assert!(stored_no("ssh:far-future").is_none());
+    }
+
+    /// A host that answered again is not down, whatever its backoff says: the
+    /// interface's survey reaching it clears the `not answering` verdict, so
+    /// `session list` does not hold it unreachable until the backoff runs out.
+    /// A refusal is a different fact about a host that *was* reached, and
+    /// stays backed off.
+    #[test]
+    fn a_host_that_answered_again_is_no_longer_recorded_down() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(temp.path());
+        let now = SystemTime::now();
+        let no = |reason: &str| Verdict {
+            usable: Usable::No(reason.to_string()),
+            at: now,
+            failures: 3,
+        };
+        store("ssh:back-again", Some(&no("host not answering: timed out")));
+        store("ssh:refuser", Some(&no("thurbox-cli could not be started")));
+        assert!(recorded_down("ssh:back-again:tmux"));
+
+        host_answered("ssh:back-again:tmux");
+        host_answered("ssh:refuser:tmux");
+
+        assert!(!recorded_down("ssh:back-again:tmux"));
+        assert!(
+            stored_no("ssh:refuser").is_some(),
+            "a refusal is kept: reaching the host is what it already did"
+        );
     }
 
     /// And the message an operator reads has to name the cause. "printed no

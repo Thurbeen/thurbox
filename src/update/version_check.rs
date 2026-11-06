@@ -90,7 +90,7 @@ pub fn decide_update(current: &str, latest: &str) -> Option<UpdateStatus> {
 /// kernel, so an update across that line is not a newer patch of what you are
 /// running — it is a different program wearing the same binary name. Auto-update
 /// therefore reports such a release but does not install it
-/// ([`crate::agent::self_update::perform_update`]); the user crosses on purpose.
+/// ([`crate::update::self_update::perform_update`]); the user crosses on purpose.
 ///
 /// `false` whenever the question cannot be answered from the two strings — a dev
 /// build, or a version with no readable major — because the guard exists to stop

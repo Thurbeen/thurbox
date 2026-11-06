@@ -29,6 +29,7 @@
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thurbox::backend::WindowLifecycle;
 
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -120,7 +121,9 @@ fn start(server: &TmuxServer) -> bool {
 }
 
 fn instance() -> Arc<dyn SessionBackend> {
-    let backend = Arc::new(TmuxBackend::local());
+    let backend = Arc::new(TmuxBackend::local(
+        thurbox::session::settings::default_scrollback_lines(),
+    ));
     backend
         .ensure_ready()
         .unwrap_or_else(|e| panic!("tmux control mode would not start: {e:#}"));
@@ -159,6 +162,7 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
         &Default::default(),
         24,
         80,
+        thurbox::session::settings::Settings::default().scrollback_lines,
     )
     .expect("spawn in A");
     let id = a.backend_id().to_string();
@@ -170,7 +174,15 @@ async fn two_instances_painting_different_rects_leave_the_pane_alone() {
     // Instance B, in a bigger terminal, attaches to the same pane and paints it
     // into a 40×120 rect.
     let b_backend = instance();
-    let b = ProgramPane::adopt(Arc::clone(&b_backend), &id, "sh", 40, 120).expect("adopt in B");
+    let b = ProgramPane::adopt(
+        Arc::clone(&b_backend),
+        &id,
+        "sh",
+        40,
+        120,
+        thurbox::session::settings::Settings::default().scrollback_lines,
+    )
+    .expect("adopt in B");
     assert!(b.resize(40, 120), "B's resize could not be sent");
 
     let seen = sizes_over_settle(&server, &id).await;
@@ -271,6 +283,7 @@ async fn a_lone_instance_still_resizes_to_every_rect() {
         &Default::default(),
         24,
         80,
+        thurbox::session::settings::Settings::default().scrollback_lines,
     )
     .expect("spawn");
     let id = pane.backend_id().to_string();
@@ -430,7 +443,10 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
     let id = session_window(&server);
 
     // This instance shows the session without the focus, and sizes the pane.
-    let mut here = Terminals::with_registry(Arc::new(thurbox::backend::wiring::configured().0));
+    let mut here = Terminals::with_registry(
+        Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     attach(&mut here, &id, here_rect).await;
     frame(&mut here, here_rect, false);
     until("this instance's rect to reach the pane", || {
@@ -446,6 +462,7 @@ async fn focusing_a_pane_another_instance_sizes_takes_its_size_before_any_keystr
         "sh",
         there_rect.0,
         there_rect.1,
+        thurbox::session::settings::Settings::default().scrollback_lines,
     )
     .expect("adopt in the other instance");
     assert!(there.resize(there_rect.0, there_rect.1));
@@ -533,7 +550,10 @@ async fn a_focused_session_whose_pane_is_replaced_takes_the_new_panes_size() {
         return;
     }
     let first = session_window(&server);
-    let mut here = Terminals::with_registry(Arc::new(thurbox::backend::wiring::configured().0));
+    let mut here = Terminals::with_registry(
+        Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     attach(&mut here, &first, here_rect).await;
     frame(&mut here, here_rect, true);
     until("this instance's rect to reach the pane", || {
@@ -554,6 +574,7 @@ async fn a_focused_session_whose_pane_is_replaced_takes_the_new_panes_size() {
         "sh",
         there_rect.0,
         there_rect.1,
+        thurbox::session::settings::Settings::default().scrollback_lines,
     )
     .expect("adopt in the other instance");
     assert!(there.resize(there_rect.0, there_rect.1));

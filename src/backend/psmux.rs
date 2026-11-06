@@ -22,8 +22,12 @@ use base64::Engine as _;
 use tracing::warn;
 
 use crate::backend::contract::{SessionBackend, WindowRole};
-use crate::backend::tmux_compat::control_mode::{ControlPolicy, PaneInput, SEND_KEYS_CHUNK_BYTES};
-use crate::backend::tmux_compat::server::{ConfigOption, Server, TmuxCompatible};
+use crate::backend::tmux_compat::control_mode::{
+    ControlPolicy, Missing, PaneInput, SEND_KEYS_CHUNK_BYTES,
+};
+use crate::backend::tmux_compat::server::{
+    named_version, parse_version, tmux_answered_absent, ConfigOption, Server, TmuxCompatible,
+};
 use crate::backend::tmux_compat::transport::TmuxTransport;
 use crate::session::{HostDef, Multiplexer, Platform};
 use crate::shell::{
@@ -37,8 +41,8 @@ pub struct Psmux;
 pub type PsmuxBackend = Server<Psmux>;
 
 /// psmux on this machine, whatever OS it is.
-pub fn local() -> Arc<dyn SessionBackend> {
-    Arc::new(PsmuxBackend::local())
+pub fn local(scrollback_lines: usize) -> Arc<dyn SessionBackend> {
+    Arc::new(PsmuxBackend::local(scrollback_lines))
 }
 
 /// psmux on `host`, reached through `launcher` on a machine of `platform`.
@@ -46,8 +50,14 @@ pub fn on_host(
     host: &HostDef,
     launcher: HostLauncher,
     platform: Platform,
+    scrollback_lines: usize,
 ) -> Arc<dyn SessionBackend> {
-    Arc::new(PsmuxBackend::on_host(host, launcher, platform))
+    Arc::new(PsmuxBackend::on_host(
+        host,
+        launcher,
+        platform,
+        scrollback_lines,
+    ))
 }
 
 impl TmuxCompatible for Psmux {
@@ -147,6 +157,12 @@ impl TmuxCompatible for Psmux {
         check_psmux_binary(banner)
     }
 
+    /// psmux's own name, or tmux's on the alias it installs: 3.3.7 prints
+    /// both, 3.3.6 only the second.
+    fn banner_version(banner: &str) -> Option<&str> {
+        named_version(banner, &["psmux", "tmux"])
+    }
+
     fn check_listing(listing: &str) -> Result<()> {
         if let Some(error) = listing.lines().find(|line| line.starts_with("ERROR:")) {
             bail!("psmux listing failed: {error}");
@@ -165,6 +181,34 @@ impl TmuxCompatible for Psmux {
     /// gets the double-quote framing it does parse.
     fn quote(arg: &str) -> String {
         psmux_quote(arg)
+    }
+
+    /// tmux's replies, psmux's own `session not found: `, and its
+    /// `psmux: no server running on session`, bare or naming the socket it
+    /// looked for in single quotes. The unquoted form a nested client's
+    /// leaked target produces (`MUX_NESTING_ENV`) is not one of these: it
+    /// names a socket thurbox never asked for.
+    fn answered_absent(answer: &str) -> Option<Missing> {
+        const NO_SERVER: &str = "psmux: no server running on session";
+        if answer == NO_SERVER {
+            return Some(Missing::Server);
+        }
+        if let Some(socket) = answer
+            .strip_prefix(NO_SERVER)
+            .and_then(|rest| rest.strip_prefix(" '"))
+        {
+            return socket
+                .strip_suffix('\'')
+                .filter(|socket| !socket.is_empty() && !socket.contains('\''))
+                .map(|_| Missing::Server);
+        }
+        if answer
+            .strip_prefix("session not found: ")
+            .is_some_and(|session| !session.is_empty())
+        {
+            return Some(Missing::Server);
+        }
+        tmux_answered_absent(answer)
     }
 
     /// None: psmux ignores `new-window -e`, so the environment is folded into
@@ -255,7 +299,7 @@ impl TmuxCompatible for Psmux {
             command_list_single_reply: Self::COMMAND_LIST_SINGLE_REPLY,
             subscriptions: false,
             status_poll: (transport.is_remote() && Self::HOOK_STATUS)
-                .then(|| hook_poll_command(session)),
+                .then(|| Self::hook_poll_command(session)),
             confirm_close: Some(live_panes_command(session)),
         }
     }
@@ -304,33 +348,14 @@ impl TmuxCompatible for Psmux {
     }
 }
 
-/// The listing the hook poller runs: every pane of `session` with its
-/// hook-state option.
-fn hook_poll_command(session: &str) -> String {
-    // Double-quoted framing: psmux's tokenizer passes `'` through `"…"` tokens
-    // but concatenates adjacent `'…'` segments (verified against 3.3.6). The
-    // session name is user-authored hosts.toml text embedded in a wire command,
-    // so it gets the same double-quote framing, minus the `"`/`\` it can't
-    // carry — mirroring the socket sanitization in `hook_signal_command`.
-    let session_safe: String = session
-        .chars()
-        .filter(|c| !matches!(c, '"' | '\\'))
-        .collect();
-    format!(
-        "list-panes -s -t \"{session_safe}\" -F \"#{{pane_id}} #{{{}}}\"",
-        crate::backend::tmux_compat::control_mode::REMOTE_HOOK_STATE_OPTION,
-    )
-}
-
 /// The control-mode command listing the panes `session` still has, which a
 /// `%window-close` is checked against ([`ControlPolicy::confirm_close`]).
-/// Framed as [`hook_poll_command`] frames its session, for the same reason.
 fn live_panes_command(session: &str) -> String {
-    let session_safe: String = session
-        .chars()
-        .filter(|c| !matches!(c, '"' | '\\'))
-        .collect();
-    format!("list-panes -s -t \"{session_safe}\" -F \"#{{pane_id}}\"")
+    format!(
+        "list-panes -s -t {} -F {}",
+        psmux_quote(session),
+        psmux_quote("#{pane_id}")
+    )
 }
 
 /// psmux's pane input: [`psmux_send_keys_commands`] for keystrokes, and a
@@ -421,19 +446,8 @@ fn check_psmux_binary(banner: &str) -> Result<()> {
 fn psmux_version(output: &str) -> Option<(u32, u32, u32)> {
     output.lines().rev().find_map(|line| {
         let line = line.trim();
-        let rest = line
-            .strip_prefix("psmux ")
-            .or_else(|| line.strip_prefix("tmux "))
-            .unwrap_or(line);
-        let mut parts = rest.split_whitespace().next()?.split('.').map(|p| {
-            let digits: String = p.chars().take_while(char::is_ascii_digit).collect();
-            digits.parse::<u32>().ok()
-        });
-        Some((
-            parts.next()??,
-            parts.next()??,
-            parts.next().flatten().unwrap_or(0),
-        ))
+        let word = Psmux::banner_version(line).or_else(|| line.split_whitespace().next())?;
+        parse_version(word)
     })
 }
 
@@ -1106,6 +1120,9 @@ impl PsmuxPaste {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::StatusChannel;
+    #[cfg(unix)]
+    use crate::backend::{PaneIo, WindowLifecycle};
 
     #[cfg(unix)]
     fn cold_start_backend(root: &tempfile::TempDir, scenario: &str) -> PsmuxBackend {
@@ -1230,6 +1247,7 @@ mod tests {
             "private-socket",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         )
     }
 
@@ -1247,6 +1265,7 @@ mod tests {
             "private-socket",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         )
     }
 
@@ -1272,6 +1291,7 @@ mod tests {
             "private-socket",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         );
         (backend, log)
     }
@@ -1381,6 +1401,7 @@ mod tests {
             "private-socket",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         );
 
         assert!(backend.discover_answered().is_err());
@@ -1672,7 +1693,7 @@ mod tests {
         let backend = cold_start_backend(&root, "always_refused");
 
         let error = backend.ensure_session_configured().unwrap_err().to_string();
-        assert!(error.contains("Failed to create tmux session"), "{error}");
+        assert!(error.contains("Failed to create psmux session"), "{error}");
         assert_eq!(attempt_count(&root), 3);
     }
 
@@ -1683,9 +1704,15 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        assert!(PsmuxBackend::for_host(&host).needs_liveness_poll());
         assert!(
-            PsmuxBackend::local().needs_liveness_poll(),
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines())
+                .capabilities()
+                .needs_liveness_poll
+        );
+        assert!(
+            PsmuxBackend::local(crate::session::settings::default_scrollback_lines())
+                .capabilities()
+                .needs_liveness_poll,
             "on this machine too, whatever OS it is"
         );
     }
@@ -1810,6 +1837,7 @@ mod tests {
             "test",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         );
         (root, backend, mux.with_extension("log"))
     }
@@ -1993,7 +2021,7 @@ mod tests {
     /// window by name is already qualified and is left as it is.
     #[test]
     fn a_psmux_kill_reaches_the_pane_it_names_in_thurboxs_session() {
-        let psmux = PsmuxBackend::local();
+        let psmux = PsmuxBackend::local(crate::session::settings::default_scrollback_lines());
         let session = psmux.session.clone();
         assert_eq!(
             psmux.kill_spelling("%8"),
@@ -2013,7 +2041,7 @@ mod tests {
     /// a bare `%N` the server could route to its `__warm__` session.
     #[test]
     fn a_psmux_pane_target_names_thurboxs_session() {
-        let psmux = PsmuxBackend::local();
+        let psmux = PsmuxBackend::local(crate::session::settings::default_scrollback_lines());
         assert_eq!(psmux.spell_target("%2"), format!("{}:.%2", psmux.session));
     }
 
@@ -2311,7 +2339,8 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        let backend = PsmuxBackend::for_host(&host);
+        let backend =
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
         let cmd = Psmux::window_command(&backend, "tbs-x", "claude", &[], &HashMap::new()).unwrap();
         assert_eq!(
@@ -2362,9 +2391,15 @@ mod tests {
                 transport.is_remote() && Psmux::HOOK_STATUS
             );
         }
+        // The session name is user-authored hosts.toml text, quoted whole
+        // rather than stripped of what psmux's tokenizer reads as escapes.
         assert_eq!(
-            hook_poll_command("a\"b\\c"),
-            "list-panes -s -t \"abc\" -F \"#{pane_id} #{@thurbox_state}\""
+            Psmux::hook_poll_command("a\"b\\c"),
+            "list-panes -s -t \"a\\\"b\\\\c\" -F \"#{pane_id} #{@thurbox_state}\""
+        );
+        assert_eq!(
+            live_panes_command("a\"b"),
+            "list-panes -s -t \"a\\\"b\" -F \"#{pane_id}\""
         );
     }
 
@@ -2393,7 +2428,8 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        let backend = PsmuxBackend::for_host(&host);
+        let backend =
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         let format = "#{pane_id}|#{window_name}|#{pane_dead}";
         let line = host_line(
             &backend
@@ -2443,7 +2479,8 @@ mod tests {
                 socket: socket.map(Into::into),
                 ..Default::default()
             };
-            let backend = PsmuxBackend::for_host(&host);
+            let backend =
+                PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
             for text in ["x".repeat(2500), "é".repeat(PASTE_CHUNK_BYTES)] {
                 for paste in Psmux::paste_args("%123", &text) {
                     let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
@@ -2464,9 +2501,16 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        for backend in [PsmuxBackend::local(), PsmuxBackend::for_host(&host)] {
+        for backend in [
+            PsmuxBackend::local(crate::session::settings::default_scrollback_lines()),
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines()),
+        ] {
             assert!(!backend.stamps_are_per_window(), "{}", backend.name());
-            assert!(!backend.supports_snapshots(), "{}", backend.name());
+            assert!(
+                !backend.capabilities().supports_snapshots,
+                "{}",
+                backend.name()
+            );
         }
     }
 
@@ -2823,7 +2867,10 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        for backend in [PsmuxBackend::local(), PsmuxBackend::for_host(&host)] {
+        for backend in [
+            PsmuxBackend::local(crate::session::settings::default_scrollback_lines()),
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines()),
+        ] {
             assert_eq!(backend.hook_signal_command(), None);
             assert!(backend.record_hook_state("%1", "working").is_err());
             assert!(backend.hook_states().is_err());
@@ -2841,8 +2888,12 @@ mod tests {
             socket: Some(socket.into()),
             ..Default::default()
         };
-        let command =
-            |socket: &str| Psmux::hook_signal_command(&PsmuxBackend::for_host(&host(socket)));
+        let command = |socket: &str| {
+            Psmux::hook_signal_command(&PsmuxBackend::for_host(
+                &host(socket),
+                crate::session::settings::default_scrollback_lines(),
+            ))
+        };
         assert_eq!(
             command("we\"ird sock\\et"),
             "psmux -L weirdsocket set-option -p @thurbox_state "
@@ -2854,5 +2905,50 @@ mod tests {
                 crate::backend::instance::TMUX_SOCKET
             )
         );
+    }
+
+    /// psmux's own replies, the ones its tests here are built on.
+    #[cfg(unix)]
+    #[test]
+    fn psmuxs_own_absence_replies_read_as_absence() {
+        crate::backend::tmux_compat::server::assert_absence_replies::<Psmux>(&[
+            ("psmux: no server running on session", true),
+            (
+                "psmux: no server running on session 'private-socket__thurbox'",
+                true,
+            ),
+            ("can't find session: thurbox", true),
+            ("session not found: thurbox", true),
+            ("can't find pane: %2", false),
+            ("can't find window: =tb-demo", false),
+        ]);
+    }
+
+    #[test]
+    fn a_banner_names_the_version_on_its_last_line_that_has_one() {
+        // psmux's banner, the one the version question is asked of.
+        let banner_version = |banner| {
+            Psmux::banner_version(banner)
+                .filter(|v| crate::backend::tmux_compat::server::is_version_answer(v))
+        };
+        assert_eq!(
+            banner_version("tmux 3.3.7\npsmux 3.3.7 (05cc5d4 2026-07-20)\n"),
+            Some("3.3.7")
+        );
+        assert_eq!(banner_version("tmux 3.3.6\n"), Some("3.3.6"));
+        assert_eq!(banner_version("psmux 3.4.0 (20aa1d7)"), Some("3.4.0"));
+        for banner in [
+            "",
+            "3.3.8",
+            "psmux",
+            "psmux dev",
+            "ERROR: x",
+            // The last line names a pre-release, and an earlier one is not
+            // read in its place.
+            "tmux 3.3.7\npsmux 3.3.8-dev (x)\n",
+            "tmux 3.3.9\npsmux 3.3.9-dev (x)\n",
+        ] {
+            assert_eq!(banner_version(banner), None, "{banner:?}");
+        }
     }
 }

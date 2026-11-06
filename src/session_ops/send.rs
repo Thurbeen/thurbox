@@ -13,12 +13,11 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::session::SessionId;
+use crate::session::SharedSession;
 use crate::storage::messages::NewMessage;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
-use super::delivery::{DeliveredVia, Handed};
+use super::delivery::{DeliveredVia, Handed, Sender};
 use super::{Executor, OpError, SendOutcome};
 
 /// How a send behaves.
@@ -35,13 +34,13 @@ pub struct SendPolicy {
     /// How long that wait may take; unlimited when `None`.
     pub timeout: Option<Duration>,
     /// Who the text is from, should it end up in the mailbox.
-    pub from_session: Option<SessionId>,
+    pub from: Sender,
     /// The task it is from, should it end up in the mailbox.
     pub from_task: Option<i64>,
 }
 
 impl SendPolicy {
-    /// What the interface sends with: submitted, guarded, from nobody.
+    /// What the interface sends with: submitted, guarded, from thurbox itself.
     pub fn submit() -> Self {
         Self {
             submit: true,
@@ -230,12 +229,12 @@ fn hand_over(
 ) -> Result<Handed, OpError> {
     let new = NewMessage {
         to_session_id: session.id,
-        from_session_id: policy.from_session,
+        from_session_id: policy.from.session_id(),
         from_task_id: policy.from_task,
         kind: "session-send".into(),
         body: text.to_string(),
     };
-    super::delivery::enqueue_and_deliver(db, session, new, false)
+    super::delivery::enqueue_and_deliver(db, session, new, policy.from, false, None)
 }
 
 fn failure(delivery: &Delivery, session: &SharedSession, strict: bool) -> Option<OpError> {

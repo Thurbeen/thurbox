@@ -13,14 +13,17 @@ use serde_json::{json, Value};
 use thurbox::cli::sessions::{run, Action};
 use thurbox::kernel::command::{Args, Command};
 use thurbox::session::{HostDef, SessionId};
+use thurbox::session::{SharedSession, SharedWorktree};
 use thurbox::session_ops::mirror::{self, HostDeletedRow, MirrorReport, Transitive};
 use thurbox::storage::Database;
-use thurbox::sync::{SharedSession, SharedWorktree};
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[cfg(unix)]
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
+
+#[path = "support/recording_backend.rs"]
+mod recording_backend;
 
 const BACKEND: &str = "ssh:devbox";
 
@@ -79,7 +82,8 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
             key_prefix: None,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap();
     let rows = out.as_array().unwrap();
@@ -104,7 +108,8 @@ fn list_deleted_prints_what_a_mirroring_peer_reads() {
             key_prefix: None,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap();
     let only = &active.as_array().unwrap()[0];
@@ -206,7 +211,8 @@ fn register_records_only_a_window_that_is_running() {
             json_row: body.to_string(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("no live window"), "{err}");
@@ -217,10 +223,107 @@ fn register_records_only_a_window_that_is_running() {
             json_row: "{not json".into(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("--json-row"), "{err}");
+}
+
+/// A row for a window already running on this machine's route, and a backend
+/// that serves it, as `sync --adopt` finds them on the host it registers on.
+fn running_here(name: &str) -> (SharedSession, thurbox::cli::Backends<'static>) {
+    let route =
+        thurbox::session::Route::local(Some(thurbox::session::Multiplexer::platform_default()));
+    let backend = recording_backend::RecordingBackend::new(&route);
+    let session = row(SessionId::default(), name, &route.format());
+    backend.open(
+        name,
+        &session.id.to_string(),
+        thurbox::backend::WindowRole::Agent,
+    );
+    let backends =
+        thurbox::cli::Backends::ready(thurbox::backend::BackendRegistry::new(route, backend));
+    (session, backends)
+}
+
+fn register(
+    db: &Database,
+    backends: &thurbox::cli::Backends<'_>,
+    session: &SharedSession,
+) -> Result<thurbox::cli::output::CommandOutput, String> {
+    let body = mirror::session_to_json(session, Some("working"), None, None);
+    run(
+        Action::Register {
+            json_row: body.to_string(),
+        },
+        db,
+        backends,
+        &Default::default(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[test]
+fn register_waits_for_an_operation_already_deciding_the_session() {
+    // `register` is the host half of `sync --adopt`: it writes a row and its
+    // state like any creator, so it takes the locks every creator takes. A
+    // creation holding the name has not written its row yet, so the
+    // "a session named … already exists" check alone cannot see it.
+    let db = Database::open_in_memory().unwrap();
+    let (session, backends) = running_here("adopted");
+    let creation =
+        thurbox::session_ops::names::hold(&db, "adopted", &session.backend_type, "create")
+            .unwrap()
+            .expect("the name is free");
+    let err = register(&db, &backends, &session).unwrap_err();
+    assert!(err.contains("right now"), "{err}");
+    assert!(db.get_session_by_id(session.id).unwrap().is_none());
+    drop(creation);
+
+    // The same row, while another operation holds the session itself.
+    let held = thurbox::session_ops::lock::lock(
+        &db,
+        thurbox::session_ops::lock::Subject::Session(session.id),
+        "restore",
+    )
+    .unwrap()
+    .expect("the session is free");
+    let err = register(&db, &backends, &session).unwrap_err();
+    assert!(err.contains("right now"), "{err}");
+    assert!(db.get_session_by_id(session.id).unwrap().is_none());
+    drop(held);
+
+    let out = register(&db, &backends, &session).expect("registered once both are free");
+    assert_eq!(out["registered"], true);
+    assert_eq!(
+        db.load_hook_state(session.id)
+            .unwrap()
+            .unwrap()
+            .state
+            .as_deref(),
+        Some("working")
+    );
+}
+
+#[test]
+fn register_takes_only_a_state_from_the_host() {
+    // The state comes from another machine's JSON; it is held to the same
+    // allow-list as every other report.
+    let db = Database::open_in_memory().unwrap();
+    let (session, backends) = running_here("adopted");
+    let mut body = mirror::session_to_json(&session, None, None, None);
+    body["hook_state"] = json!("'; DROP TABLE sessions; --");
+    run(
+        Action::Register {
+            json_row: body.to_string(),
+        },
+        &db,
+        &backends,
+        &Default::default(),
+    )
+    .expect("registered");
+    assert_eq!(db.load_hook_state(session.id).unwrap().unwrap().state, None);
 }
 
 #[test]
@@ -234,7 +337,8 @@ fn register_refuses_an_id_or_a_name_already_here() {
             json_row: same_id.to_string(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("already registered"), "{err}");
@@ -249,7 +353,8 @@ fn register_refuses_an_id_or_a_name_already_here() {
             json_row: same_name.to_string(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("already exists"), "{err}");
@@ -266,7 +371,8 @@ fn sync_with_no_shareable_host_configured_is_an_empty_report() {
             adopt: false,
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap();
     assert_eq!(out.as_array().map(Vec::len), Some(0));
@@ -432,7 +538,8 @@ fn listing(db: &Database, deleted: bool) -> Value {
             key_prefix: None,
         },
         db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap()
     .json
@@ -698,18 +805,12 @@ fn listings(root: &std::path::Path) -> usize {
         .count()
 }
 
-/// The mirror over a real `ssh` round trip: an idle host is not re-listed.
-///
-/// A host's full `session list` + `session list --deleted` grows with its
-/// deleted history, and the mirror runs every few seconds per host. The
-/// stand-in logs every remote script, so the test sees what crossed the wire.
-/// It sets `PATH` and the data directories process-wide, which nextest's
-/// process per test keeps to this test.
+/// Lay out a caller and a stand-in host under `root`, and point this process
+/// at the caller's side with the [`write_ssh`] stand-in first on `PATH`. Sets
+/// the variables process-wide, which nextest's process per test keeps to the
+/// test.
 #[cfg(unix)]
-#[test]
-fn an_idle_host_is_not_listed_again() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
+fn stand_in_host(root: &std::path::Path) {
     for dir in [
         "bin",
         "home",
@@ -733,6 +834,29 @@ fn an_idle_host_is_not_listed_again() {
             std::env::var("PATH").unwrap_or_default()
         ),
     );
+}
+
+#[cfg(unix)]
+fn usable_cli(host: &HostDef) -> thurbox::session_ops::host_cli::CliInfo {
+    match thurbox::session_ops::host_cli::usable(host) {
+        thurbox::session_ops::host_cli::Usable::Yes(cli) => cli,
+        thurbox::session_ops::host_cli::Usable::No(why) => {
+            panic!("the stand-in host is not usable: {why}")
+        }
+    }
+}
+
+/// The mirror over a real `ssh` round trip: an idle host is not re-listed.
+///
+/// A host's full `session list` + `session list --deleted` grows with its
+/// deleted history, and the mirror runs every few seconds per host. The
+/// stand-in logs every remote script, so the test sees what crossed the wire.
+#[cfg(unix)]
+#[test]
+fn an_idle_host_is_not_listed_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    stand_in_host(root);
 
     // The host: one live session and a long deleted history.
     let host_db = Database::open(&root.join("host-data/thurbox.db")).unwrap();
@@ -751,12 +875,7 @@ fn an_idle_host_is_not_listed_again() {
         destination: "probe".into(),
         ..Default::default()
     };
-    let cli = match thurbox::session_ops::host_cli::usable(&host) {
-        thurbox::session_ops::host_cli::Usable::Yes(cli) => cli,
-        thurbox::session_ops::host_cli::Usable::No(why) => {
-            panic!("the stand-in host is not usable: {why}")
-        }
-    };
+    let cli = usable_cli(&host);
     let db = Database::open(&root.join("data/thurbox.db")).unwrap();
 
     let first = mirror::mirror_host(&db, &host, &cli).unwrap();
@@ -777,6 +896,46 @@ fn an_idle_host_is_not_listed_again() {
     let moved = mirror::mirror_host(&db, &host, &cli).unwrap();
     assert_eq!(moved.deleted, vec![live], "{moved:?}");
     assert!(listings(root) > after_first);
+}
+
+/// A → B → C over a real `ssh` round trip, with no `settings.toml` here: A
+/// lists B's own session and none of the ones B only mirrors from C. A remote
+/// session of a remote session is shown only on an explicit
+/// `[remote] transitive_sessions = true`.
+#[cfg(unix)]
+#[test]
+fn a_hosts_mirror_of_its_own_host_is_not_listed_by_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    stand_in_host(root);
+
+    // B: one session of its own, and its mirror of one on its host C.
+    let host_db = Database::open(&root.join("host-data/thurbox.db")).unwrap();
+    let on_b = SessionId::default();
+    host_db
+        .upsert_session(&host_row(on_b, "bravo-own"))
+        .unwrap();
+    let on_c = SessionId::default();
+    let mut mirrored = host_row(on_c, "charlie-own");
+    mirrored.backend_type = "ssh:charlie".into();
+    host_db.upsert_session(&mirrored).unwrap();
+
+    let host = HostDef {
+        name: "bravo".into(),
+        destination: "bravo".into(),
+        ..Default::default()
+    };
+    let cli = usable_cli(&host);
+    let db = Database::open(&root.join("data/thurbox.db")).unwrap();
+
+    let report = mirror::mirror_host(&db, &host, &cli).unwrap();
+    assert_eq!(report.adopted, vec![on_b], "{report:?}");
+    assert_eq!(listed_on(&db, on_b), vec!["ssh:bravo"]);
+    assert!(
+        listed_on(&db, on_c).is_empty(),
+        "C's session, seen only through B, is listed here: {:?}",
+        listed_on(&db, on_c)
+    );
 }
 
 /// A host that upgraded first is still shared with (#1429). Its CLI is a minor
@@ -1080,8 +1239,9 @@ mod delegated_create {
         for var in ["THURBOX_SESSION", "THURBOX_SESSION_ID"] {
             std::env::remove_var(var);
         }
-        let (backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
-        let mut bus = CommandBus::new(Arc::new(backends));
+        let (backends, _hosts, _warnings) =
+            thurbox::backend::wiring::configured(&Default::default());
+        let mut bus = CommandBus::new(Arc::new(backends), &Default::default());
 
         let sends = |log: &str| {
             log.lines()
@@ -1156,7 +1316,8 @@ mod delegated_create {
         for var in ["THURBOX_SESSION", "THURBOX_SESSION_ID"] {
             std::env::remove_var(var);
         }
-        let (backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+        let (backends, _hosts, _warnings) =
+            thurbox::backend::wiring::configured(&Default::default());
         let db = pair.caller_db();
         let session = db.get_session_by_id(id).unwrap().expect("the mirror row");
 

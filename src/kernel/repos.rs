@@ -323,7 +323,7 @@ impl RepoStore {
     /// loop's business at startup, not this store's — it only needs to resolve
     /// a key to a host.
     pub fn new() -> Self {
-        let (registry, _warnings) = crate::agent::host_config::cached_registry();
+        let (registry, _warnings) = crate::config::hosts::cached_registry();
         Self::with_hosts(registry.clone())
     }
 

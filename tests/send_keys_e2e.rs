@@ -14,8 +14,8 @@ use std::process::Command;
 use thurbox::cli::output::CommandOutput;
 use thurbox::cli::sessions::{run, Action};
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -154,7 +154,8 @@ fn no_enter_types_without_submitting_and_key_enter_submits() {
             wait: Default::default(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("send --no-enter");
     assert_eq!(out["sent"], true);
@@ -174,7 +175,8 @@ fn no_enter_types_without_submitting_and_key_enter_submits() {
             key: "enter".into(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("key enter");
     assert_eq!(out["sent"], true);
@@ -215,7 +217,8 @@ fn text_arrives_literally_whatever_it_starts_with() {
             wait: Default::default(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("send --no-enter");
     assert_eq!(out["submitted"], false);
@@ -249,7 +252,8 @@ fn a_named_key_arrives_as_a_key_not_as_its_name() {
             wait: Default::default(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("send --no-enter");
     screen_when(&session, |s| s.contains("DISCARD_ME"));
@@ -263,7 +267,8 @@ fn a_named_key_arrives_as_a_key_not_as_its_name() {
             key: "CTRL+U".into(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("key ctrl-u");
     assert_eq!(
@@ -304,7 +309,8 @@ fn an_unknown_key_is_refused_before_anything_reaches_the_pane() {
             key: "Escpe".into(),
         },
         &db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .unwrap_err();
     assert!(err.contains("Unknown key"), "got {err}");
@@ -349,7 +355,8 @@ fn send(db: &Database, session: &SharedSession, text: &str, force: bool) -> Comm
             wait: Default::default(),
         },
         db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("session send")
 }

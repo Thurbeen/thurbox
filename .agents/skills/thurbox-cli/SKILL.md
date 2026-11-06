@@ -1,6 +1,6 @@
 ---
 name: thurbox-cli
-description: The thurbox-cli binary: every subcommand group (agent, session, automation, task, message, editor, config, extension, version, update, notify, perf, plugin), soft vs force delete and restore, session lifecycle hooks (hooks.toml), parent lead/worker sessions, manual session ordering, the inter-session message mailbox, Exec automations and the heartbeat keeper, plus tasks/todos. Use when changing or driving thurbox headlessly, or working on any of those subsystems.
+description: The thurbox-cli binary: every subcommand group (agent, session, automation, task, message, editor, config, extension, version, update, notify, perf, watch, runtime, plugin, ui, schema, doctor), soft vs force delete and restore, session lifecycle hooks (hooks.toml), parent lead/worker sessions, manual session ordering, the inter-session message mailbox, Exec automations and the heartbeat keeper, plus tasks/todos. Use when changing or driving thurbox headlessly, or working on any of those subsystems.
 ---
 
 # thurbox-cli, automations, tasks and messages
@@ -36,22 +36,22 @@ thurbox-cli session list --parent <lead-uuid> --recursive  # every descendant
 thurbox-cli session list --tree                # nested as the sidebar nests it
 ```
 
-Subcommands: `ui` (instances/state/actions/action/input for a live local TUI),
+Subcommands: `ui` (instances/state/watch/actions/confirm/input/action for a live local TUI),
 `schema` (CLI command tree plus that instance's live UI action catalog),
 `agent` (launch-args — see below), `session` (create/list [`--deleted` [`--since`]]/get/delete/reap/purge/restore/restart
-[`--if-missing`]/rename/reparent/stop/start/fork/exec/meta/reports-as/set-key/send [`--no-enter`]/key/capture/focus/signal/doctor/sync/revision/register —
+[`--if-missing`]/rename/reparent/stop/start/fork/exec/meta/reports-as/set-key/send [`--no-enter`]/wait/key/capture/focus/signal/doctor/sync/revision/register/bind-codex —
 `sync`/`revision`/`register` and the flags serve session sharing, ADR-24), `watch` (stream
 the session event log, one event per line), `runtime` (status/stop — what
 thurbox runs that is not a session), `automation` (alias `auto`:
 create/list/show/edit/remove/run/runs/tick), `task` (alias `todo`:
 create/list/show/edit/remove/run), `message` (alias `msg`:
-send/inbox/prune — the inter-session mailbox queue; see below), `editor`
+send/reply/inbox/prune — the inter-session mailbox queue; see below), `editor`
 (get/set the Ctrl+O editor command; `editor mode <auto|terminal|gui>` chooses
 how it launches — terminal editors get a real TTY via a tmux popup or TUI
 suspend, GUI editors spawn detached; see the Editor Integration section of
 `docs/FEATURES.md`), `config`
-(validate/show — strict-parses every config file / prints the
-effective resolved config; see `docs/CONFIG.md`), `extension`
+(validate/show/accept-interface — strict-parses every config file / prints the
+effective resolved config / records the interface change as seen; see `docs/CONFIG.md`), `extension`
 (alias `ext`: install/uninstall/reinstall/list/available/update/activate/
 deactivate/status — manage opt-in extensions; see below), `version`
 (prints the running version; `--check` queries GitHub's latest release —
@@ -102,7 +102,7 @@ Three rules it is written under, each of which a change here must keep:
 
 - **It never blocks.** A `Missing` answer is a warning on the choice, not a
   refusal — a `command` may be a shell function, an alias, or something
-  installed a second later. Same rule as `tmux::resolve_local_program`:
+  installed a second later. Same rule as `tmux_compat::server::resolve_local_program`:
   resolution is an improvement where it succeeds, never a new way to fail.
   `session create` reports it as a `warnings` entry beside `hook_failures`, and
   still creates the session.
@@ -345,6 +345,14 @@ defaults and this instance's locations (config dir, data dir, socket), with no
 session identity. Always a **fresh** launch — continuing a
 conversation is `session start`/`restart`.
 
+`session restart --fresh [--wait]` is the other way round: the same session on
+a **new** conversation (no resume group, new `agent_session_id` written to the
+row), refused with exit 5 while the session reports `working`/`blocked`/
+`background` unless `--wait`. `--json` `outcome` is `cleared`, `waited` or
+`refused`. One owner, `session_ops::restart::restart_fresh`, behind the CLI and
+the interface's `restart` command (`fresh = true`, never waits);
+docs/ORCHESTRATION.md → *Clearing a worker's conversation*.
+
 ### Session keys — the address a driver finds its sessions by
 
 One opaque **key** per session (issue #1408, ADR-35): `session create --key K`
@@ -410,9 +418,9 @@ Each line carries:
 
 | field | what it says |
 |---|---|
-| `seq` | monotonic, never reused — what `--since` resumes from |
+| `seq` | monotonic, never reused — what `--since` resumes from; `null` on a `host_down`/`host_up` line, which is not in the log |
 | `event` | `present` (baseline) / `created` / `changed` / `gone` |
-| `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated`, `lost`, `exited`, `relaunched` · `soft_deleted`, `force_deleted`, `forgotten` |
+| `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated`, `lost`, `exited`, `relaunched` · `soft_deleted`, `force_deleted`, `forgotten` · `host_down`, `host_up` (the host's recorded verdict flipped; no `from_state`/`to_state`) |
 | `from_state`, `to_state` | the transition itself, for a `changed`/`state` event |
 | `exit_code`, `detail` | an `exited` event's status and the pane's last lines (psmux: the agent window reports them on the way out — `docs/ARCHITECTURE.md` → "A psmux agent reports its own exit") |
 | `state`, `hook_state`, `state_source`, `hook_coverage`, `hook_blocked_is_heuristic`, `hook_state_contradicted`, `detected_agent` | the same gating fields `session get` publishes, so reacting to a `blocked` needs no follow-up call |
@@ -496,7 +504,7 @@ host's transport through the registry instead (ADR-30). Only a backend with no
 ### `runtime` — what thurbox runs that is not a session
 
 The automation heartbeat is kept by this machine's backend — the registry's
-default (`SessionBackend::ensure_heartbeat`; on a tmux-protocol server a
+default (`StatusChannel::ensure_heartbeat`; on a tmux-protocol server a
 detached `automation-heartbeat` window) — and created implicitly by anything
 that arms an automation. It is not a session, so no session listing shows it
 and no delete reclaims it. `runtime status` reports it (`null` when the backend
@@ -852,8 +860,8 @@ the pre-create hooks run, so the placeholder row says so.
   as the dotted names), `LifecycleHook`, `HooksFile`, and `HookContext` with
   `env()` (the `THURBOX_*` set, `THURBOX_SESSION_KEY` included — unset, never empty, for an unknown fact),
   `json()` (the stdin document) and `workdir()`.
-- **File**: `agent::hooks_config` mirrors `host_config` — seed, strict
-  parse through `parse_toml_reporting_unknown`, empty-with-warning on
+- **File**: `config::hooks` loads through `config::file::load_or_seed` — seed, strict
+  parse reporting unknown keys, empty-with-warning on
   failure; `hooks_for(event)` in file order. `config validate`/`show` cover
   it.
 - **Runner**: `session_ops::lifecycle_hooks::run_hook` — `platform_shell`,
@@ -874,11 +882,14 @@ the pre-create hooks run, so the placeholder row says so.
   running); unit tests beside each module. User docs: `docs/CONFIG.md` →
   hooks.toml.
 
-`session.pre_launch` additionally runs on local create/fork after the final
+`session.pre_launch` additionally runs on create/fork after the final
 cwd/worktrees exist and before opening the pane, with an `agents = [...]`
-filter and the same bounded, fail-closed runner. A refusal closes the creation
-intent and retains preparation for inspection. It is excluded from remote,
-restart, start and restore paths.
+filter and the same bounded, fail-closed runner — on the machine the agent
+runs on: locally, or for a remote session on its host, in that host's shell
+and launch directory (`fire_pre_launch`; a host that shares its sessions runs
+its own hooks instead). A refusal closes the creation intent and retains
+preparation for inspection. It is excluded from restart, start and restore
+paths.
 
 `session.state_changed` is the heartbeat consumer in
 `session_ops::state_hooks`: `events::drain` reads at most 512 rows, a `hooks`
@@ -933,7 +944,8 @@ not the bundled interface's. Storage: nullable `sessions.parent_session_id`
 ### Manual session ordering
 
 The session list is **manually orderable**: `Shift+J`/`Shift+K` (session list
-focused; rebindable `SessionListMoveDown`/`SessionListMoveUp`) move the selected
+focused; the `sessions.move_down`/`sessions.move_up` actions, rebindable in
+`ui.json`) move the selected
 session one row down/up. Manual order **wins** — status changes only recolor the
 dot, never move a row. A move swaps two adjacent *blocks* (a row plus its nested
 children, so a parent drags its subtree): root rows swap within their repo group,
@@ -945,8 +957,8 @@ v1's `move_in_order`), and the result is handed back whole as one
 persists, so the order survives restarts and syncs across instances via
 `data_version` polling. Storage: nullable `sessions.display_order` (schema v31);
 `None` = never moved, renders after ordered sessions in creation order (new
-sessions append to their group). **`Shift+S`** (rebindable
-`SessionListSortAlphabetically`) sorts by name **within each repo group** in one
+sessions append to their group). **`Shift+S`** (the `sessions.sort`
+action) sorts by name **within each repo group** in one
 shot, preserving group order (still by lowest `display_order`) and parent/child
 nesting, and issues the same `Order` command (v1's
 `sort_alphabetically_within_groups`). A **creation in flight** is a row with no
@@ -1009,7 +1021,9 @@ without double-processing.
   (`delivering_at`, `delivery_lease`) that `claim` skips and that is renewed
   before each attempt; success marks the row read + `delivered_via` (schema
   v48), failure releases it, and a killed sender's lease just lapses.
-  Output: `delivered_via` = `claude-socket` | `codex-queue` | `mailbox`, plus
+  Output: `delivered` (bool; `false` = mailbox only), `delivered_via` =
+  `claude-socket` | `codex-queue` | `mailbox`, `host` (set when a sharing
+  host's own CLI did the send, ADR-24 — `delivery::on_host`), plus
   `delivery_note` and `may_hold` — true for `claude-socket`, whose recipient
   can hold the body behind an approval dialog unless its settings carry
   `crossSessionInbound: accept` (a fact about the route; thurbox never sees the
@@ -1017,8 +1031,9 @@ without double-processing.
   unreachable from this path.
 
 - **Identity (the registry key, self-knowable).** A session's `SessionId` is
-  **stable for life** — `respawn_stale_session` reuses the original id on
-  re-adoption (no soft-delete + new-row churn), so a cached id or queued message
+  **stable for life** — the interface's `respawn_missing_agents` (v1's
+  `respawn_stale_session`) relaunches through `restart` under the original id
+  (no soft-delete + new-row churn), so a cached id or queued message
   never goes stale. At spawn thurbox injects `THURBOX_SESSION` (= the `SessionId`,
   threaded via `SessionConfig.session_id` so it's known *before* launch and reused
   on respawn), `THURBOX_SESSION_NAME` (= the launch-time display-name snapshot),
@@ -1092,7 +1107,9 @@ automations and runs. Delete JSON includes `disabled_automation_ids` and
   reap, teardowns, telemetry — `cli::automations` passes it, since the export
   needs `cli`/`telemetry`). `run_now` is `automation run --wait`: lock (exit 5
   when held), claim only if due (a manual run never shifts the schedule), fire,
-  record, return the row; exit 0/1/4 for success/failure/timeout.
+  record, return the row; exit 0/1/4 for success/failure/timeout, 6 when the
+  automation was deleted meanwhile. `--wait --force` runs a disabled one once,
+  leaving it disabled.
 - `tick_log` — `automation-tick.json` (last outcome, read by `runtime status`)
   and `automation-tick.log` (a timestamped line per failed tick and per
   automation a running tick could not fire, 64 KB cap).
@@ -1156,6 +1173,9 @@ once the agent was shown the prompt: one left only in the mailbox fails the disp
 `session_ops::tasks::dispatch` is the one implementation (#1468): `task run` and the
 interface's `dispatch` command both call it, so they name, reuse and refuse alike; the
 command additionally takes a session to send to instead of the task's action.
+Creating, editing and deleting go the same way (#1637): `session_ops::tasks::{create,
+edit, delete}` return `OpError`, `TaskStatus: FromStr` is the one status parser, and a
+missing task is `tasks::not_found` ("Task not found: <id>") from either caller.
 
 - **Data** (`session/task.rs`): `Task` (`id`, `title`, `description:
   Option<String>`, `status: TaskStatus` {`Todo`/`InProgress`/`Done`}, `action:

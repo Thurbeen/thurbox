@@ -65,12 +65,14 @@ installs from a URL, a local path, or a repository (`git+https://...`).
 
 The one extension the docs present to a user lives in **another repo**:
 [Thurbeen/fleet](https://github.com/Thurbeen/fleet), a control-plane template
-you clone. It is the reference for what a manifest looks like in practice —
-`[[agents]]`, one `[[files]]` payload, three `[[symlinks]]` surfacing it as
-`CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, one long-lived `[[sessions]]`, and
-deliberately no `[[automations]]` — and it ships its manifest as
-`extension.toml.in` with a `__REPO_PATH__` placeholder its
-`scripts/install-extension.sh` renders, because `{home}` resolves to the
+you clone — at its frozen Python tag `v1.0.0`; the v2 installer on `main`
+configures no extension. It is the reference for what a manifest looks like in
+practice — one `[[files]]` payload (`FLEET.rendered.md`), three `[[symlinks]]`
+surfacing it as `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, a long-lived lead
+`[[sessions]]` (plus a conductor session rendered only under
+`CONDUCTOR=session`), and deliberately no `[[automations]]` — and it ships its
+manifest as `extension.toml.in` with a `__REPO_PATH__` placeholder that
+`uv run fleet install-extension` renders, because `{home}` resolves to the
 extension home and no token spells "my clone". `docs/ORCHESTRATION.md` → "The
 reference implementation" owns that story; nothing in thurbox knows fleet
 exists.
@@ -129,7 +131,7 @@ document-wide, so nothing of ours is ever orphaned.
 extensions ship **embedded** in the binary and are **auto-activated by default**
 (`ensure_builtin_extensions` at TUI startup, the headless tick, and before each
 `thurbox-cli session create`/`start`/`restart`/`fork` and each task or automation
-spawn (`cli::action::ensure_hooks_wired`, run once the command is committed to
+spawn (`session_ops::deliver::ensure_hooks_wired`, run once the command is committed to
 spawning) — a machine driven by the CLI alone reaches its first spawn before any tick, and that session used to
 launch without claude's `--settings`). Each is a
 `Builtin` — embedded assets, a home under *this build's* config dir, and how it
@@ -155,9 +157,11 @@ account, #1526 — gets the payload there via
 `extensions::land_payload`, the installer's own merge rules) or the host pass.
 The installed manifest saves the env-resolved paths, so uninstall reverts the
 file the install wrote whatever its own env; it reverts only the installer's
-copy. Merged hook files are replaced atomically (temp file + rename, through a
-symlink to its target), since the tick and each account launch may merge one
-at once. Opt out of either with `thurbox-cli extension deactivate <name>` (records a
+copy. Every file the installer writes — payloads, merged hook files, the saved
+manifest, `agents.toml` — goes through `paths::write_atomically` (temp file +
+rename, through a symlink to its target, keeping the file's permissions), since
+the tick and each account launch may merge one at once. Opt out of either with
+`thurbox-cli extension deactivate <name>` (records a
 `builtin_<name>_optout` metadata flag so self-heal won't resurrect it — the key
 format is chosen so `hooks` keeps producing the `builtin_hooks_optout` row it
 wrote before there was more than one built-in); `activate`/`install <name>`

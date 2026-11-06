@@ -281,11 +281,11 @@ fn searched(binary: &str) -> String {
 pub fn launch_failure(
     remote_launcher: Option<&str>,
     mux: &str,
-    context: &'static str,
+    context: &str,
     err: std::io::Error,
 ) -> anyhow::Error {
     if err.kind() != std::io::ErrorKind::NotFound {
-        return anyhow::Error::new(err).context(context);
+        return anyhow::Error::new(err).context(context.to_string());
     }
     let dependency = match remote_launcher {
         Some(launcher) => Dependency::Launcher(launcher),
@@ -328,7 +328,7 @@ pub fn local_multiplexers() -> Vec<Multiplexer> {
         .into_iter()
         .filter(|mux| look_up(mux.name()) == Presence::Present)
         .collect();
-    Multiplexer::available_on(crate::session::Platform::local(), Some(&found), None)
+    Multiplexer::available_on(crate::shell::local_platform(), Some(&found), None)
 }
 
 /// The multiplexer a local session would run in on this platform.

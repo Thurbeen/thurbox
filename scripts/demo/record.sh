@@ -50,7 +50,7 @@ ALL_TAPES="interface theme session-creation fork search"
 TAPES="${*:-$ALL_TAPES}"
 
 # thurbox TUI theme every clip starts in (persisted string in metadata.active_theme,
-# see src/session/theme_config/mod.rs). The `theme` clip switches away from it to show
+# see src/theme/mod.rs). The `theme` clip switches away from it to show
 # the picker, so we re-apply this before EVERY tape to keep all videos on-brand.
 DEMO_THEME="${DEMO_THEME:-doom}"
 
@@ -125,7 +125,7 @@ DB_FILE="$XDG_DATA_HOME/thurbox-dev/thurbox.db"  # SQLite db (dev_build subdir)
 mkdir -p "$CFG_DIR"
 
 # Hide `wsl.exe` from the demo's PATH. WSL distros are AUTO-discovered (no config
-# to isolate — `host_config::discover_wsl_hosts` shells out to `wsl.exe -l -q`
+# to isolate — `config::hosts::discover_wsl_hosts` shells out to `wsl.exe -l -q`
 # whenever it resolves on PATH), so on a WSL box every discovered distro becomes a
 # host and Ctrl+N opens the "Run On" host picker *before* the repo picker. That
 # extra modal shifts every subsequent keystroke in the spawn tapes by one step, so

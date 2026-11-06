@@ -16,7 +16,7 @@
 //! The wake-up is still the gate the interface's own sync worker uses: SQLite's
 //! `PRAGMA data_version` changes when *another* connection commits, so a reader
 //! sits on a cheap pragma and reads the log's tail only when there is a tail to
-//! read (see [`crate::sync`]).
+//! read (see `storage::Database::data_version`).
 //!
 //! Deliberately not the kernel's event bus. That would need an IPC channel out
 //! of a running interface, and would then only work while one is running —
@@ -25,7 +25,7 @@
 //! replace what is behind this command later without the command itself
 //! changing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, Write};
 use std::time::{Duration, Instant};
 
@@ -119,6 +119,10 @@ pub fn run(
     // it as of the last event *for that session*, never a later batch's
     // snapshot (see `drain`'s doc comment).
     let seed_facts = db.load_session_facts().unwrap_or_default();
+    // Taken before the baseline rows for the reason the head is: a host that
+    // flips between the two is reported twice rather than not at all.
+    let mut hosts = HostVerdicts::default();
+    hosts.look(db, filter);
     let mut stopped_state: HashMap<SessionId, bool> = seed_facts
         .iter()
         .map(|(id, facts)| (*id, facts.stopped))
@@ -184,6 +188,19 @@ pub fn run(
         if swept.elapsed() >= SWEEP {
             found = lost.sweep(db, local) + crate::session_ops::launch_failure::sweep(db, local);
             swept = Instant::now();
+            let mut fields = crate::session_ops::read_fields::ReadFields::default();
+            for (session, down) in hosts.look(db, filter) {
+                let line = host_line(db, &registry, &session, down, backends);
+                // A parked session reads `stopped` either way: nothing changed.
+                let Some(mut line) = line.filter(|line| line["stopped"] != Value::Bool(true))
+                else {
+                    continue;
+                };
+                fields.annotate(db, Some(local), &registry, &session, &mut line);
+                if !out.write(&line) {
+                    return Ok(());
+                }
+            }
         }
 
         // The gate: unchanged means no other connection has committed, so
@@ -311,6 +328,7 @@ fn line(
         name: String::new(),
         agent: String::new(),
         backend_id: String::new(),
+        backend_type: String::new(),
         stopped: false,
         seen_at: None,
         launch_failure: None,
@@ -338,11 +356,14 @@ fn line(
     crate::session_ops::events::render(event, facts, &hook, stopped)
 }
 
-/// What the stored columns — and, with `--verify`, the pane — say about a
-/// session at the moment an event describes.
+/// What the stored columns, the host's recorded verdict and, with `--verify`,
+/// the pane say about a session at the moment an event describes.
 ///
-/// Reuses [`Assessment`] rather than re-deriving coverage here, so the words
-/// this stream uses are the words every other surface uses.
+/// The same fold `session get`/`list` make ([`crate::session_ops::events::assess`],
+/// then [`crate::session_ops::host_cli::with_host_verdict`]), so the words this
+/// stream uses are the words every other surface uses. The verdict is the
+/// host's *now*, like `seen_at` (see [`line`]): a report replayed from a host
+/// that has since gone quiet is a report nobody can confirm.
 fn assess(
     registry: &crate::session::AgentRegistry,
     facts: &SessionFacts,
@@ -350,21 +371,30 @@ fn assess(
     stopped: bool,
     probe: Option<(
         &crate::backend::BackendRegistry,
-        &crate::sync::SharedSession,
+        &crate::session::SharedSession,
     )>,
 ) -> Assessment {
-    let hook = Assessment::from_hooks(
-        registry,
-        &facts.agent,
-        columns.state.as_deref(),
-        columns.state_at,
-        columns.seen_at,
-        crate::sync::current_time_millis() as i64,
-    );
+    let down = crate::session_ops::host_cli::recorded_down(&facts.backend_type);
+    assess_sampled(registry, facts, columns, stopped, down, probe)
+}
+
+/// [`assess`] with the host verdict already read, as `down`.
+fn assess_sampled(
+    registry: &crate::session::AgentRegistry,
+    facts: &SessionFacts,
+    columns: &HookRow,
+    stopped: bool,
+    down: bool,
+    probe: Option<(
+        &crate::backend::BackendRegistry,
+        &crate::session::SharedSession,
+    )>,
+) -> Assessment {
+    let hook = crate::session_ops::events::assess(registry, facts, columns, stopped);
     if stopped {
-        return hook.parked();
+        return hook;
     }
-    let hook = hook.with_launch_failure(facts.launch_failure.clone());
+    let hook = crate::session_ops::host_cli::with_host_down(hook, down);
     let Some((backends, session)) = probe else {
         return hook;
     };
@@ -372,6 +402,85 @@ fn assess(
         return hook.pane_unavailable();
     }
     crate::cli::sessions::probe_pane(hook, registry, &facts.agent, backends, session)
+}
+
+/// The remote sessions whose host was recorded as not answering at the last
+/// look.
+///
+/// A host verdict is a file the interface's probe writes, not a row, so its
+/// going down or coming back appends nothing to the event log. Each sweep
+/// compares and reports the flips itself, as `changed`/`host_down` and
+/// `changed`/`host_up`.
+#[derive(Default)]
+struct HostVerdicts {
+    down: HashSet<SessionId>,
+}
+
+impl HostVerdicts {
+    /// Look again: every watched remote session whose host went down or came
+    /// back since the last look, with the row it was read from and whether it
+    /// is now down. The verdict is read once per route spelling, not once per
+    /// session.
+    fn look(
+        &mut self,
+        db: &Database,
+        filter: Option<SessionId>,
+    ) -> Vec<(crate::session::SharedSession, bool)> {
+        let mut by_host: HashMap<String, bool> = HashMap::new();
+        let mut down = HashSet::new();
+        let mut flips = Vec::new();
+        for session in db.list_active_sessions().unwrap_or_default() {
+            if filter.is_some_and(|only| only != session.id)
+                || !crate::session::Route::is_remote_key(&session.backend_type)
+            {
+                continue;
+            }
+            let is_down = *by_host
+                .entry(session.backend_type.clone())
+                .or_insert_with_key(|route| crate::session_ops::host_cli::recorded_down(route));
+            if is_down {
+                down.insert(session.id);
+            }
+            if is_down != self.down.contains(&session.id) {
+                flips.push((session, is_down));
+            }
+        }
+        self.down = down;
+        flips
+    }
+}
+
+/// One host flip as a stream line. Not in the log, so it has no `seq` of its
+/// own to resume from (`null`), and no hook transition (`from_state` and
+/// `to_state` are `null`): what changed is `state`. Assessed with the `down`
+/// the sweep sampled, not a second read, so `reason` and `state` cannot
+/// disagree when the verdict moves in between.
+fn host_line(
+    db: &Database,
+    registry: &crate::session::AgentRegistry,
+    session: &crate::session::SharedSession,
+    down: bool,
+    backends: Option<&crate::backend::BackendRegistry>,
+) -> Option<Value> {
+    let facts = db
+        .load_session_facts_for(&[session.id])
+        .ok()?
+        .remove(&session.id)?;
+    let columns = db.load_hook_state(session.id).ok().flatten()?;
+    let hook = assess_sampled(
+        registry,
+        &facts,
+        &columns,
+        facts.stopped,
+        down,
+        backends.map(|b| (b, session)),
+    );
+    let mut line = crate::session_ops::events::present(0, session.id, &facts, &hook);
+    line["seq"] = Value::Null;
+    line["event"] = serde_json::json!("changed");
+    line["reason"] = serde_json::json!(if down { "host_down" } else { "host_up" });
+    line["to_state"] = Value::Null;
+    Some(line)
 }
 
 /// The columns the non-JSON renderings show, in the order they answer "what
@@ -464,7 +573,10 @@ fn human(event: &Value) -> String {
             .unwrap_or_default()
             .to_string()
     };
-    let seq = event.get("seq").and_then(Value::as_i64).unwrap_or_default();
+    let seq = event
+        .get("seq")
+        .and_then(Value::as_i64)
+        .map_or_else(|| "-".to_string(), |seq| seq.to_string());
     let reason = match field("reason").as_str() {
         "" => String::new(),
         reason => format!(" ({reason})"),
@@ -488,4 +600,44 @@ fn human(event: &Value) -> String {
         field("name"),
         field("state"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A host line is one sample of the verdict: its `reason` and its `state`
+    /// say the same thing even when the verdict changed between the sweep's
+    /// look and the line being built — here, cleared before the line is.
+    #[test]
+    fn a_host_line_reads_the_verdict_it_was_sampled_with() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let _paths = crate::paths::TestPathGuard::new(temp.path());
+        let db = Database::open_in_memory().unwrap();
+        let session = crate::session::SharedSession {
+            id: SessionId::default(),
+            name: "on-a-host".into(),
+            agent: "claude".into(),
+            backend_id: "%1".into(),
+            backend_type: "ssh:elsewhere:tmux".into(),
+            agent_session_id: None,
+            cwd: None,
+            additional_dirs: Vec::new(),
+            worktrees: Vec::new(),
+            shell_backend_id: None,
+            parent_session_id: None,
+            display_order: None,
+            tombstone: false,
+            tombstone_at: None,
+            key: None,
+        };
+        db.upsert_session(&session).unwrap();
+        db.set_hook_state(session.id, "idle").unwrap();
+        let registry = crate::agent::agent_config::load_or_seed();
+
+        // No verdict on file: the host answered again after the look.
+        let down = host_line(&db, &registry, &session, true, None).unwrap();
+        assert_eq!(down["reason"], "host_down");
+        assert_eq!(down["state"], "unreachable", "{down}");
+    }
 }

@@ -8,9 +8,10 @@ use serde_json::{json, Value};
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
 use crate::session::background_work::WorkEdge;
+use crate::session::settings::Settings;
 use crate::session::SessionId;
+use crate::session::SharedSession;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 #[derive(clap::Args, Debug, Default)]
 pub struct SendWaitArgs {
@@ -392,13 +393,27 @@ pub enum Action {
     /// Restart a session in-place: kill the window and re-spawn, resuming the
     /// conversation when one exists (a hook reported a turn, or its transcript
     /// is on disk) and starting it fresh otherwise.
+    ///
+    /// `--fresh` starts the agent on a new conversation instead, on the same
+    /// session (id, name, worktree, parent, mailbox): no resume group and a new
+    /// agent session id. A session mid-turn (`working`, `blocked`,
+    /// `background`) is refused with exit 5 unless `--wait` is given, which
+    /// waits for the turn to end first. `--json` says `outcome`: `cleared`,
+    /// `waited` or `refused` (with `reason`).
     Restart {
         /// Session UUID.
         uuid: String,
         /// Relaunch only if the session has no live window; a running session
         /// is left alone. What a peer asks for after this host rebooted.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "fresh")]
         if_missing: bool,
+        /// Start a new conversation rather than resuming the current one.
+        #[arg(long)]
+        fresh: bool,
+        /// With `--fresh`: wait for a turn in progress to end instead of
+        /// refusing.
+        #[arg(long, requires = "fresh")]
+        wait: bool,
     },
     /// Rename a session, and the windows named after it.
     ///
@@ -795,7 +810,7 @@ pub enum OnExisting {
     /// Tear the existing session down first (as `delete --force` would), then
     /// create. Its worktree goes with it.
     Replace,
-    /// Refuse, naming the session in the way. Exit 1, nothing created.
+    /// Refuse, naming the session in the way. Exit 5, nothing created.
     Fail,
 }
 
@@ -858,6 +873,7 @@ pub fn run(
     action: Action,
     db: &Database,
     backends: &super::Backends<'_>,
+    settings: &Settings,
 ) -> Result<CommandOutput, CommandError> {
     match action {
         Action::List {
@@ -914,6 +930,7 @@ pub fn run(
         } => run_create(
             db,
             backends.get(),
+            settings,
             CreateArgs {
                 name,
                 repo_path,
@@ -945,12 +962,16 @@ pub fn run(
             soft,
             if_generation,
         } => {
-            let force = force
-                || (!soft
-                    && !crate::agent::settings_config::load_quiet()
-                        .features
-                        .soft_delete);
-            delete_session_if_generation(db, backends.get(), &uuid, force, if_generation)
+            let force =
+                force || (!soft && !crate::config::settings::load_quiet().features.soft_delete);
+            delete_session_if_generation(
+                db,
+                backends.get(),
+                settings.deleted_retention_days,
+                &uuid,
+                force,
+                if_generation,
+            )
         }
         Action::Restore {
             session,
@@ -988,7 +1009,15 @@ pub fn run(
                 if_generation,
             )
         }
-        Action::Restart { uuid, if_missing } => run_restart(db, backends.get(), uuid, if_missing),
+        Action::Restart {
+            uuid,
+            fresh: true,
+            wait,
+            ..
+        } => run_restart_fresh(db, backends.get(), uuid, wait),
+        Action::Restart {
+            uuid, if_missing, ..
+        } => run_restart(db, backends.get(), uuid, if_missing),
         Action::Rename { session, name } => run_rename(db, backends.get(), session, name),
         Action::Reparent {
             session,
@@ -1421,6 +1450,7 @@ struct CreateArgs {
 fn run_create(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
     args: CreateArgs,
 ) -> Result<CommandOutput, CommandError> {
     let CreateArgs {
@@ -1530,7 +1560,7 @@ fn run_create(
     // A host driven from afar has no interface of its own to arm the
     // heartbeat: this creation is the moment its sessions start needing
     // the tick (status polls, extension self-heal, reaping).
-    super::automations::arm_heartbeat(backends);
+    super::automations::arm_heartbeat(backends, settings);
     let mut human = format!(
         "{} session '{}' ({}) — {}\ncwd: {}",
         if res.created {
@@ -1710,32 +1740,130 @@ fn run_restart(
     uuid: String,
     if_missing: bool,
 ) -> Result<CommandOutput, CommandError> {
+    if if_missing {
+        if let Some(output) = restart_of_a_deleted_session(db, &uuid)? {
+            return Ok(output);
+        }
+    }
     let session = resolve(db, &uuid)?;
     crate::session_ops::deliver::ensure_hooks_wired(db, backends);
     let report = crate::session_ops::restart::restart_session_headless_with(
         db, backends, session.id, if_missing,
     )?;
-    let mut human = match report.held_back {
-        true => format!(
+    let mut human = match (report.held_back, report.gone) {
+        (true, _) => format!(
             "Not relaunching '{}' ({}): {}. `thurbox-cli session restart {}` brings it back.",
             session.name,
             session.id,
             crate::session_ops::restart::held_back_reason(),
             session.id
         ),
-        false => format!("Restarted session '{}' ({})", session.name, session.id),
+        // Deleted between the lookup above and the repair, here or on its
+        // host. The same answer as `restart_of_a_deleted_session`.
+        (false, true) => format!(
+            "'{}' ({}) has been deleted; nothing to relaunch",
+            session.name, session.id
+        ),
+        (false, false) => format!("Restarted session '{}' ({})", session.name, session.id),
     };
     push_hook_failures(&mut human, &report.hook_failures);
     Ok(CommandOutput::new(
         json!({
-            "restarted": !report.held_back,
+            "restarted": !report.held_back && !report.gone,
             "held_back": report.held_back,
+            "gone": report.gone,
             "session_id": session.id.to_string(),
             "session_name": session.name,
             "hook_failures": report.hook_failures,
         }),
         human,
     ))
+}
+
+/// `restart --if-missing` of a session this database holds as deleted.
+///
+/// A repairer acts on a survey taken before it ran, and a session deleted
+/// since has no window to put back. So the repair is a no-op (`gone`), not a
+/// "Session not found" failure that blames the delete. Only a UUID of a known
+/// deleted row qualifies: a reference that names nothing, such as a typo,
+/// still fails, as does a restart asked for without `--if-missing`.
+fn restart_of_a_deleted_session(
+    db: &Database,
+    reference: &str,
+) -> Result<Option<CommandOutput>, CommandError> {
+    let Ok(id) = reference.parse::<crate::session::SessionId>() else {
+        return Ok(None);
+    };
+    let read = |e: rusqlite::Error| CommandError::from(format!("read session {id}: {e}"));
+    if db.get_session_by_id(id).map_err(read)?.is_some() {
+        return Ok(None);
+    }
+    let Some(gone) = db.get_deleted_session_by_id(id).map_err(read)? else {
+        return Ok(None);
+    };
+    Ok(Some(CommandOutput::new(
+        json!({
+            "restarted": false,
+            "held_back": false,
+            "gone": true,
+            "session_id": id.to_string(),
+            "session_name": gone.name,
+            "hook_failures": [],
+        }),
+        format!(
+            "'{}' ({id}) has been deleted; nothing to relaunch",
+            gone.name
+        ),
+    )))
+}
+
+fn run_restart_fresh(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    uuid: String,
+    wait: bool,
+) -> Result<CommandOutput, CommandError> {
+    use crate::session_ops::restart::{Fresh, WhenBusy};
+    let session = resolve(db, &uuid)?;
+    crate::session_ops::deliver::ensure_hooks_wired(db, backends);
+    let when_busy = match wait {
+        true => WhenBusy::Wait,
+        false => WhenBusy::Refuse,
+    };
+    let report = crate::session_ops::restart::restart_fresh(db, backends, session.id, when_busy)?;
+    let mut json = json!({
+        "outcome": report.fresh.as_str(),
+        "restarted": !matches!(report.fresh, Fresh::Refused(_)),
+        "session_id": session.id.to_string(),
+        "session_name": session.name,
+        "agent_session_id": report.agent_session_id,
+        "hook_failures": report.restart.hook_failures,
+    });
+    if let Fresh::Refused(reason) = &report.fresh {
+        // `error`/`error_kind` too, so a peer delegating to this CLI reads the
+        // refusal as the conflict it is (`host_cli`).
+        json["reason"] = json!(reason);
+        json["error"] = json!(reason);
+        json["error_kind"] = json!("conflict");
+        let human = format!(
+            "Not restarting '{}' ({}): {reason}",
+            session.name, session.id
+        );
+        return Ok(CommandOutput::failed(json, human, reason.clone())
+            .exiting_with(crate::cli::EXIT_CONFLICT));
+    }
+    let mut human = match report.fresh {
+        Fresh::Waited => format!(
+            "Turn ended; restarted '{}' ({}) on a new conversation",
+            session.name, session.id
+        ),
+        _ => format!(
+            "Restarted '{}' ({}) on a new conversation",
+            session.name, session.id
+        ),
+    };
+    push_hook_failures(&mut human, &report.restart.hook_failures);
+    Ok(CommandOutput::new(json, human))
 }
 
 fn run_rename(
@@ -1880,7 +2008,7 @@ fn run_send(
         strict: wait.strict,
         wait_turn: wait.wait_turn,
         timeout: wait.timeout.map(std::time::Duration::from_secs),
-        from_session: super::identity::calling_session(db).map(|s| s.id),
+        from: super::identity::sender(db),
         from_task: super::messages::calling_task_id(),
     };
     let report = send::send(db, backends, &session, &text, &policy)?;
@@ -2062,7 +2190,28 @@ fn run_register(
                 .map_err(|e| format!("--json-row telemetry_attrs: {e}"))
         })
         .transpose()?;
-    register_running_session(db, backends, row, telemetry_attrs)
+    let crate::session_ops::mirror::Registered {
+        session,
+        key_dropped,
+    } = crate::session_ops::mirror::register_running(db, backends, row, telemetry_attrs.as_ref())?;
+    let human = format!(
+        "Registered running session '{}' ({})",
+        session.name, session.id
+    );
+    Ok(CommandOutput::new(
+        json!({
+            "registered": true,
+            "id": session.id.to_string(),
+            "name": session.name,
+            "key": session.key,
+            "key_dropped": key_dropped,
+            "backend_id": session.backend_id,
+        }),
+        match &key_dropped {
+            Some(why) => format!("{human}\n  {why}"),
+            None => human,
+        },
+    ))
 }
 
 fn run_stop(
@@ -2260,10 +2409,22 @@ fn run_signal(
                 None if *turn_start => ReportFrom::TurnStart,
                 None => ReportFrom::Agent,
             };
-            let stored = db
-                .signal_hook_state(target.id, state, from, stop.as_ref())
-                .map_err(|e| format!("set_hook_state: {e}"))?
-                .ok_or_else(parked)?;
+            use crate::session_ops::signals::{report, Reported};
+            let stored = match report(db, target.id, state, from, stop.as_ref())
+                .map_err(|e| format!("record the state: {e}"))?
+            {
+                Reported::Stored { state, .. } => state,
+                Reported::NotAState => {
+                    return Err(CommandError::with_code(
+                        format!(
+                            "'{state}' is not a state; one of {}",
+                            crate::session::HOOK_STATES.join(", ")
+                        ),
+                        super::EXIT_USAGE,
+                    ))
+                }
+                Reported::NotTaken => return Err(parked()),
+            };
             // A turn means the conversation exists, so a restart must resume
             // it rather than pin its id afresh — see
             // `session_ops::conversation_started`. Recorded only when the
@@ -2518,7 +2679,7 @@ fn run_bind_codex(db: &Database) -> Result<CommandOutput, CommandError> {
             "Cannot prove a pane-local Codex process. No safe live repair is available; see the Codex binding recovery instructions before an operator-controlled relaunch. Do not manually copy a conversation ID.",
         ));
     }
-    const KEY: &str = "thurbox.codex_conversation_id";
+    const KEY: &str = crate::session::CODEX_CONVERSATION_META;
     const PICKER_REQUIRED: &str = crate::session_ops::CODEX_PICKER_REQUIRED;
     let source = payload["source"].as_str().unwrap_or_default();
     match db
@@ -2678,6 +2839,7 @@ fn capture_pane(
 fn delete_session_if_generation(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    deleted_retention_days: u64,
     uuid: &str,
     force: bool,
     if_generation: Option<u64>,
@@ -2719,7 +2881,7 @@ fn delete_session_if_generation(
     let (undo_until, reapable_at) = undo_deadlines(
         report.host_deadlines.as_ref(),
         row.as_ref().filter(|_| !force).map(|r| r.deleted_at),
-        crate::session::settings::global().deleted_retention_days,
+        deleted_retention_days,
     );
     Ok(CommandOutput::new(
         json!({
@@ -3382,7 +3544,7 @@ pub(crate) fn parse_env(
 
 /// One worktree as the CLI renders it — the shape `session get` already
 /// publishes, so a caller parses one form wherever it meets a worktree.
-fn worktree_json(w: &crate::sync::SharedWorktree) -> Value {
+fn worktree_json(w: &crate::session::SharedWorktree) -> Value {
     json!({
         "repo_path": w.repo_path.display().to_string(),
         "worktree_path": w.worktree_path.display().to_string(),
@@ -3584,7 +3746,7 @@ impl SessionFacts {
             row.and_then(|r| r.state.as_deref()),
             row.and_then(|r| r.state_at),
             row.and_then(|r| r.seen_at),
-            crate::sync::current_time_millis() as i64,
+            crate::storage::current_time_millis() as i64,
         )
         .with_work(self.work.get(&s.id).map(String::as_str));
         let hook = if self.hooks_enabled {
@@ -3595,7 +3757,10 @@ impl SessionFacts {
         if self.parked.contains(&s.id) {
             return hook.parked();
         }
-        let hook = hook.with_launch_failure(self.launch_failures.get(&s.id).cloned());
+        let hook = crate::session_ops::host_cli::with_host_verdict(
+            hook.with_launch_failure(self.launch_failures.get(&s.id).cloned()),
+            &s.backend_type,
+        );
         let Some(backends) = probe else {
             return hook;
         };
@@ -3709,96 +3874,6 @@ fn render_mirror_report(r: &crate::session_ops::mirror::MirrorReport) -> String 
     }
 }
 
-/// `session register`: a row for an agent window that is already running on
-/// this machine's server. The window must exist — this records, it never
-/// launches — and neither the id nor the name may already be a session here.
-fn register_running_session(
-    db: &Database,
-    backends: &crate::backend::BackendRegistry,
-    row: crate::session_ops::mirror::HostRow,
-    telemetry_attrs: Option<std::collections::BTreeMap<String, String>>,
-) -> Result<CommandOutput, CommandError> {
-    let mut session = row.session;
-    if db
-        .get_session_by_id(session.id)
-        .map_err(|e| format!("get_session_by_id: {e}"))?
-        .is_some()
-    {
-        return Err(format!("session {} is already registered here", session.id).into());
-    }
-    if let Some(existing) = db
-        .get_session_by_name(&session.name)
-        .map_err(|e| format!("get_session_by_name: {e}"))?
-    {
-        return Err(format!(
-            "a session named '{}' already exists here ({})",
-            session.name, existing.id
-        )
-        .into());
-    }
-    // The row is being adopted onto this machine, so no window can be stamped
-    // for its id yet; passing the real id (rather than "") still lets the
-    // by-name fallback require the sole match to be unstamped, refusing to
-    // steal a window already stamped for a different, live session. Claimed,
-    // it is stamped: the row then owns that window by id rather than by a name
-    // a later namesake could take.
-    let pane = crate::session_ops::windows::claim_running_window(
-        backends,
-        &session.backend_type,
-        &session.id.to_string(),
-        &session.name,
-    )?;
-    session.backend_id = pane;
-    // A key comes along only when nobody on this machine has it: the row is
-    // being recorded either way — its window is already running, and refusing
-    // would leave `sync --adopt` retrying it every pass — so a taken key is
-    // dropped and said so, the way a restore drops one.
-    let (key_claim, key_dropped) = crate::session_ops::names::admit_key(
-        db,
-        session.key.as_deref(),
-        &session.backend_type,
-        "register",
-    )?;
-    let key_dropped = key_dropped.map(|why| format!("registered without its key: {why}"));
-    if key_dropped.is_some() {
-        session.key = None;
-    }
-    db.upsert_session_with_launch_metadata(
-        &session,
-        crate::storage::EventReason::Registered,
-        row.agent_args.as_deref(),
-        telemetry_attrs.as_ref(),
-    )
-    .map_err(|e| format!("upsert_session: {e}"))?;
-    drop(key_claim);
-    if let Some(state) = row.hook_state.as_deref() {
-        let _ = db.set_hook_state(session.id, state);
-    }
-    if let Some(base) = row.base_branch.as_deref() {
-        let _ = db.set_session_base_branch(session.id, base);
-    }
-    Ok(CommandOutput::new(
-        json!({
-            "registered": true,
-            "id": session.id.to_string(),
-            "name": session.name,
-            "key": session.key,
-            "key_dropped": key_dropped,
-            "backend_id": session.backend_id,
-        }),
-        match &key_dropped {
-            Some(why) => format!(
-                "Registered running session '{}' ({})\n  {why}",
-                session.name, session.id
-            ),
-            None => format!(
-                "Registered running session '{}' ({})",
-                session.name, session.id
-            ),
-        },
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3878,6 +3953,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert!(v.is_array(), "got {v}");
@@ -3905,6 +3981,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(out["state"], "blocked");
@@ -3933,6 +4010,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("not inside a thurbox session"), "got {err}");
@@ -3995,6 +4073,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -4016,6 +4095,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(SessionFacts::load(&db).declared_agent(&session), None);
@@ -4036,6 +4116,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("clyde"), "got {err}");
@@ -4063,6 +4144,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -4076,6 +4158,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         // Set by name, read back by id: one session, either spelling.
@@ -4089,6 +4172,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(listed["fm.task_id"].as_str(), Some("T-1043"));
@@ -4102,6 +4186,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(removed["removed"].as_bool(), Some(true));
@@ -4115,6 +4200,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(again["removed"].as_bool(), Some(false));
@@ -4125,19 +4211,20 @@ mod tests {
         let db = db();
         let session = make_test_session("worker");
         db.upsert_session(&session).unwrap();
-        db.set_session_meta(session.id, "thurbox.codex_conversation_id", "real")
+        db.set_session_meta(session.id, crate::session::CODEX_CONVERSATION_META, "real")
             .unwrap();
 
         let err = run(
             Action::Meta {
                 action: MetaAction::Set {
                     session: "worker".into(),
-                    key: "thurbox.codex_conversation_id".into(),
+                    key: crate::session::CODEX_CONVERSATION_META.into(),
                     value: Some("forged".into()),
                 },
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert_eq!(err.exit_code, crate::cli::EXIT_USAGE);
@@ -4146,11 +4233,12 @@ mod tests {
             Action::Meta {
                 action: MetaAction::Unset {
                     session: "worker".into(),
-                    key: "thurbox.codex_conversation_id".into(),
+                    key: crate::session::CODEX_CONVERSATION_META.into(),
                 },
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert_eq!(
@@ -4159,7 +4247,7 @@ mod tests {
             "removing one is refused too"
         );
         assert_eq!(
-            db.get_session_meta(session.id, "thurbox.codex_conversation_id")
+            db.get_session_meta(session.id, crate::session::CODEX_CONVERSATION_META)
                 .unwrap()
                 .as_deref(),
             Some("real")
@@ -4197,6 +4285,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(out["exit_code"].as_i64(), Some(0));
@@ -4223,6 +4312,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(failed["exit_code"].as_i64(), Some(3));
@@ -4236,6 +4326,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(passthrough["exit_code"].as_i64(), Some(3));
@@ -4315,6 +4406,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -4374,6 +4466,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -4399,6 +4492,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -4422,6 +4516,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -4440,6 +4535,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -4482,6 +4578,7 @@ mod tests {
                     },
                     &db,
                     &crate::cli::Backends::ready(crate::backend::registry::inert()),
+                    &Settings::default(),
                 )
                 .unwrap_err();
                 assert!(err.contains("text"), "got {err}");
@@ -4519,6 +4616,7 @@ mod tests {
                 action,
                 &db,
                 &crate::cli::Backends::ready(crate::backend::registry::inert()),
+                &Settings::default(),
             )
             .unwrap_err();
             assert!(err.contains("ssh:devbox"), "got {err}");
@@ -4544,6 +4642,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("Unknown key 'escpe'"), "got {err}");
@@ -4565,6 +4664,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -4630,6 +4730,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(v["deleted"], true);
@@ -4646,6 +4747,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -4682,6 +4784,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -4692,6 +4795,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("--best-effort"), "{err}");
@@ -4705,6 +4809,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -4724,7 +4829,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut shared = make_test_session("borrowed");
         shared.agent_session_id = Some("restore-test".into());
-        shared.worktrees = vec![crate::sync::SharedWorktree {
+        shared.worktrees = vec![crate::session::SharedWorktree {
             repo_path: dir.path().to_path_buf(),
             worktree_path: dir.path().to_path_buf(),
             branch: "feat/borrowed".into(),
@@ -4750,6 +4855,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -4760,6 +4866,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -4775,7 +4882,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let gone = dir.path().join("checkout");
         let mut shared = make_test_session("vanished");
-        shared.worktrees = vec![crate::sync::SharedWorktree {
+        shared.worktrees = vec![crate::session::SharedWorktree {
             repo_path: dir.path().to_path_buf(),
             worktree_path: gone.clone(),
             branch: "feat/borrowed".into(),
@@ -4792,6 +4899,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -4802,6 +4910,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains(&gone.display().to_string()), "{err}");
@@ -4840,6 +4949,7 @@ mod tests {
                 },
                 &db,
                 &crate::cli::Backends::ready(crate::backend::registry::inert()),
+                &Settings::default(),
             )
             .unwrap()
             .json

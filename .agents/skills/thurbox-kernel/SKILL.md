@@ -45,9 +45,13 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
    plugin has, so `thurbox.granted` reports the grant instead — a boolean about a
    decision already made, which withholds nothing.
 5. **Anything touching the world runs on a worker** — terminal attach, commands,
-   the interface's database reads and writes (`kernel::snapshot_db`), diffs,
+   the interface's database reads and writes (`kernel::snapshot::db`), diffs,
    metrics, git stats, repository reads, update checks, and programs a plugin
-   asked for.
+   asked for. In `kernel::snapshot` (`db`, `git`, `probe`) and
+   `kernel::terminal` (`attach`, `discovery`, `shells`) each worker is a file of
+   its own, and `each_kernel_worker_lives_in_a_file_of_its_own` in
+   `tests/architecture_rules.rs` fails when the store, the read model or the
+   paint path (`terminal::paint`) starts a thread or opens the database.
 
 `files.read` uses `kernel::worker_store::WorkerStore<K, V>`: two reusable
 workers, 16 deduplicated keys/answers, one-second TTL refreshes, and a generation
@@ -72,13 +76,21 @@ Empty session queues retire on the worker, without needing the UI to poll.
 
 ```text
 node                 may reference                     [fully-qualified path only]
-session              nothing — pure data, the dependency sink
+session              nothing — pure data, the dependency sink (no
+                     process state, no env reads, no rendering crate)
 agent                agent::{generic,provider} (re-exports only)
-agent::*             every file a node: session, paths, shell and the other
-                     agent::* files each declares (NEVER git, NEVER backend)
-agent::host_config   session, paths, shell, agent::agent_config
+agent::*             every file a node: session, paths, shell, config::file
+                     and the other agent::* files each declares (NEVER git,
+                     NEVER backend)
+config               config::* (declarations only)
+config::*            every file a node: config::file (the one loader, over
+                     paths) plus session (themes: theme instead), and
+                     for hosts paths and shell
+update               update::* (declarations only)
+update::*            session, paths, shell, agent::extension_config,
+                     update::version_check
 backend              backend::{contract,pane,registry} (re-exports only)
-backend::contract    nothing — the trait and the values crossing it
+backend::contract    nothing — the role traits and the values crossing them
 backend::identity    backend::contract
 backend::instance    session, paths                    (ADR-12 socket naming)
 backend::pane        session, backend::{contract,identity,osc8,output_wake}
@@ -86,7 +98,7 @@ backend::osc8        session
 backend::output_wake nothing
 backend::registry    session, backend::contract        (a container, no factory)
 backend::wiring      session, shell,                   (the factory: the only
-                     agent::host_config,                node naming an adapter)
+                     config::hosts,                     node naming an adapter)
                      backend::{contract,registry,
                      tmux,psmux,rmux}
 backend::tmux_compat nothing — declares the three below (tmux protocol helper)
@@ -110,25 +122,25 @@ backend::rmux        session, shell, backend::contract, (the RMUX adapter)
                      backend::tmux_compat::{control_mode,
                      server,transport}
 git                  session, paths, shell
-storage              session, sync, paths
-sync                 session
+storage              session, paths
 telemetry            session, storage                  (ADR-37/38 OTLP export)
-session_ops          session, storage, git, sync,      [agent::<the config it reads>,
-                     paths, workspace, shell            backend::{contract,identity,
+session_ops          session, storage, git, paths,     [agent|config|update::<file>,
+                     workspace, shell                   backend::{contract,identity,
                                                         instance,registry}]
-kernel               session, storage, sync, paths,    [agent::<the config it reads>,
+kernel               session, storage, paths,          [agent|config|update::<file>,
                      session_ops, git, notifications,   backend::{contract,identity,
-                     shell                              pane,registry}]
-cli                  session, storage, session_ops,    [agent::<the config it reads>,
-                     sync, paths, notifications,        backend::{contract,instance,
-                     ui_control, telemetry              registry}, kernel]
+                     shell, theme                       pane,registry}]
+cli                  session, storage, session_ops,    [agent|config|update::<file>,
+                     paths, notifications, ui_control,  backend::{contract,instance,
+                     telemetry, theme                   registry}, kernel]
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
 ui_control           paths
-shell                session (HostLauncher::for_host)
-coordinator          agent::{input,settings_config},   (main's body: the loop,
+shell                session (HostLauncher::for_host, local_platform)
+theme                nothing — the presets, in ratatui colours
+coordinator          agent::input, config::settings,   (main's body: the loop,
                      backend::{instance,output_wake,    the workers, the chrome)
                      wiring}, clipboard, kernel,
                      paths, session, session_ops,
@@ -197,12 +209,21 @@ alias and re-export laundering, and test-only edges.
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
   `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
   install/converge/withdraw operations — sharing `bundled`'s decision matrix).
-- **`agent/`** — the agent and host config layer. `AgentProvider`
-  - `GenericProvider` build the CLI invocation from a declarative `AgentDef`;
-  the other files read thurbox's config (agents, hosts, hooks, settings,
-  themes) and run the preflight and self-update.
+- **`agent/`** — the coding agents. `AgentProvider` + `GenericProvider`
+  build the CLI invocation from a declarative `AgentDef`; `agent_config` loads
+  `agents.toml`, `extension_config` the extension manifests, and `preflight`
+  and `host_path` check and translate what a launch needs.
+- **`config/`** — thurbox's own config files beside `config.toml` (`hooks`,
+  `hosts`, `settings`, `themes`). `config::file` is the one loader every config
+  file goes through, `agents.toml` and the manifests included: its path,
+  seeding it on first run, parsing it with unknown keys reported, degrading to
+  a fallback with a warning, and writing it back with `paths::write_atomically`.
+- **`update/`** — self-update: `version_check` (is a newer release out) and
+  `self_update` (install it).
 - **`backend/`** — the session-backend boundary. `contract` is the
-  `SessionBackend` trait every consumer names; `registry` holds one backend
+  `SessionBackend` trait every consumer names — the `PaneStream`,
+  `WindowLifecycle`, `PaneIo` and `StatusChannel` roles plus a `Capabilities`
+  value for what an adapter can do; `registry` holds one backend
   per route and `wiring` is the only factory naming an adapter. `TmuxBackend`
   and `PsmuxBackend` are peer adapters over `tmux_compat::Server<M>`, reached
   through a `TmuxTransport` (an optional `HostLauncher` — ssh or WSL — plus the
@@ -214,7 +235,10 @@ alias and re-export laundering, and test-only edges.
   `SessionConfig`, `AgentDef`/`AgentRegistry`, `HostDef`/`HostRegistry`,
   `PluginSpec`/`PluginLock`/`PackageManifest` (`plugin_spec`, so the kernel and the
   CLI share one definition), plus the logic the kernel needs and cannot import
-  `agent` for (`hyperlink`, `review`, `theme_config`).
+  `agent` for (`hyperlink`, `review`). Holds no process state, reads no
+  environment and names no rendering crate (`session_is_pure_data`).
+- **`theme/`** — the 36 presets and the custom-theme overrides, as `ratatui`
+  colours: `session` cannot name a rendering crate, so the palettes live here.
 - **`git/`** — every `git` invocation, split by concern: `command` (the one
   place a `git` process is built, and where the inherited `GIT_*` scrub lives),
   `plugin` (clone/checkout of a plugin working copy), `remote` (running a command
@@ -229,8 +253,10 @@ alias and re-export laundering, and test-only edges.
   workers (`mod`), then `commands`, `publish`, `draw`, `input`, `mouse`, `focus`,
   `events` (the one dispatch point, and the kernel events derived from the
   loop's own signals) and `interface` — plus `boot` (the startup sequence `main` delegates to),
-  `chrome` (the terminal/error-panel/perf-HUD helpers) and `editor` (the
-  `Ctrl+O` command resolution). Still one model and one loop — splitting `App`
+  `chrome` (the terminal/error-panel/perf-HUD helpers), `editor` (the
+  `Ctrl+O` command resolution), `control` (applying `thurbox-cli ui` requests on
+  the loop, ADR-33) and `paste` (rebuilding a paste from the key stream the
+  Windows console delivers). Still one model and one loop — splitting `App`
   itself is what ADR-22 rejected, and the invariants that matter hold *across*
   these groups.
 - **`ui/`** (Lua, not Rust) — `layout.lua` is the arrangement; `lib/` holds
@@ -240,7 +266,8 @@ alias and re-export laundering, and test-only edges.
   `order` and `session_model` (the session list's model, with its memo),
   `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
   panes.
-- **`cli/`** — `thurbox-cli` subcommands, including `plugin dir|new|check|list|events|install|sync|update|remove`
+- **`cli/`** — `thurbox-cli` subcommands, including
+  `plugin dir|new|check|list|events|install|sync|update|remove|available`
   for writing an interface with no TTY.
 
 ### Event Loop (`src/main.rs` + `src/coordinator/`)

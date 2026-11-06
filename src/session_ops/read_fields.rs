@@ -1,9 +1,8 @@
 //! Read-side evidence, separate from state: neither output nor a transcript
 //! declares completion. No transcript content is opened or parsed here.
 use crate::{
-    session::{AgentRegistry, SessionId},
+    session::{AgentRegistry, SessionId, SharedSession},
     storage::Database,
-    sync::SharedSession,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;

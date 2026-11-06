@@ -129,11 +129,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     let process_start = Instant::now();
     let mut startup = thurbox::kernel::perf::Startup::default();
 
-    // The user's settings, published process-wide BEFORE anything reads one.
-    // `Database::open` below reads a restart-only value — it prunes the audit log
-    // to `audit_retention_days` — and v1 loads them at the same point for the same
-    // reason. Without this call `settings::global()` hands out `Settings::default`
-    // and the whole file is ignored, however carefully it was written.
+    // The user's settings, loaded BEFORE anything is built with one: every
+    // restart-only value below — the backends' history depth, the terminals'
+    // scrollback, the snapshot store's git cadence, the audit retention — is
+    // handed over from `startup_settings`, never read from process state.
     //
     // Loaded under the file log alone, because the global subscriber depends on
     // what it says: `[telemetry]` decides whether diagnostic logs are bridged to
@@ -144,23 +143,22 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         || {
             // Before the load, so a key v2.32.0 wrote is noted once here rather
             // than reported as unknown on every start.
-            let layout_note = thurbox::agent::settings_config::retire_layout_preset();
+            let layout_note = thurbox::config::settings::retire_layout_preset();
             (layout_note, thurbox::kernel::config::Config::load())
         },
     );
     startup.config_init_ms = phase.elapsed().as_millis() as u64;
+    let startup_settings = config.in_force().clone();
 
     let identity = thurbox::telemetry::Identity {
         version: env!("THURBOX_VERSION").to_string(),
         instance: thurbox::backend::instance::local_socket_name(),
     };
-    let (bridge, bridge_error) = match thurbox::telemetry::diagnostic::layer(
-        &thurbox::session::settings::global().telemetry,
-        &identity,
-    ) {
-        Ok(bridge) => (bridge, None),
-        Err(e) => (None, Some(e)),
-    };
+    let (bridge, bridge_error) =
+        match thurbox::telemetry::diagnostic::layer(&startup_settings.telemetry, &identity) {
+            Ok(bridge) => (bridge, None),
+            Err(e) => (None, Some(e)),
+        };
     tracing_subscriber::registry()
         .with(file_layer())
         .with(bridge)
@@ -173,7 +171,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // and handed to each consumer: attach, the command workers and the startup
     // self-heal all see the same set of backends. Registration only — nothing
     // is connected until a session on a backend is attached or acted on.
-    let (backends, _hosts, _host_warnings) = thurbox::backend::wiring::configured();
+    let (backends, _hosts, _host_warnings) =
+        thurbox::backend::wiring::configured(&startup_settings);
     let backends = std::sync::Arc::new(backends);
 
     // Extensions, before the interface takes the terminal.
@@ -190,7 +189,12 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     startup_notices.extend(config_warnings);
     let phase = Instant::now();
     if let Some(db) = snapshots_db() {
-        startup_notices.extend(thurbox::session_ops::heal_active_extensions(&db, &backends));
+        db.prune_history(startup_settings.audit_retention_days);
+        startup_notices.extend(thurbox::session_ops::heal_active_extensions(
+            &db,
+            &backends,
+            startup_settings.features.auto_update,
+        ));
         startup_notices.extend(thurbox::session_ops::ensure_builtin_extensions(
             &db, &backends,
         ));
@@ -227,7 +231,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // pointer to this build's own, so a dev checkout is found before a release
     // install on PATH (ADR-24).
     thurbox::session_ops::host_cli::advertise_running_cli();
-    if thurbox::session::settings::global().features.automations {
+    if startup_settings.features.automations {
         if let Err(e) = thurbox::session_ops::arm_heartbeat(&backends) {
             tracing::warn!("could not arm the automation heartbeat: {e}");
         }
@@ -264,7 +268,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Hoisted out of the struct literal below so each phase can be timed
     // separately; the construction order is unchanged.
     let phase = Instant::now();
-    let snapshots = SnapshotStore::open(&backends);
+    let snapshots = SnapshotStore::open(&backends, &startup_settings);
     startup.db_open_ms = phase.elapsed().as_millis() as u64;
 
     let phase = Instant::now();
@@ -296,8 +300,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         watcher: Watcher::new(&ui_dir)?,
         ui_dir,
         snapshots,
-        terminals: Terminals::with_registry(std::sync::Arc::clone(&backends)),
-        commands: CommandBus::new(std::sync::Arc::clone(&backends)),
+        terminals: Terminals::with_registry(std::sync::Arc::clone(&backends), &startup_settings),
+        commands: CommandBus::new(std::sync::Arc::clone(&backends), &startup_settings),
         diffs: DiffStore::new(),
         repos: thurbox::kernel::repos::RepoStore::new(),
         metrics: Metrics::new(),
@@ -327,10 +331,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         selection: None,
         wheel_notch: crate::coordinator::mouse::WheelNotch::default(),
         click_train: crate::coordinator::mouse::ClickTrain::default(),
-        notifier: {
-            let settings = thurbox::session::settings::global();
-            Notifier::new(settings.features.notifications, settings.notifications)
-        },
+        notifier: Notifier::new(
+            startup_settings.features.notifications,
+            startup_settings.notifications,
+        ),
         themes,
         updates: thurbox::kernel::updates::Updates::start(config.features()),
         slot_selection: std::collections::HashMap::new(),

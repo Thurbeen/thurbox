@@ -11,8 +11,8 @@
 //! session exists.
 
 use crate::session::SessionId;
+use crate::session::SharedSession;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 use super::spawn::{ProgressFn, SpawnRequest, SpawnResult};
 use super::OpError;

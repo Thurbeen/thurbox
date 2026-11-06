@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -786,4 +786,88 @@ fn verify_contradicts_an_active_state_whose_window_is_gone() {
         Value::Bool(true),
         "no window of this row's is on the server: {event}"
     );
+}
+
+/// Record (or, with `None`, clear) the "host not answering" verdict the
+/// interface's probe of `elsewhere` would have left — what `seed`'s host reads
+/// as while it is down. Stamped now, so it is inside its backoff.
+fn record_elsewhere_down(env: &Env, down: bool) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let verdicts = if down {
+        format!(
+            r#"{{"ssh:elsewhere":{{"reason":"host not answering: ssh: connect to host elsewhere port 22: Connection timed out","at":{now},"failures":3}}}}"#
+        )
+    } else {
+        "{}".to_string()
+    };
+    std::fs::write(env.path("data").join("host-verdicts.json"), verdicts)
+        .expect("record the verdict");
+}
+
+/// A session whose host is recorded as not answering streams `unreachable`, as
+/// `session get` and `session list` report it, not the `idle` its last mirror
+/// pass left in the hook columns — at baseline, on a logged event, and as the
+/// host goes down and comes back, which writes no event of its own.
+#[test]
+fn a_session_on_a_host_recorded_as_down_streams_unreachable() {
+    let env = Env::new();
+    let db = env.db();
+    let id = seed(&db, "on-down-host");
+    db.set_hook_state(id, "idle").expect("signal");
+    record_elsewhere_down(&env, true);
+
+    let watch = env.watch(&["--json", "--initial", "--for-secs", "60"]);
+    let baseline = watch.event("the baseline");
+    assert_eq!(event_of(&baseline).0, "present");
+    assert_eq!(baseline["state"], Value::String("unreachable".into()));
+    assert_eq!(baseline["state_source"], Value::String("host".into()));
+    assert_eq!(
+        baseline["hook_state"],
+        Value::String("idle".into()),
+        "the stored report itself is untouched"
+    );
+    settle();
+
+    // A report the mirror carried over is still a report from a host nobody
+    // can reach now.
+    db.set_hook_state(id, "working").expect("working");
+    let changed = watch.event("the working transition");
+    assert_eq!(event_of(&changed), ("changed", "state"));
+    assert_eq!(changed["to_state"], Value::String("working".into()));
+    assert_eq!(changed["state"], Value::String("unreachable".into()));
+
+    // The host answers again: the verdict is cleared, and the stream says so.
+    record_elsewhere_down(&env, false);
+    let back = watch.event("the host coming back");
+    assert_eq!(event_of(&back), ("changed", "host_up"));
+    assert_eq!(back["session"], Value::String(id.to_string()));
+    assert_eq!(back["state"], Value::String("working".into()));
+    assert_eq!(back["state_source"], Value::String("hook".into()));
+
+    // And goes down again.
+    record_elsewhere_down(&env, true);
+    let down = watch.event("the host going down");
+    assert_eq!(event_of(&down), ("changed", "host_down"));
+    assert_eq!(down["state"], Value::String("unreachable".into()));
+    assert_eq!(down["state_source"], Value::String("host".into()));
+    assert_eq!(down["hook_state"], Value::String("working".into()));
+}
+
+/// A parked session reads `stopped` whatever its host does, so its host going
+/// down or coming back is no change to report.
+#[test]
+fn a_parked_session_gets_no_host_lines() {
+    let env = Env::new();
+    let db = env.db();
+    let id = seed(&db, "parked-on-a-host");
+    db.set_session_stopped(id, true).expect("park");
+
+    let watch = env.watch(&["--json", "--for-secs", "30"]);
+    settle();
+    record_elsewhere_down(&env, true);
+    // Two sweeps: long enough that a host line would have been written.
+    watch.silent_for(Duration::from_secs(7));
 }
