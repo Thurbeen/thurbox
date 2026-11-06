@@ -306,7 +306,7 @@ next tick), and the restart path's `clear_hook_state` calls
 `data_version`, so they're picked up on the next tick as before.
 
 **The v2 gate**: `SnapshotStore` polls `data_version` on its 400 ms cadence,
-through the one thread that owns its connection (`kernel::snapshot_db`, from
+through the one thread that owns its connection (`kernel::snapshot::db`, from
 issue #1474): the event loop sends the poll and applies the answer when it
 lands, so a write lock another process holds stalls that thread's busy wait,
 never a frame. The loop's own writes — acknowledging a `done`, recording a

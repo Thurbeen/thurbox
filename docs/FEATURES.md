@@ -151,7 +151,7 @@ One enum, so `session get`, `session list`, `thurbox-cli watch` and the session
 list cannot disagree about a row — and since the interface has to answer
 `running`, it probes what holds each unreported session's pane. That probe
 shells out, so it runs on a worker thread and only for rows whose agent has
-reported nothing (`kernel::snapshot::PaneProbe`); a session whose hooks work
+reported nothing (`kernel::snapshot::probe::PaneProbe`); a session whose hooks work
 costs nothing.
 
 A `Done` session becomes `Idle` once you move focus off it (you've

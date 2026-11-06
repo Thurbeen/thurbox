@@ -202,7 +202,7 @@ own, which is the point.
   the pane. A missed identity is a blank; a wrong one is on screen.
 - **Reading the pane from the interface.** The probe costs one
   `display-message` plus one `ps`, which the render loop may not pay, so
-  `kernel::snapshot::PaneProbe` runs it on a worker thread and the verdict is
+  `kernel::snapshot::probe::PaneProbe` runs it on a worker thread and the verdict is
   folded in when it lands (`Assessment::with_corroboration`). It is asked
   **only** about rows whose `hook_state` is null, is cached for
   `PANE_PROBE_TTL` (2 s), and a moved verdict forces the snapshot rebuild —

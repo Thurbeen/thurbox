@@ -7,14 +7,15 @@
 //! loop nothing.
 //!
 //! One thread, not a pool: the queue is the ordering. A read sent after a
-//! write sees it, which is what lets [`super::snapshot::SnapshotStore`] tell a
+//! write sees it, which is what lets [`super::SnapshotStore`] tell a
 //! read that predates its own in-place corrections from one that includes
 //! them — see [`Reply::Rows`].
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use super::snapshot::{AutomationRow, DeletedRow, RunRow, TaskRow};
+use super::{AutomationRow, DeletedRow, EditorRequest, RunRow, TaskRow};
 use crate::session::background_work::ReportFrom;
 use crate::session::SessionId;
 use crate::session::SharedSession;
@@ -150,6 +151,19 @@ pub(crate) struct DbWorker {
 }
 
 impl DbWorker {
+    /// The worker over the real thurbox database, and the file it opened.
+    ///
+    /// An error is the message the snapshot carries in its place: a database
+    /// that will not open leaves the kernel running on empty rows a plugin can
+    /// explain, rather than no interface at all.
+    pub(crate) fn open() -> Result<(Self, PathBuf), String> {
+        let path = crate::paths::database_file()
+            .ok_or_else(|| "could not resolve the database path".to_string())?;
+        let database =
+            Database::open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        Ok((Self::spawn(database), path))
+    }
+
     pub(crate) fn spawn(database: Database) -> Self {
         let (jobs, inbox) = mpsc::channel();
         let (outbox, replies) = mpsc::channel();
@@ -568,4 +582,35 @@ fn read_rows(database: &Database) -> Result<RowsRead, String> {
         tasks,
         automations,
     })
+}
+
+/// The file `database` is connected to; `None` for one in memory.
+pub(crate) fn path_of(database: &Database) -> Option<PathBuf> {
+    database
+        .conn_ref()
+        .path()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Read the editor setting on a thread of its own and send it to `answer`.
+///
+/// Over [`Database::open_existing`] rather than through the worker: a WAL read
+/// waits for no writer, and `open_existing` skips the prunes that make an open
+/// write. Anything that cannot be read answers "none stored", so
+/// `$VISUAL`/`$EDITOR` still apply.
+pub(crate) fn read_editor(session: String, path: Option<PathBuf>, answer: Sender<EditorRequest>) {
+    std::thread::spawn(move || {
+        let db = path.and_then(|path| Database::open_existing(&path).ok());
+        let _ = answer.send(EditorRequest {
+            session,
+            command: db
+                .as_ref()
+                .and_then(|db| db.get_editor_command().ok().flatten()),
+            mode: db
+                .as_ref()
+                .and_then(|db| db.get_editor_mode().ok())
+                .unwrap_or_default(),
+        });
+    });
 }
