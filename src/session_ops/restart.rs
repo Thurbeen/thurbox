@@ -855,7 +855,7 @@ fn restart_for(
 
     // Where an exit takes its window with it, "missing" is also what an agent
     // that keeps dying looks like, so a repairer's relaunches are counted.
-    let counted = why.is_a_repairer() && !backend.keeps_exited_windows();
+    let counted = why.is_a_repairer() && !backend.capabilities().keeps_exited_windows;
     if counted && crash_looping(db, &session)? {
         // The hold has to go first: a loss is not recorded while a restart
         // holds the row, since that gap is normally on purpose.

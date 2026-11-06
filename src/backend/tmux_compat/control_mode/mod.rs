@@ -1206,7 +1206,7 @@ pub fn is_valid_window_id(s: &str) -> bool {
 /// `(pane_id, value)` pairs whose option is **set**: one `%<id> [value]` line
 /// per pane; empty values (option unset) and malformed lines are skipped —
 /// wire data never panics. Shared by the hook poller's diff below and the
-/// headless listing (`SessionBackend::hook_states`).
+/// headless listing (`StatusChannel::hook_states`).
 pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
     body.lines()
         .filter_map(|line| {
@@ -1223,7 +1223,7 @@ pub fn parse_pane_hook_states(body: &str) -> Vec<(String, String)> {
 
 /// Parse `list-panes -a -F "#{pane_id}"` output into the set of panes the
 /// server has, dead ones included. Malformed lines are skipped. Backs
-/// `SessionBackend::pane_ids`, the existence question a pid cannot answer.
+/// `WindowLifecycle::pane_ids`, the existence question a pid cannot answer.
 pub fn parse_pane_ids(body: &str) -> std::collections::HashSet<String> {
     body.lines()
         .map(str::trim)
@@ -1236,7 +1236,7 @@ pub fn parse_pane_ids(body: &str) -> std::collections::HashSet<String> {
 /// `pane_id → pid` map — the same line shape [`parse_pane_hook_states`] reads,
 /// with a pid where the option value was. Malformed lines and non-numeric pids
 /// are skipped: wire data never panics. Backs the batched
-/// `SessionBackend::pane_pids` the metrics sampler uses.
+/// `WindowLifecycle::pane_pids` the metrics sampler uses.
 pub fn parse_pane_pids(body: &str) -> std::collections::HashMap<String, u32> {
     body.lines()
         .filter_map(|line| {

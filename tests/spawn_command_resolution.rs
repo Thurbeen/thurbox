@@ -30,9 +30,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use thurbox::backend::{PaneStream, WindowLifecycle};
 
 use thurbox::backend::tmux::TmuxBackend;
-use thurbox::backend::SessionBackend;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]

@@ -173,6 +173,7 @@ fn check_min_version(version_output: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::StatusChannel;
 
     #[test]
     fn a_tmux_banner_names_its_version() {
@@ -263,15 +264,25 @@ mod tests {
         for local in Platform::ALL {
             simulate_local(local, || {
                 assert!(
-                    !TmuxBackend::local().needs_liveness_poll(),
+                    !TmuxBackend::local().capabilities().needs_liveness_poll,
                     "local tmux on simulated {local:?}"
                 );
-                assert!(!TmuxBackend::for_host(&windows_host("tmux")).needs_liveness_poll());
                 assert!(
-                    !TmuxBackend::for_host(&windows_host("psmux")).needs_liveness_poll(),
+                    !TmuxBackend::for_host(&windows_host("tmux"))
+                        .capabilities()
+                        .needs_liveness_poll
+                );
+                assert!(
+                    !TmuxBackend::for_host(&windows_host("psmux"))
+                        .capabilities()
+                        .needs_liveness_poll,
                     "tmux on a host that prefers psmux is still tmux"
                 );
-                assert!(!TmuxBackend::for_host(&HostDef::wsl("Ubuntu")).needs_liveness_poll());
+                assert!(
+                    !TmuxBackend::for_host(&HostDef::wsl("Ubuntu"))
+                        .capabilities()
+                        .needs_liveness_poll
+                );
             });
         }
     }

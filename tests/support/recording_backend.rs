@@ -23,8 +23,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use thurbox::backend::identity::{window_name_for, WindowIndex};
 use thurbox::backend::{
-    AdoptedSession, DiscoveredSession, Key, Located, Owner, PaneChunk, PaneState, Placed,
-    SessionBackend, SpawnedSession, WindowRole, WindowSpec,
+    AdoptedSession, Capabilities, DiscoveredSession, Key, Located, Owner, PaneChunk, PaneIo,
+    PaneState, PaneStream, Placed, SessionBackend, SpawnedSession, StatusChannel, WindowLifecycle,
+    WindowRole, WindowSpec,
 };
 use thurbox::session::Route;
 
@@ -383,23 +384,7 @@ impl Write for Discard {
     }
 }
 
-impl SessionBackend for RecordingBackend {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn check_available(&self) -> thurbox::backend::contract::BackendResult<()> {
-        Ok(self.lock("check_available".into()).map(drop)?)
-    }
-
-    fn ensure_ready(&self) -> thurbox::backend::contract::BackendResult<()> {
-        let state = self.lock("ensure_ready".into())?;
-        if state.closed {
-            return Err(anyhow::anyhow!("{} is shut down", self.name).into());
-        }
-        Ok(())
-    }
-
+impl PaneStream for RecordingBackend {
     fn spawn(
         &self,
         window_name: &str,
@@ -451,6 +436,34 @@ impl SessionBackend for RecordingBackend {
             seed_len: 0,
             size: None,
         })
+    }
+
+    fn resize(
+        &self,
+        backend_id: &str,
+        rows: u16,
+        cols: u16,
+    ) -> thurbox::backend::contract::BackendResult<()> {
+        let state = self.lock(format!("resize {backend_id} {rows}x{cols}"))?;
+        Ok(state.find(backend_id).map(drop)?)
+    }
+
+    fn detach(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<()> {
+        Ok(self.lock(format!("detach {backend_id}")).map(drop)?)
+    }
+}
+
+impl WindowLifecycle for RecordingBackend {
+    fn check_available(&self) -> thurbox::backend::contract::BackendResult<()> {
+        Ok(self.lock("check_available".into()).map(drop)?)
+    }
+
+    fn ensure_ready(&self) -> thurbox::backend::contract::BackendResult<()> {
+        let state = self.lock("ensure_ready".into())?;
+        if state.closed {
+            return Err(anyhow::anyhow!("{} is shut down", self.name).into());
+        }
+        Ok(())
     }
 
     fn create_window(
@@ -605,6 +618,76 @@ impl SessionBackend for RecordingBackend {
         Ok(state.find(backend_id).map(drop)?)
     }
 
+    fn pane_state(&self, pane: &str) -> thurbox::backend::contract::BackendResult<PaneState> {
+        let callback = self.on_pane_state.lock().unwrap().take();
+        if let Some(callback) = callback {
+            callback();
+        }
+        let state = self.lock(format!("pane_state {pane}"))?;
+        let window = state.find(pane)?;
+        Ok(PaneState {
+            foreground_process: window.command.split_whitespace().next().map(str::to_string),
+            foreground_command: (!window.command.is_empty()).then(|| window.command.clone()),
+            foreground_cwd: window.cwd.clone(),
+            dead: Some(!window.alive),
+            ..PaneState::default()
+        })
+    }
+
+    fn pane_path(&self, pane: &str) -> thurbox::backend::contract::BackendResult<Option<String>> {
+        let state = self.lock(format!("pane_path {pane}"))?;
+        Ok(state.find(pane)?.path.clone())
+    }
+
+    fn is_dead(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<bool> {
+        let state = self.lock(format!("is_dead {backend_id}"))?;
+        Ok(!state.find(backend_id)?.alive)
+    }
+
+    fn kill(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<()> {
+        let mut state = self.lock(format!("kill {backend_id}"))?;
+        if state.refuse_kill {
+            return Err(anyhow::anyhow!("scripted kill refusal").into());
+        }
+        // Idempotent, as the contract asks: a pane already gone is the
+        // outcome a kill wanted.
+        state.windows.retain(|w| w.pane != backend_id);
+        Ok(())
+    }
+
+    fn default_shell(&self) -> String {
+        "/bin/sh".to_string()
+    }
+
+    fn pane_pid(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<Option<u32>> {
+        let state = self.lock(format!("pane_pid {backend_id}"))?;
+        let window = state.find(backend_id)?;
+        Ok(window.alive.then(|| 10_000 + pane_number(&window.pane)))
+    }
+
+    fn pane_pids(&self) -> thurbox::backend::contract::BackendResult<HashMap<String, u32>> {
+        let state = self.lock("pane_pids".into())?;
+        Ok(state
+            .windows
+            .iter()
+            .filter(|w| w.alive)
+            .map(|w| (w.pane.clone(), 10_000 + pane_number(&w.pane)))
+            .collect())
+    }
+
+    fn pane_ids(&self) -> thurbox::backend::contract::BackendResult<HashSet<String>> {
+        let state = self.lock("pane_ids".into())?;
+        Ok(state.windows.iter().map(|w| w.pane.clone()).collect())
+    }
+
+    fn shutdown(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.calls.push("shutdown".into());
+        state.closed = true;
+    }
+}
+
+impl PaneIo for RecordingBackend {
     fn send_text(
         &self,
         pane: &str,
@@ -692,85 +775,9 @@ impl SessionBackend for RecordingBackend {
         }
         Ok(Some(row))
     }
+}
 
-    fn pane_state(&self, pane: &str) -> thurbox::backend::contract::BackendResult<PaneState> {
-        let callback = self.on_pane_state.lock().unwrap().take();
-        if let Some(callback) = callback {
-            callback();
-        }
-        let state = self.lock(format!("pane_state {pane}"))?;
-        let window = state.find(pane)?;
-        Ok(PaneState {
-            foreground_process: window.command.split_whitespace().next().map(str::to_string),
-            foreground_command: (!window.command.is_empty()).then(|| window.command.clone()),
-            foreground_cwd: window.cwd.clone(),
-            dead: Some(!window.alive),
-            ..PaneState::default()
-        })
-    }
-
-    fn pane_path(&self, pane: &str) -> thurbox::backend::contract::BackendResult<Option<String>> {
-        let state = self.lock(format!("pane_path {pane}"))?;
-        Ok(state.find(pane)?.path.clone())
-    }
-
-    fn resize(
-        &self,
-        backend_id: &str,
-        rows: u16,
-        cols: u16,
-    ) -> thurbox::backend::contract::BackendResult<()> {
-        let state = self.lock(format!("resize {backend_id} {rows}x{cols}"))?;
-        Ok(state.find(backend_id).map(drop)?)
-    }
-
-    fn is_dead(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<bool> {
-        let state = self.lock(format!("is_dead {backend_id}"))?;
-        Ok(!state.find(backend_id)?.alive)
-    }
-
-    fn kill(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<()> {
-        let mut state = self.lock(format!("kill {backend_id}"))?;
-        if state.refuse_kill {
-            return Err(anyhow::anyhow!("scripted kill refusal").into());
-        }
-        // Idempotent, as the contract asks: a pane already gone is the
-        // outcome a kill wanted.
-        state.windows.retain(|w| w.pane != backend_id);
-        Ok(())
-    }
-
-    fn detach(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<()> {
-        Ok(self.lock(format!("detach {backend_id}")).map(drop)?)
-    }
-
-    fn default_shell(&self) -> String {
-        "/bin/sh".to_string()
-    }
-
-    fn pane_pid(&self, backend_id: &str) -> thurbox::backend::contract::BackendResult<Option<u32>> {
-        let state = self.lock(format!("pane_pid {backend_id}"))?;
-        let window = state.find(backend_id)?;
-        Ok(window.alive.then(|| 10_000 + pane_number(&window.pane)))
-    }
-
-    fn pane_pids(&self) -> thurbox::backend::contract::BackendResult<HashMap<String, u32>> {
-        let state = self.lock("pane_pids".into())?;
-        Ok(state
-            .windows
-            .iter()
-            .filter(|w| w.alive)
-            .map(|w| (w.pane.clone(), 10_000 + pane_number(&w.pane)))
-            .collect())
-    }
-
-    fn pane_ids(&self) -> thurbox::backend::contract::BackendResult<HashSet<String>> {
-        let state = self.lock("pane_ids".into())?;
-        Ok(state.windows.iter().map(|w| w.pane.clone()).collect())
-    }
-
-    /// A command of the fake's own, nothing like tmux's: what a backend whose
-    /// panes report somewhere other than a pane option would hand the hooks.
+impl StatusChannel for RecordingBackend {
     fn hook_signal_command(&self) -> Option<String> {
         Some(format!("{SIGNAL_COMMAND} "))
     }
@@ -833,10 +840,13 @@ impl SessionBackend for RecordingBackend {
             .take()
             .is_some())
     }
+}
 
-    fn shutdown(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.calls.push("shutdown".into());
-        state.closed = true;
+impl SessionBackend for RecordingBackend {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::NONE
     }
 }

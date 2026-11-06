@@ -525,10 +525,10 @@ attach, serialized by the connection mutex — inherently sequential). Restore
 now runs all matched panes' captures **in parallel** up front
 (`App::prefetch_capture_seeds`, a bounded `std::thread::scope` fan-out capped
 at 8 concurrent subprocesses) and passes each seed into the adopt:
-`SessionBackend::adopt` takes `seed: Option<Vec<u8>>` (`None` = capture
+`PaneStream::adopt` takes `seed: Option<Vec<u8>>` (`None` = capture
 inline, exactly the old behavior — used by mid-run adopts, shell-pane
 re-adoption, and the remote restore path) and the new
-`SessionBackend::capture_history` exposes the capture as its own trait method.
+`PaneStream::capture_history` exposes the capture as its own trait method.
 With N sessions the restore's capture cost drops from `N × capture_ms` to
 roughly one `capture_ms`; `adopt_split` now logs `capture_ms ≈ 0` on the
 startup path, and a `restore_capture_prefetch` line (`sessions`,

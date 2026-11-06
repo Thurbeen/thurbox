@@ -30,7 +30,7 @@ fn without_a_multiplexer<T>(f: impl FnOnce() -> T) -> T {
 #[test]
 fn a_spawn_with_no_multiplexer_installed_names_it_the_search_and_the_fix() {
     let message = without_a_multiplexer(|| {
-        let err = thurbox::backend::SessionBackend::create_window(
+        let err = thurbox::backend::WindowLifecycle::create_window(
             &thurbox::backend::tmux::TmuxBackend::new(),
             &thurbox::backend::WindowSpec {
                 owner: thurbox::backend::Owner::new(

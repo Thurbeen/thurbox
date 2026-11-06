@@ -132,7 +132,7 @@ pub fn record_exited(
 /// A failure is recorded once, so it is read only once the multiplexer knows
 /// how the program ended — before that it would say the status is unknown for
 /// good. tmux before 3.7 reads a pane dead before then and can stay there
-/// until asked to reap ([`crate::backend::SessionBackend::reap_exited`]); a
+/// until asked to reap ([`crate::backend::WindowLifecycle::reap_exited`]); a
 /// pane still unreaped after that has a program that closed its terminal and
 /// runs on, and is looked at again on the next sweep. Where the multiplexer
 /// cannot tell (tmux 3.2) it is read as it stands.

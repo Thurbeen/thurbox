@@ -33,6 +33,7 @@
 use std::collections::HashMap;
 use std::process::Command;
 use std::time::{Duration, Instant};
+use thurbox::backend::WindowLifecycle;
 
 use thurbox::backend::pane::ProgramPane;
 use thurbox::backend::tmux::TmuxBackend;

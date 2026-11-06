@@ -1,8 +1,9 @@
 //! Permanent deletion must retain the cleanup worklist until teardown succeeds.
 
 use std::sync::Arc;
+use thurbox::backend::WindowLifecycle;
 
-use thurbox::backend::{BackendRegistry, SessionBackend, WindowRole};
+use thurbox::backend::{BackendRegistry, WindowRole};
 use thurbox::session::{Multiplexer, Route, SessionId};
 use thurbox::session_ops::purge::{purge_deleted, Age};
 use thurbox::storage::Database;

@@ -200,7 +200,7 @@ pub enum PaneChunk {
     /// reader listens.
     SizedElsewhere(bool),
     /// The title and input modes of a pane whose output is held back
-    /// ([`SessionBackend::hide_output`]), as terminal bytes to parse but not
+    /// ([`PaneStream::hide_output`]), as terminal bytes to parse but not
     /// to count as output: the report of what the pane already was.
     State(Vec<u8>),
 }
@@ -325,7 +325,7 @@ impl<'a> Owner<'a> {
     }
 }
 
-/// The pane [`SessionBackend::create_window`] opened. Never empty: a backend
+/// The pane [`WindowLifecycle::create_window`] opened. Never empty: a backend
 /// that cannot name the pane it made fails the create instead, because a
 /// window found by its name alone may be a namesake's (issue #1456).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -506,7 +506,7 @@ pub struct PaneState {
     ///
     /// tmux before 3.7 reads a pane dead once its terminal closes, which is
     /// before the program is reaped, and can then leave it unreaped until
-    /// another of its children exits — see [`SessionBackend::reap_exited`].
+    /// another of its children exits — see [`WindowLifecycle::reap_exited`].
     pub reaped: Option<bool>,
 }
 
@@ -575,36 +575,10 @@ pub struct AdoptedSession {
     pub size: Option<PaneSize>,
 }
 
-/// Trait that all session backends implement. The app layer interacts only through this trait.
-pub trait SessionBackend: Send + Sync {
-    /// The qualified route this backend serves (`local:tmux`,
-    /// `ssh:<host>:psmux`), as logs and `runtime status` name it.
-    fn name(&self) -> &str;
-
-    /// Backends whose stream does not reliably end when a window is deleted
-    /// request periodic discovery of attached sessions. tmux reports close
-    /// events in control mode and opts out; psmux and backends without that
-    /// guarantee keep polling.
-    fn needs_liveness_poll(&self) -> bool {
-        true
-    }
-
-    /// Whether an agent that exits leaves its window behind ([`BackendLiveness::Exited`]).
-    ///
-    /// Where it does not, an exit and a window somebody closed both read as
-    /// [`BackendLiveness::Missing`], which a repairer relaunches — so a relaunch
-    /// there is recorded and a crash loop is held back
-    /// (`session_ops::restart`).
-    fn keeps_exited_windows(&self) -> bool {
-        true
-    }
-
-    /// Check if the backend is available/healthy.
-    fn check_available(&self) -> BackendResult<()>;
-
-    /// Initialize the backend (e.g., start tmux server).
-    fn ensure_ready(&self) -> BackendResult<()>;
-
+/// A pane's output stream: opening one (a new window, or a running one
+/// adopted), what is replayed into it, the snapshots that let a pane off
+/// screen drop its grid, its size, and letting go of it.
+pub trait PaneStream: Send + Sync {
     /// Spawn a new session running the given command.
     #[allow(clippy::too_many_arguments)]
     fn spawn(
@@ -642,14 +616,6 @@ pub trait SessionBackend: Send + Sync {
     /// empty scrollback, exactly as if the capture had failed).
     fn capture_history(&self, _backend_id: &str) -> BackendResult<Vec<u8>> {
         Ok(Vec::new())
-    }
-
-    /// Whether this backend can hand back a pane's screen and history in step
-    /// with its output ([`Self::request_snapshot`]) — the thing that lets a
-    /// session off screen drop its grid ([`WiredPane::evict`](crate::backend::pane::WiredPane::evict)) and get it back
-    /// exactly. Default: no, and such a backend's sessions keep theirs.
-    fn supports_snapshots(&self) -> bool {
-        false
     }
 
     /// Ask for the pane's state to arrive **in its own output stream**, at the
@@ -694,6 +660,35 @@ pub trait SessionBackend: Send + Sync {
         Vec::new()
     }
 
+    /// Match a pane to the rect it is painted into.
+    ///
+    /// On a multiplexer other clients share, this may be declined: a pane
+    /// another client is sizing stays that client's size (see
+    /// `tmux_compat::Server::resize`), and a backend that declines reports the size the
+    /// pane really is through [`PaneSize`].
+    fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> BackendResult<()>;
+
+    /// Size a pane to `rows` × `cols` and become the client that sizes it — the
+    /// user is typing into it here. Default: a plain [`Self::resize`], for a
+    /// backend nothing else shares.
+    fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> BackendResult<()> {
+        self.resize(backend_id, rows, cols)
+    }
+
+    /// Detach from a session without killing it (for Ctrl+Q quit).
+    fn detach(&self, backend_id: &str) -> BackendResult<()>;
+}
+
+/// The windows on a backend's server: making sure the server answers,
+/// creating, finding, naming, stamping and killing a session's windows, what
+/// each pane is running, and tearing the connection down at quit.
+pub trait WindowLifecycle: Send + Sync {
+    /// Check if the backend is available/healthy.
+    fn check_available(&self) -> BackendResult<()>;
+
+    /// Initialize the backend (e.g., start tmux server).
+    fn ensure_ready(&self) -> BackendResult<()>;
+
     /// Every thurbox window the backend holds, as it answers for them.
     ///
     /// `Ok` with an empty list only when the backend itself says it holds
@@ -704,7 +699,7 @@ pub trait SessionBackend: Send + Sync {
     fn discover(&self) -> BackendResult<Vec<DiscoveredSession>>;
 
     /// Open `spec.owner`'s `spec.role` window, detached, stamped with its owner
-    /// as it is created, and return its pane — what [`Self::adopt`] later
+    /// as it is created, and return its pane — what [`PaneStream::adopt`] later
     /// attaches to. The headless half of a session's lifecycle: create,
     /// restart and restore open a window through here and nothing attaches to
     /// it until an interface does.
@@ -808,6 +803,91 @@ pub trait SessionBackend: Send + Sync {
     /// naming, so this is one round trip and no lookup.
     fn set_pane_retention(&self, backend_id: &str, keep: bool) -> BackendResult<()>;
 
+    /// What is around a pane's text — see [`PaneState`]. `Err` when the backend
+    /// could not ask; an answer it could not read is a default field, not an
+    /// error.
+    fn pane_state(&self, pane: &str) -> BackendResult<PaneState>;
+
+    /// Have the backend collect the exit of every pane program that has ended,
+    /// so a [`PaneState::reaped`] read after it is current. Best effort.
+    ///
+    /// tmux before 3.7 can leave an exited pane's program unreaped — dead, no
+    /// status — until another of its children exits (measured on 3.2a and
+    /// 3.4: some of several panes exiting together stayed so for as long as
+    /// the server ran on). A child of the server's own that exits is that
+    /// other child. No-op where a backend reaps on its own.
+    fn reap_exited(&self) {}
+
+    /// The `PATH` thurbox handed the pane's program when it opened the window,
+    /// read back from the backend's own record of it. `Ok(None)`: the pane is
+    /// there, and its `PATH` is not one thurbox wrote or one this backend can
+    /// read — which a caller must report as unknown, never as a working one.
+    fn pane_path(&self, pane: &str) -> BackendResult<Option<String>>;
+
+    /// Check if a session's process has exited.
+    fn is_dead(&self, backend_id: &str) -> BackendResult<bool>;
+
+    /// Kill a pane and the window it is in — attached or not, so a
+    /// teardown needs no interface. Idempotent: a pane already gone is what
+    /// the kill wanted.
+    fn kill(&self, backend_id: &str) -> BackendResult<()>;
+
+    /// Default shell command for companion shell panes: one that exists on
+    /// the machine this backend's panes run on. Each backend answers for its
+    /// own machine — the OS thurbox was built for is not that machine's once
+    /// a pane runs on a host.
+    fn default_shell(&self) -> String;
+
+    /// Return the PID of the process running in a backend pane, attached or
+    /// not.
+    fn pane_pid(&self, backend_id: &str) -> BackendResult<Option<u32>>;
+
+    /// Every live pane's `pane_id → pid` in **one** backend round trip.
+    ///
+    /// The batched form of [`Self::pane_pid`], for callers that sample many
+    /// panes at once (the metrics worker, once per second per session):
+    /// each single-pane lookup is a control-mode round trip serialized on the
+    /// same connection mutex keystrokes share, so per-session lookups scale
+    /// the contention with the session count. A pane absent from an `Ok` map
+    /// simply has no pid (it is gone or dead).
+    ///
+    /// Default: unsupported — an `Err` tells the caller to fall back to
+    /// per-pane [`Self::pane_pid`], which every backend must provide.
+    fn pane_pids(&self) -> BackendResult<HashMap<String, u32>> {
+        Err(anyhow::anyhow!("batched pane pid lookup not supported by this backend").into())
+    }
+
+    /// Every pane the backend lists, dead ones included, in one round trip.
+    ///
+    /// Whether a pane still *exists*, which [`Self::pane_pids`] cannot say: a
+    /// pane is missing from that map whenever it has no pid to report.
+    ///
+    /// Default: unsupported.
+    fn pane_ids(&self) -> BackendResult<HashSet<String>> {
+        Err(anyhow::anyhow!("pane listing not supported by this backend").into())
+    }
+
+    /// Tear down the backend's own long-lived resources (for a tmux backend,
+    /// its control-mode connection: child process + reader thread).
+    ///
+    /// Distinct from [`PaneStream::detach`], which retires one *session*'s pane. This
+    /// retires the *connection*, and is called once per backend at quit
+    /// ([`BackendRegistry::shutdown_all`](crate::backend::BackendRegistry::shutdown_all)).
+    ///
+    /// Exists as an explicit method rather than relying on `Drop` so quit can
+    /// run every backend's teardown **concurrently**: the registry holds each
+    /// backend behind an `Arc`, so dropping it is both hard to sequence and
+    /// serial by nature, and each connection's teardown blocks on a child exit.
+    /// Total quit cost is then the slowest connection rather than their sum —
+    /// which matters because the backend count grows with every configured SSH
+    /// host and auto-discovered WSL distro. Must be idempotent: a later `Drop`
+    /// still runs and has to be a no-op.
+    fn shutdown(&self);
+}
+
+/// Talking to a pane as a person at its keyboard would: typing text, pressing
+/// keys, and reading the screen back.
+pub trait PaneIo: Send + Sync {
     /// Type `text` into a pane, pressing Enter after it when `submit`.
     ///
     /// The text arrives literally — never read as keys or flags — and a
@@ -847,89 +927,14 @@ pub trait SessionBackend: Send + Sync {
     fn text_before_cursor(&self, _pane: &str) -> BackendResult<Option<String>> {
         Ok(None)
     }
+}
 
-    /// What is around a pane's text — see [`PaneState`]. `Err` when the backend
-    /// could not ask; an answer it could not read is a default field, not an
-    /// error.
-    fn pane_state(&self, pane: &str) -> BackendResult<PaneState>;
-
-    /// Have the backend collect the exit of every pane program that has ended,
-    /// so a [`PaneState::reaped`] read after it is current. Best effort.
-    ///
-    /// tmux before 3.7 can leave an exited pane's program unreaped — dead, no
-    /// status — until another of its children exits (measured on 3.2a and
-    /// 3.4: some of several panes exiting together stayed so for as long as
-    /// the server ran on). A child of the server's own that exits is that
-    /// other child. No-op where a backend reaps on its own.
-    fn reap_exited(&self) {}
-
-    /// The `PATH` thurbox handed the pane's program when it opened the window,
-    /// read back from the backend's own record of it. `Ok(None)`: the pane is
-    /// there, and its `PATH` is not one thurbox wrote or one this backend can
-    /// read — which a caller must report as unknown, never as a working one.
-    fn pane_path(&self, pane: &str) -> BackendResult<Option<String>>;
-
-    /// Match a pane to the rect it is painted into.
-    ///
-    /// On a multiplexer other clients share, this may be declined: a pane
-    /// another client is sizing stays that client's size (see
-    /// `tmux_compat::Server::resize`), and a backend that declines reports the size the
-    /// pane really is through [`PaneSize`].
-    fn resize(&self, backend_id: &str, rows: u16, cols: u16) -> BackendResult<()>;
-
-    /// Size a pane to `rows` × `cols` and become the client that sizes it — the
-    /// user is typing into it here. Default: a plain [`Self::resize`], for a
-    /// backend nothing else shares.
-    fn claim_size(&self, backend_id: &str, rows: u16, cols: u16) -> BackendResult<()> {
-        self.resize(backend_id, rows, cols)
-    }
-
-    /// Check if a session's process has exited.
-    fn is_dead(&self, backend_id: &str) -> BackendResult<bool>;
-
-    /// Kill a pane and the window it is in — attached or not, so a
-    /// teardown needs no interface. Idempotent: a pane already gone is what
-    /// the kill wanted.
-    fn kill(&self, backend_id: &str) -> BackendResult<()>;
-
-    /// Detach from a session without killing it (for Ctrl+Q quit).
-    fn detach(&self, backend_id: &str) -> BackendResult<()>;
-
-    /// Default shell command for companion shell panes: one that exists on
-    /// the machine this backend's panes run on. Each backend answers for its
-    /// own machine — the OS thurbox was built for is not that machine's once
-    /// a pane runs on a host.
-    fn default_shell(&self) -> String;
-
-    /// Return the PID of the process running in a backend pane, attached or
-    /// not.
-    fn pane_pid(&self, backend_id: &str) -> BackendResult<Option<u32>>;
-
-    /// Every live pane's `pane_id → pid` in **one** backend round trip.
-    ///
-    /// The batched form of [`Self::pane_pid`], for callers that sample many
-    /// panes at once (the metrics worker, once per second per session):
-    /// each single-pane lookup is a control-mode round trip serialized on the
-    /// same connection mutex keystrokes share, so per-session lookups scale
-    /// the contention with the session count. A pane absent from an `Ok` map
-    /// simply has no pid (it is gone or dead).
-    ///
-    /// Default: unsupported — an `Err` tells the caller to fall back to
-    /// per-pane [`Self::pane_pid`], which every backend must provide.
-    fn pane_pids(&self) -> BackendResult<HashMap<String, u32>> {
-        Err(anyhow::anyhow!("batched pane pid lookup not supported by this backend").into())
-    }
-
-    /// Every pane the backend lists, dead ones included, in one round trip.
-    ///
-    /// Whether a pane still *exists*, which [`Self::pane_pids`] cannot say: a
-    /// pane is missing from that map whenever it has no pid to report.
-    ///
-    /// Default: unsupported.
-    fn pane_ids(&self) -> BackendResult<HashSet<String>> {
-        Err(anyhow::anyhow!("pane listing not supported by this backend").into())
-    }
-
+/// Status delivery and the heartbeat, behind the contract (ADR-32): a hook's
+/// state recorded on a pane and read back, and the one heartbeat window the
+/// server keeps. Where the backend has no status channel
+/// ([`Self::hook_signal_command`] is `None`), recording and listing
+/// are refused.
+pub trait StatusChannel: Send + Sync {
     /// The command a hook running in one of this backend's panes runs, with
     /// the state word appended, to report that state **through this backend**
     /// — in place of `thurbox-cli session signal --state`, which cannot reach
@@ -969,7 +974,7 @@ pub trait SessionBackend: Send + Sync {
 
     /// Keep `program args…` running every `every` on this backend's machine,
     /// with no interface attached — the automation heartbeat. Infrastructure,
-    /// not a session: [`Self::discover`] never lists it. Idempotent: a no-op
+    /// not a session: [`WindowLifecycle::discover`] never lists it. Idempotent: a no-op
     /// when it is already running.
     fn ensure_heartbeat(
         &self,
@@ -984,23 +989,54 @@ pub trait SessionBackend: Send + Sync {
 
     /// Stop the heartbeat. Returns whether there was one to stop.
     fn stop_heartbeat(&self) -> BackendResult<bool>;
+}
 
-    /// Tear down the backend's own long-lived resources (for a tmux backend,
-    /// its control-mode connection: child process + reader thread).
+/// What a backend's multiplexer can do, as one value: the facts consumers
+/// branch on, each answered by the adapter for its own multiplexer — never
+/// read off the multiplexer's name or the host's OS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Capabilities {
+    /// Whether a pane's stream may outlive its deleted window, so attached
+    /// sessions are found gone by periodic discovery. tmux reports a close in
+    /// control mode (`%window-close`) and needs no poll; psmux and RMUX do.
+    pub needs_liveness_poll: bool,
+    /// Whether the backend can hand back a pane's screen and history in step
+    /// with its output ([`PaneStream::request_snapshot`]) — the thing that lets
+    /// a session off screen drop its grid
+    /// ([`WiredPane::evict`](crate::backend::pane::WiredPane::evict)) and get it
+    /// back exactly. Where it cannot, a session keeps its grid.
+    pub supports_snapshots: bool,
+    /// Whether an agent that exits leaves its window behind
+    /// ([`BackendLiveness::Exited`]).
     ///
-    /// Distinct from [`Self::detach`], which retires one *session*'s pane. This
-    /// retires the *connection*, and is called once per backend at quit
-    /// ([`BackendRegistry::shutdown_all`](crate::backend::BackendRegistry::shutdown_all)).
-    ///
-    /// Exists as an explicit method rather than relying on `Drop` so quit can
-    /// run every backend's teardown **concurrently**: the registry holds each
-    /// backend behind an `Arc`, so dropping it is both hard to sequence and
-    /// serial by nature, and each connection's teardown blocks on a child exit.
-    /// Total quit cost is then the slowest connection rather than their sum —
-    /// which matters because the backend count grows with every configured SSH
-    /// host and auto-discovered WSL distro. Must be idempotent: a later `Drop`
-    /// still runs and has to be a no-op.
-    fn shutdown(&self);
+    /// Where it does not, an exit and a window somebody closed both read as
+    /// [`BackendLiveness::Missing`], which a repairer relaunches — so a relaunch
+    /// there is recorded and a crash loop is held back
+    /// (`session_ops::restart`).
+    pub keeps_exited_windows: bool,
+}
+
+impl Capabilities {
+    /// What a backend that can promise nothing answers: its sessions are
+    /// polled, keep their grids, and hold an exited window.
+    pub const NONE: Self = Self {
+        needs_liveness_poll: true,
+        supports_snapshots: false,
+        keeps_exited_windows: true,
+    };
+}
+
+/// The whole contract every session backend implements, as its four roles plus
+/// its name and capabilities. The app layer interacts only through this trait
+/// and its roles; a consumer that needs one role may take just that one.
+pub trait SessionBackend: PaneStream + WindowLifecycle + PaneIo + StatusChannel {
+    /// The qualified route this backend serves (`local:tmux`,
+    /// `ssh:<host>:psmux`), as logs and `runtime status` name it.
+    fn name(&self) -> &str;
+
+    /// What this backend's multiplexer can do. Read on the frame path
+    /// (`Terminals::sync`), so it is plain flags and costs nothing to build.
+    fn capabilities(&self) -> Capabilities;
 }
 
 #[cfg(test)]

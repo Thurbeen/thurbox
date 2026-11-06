@@ -85,7 +85,7 @@ fn window_names() -> Vec<String> {
 /// A long-lived program: one that exits before tmux finishes setting the window
 /// up would turn a real failure into a passing run.
 fn spawn(name: &str, cwd: &std::path::Path) -> thurbox::backend::BackendResult<String> {
-    thurbox::backend::SessionBackend::create_window(
+    thurbox::backend::WindowLifecycle::create_window(
         &thurbox::backend::tmux::TmuxBackend::new(),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(SESSION_ID, name),
@@ -208,7 +208,7 @@ fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
     // The keeper runs `<cli> automation tick` in a shell loop, so the loop —
     // and the window holding it — exists whether or not the path resolves.
     let backend = thurbox::backend::tmux::TmuxBackend::new();
-    let armed = thurbox::backend::SessionBackend::ensure_heartbeat(
+    let armed = thurbox::backend::StatusChannel::ensure_heartbeat(
         &backend,
         &dir.path().join("thurbox-cli"),
         &["automation".to_string(), "tick".to_string()],
@@ -216,7 +216,7 @@ fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
     );
     let names = window_names();
     let running =
-        thurbox::backend::SessionBackend::heartbeat_running(&backend).expect("the server answers");
+        thurbox::backend::StatusChannel::heartbeat_running(&backend).expect("the server answers");
 
     if let Err(e) = armed {
         panic!("a heartbeat window tmux created was reported as a failure because a user hook exited non-zero: {e:#}");

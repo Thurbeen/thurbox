@@ -78,7 +78,7 @@ agent::*             every file a node: session, paths, shell and the other
                      agent::* files each declares (NEVER git, NEVER backend)
 agent::host_config   session, paths, shell, agent::agent_config
 backend              backend::{contract,pane,registry} (re-exports only)
-backend::contract    nothing — the trait and the values crossing it
+backend::contract    nothing — the role traits and the values crossing them
 backend::identity    backend::contract
 backend::instance    session, paths                    (ADR-12 socket naming)
 backend::pane        session, backend::{contract,identity,osc8,output_wake}
@@ -202,7 +202,9 @@ alias and re-export laundering, and test-only edges.
   the other files read thurbox's config (agents, hosts, hooks, settings,
   themes) and run the preflight and self-update.
 - **`backend/`** — the session-backend boundary. `contract` is the
-  `SessionBackend` trait every consumer names; `registry` holds one backend
+  `SessionBackend` trait every consumer names — the `PaneStream`,
+  `WindowLifecycle`, `PaneIo` and `StatusChannel` roles plus a `Capabilities`
+  value for what an adapter can do; `registry` holds one backend
   per route and `wiring` is the only factory naming an adapter. `TmuxBackend`
   and `PsmuxBackend` are peer adapters over `tmux_compat::Server<M>`, reached
   through a `TmuxTransport` (an optional `HostLauncher` — ssh or WSL — plus the

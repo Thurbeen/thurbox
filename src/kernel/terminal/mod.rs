@@ -677,7 +677,7 @@ impl Terminals {
         waiting.extend(snapshot.sessions.iter().filter_map(|row| {
             self.live.get(&row.id)?;
             self.backend_for(&row.backend)
-                .filter(|backend| backend.needs_liveness_poll())
+                .filter(|backend| backend.capabilities().needs_liveness_poll)
                 .map(|_| self.key(&row.backend))
         }));
         waiting.sort_unstable();
@@ -963,7 +963,7 @@ impl Terminals {
                     // Nothing is looking at it yet, so where the grid can be had
                     // back later it is not built now — nor its history captured,
                     // which was a round trip per pane on every start.
-                    if lazy && backend.supports_snapshots() {
+                    if lazy && backend.capabilities().supports_snapshots {
                         return crate::backend::Session::adopt_dormant(
                             name,
                             rows,
@@ -2793,133 +2793,7 @@ mod tests {
 
     struct FakeLivenessBackend(std::sync::atomic::AtomicU8);
 
-    impl crate::backend::SessionBackend for FakeLivenessBackend {
-        fn hook_signal_command(&self) -> Option<String> {
-            None
-        }
-        fn record_hook_state(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub has no status channel").into())
-        }
-        fn hook_states(&self) -> crate::backend::contract::BackendResult<Vec<(String, String)>> {
-            Err(anyhow::anyhow!("this stub has no status channel").into())
-        }
-        fn take_hook_state_events(&self) -> Vec<(String, String)> {
-            Vec::new()
-        }
-        fn ensure_heartbeat(
-            &self,
-            _: &std::path::Path,
-            _: &[String],
-            _: std::time::Duration,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub keeps no heartbeat").into())
-        }
-        fn heartbeat_running(&self) -> crate::backend::contract::BackendResult<bool> {
-            Ok(false)
-        }
-        fn stop_heartbeat(&self) -> crate::backend::contract::BackendResult<bool> {
-            Ok(false)
-        }
-        fn send_text(
-            &self,
-            _: &str,
-            _: &str,
-            _: bool,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub has no panes to type into").into())
-        }
-        fn send_text_after(
-            &self,
-            _: &str,
-            _: &str,
-            _: std::time::Duration,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub has no panes to type into").into())
-        }
-        fn send_key(
-            &self,
-            _: &str,
-            _: &crate::backend::Key,
-        ) -> crate::backend::contract::BackendResult<String> {
-            Err(anyhow::anyhow!("this stub has no panes to type into").into())
-        }
-        fn capture(
-            &self,
-            _: &str,
-            _: u32,
-            _: bool,
-        ) -> crate::backend::contract::BackendResult<String> {
-            Err(anyhow::anyhow!("this stub has no panes to read").into())
-        }
-        fn pane_state(
-            &self,
-            _: &str,
-        ) -> crate::backend::contract::BackendResult<crate::backend::PaneState> {
-            Err(anyhow::anyhow!("this stub has no panes to read").into())
-        }
-        fn pane_path(&self, _: &str) -> crate::backend::contract::BackendResult<Option<String>> {
-            Err(anyhow::anyhow!("this stub has no panes to read").into())
-        }
-        fn create_window(
-            &self,
-            _: &crate::backend::WindowSpec<'_>,
-        ) -> crate::backend::contract::BackendResult<crate::backend::PaneId> {
-            Err(anyhow::anyhow!("{}: a stub opens no windows", self.name()).into())
-        }
-        fn locate(
-            &self,
-            _: crate::backend::Owner<'_>,
-        ) -> crate::backend::contract::BackendResult<crate::backend::Placed> {
-            Ok(crate::backend::Placed {
-                agent: crate::backend::Located::Absent,
-                shell: crate::backend::Located::Absent,
-            })
-        }
-        fn rename_windows(
-            &self,
-            _: crate::backend::Owner<'_>,
-            _: &str,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
-        fn stamp_window(
-            &self,
-            _: &str,
-            _: &str,
-            _: crate::backend::WindowRole,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
-        fn window_panes(
-            &self,
-            _: &str,
-        ) -> crate::backend::contract::BackendResult<Vec<(String, bool)>> {
-            Ok(Vec::new())
-        }
-        fn set_pane_retention(
-            &self,
-            _: &str,
-            _: bool,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
-        fn shutdown(&self) {}
-        fn name(&self) -> &str {
-            "fake"
-        }
-        fn default_shell(&self) -> String {
-            "/bin/sh".to_string()
-        }
-        fn check_available(&self) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
-        fn ensure_ready(&self) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
+    impl crate::backend::PaneStream for FakeLivenessBackend {
         fn spawn(
             &self,
             _: &str,
@@ -2932,6 +2806,7 @@ mod tests {
         ) -> crate::backend::contract::BackendResult<crate::backend::SpawnedSession> {
             unreachable!()
         }
+
         fn adopt(
             &self,
             _: &str,
@@ -2941,6 +2816,95 @@ mod tests {
         ) -> crate::backend::contract::BackendResult<crate::backend::AdoptedSession> {
             unreachable!()
         }
+
+        fn resize(&self, _: &str, _: u16, _: u16) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn detach(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+    }
+
+    impl crate::backend::WindowLifecycle for FakeLivenessBackend {
+        fn pane_state(
+            &self,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<crate::backend::PaneState> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
+        }
+
+        fn pane_path(&self, _: &str) -> crate::backend::contract::BackendResult<Option<String>> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
+        }
+
+        fn create_window(
+            &self,
+            _: &crate::backend::WindowSpec<'_>,
+        ) -> crate::backend::contract::BackendResult<crate::backend::PaneId> {
+            Err(anyhow::anyhow!(
+                "{}: a stub opens no windows",
+                crate::backend::SessionBackend::name(self)
+            )
+            .into())
+        }
+
+        fn locate(
+            &self,
+            _: crate::backend::Owner<'_>,
+        ) -> crate::backend::contract::BackendResult<crate::backend::Placed> {
+            Ok(crate::backend::Placed {
+                agent: crate::backend::Located::Absent,
+                shell: crate::backend::Located::Absent,
+            })
+        }
+
+        fn rename_windows(
+            &self,
+            _: crate::backend::Owner<'_>,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn stamp_window(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::backend::WindowRole,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn window_panes(
+            &self,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<Vec<(String, bool)>> {
+            Ok(Vec::new())
+        }
+
+        fn set_pane_retention(
+            &self,
+            _: &str,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn shutdown(&self) {}
+
+        fn default_shell(&self) -> String {
+            "/bin/sh".to_string()
+        }
+
+        fn check_available(&self) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn ensure_ready(&self) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
         fn discover(
             &self,
         ) -> crate::backend::contract::BackendResult<Vec<crate::backend::DiscoveredSession>>
@@ -2962,20 +2926,102 @@ mod tests {
                 }]),
             }
         }
-        fn resize(&self, _: &str, _: u16, _: u16) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
+
         fn is_dead(&self, _: &str) -> crate::backend::contract::BackendResult<bool> {
             Ok(false)
         }
+
         fn kill(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
-        fn detach(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
+
         fn pane_pid(&self, _: &str) -> crate::backend::contract::BackendResult<Option<u32>> {
             Ok(None)
+        }
+    }
+
+    impl crate::backend::PaneIo for FakeLivenessBackend {
+        fn send_text(
+            &self,
+            _: &str,
+            _: &str,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+        }
+
+        fn send_text_after(
+            &self,
+            _: &str,
+            _: &str,
+            _: std::time::Duration,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+        }
+
+        fn send_key(
+            &self,
+            _: &str,
+            _: &crate::backend::Key,
+        ) -> crate::backend::contract::BackendResult<String> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+        }
+
+        fn capture(
+            &self,
+            _: &str,
+            _: u32,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<String> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
+        }
+    }
+
+    impl crate::backend::StatusChannel for FakeLivenessBackend {
+        fn hook_signal_command(&self) -> Option<String> {
+            None
+        }
+
+        fn record_hook_state(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no status channel").into())
+        }
+
+        fn hook_states(&self) -> crate::backend::contract::BackendResult<Vec<(String, String)>> {
+            Err(anyhow::anyhow!("this stub has no status channel").into())
+        }
+
+        fn take_hook_state_events(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+
+        fn ensure_heartbeat(
+            &self,
+            _: &std::path::Path,
+            _: &[String],
+            _: std::time::Duration,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub keeps no heartbeat").into())
+        }
+
+        fn heartbeat_running(&self) -> crate::backend::contract::BackendResult<bool> {
+            Ok(false)
+        }
+
+        fn stop_heartbeat(&self) -> crate::backend::contract::BackendResult<bool> {
+            Ok(false)
+        }
+    }
+
+    impl crate::backend::SessionBackend for FakeLivenessBackend {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn capabilities(&self) -> crate::backend::Capabilities {
+            crate::backend::Capabilities::NONE
         }
     }
 
@@ -3102,133 +3148,7 @@ mod tests {
     /// started through it goes no further than the attempt.
     struct RefusingLocal;
 
-    impl crate::backend::SessionBackend for RefusingLocal {
-        fn hook_signal_command(&self) -> Option<String> {
-            None
-        }
-        fn record_hook_state(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub has no status channel").into())
-        }
-        fn hook_states(&self) -> crate::backend::contract::BackendResult<Vec<(String, String)>> {
-            Err(anyhow::anyhow!("this stub has no status channel").into())
-        }
-        fn take_hook_state_events(&self) -> Vec<(String, String)> {
-            Vec::new()
-        }
-        fn ensure_heartbeat(
-            &self,
-            _: &std::path::Path,
-            _: &[String],
-            _: std::time::Duration,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub keeps no heartbeat").into())
-        }
-        fn heartbeat_running(&self) -> crate::backend::contract::BackendResult<bool> {
-            Ok(false)
-        }
-        fn stop_heartbeat(&self) -> crate::backend::contract::BackendResult<bool> {
-            Ok(false)
-        }
-        fn send_text(
-            &self,
-            _: &str,
-            _: &str,
-            _: bool,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub has no panes to type into").into())
-        }
-        fn send_text_after(
-            &self,
-            _: &str,
-            _: &str,
-            _: std::time::Duration,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("this stub has no panes to type into").into())
-        }
-        fn send_key(
-            &self,
-            _: &str,
-            _: &crate::backend::Key,
-        ) -> crate::backend::contract::BackendResult<String> {
-            Err(anyhow::anyhow!("this stub has no panes to type into").into())
-        }
-        fn capture(
-            &self,
-            _: &str,
-            _: u32,
-            _: bool,
-        ) -> crate::backend::contract::BackendResult<String> {
-            Err(anyhow::anyhow!("this stub has no panes to read").into())
-        }
-        fn pane_state(
-            &self,
-            _: &str,
-        ) -> crate::backend::contract::BackendResult<crate::backend::PaneState> {
-            Err(anyhow::anyhow!("this stub has no panes to read").into())
-        }
-        fn pane_path(&self, _: &str) -> crate::backend::contract::BackendResult<Option<String>> {
-            Err(anyhow::anyhow!("this stub has no panes to read").into())
-        }
-        fn create_window(
-            &self,
-            _: &crate::backend::WindowSpec<'_>,
-        ) -> crate::backend::contract::BackendResult<crate::backend::PaneId> {
-            Err(anyhow::anyhow!("{}: a stub opens no windows", self.name()).into())
-        }
-        fn locate(
-            &self,
-            _: crate::backend::Owner<'_>,
-        ) -> crate::backend::contract::BackendResult<crate::backend::Placed> {
-            Ok(crate::backend::Placed {
-                agent: crate::backend::Located::Absent,
-                shell: crate::backend::Located::Absent,
-            })
-        }
-        fn rename_windows(
-            &self,
-            _: crate::backend::Owner<'_>,
-            _: &str,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
-        fn stamp_window(
-            &self,
-            _: &str,
-            _: &str,
-            _: crate::backend::WindowRole,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
-        fn window_panes(
-            &self,
-            _: &str,
-        ) -> crate::backend::contract::BackendResult<Vec<(String, bool)>> {
-            Ok(Vec::new())
-        }
-        fn set_pane_retention(
-            &self,
-            _: &str,
-            _: bool,
-        ) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
-        fn shutdown(&self) {}
-        fn name(&self) -> &str {
-            "local-tmux"
-        }
-        fn default_shell(&self) -> String {
-            "/bin/sh".to_string()
-        }
-        fn check_available(&self) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
-        fn ensure_ready(&self) -> crate::backend::contract::BackendResult<()> {
-            Err(anyhow::anyhow!("not opened in a unit test").into())
-        }
+    impl crate::backend::PaneStream for RefusingLocal {
         fn spawn(
             &self,
             _: &str,
@@ -3241,6 +3161,7 @@ mod tests {
         ) -> crate::backend::contract::BackendResult<crate::backend::SpawnedSession> {
             unreachable!()
         }
+
         fn adopt(
             &self,
             _: &str,
@@ -3250,26 +3171,197 @@ mod tests {
         ) -> crate::backend::contract::BackendResult<crate::backend::AdoptedSession> {
             unreachable!()
         }
+
+        fn resize(&self, _: &str, _: u16, _: u16) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn detach(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+    }
+
+    impl crate::backend::WindowLifecycle for RefusingLocal {
+        fn pane_state(
+            &self,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<crate::backend::PaneState> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
+        }
+
+        fn pane_path(&self, _: &str) -> crate::backend::contract::BackendResult<Option<String>> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
+        }
+
+        fn create_window(
+            &self,
+            _: &crate::backend::WindowSpec<'_>,
+        ) -> crate::backend::contract::BackendResult<crate::backend::PaneId> {
+            Err(anyhow::anyhow!(
+                "{}: a stub opens no windows",
+                crate::backend::SessionBackend::name(self)
+            )
+            .into())
+        }
+
+        fn locate(
+            &self,
+            _: crate::backend::Owner<'_>,
+        ) -> crate::backend::contract::BackendResult<crate::backend::Placed> {
+            Ok(crate::backend::Placed {
+                agent: crate::backend::Located::Absent,
+                shell: crate::backend::Located::Absent,
+            })
+        }
+
+        fn rename_windows(
+            &self,
+            _: crate::backend::Owner<'_>,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn stamp_window(
+            &self,
+            _: &str,
+            _: &str,
+            _: crate::backend::WindowRole,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn window_panes(
+            &self,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<Vec<(String, bool)>> {
+            Ok(Vec::new())
+        }
+
+        fn set_pane_retention(
+            &self,
+            _: &str,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn shutdown(&self) {}
+
+        fn default_shell(&self) -> String {
+            "/bin/sh".to_string()
+        }
+
+        fn check_available(&self) -> crate::backend::contract::BackendResult<()> {
+            Ok(())
+        }
+
+        fn ensure_ready(&self) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("not opened in a unit test").into())
+        }
+
         fn discover(
             &self,
         ) -> crate::backend::contract::BackendResult<Vec<crate::backend::DiscoveredSession>>
         {
             Ok(Vec::new())
         }
-        fn resize(&self, _: &str, _: u16, _: u16) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
+
         fn is_dead(&self, _: &str) -> crate::backend::contract::BackendResult<bool> {
             Ok(false)
         }
+
         fn kill(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
             Ok(())
         }
-        fn detach(&self, _: &str) -> crate::backend::contract::BackendResult<()> {
-            Ok(())
-        }
+
         fn pane_pid(&self, _: &str) -> crate::backend::contract::BackendResult<Option<u32>> {
             Ok(None)
+        }
+    }
+
+    impl crate::backend::PaneIo for RefusingLocal {
+        fn send_text(
+            &self,
+            _: &str,
+            _: &str,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+        }
+
+        fn send_text_after(
+            &self,
+            _: &str,
+            _: &str,
+            _: std::time::Duration,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+        }
+
+        fn send_key(
+            &self,
+            _: &str,
+            _: &crate::backend::Key,
+        ) -> crate::backend::contract::BackendResult<String> {
+            Err(anyhow::anyhow!("this stub has no panes to type into").into())
+        }
+
+        fn capture(
+            &self,
+            _: &str,
+            _: u32,
+            _: bool,
+        ) -> crate::backend::contract::BackendResult<String> {
+            Err(anyhow::anyhow!("this stub has no panes to read").into())
+        }
+    }
+
+    impl crate::backend::StatusChannel for RefusingLocal {
+        fn hook_signal_command(&self) -> Option<String> {
+            None
+        }
+
+        fn record_hook_state(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub has no status channel").into())
+        }
+
+        fn hook_states(&self) -> crate::backend::contract::BackendResult<Vec<(String, String)>> {
+            Err(anyhow::anyhow!("this stub has no status channel").into())
+        }
+
+        fn take_hook_state_events(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+
+        fn ensure_heartbeat(
+            &self,
+            _: &std::path::Path,
+            _: &[String],
+            _: std::time::Duration,
+        ) -> crate::backend::contract::BackendResult<()> {
+            Err(anyhow::anyhow!("this stub keeps no heartbeat").into())
+        }
+
+        fn heartbeat_running(&self) -> crate::backend::contract::BackendResult<bool> {
+            Ok(false)
+        }
+
+        fn stop_heartbeat(&self) -> crate::backend::contract::BackendResult<bool> {
+            Ok(false)
+        }
+    }
+
+    impl crate::backend::SessionBackend for RefusingLocal {
+        fn name(&self) -> &str {
+            "local-tmux"
+        }
+        fn capabilities(&self) -> crate::backend::Capabilities {
+            crate::backend::Capabilities::NONE
         }
     }
 

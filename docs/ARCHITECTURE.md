@@ -366,7 +366,7 @@ growth would bloat the database over months of use.
 **Choice**: Automations fire from three places that all funnel
 through one headless entry point, `thurbox-cli automation tick`:
 the TUI tick loop, a **heartbeat** this machine's backend keeps
-running (`SessionBackend::ensure_heartbeat`, armed on TUI startup and
+running (`StatusChannel::ensure_heartbeat`, armed on TUI startup and
 on `automation create`, looping `tick` every 60 s — on a tmux-protocol
 server, the detached `automation-heartbeat` window; ADR-32), and
 optional systemd/launchd
@@ -453,18 +453,33 @@ from each adapter's `ControlPolicy`; a backend without that facility leaves it
 absent. The shared lifecycle asks for outcomes through `SessionBackend` and
 does not send control-mode commands.
 
-**Trait methods**, by job (the list itself is `src/backend/contract.rs`):
+**Roles.** `SessionBackend` is four role traits plus a name and a
+`Capabilities` value (the methods themselves are `src/backend/contract.rs`):
 
-- *the attach/render half*: `check_available`, `ensure_ready`, `spawn`,
-  `adopt`, `discover`, `resize`, `claim_size`, `is_dead`, `kill`, `detach`,
-  plus snapshots and state seeding (title and mouse modes);
-- *the headless lifecycle* (ADR-29): `create_window`, `locate`,
-  `rename_windows`, `stamp_window`, `window_panes`, `set_pane_retention`;
-- *pane I/O by pane id* (ADR-30): `send_text`, `send_key`, `capture`,
-  `pane_state`, `pane_path`, `pane_pid(s)`, `pane_ids`;
-- *hook status and the heartbeat* (ADR-32): `hook_signal_command`,
-  `record_hook_state`, `hook_states`, `take_hook_state_events`,
-  `ensure_heartbeat`, `heartbeat_running`, `stop_heartbeat`.
+- `PaneStream` — a pane's output stream: `spawn`, `adopt`, history capture,
+  snapshots and state seeding (title and mouse modes), `resize`, `claim_size`,
+  `detach`;
+- `WindowLifecycle` (ADR-29) — the windows on the server: `check_available`,
+  `ensure_ready`, `discover`, `create_window`, `locate`, `rename_windows`,
+  `stamp_window`, `window_panes`, `set_pane_retention`, `pane_state`,
+  `pane_path`, `pane_pid(s)`, `pane_ids`, `is_dead`, `kill`, `shutdown`;
+- `PaneIo` (ADR-30) — a pane by its id, as a keyboard and a screen:
+  `send_text`, `send_key`, `capture`, `text_before_cursor`;
+- `StatusChannel` (ADR-32) — hook status and the heartbeat:
+  `hook_signal_command`, `record_hook_state`, `hook_states`,
+  `take_hook_state_events`, `ensure_heartbeat`, `heartbeat_running`,
+  `stop_heartbeat`.
+
+`Capabilities` holds the flags consumers branch on, each answered by the
+adapter for its own multiplexer: `needs_liveness_poll`, `supports_snapshots`
+and `keeps_exited_windows`. One value rather than three methods with defaults
+scattered through the trait, so what an adapter can do is read in one place and
+a stub declares all of it (`Capabilities::NONE` is the backend that promises
+nothing). It is plain `Copy` flags because `Terminals::sync` reads it every
+frame. The hook command is not among them: it names the server's socket, which
+a host can learn after the backend is built, so it is a `StatusChannel` method
+built when asked. A consumer holds `dyn SessionBackend`; one that needs a
+single role can take just that trait.
 
 A `backend_id` crossing the trait is the multiplexer's **pane id** (for example,
 tmux's `%N`), not a backend's name: the column predates the contract and keeps
@@ -2167,7 +2182,7 @@ for a shared Windows host. Relaunch after a reboot is the host's
 (`session restart --if-missing`, idempotent across observers). The mirror
 writes nothing when nothing changed. Status keeps its sub-second channel on
 hosts whose backend has a status channel because `session signal` also records
-the state in the row's backend (`SessionBackend::record_hook_state` — on tmux,
+the state in the row's backend (`StatusChannel::record_hook_state` — on tmux,
 the pane option a peer's subscription reads; ADR-32). A shared-host fork uses
 `session fork` on the owner, keeping the parent's saved account environment,
 conversation selection and checkout together. Older or directly created
@@ -2998,12 +3013,12 @@ installation, selection, and the verified version table.
 
 **Choice**: how a hook in a session's pane reports its state, how that state is
 read back with no interface attached, and what keeps the automation heartbeat
-running are all verbs of `SessionBackend`, answered by the backend serving the
-row's route:
+running are all verbs of `SessionBackend`'s `StatusChannel` role, answered by
+the backend serving the row's route:
 
-- `hook_signal_command()` — the command a hook in this backend's panes runs, the
-  state word appended, in place of `thurbox-cli session signal` where that CLI
-  cannot reach this instance's database (a pane on a host). Spawn, restart and
+- `StatusChannel::hook_signal_command` — the command a hook in this backend's
+  panes runs, the state word appended, in place of `thurbox-cli session signal`
+  where that CLI cannot reach this instance's database (a pane on a host). Spawn, restart and
   `agent launch-args` rewrite the shipped hook files and literal args to it;
   `None` means no channel, and then no hook config is shipped at all. A
   Windows host ships none either, whatever serves the row: an agent config

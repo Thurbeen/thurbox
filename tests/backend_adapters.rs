@@ -5,7 +5,8 @@
 use thurbox::backend::psmux::PsmuxBackend;
 use thurbox::backend::rmux::RmuxBackend;
 use thurbox::backend::tmux::TmuxBackend;
-use thurbox::backend::SessionBackend;
+use thurbox::backend::{Capabilities, SessionBackend};
+use thurbox::backend::{PaneIo, WindowLifecycle};
 use thurbox::session::{HostDef, Multiplexer, Platform, Route};
 
 #[path = "support/backend_contract.rs"]
@@ -60,30 +61,46 @@ fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
     }
 }
 
-/// What a multiplexer can report is its adapter's answer: tmux announces a
-/// window's close and answers a snapshot in step with the pane's output, psmux
-/// does neither (ADR-13) — on any OS, since neither is a fact about one.
+/// What a multiplexer can report is its adapter's answer, read off its
+/// `Capabilities` and its status channel: tmux announces a window's close and answers a
+/// snapshot in step with the pane's output, psmux does neither (ADR-13), RMUX
+/// answers a snapshot but is polled — on any OS, since none of it is a fact
+/// about one. Only a server that keeps a dead pane can hold an exited window,
+/// and only one with a status channel hands out a hook command.
 #[test]
 fn what_each_multiplexer_can_report_is_its_own_adapters_answer() {
     let windows = host("windows", Platform::Windows, None);
     let linux = host("linux", Platform::Posix, Some("psmux"));
-    let tmux: [Box<dyn SessionBackend>; 3] = [
-        Box::new(TmuxBackend::local()),
-        Box::new(TmuxBackend::for_host(&windows)),
-        Box::new(TmuxBackend::for_host(&linux)),
+    // `[needs_liveness_poll, supports_snapshots, keeps_exited_windows, hooks]`
+    let tmux = [false, true, true, true];
+    let psmux = [true, false, false, false];
+    let rmux = [true, true, true, true];
+    let adapters: [(Box<dyn SessionBackend>, [bool; 4]); 7] = [
+        (Box::new(TmuxBackend::local()), tmux),
+        (Box::new(TmuxBackend::for_host(&windows)), tmux),
+        (Box::new(TmuxBackend::for_host(&linux)), tmux),
+        (Box::new(PsmuxBackend::local()), psmux),
+        (Box::new(PsmuxBackend::for_host(&windows)), psmux),
+        (Box::new(PsmuxBackend::for_host(&linux)), psmux),
+        (Box::new(RmuxBackend::local()), rmux),
     ];
-    for backend in &tmux {
-        assert!(!backend.needs_liveness_poll(), "{}", backend.name());
-        assert!(backend.supports_snapshots(), "{}", backend.name());
-    }
-    let psmux: [Box<dyn SessionBackend>; 3] = [
-        Box::new(PsmuxBackend::local()),
-        Box::new(PsmuxBackend::for_host(&windows)),
-        Box::new(PsmuxBackend::for_host(&linux)),
-    ];
-    for backend in &psmux {
-        assert!(backend.needs_liveness_poll(), "{}", backend.name());
-        assert!(!backend.supports_snapshots(), "{}", backend.name());
+    for (backend, expected) in &adapters {
+        let Capabilities {
+            needs_liveness_poll,
+            supports_snapshots,
+            keeps_exited_windows,
+        } = backend.capabilities();
+        assert_eq!(
+            [
+                needs_liveness_poll,
+                supports_snapshots,
+                keeps_exited_windows,
+                backend.hook_signal_command().is_some(),
+            ],
+            *expected,
+            "{}",
+            backend.name()
+        );
     }
 }
 

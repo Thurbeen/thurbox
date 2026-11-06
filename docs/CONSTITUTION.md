@@ -194,7 +194,9 @@ No ad-hoc event handlers, no component-local state, no callback chains.
 
 ### 8. Backend-first session model
 
-Coding-agent sessions run via a `SessionBackend` trait, one backend per route
+Coding-agent sessions run via a `SessionBackend` trait (four roles —
+`PaneStream`, `WindowLifecycle`, `PaneIo`, `StatusChannel` — plus a
+`Capabilities` value), one backend per route
 in the registry (ADR-29). The default is the platform's multiplexer run
 locally (`tmux -L thurbox`; `psmux` on native Windows). Each adapter —
 `TmuxBackend`, `PsmuxBackend`, `RmuxBackend`, peers over one tmux-protocol server (ADR-31) —
