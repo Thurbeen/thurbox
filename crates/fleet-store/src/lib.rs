@@ -457,7 +457,7 @@ fn push_entry(obj: &Object, st: &mut TaskStatus, entry: InboxEntry) -> Result<()
 
 /// [`push_entry`] without the amendment guard: the amend mutation's own.
 fn push_checked(obj: &Object, st: &mut TaskStatus, entry: InboxEntry) -> Result<(), StoreError> {
-    fleet_api::inbox::check_append(&st.inbox, &st.deliveries, &entry)
+    fleet_api::inbox::check_append(&st.inbox, &st.delivery_attempts, &st.deliveries, &entry)
         .map_err(|why| inbox_refusal(obj, why))?;
     talk::check_answers(&st.declared, &entry.answers)
         .map_err(|why| StoreError::Invalid(format!("{}: {why}", obj.key())))?;

@@ -80,7 +80,7 @@ concludes nothing.
 | Spawned, Briefed or Concluded | Entry send refused (Known failure) | unchanged | Wait, then send again under the same key to a session observed ready; at most 3 sends. |
 | Spawned, Briefed or Concluded | Entry delivery unreadable after an ambiguous send | unchanged | Wait, then read the journal again. After 3 unreadable reads, raise `NeedsAttention/DeliveryUnconfirmed` naming the entry. The entry stays, marked failed, and is never sent again. Later entries are still delivered. |
 | Spawned, Briefed or Concluded | A fourth send of one entry would be needed | unchanged | `NeedsAttention/DeliveryFailed` naming the entry; the entry stays, marked failed, and later entries are still delivered. |
-| Spawned, Briefed or Concluded | More than 20 entries undelivered | unchanged | `NeedsAttention/InboxFull`; cleared once delivery brings the count back within the bound. |
+| Spawned, Briefed or Concluded | More than 20 entries still to deliver, not counting entries given up on | unchanged | `NeedsAttention/InboxFull`; cleared once the count is back within the bound. |
 | Concluded | Empty inbox; session recheck due; lookup answered | Concluded | Record `sessionCheckedAt`; the next recheck is due 5 minutes later. |
 | Concluded | Readable lookup lacks the recorded session | Concluded | `WorkerGone` and `NeedsAttention`; never a respawn. |
 | Stalled | Any inbox entry | Stalled | Nothing is delivered; Stalled has no session to deliver to. |

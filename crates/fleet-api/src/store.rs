@@ -238,7 +238,7 @@ pub trait Store {
     /// Append one entry to a Task's `status.inbox`, compare-and-swap on
     /// resourceVersion, as a caller `kinds::may_append_inbox` admits. Refused
     /// when the key is already in `inbox` or `deliveries`, when more than
-    /// `inbox::MAX_INBOX` entries are undelivered, on a deleting Task, or
+    /// `inbox::MAX_INBOX` entries are still to deliver (`inbox::due`), on a deleting Task, or
     /// when an `answers` id names no declared Question. The entry's
     /// `answers` are recorded in `status.answered` in the same write, first
     /// answer wins. No other status field changes.

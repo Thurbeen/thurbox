@@ -1092,3 +1092,48 @@ fn a_message_thurbox_only_queues_is_given_up_and_never_sent_again() {
         "{sent:#}"
     );
 }
+
+#[test]
+fn given_up_entries_never_fill_the_inbox() {
+    // A Claude session whose inbox socket thurbox cannot find has every
+    // message kept in the mailbox. Each one is given up and stays in
+    // status.inbox, but none can ever be delivered, so none may hold back
+    // the next message once thurbox reaches the agent again.
+    let env = setup("thurbox-inbox-given-up-full", vec![task("t1", true)]);
+    env.reconcile().ok();
+    env.edit_stub(|s| s["mailboxNote"] = json!("no Claude inbox socket"));
+    let bound = fleet_api::inbox::MAX_INBOX;
+    for i in 0..=bound {
+        env.fleet(&["send", "t1", &format!("lost {i}")]).ok();
+        env.expire_wait("t1");
+        env.reconcile().ok();
+    }
+    let full = full_status(&env, "t1");
+    assert_eq!(
+        full["inbox"].as_array().unwrap().len(),
+        bound + 1,
+        "{full:#}"
+    );
+    let given_up = full["deliveryAttempts"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|a| a["failed"] == true)
+        .count();
+    assert_eq!(given_up, bound + 1, "every entry given up: {full:#}");
+
+    env.edit_stub(|s| s["mailboxNote"] = Value::Null);
+    env.fleet(&["send", "t1", "after the outage"]).ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    let sent = &env.stub_sessions()[0]["sent"];
+    assert!(
+        sent.as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "after the outage"),
+        "{sent:#}"
+    );
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryQueued");
+}

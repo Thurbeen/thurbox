@@ -262,12 +262,16 @@ prints the entry as appended.
 | `amends` | For an amendment: the spec generation it created. Absent otherwise. |
 | `queuedAt` | Unix milliseconds. |
 
+An entry is given up on when TaskController stops sending it, as the
+delivery rules below describe. An entry is still to deliver when it is not
+given up on.
+
 `status.inbox` has no owner. The store reaches it through typed mutations,
 each named by its caller: append (`fleet send`, and the Forge controller's
 relay write, which also replaces `status.forge`), which refuses a key
 already in `inbox` or `deliveries`, an `about.revision` not above the
 mirror's highest delivered one, an append while more than 20 entries are
-undelivered, and a deleting Task; and record-and-remove, TaskController's
+still to deliver, and a deleting Task; and record-and-remove, TaskController's
 status write that also moves one entry's receipt into `deliveries` and the
 entry out of `inbox`. No manager may replace the list.
 
@@ -283,10 +287,12 @@ again, stays in `status.inbox`, and holds back no later entry. An entry the
 runtime only queued, where the agent does not read it, raises
 `NeedsAttention/DeliveryQueued` naming it, with the same outcome. The Thurbox
 runtime refuses an entry over 16 000 bytes before it types anything, because
-tmux refuses a longer command. More than 20 undelivered entries raise
-`NeedsAttention/InboxFull`. A Concluded Task with a nonempty inbox is due again
-for delivery, and at rest for a session recheck every 5 minutes, as the [Task
-state machine](../controllers/task/state-machine.md#transition-rules) describes;
+tmux refuses a longer command. More than 20 entries still to deliver raise
+`NeedsAttention/InboxFull`. An entry given up on does not count. Such an entry
+can never be delivered, so it can never make room. A Concluded Task with a
+nonempty inbox is due again for delivery, and at rest for a session recheck
+every 5 minutes, as the [Task state
+machine](../controllers/task/state-machine.md#transition-rules) describes;
 a readable lookup that no longer shows its session is `WorkerGone` and
 `NeedsAttention`, never a respawn. A session that is still there without its
 window, as after a host reboot, is revived to read its inbox. See [after a host

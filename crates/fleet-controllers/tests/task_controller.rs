@@ -1200,6 +1200,38 @@ fn more_than_the_bound_queued_is_attention_until_delivered_down() {
 }
 
 #[test]
+fn entries_given_up_on_never_raise_inbox_full() {
+    let keys: Vec<String> = (0..=fleet_api::inbox::MAX_INBOX)
+        .map(|i| format!("task/t/u7/send/{i}"))
+        .collect();
+    let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let obj = briefed_with(&refs, |st| {
+        for k in &keys {
+            st.delivery_attempts.insert(
+                k.clone(),
+                fleet_api::inbox::DeliveryAttempt {
+                    failed: true,
+                    ..Default::default()
+                },
+            );
+        }
+    });
+    let (_, st) = run(
+        &obj,
+        Observations {
+            find: live(),
+            ready: Some(Observation::Known(true)),
+            ..Default::default()
+        },
+    );
+    assert!(
+        st.conditions.iter().all(|c| c.reason != "InboxFull"),
+        "{:#?}",
+        st.conditions
+    );
+}
+
+#[test]
 fn the_brief_waits_for_the_agent_to_trust_its_workspace() {
     let obj = spawned(|_| {});
     assert!(probes(&obj).contains(&Probe::WorkspaceTrust {

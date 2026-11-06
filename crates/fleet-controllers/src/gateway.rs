@@ -35,7 +35,7 @@ use fleet_api::gateway::{
     HistoryObservation, HistoryQuery, LogThread, Marker, Message, PostFound, Verified, admit,
     find_post,
 };
-use fleet_api::inbox::{InboxAbout, InboxEntry, MAX_INBOX};
+use fleet_api::inbox::{self, InboxAbout, InboxEntry, MAX_INBOX};
 use fleet_api::meta::{Millis, Object};
 use fleet_api::plan::{Action, Effect, EffectOutcome, Intent, Plan, Probe, Receipt};
 use fleet_api::store::FieldManager;
@@ -531,10 +531,10 @@ impl Pass<'_, '_> {
     }
 
     /// Whether the store would refuse one more append: it accepts each
-    /// while at most MAX_INBOX entries are undelivered, counting those
+    /// while at most MAX_INBOX entries are still to deliver, counting those
     /// this pass already planned.
     fn inbox_full(&self) -> bool {
-        self.st.inbox.len() + self.appends.len() > MAX_INBOX
+        inbox::due(&self.st.inbox, &self.st.delivery_attempts) + self.appends.len() > MAX_INBOX
     }
 
     /// The tie, as the labels and the Conversation's observation leave it:
@@ -665,7 +665,7 @@ impl Pass<'_, '_> {
             return;
         }
         if self.inbox_full() {
-            // More than MAX_INBOX undelivered: the store would refuse the
+            // More than MAX_INBOX still to deliver: the store would refuse the
             // append. Neither the cursor nor the read moves, so this is
             // judged again once the inbox drains.
             return;

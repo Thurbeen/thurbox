@@ -10,7 +10,7 @@
 use fleet_api::condition::{
     ConditionStatus, condition, is_true, set_condition, settle_transitions,
 };
-use fleet_api::inbox::{DeliveryAttempt, DeliveryReceipt, InboxEntry, MAX_INBOX};
+use fleet_api::inbox::{self, DeliveryAttempt, DeliveryReceipt, InboxEntry, MAX_INBOX};
 use fleet_api::meta::{Millis, Object};
 use fleet_api::plan::{
     Action, Effect, EffectOutcome, Intent, Observations, Plan, Probe, Receipt, SpawnSpec,
@@ -827,13 +827,11 @@ impl Pass<'_, '_> {
     /// under the entry's key. One entry per pass; nothing else of the Task
     /// changes, apart from the attention a failed delivery asks for.
     fn deliver(&mut self, session: SessionRef) {
-        if self.st.inbox.len() > MAX_INBOX {
+        let due = inbox::due(&self.st.inbox, &self.st.delivery_attempts);
+        if due > MAX_INBOX {
             self.needs_attention(
                 "InboxFull",
-                format!(
-                    "{} undelivered entries; appends are refused past {MAX_INBOX}",
-                    self.st.inbox.len()
-                ),
+                format!("{due} entries still to deliver; appends are refused past {MAX_INBOX}"),
             );
         } else {
             self.settle_attention("InboxFull");

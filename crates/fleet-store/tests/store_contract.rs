@@ -1018,7 +1018,7 @@ fn the_inbox_bound_and_the_delivered_revision_hold_on_append() {
         )
         .unwrap_err();
     assert!(
-        matches!(err, StoreError::Forbidden(ref m) if m.contains("undelivered")),
+        matches!(err, StoreError::Forbidden(ref m) if m.contains("still to deliver")),
         "{err}"
     );
     assert_eq!(inbox_status(&t).inbox.len(), MAX_INBOX + 1);
@@ -3300,7 +3300,7 @@ fn a_plugins_amend_is_fenced_on_its_generation_and_keeps_fleet_amends_checks() {
     }
     assert!(matches!(
         store.plugin_mutate(amend("own", &uid, 2, json!({})), writer.clone(), &lease),
-        Err(StoreError::Forbidden(why)) if why.contains("undelivered")
+        Err(StoreError::Forbidden(why)) if why.contains("still to deliver")
     ));
 
     // A Task this plugin did not create is foreign under `tasks = "own"`.

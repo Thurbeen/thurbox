@@ -796,6 +796,47 @@ fn a_full_inbox_holds_the_relay_without_moving_the_cursor_or_the_read() {
 }
 
 #[test]
+fn entries_given_up_on_never_hold_the_relay() {
+    let mut inbox = Vec::new();
+    let mut delivery_attempts = BTreeMap::new();
+    for i in 0..=MAX_INBOX {
+        let key = format!("task/{TASK}/{TASK_UID}/send/{i}");
+        let failed = fleet_api::inbox::DeliveryAttempt {
+            failed: true,
+            ..Default::default()
+        };
+        delivery_attempts.insert(key.clone(), failed);
+        inbox.push(InboxEntry {
+            key,
+            from: "cli/a".into(),
+            text: "m".into(),
+            about: None,
+            answers: Vec::new(),
+            amends: None,
+            queued_at: 1,
+        });
+    }
+    let t = task(
+        tied_at(1),
+        TaskStatus {
+            inbox: inbox.clone(),
+            delivery_attempts: delivery_attempts.clone(),
+            ..TaskStatus::default()
+        },
+    );
+    let mut messages = thread();
+    messages.push(person(T0 + 400_000, 2, ALEX, "more"));
+    let (plan, gw) = run(
+        &t,
+        observed(Observation::Known(Some(conversation(2, messages)))),
+    );
+    assert_eq!(plan.appends.len(), 1, "{gw:#?}");
+    for e in &plan.appends {
+        check_append(&inbox, &delivery_attempts, &Deliveries::default(), e).unwrap();
+    }
+}
+
+#[test]
 fn a_route_that_left_the_config_raises_route_unknown_and_relays_nothing() {
     let t = task(tied_at(1), TaskStatus::default());
     let mut messages = thread();
@@ -1181,7 +1222,7 @@ fn more_unread_items_than_the_inbox_holds_go_out_in_batches_the_store_accepts() 
     let accepted = |inbox: &[InboxEntry], plan: &Plan| {
         let mut inbox = inbox.to_vec();
         for e in &plan.appends {
-            check_append(&inbox, &Deliveries::default(), e).unwrap();
+            check_append(&inbox, &Default::default(), &Deliveries::default(), e).unwrap();
             inbox.push(e.clone());
         }
     };

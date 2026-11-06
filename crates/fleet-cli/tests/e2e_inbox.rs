@@ -219,7 +219,7 @@ fn the_inbox_is_bounded_and_drains_one_entry_per_pass() {
     assert_eq!(inbox_keys(&full_status(&env)).len(), bound + 1);
     env.fleet(&["send", "t1", "one too many"])
         .code(1)
-        .stderr_has("undelivered");
+        .stderr_has("still to deliver");
     env.reconcile().ok();
     assert_condition(&env.status("t1"), "NeedsAttention", "True", "InboxFull");
     assert_eq!(env.calls("brief"), 1, "not ready: nothing typed");

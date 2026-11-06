@@ -547,7 +547,8 @@ again. An item without an `id` is skipped and named in
 - An edited message is relayed again, marked as an edit.
 - An entry holds at most 64 KiB of messages. It keeps the newest and says
   how many older ones remain on the platform.
-- While the inbox holds more than 20 undelivered entries, new messages wait.
+- While the inbox holds more than 20 entries still to deliver, new messages
+  wait. An entry given up on does not count.
   Posting goes on meanwhile.
 - One pass appends no more entries than the store accepts. The relay comes
   first, then each child's items in order.

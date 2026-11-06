@@ -8,7 +8,7 @@
 //! and record-and-remove ([`Store::record_delivery`]), which moves an
 //! entry's receipt into `status.deliveries` and the entry out of `inbox` in
 //! one write. The store refuses a key already present in either, and an
-//! append while more than [`MAX_INBOX`] entries are undelivered.
+//! append while more than [`MAX_INBOX`] entries are still to deliver.
 //!
 //! [`Store::append_inbox`]: crate::store::Store::append_inbox
 //! [`Store::record_delivery`]: crate::store::Store::record_delivery
@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 use crate::meta::Millis;
 use crate::plan::effect_key;
 
-/// An append is refused while more than this many entries are undelivered.
+/// An append is refused while more than this many entries are still to
+/// deliver. An entry given up on stays in the inbox but counts against no
+/// bound: it can never be delivered, so it could never make room.
 pub const MAX_INBOX: usize = 20;
 
 /// How many delivery receipts `status.deliveries` retains, newest first to
@@ -160,9 +162,18 @@ pub struct DeliveryAttempt {
     pub failed: bool,
 }
 
+/// The entries still to deliver: every entry but those given up on.
+pub fn due(inbox: &[InboxEntry], attempts: &BTreeMap<String, DeliveryAttempt>) -> usize {
+    inbox
+        .iter()
+        .filter(|e| !attempts.get(&e.key).is_some_and(|a| a.failed))
+        .count()
+}
+
 /// Why an append is refused, as the store reports it.
 pub fn check_append(
     inbox: &[InboxEntry],
+    attempts: &BTreeMap<String, DeliveryAttempt>,
     deliveries: &Deliveries,
     entry: &InboxEntry,
 ) -> Result<(), String> {
@@ -186,10 +197,10 @@ pub fn check_append(
             entry.key, about.revision, entry.from, about.uid
         ));
     }
-    if inbox.len() > MAX_INBOX {
+    let due = due(inbox, attempts);
+    if due > MAX_INBOX {
         return Err(format!(
-            "inbox holds {} undelivered entries (more than {MAX_INBOX}); deliver some first",
-            inbox.len()
+            "inbox holds {due} entries still to deliver (more than {MAX_INBOX}); deliver some first"
         ));
     }
     Ok(())
@@ -252,10 +263,10 @@ mod tests {
     fn a_key_is_refused_while_it_is_queued_or_receipted() {
         let queued = vec![entry("k1", "cli/a", None)];
         let mut d = Deliveries::default();
-        assert!(check_append(&queued, &d, &entry("k1", "cli/a", None)).is_err());
-        assert!(check_append(&queued, &d, &entry("k2", "cli/a", None)).is_ok());
+        assert!(check_append(&queued, &BTreeMap::new(), &d, &entry("k1", "cli/a", None)).is_err());
+        assert!(check_append(&queued, &BTreeMap::new(), &d, &entry("k2", "cli/a", None)).is_ok());
         d.record(&queued[0], receipt("k1", 5));
-        assert!(check_append(&[], &d, &entry("k1", "cli/a", None)).is_err());
+        assert!(check_append(&[], &BTreeMap::new(), &d, &entry("k1", "cli/a", None)).is_err());
         assert_eq!(d.receipts[0].from, "cli/a", "the store copies the source");
     }
 
@@ -265,8 +276,36 @@ mod tests {
             .map(|i| entry(&format!("k{i}"), "cli/a", None))
             .collect();
         let d = Deliveries::default();
-        assert!(check_append(&full[..MAX_INBOX], &d, &entry("x", "cli/a", None)).is_ok());
-        assert!(check_append(&full, &d, &entry("x", "cli/a", None)).is_err());
+        assert!(
+            check_append(
+                &full[..MAX_INBOX],
+                &BTreeMap::new(),
+                &d,
+                &entry("x", "cli/a", None)
+            )
+            .is_ok()
+        );
+        assert!(check_append(&full, &BTreeMap::new(), &d, &entry("x", "cli/a", None)).is_err());
+    }
+
+    #[test]
+    fn an_entry_given_up_on_counts_against_no_bound() {
+        let full: Vec<InboxEntry> = (0..=MAX_INBOX)
+            .map(|i| entry(&format!("k{i}"), "cli/a", None))
+            .collect();
+        let given_up: BTreeMap<String, DeliveryAttempt> = full
+            .iter()
+            .map(|e| {
+                let attempt = DeliveryAttempt {
+                    failed: true,
+                    ..DeliveryAttempt::default()
+                };
+                (e.key.clone(), attempt)
+            })
+            .collect();
+        let d = Deliveries::default();
+        assert_eq!(due(&full, &given_up), 0);
+        assert!(check_append(&full, &given_up, &d, &entry("x", "cli/a", None)).is_ok());
     }
 
     #[test]
@@ -282,13 +321,37 @@ mod tests {
         }
         assert_eq!(d.receipts.len(), MAX_DELIVERIES);
         assert!(!d.delivered("r7"), "the oldest receipt rotated out");
-        assert!(check_append(&[], &d, &entry("r7b", "forge/cr-1", Some(7))).is_err());
-        assert!(check_append(&[], &d, &entry("r8", "forge/cr-1", Some(8))).is_ok());
-        assert!(check_append(&[], &d, &entry("o7", "forge/cr-2", Some(7))).is_ok());
+        assert!(
+            check_append(
+                &[],
+                &BTreeMap::new(),
+                &d,
+                &entry("r7b", "forge/cr-1", Some(7))
+            )
+            .is_err()
+        );
+        assert!(
+            check_append(
+                &[],
+                &BTreeMap::new(),
+                &d,
+                &entry("r8", "forge/cr-1", Some(8))
+            )
+            .is_ok()
+        );
+        assert!(
+            check_append(
+                &[],
+                &BTreeMap::new(),
+                &d,
+                &entry("o7", "forge/cr-2", Some(7))
+            )
+            .is_ok()
+        );
         // The same name with a new mirror uid, after retention, starts afresh.
         let mut rebound = entry("r1b", "forge/cr-1", Some(1));
         rebound.about.as_mut().unwrap().uid = "c1-again".into();
-        assert!(check_append(&[], &d, &rebound).is_ok());
+        assert!(check_append(&[], &BTreeMap::new(), &d, &rebound).is_ok());
     }
 
     #[test]

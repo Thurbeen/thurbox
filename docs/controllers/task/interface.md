@@ -281,7 +281,8 @@ through three typed mutations, `append_inbox`, `record_relay` and
 `kinds::may_record_relay`, `kinds::may_record_delivery`), with the rules the
 store enforces: no duplicate key across `inbox` and `deliveries`, no
 `about.revision` at or below the mirror's highest delivered one, no append
-while more than 20 entries are undelivered or the Task is deleting, and no
+while more than 20 entries are still to deliver (entries given up on do not
+count) or the Task is deleting, and no
 other field of the Task changed by any of them. A plain `update_status` that
 changes `inbox` is refused whoever writes it.
 
