@@ -236,6 +236,7 @@ impl<M: TmuxCompatible> Server<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::backend::tmux_compat::server::tests::answering_mux;
 
     /// A kill that failed is not "there was none to stop".
