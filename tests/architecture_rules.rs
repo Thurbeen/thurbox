@@ -2009,7 +2009,8 @@ fn relative(root: &Path, file: &Path) -> String {
 }
 
 /// Every production site breaking [`KERNEL_THREADS`] or [`KERNEL_REACHES`] in
-/// `tree`, as `dir/file.rs:line what`.
+/// `tree`, as `dir/file.rs:line what`, and every production glob import under
+/// those directories.
 fn misplaced_kernel_work(tree: &Tree) -> Vec<String> {
     let mut found = Vec::new();
     for (file, line, needle) in tree.mentions(&["thread::"], "", false) {
@@ -2020,6 +2021,17 @@ fn misplaced_kernel_work(tree: &Tree) -> Vec<String> {
             .map(|(_, allowed)| *allowed);
         if allowed.is_some_and(|allowed| !allowed.contains(&file.as_str())) {
             found.push(format!("{file}:{line} {needle}"));
+        }
+    }
+    // A glob import binds nothing the resolver can follow, so a reach through
+    // one would never reach the check below.
+    for (file, line, _) in tree.mentions(&["*;", "*}"], "", false) {
+        let file = relative(Path::new(""), &file);
+        if KERNEL_THREADS
+            .iter()
+            .any(|(dir, _)| file.starts_with(&format!("{dir}/")))
+        {
+            found.push(format!("{file}:{line} glob import"));
         }
     }
     for reference in tree.references(&["kernel", "git", "storage"]) {
@@ -2066,16 +2078,17 @@ fn each_kernel_worker_lives_in_a_file_of_its_own() {
 
 /// The scans behind [`each_kernel_worker_lives_in_a_file_of_its_own`] find a
 /// worker's reach outside its file — through a `Builder`, an alias or a renamed
-/// import too — and none of its lookalikes: a comment, a string, test code,
+/// import too, and the glob import a reach could hide behind — and none of its lookalikes: a comment, a string, test code,
 /// the type named to pass a connection on, or the worker's own file.
 #[test]
 fn the_kernel_worker_scan_sees_only_misplaced_production_reaches() {
     assert_eq!(
         misplaced_kernel_work(&fixture("kernel_workers")),
         [
-            "kernel/snapshot/mod.rs:13 thread::",
-            "kernel/snapshot/mod.rs:14 git::stats",
-            "kernel/snapshot/mod.rs:15 storage::Database::open",
+            "kernel/snapshot/mod.rs:14 thread::",
+            "kernel/snapshot/mod.rs:15 git::stats",
+            "kernel/snapshot/mod.rs:16 storage::Database::open",
+            "kernel/snapshot/probe.rs:1 glob import",
             "kernel/terminal/mod.rs:4 thread::",
             "kernel/terminal/paint.rs:2 thread::",
         ]

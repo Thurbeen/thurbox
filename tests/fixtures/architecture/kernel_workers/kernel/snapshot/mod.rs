@@ -1,4 +1,5 @@
 mod git;
+mod probe;
 
 use crate::git as repo;
 use crate::storage::Database as Db;
