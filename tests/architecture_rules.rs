@@ -1777,6 +1777,19 @@ fn in_session(found: Vec<(PathBuf, usize, &str)>) -> Vec<String> {
         .collect()
 }
 
+/// What keeps `session` from being pure data in `tree`: a crate of `foreign`
+/// named by path or imported under any name, process state, or an environment
+/// read.
+fn session_impurities(tree: &Tree, foreign: &[&str]) -> Vec<String> {
+    let mut problems = in_session(tree.mentions(foreign, "::", true));
+    problems.extend(in_session(tree.imports(foreign, true)));
+    problems.extend(in_session(tree.mentions(SESSION_STATE, "", true)));
+    problems.extend(in_session(tree.mentions(SESSION_ENV, "", false)));
+    problems.sort();
+    problems.dedup();
+    problems
+}
+
 /// `session` is the dependency sink and documented as pure data: it names
 /// only the external crates [`SESSION_CRATES`] lists, holds no process state
 /// and reads no environment.
@@ -1792,13 +1805,25 @@ fn session_is_pure_data() {
         .map(String::as_str)
         .filter(|c| !SESSION_CRATES.contains(c))
         .collect();
-    let mut problems = in_session(src_tree().mentions(&foreign, "::", true));
-    problems.extend(in_session(src_tree().mentions(SESSION_STATE, "", true)));
-    problems.extend(in_session(src_tree().mentions(SESSION_ENV, "", false)));
+    let problems = session_impurities(src_tree(), &foreign);
     assert!(
         problems.is_empty(),
         "session must stay pure data — move these out, or extend SESSION_CRATES with why:\n  {}",
         problems.join("\n  ")
+    );
+}
+
+/// A crate imported under another name is still that crate: `use ratatui as
+/// rendering;` leaves no `ratatui::` behind for the path scan to find.
+#[test]
+fn session_purity_sees_a_renamed_import() {
+    assert_eq!(
+        session_impurities(&fixture("session_imports"), &["ratatui"]),
+        [
+            "session/mod.rs:1 ratatui",
+            "session/mod.rs:8 ratatui",
+            "session/mod.rs:9 ratatui"
+        ]
     );
 }
 

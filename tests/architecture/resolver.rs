@@ -509,6 +509,41 @@ impl Tree {
         }
         found
     }
+
+    /// Every `use` whose first segment is one of `crates`, whatever name it
+    /// binds — `use ratatui as r;` is found though no `ratatui::` follows —
+    /// with the same file/line/needle shape as [`Self::mentions`].
+    pub fn imports<'a>(
+        &self,
+        crates: &[&'a str],
+        with_tests: bool,
+    ) -> Vec<(PathBuf, usize, &'a str)> {
+        let mut found = Vec::new();
+        for file in &self.files {
+            if !with_tests && self.is_test_module(&file.module) {
+                continue;
+            }
+            let rel = file.path.strip_prefix(&self.root).unwrap_or(&file.path);
+            for leaf in &file.uses {
+                let Some(krate) = leaf
+                    .raw
+                    .first()
+                    .and_then(|first| crates.iter().find(|c| **c == first.as_str()))
+                else {
+                    continue;
+                };
+                if !with_tests
+                    && (file.in_test_span(leaf.offset)
+                        || self.is_test_module(&file.scope_at(leaf.offset)))
+                {
+                    continue;
+                }
+                let line = file.stripped[..leaf.offset].matches('\n').count() + 1;
+                found.push((rel.to_path_buf(), line, *krate));
+            }
+        }
+        found
+    }
 }
 
 impl SourceFile {
