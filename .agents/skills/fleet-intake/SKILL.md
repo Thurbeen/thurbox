@@ -11,8 +11,8 @@ Use the config and data directory the requester supplies; never probe a live
 queue or create a fresh operational deployment by guessing a path.
 
 Represent one session as a Task with `harness`, `host`, optional `model`,
-`brief`, `workspace` (`dir`, or `repositories` for the runtime to check out),
-optional `outputs` and explicit `dispatch`. The
+`brief`, `workspace` (an existing `dir`, or `repositories` checked out for the
+Task), optional `outputs` and explicit `dispatch`. The
 [Task resource](../../../docs/resources/task.md) documents every field. Apply
 it with `fleet apply -f FILE`. Record its name and returned generation.
 Inspect it with `fleet get task NAME` and `fleet status task NAME --json`.

@@ -172,15 +172,8 @@ may not start with `-`, since they reach the runtime as arguments; whether
 each is present never changes after creation.
 
 `spec.workspace` names what the session works in. It never says how the
-runtime makes it.
-
-- `{dir}` is a directory that exists before the Task. It may not be empty.
-- `{repositories}` names one or more repositories by identity. Each `name`
-  is a valid resource name and unique in the Task; each `url` is unique in
-  the Task. Each `url` and optional `ref` is
-  non-empty, has no whitespace and does not start with `-`. Fleet does not
-  interpret `ref`.
-- A workspace has exactly one of the two forms. Unknown fields are refused.
+workspace is made. [Workspaces](../docs/resources/task.md#workspaces)
+defines both forms and their validation.
 
 See [execution configuration](../docs/resources/task-config.md) for
 reference validation, deterministic precedence and private launch freezing.
@@ -909,7 +902,8 @@ makes no worktree. It maps `{repositories}` to one worktree create:
 
 - The first repository's source is `--repo-path`, and its `ref` is
   `--base-branch`.
-- Each other repository is `--add-repo PATH[@REF]`.
+- Each other repository is `--add-repo PATH[@REF]`. Thurbox starts a
+  repository without a `ref` from the primary's `ref`.
 - Every worktree is on the branch `<keyPrefix>/<session key>`. A source
   repository with a branch named exactly `<keyPrefix>` cannot hold these
   branches, so its spawns fail.
@@ -917,7 +911,8 @@ makes no worktree. It maps `{repositories}` to one worktree create:
   relative source is refused when the config loads. An unmapped URL is
   `Unmapped`. An `@` that `PATH@REF` cannot carry fails the spawn.
 - A running `fleet up` reads `runtime.repositories` again before each sweep.
-  The next spawn uses the new map.
+  The next spawn uses the new map. See
+  [reloading](../docs/configuration/fleet-toml.md#reloading-runtimerepositories).
 - `release` runs `session delete --force` by default. Thurbox then removes
   the window and the worktrees it created.
 - With `runtime.workspaceCleanup = "keep"`, `release` runs
@@ -925,6 +920,12 @@ makes no worktree. It maps `{repositories}` to one worktree create:
   session.
 - Cleanup is best effort. Fleet reads a delete that exits 0 as released,
   even when thurbox reports a worktree or remote teardown error.
+
+The multi-repository layout is the same for both paths:
+
+- With one repository, the agent starts in that repository's worktree.
+- With several, thurbox starts the agent in a directory of its own. That
+  directory holds one link per repository.
 
 ### Workspace trust
 
@@ -938,7 +939,7 @@ The trust root is the directory the agent keys the session's trust on:
 - For `{dir}`, the trust root is the directory.
 - For `{repositories}`, the trust root is the primary repository's source
   checkout. Codex and Claude Code key a worktree's trust on its main
-  checkout, and the primary worktree is the session's cwd.
+  checkout. With one repository, that worktree is the session's cwd.
 - Additional repositories get no trust. Neither agent loads their project
   settings.
 
@@ -996,8 +997,8 @@ and Claude Code 2.1.312.
 
 A Workspace is the set of files one Session works in (`fleet_api::workspace`).
 A Task owns at most one. TaskController records it in `status.workspace`
-as `WorkspaceRef`: Fleet's `key`, the `host` the adapter reported, the `dir`
-the session runs in, the `extraDirs` it also spans and an optional
+as `WorkspaceRef`: Fleet's `key`, the `host` the adapter reported, the
+primary `dir`, the `extraDirs` the session also spans and an optional
 `trustRoot`. The workspace key is the session key.
 
 `fleet_api::workspace::Workspaces`: `materialize`, `find` and `clean`, each
@@ -1026,9 +1027,11 @@ The `worktree` adapter serves the local host and refuses any other:
   worktree at `<root>/<key>/<name>` on the branch `<branchPrefix>/<key>`
   of its source checkout, from its `ref` or the source's `HEAD`.
 - `runtime.repositories` maps each URL to its source checkout.
-- The session runs in the first repository's worktree. Its trust root is
-  that repository's source checkout, as for a thurbox worktree.
+- `dir` is the first repository's worktree. Its trust root is that
+  repository's source checkout, as for a thurbox worktree.
 - Each other repository's worktree is in `extraDirs`, in the Task's order.
+  The runtime spans them; see the multi-repository layout under the
+  [runtime contract](#runtime-contract).
 - The marker `<root>/<key>/.fleet-workspace.json` is written last. A
   directory without it is partial.
 - A branch left by an earlier attempt is checked out again, so no commit
@@ -1208,14 +1211,10 @@ must fit inside the lease as well as runtime operations. Ctrl-C/SIGTERM stops
 after bounded work and releases the lease; Tasks and sessions survive. Crash
 recovery waits for lease expiry. Uncertain runtime observations remain Unknown.
 
-`fleet up` reads its config file again before each sweep. It applies
-`runtime.repositories` only:
-
-- A file that cannot be read, parsed or validated changes nothing. The last
-  valid map stays in force, and `fleet up` reports the refusal once.
-- A change to any other setting is not applied. `fleet up` reports it once
-  and asks for a restart. The store, the lease holder, the runtime kind and
-  the key prefix never change in a running process.
+`fleet up` reads its config file again before each sweep and applies
+`runtime.repositories` only.
+[Reloading](../docs/configuration/fleet-toml.md#reloading-runtimerepositories)
+states the rules.
 `e2e_bootstrap` covers installed first-run, repeat/concurrent initialization,
 customized updates, resident progress, exclusive startup, crash/reconnect and
 the `runtime.repositories` reload.

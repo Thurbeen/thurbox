@@ -66,11 +66,10 @@ names repositories by URL. The thurbox runtime creates the worktrees and
 chooses the branch `<keyPrefix>/<session key>`.
 
 - Use `{"repositories": [{"name", "url", "ref"}]}` for work on repositories.
-  The first entry is the primary repository, where the agent starts. Put more
-  entries for v1's `--add-repo`.
-- Map each URL to its local source checkout in `[runtime.repositories]`. The
-  path must be absolute. A Task with an unmapped URL waits in `Pending` with
-  the reason `RepositoryUnmapped`.
+  The first entry is the primary repository. Put more entries for v1's
+  `--add-repo`.
+- Map each URL to its local source checkout in
+  [`[runtime.repositories]`](configuration/fleet-toml.md#fields).
 - Use `{"dir": PATH}` for a directory that exists before the Task. V2 has no
   equivalent of v1's `--add-dir`.
 - `runtime.workspaceCleanup` is the closest equivalent of v1's `ON_LANDED`

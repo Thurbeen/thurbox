@@ -43,7 +43,7 @@ except `dispatch` and `forge`. `amendments` grows only through
 | `pauseAfterMs` | no | Pause the session once its agent was idle this long, in milliseconds; at least 1. Overrides the TaskConfig's value. Absent inherits it; with neither, the session is never paused. See [pausing an idle session](../controllers/task/state-machine.md#pausing-an-idle-session). |
 | `brief` | yes | The brief, sent once to the ready session. It never changes. |
 | `amendments` | no | Additions to the brief, oldest first, each `{text, reason?, outputs?, from, at, generation}`. Only `fleet amend` appends one. See [Amendments](#amendments). |
-| `workspace` | yes | What the session works in: `{"dir": PATH}`, a directory that exists before the Task (the thurbox runtime needs an absolute path on the host), or `{"repositories": [{"name", "url", "ref"?}]}`, repositories the runtime materializes for this Task. The first repository is the primary, where the agent starts. Fleet never interprets `ref`; the runtime decides what it means. Deleting the session cleans the workspace up as the runtime is configured to. See [Workspaces](#workspaces). |
+| `workspace` | yes | What the session works in: `{"dir": PATH}` or `{"repositories": [{"name", "url", "ref"?}]}`. See [Workspaces](#workspaces). |
 | `dispatch` | no | Nothing spawns while `false` (the default). |
 | `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. An amendment can add outputs. |
 | `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
@@ -56,7 +56,9 @@ precedence, validation and private launch snapshots.
 
 ### Workspaces
 
-A Task names its repositories. The runtime decides how they become files.
+A workspace has exactly one of two forms. Unknown fields are refused.
+
+`{"repositories": [...]}` names repositories by identity:
 
 ```json
 {"workspace": {"repositories": [
@@ -68,27 +70,37 @@ A Task names its repositories. The runtime decides how they become files.
 - Each `name` is a lowercase DNS-like name, unique in the Task. Each `url`
   is unique in the Task. Each `url` and `ref` is non-empty, has no
   whitespace and does not start with `-`.
-- A workspace has `dir` or `repositories`, never both.
-- Fleet has no branch, base, worktree or cleanup field. The runtime chooses
-  them. The worker reports the change it opened through `fleet declare`.
-- The thurbox runtime creates one worktree per repository, on the branch
-  `<keyPrefix>/<session key>`. `runtime.repositories` in `fleet.toml` maps
-  each URL to its source checkout. An unmapped URL keeps the Task in Pending
-  with `RepositoryUnmapped`.
-- With thurbox, a `harness` that `runtime.workspaceTrust` does not map keeps
-  the Task in Pending with `TrustUnmapped`.
-- Deleting the session cleans the workspace. With thurbox, the worktrees go
-  with the session by default. `runtime.workspaceCleanup = "keep"` keeps
-  them instead.
-- With a `[workspaces]` section in `fleet.toml`, Fleet makes the workspace
-  itself before the spawn. The runtime then gets a ready directory and makes
-  nothing. Fleet records the workspace in `status.workspace` and cleans it
-  after the release. See
-  [Workspaces and the workspace port](../ARCHITECTURE.md#workspaces-and-the-workspace-port).
-- The `worktree` adapter makes one git worktree per repository, in
-  `<root>/<session key>/<name>`, on the branch `<branchPrefix>/<session key>`.
-  The session runs in the first repository's worktree and spans the others.
-  A clean removes the worktrees and keeps the branch.
+- The first repository is the primary. Its source checkout is the trust
+  root, as [workspace trust](../../crates/CONTRACTS.md#workspace-trust)
+  states.
+- Fleet does not interpret `ref`. The maker of the workspace decides what it
+  means.
+- Fleet has no branch, base, worktree or cleanup field. The maker makes the
+  checkout for this Task alone and names its branch. The worker reports the
+  change it opened through `fleet declare`.
+- `runtime.repositories` in [`fleet.toml`](../configuration/fleet-toml.md#fields)
+  maps each `url` to its source checkout. A Task with an unmapped `url`
+  waits with `RepositoryUnmapped`.
+
+One of two makers makes a `repositories` workspace:
+
+- Without a `[workspaces]` section, the runtime makes it at the spawn and
+  cleans it when the session is deleted, as `runtime.workspaceCleanup`
+  says. The [runtime contract](../../crates/CONTRACTS.md#runtime-contract)
+  states how thurbox does this.
+- With a `[workspaces]` section, Fleet makes it before the spawn, records it
+  in `status.workspace`, and cleans it after the release. The
+  [workspace contract](../../crates/CONTRACTS.md#workspace-contract) states
+  how the `worktree` adapter does this.
+
+`{"dir": PATH}` names a directory that exists before the Task. The session
+works in it as it is.
+
+- Fleet does not create, isolate or clean the directory. Two Tasks can name
+  the same directory.
+- A [Gateway route](../configuration/fleet-toml.md#the-gateway-section) with a
+  `dir` workspace is the one exception: the manager creates each thread's
+  directory and removes it when the thread retires.
 
 ## Status
 
@@ -107,7 +119,7 @@ mutations described under [Inbox](#inbox).
 | `conditions` | One entry per [condition type](../controllers/task/state-machine.md#conditions), with `status`, `reason`, `message`, `lastTransitionTime` and `observedGeneration`, the spec generation the condition was last set for. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
 | `session` | The session's runtime id, host and key, once spawned or adopted. A Task owns at most one session, from its spawn to its release; see [Session](session.md). |
-| `workspace` | The workspace Fleet made for the session: its `key`, the `host` the adapter reported, the `dir` the session runs in, the `extraDirs` of the other repositories it also spans, and an optional `trustRoot`. Absent while the runtime makes the workspace, and after Fleet cleaned it. |
+| `workspace` | The workspace Fleet made for the session: its `key`, the `host` the adapter reported, the `dir` of the primary repository, the `extraDirs` of the other repositories it also spans, and an optional `trustRoot`. Absent while the runtime makes the workspace, and after Fleet cleaned it. |
 | `materializeAttempts`, `cleanAttempts` | Materialize attempts, bounded at 3 like spawn attempts, and workspace cleans after the release. A materialize refused for an unmapped repository does not count. Three failed cleans raise `NeedsAttention/CleanFailed`; cleans continue after each wait. |
 | `sessionState` | What the runtime last proved about the session: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. Absent until a pass proved something. A pass whose answers are Unknown keeps the last state. Nothing decides on it; `fleet status` prints it. [Session](session.md#states) defines each state and how it is proved. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
