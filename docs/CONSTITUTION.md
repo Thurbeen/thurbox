@@ -58,9 +58,20 @@ backend::wiring      → session, shell, config::hosts,
 backend::tmux_compat (declares the modules below — no references)
   ::control_mode     → shell, backend::contract,
                        backend::tmux_compat::transport
-  ::server           → session, paths, shell, agent::{host_path, preflight},
+  ::server           → session, paths, shell,
                        backend::{contract, identity, instance},
                        backend::tmux_compat::{control_mode, transport}
+    ::locator        → session, agent::host_path, backend::{contract, instance},
+                       backend::tmux_compat::{server, transport}
+    ::bootstrap      → session, agent::preflight,
+                       backend::tmux_compat::{server, control_mode}
+    ::connection     → backend::contract,
+                       backend::tmux_compat::{server, control_mode}
+    ::spawn          → session, agent::host_path, backend::{contract, identity},
+                       backend::tmux_compat::{server, control_mode}
+    ::sizing         → backend::contract, backend::tmux_compat::server
+    ::status         → session, shell, backend::contract,
+                       backend::tmux_compat::{server, control_mode}
   ::transport        → shell, agent::preflight
 backend::tmux        → session, shell, backend::contract,
                        backend::tmux_compat::{control_mode, server, transport}

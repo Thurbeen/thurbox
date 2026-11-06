@@ -2466,7 +2466,7 @@ mechanisms now, and they answer different halves:
   refusing an operator's own `session restart` would leave the verb answering
   "already restarting" long after the holder died.
 - **A second window carrying a stamp is retired where the stamp is written.**
-  `Server::retire_duplicate_windows` (`backend::tmux_compat::server`) runs after every stamp
+  `Server::retire_duplicate_windows` (`backend::tmux_compat::server::spawn`) runs after every stamp
   (the headless `create_window`, whose stamp rides in `new-window`'s own
   command list, and `stamp_window` for the interface's own spawn,
   an adopt, a restore, a `session register` and every window created on a

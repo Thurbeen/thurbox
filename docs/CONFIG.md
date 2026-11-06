@@ -697,7 +697,7 @@ For tmux, the limiting features are `refresh-client -f pause-after=5`,
 `send-keys -H` and pane options in 3.0; `set-clipboard external` in 2.6;
 `resize-window` in 2.9. These are recorded in the same upstream changelog.
 The mouse-state seed in
-[`pane_state_seed`](../src/backend/tmux_compat/server.rs) uses six
+[`pane_state_seed`](../src/backend/tmux_compat/server/mod.rs) uses six
 `#{mouse_*_flag}` formats: all are present in upstream
 [3.2 format.c](https://github.com/tmux/tmux/blob/3.2/format.c).
 The changelog records the SGR/UTF-8 mouse formats in 3.0; the source confirms
