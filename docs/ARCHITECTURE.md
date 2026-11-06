@@ -1568,7 +1568,7 @@ without a terminal UI.
 
 > **Superseded by ADR-23.** The constants below were v1's. The kernel publishes
 > theme *roles* to plugins (`thurbox.theme`, `kernel::theme::palette_roles`); the
-> 36 built-in palettes live in `session::theme_config`, and a user's own in
+> 36 built-in palettes live in `theme`, and a user's own in
 > `~/.config/thurbox/themes.toml`.
 
 **Choice**: All UI colors are defined as associated constants on a
