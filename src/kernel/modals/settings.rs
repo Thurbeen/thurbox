@@ -1288,7 +1288,7 @@ mod tests {
     /// on screen and the row keeps to its width.
     #[test]
     fn an_edit_past_the_value_column_keeps_its_caret_in_view() {
-        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let palette = crate::theme::ThemePreset::Default.palette();
         let row = setting("a", "label", Value::Text(String::new()));
         let buffer = "x".repeat(40) + "end";
         let line = setting_line(
@@ -1519,7 +1519,7 @@ mod tests {
         // and the modal must say so rather than divide by an empty list.
         let registry = registry_with(Vec::new());
         let mut modal = SettingsModal::default();
-        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let palette = crate::theme::ThemePreset::Default.palette();
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).expect("terminal");
         terminal
@@ -1541,7 +1541,7 @@ mod tests {
 
     /// Every cell of a rendered modal as one string.
     fn painted(modal: &mut SettingsModal, registry: &Registry, on_disk: &Settings) -> String {
-        let palette = crate::session::theme_config::ThemePreset::Default.palette();
+        let palette = crate::theme::ThemePreset::Default.palette();
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).expect("terminal");
         terminal

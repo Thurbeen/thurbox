@@ -2249,9 +2249,10 @@ fn a_creation_that_cannot_start_reports_why_and_leaves_nothing() {
     use thurbox::kernel::command::{Args, Command, CommandBus, Phase as CmdPhase};
 
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     bus.dispatch(
         Command::parse(
             "create",
@@ -2303,9 +2304,10 @@ fn opening_a_worktree_that_is_not_there_reports_why_before_spawning() {
     let repo = tempfile::TempDir::new().expect("tempdir");
 
     let _home = isolate();
-    let mut bus = CommandBus::new(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut bus = CommandBus::new(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
     bus.dispatch(
         Command::parse(
             "create",
@@ -2770,7 +2772,7 @@ fn the_spawn_pipeline_reports_the_stage_it_reached() {
     // Fails partway — the point is what it reported before it did.
     let _ = spawn_session_headless_with_progress(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         SpawnRequest {
             name: "probe".into(),
             telemetry_attrs: Default::default(),

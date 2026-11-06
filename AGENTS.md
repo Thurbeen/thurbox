@@ -254,14 +254,16 @@ because the squash throws them away.
 
 ```text
 node                 may reference                     [fully-qualified path only]
-session              nothing — pure data, the dependency sink
+session              nothing — pure data, the dependency sink (no
+                     process state, no env reads, no rendering crate)
 agent                agent::{generic,provider} (re-exports only)
 agent::*             every file a node: session, paths, shell, config::file
                      and the other agent::* files each declares (NEVER git,
                      NEVER backend)
 config               config::* (declarations only)
 config::*            every file a node: config::file (the one loader, over
-                     paths) plus session, and for hosts paths and shell
+                     paths) plus session (themes: theme instead), and
+                     for hosts paths and shell
 update               update::* (declarations only)
 update::*            session, paths, shell, agent::extension_config,
                      update::version_check
@@ -298,24 +300,24 @@ backend::rmux        session, shell, backend::contract, (the RMUX adapter)
                      backend::tmux_compat::{control_mode,
                      server,transport}
 git                  session, paths, shell
-storage              session, sync, paths
-sync                 session
+storage              session, paths
 telemetry            session, storage                  (ADR-37/38 OTLP export)
-session_ops          session, storage, git, sync,      [agent|config|update::<file>,
-                     paths, workspace, shell            backend::{contract,identity,
+session_ops          session, storage, git, paths,     [agent|config|update::<file>,
+                     workspace, shell                   backend::{contract,identity,
                                                         instance,registry}]
-kernel               session, storage, sync, paths,    [agent|config|update::<file>,
+kernel               session, storage, paths,          [agent|config|update::<file>,
                      session_ops, git, notifications,   backend::{contract,identity,
-                     shell                              pane,registry}]
+                     shell, theme                       pane,registry}]
 cli                  session, storage, session_ops,    [agent|config|update::<file>,
-                     sync, paths, notifications,        backend::{contract,instance,
-                     ui_control, telemetry              registry}, kernel]
+                     paths, notifications, ui_control,  backend::{contract,instance,
+                     telemetry, theme                   registry}, kernel]
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
 ui_control           paths
-shell                session (HostLauncher::for_host)
+shell                session (HostLauncher::for_host, local_platform)
+theme                nothing — the presets, in ratatui colours
 coordinator          agent::input, config::settings,   (main's body: the loop,
                      backend::{instance,output_wake,    the workers, the chrome)
                      wiring}, clipboard, kernel,

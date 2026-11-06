@@ -182,7 +182,7 @@ fn a_wait_for_failed_answers_after_the_failed_pane_is_lost() {
 
     env._server.tmux(&["kill-window", "-t", &pane]);
     let db = env.db();
-    let backends = thurbox::backend::wiring::configured().0;
+    let backends = thurbox::backend::wiring::configured(&Default::default()).0;
     let mut sweep = thurbox::session_ops::lost::LostSweep::default();
     let deadline = Instant::now() + WAIT;
     while db.session_lost_at(id.parse().unwrap()).unwrap().is_none() {
@@ -355,7 +355,7 @@ impl Env {
     fn spawn(&self, agent: &str) -> String {
         let spawned = thurbox::session_ops::spawn_session_headless(
             &self.db(),
-            &thurbox::backend::wiring::configured().0,
+            &thurbox::backend::wiring::configured(&Default::default()).0,
             thurbox::session_ops::SpawnRequest {
                 name: agent.into(),
                 repo_path: self.repo.path().into(),

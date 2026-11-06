@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use crate::cli::automations::arm_heartbeat;
 use crate::cli::output::{self, CommandOutput};
+use crate::session::settings::Settings;
 use crate::session::ExtensionDef;
 use crate::storage::Database;
 
@@ -105,21 +106,24 @@ pub fn run(
     action: Action,
     db: &Database,
     backends: &super::Backends<'_>,
+    settings: &Settings,
 ) -> Result<CommandOutput, crate::cli::CommandError> {
     match action {
         Action::Install {
             target,
             home,
             force,
-        } => install_extension(db, backends.get(), target, home, force),
+        } => install_extension(db, backends.get(), settings, target, home, force),
         Action::Uninstall { name, purge } => uninstall_extension(db, backends.get(), name, purge),
         Action::List => list_extensions(db),
         Action::Available { query } => Ok(available_output(query.as_deref())),
         Action::Update { name, all, force } => {
-            update_extensions(db, backends.get(), name, all, force)
+            update_extensions(db, backends.get(), settings, name, all, force)
         }
-        Action::Reinstall { name, purge } => reinstall_extension(db, backends.get(), name, purge),
-        Action::Activate { name } => activate_extension(db, backends.get(), name),
+        Action::Reinstall { name, purge } => {
+            reinstall_extension(db, backends.get(), settings, name, purge)
+        }
+        Action::Activate { name } => activate_extension(db, backends.get(), settings, name),
         Action::Deactivate { name, force, purge } => {
             deactivate_extension(db, backends.get(), name, force, purge)
         }
@@ -131,6 +135,7 @@ pub fn run(
 fn install_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
     target: String,
     home: Option<String>,
     force: bool,
@@ -142,7 +147,7 @@ fn install_extension(
         let _ = db.set_builtin_extension_optout(builtin.name, false);
     }
     // Arm the heartbeat so the extension's automations fire headlessly.
-    arm_heartbeat(backends);
+    arm_heartbeat(backends, settings);
     Ok(CommandOutput::from_summary(install_report_to_json(&report)))
 }
 
@@ -186,6 +191,7 @@ fn list_extensions(db: &Database) -> Result<CommandOutput, crate::cli::CommandEr
 fn update_extensions(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
     name: Option<String>,
     all: bool,
     force: bool,
@@ -197,10 +203,10 @@ fn update_extensions(
         Some(name) => {
             let report = crate::session_ops::update_extension(db, backends, &name, force)?;
             // Arm the heartbeat so the refreshed automations keep firing headlessly.
-            arm_heartbeat(backends);
+            arm_heartbeat(backends, settings);
             Ok(CommandOutput::from_summary(update_report_to_json(&report)))
         }
-        None => Ok(update_all_extensions(db, backends, force)),
+        None => Ok(update_all_extensions(db, backends, settings, force)),
     }
 }
 
@@ -209,10 +215,11 @@ fn update_extensions(
 fn update_all_extensions(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
     force: bool,
 ) -> CommandOutput {
     let results = crate::session_ops::update_all_extensions(db, backends, force);
-    arm_heartbeat(backends);
+    arm_heartbeat(backends, settings);
     let total = results.len();
     let mut changed = 0;
     let mut failed = 0;
@@ -243,11 +250,12 @@ fn update_all_extensions(
 fn reinstall_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
     name: String,
     purge: bool,
 ) -> Result<CommandOutput, crate::cli::CommandError> {
     let report = crate::session_ops::reinstall_extension(db, backends, &name, purge)?;
-    arm_heartbeat(backends);
+    arm_heartbeat(backends, settings);
     let version = report.install.version.as_deref().unwrap_or("?");
     Ok(CommandOutput::from_summary(json!({
         "ok": true,
@@ -285,6 +293,7 @@ fn with_blocked(mut summary: String, blocked: &[String]) -> String {
 fn activate_extension(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
     name: String,
 ) -> Result<CommandOutput, crate::cli::CommandError> {
     // A built-in extension is installed from embedded assets, not a discovery
@@ -293,7 +302,7 @@ fn activate_extension(
         db.set_builtin_extension_optout(builtin.name, false)
             .map_err(|e| format!("clear opt-out: {e}"))?;
         let msgs = builtin.ensure(db, backends);
-        arm_heartbeat(backends);
+        arm_heartbeat(backends, settings);
         return Ok(CommandOutput::from_summary(json!({
             "ok": true,
             "summary": format!("Activated '{}' ({} re-applied)", builtin.name, builtin.blurb),
@@ -306,7 +315,7 @@ fn activate_extension(
     // A `Send` automation only fires while something ticks it. Arm the
     // heartbeat keeper so the extension works headlessly (TUI closed),
     // matching how `automation create` arms it.
-    arm_heartbeat(backends);
+    arm_heartbeat(backends, settings);
     Ok(CommandOutput::from_summary(json!({
         "ok": true,
         "summary": with_blocked(

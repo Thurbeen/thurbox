@@ -18,8 +18,8 @@ use opentelemetry_proto::tonic::common::v1::{any_value, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1::{metric, number_data_point, Metric};
 use prost::Message;
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 #[path = "support/tmux_server.rs"]
 mod tmux_server;

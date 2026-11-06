@@ -24,7 +24,7 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::Value;
 use thurbox::session::SessionId;
-use thurbox::sync::SharedSession;
+use thurbox::session::SharedSession;
 
 /// The keys codex's `Stop` hook output accepts. Its schema is
 /// `deny_unknown_fields`, so anything else is the same hard failure as plain

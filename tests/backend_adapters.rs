@@ -30,15 +30,15 @@ fn host(name: &str, platform: Platform, preferred: Option<&str>) -> HostDef {
 #[test]
 fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
     assert_eq!(
-        TmuxBackend::local().name(),
+        TmuxBackend::local(thurbox::session::settings::default_scrollback_lines()).name(),
         Route::local(Some(Multiplexer::Tmux)).format()
     );
     assert_eq!(
-        PsmuxBackend::local().name(),
+        PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines()).name(),
         Route::local(Some(Multiplexer::Psmux)).format()
     );
     assert_eq!(
-        RmuxBackend::local().name(),
+        RmuxBackend::local(thurbox::session::settings::default_scrollback_lines()).name(),
         Route::local(Some(Multiplexer::Rmux)).format()
     );
     for host in [
@@ -47,15 +47,27 @@ fn each_adapter_serves_its_own_multiplexer_wherever_it_runs() {
         host("moved", Platform::Posix, Some("rmux")),
     ] {
         assert_eq!(
-            TmuxBackend::for_host(&host).name(),
+            TmuxBackend::for_host(
+                &host,
+                thurbox::session::settings::default_scrollback_lines()
+            )
+            .name(),
             host.route(Some(Multiplexer::Tmux)).format()
         );
         assert_eq!(
-            PsmuxBackend::for_host(&host).name(),
+            PsmuxBackend::for_host(
+                &host,
+                thurbox::session::settings::default_scrollback_lines()
+            )
+            .name(),
             host.route(Some(Multiplexer::Psmux)).format()
         );
         assert_eq!(
-            RmuxBackend::for_host(&host).name(),
+            RmuxBackend::for_host(
+                &host,
+                thurbox::session::settings::default_scrollback_lines()
+            )
+            .name(),
             host.route(Some(Multiplexer::Rmux)).format()
         );
     }
@@ -76,13 +88,52 @@ fn what_each_multiplexer_can_report_is_its_own_adapters_answer() {
     let psmux = [true, false, false, false];
     let rmux = [true, true, true, true];
     let adapters: [(Box<dyn SessionBackend>, [bool; 4]); 7] = [
-        (Box::new(TmuxBackend::local()), tmux),
-        (Box::new(TmuxBackend::for_host(&windows)), tmux),
-        (Box::new(TmuxBackend::for_host(&linux)), tmux),
-        (Box::new(PsmuxBackend::local()), psmux),
-        (Box::new(PsmuxBackend::for_host(&windows)), psmux),
-        (Box::new(PsmuxBackend::for_host(&linux)), psmux),
-        (Box::new(RmuxBackend::local()), rmux),
+        (
+            Box::new(TmuxBackend::local(
+                thurbox::session::settings::default_scrollback_lines(),
+            )),
+            tmux,
+        ),
+        (
+            Box::new(TmuxBackend::for_host(
+                &windows,
+                thurbox::session::settings::default_scrollback_lines(),
+            )),
+            tmux,
+        ),
+        (
+            Box::new(TmuxBackend::for_host(
+                &linux,
+                thurbox::session::settings::default_scrollback_lines(),
+            )),
+            tmux,
+        ),
+        (
+            Box::new(PsmuxBackend::local(
+                thurbox::session::settings::default_scrollback_lines(),
+            )),
+            psmux,
+        ),
+        (
+            Box::new(PsmuxBackend::for_host(
+                &windows,
+                thurbox::session::settings::default_scrollback_lines(),
+            )),
+            psmux,
+        ),
+        (
+            Box::new(PsmuxBackend::for_host(
+                &linux,
+                thurbox::session::settings::default_scrollback_lines(),
+            )),
+            psmux,
+        ),
+        (
+            Box::new(RmuxBackend::local(
+                thurbox::session::settings::default_scrollback_lines(),
+            )),
+            rmux,
+        ),
     ];
     for (backend, expected) in &adapters {
         let Capabilities {
@@ -133,13 +184,13 @@ fn each_adapter_runs_its_own_binary() {
     // nextest runs each test in a process of its own.
     std::env::set_var("PATH", dir.path());
 
-    TmuxBackend::local()
+    TmuxBackend::local(thurbox::session::settings::default_scrollback_lines())
         .check_available()
         .expect("tmux answers");
-    PsmuxBackend::local()
+    PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines())
         .check_available()
         .expect("psmux answers");
-    RmuxBackend::local()
+    RmuxBackend::local(thurbox::session::settings::default_scrollback_lines())
         .check_available()
         .expect("rmux answers");
 
@@ -265,7 +316,7 @@ fn reassigned_pane_ids_do_not_claim_duplicate_unstamped_names() {
     }
 
     let _shim = forwarding_psmux(&tmux);
-    let backend = PsmuxBackend::local();
+    let backend = PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     let windows = backend.discover().expect("real windows");
     for name in ["tb-stale", "tbs-stale"] {
         assert_eq!(
@@ -360,7 +411,7 @@ fn local_psmux_recovery_uses_the_unique_live_pane_without_a_remembered_tiebreake
         std::thread::sleep(Duration::from_millis(10));
     }
     let _shim = forwarding_psmux(&tmux);
-    let backend = PsmuxBackend::local();
+    let backend = PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     let listed = backend.discover().expect("real windows");
     assert_eq!(
         listed
@@ -424,7 +475,7 @@ esac
     std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     std::env::set_var("PATH", dir.path());
 
-    let backend = PsmuxBackend::local();
+    let backend = PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     let owner = Owner::new("11111111-1111-4111-8111-111111111111", "demo");
     assert_eq!(
         backend.locate(owner).expect("listing").agent,
@@ -512,7 +563,7 @@ fn native_psmux_namesakes_stay_unknown_with_a_remembered_pane() {
         assert!(created.status.success(), "create duplicate window");
     }
 
-    let backend = PsmuxBackend::local();
+    let backend = PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     let panes: Vec<_> = backend
         .discover()
         .expect("discover native windows")
@@ -595,9 +646,13 @@ esac
     .expect("write fake psmux");
     std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     std::env::set_var("PATH", dir.path());
-    assert!(PsmuxBackend::local().discover().is_err());
+    assert!(
+        PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines())
+            .discover()
+            .is_err()
+    );
     assert_eq!(
-        PsmuxBackend::local()
+        PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines())
             .capture("%1", 20, false)
             .expect("agent output"),
         "ERROR: agent message\n"
@@ -628,9 +683,11 @@ fn the_psmux_backend_keeps_the_contract_where_psmux_is_installed() {
         }
     }
     let _reap = Reap;
-    let backend = PsmuxBackend::local();
+    let backend = PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     backend_contract::pane_io(&backend);
-    backend_contract::shutdown_is_final(&PsmuxBackend::local());
+    backend_contract::shutdown_is_final(&PsmuxBackend::local(
+        thurbox::session::settings::default_scrollback_lines(),
+    ));
 }
 
 /// A psmux window with no stored pane id is the recovery shape of a row that
@@ -659,7 +716,7 @@ fn psmux_recovery_requires_one_unique_live_pane() {
         }
     }
     let _reap = Reap(socket.clone());
-    let backend = PsmuxBackend::local();
+    let backend = PsmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     let env = std::collections::HashMap::new();
     let args = [
         "-NoProfile".to_string(),

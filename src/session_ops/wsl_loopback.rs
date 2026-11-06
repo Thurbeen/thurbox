@@ -107,7 +107,7 @@ pub fn repair_wsl_loopback_rows(db: &Database) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::host_def::with_wsl_distro;
+    use crate::paths::with_wsl_distro;
     use crate::session::HostDef;
 
     /// A discovery stub that fails if it is consulted at all: the repair must

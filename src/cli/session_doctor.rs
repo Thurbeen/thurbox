@@ -16,9 +16,9 @@ use serde_json::{json, Value};
 
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
+use crate::session::SharedSession;
 use crate::session::{Assessment, Corroboration, Coverage, HookDelivery};
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 /// A single thing checked, and what was found.
 struct Finding {

@@ -122,7 +122,7 @@ itself before thurbox sees the key.
 ## Themes
 
 Thirty-six palettes — twenty-eight dark, eight light; the enumeration is in
-`session::theme_config` and `docs/FEATURES.md`. Users add their own in
+`theme` and `docs/FEATURES.md`. Users add their own in
 `~/.config/thurbox/themes.toml` (a built-in `base` plus per-colour overrides); they
 appear in the picker after the built-ins and persist by name exactly like a preset.
 

@@ -15,8 +15,8 @@ pub mod plugin_spec;
 pub mod review;
 pub mod route;
 pub mod settings;
+pub mod shared;
 pub mod task;
-pub mod theme_config;
 
 pub use agent_def::{AgentDef, AgentRegistry};
 pub use automation::{
@@ -36,7 +36,7 @@ pub use hook_status::{
     Corroboration, Coverage, CoverageSource, HookDelivery, SessionState, StateSource,
     AGENT_HOOK_COVERAGE, WORKING_QUIET_MS,
 };
-pub use host_def::{current_wsl_distro, HostDef, HostKind, HostRegistry, WslRepairPlan};
+pub use host_def::{HostDef, HostKind, HostRegistry, WslRepairPlan};
 pub use hyperlink::{HyperlinkRun, HyperlinkTable, VisibleRun};
 pub use launch_failure::{
     LaunchFailure, LaunchFailureReason, LAUNCH_FAILURE_META, LAUNCH_REPORTED_META,
@@ -53,8 +53,8 @@ pub use review::{
     FileStatus, ReviewComment, Side,
 };
 pub use route::{Place, Route, RouteError, Via, SSH_PREFIX, WSL_PREFIX};
+pub use shared::{SharedSession, SharedWorktree};
 pub use task::{Task, TaskStatus, SOURCE_LOCAL};
-pub use theme_config::{ThemePalette, ThemePreset};
 
 /// The session meta keys published to interface plugins as `session.meta`
 /// (ADR-40). The snapshot reader, `session meta` and `fork` all name this one
@@ -156,7 +156,7 @@ pub struct WorktreeInfo {
     pub worktree_path: PathBuf,
     pub branch: String,
     /// Whether thurbox checked this worktree out itself — see
-    /// [`crate::sync::SharedWorktree::created_by_thurbox`]. Carried here so the
+    /// [`crate::session::SharedWorktree::created_by_thurbox`]. Carried here so the
     /// `SharedWorktree` → `WorktreeInfo` → `SharedWorktree` round trip that
     /// restore performs cannot quietly turn a borrowed worktree into ours.
     pub created_by_thurbox: bool,

@@ -28,6 +28,7 @@ pub(super) enum Outcome {
 pub(super) fn execute(
     command: &Command,
     backends: &crate::backend::BackendRegistry,
+    deleted_retention_days: u64,
     id: u64,
     progress: &Sender<Progress>,
 ) -> Result<Outcome, String> {
@@ -38,7 +39,7 @@ pub(super) fn execute(
     }
     if let Command::Guarded { inner, .. } = command {
         confirm_guard(command)?;
-        return execute(inner, backends, id, progress);
+        return execute(inner, backends, deleted_retention_days, id, progress);
     }
     // The one command that can rightly do nothing: a repair (the interface's
     // respawn of a pane-less row) whose session was deleted meanwhile, or
@@ -51,7 +52,7 @@ pub(super) fn execute(
     {
         return restart(command, backends, *if_missing);
     }
-    perform(command, backends, id, progress).map(|()| Outcome::Done)
+    perform(command, backends, deleted_retention_days, id, progress).map(|()| Outcome::Done)
 }
 
 /// A plain restart, and whether it relaunched anything.
@@ -125,6 +126,7 @@ fn confirm_guard(command: &Command) -> Result<(), String> {
 fn perform(
     command: &Command,
     backends: &crate::backend::BackendRegistry,
+    deleted_retention_days: u64,
     id: u64,
     progress: &Sender<Progress>,
 ) -> Result<(), String> {
@@ -176,7 +178,7 @@ fn perform(
     if matches!(command, Command::Reap) {
         let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
         let db = Database::open_existing(&path).map_err(|e| format!("open database: {e}"))?;
-        crate::session_ops::reconcile::tick(&db, backends);
+        crate::session_ops::reconcile::tick(&db, backends, deleted_retention_days);
         return Ok(());
     }
 
@@ -214,7 +216,7 @@ fn perform(
                 delete,
             } => automation(&db, *id, *enabled, *run_now, *delete),
             Command::AutomationSave { id, draft, .. } => {
-                save_automation(&db, *id, draft, crate::sync::current_time_millis())
+                save_automation(&db, *id, draft, crate::storage::current_time_millis())
             }
             _ => unreachable!(),
         };
@@ -679,7 +681,7 @@ fn automation(
         return ops::remove(db, id).map(|_| ());
     }
     if let Some(enabled) = enabled {
-        ops::set_enabled(db, id, enabled, crate::sync::current_time_millis())?;
+        ops::set_enabled(db, id, enabled, crate::storage::current_time_millis())?;
     }
     if run_now {
         // Marks it due; the next `automation tick` — the heartbeat keeper's,
@@ -717,7 +719,7 @@ fn save_automation(
 /// commands each run on their own thread.
 fn reorder(db: &Database, id: SessionId, delta: i64) -> Result<(), String> {
     db.reorder_sessions(|rows| {
-        let mut sessions: Vec<&crate::sync::SharedSession> = rows.iter().collect();
+        let mut sessions: Vec<&crate::session::SharedSession> = rows.iter().collect();
 
         // The order the list renders in: manual position first, then name — the
         // same comparator ui/plugins/10_sessions.lua uses, or a move would appear
@@ -737,7 +739,7 @@ fn reorder(db: &Database, id: SessionId, delta: i64) -> Result<(), String> {
         // A move stays inside its repo group, because that is how the list is
         // drawn: swapping past a group edge would reorder the underlying list
         // while the screen appeared not to change at all.
-        let repo_of = |s: &crate::sync::SharedSession| {
+        let repo_of = |s: &crate::session::SharedSession| {
             snapshot::repo_name(&s.cwd, s.worktrees.first().map(|w| &w.repo_path))
         };
         let group = repo_of(sessions[at]);
@@ -783,7 +785,7 @@ fn order(db: &Database, list: &[String]) -> Result<(), String> {
         // Unmentioned rows sort after every mentioned one, keeping the order
         // they already had among themselves.
         let existing =
-            |session: &crate::sync::SharedSession| session.display_order.unwrap_or(i64::MAX);
+            |session: &crate::session::SharedSession| session.display_order.unwrap_or(i64::MAX);
         let mut indexed: Vec<(usize, i64, usize)> = sessions
             .iter()
             .enumerate()
@@ -859,8 +861,8 @@ mod tests {
         use super::super::{execute, Outcome};
         use crate::kernel::command::Command;
         use crate::session::SessionId;
+        use crate::session::SharedSession;
         use crate::storage::Database;
-        use crate::sync::SharedSession;
 
         struct Rig {
             _temp: tempfile::TempDir,
@@ -912,6 +914,7 @@ mod tests {
                     fresh: false,
                 },
                 &crate::backend::registry::inert(),
+                0,
                 1,
                 &progress,
             )

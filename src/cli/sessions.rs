@@ -8,9 +8,10 @@ use serde_json::{json, Value};
 use crate::cli::output::{self, CommandOutput};
 use crate::cli::CommandError;
 use crate::session::background_work::WorkEdge;
+use crate::session::settings::Settings;
 use crate::session::SessionId;
+use crate::session::SharedSession;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 #[derive(clap::Args, Debug, Default)]
 pub struct SendWaitArgs {
@@ -840,6 +841,7 @@ pub fn run(
     action: Action,
     db: &Database,
     backends: &super::Backends<'_>,
+    settings: &Settings,
 ) -> Result<CommandOutput, CommandError> {
     match action {
         Action::List {
@@ -896,6 +898,7 @@ pub fn run(
         } => run_create(
             db,
             backends.get(),
+            settings,
             CreateArgs {
                 name,
                 repo_path,
@@ -929,7 +932,14 @@ pub fn run(
         } => {
             let force =
                 force || (!soft && !crate::config::settings::load_quiet().features.soft_delete);
-            delete_session_if_generation(db, backends.get(), &uuid, force, if_generation)
+            delete_session_if_generation(
+                db,
+                backends.get(),
+                settings.deleted_retention_days,
+                &uuid,
+                force,
+                if_generation,
+            )
         }
         Action::Restore {
             session,
@@ -1398,6 +1408,7 @@ struct CreateArgs {
 fn run_create(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    settings: &Settings,
     args: CreateArgs,
 ) -> Result<CommandOutput, CommandError> {
     let CreateArgs {
@@ -1507,7 +1518,7 @@ fn run_create(
     // A host driven from afar has no interface of its own to arm the
     // heartbeat: this creation is the moment its sessions start needing
     // the tick (status polls, extension self-heal, reaping).
-    super::automations::arm_heartbeat(backends);
+    super::automations::arm_heartbeat(backends, settings);
     let mut human = format!(
         "{} session '{}' ({}) — {}\ncwd: {}",
         if res.created {
@@ -2732,6 +2743,7 @@ fn capture_pane(
 fn delete_session_if_generation(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    deleted_retention_days: u64,
     uuid: &str,
     force: bool,
     if_generation: Option<u64>,
@@ -2773,7 +2785,7 @@ fn delete_session_if_generation(
     let (undo_until, reapable_at) = undo_deadlines(
         report.host_deadlines.as_ref(),
         row.as_ref().filter(|_| !force).map(|r| r.deleted_at),
-        crate::session::settings::global().deleted_retention_days,
+        deleted_retention_days,
     );
     Ok(CommandOutput::new(
         json!({
@@ -3436,7 +3448,7 @@ pub(crate) fn parse_env(
 
 /// One worktree as the CLI renders it — the shape `session get` already
 /// publishes, so a caller parses one form wherever it meets a worktree.
-fn worktree_json(w: &crate::sync::SharedWorktree) -> Value {
+fn worktree_json(w: &crate::session::SharedWorktree) -> Value {
     json!({
         "repo_path": w.repo_path.display().to_string(),
         "worktree_path": w.worktree_path.display().to_string(),
@@ -3632,7 +3644,7 @@ impl SessionFacts {
             row.and_then(|r| r.state.as_deref()),
             row.and_then(|r| r.state_at),
             row.and_then(|r| r.seen_at),
-            crate::sync::current_time_millis() as i64,
+            crate::storage::current_time_millis() as i64,
         );
         if self.parked.contains(&s.id) {
             return hook.parked();
@@ -3833,6 +3845,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert!(v.is_array(), "got {v}");
@@ -3858,6 +3871,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(out["state"], "blocked");
@@ -3884,6 +3898,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("not inside a thurbox session"), "got {err}");
@@ -3946,6 +3961,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -3967,6 +3983,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(SessionFacts::load(&db).declared_agent(&session), None);
@@ -3987,6 +4004,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("clyde"), "got {err}");
@@ -4014,6 +4032,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -4027,6 +4046,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         // Set by name, read back by id: one session, either spelling.
@@ -4040,6 +4060,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(listed["fm.task_id"].as_str(), Some("T-1043"));
@@ -4053,6 +4074,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(removed["removed"].as_bool(), Some(true));
@@ -4066,6 +4088,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(again["removed"].as_bool(), Some(false));
@@ -4089,6 +4112,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert_eq!(err.exit_code, crate::cli::EXIT_USAGE);
@@ -4102,6 +4126,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert_eq!(
@@ -4148,6 +4173,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(out["exit_code"].as_i64(), Some(0));
@@ -4174,6 +4200,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(failed["exit_code"].as_i64(), Some(3));
@@ -4187,6 +4214,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(passthrough["exit_code"].as_i64(), Some(3));
@@ -4266,6 +4294,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -4325,6 +4354,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -4350,6 +4380,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         let arr = v.as_array().unwrap();
@@ -4373,6 +4404,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -4391,6 +4423,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -4433,6 +4466,7 @@ mod tests {
                     },
                     &db,
                     &crate::cli::Backends::ready(crate::backend::registry::inert()),
+                    &Settings::default(),
                 )
                 .unwrap_err();
                 assert!(err.contains("text"), "got {err}");
@@ -4470,6 +4504,7 @@ mod tests {
                 action,
                 &db,
                 &crate::cli::Backends::ready(crate::backend::registry::inert()),
+                &Settings::default(),
             )
             .unwrap_err();
             assert!(err.contains("ssh:devbox"), "got {err}");
@@ -4495,6 +4530,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("Unknown key 'escpe'"), "got {err}");
@@ -4516,6 +4552,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("Session not found"), "got {err}");
@@ -4581,6 +4618,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(v["deleted"], true);
@@ -4597,6 +4635,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -4633,6 +4672,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -4643,6 +4683,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains("--best-effort"), "{err}");
@@ -4656,6 +4697,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -4675,7 +4717,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut shared = make_test_session("borrowed");
         shared.agent_session_id = Some("restore-test".into());
-        shared.worktrees = vec![crate::sync::SharedWorktree {
+        shared.worktrees = vec![crate::session::SharedWorktree {
             repo_path: dir.path().to_path_buf(),
             worktree_path: dir.path().to_path_buf(),
             branch: "feat/borrowed".into(),
@@ -4701,6 +4743,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -4711,6 +4754,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
         assert_eq!(restored["restored"], true);
@@ -4726,7 +4770,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let gone = dir.path().join("checkout");
         let mut shared = make_test_session("vanished");
-        shared.worktrees = vec![crate::sync::SharedWorktree {
+        shared.worktrees = vec![crate::session::SharedWorktree {
             repo_path: dir.path().to_path_buf(),
             worktree_path: gone.clone(),
             branch: "feat/borrowed".into(),
@@ -4743,6 +4787,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap();
 
@@ -4753,6 +4798,7 @@ mod tests {
             },
             &db,
             &crate::cli::Backends::ready(crate::backend::registry::inert()),
+            &Settings::default(),
         )
         .unwrap_err();
         assert!(err.contains(&gone.display().to_string()), "{err}");
@@ -4791,6 +4837,7 @@ mod tests {
                 },
                 &db,
                 &crate::cli::Backends::ready(crate::backend::registry::inert()),
+                &Settings::default(),
             )
             .unwrap()
             .json

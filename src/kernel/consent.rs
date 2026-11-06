@@ -90,7 +90,7 @@ impl Skin {
     /// The three conditions `scripts/install.sh` already honours: a TTY, no
     /// `NO_COLOR`, and a `TERM` that is not `dumb`. Piping this screen into a file
     /// or a pager must not fill it with escapes.
-    pub fn detect(palette: &crate::session::theme_config::ThemePalette) -> Self {
+    pub fn detect(palette: &crate::theme::ThemePalette) -> Self {
         let colour = std::io::IsTerminal::is_terminal(&std::io::stdout())
             && std::env::var_os("NO_COLOR").is_none()
             && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(true);

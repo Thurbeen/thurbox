@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::snapshot_db::{DbWorker, Job, Reply, RowsRead, Write};
+use crate::session::settings::Settings;
 use crate::session::{
     derive_state, with_output_quiescence, AgentRegistry, Assessment, Corroboration, SessionId,
     SessionState,
@@ -387,10 +388,9 @@ type StatResult = (String, Option<GitState>, Option<(String, bool)>);
 /// A setting rather than the constant it was, because the number governs a cost
 /// that is **per session**: sixteen of them at five seconds is a `git` burst
 /// every 300ms for as long as the interface runs, most of it about rows nobody
-/// is reading. It is read once, here, so it takes effect on the next launch
-/// (issue #1167).
-fn git_poll_interval() -> Option<Duration> {
-    let secs = crate::session::settings::global().git_poll_secs;
+/// is reading. It is read once, when the store is built, so it takes effect on
+/// the next launch (issue #1167).
+fn git_poll_interval(secs: u64) -> Option<Duration> {
     (secs > 0).then(|| Duration::from_secs(secs))
 }
 
@@ -799,6 +799,8 @@ pub struct SnapshotStore {
     /// Whether the local multiplexer is installed. Beside `agents` because it
     /// is refreshed with them and for the same reason.
     mux: MuxRow,
+    /// `settings.toml`'s `multiplexer`, as the store was built with it.
+    configured_mux: Option<String>,
     /// When the multiplexer and the agent commands were last looked for.
     /// Gates [`Self::poll_preflight`]; see [`PREFLIGHT_TTL`].
     preflight_at: Instant,
@@ -860,7 +862,7 @@ impl SnapshotStore {
     /// A database that will not open is not fatal: the kernel still runs and
     /// every read returns an empty snapshot carrying the error, which a plugin
     /// can render. Losing the UI because the DB is busy would be worse.
-    pub fn open(backends: &crate::backend::BackendRegistry) -> Self {
+    pub fn open(backends: &crate::backend::BackendRegistry, settings: &Settings) -> Self {
         let (database, error) = match crate::paths::database_file() {
             Some(path) => match Database::open(&path) {
                 Ok(db) => (Some(db), None),
@@ -887,7 +889,7 @@ impl SnapshotStore {
             reads_sent: 0,
             reads_applied: 0,
             settles: 0,
-            git: GitStats::new(git_poll_interval()),
+            git: GitStats::new(git_poll_interval(settings.git_poll_secs)),
             panes: PaneProbe::default(),
             agents: read_agents(&registry),
             agent_default: registry.default_name().to_string(),
@@ -896,7 +898,8 @@ impl SnapshotStore {
             registry_polled_at: None,
             hosts: read_hosts(&served, false),
             probe_hosts: false,
-            mux: read_mux(&served),
+            mux: read_mux(&served, settings.multiplexer.clone()),
+            configured_mux: settings.multiplexer.clone(),
             served,
             backends: backends.clone(),
             preflight_at: Instant::now(),
@@ -919,7 +922,11 @@ impl SnapshotStore {
 
     /// Build a store over an already-open database (tests, and any caller that
     /// owns its own connection).
-    pub fn with_database(database: Database, backends: &crate::backend::BackendRegistry) -> Self {
+    pub fn with_database(
+        database: Database,
+        backends: &crate::backend::BackendRegistry,
+        settings: &Settings,
+    ) -> Self {
         let registry = read_registry();
         crate::agent::agent_config::publish_registry(&registry);
         let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
@@ -937,7 +944,7 @@ impl SnapshotStore {
             reads_sent: 0,
             reads_applied: 0,
             settles: 0,
-            git: GitStats::new(git_poll_interval()),
+            git: GitStats::new(git_poll_interval(settings.git_poll_secs)),
             panes: PaneProbe::default(),
             agents: read_agents(&registry),
             agent_default: registry.default_name().to_string(),
@@ -946,7 +953,8 @@ impl SnapshotStore {
             registry_polled_at: None,
             hosts: read_hosts(&served, false),
             probe_hosts: false,
-            mux: read_mux(&served),
+            mux: read_mux(&served, settings.multiplexer.clone()),
+            configured_mux: settings.multiplexer.clone(),
             served,
             backends: backends.clone(),
             preflight_at: Instant::now(),
@@ -1603,7 +1611,7 @@ impl SnapshotStore {
             // directly, which is the one case its hook.state gate cannot cover.
             // Stamped now; the worker answers with the stamp and the word
             // storage chose.
-            let stamped = crate::sync::current_time_millis() as i64;
+            let stamped = crate::storage::current_time_millis() as i64;
             self.hook_state_at.insert(row.id.clone(), stamped);
             row.status = derive_state(Some(&event.state), Some(stamped), None);
             row.hook_state = Some(event.state.clone());
@@ -1653,7 +1661,7 @@ impl SnapshotStore {
     /// would allocate every tick to carry the sessions nobody asked about
     /// (ADR-P10).
     pub fn apply_output_quiescence(&mut self, quiet_for: impl Fn(&str) -> Option<u64>) -> usize {
-        let now = crate::sync::current_time_millis() as i64;
+        let now = crate::storage::current_time_millis() as i64;
         let mut changed = 0;
         for row in &mut self.current.sessions {
             // A parked session has no process to be working or blocked in, and
@@ -1805,7 +1813,7 @@ impl SnapshotStore {
             return false;
         }
         self.preflight_at = Instant::now();
-        let mux = read_mux(&self.served);
+        let mux = read_mux(&self.served, self.configured_mux.clone());
         let mut moved = mux != self.mux;
         self.mux = mux;
         for row in &mut self.agents {
@@ -1901,7 +1909,7 @@ impl SnapshotStore {
             .iter()
             .filter_map(|(id, row)| Some((id.to_string(), row.state_at?)))
             .collect();
-        let now = crate::sync::current_time_millis() as i64;
+        let now = crate::storage::current_time_millis() as i64;
 
         self.git.drain();
 
@@ -2080,9 +2088,11 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
 
 /// Which multiplexers this machine can run sessions in, and the one a create
 /// uses when nothing names one — what to do when there is none.
-fn read_mux(served: &std::collections::HashSet<crate::session::Route>) -> MuxRow {
-    use crate::session::{Multiplexer, Platform, Route};
-    let configured = crate::session::settings::global().multiplexer.clone();
+fn read_mux(
+    served: &std::collections::HashSet<crate::session::Route>,
+    configured: Option<String>,
+) -> MuxRow {
+    use crate::session::{Multiplexer, Route};
     let available: Vec<Multiplexer> = crate::agent::preflight::local_multiplexers()
         .into_iter()
         .filter(|mux| served.contains(&Route::local(Some(*mux))))
@@ -2092,7 +2102,7 @@ fn read_mux(served: &std::collections::HashSet<crate::session::Route>) -> MuxRow
     let binary = configured
         .as_deref()
         .and_then(|name| Multiplexer::parse(name).ok())
-        .or_else(|| Multiplexer::preferred(Platform::local(), &available))
+        .or_else(|| Multiplexer::preferred(crate::shell::local_platform(), &available))
         .unwrap_or_else(Multiplexer::platform_default);
     let presence = crate::agent::preflight::look_up(binary.name());
     MuxRow {
@@ -2183,7 +2193,7 @@ pub(super) fn remote_host_of(backend: &str) -> Option<String> {
 /// shells out on a cache miss, and this runs on the loop thread.
 fn session_members(
     cwd: Option<&std::path::Path>,
-    worktrees: &[crate::sync::state::SharedWorktree],
+    worktrees: &[crate::session::SharedWorktree],
     additional_dirs: &[PathBuf],
 ) -> Vec<(Option<String>, PathBuf)> {
     let leaf = |path: &std::path::Path| {
@@ -2428,8 +2438,11 @@ mod tests {
 
         crate::paths::with_path(dir.path(), || {
             let database = Database::open_in_memory().expect("in-memory database opens");
-            let mut store =
-                SnapshotStore::with_database(database, &crate::backend::registry::inert());
+            let mut store = SnapshotStore::with_database(
+                database,
+                &crate::backend::registry::inert(),
+                &Settings::default(),
+            );
             assert_eq!(
                 store.current().mux.presence,
                 crate::agent::preflight::Presence::Present,
@@ -2473,12 +2486,12 @@ mod tests {
         .into_iter()
         .collect();
         crate::paths::with_path(dir.path(), || {
-            let none = read_mux(&served);
+            let none = read_mux(&served, None);
             assert!(none.available.is_empty(), "{none:?}");
             assert_eq!(none.presence, crate::agent::preflight::Presence::Missing);
 
             install("rmux");
-            let only_rmux = read_mux(&served);
+            let only_rmux = read_mux(&served, None);
             assert_eq!(only_rmux.available, vec!["rmux"]);
             assert_eq!(only_rmux.binary, "rmux", "the one installed is the default");
             assert_eq!(
@@ -2490,7 +2503,7 @@ mod tests {
             // does not make it a choice here.
             install("psmux");
             install("tmux");
-            let both = read_mux(&served);
+            let both = read_mux(&served, None);
             assert_eq!(both.available, vec!["tmux", "rmux"]);
             assert_eq!(both.binary, "tmux");
         });
@@ -2553,7 +2566,11 @@ mod tests {
         database
             .record_automation_run(id, AutomationRunStatus::Error, "exit 2: boom", None)
             .expect("run");
-        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         let row = &store.current().automations[0];
         assert_eq!(row.schedule, "once", "the old summary is unchanged");
         assert_eq!(row.trigger, "at:4000000000000");
@@ -2571,7 +2588,11 @@ mod tests {
     #[test]
     fn an_in_memory_database_yields_an_empty_but_stamped_snapshot() {
         let database = Database::open_in_memory().expect("in-memory database opens");
-        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         let snapshot = store.current();
         assert!(snapshot.sessions.is_empty());
         assert!(snapshot.taken_at_ms > 0, "snapshot must carry its instant");
@@ -2581,7 +2602,11 @@ mod tests {
     #[test]
     fn a_read_is_immediate_and_repeatable() {
         let database = Database::open_in_memory().expect("in-memory database opens");
-        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         // The property that matters: reading never consults the database.
         for _ in 0..1000 {
             assert!(store.current().sessions.is_empty());
@@ -2601,7 +2626,7 @@ mod tests {
     fn a_member_is_named_for_its_repository_but_points_at_its_checkout() {
         // The distinction the editor depends on: opening the repository root
         // would land on whatever branch that has, not the one being worked.
-        let worktrees = vec![crate::sync::state::SharedWorktree {
+        let worktrees = vec![crate::session::SharedWorktree {
             repo_path: PathBuf::from("/src/thurbox"),
             worktree_path: PathBuf::from("/worktrees/fix-osc52"),
             branch: "fix/osc52".into(),
@@ -2620,13 +2645,13 @@ mod tests {
     #[test]
     fn every_repository_of_a_multi_repo_session_is_a_member() {
         let worktrees = vec![
-            crate::sync::state::SharedWorktree {
+            crate::session::SharedWorktree {
                 repo_path: PathBuf::from("/src/a"),
                 worktree_path: PathBuf::from("/worktrees/a"),
                 branch: "feat/x".into(),
                 created_by_thurbox: true,
             },
-            crate::sync::state::SharedWorktree {
+            crate::session::SharedWorktree {
                 repo_path: PathBuf::from("/src/b"),
                 worktree_path: PathBuf::from("/worktrees/b"),
                 branch: "feat/x".into(),
@@ -2650,9 +2675,9 @@ mod tests {
     /// Seed an in-memory store with one session whose pane probe already found
     /// a foreign agent, so `detected_agent` is published for it — the
     /// "firstmate" scenario: a bare shell with a real agent running in it.
-    fn store_with_a_detected_agent() -> (SnapshotStore, crate::sync::SharedSession) {
+    fn store_with_a_detected_agent() -> (SnapshotStore, crate::session::SharedSession) {
         let database = Database::open_in_memory().expect("in-memory database opens");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "shell".into(),
             agent: "zsh".into(),
@@ -2670,7 +2695,11 @@ mod tests {
             key: None,
         };
         database.upsert_session(&row).expect("upsert");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         store.panes.known.insert(
             row.id.to_string(),
             Probe {
@@ -2752,7 +2781,7 @@ mod tests {
     fn a_block_the_pane_printed_past_stops_being_drawn() {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         let database = Database::open(temp.path()).expect("open store connection");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "crewmate".into(),
             agent: "zsh".into(),
@@ -2771,7 +2800,11 @@ mod tests {
         };
         database.upsert_session(&row).expect("upsert");
         database.set_hook_state(row.id, "blocked").expect("signal");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         store.refresh();
         let id = row.id.to_string();
         assert_eq!(status_of(&store, &id), SessionState::Blocked);
@@ -2783,7 +2816,7 @@ mod tests {
 
         // Age the edge to what the captain saw: stamped 2547s ago, and the
         // pane printed all the way to 17s ago.
-        let stamped = crate::sync::current_time_millis() as i64 - 2_547_000;
+        let stamped = crate::storage::current_time_millis() as i64 - 2_547_000;
         store.hook_state_at.insert(id.clone(), stamped);
 
         assert_eq!(store.apply_output_quiescence(|_| Some(17_000)), 1);
@@ -2837,7 +2870,7 @@ mod tests {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         let database = Database::open(temp.path()).expect("db");
         let driver = Database::open(temp.path()).expect("second connection");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "codex-pane".into(),
             agent: agent.into(),
@@ -2856,7 +2889,11 @@ mod tests {
         };
         database.upsert_session(&row).expect("persist");
         database.set_hook_state(row.id, "idle").expect("idle");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         let (registry, warnings) = crate::agent::agent_config::parse_for_reload(
             "[[agents]]\nname='codex'\ncommand='codex'\n[[agents]]\nname='codex-variant'\nextends='codex'\n",
         )
@@ -2902,7 +2939,7 @@ mod tests {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         let database = Database::open(temp.path()).expect("db");
         let driver = Database::open(temp.path()).expect("second connection");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "remote-codex".into(),
             agent: "codex".into(),
@@ -2923,7 +2960,7 @@ mod tests {
         database.set_hook_state(row.id, "working").expect("working");
         // A future stamp also models repeated reports within one millisecond:
         // set_hook_state keeps each stamp distinct even when the clock has not moved.
-        let future = crate::sync::current_time_millis() as i64 + 60_000;
+        let future = crate::storage::current_time_millis() as i64 + 60_000;
         database
             .conn_ref()
             .execute(
@@ -2931,7 +2968,11 @@ mod tests {
                 rusqlite::params![future, row.id.to_string()],
             )
             .expect("seed later stamp");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         assert_eq!(
             store.apply_hook_states(
                 vec![("ssh:fixture:tmux".into(), "%7".into(), "idle".into())],
@@ -2968,7 +3009,7 @@ mod tests {
         let path = temp.path();
 
         let database = Database::open(path).expect("open store connection");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "shell".into(),
             agent: "zsh".into(),
@@ -2986,7 +3027,11 @@ mod tests {
             key: None,
         };
         database.upsert_session(&row).expect("upsert");
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
 
         store.panes.known.insert(
             row.id.to_string(),
@@ -3055,7 +3100,7 @@ mod tests {
     ) -> (tempfile::NamedTempFile, Database, SnapshotStore, String) {
         let temp = tempfile::NamedTempFile::new().expect("temp file");
         let database = Database::open(temp.path()).expect("db");
-        let row = crate::sync::SharedSession {
+        let row = crate::session::SharedSession {
             id: SessionId::default(),
             name: "finished".into(),
             agent: "claude".into(),
@@ -3075,7 +3120,11 @@ mod tests {
         database.upsert_session(&row).expect("persist");
         database.set_hook_state(row.id, state).expect("hook state");
         let driver = Database::open(temp.path()).expect("second connection");
-        let store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         (temp, driver, store, row.id.to_string())
     }
 
@@ -3296,7 +3345,11 @@ mod tests {
     #[test]
     fn idle_clock_does_not_invalidate_snapshot_rows() {
         let database = Database::open_in_memory().unwrap();
-        let mut store = SnapshotStore::with_database(database, &crate::backend::registry::inert());
+        let mut store = SnapshotStore::with_database(
+            database,
+            &crate::backend::registry::inert(),
+            &Settings::default(),
+        );
         store.refresh();
         let version = store.version();
         store.current.taken_at_ms = 0;

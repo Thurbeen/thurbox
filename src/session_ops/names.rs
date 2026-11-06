@@ -21,8 +21,8 @@
 //!   seconds, so "look, then create" is not a claim at all.
 
 use super::lock::{Lock, Subject};
+use crate::session::SharedSession;
 use crate::storage::{Database, DeletedSessionInfo};
-use crate::sync::SharedSession;
 
 /// The live sessions already carrying `name` on `backend`'s server
 /// ([`super::server_key`]).
@@ -247,7 +247,7 @@ pub fn admit_key<'a>(
 mod tests {
     use super::*;
     use crate::session::SessionId;
-    use crate::sync::current_time_millis;
+    use crate::storage::current_time_millis;
 
     fn db() -> Database {
         Database::open_in_memory().expect("in-memory db")

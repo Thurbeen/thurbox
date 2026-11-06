@@ -11,9 +11,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::session::SharedSession;
 use crate::session::{SessionConfig, SessionId};
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 /// The resolved inputs for re-spawning a session's tmux window: the agent
 /// command + args, the process cwd, and the identity env. Extracted from the
@@ -306,7 +306,7 @@ pub fn start_session_headless(
 /// (see [`record_pane`]) — after the spawn rather than before it.
 fn refuse_if_deleted(
     db: &Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
 ) -> Result<(), crate::session_ops::OpError> {
     match db.get_deleted_session_by_id(session.id) {
         Ok(None) => Ok(()),
@@ -368,7 +368,7 @@ impl Recorded {
 /// (`drain_adopted_panes`). Killing the agent to tidy up after a transient
 /// failure is the worse of the two mistakes, and it is the one that left a
 /// session with no window at all.
-fn record_pane(db: &Database, session: &crate::sync::SharedSession, pane: &str) -> Recorded {
+fn record_pane(db: &Database, session: &crate::session::SharedSession, pane: &str) -> Recorded {
     match db.claim_backend_id(session.id, pane, |target, other| {
         super::server_key(target) == super::server_key(other)
     }) {
@@ -474,7 +474,7 @@ fn crash_looping(
     if db.relaunches_held(session.id).map_err(read)? {
         return Ok(true);
     }
-    let since = crate::sync::current_time_millis() as i64 - CRASH_LOOP_WINDOW_MS;
+    let since = crate::storage::current_time_millis() as i64 - CRASH_LOOP_WINDOW_MS;
     if db.relaunches_since(session.id, since).map_err(read)? < CRASH_LOOP_RELAUNCHES {
         return Ok(false);
     }
@@ -971,7 +971,7 @@ fn restart_for(
     if counted {
         if let Err(e) = db.record_relaunch(
             session.id,
-            crate::sync::current_time_millis() as i64 - CRASH_LOOP_WINDOW_MS,
+            crate::storage::current_time_millis() as i64 - CRASH_LOOP_WINDOW_MS,
         ) {
             tracing::warn!("could not record the relaunch of '{}': {e}", session.name);
         }
@@ -1342,8 +1342,8 @@ mod tests {
         assert!(!db.load_lost_sessions().unwrap().contains_key(&row.id));
     }
 
-    /// Review of #1390: the guard was counted from the event log, which every
-    /// database open prunes on the audit retention — zero included — and a
+    /// Review of #1390: the guard was counted from the event log, which the
+    /// startup sweep prunes on the audit retention — zero included — and a
     /// hold anchored there was released once its relaunches aged out of it.
     #[test]
     fn a_hold_survives_a_pruned_event_log_and_an_aged_window() {
@@ -1484,7 +1484,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let row = session(None, None);
         let held = crate::storage::event_cursors::LockSubject::Session(row.id);
-        let now = crate::sync::current_time_millis();
+        let now = crate::storage::current_time_millis();
 
         assert!(db.take_lease(&held, now - 1, now).unwrap());
         let successor = hold_restart(&db, row.id).expect("an expired hold is taken over");

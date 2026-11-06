@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use crate::session::{Automation, AutomationRun, AutomationRunStatus};
 use crate::storage::automations::RunRecord;
+use crate::storage::current_time_millis;
 use crate::storage::Database;
-use crate::sync::current_time_millis;
 
 use super::super::lock::{self, Lock, Subject};
 use super::fire::{fire, ExecJob};

@@ -123,10 +123,16 @@ pub struct CommandBus {
     /// The process's one registry, which every command's worker drives the
     /// session's backend through.
     backends: Arc<crate::backend::BackendRegistry>,
+    /// `settings.toml`'s `deleted_retention_days`, which the reap sweep
+    /// purges by, as the settings the bus was built with say.
+    deleted_retention_days: u64,
 }
 
 impl CommandBus {
-    pub fn new(backends: Arc<crate::backend::BackendRegistry>) -> Self {
+    pub fn new(
+        backends: Arc<crate::backend::BackendRegistry>,
+        settings: &crate::session::settings::Settings,
+    ) -> Self {
         let (finished_tx, finished_rx) = channel();
         let (progress_tx, progress_rx) = channel();
         Self {
@@ -140,6 +146,7 @@ impl CommandBus {
             failed_at: Vec::new(),
             did_nothing: std::collections::HashSet::new(),
             backends,
+            deleted_retention_days: settings.deleted_retention_days,
         }
     }
 
@@ -181,6 +188,7 @@ impl CommandBus {
         let finished = self.finished_tx.clone();
         let progress = self.progress_tx.clone();
         let backends = Arc::clone(&self.backends);
+        let retention = self.deleted_retention_days;
         let pending = Arc::clone(&self.pending);
         std::thread::spawn(move || {
             let mut next = Some((id, command));
@@ -192,7 +200,7 @@ impl CommandBus {
                 }
                 // A panic must not strand the remaining commands for this session.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    execute(&command, &backends, id, &progress)
+                    execute(&command, &backends, retention, id, &progress)
                 }))
                 .unwrap_or_else(|_| Err("command worker panicked".into()));
                 let _ = finished.send(Done::from_result(id, result));
@@ -220,8 +228,9 @@ impl CommandBus {
     fn dispatch_housekeeping(&self, command: Command, id: u64) -> u64 {
         let progress = self.progress_tx.clone();
         let backends = Arc::clone(&self.backends);
+        let retention = self.deleted_retention_days;
         std::thread::spawn(move || {
-            if let Err(e) = execute(&command, &backends, id, &progress) {
+            if let Err(e) = execute(&command, &backends, retention, id, &progress) {
                 tracing::warn!(command = command.kind(), "housekeeping failed: {e}");
             }
         });

@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::session::{ExtraRepo, HostDef, Platform, SessionConfig, SessionId};
+use crate::session::{SharedSession, SharedWorktree};
 use crate::storage::Database;
-use crate::sync::{SharedSession, SharedWorktree};
 
 /// Default base branch for `--worktree-branch` when none is given.
 const DEFAULT_BASE_BRANCH: &str = "main";
@@ -2312,7 +2312,7 @@ fn resolve_backend(
         .multiplexer
         .or_else(|| {
             let installed = crate::agent::preflight::local_multiplexers();
-            crate::session::Multiplexer::preferred(crate::session::Platform::local(), &installed)
+            crate::session::Multiplexer::preferred(crate::shell::local_platform(), &installed)
                 .map(|mux| mux.name().to_string())
         });
     let choice =
@@ -2485,7 +2485,7 @@ mod tests {
         let db = empty_db();
         assert!(validate_parent_session(&db, None).is_ok());
 
-        let parent = crate::sync::SharedSession {
+        let parent = crate::session::SharedSession {
             id: SessionId::default(),
             name: "lead".into(),
             agent: "dev".into(),
@@ -2772,7 +2772,8 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         // An explicit, seeded agent wins and its name round-trips.
-        let resolve = |n| super::super::resolve_agent_def(n, Platform::local()).map(|d| d.name);
+        let resolve =
+            |n| super::super::resolve_agent_def(n, crate::shell::local_platform()).map(|d| d.name);
         assert_eq!(resolve(Some("codex")).unwrap(), "codex");
         // Empty/None fall back to the registry default; an unknown name is
         // refused, naming what is defined.
@@ -2790,7 +2791,7 @@ mod tests {
     /// directions, while one the user changed is launched as written.
     #[test]
     fn the_stock_shell_follows_the_host_platform() {
-        use crate::session::platform::simulate_local;
+        use crate::shell::simulate_local;
         let command = |p| {
             let d = super::super::resolve_agent_def(Some("shell"), p).unwrap();
             format!("{} {}", d.command, d.args.join(" "))

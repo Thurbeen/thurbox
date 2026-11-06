@@ -11,7 +11,7 @@
 use rusqlite::{params, OptionalExtension};
 
 use crate::session::SessionId;
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::session_events::{EventReason, SessionEventKind};
 use super::Database;
@@ -79,7 +79,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     fn row(name: &str) -> SharedSession {
         SharedSession {

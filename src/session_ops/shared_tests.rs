@@ -12,8 +12,8 @@ use super::host_cli::{self, fake, Usable};
 use super::mirror;
 use super::spawn::SpawnRequest;
 use crate::session::SessionId;
+use crate::session::SharedSession;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 const HOST: &str = "devbox";
 const BACKEND: &str = "ssh:devbox";
@@ -356,7 +356,7 @@ fn a_fork_without_a_pinned_conversation_is_not_delegated_either() {
     // what make it a fork, so it stays on this side as well.
     let rig = rig();
     let mut req = create_request("forked-bare");
-    req.inherit_worktrees = vec![crate::sync::SharedWorktree {
+    req.inherit_worktrees = vec![crate::session::SharedWorktree {
         repo_path: PathBuf::from("/srv/repo"),
         worktree_path: PathBuf::from("/srv/worktrees/parent"),
         branch: "parent".into(),
@@ -1198,7 +1198,7 @@ fn inside_wsl_without_wsl_exe_sibling_distros_are_not_forgotten() {
     rig.db.set_host_updated_at(id, 1).unwrap();
     // Interop off (`appendWindowsPath = false`): no `wsl.exe` on PATH, which
     // discovery reads as "no distros" — true off WSL, not inside it.
-    crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+    crate::paths::with_wsl_distro(Some("Ubuntu"), || {
         mirror::sync(&rig.db, None, false).unwrap();
     });
     assert!(
@@ -1251,7 +1251,7 @@ fn a_loopback_entrys_rows_are_left_to_the_wsl_repair() {
     std::fs::write(&wsl, "#!/bin/sh\n").unwrap();
     std::fs::set_permissions(&wsl, std::fs::Permissions::from_mode(0o755)).unwrap();
     crate::paths::with_path(&bin, || {
-        crate::session::host_def::with_wsl_distro(Some("Ubuntu"), || {
+        crate::paths::with_wsl_distro(Some("Ubuntu"), || {
             crate::config::hosts::with_discovered_wsl(Ok(Vec::new()), || {
                 mirror::sync(&rig.db, None, false).unwrap();
             });

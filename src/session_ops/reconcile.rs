@@ -77,7 +77,7 @@ fn finish(
         Ok(()) => db.clear_create_intent(intent.session.id).is_ok(),
         Err(e) => {
             tracing::warn!(session = %intent.session.id, "creation cleanup is still owed: {e}");
-            intent.expires_at = crate::sync::current_time_millis().saturating_add(60_000);
+            intent.expires_at = crate::storage::current_time_millis().saturating_add(60_000);
             let _ = db.update_create_intent(intent);
             false
         }
@@ -196,7 +196,7 @@ fn rollback(
 }
 
 pub fn creating(db: &Database, backends: &crate::backend::BackendRegistry) -> usize {
-    let Ok(intents) = db.expired_create_intents(crate::sync::current_time_millis()) else {
+    let Ok(intents) = db.expired_create_intents(crate::storage::current_time_millis()) else {
         return 0;
     };
     let mut finished = 0;
@@ -223,7 +223,7 @@ pub fn creating(db: &Database, backends: &crate::backend::BackendRegistry) -> us
         let Ok(Some(current)) = db.create_intent(intent.session.id) else {
             continue;
         };
-        if current.expires_at > crate::sync::current_time_millis() {
+        if current.expires_at > crate::storage::current_time_millis() {
             continue;
         }
         intent = current;
@@ -257,7 +257,7 @@ pub fn creating(db: &Database, backends: &crate::backend::BackendRegistry) -> us
 /// The caller holds the workspace lease; check claims again after slow teardown.
 pub(super) fn remove_workspace(
     db: &Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
 ) -> Result<(), super::OpError> {
     if crate::session::Route::is_remote_key(&session.backend_type) {
         return Ok(());
@@ -303,10 +303,15 @@ pub struct Report {
     pub launch_failed: usize,
 }
 
-/// The interface worker and the headless heartbeat run this same sweep.
-pub fn tick(db: &Database, backends: &crate::backend::BackendRegistry) -> Report {
+/// The interface worker and the headless heartbeat run this same sweep, each
+/// with the `deleted_retention_days` it loaded.
+pub fn tick(
+    db: &Database,
+    backends: &crate::backend::BackendRegistry,
+    deleted_retention_days: u64,
+) -> Report {
     let teardowns = super::retry_owed_remote_teardowns(db, backends);
-    let reaped = super::reap_overdue_soft_deletes(db, backends);
+    let reaped = super::reap_overdue_soft_deletes(db, backends, deleted_retention_days);
     let lost = super::lost::LostSweep::persistent(db, backends);
     let launch_failed = super::launch_failure::sweep(db, backends);
     Report {

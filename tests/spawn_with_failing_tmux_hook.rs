@@ -86,7 +86,9 @@ fn window_names() -> Vec<String> {
 /// up would turn a real failure into a passing run.
 fn spawn(name: &str, cwd: &std::path::Path) -> thurbox::backend::BackendResult<String> {
     thurbox::backend::WindowLifecycle::create_window(
-        &thurbox::backend::tmux::TmuxBackend::new(),
+        &thurbox::backend::tmux::TmuxBackend::local(
+            thurbox::session::settings::default_scrollback_lines(),
+        ),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(SESSION_ID, name),
             role: thurbox::backend::WindowRole::Agent,
@@ -207,7 +209,9 @@ fn a_dead_plugin_hook_does_not_fail_the_heartbeat_keeper() {
 
     // The keeper runs `<cli> automation tick` in a shell loop, so the loop —
     // and the window holding it — exists whether or not the path resolves.
-    let backend = thurbox::backend::tmux::TmuxBackend::new();
+    let backend = thurbox::backend::tmux::TmuxBackend::local(
+        thurbox::session::settings::default_scrollback_lines(),
+    );
     let armed = thurbox::backend::StatusChannel::ensure_heartbeat(
         &backend,
         &dir.path().join("thurbox-cli"),

@@ -27,7 +27,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use crate::session::SessionId;
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     use super::*;
 

@@ -26,9 +26,9 @@ use std::sync::Arc;
 use clap::Parser;
 use serde_json::Value;
 use thurbox::backend::{SessionBackend, WindowRole};
+use thurbox::session::SharedSession;
 use thurbox::session::{Multiplexer, Route, SessionId, Via};
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
@@ -124,7 +124,7 @@ impl Instance {
         }
         let mut settings = thurbox::session::settings::Settings::default();
         settings.features.automations = automations;
-        thurbox::session::settings::init(settings);
+        thurbox::config::settings::save_settings(&settings).expect("settings.toml");
         Self { root, server }
     }
 
@@ -195,10 +195,11 @@ fn cli(
             .map_err(|e| format!("parse {args:?}: {e}"))?;
     let output = match parsed.command {
         Some(thurbox::cli::Command::Session { action }) => {
-            thurbox::cli::sessions::run(action, db, backends).map_err(|e| e.message)?
+            thurbox::cli::sessions::run(action, db, backends, &settings()).map_err(|e| e.message)?
         }
         Some(thurbox::cli::Command::Automation { action }) => {
-            thurbox::cli::automations::run(action, db, backends).map_err(|e| e.message)?
+            thurbox::cli::automations::run(action, db, backends, &settings())
+                .map_err(|e| e.message)?
         }
         Some(thurbox::cli::Command::Runtime { action }) => {
             thurbox::cli::runtime::run(action, backends)
@@ -260,7 +261,7 @@ impl Routes {
     /// The registry the binary builds, with every route above served by its
     /// recorded backend — the tmux and psmux hosts' real adapters replaced.
     fn registry(&self) -> thurbox::backend::BackendRegistry {
-        let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+        let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured(&settings());
         backends.register(local_probe(), self.local.clone());
         backends.register(far_probe(), self.far.clone());
         backends.register(tmux_host(), self.tmux_host.clone());
@@ -422,7 +423,7 @@ fn session_signal_on_a_local_row_builds_no_host_registry() {
     // What the binary's root hands down: this machine's adapters alone, with
     // the probe serving the row's local route.
     let here = || {
-        let mut registry = thurbox::backend::wiring::local_only();
+        let mut registry = thurbox::backend::wiring::local_only(&settings());
         registry.register(local_probe(), routes.local.clone());
         registry
     };
@@ -575,4 +576,10 @@ fn automation_tick_refuses_a_late_background_for_work_that_ended() {
     );
     assert_eq!(hook_state(&db, never).as_deref(), Some("background"));
     instance.assert_untouched("automation tick");
+}
+
+/// The settings this instance runs with, read from its `settings.toml` the way
+/// `thurbox-cli` loads them at startup.
+fn settings() -> thurbox::session::settings::Settings {
+    thurbox::config::settings::load_or_seed_with_warnings().0
 }

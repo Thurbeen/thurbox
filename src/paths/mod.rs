@@ -230,6 +230,47 @@ pub fn path_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
+/// The environment variable every WSL2 distro's init sets to that distro's own
+/// name. Present only *inside* a distro — not on Windows, not on a plain Linux
+/// or macOS host.
+pub const WSL_DISTRO_NAME_VAR: &str = "WSL_DISTRO_NAME";
+
+/// The WSL distro thurbox is itself running inside, if any.
+///
+/// Read from the environment rather than probed for: `wsl.exe` is on `PATH`
+/// inside a distro (interop), so its presence says a distro is *reachable* and
+/// never which one we are already in. Read here, not in `session`: a
+/// `HostDef` is told the distro (`HostDef::is_wsl_loopback`) rather than
+/// reading process state itself.
+pub fn current_wsl_distro() -> Option<String> {
+    std::env::var(WSL_DISTRO_NAME_VAR)
+        .ok()
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+}
+
+/// Run `f` with [`WSL_DISTRO_NAME_VAR`] set to `distro` (or unset, for
+/// `None`), restoring what was there before.
+///
+/// Serialized on a process-wide lock, and the **only** way a test may set it,
+/// for the reason [`with_path`] gives.
+#[cfg(test)]
+pub(crate) fn with_wsl_distro<T>(distro: Option<&str>, f: impl FnOnce() -> T) -> T {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = std::env::var_os(WSL_DISTRO_NAME_VAR);
+    match distro {
+        Some(d) => std::env::set_var(WSL_DISTRO_NAME_VAR, d),
+        None => std::env::remove_var(WSL_DISTRO_NAME_VAR),
+    }
+    let out = f();
+    match saved {
+        Some(v) => std::env::set_var(WSL_DISTRO_NAME_VAR, v),
+        None => std::env::remove_var(WSL_DISTRO_NAME_VAR),
+    }
+    out
+}
+
 /// Run `f` with `PATH` set to `path`, restoring what was there before.
 ///
 /// Serialized on a process-wide lock, and the **only** way a test may set

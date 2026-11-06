@@ -388,7 +388,7 @@ own, which is the point.
 - **Colours** are tunable theme fields: `status_working` / `status_blocked`
   / `status_done` / `status_idle` / `status_unreachable` / `status_running` /
   `status_unknown` / `status_background`
-  (`session::theme_config`, all 36 presets + custom-theme overrides), published
+  (`theme`, all 36 presets + custom-theme overrides), published
   to Lua as theme roles and read by the pane. `status_error` is a separate
   role (a failed *command*, e.g. `bands.rs`'s `Level::Error` — not a session
   state, and untouched by `SessionState` dropping `Error`).

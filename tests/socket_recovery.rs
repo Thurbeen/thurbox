@@ -128,6 +128,7 @@ fn host_backend(socket: &str, session: &str) -> TmuxBackend {
             ssh_opts: Vec::new(),
         },
         Platform::Posix,
+        thurbox::session::settings::default_scrollback_lines(),
     )
 }
 
@@ -211,7 +212,7 @@ fn a_server_whose_socket_was_removed_is_reattached_not_replaced() {
     std::fs::remove_file(socket_path(server.tmpdir(), server.socket())).expect("remove socket");
     assert!(answering_pid(&server).is_none(), "the socket is gone");
 
-    let backend = TmuxBackend::local();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     assert!(
         window_names(&backend).contains(&"tb-survivor".to_string()),
         "discovery reads the original server's windows"
@@ -284,6 +285,7 @@ fn a_server_in_the_old_directory_is_adopted_until_it_exits() {
             server.socket(),
             TMUX_SESSION,
             "local:tmux",
+            thurbox::session::settings::default_scrollback_lines(),
         )
     };
     let adopted = backend();
@@ -326,7 +328,7 @@ fn a_socket_path_with_a_space_in_it_is_found_whole() {
     reap.0.push(pid);
     std::fs::remove_file(socket_path(server.tmpdir(), server.socket())).expect("remove socket");
 
-    let backend = TmuxBackend::local();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     assert!(
         window_names(&backend).contains(&"tb-survivor".to_string()),
         "discovery reads the original server's windows"
@@ -353,7 +355,7 @@ fn a_server_that_will_not_answer_is_not_replaced() {
     unsafe { libc::kill(pid as libc::pid_t, libc::SIGSTOP) };
     std::fs::remove_file(socket_path(server.tmpdir(), server.socket())).expect("remove socket");
 
-    let backend = TmuxBackend::local();
+    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
     let listed = backend.discover().map(|windows| windows.len());
     assert!(
         listed.is_err(),

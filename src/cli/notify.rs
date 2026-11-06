@@ -22,11 +22,11 @@ use clap::{Args, Subcommand};
 use serde_json::{json, Value};
 
 use crate::notifications::{self, DeliveryBackend, Notification};
-use crate::session::settings::{self, NotificationBackend};
+use crate::session::settings::{NotificationBackend, Settings};
 use crate::session::SessionId;
+use crate::storage::current_time_millis;
 use crate::storage::event_cursors::LockSubject;
 use crate::storage::Database;
-use crate::sync::current_time_millis;
 
 use super::output::{kv, CommandOutput};
 use super::CommandError;
@@ -121,16 +121,14 @@ fn dedupe_subject(key: &str) -> LockSubject {
 /// deliver once; a delivery that fails gives the lease back, so the retry is
 /// not deduped against a notification nobody saw.
 /// Whether either off switch is set.
-fn disabled() -> bool {
-    let s = settings::global();
+fn disabled(s: &Settings) -> bool {
     !s.features.notifications || s.notifications.backend == NotificationBackend::Off
 }
 
-pub(crate) fn send(db: &Database, m: &Message) -> Sent {
-    if disabled() {
+pub(crate) fn send(db: &Database, m: &Message, s: &Settings) -> Sent {
+    if disabled(s) {
         return Sent::Suppressed("disabled");
     }
-    let s = settings::global();
     let leased = match &m.dedupe {
         Some((key, secs)) => {
             let now = current_time_millis();
@@ -189,17 +187,25 @@ pub(crate) fn forget(db: &Database, key: &str) -> rusqlite::Result<()> {
 }
 
 /// Run the `notify` command.
-pub fn run(args: NotifyArgs, db: &Database) -> Result<CommandOutput, CommandError> {
+pub fn run(
+    args: NotifyArgs,
+    db: &Database,
+    settings: &Settings,
+) -> Result<CommandOutput, CommandError> {
     match args.action {
-        Some(Action::Send(send_args)) => run_send(db, send_args),
-        None => Ok(diagnose(args.test)),
+        Some(Action::Send(send_args)) => run_send(db, send_args, settings),
+        None => Ok(diagnose(args.test, settings)),
     }
 }
 
-fn run_send(db: &Database, args: SendArgs) -> Result<CommandOutput, CommandError> {
+fn run_send(
+    db: &Database,
+    args: SendArgs,
+    settings: &Settings,
+) -> Result<CommandOutput, CommandError> {
     // Before the session is looked up: with notifications off a hook naming a
     // session that is already gone still exits 0.
-    if disabled() {
+    if disabled(settings) {
         let mut json = Sent::Suppressed("disabled").to_json();
         json["session_id"] = Value::Null;
         return Ok(CommandOutput::new(
@@ -219,6 +225,7 @@ fn run_send(db: &Database, args: SendArgs) -> Result<CommandOutput, CommandError
             session,
             dedupe: args.key.zip(args.min_interval),
         },
+        settings,
     );
     let mut json = sent.to_json();
     json["session_id"] = session.map_or(Value::Null, |id| Value::String(id.to_string()));
@@ -234,16 +241,15 @@ fn run_send(db: &Database, args: SendArgs) -> Result<CommandOutput, CommandError
     })
 }
 
-/// The report `notify` with no subcommand prints. Reads the process-wide
-/// settings (for the configured backend) and probes the host.
-fn diagnose(test: bool) -> CommandOutput {
-    let s = settings::global();
+/// The report `notify` with no subcommand prints. Reads the settings (for the
+/// configured backend) and probes the host.
+fn diagnose(test: bool, s: &Settings) -> CommandOutput {
     let feature_on = s.features.notifications;
     let configured = s.notifications.backend;
     let backend = notifications::detect_backend(configured);
 
     if test {
-        return run_test(feature_on, backend);
+        return run_test(feature_on, backend, s.notifications.sound);
     }
 
     let last_error = notifications::last_error();
@@ -276,7 +282,7 @@ fn diagnose(test: bool) -> CommandOutput {
     )
 }
 
-fn run_test(feature_on: bool, backend: DeliveryBackend) -> CommandOutput {
+fn run_test(feature_on: bool, backend: DeliveryBackend, sound: bool) -> CommandOutput {
     if !feature_on {
         let msg = "Notifications are disabled ([features] notifications = false); \
                    nothing to test. Enable the feature first.";
@@ -294,7 +300,7 @@ fn run_test(feature_on: bool, backend: DeliveryBackend) -> CommandOutput {
         session_id: SessionId::default(),
         title: "thurbox · test".into(),
         body: "Notifications are working. This is a test from `thurbox-cli notify --test`.".into(),
-        sound: settings::global().notifications.sound,
+        sound,
     };
 
     match notifications::send_blocking(&n, backend) {
@@ -374,10 +380,10 @@ mod tests {
 
     #[test]
     fn notify_default_reports_backend_fields() {
-        // In the test process settings::global() is the all-default config
-        // (feature on, backend auto); host probing runs against the real test
-        // host, so we only assert the shape, not the concrete backend.
-        let out = diagnose(false);
+        // The all-default config (feature on, backend auto); host probing runs
+        // against the real test host, so we only assert the shape, not the
+        // concrete backend.
+        let out = diagnose(false, &Settings::default());
         assert!(out["feature_enabled"].is_boolean());
         assert!(out["resolved_backend"].is_string());
         assert!(out["deliverable"].is_boolean());

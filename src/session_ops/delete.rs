@@ -301,7 +301,7 @@ pub fn delete_if_generation(
 fn finish_locally(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     force: bool,
     report: ForceDeleteReport,
     hook_ctx: &crate::session::HookContext,
@@ -324,12 +324,12 @@ fn finish_locally(
 /// from *inside* it — which is the only place the ordering below is visible.
 fn finish_locally_with(
     db: &Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     force: bool,
     mut report: ForceDeleteReport,
     hook_ctx: &crate::session::HookContext,
     expected: Option<u64>,
-    teardown: impl FnOnce(&crate::sync::SharedSession, &mut ForceDeleteReport),
+    teardown: impl FnOnce(&crate::session::SharedSession, &mut ForceDeleteReport),
 ) -> Result<ForceDeleteReport, crate::session_ops::OpError> {
     // Marked **before** anything is torn down. The teardown kills windows and
     // removes worktrees, and a crash or a kill signal partway through used to
@@ -365,7 +365,10 @@ fn finish_locally_with(
     Ok(report)
 }
 
-fn set_remote_report_aliases(session: &crate::sync::SharedSession, report: &mut ForceDeleteReport) {
+fn set_remote_report_aliases(
+    session: &crate::session::SharedSession,
+    report: &mut ForceDeleteReport,
+) {
     if crate::session::Route::is_remote_key(&session.backend_type) {
         report.remote_teardown_error = report.teardown_error.clone();
         report.remote_teardown_owed = report.teardown_owed;
@@ -411,7 +414,7 @@ fn string_list(answer: &serde_json::Value, key: &str) -> Vec<String> {
 pub fn teardown_runtime_resources(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
     let _workspace = match super::lock::workspace(
@@ -452,7 +455,10 @@ pub fn teardown_runtime_resources(
     set_remote_report_aliases(session, report);
 }
 
-fn unclaimed_resources(db: &Database, session: &crate::sync::SharedSession) -> Result<(), String> {
+fn unclaimed_resources(
+    db: &Database,
+    session: &crate::session::SharedSession,
+) -> Result<(), String> {
     let active = db
         .list_active_sessions()
         .map_err(|e| format!("cannot check resource ownership: {e}"))?;
@@ -491,7 +497,7 @@ fn unclaimed_resources(db: &Database, session: &crate::sync::SharedSession) -> R
 fn teardown_runtime_resources_inner(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
     if crate::session::Route::is_remote_key(&session.backend_type) {
@@ -564,7 +570,10 @@ fn teardown_runtime_resources_inner(
 }
 
 /// A cleanup error keeps the durable debt, including failed local worktree removal.
-fn owes_remote_teardown(_session: &crate::sync::SharedSession, report: &ForceDeleteReport) -> bool {
+fn owes_remote_teardown(
+    _session: &crate::session::SharedSession,
+    report: &ForceDeleteReport,
+) -> bool {
     report.teardown_error.is_some() || !report.worktree_errors.is_empty()
 }
 
@@ -621,7 +630,7 @@ pub fn retry_owed_remote_teardowns(
         if attempts >= 128 {
             break;
         }
-        if !claim_reap(db, row.id, crate::sync::current_time_millis()) {
+        if !claim_reap(db, row.id, crate::storage::current_time_millis()) {
             continue;
         }
         let Ok(Some(_lease)) =
@@ -640,7 +649,7 @@ pub fn retry_owed_remote_teardowns(
         }
         let row = current;
         if unclaimed_resources(db, &shared_deleted(&row)).is_err() {
-            reap_failed(db, row.id, crate::sync::current_time_millis());
+            reap_failed(db, row.id, crate::storage::current_time_millis());
             continue;
         }
         attempts += 1;
@@ -654,7 +663,7 @@ pub fn retry_owed_remote_teardowns(
                     reap_succeeded(db, row.id);
                 }
             } else {
-                reap_failed(db, row.id, crate::sync::current_time_millis());
+                reap_failed(db, row.id, crate::storage::current_time_millis());
             }
             continue;
         }
@@ -678,7 +687,7 @@ pub fn retry_owed_remote_teardowns(
                 }
             },
             Err(Owed::Unreached(e)) => {
-                reap_failed(db, row.id, crate::sync::current_time_millis());
+                reap_failed(db, row.id, crate::storage::current_time_millis());
                 tracing::debug!(
                     "'{}' still owes a teardown on '{}': {e}",
                     row.name,
@@ -689,7 +698,7 @@ pub fn retry_owed_remote_teardowns(
             // The host may be fine; this row's multiplexer is what nothing here
             // drives, so the other rows there still get their turn.
             Err(Owed::Undrivable(e)) => {
-                reap_failed(db, row.id, crate::sync::current_time_millis());
+                reap_failed(db, row.id, crate::storage::current_time_millis());
                 tracing::debug!("'{}' still owes a teardown: {e}", row.name);
             }
         }
@@ -855,12 +864,13 @@ pub const UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 pub fn reap_overdue_soft_deletes(
     db: &Database,
     backends: &crate::backend::BackendRegistry,
+    deleted_retention_days: u64,
 ) -> Vec<String> {
     super::reconcile::creating(db, backends);
     let Ok(rows) = db.list_deleted_sessions() else {
         return Vec::new();
     };
-    let now = crate::sync::current_time_millis();
+    let now = crate::storage::current_time_millis();
     let window = UNDO_WINDOW.as_millis() as u64;
     let mut reaped = Vec::new();
     let mut windows: std::collections::HashMap<String, crate::backend::identity::WindowIndex> =
@@ -897,7 +907,7 @@ pub fn reap_overdue_soft_deletes(
     }
     // The same two drivers are what `deleted_retention_days` needs, so the
     // retention purge rides this sweep rather than inventing a third.
-    super::purge::purge_expired(db, backends);
+    super::purge::purge_expired(db, backends, deleted_retention_days);
     reaped
 }
 
@@ -993,7 +1003,7 @@ fn listing_retry_after_ms(failures: u32) -> u64 {
 fn claim_listing(db: &Database, backend_type: &str) -> bool {
     db.claim_host_probe(
         backend_type,
-        crate::sync::current_time_millis(),
+        crate::storage::current_time_millis(),
         listing_retry_after_ms,
     )
     .unwrap_or(true)
@@ -1002,7 +1012,7 @@ fn claim_listing(db: &Database, backend_type: &str) -> bool {
 /// Record that `backend_type` could not be listed, spacing the next attempt
 /// further out than the last.
 fn listing_failed(db: &Database, backend_type: &str) {
-    if let Err(e) = db.note_host_probe_failed(backend_type, crate::sync::current_time_millis()) {
+    if let Err(e) = db.note_host_probe_failed(backend_type, crate::storage::current_time_millis()) {
         tracing::debug!("could not record the listing failure of '{backend_type}': {e}");
     }
 }
@@ -1331,7 +1341,7 @@ fn deleted_owner<'a>(row: &'a DeletedSessionInfo, id: &'a str) -> crate::backend
 /// A session as its backend is asked about it, remembering the panes it
 /// recorded.
 fn session_owner<'a>(
-    session: &'a crate::sync::SharedSession,
+    session: &'a crate::session::SharedSession,
     id: &'a str,
 ) -> crate::backend::Owner<'a> {
     crate::backend::Owner::new(id, &session.name).remembering(
@@ -1351,7 +1361,7 @@ fn remote_host_in<'a>(
 fn kill_confirmed(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
 ) -> anyhow::Result<bool> {
     let id = session.id.to_string();
     let owner = session_owner(session, &id);
@@ -1395,7 +1405,7 @@ fn kill_confirmed(
 fn kill_local_window(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
     #[cfg(windows)]
@@ -1446,7 +1456,7 @@ fn kill_local_window(
 fn kill_remote_window(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     report: &mut ForceDeleteReport,
 ) {
     match kill_confirmed(db, backend, session) {
@@ -1507,9 +1517,9 @@ fn reap_pane_process(pid: u32) {
 /// `report.kept_worktrees`.
 fn remove_worktree_into(
     db: &Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     host: Option<&crate::session::HostDef>,
-    wt: &crate::sync::SharedWorktree,
+    wt: &crate::session::SharedWorktree,
     report: &mut ForceDeleteReport,
 ) {
     // Only what thurbox checked out. `git worktree remove --force` deletes the
@@ -1559,9 +1569,9 @@ fn remove_worktree_into(
 /// the worktree's own host; a pushed copy is the remote's business.
 fn delete_branch_into(
     db: &Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     host: Option<&crate::session::HostDef>,
-    wt: &crate::sync::SharedWorktree,
+    wt: &crate::session::SharedWorktree,
     report: &mut ForceDeleteReport,
 ) {
     let outcome = match branch_wanted_elsewhere(db, session, host, wt) {
@@ -1594,9 +1604,9 @@ fn delete_branch_into(
 /// identify counts as the same one, since keeping a branch only leaks a ref.
 pub(super) fn branch_wanted_elsewhere(
     db: &Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     host: Option<&crate::session::HostDef>,
-    wt: &crate::sync::SharedWorktree,
+    wt: &crate::session::SharedWorktree,
 ) -> Result<bool, String> {
     let ours = std::cell::OnceCell::new();
     let same_repo = |other: &std::path::Path| {
@@ -1609,7 +1619,7 @@ pub(super) fn branch_wanted_elsewhere(
         }
     };
     let names_branch =
-        |id: SessionId, backend_type: &str, worktrees: &[crate::sync::SharedWorktree]| {
+        |id: SessionId, backend_type: &str, worktrees: &[crate::session::SharedWorktree]| {
             id != session.id
                 && super::same_machine(backend_type, &session.backend_type)
                 && worktrees
@@ -1635,8 +1645,8 @@ pub(super) fn branch_wanted_elsewhere(
     }))
 }
 
-pub(crate) fn shared_deleted(row: &DeletedSessionInfo) -> crate::sync::SharedSession {
-    crate::sync::SharedSession {
+pub(crate) fn shared_deleted(row: &DeletedSessionInfo) -> crate::session::SharedSession {
+    crate::session::SharedSession {
         id: row.id,
         name: row.name.clone(),
         agent: row.agent.clone(),
@@ -1659,7 +1669,7 @@ pub(crate) fn shared_deleted(row: &DeletedSessionInfo) -> crate::sync::SharedSes
 mod tests {
     use super::*;
     use crate::session::SessionId;
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     /// The sweep runs every five seconds, and a row on a host it cannot resolve
     /// is never reaped — so without a backoff that host is re-probed at exactly
@@ -1675,7 +1685,7 @@ mod tests {
         // under test.
         let backend = "ssh:no-such-host-for-the-sweep-backoff-test";
 
-        let asked_at = crate::sync::current_time_millis();
+        let asked_at = crate::storage::current_time_millis();
         window_index_on(&db, &crate::backend::registry::inert(), backend);
 
         // The sweep's own cadence, and every pass short of the first retry.
@@ -1714,7 +1724,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = SessionId::default();
 
-        let asked_at = crate::sync::current_time_millis();
+        let asked_at = crate::storage::current_time_millis();
         assert!(
             claim_reap(&db, id, asked_at),
             "a row nothing has attempted yet is never held back"
@@ -2028,7 +2038,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let id = insert_session_on(&db, "remote", "ssh:devbox", "%3");
         db.soft_delete_session(id).unwrap();
-        let failed_at = crate::sync::current_time_millis();
+        let failed_at = crate::storage::current_time_millis();
         reap_failed(&db, id, failed_at);
         assert!(!claim_reap(&db, id, failed_at + 5_000));
 
@@ -2404,7 +2414,7 @@ mod tests {
             agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktrees: vec![crate::sync::SharedWorktree {
+            worktrees: vec![crate::session::SharedWorktree {
                 repo_path: "/nonexistent/repo".into(),
                 worktree_path: "/nonexistent/repo/.worktrees/mine".into(),
                 branch: "feat/x".into(),
@@ -2452,7 +2462,7 @@ mod tests {
             agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktrees: vec![crate::sync::SharedWorktree {
+            worktrees: vec![crate::session::SharedWorktree {
                 repo_path: "/nonexistent/repo".into(),
                 worktree_path: "/nonexistent/repo/wt".into(),
                 branch: "feat/x".into(),
@@ -2501,7 +2511,7 @@ mod tests {
         repo
     }
 
-    fn session_with_worktree(wt: crate::sync::SharedWorktree) -> SharedSession {
+    fn session_with_worktree(wt: crate::session::SharedWorktree) -> SharedSession {
         SharedSession {
             id: SessionId::default(),
             name: "branchy".into(),
@@ -2521,8 +2531,8 @@ mod tests {
         }
     }
 
-    fn created_worktree(repo: &std::path::Path, branch: &str) -> crate::sync::SharedWorktree {
-        crate::sync::SharedWorktree {
+    fn created_worktree(repo: &std::path::Path, branch: &str) -> crate::session::SharedWorktree {
+        crate::session::SharedWorktree {
             repo_path: repo.to_path_buf(),
             worktree_path: crate::git::create_worktree(repo, branch, "main").unwrap(),
             branch: branch.into(),
@@ -2604,7 +2614,7 @@ mod tests {
 
         // An opened worktree: neither the directory nor the branch is touched.
         let opened = crate::git::add_existing_worktree(&repo, "opened").unwrap();
-        let report = teardown(&session_with_worktree(crate::sync::SharedWorktree {
+        let report = teardown(&session_with_worktree(crate::session::SharedWorktree {
             repo_path: repo.clone(),
             worktree_path: opened.clone(),
             branch: "opened".into(),
@@ -2627,7 +2637,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         // A fork that recorded the repository by another name, soft-deleted
         // and so still owed its undo.
-        let mut saved = session_with_worktree(crate::sync::SharedWorktree {
+        let mut saved = session_with_worktree(crate::session::SharedWorktree {
             repo_path: alias,
             ..wt.clone()
         });
@@ -2686,7 +2696,7 @@ mod tests {
             agent_session_id: None,
             cwd: None,
             additional_dirs: Vec::new(),
-            worktrees: vec![crate::sync::SharedWorktree {
+            worktrees: vec![crate::session::SharedWorktree {
                 repo_path: "/nonexistent/repo".into(),
                 worktree_path: "/nonexistent/repo/wt".into(),
                 branch: "feat/x".into(),
@@ -2724,7 +2734,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let db = Database::open_in_memory().unwrap();
-        let fresh = crate::sync::SharedSession {
+        let fresh = crate::session::SharedSession {
             id: SessionId::default(),
             name: "fresh".into(),
             agent: "claude".into(),
@@ -2751,7 +2761,7 @@ mod tests {
         db.soft_delete_session(remote.id).unwrap();
         // Inside the undo window, and on another machine: neither is touched
         // (and no tmux is consulted for either).
-        assert!(reap_overdue_soft_deletes(&db, &crate::backend::registry::inert()).is_empty());
+        assert!(reap_overdue_soft_deletes(&db, &crate::backend::registry::inert(), 0).is_empty());
     }
 
     /// The sweep's ownership gate. Its old test was `agent_window_alive`, so an
@@ -2765,7 +2775,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
         let db = Database::open_in_memory().unwrap();
-        let stale = crate::sync::SharedSession {
+        let stale = crate::session::SharedSession {
             id: SessionId::default(),
             name: "fleet".into(),
             agent: "claude".into(),
@@ -2796,7 +2806,7 @@ mod tests {
         db.upsert_session(&live).unwrap();
 
         assert!(
-            reap_overdue_soft_deletes(&db, &crate::backend::registry::inert()).is_empty(),
+            reap_overdue_soft_deletes(&db, &crate::backend::registry::inert(), 0).is_empty(),
             "an overdue row whose pane and name a live namesake claims owns \
              nothing to release"
         );

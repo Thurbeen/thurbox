@@ -11,16 +11,12 @@
 //!
 //! Which field is which is one table, [`crate::session::settings::FIELDS`], and
 //! this holds the line it draws: the live half lives here and is replaced on
-//! reload, the restart-only half stays as it was published at startup and is
-//! read through [`crate::session::settings::global`]. Asking this for a
-//! restart-only value and asking the global for a live one would both be wrong,
-//! so [`Config::in_force`] is the one answer to "what is the user running with"
-//! — and it is what gets published to plugins.
-//!
-//! The reason this module exists at all: `settings::global` is a write-once
-//! `OnceLock` shared with `thurbox-cli` and v1. That is what makes those callers
-//! safe, so it must not become mutable — a live setting needs somewhere else to
-//! live.
+//! reload, the restart-only half stays as it was loaded at startup. Whatever
+//! consumes a restart-only value is handed it when it is built — the backends,
+//! the terminals, the snapshot store, the command bus — so [`Config::in_force`]
+//! is the one answer to "what is the user running with", and it is what gets
+//! published to plugins. There is no process-wide copy: `session` holds no
+//! state (#1477).
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -65,18 +61,15 @@ pub struct Config {
 }
 
 impl Config {
-    /// Read the file, publish it process-wide, and keep a live copy.
+    /// Read the file and keep a live copy.
     ///
-    /// Publishing must happen before anything reads a restart-only value — and
-    /// `Database::open` reads one (it prunes the audit log to
-    /// `audit_retention_days`), so this belongs at the very top of `main`. v1
-    /// loads it in exactly the same place, for exactly that reason.
+    /// Before anything that is built with a restart-only value, so at the top
+    /// of `main`: the rest of startup is handed [`Self::in_force`].
     ///
     /// Returns the warnings the loader produced (an unknown key, a value out of
     /// range) so the caller can surface them as startup notices.
     pub fn load() -> (Self, Vec<String>) {
         let (settings, warnings) = crate::config::settings::load_or_seed_with_warnings();
-        crate::session::settings::init(settings.clone());
         let path = crate::config::settings::settings_config_path();
         let stamp = path.as_deref().and_then(modified);
         (

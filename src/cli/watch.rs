@@ -16,7 +16,7 @@
 //! The wake-up is still the gate the interface's own sync worker uses: SQLite's
 //! `PRAGMA data_version` changes when *another* connection commits, so a reader
 //! sits on a cheap pragma and reads the log's tail only when there is a tail to
-//! read (see [`crate::sync`]).
+//! read (see `storage::Database::data_version`).
 //!
 //! Deliberately not the kernel's event bus. That would need an IPC channel out
 //! of a running interface, and would then only work while one is running —
@@ -371,7 +371,7 @@ fn assess(
     stopped: bool,
     probe: Option<(
         &crate::backend::BackendRegistry,
-        &crate::sync::SharedSession,
+        &crate::session::SharedSession,
     )>,
 ) -> Assessment {
     let down = crate::session_ops::host_cli::recorded_down(&facts.backend_type);
@@ -387,7 +387,7 @@ fn assess_sampled(
     down: bool,
     probe: Option<(
         &crate::backend::BackendRegistry,
-        &crate::sync::SharedSession,
+        &crate::session::SharedSession,
     )>,
 ) -> Assessment {
     let hook = crate::session_ops::events::assess(registry, facts, columns, stopped);
@@ -425,7 +425,7 @@ impl HostVerdicts {
         &mut self,
         db: &Database,
         filter: Option<SessionId>,
-    ) -> Vec<(crate::sync::SharedSession, bool)> {
+    ) -> Vec<(crate::session::SharedSession, bool)> {
         let mut by_host: HashMap<String, bool> = HashMap::new();
         let mut down = HashSet::new();
         let mut flips = Vec::new();
@@ -458,7 +458,7 @@ impl HostVerdicts {
 fn host_line(
     db: &Database,
     registry: &crate::session::AgentRegistry,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     down: bool,
     backends: Option<&crate::backend::BackendRegistry>,
 ) -> Option<Value> {
@@ -614,7 +614,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let _paths = crate::paths::TestPathGuard::new(temp.path());
         let db = Database::open_in_memory().unwrap();
-        let session = crate::sync::SharedSession {
+        let session = crate::session::SharedSession {
             id: SessionId::default(),
             name: "on-a-host".into(),
             agent: "claude".into(),

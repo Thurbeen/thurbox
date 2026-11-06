@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use crate::session::{Automation, AutomationAction, AutomationRunStatus, SessionId};
 use crate::storage::automations::RunRecord;
+use crate::storage::current_time_millis;
 use crate::storage::Database;
-use crate::sync::current_time_millis;
 
 use super::super::deliver::{spawn_and_deliver, SpawnDeliverError};
 use super::super::SpawnRequest;

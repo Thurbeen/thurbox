@@ -28,9 +28,9 @@ use clap::Parser;
 use serde_json::Value;
 use thurbox::backend::{SessionBackend, WindowRole};
 use thurbox::kernel::command::{Command as KernelCommand, CommandBus, Phase};
+use thurbox::session::SharedSession;
 use thurbox::session::{Multiplexer, Route, SessionId, Via};
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
@@ -114,7 +114,7 @@ impl Instance {
         let mut settings = thurbox::session::settings::Settings::default();
         settings.features.automations = false;
         settings.multiplexer = multiplexer.map(str::to_string);
-        thurbox::session::settings::init(settings);
+        thurbox::config::settings::save_settings(&settings).expect("settings.toml");
         // What a headless create reads its default multiplexer from.
         if let Some(mux) = multiplexer {
             std::fs::write(
@@ -222,7 +222,7 @@ fn configured_with(
     local: &Arc<RecordingBackend>,
     far: &Arc<RecordingBackend>,
 ) -> thurbox::backend::BackendRegistry {
-    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured(&settings());
     backends.register(Route::local(Some(Multiplexer::Rmux)), local.clone());
     backends.register(
         Route::remote(Via::Ssh, "probehost", Some(Multiplexer::Rmux)),
@@ -266,10 +266,11 @@ fn cli(
             .map_err(|e| format!("parse {args:?}: {e}"))?;
     let output = match parsed.command {
         Some(thurbox::cli::Command::Session { action }) => {
-            thurbox::cli::sessions::run(action, db, backends).map_err(|e| e.message)?
+            thurbox::cli::sessions::run(action, db, backends, &settings()).map_err(|e| e.message)?
         }
         Some(thurbox::cli::Command::Automation { action }) => {
-            thurbox::cli::automations::run(action, db, backends).map_err(|e| e.message)?
+            thurbox::cli::automations::run(action, db, backends, &settings())
+                .map_err(|e| e.message)?
         }
         Some(thurbox::cli::Command::Task { action }) => {
             thurbox::cli::tasks::run(action, db, backends)?
@@ -284,7 +285,7 @@ fn cli(
                 ["thurbox-cli", "--json"].iter().chain(args).copied(),
             )
             .expect("parsed once already");
-            thurbox::cli::run(parsed, db, backends).map_err(|e| e.message)?;
+            thurbox::cli::run(parsed, db, backends, &settings()).map_err(|e| e.message)?;
             return Ok(Value::Null);
         }
         other => panic!("not a command this test drives: {other:?}"),
@@ -302,7 +303,7 @@ fn cli_doc(db: &Database, backends: &thurbox::cli::Backends<'_>, args: &[&str]) 
             .expect("parse");
     match parsed.command {
         Some(thurbox::cli::Command::Session { action }) => {
-            thurbox::cli::sessions::run(action, db, backends)
+            thurbox::cli::sessions::run(action, db, backends, &settings())
                 .map_err(|e| e.message)
                 .expect("a document")
                 .json
@@ -419,7 +420,7 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     instance.assert_tmux_untouched("send, key and capture");
 
     // The kernel's Send, as the interface issues it.
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
     kernel(
         &mut bus,
         KernelCommand::Send {
@@ -592,8 +593,11 @@ fn every_pane_pathway_reaches_the_backend_the_route_names() {
     );
 
     probe.forget_calls();
-    let mut store =
-        thurbox::kernel::snapshot::SnapshotStore::with_database(instance.db(), &reg.kernel);
+    let mut store = thurbox::kernel::snapshot::SnapshotStore::with_database(
+        instance.db(),
+        &reg.kernel,
+        &settings(),
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     while !probe.called("pane_state") && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
@@ -644,7 +648,9 @@ fn a_remote_rows_text_never_reaches_a_local_namesake() {
 
     // The local namesake: `tb-x` on this machine's server, unstamped, echoing
     // whatever it is sent.
-    let local = thurbox::backend::tmux::TmuxBackend::new();
+    let local = thurbox::backend::tmux::TmuxBackend::local(
+        thurbox::session::settings::default_scrollback_lines(),
+    );
     local.ensure_ready().expect("ready the private server");
     let local_pane = local
         .spawn("tb-x", "cat", &[], None, &Default::default(), 24, 80)
@@ -657,7 +663,7 @@ fn a_remote_rows_text_never_reaches_a_local_namesake() {
     let far_pane = far.open("tb-x", &uuid, WindowRole::Agent);
     seed_row(&db, id, "x", "ssh:probehost:rmux", &far_pane, "/srv/x");
 
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
     kernel(
         &mut bus,
         KernelCommand::Send {
@@ -781,7 +787,7 @@ fn a_task_dispatches_the_same_through_the_kernel_and_the_cli() {
     let reg = registries();
     let (backends, probe) = (&reg.cli, &reg.probe);
     let repo = instance.repo();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     // A row with no window: its session is stopped.
     let stopped = SessionId::default();
@@ -897,7 +903,7 @@ fn task_dispatches_to_one_session_never_interleave() {
     let reg = registries();
     let (backends, probe) = (&reg.cli, &reg.probe);
     let repo = instance.repo();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     let id = SessionId::default();
     let uuid = id.to_string();
@@ -969,7 +975,7 @@ fn a_confirmed_send_and_a_dispatch_never_interleave() {
     let probe = &reg.probe;
     probe.read_cursor();
     let repo = instance.repo();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     let id = SessionId::default();
     let uuid = id.to_string();
@@ -1025,7 +1031,7 @@ fn a_task_is_created_edited_and_deleted_the_same_through_the_kernel_and_the_cli(
     let db = instance.db();
     let reg = registries();
     let backends = &reg.cli;
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
     let missing = 9_999_i64;
 
     let mut outcomes = Vec::new();
@@ -1205,7 +1211,7 @@ fn a_send_does_the_same_through_the_kernel_and_the_cli() {
     let (backends, probe) = (&reg.cli, &reg.probe);
     probe.read_cursor();
     let repo = instance.repo();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     for via in ["kernel", "cli"] {
         let mut send = |session: &str, text: &str| -> Result<(), String> {
@@ -1292,7 +1298,7 @@ fn every_prompt_delivery_leaves_a_half_typed_line_alone() {
     let (backends, probe) = (&reg.cli, &reg.probe);
     probe.read_cursor();
     let repo = instance.repo();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     for via in ["kernel dispatch", "cli dispatch", "send automation"] {
         let id = SessionId::default();
@@ -1390,7 +1396,7 @@ fn a_key_never_lands_inside_a_confirmed_send() {
     let probe = &reg.probe;
     probe.read_cursor();
     let repo = instance.repo();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     let id = SessionId::default();
     let uuid = id.to_string();
@@ -1468,7 +1474,7 @@ fn a_pane_verb_on_an_unserved_route_is_refused_by_name() {
     seed_row(&db, id, "herd", "local:herdr", "%0", &instance.repo());
     let uuid = id.to_string();
 
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
     let refused = kernel(
         &mut bus,
         KernelCommand::Send {
@@ -1515,7 +1521,9 @@ fn a_spawn_automation_never_types_into_a_window_no_row_owns() {
     .expect("create a spawn automation");
     let spawn_id = spawn["id"].as_i64().unwrap();
 
-    let local = thurbox::backend::tmux::TmuxBackend::new();
+    let local = thurbox::backend::tmux::TmuxBackend::local(
+        thurbox::session::settings::default_scrollback_lines(),
+    );
     local.ensure_ready().expect("ready the private server");
     let stranger = local
         .spawn(
@@ -1613,7 +1621,7 @@ fn a_spawn_reuses_only_what_it_can_see_and_refuses_what_it_cannot_tell() {
 
     // A task whose earlier session sits on a local backend that does not
     // answer, while a new one could still be created on the default one.
-    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured(&settings());
     backends.register(Route::local(Some(Multiplexer::Rmux)), reg.probe.clone());
     let silent_route = Route::local(Some(Multiplexer::Herdr));
     let silent = RecordingBackend::new(&silent_route);
@@ -1781,7 +1789,7 @@ fn held_command_bus_send(other_session: bool, panic_first: bool) {
         let _ = release_rx.recv_timeout(Duration::from_secs(20));
         assert!(!panic_first, "backend call panicked");
     });
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
     let first_id = bus.dispatch(KernelCommand::Send {
         session: first.to_string(),
         text: "first prompt".into(),
@@ -1886,7 +1894,7 @@ fn a_create_does_the_same_through_the_kernel_and_the_cli() {
     std::fs::create_dir(&plain).expect("mkdir");
     git(&plain, &["init", "-q", "-b", "main"]);
     let plain = plain.display().to_string();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     let mut outcomes: Vec<Vec<Result<(), String>>> = Vec::new();
     for via in ["kernel", "cli"] {
@@ -1966,7 +1974,7 @@ fn an_action_is_read_the_same_by_tasks_automations_and_the_interface() {
     let reg = registries();
     let backends = &reg.cli;
     let repo = instance.repo();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     let cases: [(&str, Vec<&str>); 2] = [
         ("an unknown session", vec!["--session", "not-a-uuid"]),
@@ -2081,7 +2089,7 @@ fn an_empty_host_is_checked_as_this_machine() {
     let reg = registries();
     let missing = instance.root.path().join("no-such-repo");
     let missing = missing.display().to_string();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     let via_cli = cli(
         &db,
@@ -2135,7 +2143,7 @@ fn a_prompt_thurbox_hands_to_a_claude_inbox_names_thurbox_as_its_sender() {
     let db = instance.db();
     let reg = registries();
     reg.probe.read_cursor();
-    let mut bus = CommandBus::new(Arc::clone(&reg.kernel));
+    let mut bus = CommandBus::new(Arc::clone(&reg.kernel), &settings());
 
     let id = SessionId::default();
     let pane = reg
@@ -2199,4 +2207,10 @@ fn a_prompt_thurbox_hands_to_a_claude_inbox_names_thurbox_as_its_sender() {
         line.contains("from: thurbox itself, not a session"),
         "{line}"
     );
+}
+
+/// The settings this instance runs with, read from its `settings.toml` the way
+/// `thurbox-cli` loads them at startup.
+fn settings() -> thurbox::session::settings::Settings {
+    thurbox::config::settings::load_or_seed_with_warnings().0
 }

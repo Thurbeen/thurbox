@@ -16,16 +16,22 @@ use crate::shell::HostLauncher;
 pub struct Rmux;
 pub type RmuxBackend = Server<Rmux>;
 
-pub fn local() -> Arc<dyn SessionBackend> {
-    Arc::new(RmuxBackend::local())
+pub fn local(scrollback_lines: usize) -> Arc<dyn SessionBackend> {
+    Arc::new(RmuxBackend::local(scrollback_lines))
 }
 
 pub fn on_host(
     host: &HostDef,
     launcher: HostLauncher,
     platform: Platform,
+    scrollback_lines: usize,
 ) -> Arc<dyn SessionBackend> {
-    Arc::new(RmuxBackend::on_host(host, launcher, platform))
+    Arc::new(RmuxBackend::on_host(
+        host,
+        launcher,
+        platform,
+        scrollback_lines,
+    ))
 }
 
 impl TmuxCompatible for Rmux {

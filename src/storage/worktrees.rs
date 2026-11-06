@@ -1,7 +1,8 @@
 use rusqlite::params;
 
+use super::current_time_millis;
 use crate::session::SessionId;
-use crate::sync::{current_time_millis, SharedWorktree};
+use crate::session::SharedWorktree;
 
 use super::audit::{AuditAction, EntityType};
 use super::Database;
@@ -115,7 +116,7 @@ impl Database {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     use super::*;
 

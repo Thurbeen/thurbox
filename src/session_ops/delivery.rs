@@ -24,9 +24,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::session::SharedSession;
 use crate::session::{SessionId, SessionMessage};
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 /// Session-meta key holding the Claude inbox socket, captured from the agent's
 /// own hook environment by `session signal` (see [`remember_claude_socket`]).
@@ -1043,7 +1043,7 @@ mod tests {
 
     impl Transport for LosesTheLease<'_> {
         fn post_to_claude(&self, _socket: &Path, _text: &str) -> Result<(), String> {
-            let stale = crate::sync::current_time_millis() as i64
+            let stale = crate::storage::current_time_millis() as i64
                 - crate::storage::messages::DELIVERY_LEASE_MS
                 - 1;
             self.db

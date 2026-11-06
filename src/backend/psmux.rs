@@ -41,8 +41,8 @@ pub struct Psmux;
 pub type PsmuxBackend = Server<Psmux>;
 
 /// psmux on this machine, whatever OS it is.
-pub fn local() -> Arc<dyn SessionBackend> {
-    Arc::new(PsmuxBackend::local())
+pub fn local(scrollback_lines: usize) -> Arc<dyn SessionBackend> {
+    Arc::new(PsmuxBackend::local(scrollback_lines))
 }
 
 /// psmux on `host`, reached through `launcher` on a machine of `platform`.
@@ -50,8 +50,14 @@ pub fn on_host(
     host: &HostDef,
     launcher: HostLauncher,
     platform: Platform,
+    scrollback_lines: usize,
 ) -> Arc<dyn SessionBackend> {
-    Arc::new(PsmuxBackend::on_host(host, launcher, platform))
+    Arc::new(PsmuxBackend::on_host(
+        host,
+        launcher,
+        platform,
+        scrollback_lines,
+    ))
 }
 
 impl TmuxCompatible for Psmux {
@@ -1241,6 +1247,7 @@ mod tests {
             "private-socket",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         )
     }
 
@@ -1258,6 +1265,7 @@ mod tests {
             "private-socket",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         )
     }
 
@@ -1283,6 +1291,7 @@ mod tests {
             "private-socket",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         );
         (backend, log)
     }
@@ -1392,6 +1401,7 @@ mod tests {
             "private-socket",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         );
 
         assert!(backend.discover_answered().is_err());
@@ -1695,12 +1705,14 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            PsmuxBackend::for_host(&host)
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines())
                 .capabilities()
                 .needs_liveness_poll
         );
         assert!(
-            PsmuxBackend::local().capabilities().needs_liveness_poll,
+            PsmuxBackend::local(crate::session::settings::default_scrollback_lines())
+                .capabilities()
+                .needs_liveness_poll,
             "on this machine too, whatever OS it is"
         );
     }
@@ -1825,6 +1837,7 @@ mod tests {
             "test",
             "thurbox",
             "local:psmux",
+            crate::session::settings::default_scrollback_lines(),
         );
         (root, backend, mux.with_extension("log"))
     }
@@ -2008,7 +2021,7 @@ mod tests {
     /// window by name is already qualified and is left as it is.
     #[test]
     fn a_psmux_kill_reaches_the_pane_it_names_in_thurboxs_session() {
-        let psmux = PsmuxBackend::local();
+        let psmux = PsmuxBackend::local(crate::session::settings::default_scrollback_lines());
         let session = psmux.session.clone();
         assert_eq!(
             psmux.kill_spelling("%8"),
@@ -2028,7 +2041,7 @@ mod tests {
     /// a bare `%N` the server could route to its `__warm__` session.
     #[test]
     fn a_psmux_pane_target_names_thurboxs_session() {
-        let psmux = PsmuxBackend::local();
+        let psmux = PsmuxBackend::local(crate::session::settings::default_scrollback_lines());
         assert_eq!(psmux.spell_target("%2"), format!("{}:.%2", psmux.session));
     }
 
@@ -2326,7 +2339,8 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        let backend = PsmuxBackend::for_host(&host);
+        let backend =
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
         let cmd = Psmux::window_command(&backend, "tbs-x", "claude", &[], &HashMap::new()).unwrap();
         assert_eq!(
@@ -2414,7 +2428,8 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        let backend = PsmuxBackend::for_host(&host);
+        let backend =
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         let format = "#{pane_id}|#{window_name}|#{pane_dead}";
         let line = host_line(
             &backend
@@ -2464,7 +2479,8 @@ mod tests {
                 socket: socket.map(Into::into),
                 ..Default::default()
             };
-            let backend = PsmuxBackend::for_host(&host);
+            let backend =
+                PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
             for text in ["x".repeat(2500), "é".repeat(PASTE_CHUNK_BYTES)] {
                 for paste in Psmux::paste_args("%123", &text) {
                     let argv: Vec<&str> = paste.iter().map(String::as_str).collect();
@@ -2485,7 +2501,10 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        for backend in [PsmuxBackend::local(), PsmuxBackend::for_host(&host)] {
+        for backend in [
+            PsmuxBackend::local(crate::session::settings::default_scrollback_lines()),
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines()),
+        ] {
             assert!(!backend.stamps_are_per_window(), "{}", backend.name());
             assert!(
                 !backend.capabilities().supports_snapshots,
@@ -2848,7 +2867,10 @@ mod tests {
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        for backend in [PsmuxBackend::local(), PsmuxBackend::for_host(&host)] {
+        for backend in [
+            PsmuxBackend::local(crate::session::settings::default_scrollback_lines()),
+            PsmuxBackend::for_host(&host, crate::session::settings::default_scrollback_lines()),
+        ] {
             assert_eq!(backend.hook_signal_command(), None);
             assert!(backend.record_hook_state("%1", "working").is_err());
             assert!(backend.hook_states().is_err());
@@ -2866,8 +2888,12 @@ mod tests {
             socket: Some(socket.into()),
             ..Default::default()
         };
-        let command =
-            |socket: &str| Psmux::hook_signal_command(&PsmuxBackend::for_host(&host(socket)));
+        let command = |socket: &str| {
+            Psmux::hook_signal_command(&PsmuxBackend::for_host(
+                &host(socket),
+                crate::session::settings::default_scrollback_lines(),
+            ))
+        };
         assert_eq!(
             command("we\"ird sock\\et"),
             "psmux -L weirdsocket set-option -p @thurbox_state "

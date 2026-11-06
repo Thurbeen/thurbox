@@ -103,7 +103,7 @@ fn rmux_create_restart_rename_restore_relaunch_and_delete() {
     std::env::set_var("PATH", path);
     let server = RmuxServer::new();
     let db = Database::open_in_memory().expect("db");
-    let backends = wiring::configured().0;
+    let backends = wiring::configured(&Default::default()).0;
     let rmux_route = Route::local(Some(Multiplexer::Rmux));
     assert!(backends.supports(&rmux_route));
     assert!(backends.supports(&Route::local(Some(Multiplexer::Tmux))));

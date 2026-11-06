@@ -19,8 +19,8 @@ use thurbox::cli::sessions::{run, Action};
 use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::session::background_work::WorkEdge;
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 #[path = "support/recording_backend.rs"]
 mod recording_backend;
@@ -63,8 +63,11 @@ fn store_with_remote_session() -> (tempfile::TempDir, SnapshotStore, SessionId) 
     let home = tempfile::tempdir().expect("tempdir");
     let row = session("ssh:devbox");
     database(&home).upsert_session(&row).expect("upsert");
-    let store =
-        SnapshotStore::with_database(database(&home), &thurbox::backend::wiring::configured().0);
+    let store = SnapshotStore::with_database(
+        database(&home),
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
     (home, store, row.id)
 }
 
@@ -157,8 +160,11 @@ fn an_event_for_a_pane_nobody_claims_yet_is_kept_until_it_appears() {
     let mut row = session("ssh:devbox");
     row.backend_id = String::new();
     database(&home).upsert_session(&row).expect("upsert");
-    let mut store =
-        SnapshotStore::with_database(database(&home), &thurbox::backend::wiring::configured().0);
+    let mut store = SnapshotStore::with_database(
+        database(&home),
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
 
     let early = Instant::now();
     let applied = store.apply_hook_states(
@@ -189,8 +195,11 @@ fn a_parked_event_is_eventually_given_up_on() {
     let mut row = session("ssh:devbox");
     row.backend_id = String::new();
     database(&home).upsert_session(&row).expect("upsert");
-    let mut store =
-        SnapshotStore::with_database(database(&home), &thurbox::backend::wiring::configured().0);
+    let mut store = SnapshotStore::with_database(
+        database(&home),
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
 
     let early = Instant::now();
     store.apply_hook_states(
@@ -263,7 +272,7 @@ fn backends() -> thurbox::backend::BackendRegistry {
 }
 
 fn store_over(home: &tempfile::TempDir) -> SnapshotStore {
-    SnapshotStore::with_database(database(home), &backends())
+    SnapshotStore::with_database(database(home), &backends(), &Default::default())
 }
 
 fn shown(store: &SnapshotStore, id: SessionId) -> String {
@@ -322,6 +331,7 @@ fn through_session_signal(before: Before, state: &str) -> After {
         },
         &database(&home),
         &thurbox::cli::Backends::ready(backends()),
+        &Default::default(),
     );
     // A report the row cannot take is refused out loud, each for its reason.
     match (before, thurbox::session_ops::signals::is_state(state)) {

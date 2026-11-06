@@ -10,8 +10,8 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 /// The database a `thurbox-cli` pointed at `home` (see [`cli`]) uses. Nothing
 /// process-wide is set, so tests sharing a process under `cargo test`'s

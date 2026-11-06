@@ -1330,7 +1330,8 @@ launcher that reaches it and the multiplexer that serves it are four
 independent choices. The route (ADR-28) carries only place and multiplexer;
 the OS is the host's, `HostDef::platform` (`session::Platform`: `Posix` or
 `Windows`), and this machine's is `Platform::local` — the one place the build
-OS is read as a platform.
+OS is read as a platform, read through `shell::local_platform` wherever a test
+must be able to run the other one.
 
 - **Explicit, with the old reading as the default.** `hosts.toml`'s
   `platform = "posix" | "windows"` declares it. An entry that names none reads
@@ -1365,7 +1366,7 @@ OS is read as a platform.
   `session::route` and `backend::contract` free of the launchers, host
   entries, the tmux adapter and its grammar, and of any `cfg(windows)`.
 - **What is simulated.** The Windows-build branches are covered on Linux by
-  `Platform::local`'s test override (`platform::simulate_local`). No
+  `shell::local_platform`'s test override (`shell::simulate_local`). No
   multiplexer decision is behind `cfg(windows)` any more — the local psmux
   spawn path is the psmux adapter's on every OS (ADR-31) — and no test here ran
   against a live Windows host.
@@ -1547,7 +1548,7 @@ TUI's event loop. The TUI already polls `PRAGMA data_version`
 on every tick (~10 ms event-loop cadence) (ADR-7b), so changes
 made by `thurbox-cli` appear
 automatically — no new synchronization mechanism is needed. The
-`cli` module imports `storage`, `session`, `session_ops` and `sync`,
+`cli` module imports `storage`, `session` and `session_ops`,
 reaches the backend contract and registry by fully-qualified path only
 and never an adapter (`tests/architecture_rules.rs`), so it can operate
 without a terminal UI.
@@ -1567,7 +1568,7 @@ without a terminal UI.
 
 > **Superseded by ADR-23.** The constants below were v1's. The kernel publishes
 > theme *roles* to plugins (`thurbox.theme`, `kernel::theme::palette_roles`); the
-> 36 built-in palettes live in `session::theme_config`, and a user's own in
+> 36 built-in palettes live in `theme`, and a user's own in
 > `~/.config/thurbox/themes.toml`.
 
 **Choice**: All UI colors are defined as associated constants on a

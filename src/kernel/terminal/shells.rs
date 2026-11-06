@@ -199,8 +199,10 @@ mod tests {
     #[test]
     fn a_late_failed_readoption_cannot_forget_a_newer_shell() {
         for change in ["unchanged", "deleted", "reattached", "shell", "route"] {
-            let mut terminals =
-                Terminals::with_registry(Arc::new(crate::backend::registry::inert()));
+            let mut terminals = Terminals::with_registry(
+                Arc::new(crate::backend::registry::inert()),
+                &crate::session::settings::Settings::default(),
+            );
             let backend = Arc::clone(terminals.backends.default_backend());
             let session = crate::backend::Session::stub("probe", &backend);
             let done = Shelled {
@@ -264,7 +266,10 @@ mod tests {
     }
     #[test]
     fn an_old_reply_cannot_clear_a_new_attachments_pending_request() {
-        let mut terminals = Terminals::with_registry(Arc::new(crate::backend::registry::inert()));
+        let mut terminals = Terminals::with_registry(
+            Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
         let backend = Arc::clone(terminals.backends.default_backend());
         let old = crate::backend::Session::stub("probe", &backend);
         let done = Shelled {
@@ -307,8 +312,10 @@ mod tests {
     #[test]
     fn a_changed_attachment_or_shell_slot_can_start_its_own_request() {
         for (readopting, reattached) in [(false, true), (true, true), (true, false)] {
-            let mut terminals =
-                Terminals::with_registry(Arc::new(crate::backend::registry::inert()));
+            let mut terminals = Terminals::with_registry(
+                Arc::new(crate::backend::registry::inert()),
+                &crate::session::settings::Settings::default(),
+            );
             let backend = Arc::clone(terminals.backends.default_backend());
             terminals.live.insert(
                 "probe".into(),
@@ -363,7 +370,10 @@ mod tests {
     }
     #[test]
     fn clearing_the_saved_shell_does_not_swallow_a_new_open() {
-        let mut terminals = Terminals::with_registry(Arc::new(crate::backend::registry::inert()));
+        let mut terminals = Terminals::with_registry(
+            Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
         let backend = Arc::clone(terminals.backends.default_backend());
         terminals.live.insert(
             "probe".into(),
@@ -401,7 +411,10 @@ mod tests {
 
     #[test]
     fn a_same_attachment_old_reply_cannot_clear_a_new_slots_request() {
-        let mut terminals = Terminals::with_registry(Arc::new(crate::backend::registry::inert()));
+        let mut terminals = Terminals::with_registry(
+            Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
         let backend = Arc::clone(terminals.backends.default_backend());
         let session = crate::backend::Session::stub("probe", &backend);
         let done = Shelled {
@@ -441,7 +454,10 @@ mod tests {
     }
     #[test]
     fn an_obsolete_token_cannot_publish_even_when_the_saved_shell_matches_again() {
-        let mut terminals = Terminals::with_registry(Arc::new(crate::backend::registry::inert()));
+        let mut terminals = Terminals::with_registry(
+            Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
         let backend = Arc::clone(terminals.backends.default_backend());
         let session = crate::backend::Session::stub("probe", &backend);
         let done = Shelled {

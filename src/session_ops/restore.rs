@@ -13,9 +13,9 @@
 //! uncommitted work does not. That is lossy, so it is refused unless the caller
 //! says it knows.
 
+use crate::session::SharedWorktree;
 use crate::session::{SessionId, WorktreeInfo};
 use crate::storage::Database;
-use crate::sync::SharedWorktree;
 
 /// What a restore managed to bring back.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -506,7 +506,7 @@ pub fn recreate_worktrees(worktrees: &[SharedWorktree]) -> Vec<WorktreeInfo> {
 fn respawn(
     db: &Database,
     backend: &dyn crate::backend::SessionBackend,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
 ) -> Result<String, crate::session_ops::OpError> {
     // Local by design: `restore_session_headless` refuses a remote session
     // above, since its worktrees cannot be recreated from here.
@@ -728,7 +728,7 @@ mod tests {
     fn a_restore_waits_for_a_creation_that_is_holding_the_name() {
         let db = crate::storage::Database::open_in_memory().expect("db");
         let id = SessionId::default();
-        db.upsert_session(&crate::sync::SharedSession {
+        db.upsert_session(&crate::session::SharedSession {
             id,
             name: "build".into(),
             agent: "shell".into(),

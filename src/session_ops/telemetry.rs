@@ -22,7 +22,7 @@ pub(crate) const MAX_TELEMETRY_HOPS: u8 = 16;
 /// Mirrors carry no session metadata; an unavailable owner is not an empty map.
 pub(crate) fn load(
     db: &crate::storage::Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
 ) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
     load_with_hops(db, session, MAX_TELEMETRY_HOPS)
 }
@@ -30,7 +30,7 @@ pub(crate) fn load(
 /// Follow intermediate mirrors, carrying a decreasing budget on every RPC.
 pub(crate) fn load_with_hops(
     db: &crate::storage::Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     remaining_hops: u8,
 ) -> Result<BTreeMap<String, String>, crate::session_ops::OpError> {
     let remaining_hops = remaining_hops.min(MAX_TELEMETRY_HOPS);

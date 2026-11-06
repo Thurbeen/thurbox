@@ -14,8 +14,8 @@
 //! (rule 5). The process itself runs through [`super::bounded`], the runner
 //! `Exec` automations share.
 
+use crate::session::SharedSession;
 use crate::session::{HookContext, HookEvent, LifecycleHook};
-use crate::sync::SharedSession;
 
 /// Run every `pre_*` hook for `event`, in file order, stopping at the first
 /// failure. `Err` is the reason the operation must not proceed: the caller
@@ -124,7 +124,7 @@ pub(crate) fn host_name(backend_type: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-pub(crate) fn worktree(w: &crate::sync::SharedWorktree) -> crate::session::HookWorktree {
+pub(crate) fn worktree(w: &crate::session::SharedWorktree) -> crate::session::HookWorktree {
     crate::session::HookWorktree {
         repo_path: w.repo_path.clone(),
         worktree_path: w.worktree_path.clone(),
@@ -475,7 +475,7 @@ mod tests {
             agent_session_id: Some("conv".into()),
             cwd: Some("/srv/wt".into()),
             additional_dirs: vec!["/srv/other".into()],
-            worktrees: vec![crate::sync::SharedWorktree {
+            worktrees: vec![crate::session::SharedWorktree {
                 repo_path: "/srv/repo".into(),
                 worktree_path: "/srv/wt".into(),
                 branch: "feat/x".into(),

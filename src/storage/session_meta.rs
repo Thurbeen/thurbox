@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use rusqlite::params;
 
 use crate::session::SessionId;
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::Database;
 
@@ -172,7 +172,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use crate::sync::SharedSession;
+    use crate::session::SharedSession;
 
     use super::*;
 

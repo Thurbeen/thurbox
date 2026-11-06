@@ -3,11 +3,11 @@
 
 use std::path::Path;
 
+use crate::session::SharedSession;
 use crate::session::{
     AutomationAction, ExtensionAutomation, ExtensionDef, ExtensionSession, SessionId,
 };
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 use super::fs::*;
 use super::install::*;

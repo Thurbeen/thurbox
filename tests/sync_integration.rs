@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use thurbox::session::SessionId;
+use thurbox::session::{SharedSession, SharedWorktree};
 use thurbox::storage::Database;
-use thurbox::sync::{SharedSession, SharedWorktree};
 
 /// Helper to create a test session.
 fn make_session(id: SessionId, name: &str) -> SharedSession {

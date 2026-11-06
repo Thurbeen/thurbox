@@ -4,10 +4,10 @@
 //! gets the same row, the same session and the same refusal whichever of them
 //! asked. The callers keep only parsing and output.
 
+use crate::session::SharedSession;
 use crate::session::{AutomationAction, SessionId, Task, TaskStatus, SOURCE_LOCAL};
 use crate::storage::tasks::NewTask;
 use crate::storage::Database;
-use crate::sync::SharedSession;
 
 use super::deliver::{spawn_and_deliver, SpawnDeliverError};
 use super::{OpError, SpawnRequest};

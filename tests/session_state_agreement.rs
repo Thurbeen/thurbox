@@ -18,8 +18,8 @@ use std::process::Command;
 use serde_json::Value;
 use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[path = "support/tmux_server.rs"]
@@ -125,8 +125,11 @@ fn states(env: &Env, id: SessionId) -> [String; 4] {
     let watch = env.cli(&["--json", "watch", "--initial", "--for-secs", "1"]);
 
     let _guard = thurbox::paths::TestPathGuard::new(env.base());
-    let mut store =
-        SnapshotStore::with_database(env.db(), &thurbox::backend::wiring::configured().0);
+    let mut store = SnapshotStore::with_database(
+        env.db(),
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
     store.refresh();
     let tui = store
         .current()

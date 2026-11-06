@@ -176,7 +176,7 @@ distro is always POSIX). `default_shell`, the `default-command` pin and the
 `/bin/sh -lc` login wrap follow the platform, never `cfg(windows)` or the
 multiplexer's name; `needs_liveness_poll` follows whether its control stream
 closes pane readers on window deletion (tmux yes, psmux and RMUX no). Tests simulate the Windows build
-with `session::platform::simulate_local`. A Windows host has no POSIX shell. So
+with `shell::simulate_local`. A Windows host has no POSIX shell. So
 each remote probe ships **two scripts emitting one line protocol** —
 `git::host_probe` picks `sh -c` or `powershell -EncodedCommand`
 (`shell::HostShell::run_script`; UTF-16LE base64, because ssh space-joins its args for a

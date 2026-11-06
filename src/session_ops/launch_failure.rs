@@ -99,7 +99,7 @@ fn sweep_where(
 /// like a swept one: only a session no hook ever reported for.
 pub fn record_exited(
     db: &Database,
-    session: &crate::sync::SharedSession,
+    session: &crate::session::SharedSession,
     exit_code: Option<i64>,
     output: Option<String>,
 ) -> bool {
@@ -115,7 +115,7 @@ pub fn record_exited(
         &session.backend_id,
         exit_code,
         output,
-        crate::sync::current_time_millis() as i64,
+        crate::storage::current_time_millis() as i64,
     );
     Expectations::load(db).judges(session, &failure)
         && db
@@ -138,7 +138,7 @@ pub fn record_exited(
 /// cannot tell (tmux 3.2) it is read as it stands.
 fn observe(
     backends: &crate::backend::BackendRegistry,
-    row: &crate::sync::SharedSession,
+    row: &crate::session::SharedSession,
 ) -> Option<LaunchFailure> {
     let (backend, pane) = super::windows::agent_pane(backends, row).ok()??;
     let mut state = backend.pane_state(&pane).ok()?;
@@ -164,7 +164,7 @@ fn observe(
         &pane,
         state.exit_status,
         output,
-        crate::sync::current_time_millis() as i64,
+        crate::storage::current_time_millis() as i64,
     ))
 }
 
@@ -193,7 +193,7 @@ impl Expectations {
         }
     }
 
-    fn judges(&self, row: &crate::sync::SharedSession, failure: &LaunchFailure) -> bool {
+    fn judges(&self, row: &crate::session::SharedSession, failure: &LaunchFailure) -> bool {
         if failure.reason == crate::session::LaunchFailureReason::Setup {
             return true;
         }

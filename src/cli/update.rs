@@ -10,8 +10,6 @@
 use clap::Args;
 use serde_json::json;
 
-use crate::session::settings;
-
 use super::output::{kv, CommandOutput};
 
 /// `update` subcommand arguments.
@@ -24,14 +22,9 @@ pub struct UpdateArgs {
 
 /// Run the `update` command. Takes no database — it only reads the compiled-in
 /// version, the network, and the install directory.
-pub fn run(args: UpdateArgs) -> CommandOutput {
-    run_with(args, settings::global().features.auto_update)
-}
-
-/// Same as [`run`] but with the `auto_update` flag passed explicitly, so the
-/// disabled path is testable without depending on the process-global default
-/// (the flag is on by default for 1.0).
-fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
+///
+/// `enabled` is `[features] auto_update` as the process loaded it.
+pub fn run(args: UpdateArgs, enabled: bool) -> CommandOutput {
     let current = crate::update::version_check::current_version();
 
     if !enabled {
@@ -134,9 +127,9 @@ mod tests {
     #[test]
     fn update_when_flag_disabled_prints_enable_hint() {
         // The flag is on by default for 1.0, so exercise the disabled path
-        // directly via `run_with` — no process-global settings, no network or
+        // directly, with the flag passed in — no network or
         // disk touch.
-        let out = run_with(UpdateArgs { force: false }, false);
+        let out = run(UpdateArgs { force: false }, false);
         assert_eq!(out["update_enabled"], false);
         assert!(out.human.contains("disabled"), "got: {}", out.human);
         assert!(

@@ -20,9 +20,9 @@ use std::process::{Command, Output};
 use serde_json::Value;
 use thurbox::cli::sessions::{run, Action};
 use thurbox::session::SessionId;
+use thurbox::session::SharedSession;
 use thurbox::session_ops::mirror::{self, Transitive};
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
@@ -375,7 +375,8 @@ fn listing(db: &Database, deleted: bool) -> Value {
             key_prefix: None,
         },
         db,
-        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0),
+        &thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
     )
     .expect("session list")
     .json
@@ -464,7 +465,7 @@ fn an_undrivable_rows_checkout_outlives_its_window() {
     let env = Env::new(HOST_ON_TMUX);
     let id = SessionId::default();
     let mut row = session(id, "r", "ssh:box:herdr");
-    row.worktrees = vec![thurbox::sync::SharedWorktree {
+    row.worktrees = vec![thurbox::session::SharedWorktree {
         repo_path: PathBuf::from("/srv/repo"),
         worktree_path: PathBuf::from("/srv/worktrees/r"),
         branch: "r".into(),
@@ -593,7 +594,7 @@ const LOCAL_SESSION: &str = "thurbox-dev";
 impl Env {
     /// A repository with one commit and a live thurbox-made worktree of it on
     /// branch `name`, holding uncommitted work.
-    fn checkout(&self, name: &str) -> thurbox::sync::SharedWorktree {
+    fn checkout(&self, name: &str) -> thurbox::session::SharedWorktree {
         let repo = self.path("repo");
         std::fs::create_dir_all(&repo).expect("repo dir");
         git(&repo, &["init", "-q", "-b", "main"]);
@@ -616,7 +617,7 @@ impl Env {
             ],
         );
         std::fs::write(worktree.join("unsaved.txt"), "work in progress").expect("work");
-        thurbox::sync::SharedWorktree {
+        thurbox::session::SharedWorktree {
             repo_path: repo,
             worktree_path: worktree,
             branch: name.into(),

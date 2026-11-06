@@ -815,12 +815,11 @@ const SEND_KEYS_ENTER_DELAY: std::time::Duration = std::time::Duration::from_mil
 /// Hard cap on the number of scrollback lines a capture returns.
 const MAX_CAPTURE_LINES: u32 = 10_000;
 
-/// Rows of history a snapshot carries: as many as the rebuilt terminal keeps,
-/// under the same ceiling every capture here has.
-fn snapshot_history() -> usize {
-    crate::session::settings::global()
-        .scrollback_lines
-        .min(MAX_CAPTURE_LINES as usize)
+/// Rows of history a capture or a snapshot carries for a terminal that keeps
+/// `scrollback_lines`: as many as it keeps, under the ceiling every capture
+/// here has.
+fn history_lines(scrollback_lines: usize) -> usize {
+    scrollback_lines.min(MAX_CAPTURE_LINES as usize)
 }
 
 /// A server of the tmux-compatible multiplexer `M` — sessions persist in `<mux>
@@ -877,6 +876,10 @@ pub struct Server<M: TmuxCompatible> {
     questions: std::sync::atomic::AtomicU64,
     /// This backend's name in [`SIZER_OPTION`] — see [`Self::resize`].
     pub(in crate::backend) sizer: String,
+    /// Rows of history an adopt captures and a snapshot carries: what the
+    /// terminal rebuilt from them keeps, from the settings the composition root
+    /// built this backend with.
+    history_lines: usize,
     /// The host an off-local backend was built from, for the agent `PATH`
     /// its windows get ([`crate::agent::host_path`]). `None` locally.
     pub(in crate::backend) host: Option<HostDef>,
@@ -908,30 +911,20 @@ fn sizer_name() -> String {
     format!("{:x}-{nth:x}-{nanos:x}", std::process::id())
 }
 
-impl<M: TmuxCompatible> Default for Server<M> {
-    fn default() -> Self {
-        Self::local()
-    }
-}
-
 impl<M: TmuxCompatible> Server<M> {
-    /// [`Self::local`].
-    pub fn new() -> Self {
-        Self::local()
-    }
-
     /// `M` on this machine, named by the route it serves (`local:tmux`,
-    /// `local:psmux`) whatever OS this is.
-    pub fn local() -> Self {
+    /// `local:psmux`) whatever OS this is, capturing as much history as a
+    /// terminal keeping `scrollback_lines` holds.
+    pub fn local(scrollback_lines: usize) -> Self {
         let name = crate::session::Route::local(Some(M::MULTIPLEXER)).format();
         let socket = local_socket();
         let mut transport = TmuxTransport::local(M::MULTIPLEXER.name());
-        if M::SOCKET_DIR && Platform::local() == Platform::Posix {
+        if M::SOCKET_DIR && crate::shell::local_platform() == Platform::Posix {
             if let Some(dir) = crate::backend::instance::local_socket_dir(&socket) {
                 transport = transport.with_socket_dir(SocketDir::Dir(dir.display().to_string()));
             }
         }
-        Self::with_transport(transport, socket, TMUX_SESSION, name)
+        Self::with_transport(transport, socket, TMUX_SESSION, name, scrollback_lines)
     }
 
     /// A backend over an explicit transport. A remote one is taken for a POSIX
@@ -941,11 +934,12 @@ impl<M: TmuxCompatible> Server<M> {
         socket: impl Into<String>,
         session: impl Into<String>,
         name: impl Into<String>,
+        scrollback_lines: usize,
     ) -> Self {
         let platform = if transport.is_remote() {
             Platform::Posix
         } else {
-            Platform::local()
+            crate::shell::local_platform()
         };
         Self {
             transport,
@@ -961,6 +955,7 @@ impl<M: TmuxCompatible> Server<M> {
             admitting: Mutex::new(None),
             questions: std::sync::atomic::AtomicU64::new(0),
             sizer: sizer_name(),
+            history_lines: history_lines(scrollback_lines),
             host: None,
             platform,
             multiplexer: PhantomData,
@@ -969,8 +964,13 @@ impl<M: TmuxCompatible> Server<M> {
 
     /// `M` on `host`, reached the way its entry says and running as its
     /// platform — see [`Self::on_host`].
-    pub fn for_host(host: &HostDef) -> Self {
-        Self::on_host(host, HostLauncher::for_host(host), host.platform())
+    pub fn for_host(host: &HostDef, scrollback_lines: usize) -> Self {
+        Self::on_host(
+            host,
+            HostLauncher::for_host(host),
+            host.platform(),
+            scrollback_lines,
+        )
     }
 
     /// `M` on `host`, reached through `launcher` on a machine of `platform`:
@@ -980,7 +980,12 @@ impl<M: TmuxCompatible> Server<M> {
     /// since moved to something else. Its socket is the host's
     /// ([`host_socket`]), never this instance's own, and its session name is
     /// the default unless the host overrides it.
-    pub fn on_host(host: &HostDef, launcher: HostLauncher, platform: Platform) -> Self {
+    pub fn on_host(
+        host: &HostDef,
+        launcher: HostLauncher,
+        platform: Platform,
+        scrollback_lines: usize,
+    ) -> Self {
         let session = host
             .session
             .clone()
@@ -997,6 +1002,7 @@ impl<M: TmuxCompatible> Server<M> {
             host_socket(host),
             session,
             host.route(Some(M::MULTIPLEXER)).format(),
+            scrollback_lines,
         );
         backend.host = Some(host.clone());
         backend.platform = platform;
@@ -1670,6 +1676,7 @@ impl<M: TmuxCompatible> Server<M> {
             admitting: Mutex::new(None),
             questions: std::sync::atomic::AtomicU64::new(0),
             sizer: sizer_name(),
+            history_lines: self.history_lines,
             host: self.host.clone(),
             platform: self.platform,
             multiplexer: PhantomData,
@@ -2685,7 +2692,8 @@ impl<M: TmuxCompatible> Server<M> {
         let (reader, size) = self.with_control(|ctrl| {
             // A pane whose output overflowed its channel is caught up by a
             // snapshot, where one can be taken.
-            let (tx, reader) = ctrl.pane_channel(pane_id, M::SNAPSHOTS.then(snapshot_history));
+            let (tx, reader) =
+                ctrl.pane_channel(pane_id, M::SNAPSHOTS.then_some(self.history_lines));
             let size = reports.then(|| reader.size());
             let mut senders = ctrl
                 .pane_senders
@@ -2813,10 +2821,7 @@ impl<M: TmuxCompatible> Server<M> {
     /// modes ride along because the capture cannot carry them — see
     /// [`Self::pane_state_seed`].
     fn capture_history_seed(&self, pane_id: &str) -> Result<Vec<u8>> {
-        let lines = crate::session::settings::global()
-            .scrollback_lines
-            .min(MAX_CAPTURE_LINES as usize);
-        let start = format!("-{lines}");
+        let start = format!("-{}", self.history_lines);
         let output = self.run_tmux(&[
             "capture-pane",
             "-e",
@@ -3089,7 +3094,7 @@ impl<M: TmuxCompatible> PaneStream for Server<M> {
         // ahead of everything it does not already show.
         Ok(self.with_control(|ctrl| {
             ctrl.show_pane(backend_id)?;
-            ctrl.request_snapshot(backend_id, snapshot_history())
+            ctrl.request_snapshot(backend_id, self.history_lines)
         })?)
     }
 
@@ -3123,7 +3128,7 @@ impl<M: TmuxCompatible> PaneStream for Server<M> {
         // Asked, then waited for apart from the asking, so several searches'
         // round trips overlap: a search reads many panes at once.
         Ok(self
-            .with_control(|ctrl| ctrl.ask_snapshot(backend_id, snapshot_history()))?
+            .with_control(|ctrl| ctrl.ask_snapshot(backend_id, self.history_lines))?
             .wait()
             .map_err(|e| self.classified(e))?)
     }
@@ -4815,7 +4820,7 @@ const WINDOW_OPTS: &[(&str, &str)] = &[
 /// did before: resolution is an improvement where it succeeds, never a new way
 /// to fail.
 pub(crate) fn resolve_local_program(command: &str) -> String {
-    if Platform::local() == Platform::Windows {
+    if crate::shell::local_platform() == Platform::Windows {
         return command.to_string();
     }
     match crate::paths::resolve_on_path(command) {
@@ -5429,7 +5434,7 @@ fn typed_absence(error: &anyhow::Error) -> bool {
 #[cfg(all(test, unix))]
 pub(in crate::backend) fn assert_absence_replies<M: TmuxCompatible>(replies: &[(&str, bool)]) {
     use std::os::unix::process::ExitStatusExt;
-    let backend = Server::<M>::new();
+    let backend = Server::<M>::local(crate::session::settings::default_scrollback_lines());
     let name = M::MULTIPLEXER.name();
     for &(reply, holds_nothing) in replies {
         let output = std::process::Output {
@@ -5521,7 +5526,7 @@ mod tests {
     #[test]
     fn an_unfinished_or_mixed_process_reply_is_not_typed_absence() {
         use std::os::unix::process::ExitStatusExt;
-        let backend = TestBackend::new();
+        let backend = TestBackend::local(crate::session::settings::default_scrollback_lines());
         for (status, stdout) in [
             (libc::SIGKILL, Vec::new()),
             (1 << 8, b"partial listing".to_vec()),
@@ -5784,6 +5789,7 @@ mod tests {
             "unused",
             "unused",
             "local:tmux",
+            crate::session::settings::default_scrollback_lines(),
         );
         (backend, asked)
     }
@@ -5909,6 +5915,7 @@ mod tests {
             "unused",
             "unused",
             "local:tmux",
+            crate::session::settings::default_scrollback_lines(),
         )
     }
 
@@ -5991,6 +5998,7 @@ mod tests {
             "unused",
             "unused",
             "local:tmux",
+            crate::session::settings::default_scrollback_lines(),
         );
         let control = ControlMode::start(
             &transport,
@@ -6083,6 +6091,7 @@ done
             "unused",
             "unused",
             "local:tmux",
+            crate::session::settings::default_scrollback_lines(),
         ));
         // Shut down even on assertion failure, so the runtime's blocking reader
         // cannot outlive the subprocess that owns its channel.
@@ -6201,8 +6210,13 @@ done
         .expect("write fake mux");
         std::fs::set_permissions(&mux, std::fs::Permissions::from_mode(0o700)).expect("chmod");
         let transport = TmuxTransport::local(mux.to_string_lossy());
-        let backend =
-            Server::<UnmonitoredMux>::with_transport(transport, "unused", "unused", "local:tmux");
+        let backend = Server::<UnmonitoredMux>::with_transport(
+            transport,
+            "unused",
+            "unused",
+            "local:tmux",
+            crate::session::settings::default_scrollback_lines(),
+        );
         backend.ensure_control().expect("control client");
         (backend, mux)
     }
@@ -6390,15 +6404,19 @@ done
         // tests that set it run concurrently under plain `cargo test`.
         let (local, free, remote) = crate::paths::with_path(dir.path(), || {
             (
-                TestBackend::local().program_for_window("tbx-spawn-probe"),
+                TestBackend::local(crate::session::settings::default_scrollback_lines())
+                    .program_for_window("tbx-spawn-probe"),
                 resolve_local_program("tbx-spawn-probe"),
                 // A remote host's PATH is the host's, so its command is the
                 // host's to resolve — and it is login-wrapped instead.
-                TestBackend::for_host(&crate::session::HostDef {
-                    name: "devbox".into(),
-                    destination: "me@devbox".into(),
-                    ..Default::default()
-                })
+                TestBackend::for_host(
+                    &crate::session::HostDef {
+                        name: "devbox".into(),
+                        destination: "me@devbox".into(),
+                        ..Default::default()
+                    },
+                    crate::session::settings::default_scrollback_lines(),
+                )
                 .program_for_window("tbx-spawn-probe"),
             )
         });
@@ -6421,7 +6439,8 @@ done
                 destination: "me@devbox".into(),
                 ..Default::default()
             };
-            let mut backend = TestBackend::for_host(&host);
+            let mut backend =
+                TestBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
             backend.transport = backend.transport.clone().with_socket_dir(host_data.clone());
             (host, backend)
         };
@@ -6609,7 +6628,7 @@ done
 
     #[test]
     fn backend_default_has_no_control_mode() {
-        let backend = TestBackend::new();
+        let backend = TestBackend::local(crate::session::settings::default_scrollback_lines());
         let guard = backend.control.lock().unwrap();
         assert!(guard.is_none());
     }
@@ -6622,7 +6641,8 @@ done
             ssh_opts: vec!["-o".into(), "ControlMaster=auto".into()],
             ..Default::default()
         };
-        let backend = TestBackend::for_host(&host);
+        let backend =
+            TestBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         assert_eq!(backend.name(), "ssh:devbox:tmux");
         assert!(backend.transport.is_remote());
         // Falls back to the default socket/session when the host omits them.
@@ -6641,7 +6661,11 @@ done
             ..Default::default()
         };
         learn_host_socket(&host, "thurbox-elsewhere");
-        assert_eq!(TestBackend::for_host(&host).socket(), "thurbox-elsewhere");
+        assert_eq!(
+            TestBackend::for_host(&host, crate::session::settings::default_scrollback_lines())
+                .socket(),
+            "thurbox-elsewhere"
+        );
         let mut served = host.clone();
         served.multiplexer = Some("psmux".into());
         assert_eq!(host_socket(&served), "thurbox-elsewhere");
@@ -6651,7 +6675,8 @@ done
     #[test]
     fn for_host_builds_named_wsl_backend() {
         let host = crate::session::HostDef::wsl("Ubuntu");
-        let backend = TestBackend::for_host(&host);
+        let backend =
+            TestBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         assert_eq!(backend.name(), "wsl:Ubuntu:tmux");
         assert!(backend.transport.is_remote());
         assert_eq!(backend.transport.launcher(), "wsl.exe");
@@ -6672,26 +6697,35 @@ done
         // The local $SHELL (e.g. /bin/zsh) may not exist on the host: a remote
         // Windows pane got "CommandNotFoundException", a zsh-less Linux host a
         // dead pane. Remote backends pick by transport.
-        let winbox = TestBackend::for_host(&crate::session::HostDef {
-            name: "winbox".into(),
-            destination: "me@winbox".into(),
-            multiplexer: Some("psmux".into()),
-            ..Default::default()
-        });
+        let winbox = TestBackend::for_host(
+            &crate::session::HostDef {
+                name: "winbox".into(),
+                destination: "me@winbox".into(),
+                multiplexer: Some("psmux".into()),
+                ..Default::default()
+            },
+            crate::session::settings::default_scrollback_lines(),
+        );
         assert_eq!(winbox.default_shell(), "powershell");
 
-        let devbox = TestBackend::for_host(&crate::session::HostDef {
-            name: "devbox".into(),
-            destination: "me@devbox".into(),
-            ..Default::default()
-        });
+        let devbox = TestBackend::for_host(
+            &crate::session::HostDef {
+                name: "devbox".into(),
+                destination: "me@devbox".into(),
+                ..Default::default()
+            },
+            crate::session::settings::default_scrollback_lines(),
+        );
         assert_eq!(devbox.default_shell(), "/bin/sh");
 
-        let wsl = TestBackend::for_host(&crate::session::HostDef::wsl("Ubuntu"));
+        let wsl = TestBackend::for_host(
+            &crate::session::HostDef::wsl("Ubuntu"),
+            crate::session::settings::default_scrollback_lines(),
+        );
         assert_eq!(wsl.default_shell(), "/bin/sh");
 
         // Local keeps the platform default ($SHELL / %COMSPEC%).
-        let local = TestBackend::local();
+        let local = TestBackend::local(crate::session::settings::default_scrollback_lines());
         #[cfg(not(windows))]
         assert_eq!(
             local.default_shell(),
@@ -6724,14 +6758,18 @@ done
 
     /// A WSL distro is Linux whatever machine drives it, so its server gets
     /// `/bin/sh` as `default-command` from a Windows thurbox as from a Linux
-    /// one. Simulated: the build OS is replaced by `Platform::local`'s test
+    /// one. Simulated: the build OS is replaced by `shell::local_platform`'s test
     /// override, which is the only way a Linux run reaches the Windows branch.
     #[test]
     fn a_windows_thurbox_pins_posix_default_command_on_a_wsl_host() {
-        use crate::session::{platform::simulate_local, HostDef, Platform};
+        use crate::session::{HostDef, Platform};
+        use crate::shell::simulate_local;
         for local in Platform::ALL {
             let pinned = simulate_local(local, || {
-                pinned_default_command(&TestBackend::for_host(&HostDef::wsl("Ubuntu")))
+                pinned_default_command(&TestBackend::for_host(
+                    &HostDef::wsl("Ubuntu"),
+                    crate::session::settings::default_scrollback_lines(),
+                ))
             });
             assert_eq!(pinned.as_deref(), Some("/bin/sh"), "thurbox on {local:?}");
         }
@@ -6742,10 +6780,14 @@ done
     /// wrap — the platform is the host's, never inferred from `psmux`.
     #[test]
     fn a_windows_host_on_a_non_psmux_multiplexer_keeps_native_shell_semantics() {
-        use crate::session::{platform::simulate_local, Platform};
+        use crate::session::Platform;
+        use crate::shell::simulate_local;
         for local in Platform::ALL {
             simulate_local(local, || {
-                let backend = TestBackend::for_host(&windows_host("tmux"));
+                let backend = TestBackend::for_host(
+                    &windows_host("tmux"),
+                    crate::session::settings::default_scrollback_lines(),
+                );
                 assert_eq!(backend.transport.mux(), "tmux");
                 assert_eq!(backend.default_shell(), "powershell", "from {local:?}");
                 assert_eq!(pinned_default_command(&backend), None, "from {local:?}");
@@ -6771,13 +6813,19 @@ done
             )
             .expect("a shell pane's command")
         };
-        let windows = TestBackend::for_host(&windows_host("tmux"));
+        let windows = TestBackend::for_host(
+            &windows_host("tmux"),
+            crate::session::settings::default_scrollback_lines(),
+        );
         assert_eq!(shell_pane(&windows), "powershell");
-        let posix = TestBackend::for_host(&HostDef {
-            name: "devbox".into(),
-            destination: "me@devbox".into(),
-            ..Default::default()
-        });
+        let posix = TestBackend::for_host(
+            &HostDef {
+                name: "devbox".into(),
+                destination: "me@devbox".into(),
+                ..Default::default()
+            },
+            crate::session::settings::default_scrollback_lines(),
+        );
         assert_eq!(shell_pane(&posix), posix.remote_shell_pane_command());
     }
 
@@ -6786,7 +6834,8 @@ done
     /// by the OS thurbox is built for.
     #[test]
     fn a_backend_keeps_platform_launcher_and_multiplexer_apart() {
-        use crate::session::{platform::simulate_local, HostDef, HostKind, Multiplexer, Platform};
+        use crate::session::{HostDef, HostKind, Multiplexer, Platform};
+        use crate::shell::simulate_local;
         for local in Platform::ALL {
             for kind in [HostKind::Ssh, HostKind::Wsl] {
                 for platform in [Platform::Posix, Platform::Windows] {
@@ -6799,7 +6848,12 @@ done
                             multiplexer: preferred.map(str::to_string),
                             ..Default::default()
                         };
-                        let backend = simulate_local(local, || TestBackend::for_host(&host));
+                        let backend = simulate_local(local, || {
+                            TestBackend::for_host(
+                                &host,
+                                crate::session::settings::default_scrollback_lines(),
+                            )
+                        });
                         let case = format!("{kind:?}/{platform:?}/{preferred:?} from {local:?}");
                         assert_eq!(backend.platform, host.platform(), "{case}");
                         assert_eq!(backend.transport.mux(), "tmux", "{case}");
@@ -6830,7 +6884,10 @@ done
             multiplexer: Some("psmux".into()),
             ..Default::default()
         };
-        let backend = TestBackend::for_host(&legacy);
+        let backend = TestBackend::for_host(
+            &legacy,
+            crate::session::settings::default_scrollback_lines(),
+        );
         assert_eq!(backend.transport.mux(), "tmux");
         assert_eq!(backend.platform, crate::session::Platform::Windows);
         assert_eq!(backend.default_shell(), "powershell");
@@ -6850,14 +6907,20 @@ done
         // then start non-interactive (no prompt) — a blank pane.
         const EXPECT: &str =
             "/bin/sh -lc 'command -v \"$SHELL\" >/dev/null 2>&1 && exec \"$SHELL\" -l; exec /bin/sh -l'";
-        let ssh = TestBackend::for_host(&crate::session::HostDef {
-            name: "devbox".into(),
-            destination: "me@devbox".into(),
-            ..Default::default()
-        });
+        let ssh = TestBackend::for_host(
+            &crate::session::HostDef {
+                name: "devbox".into(),
+                destination: "me@devbox".into(),
+                ..Default::default()
+            },
+            crate::session::settings::default_scrollback_lines(),
+        );
         assert_eq!(ssh.remote_shell_pane_command(), EXPECT);
 
-        let wsl = TestBackend::for_host(&crate::session::HostDef::wsl("Ubuntu"));
+        let wsl = TestBackend::for_host(
+            &crate::session::HostDef::wsl("Ubuntu"),
+            crate::session::settings::default_scrollback_lines(),
+        );
         assert_eq!(wsl.remote_shell_pane_command(), EXPECT);
 
         // The interactive shell must keep stderr on the PTY — a stray
@@ -6870,7 +6933,10 @@ done
         // Remote/WSL: the window command runs under a login shell so the user's
         // profile PATH (e.g. `~/.local/bin/claude`) is present, or the agent
         // binary isn't found and the pane dies instantly.
-        let backend = TestBackend::for_host(&crate::session::HostDef::wsl("Ubuntu"));
+        let backend = TestBackend::for_host(
+            &crate::session::HostDef::wsl("Ubuntu"),
+            crate::session::settings::default_scrollback_lines(),
+        );
         let wrapped = backend.login_wrap_for_remote("claude --resume x");
         assert_eq!(wrapped, "/bin/sh -lc 'exec claude --resume x'");
     }
@@ -6892,7 +6958,8 @@ done
                 multiplexers: Vec::new(),
             }),
         );
-        let backend = TestBackend::for_host(&host);
+        let backend =
+            TestBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         assert_eq!(
             backend.login_wrap_for_remote("claude"),
             "/bin/sh -lc 'PATH=/home/me/.local/bin:/usr/bin; export PATH; exec claude'"
@@ -6920,7 +6987,8 @@ done
                 multiplexers: vec![crate::session::Multiplexer::Tmux],
             }),
         );
-        let backend = TestBackend::for_host(&host);
+        let backend =
+            TestBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         let argv: Vec<String> = backend
             .mux_command(&["-V"])
             .expect("command")
@@ -6942,7 +7010,7 @@ done
     #[test]
     fn login_wrap_is_noop_for_local() {
         // Local backends inherit the user's interactive PATH — no wrap needed.
-        let backend = TestBackend::local();
+        let backend = TestBackend::local(crate::session::settings::default_scrollback_lines());
         assert_eq!(backend.login_wrap_for_remote("claude"), "claude");
     }
 
@@ -6955,7 +7023,8 @@ done
             session: Some("sess-vm".into()),
             ..Default::default()
         };
-        let backend = TestBackend::for_host(&host);
+        let backend =
+            TestBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         assert_eq!(backend.socket, "tb-vm");
         assert_eq!(backend.session, "sess-vm");
     }
@@ -6971,7 +7040,8 @@ done
             destination: "me@devbox".into(),
             ..Default::default()
         };
-        let backend = TestBackend::for_host(&host);
+        let backend =
+            TestBackend::for_host(&host, crate::session::settings::default_scrollback_lines());
         let owner =
             Owner::new("00000000-0000-4000-8000-000000000001", "remote").remembering("%3", "");
         let refusals = [
@@ -7259,7 +7329,8 @@ done
     #[test]
     fn a_kill_of_a_server_wide_id_is_unchanged() {
         assert_eq!(
-            TestBackend::local().kill_spelling("%8"),
+            TestBackend::local(crate::session::settings::default_scrollback_lines())
+                .kill_spelling("%8"),
             ("kill-window", Cow::Borrowed("%8"))
         );
     }
@@ -7417,6 +7488,7 @@ done
             "thurbox-test",
             "thurbox-test",
             "local:tmux",
+            crate::session::settings::default_scrollback_lines(),
         );
         assert!(backend.hook_states().is_err());
     }
@@ -7437,6 +7509,7 @@ done
             "thurbox-test",
             "thurbox-test",
             "local:tmux",
+            crate::session::settings::default_scrollback_lines(),
         )
     }
 
@@ -7489,7 +7562,7 @@ done
     #[test]
     fn only_the_server_saying_no_session_is_an_empty_status_answer() {
         use std::os::unix::process::ExitStatusExt;
-        let backend = TestBackend::new();
+        let backend = TestBackend::local(crate::session::settings::default_scrollback_lines());
         let has_session = |stderr: &str| {
             let output = std::process::Output {
                 status: std::process::ExitStatus::from_raw(1 << 8),

@@ -71,7 +71,7 @@ pub fn assess(
         row.state.as_deref(),
         row.state_at,
         row.seen_at,
-        crate::sync::current_time_millis() as i64,
+        crate::storage::current_time_millis() as i64,
     );
     if stopped {
         hook.parked()
@@ -90,7 +90,7 @@ pub fn present(seq: i64, id: SessionId, facts: &SessionFacts, hook: &Assessment)
     line["exit_code"] = Value::Null;
     line["detail"] = Value::Null;
     line["stopped"] = json!(facts.stopped);
-    line["at"] = json!(crate::sync::current_time_millis());
+    line["at"] = json!(crate::storage::current_time_millis());
     line
 }
 

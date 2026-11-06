@@ -136,7 +136,7 @@ fn publish_manifest(def: &ExtensionDef) {
 
 /// The active rows carrying the declared name on the local backend — the
 /// population the whole issue is about.
-fn local_namesakes(db: &Database) -> Vec<thurbox::sync::SharedSession> {
+fn local_namesakes(db: &Database) -> Vec<thurbox::session::SharedSession> {
     db.find_sessions_by_name(DECLARED)
         .expect("find_sessions_by_name")
         .into_iter()
@@ -146,8 +146,11 @@ fn local_namesakes(db: &Database) -> Vec<thurbox::sync::SharedSession> {
 
 /// Heal once, skipping the test when the environment cannot spawn at all.
 fn heal(db: &Database, def: &ExtensionDef) -> Option<thurbox::session_ops::EnsureReport> {
-    match thurbox::session_ops::ensure_extension(db, &thurbox::backend::wiring::configured().0, def)
-    {
+    match thurbox::session_ops::ensure_extension(
+        db,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        def,
+    ) {
         Ok(report) => Some(report),
         Err(e) => {
             assert!(e.contains("tmux"), "ensure_extension failed: {e}");
@@ -185,7 +188,7 @@ fn a_heal_inside_the_undo_window_leaves_one_session_of_the_name() {
     // The operator deletes it. Softly: the undo is still on offer.
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         original,
         false,
     )
@@ -199,7 +202,7 @@ fn a_heal_inside_the_undo_window_leaves_one_session_of_the_name() {
     // The undo.
     let restored = thurbox::session_ops::restore_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         original,
         true,
     );
@@ -251,7 +254,7 @@ fn a_restore_does_not_un_delete_a_name_something_else_now_answers_to() {
     // not about waiting out the undo window.
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         original,
         true,
     )
@@ -260,7 +263,7 @@ fn a_restore_does_not_un_delete_a_name_something_else_now_answers_to() {
 
     let restored = thurbox::session_ops::restore_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         original,
         true,
     );
@@ -308,7 +311,7 @@ fn two_heals_racing_leave_one_session_of_the_name() {
             barrier.wait();
             thurbox::session_ops::ensure_extension(
                 &db,
-                &thurbox::backend::wiring::configured().0,
+                &thurbox::backend::wiring::configured(&Default::default()).0,
                 &def,
             )
         }));
@@ -367,7 +370,7 @@ fn a_namesake_on_another_backend_does_not_answer_for_the_local_session() {
     let db = Database::open_in_memory().expect("db");
 
     // A mirrored row from another machine, carrying the declared name.
-    db.upsert_session(&thurbox::sync::SharedSession {
+    db.upsert_session(&thurbox::session::SharedSession {
         id: thurbox::session::SessionId::default(),
         name: DECLARED.into(),
         agent: "shell".into(),
@@ -421,7 +424,7 @@ fn heal_still_recreates_a_force_deleted_session() {
     let original = local_namesakes(&db)[0].id;
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         original,
         true,
     )
@@ -467,7 +470,7 @@ fn a_restore_is_refused_by_a_namesake_it_only_shares_a_window_name_with() {
         .id;
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         dotted,
         true,
     )
@@ -479,7 +482,7 @@ fn a_restore_is_refused_by_a_namesake_it_only_shares_a_window_name_with() {
 
     let err = thurbox::session_ops::restore_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         dotted,
         true,
     )
@@ -508,7 +511,7 @@ fn a_refused_restore_names_the_extension_when_self_heal_owns_the_name() {
 
     let report = match thurbox::session_ops::activate_extension(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         &def,
     ) {
         Ok(report) => report,
@@ -522,7 +525,7 @@ fn a_refused_restore_names_the_extension_when_self_heal_owns_the_name() {
     let original = local_namesakes(&db)[0].id;
     thurbox::session_ops::delete_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         original,
         true,
     )
@@ -531,7 +534,7 @@ fn a_refused_restore_names_the_extension_when_self_heal_owns_the_name() {
 
     let err = thurbox::session_ops::restore_session_headless(
         &db,
-        &thurbox::backend::wiring::configured().0,
+        &thurbox::backend::wiring::configured(&Default::default()).0,
         original,
         true,
     )
@@ -550,7 +553,7 @@ fn a_refused_restore_names_the_extension_when_self_heal_owns_the_name() {
 const KEY: &str = "probe.mission-control";
 
 /// The live local sessions carrying [`KEY`].
-fn local_keyed(db: &Database) -> Vec<thurbox::sync::SharedSession> {
+fn local_keyed(db: &Database) -> Vec<thurbox::session::SharedSession> {
     db.find_sessions_by_key(KEY)
         .expect("find_sessions_by_key")
         .into_iter()
@@ -573,7 +576,7 @@ fn a_keyed_session_survives_a_rename_and_a_new_name_in_the_manifest() {
     let _server = TmuxServer::pin(SOCKET);
     isolate_paths(home.path());
     let db = Database::open_in_memory().expect("db");
-    let backends = thurbox::backend::wiring::configured().0;
+    let backends = thurbox::backend::wiring::configured(&Default::default()).0;
     let mut def = probe_def(repo.path());
     def.sessions[0].key = Some(KEY.into());
 

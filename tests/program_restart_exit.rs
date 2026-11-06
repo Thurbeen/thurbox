@@ -57,9 +57,10 @@ async fn restarting_a_finished_program_still_reports_the_ending() {
     thurbox::paths::set_test_dir(dir.path());
 
     let key = ProgramKey::new("plugins/90_files.lua", "editor_opts");
-    let mut terminals = Terminals::with_registry(std::sync::Arc::new(
-        thurbox::backend::wiring::configured().0,
-    ));
+    let mut terminals = Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
 
     // Lives for a moment, then ends on its own — an editor being quit. Not
     // instant: a program that exits before tmux has sized the window takes the

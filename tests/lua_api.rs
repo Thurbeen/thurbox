@@ -559,7 +559,7 @@ mod meta {
     use thurbox::kernel::snapshot::{Snapshot, SnapshotStore};
     use thurbox::kernel::theme::Themes;
     use thurbox::session::SessionId;
-    use thurbox::sync::SharedSession;
+    use thurbox::session::SharedSession;
 
     use super::tmux_server::TmuxServer;
 
@@ -723,8 +723,11 @@ mod meta {
     /// whole test, so a later read is the change gate noticing a CLI write, as a
     /// running interface would, not a fresh store reading everything.
     fn store(env: &Env) -> SnapshotStore {
-        let mut store =
-            SnapshotStore::with_database(env.db(), &thurbox::backend::wiring::configured().0);
+        let mut store = SnapshotStore::with_database(
+            env.db(),
+            &thurbox::backend::wiring::configured(&Default::default()).0,
+            &Default::default(),
+        );
         store.refresh();
         store
     }

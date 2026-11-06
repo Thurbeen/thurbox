@@ -25,9 +25,9 @@ use thurbox::backend::PaneIo;
 
 use clap::Parser;
 use thurbox::backend::WindowRole;
+use thurbox::session::SharedSession;
 use thurbox::session::{Multiplexer, Route, SessionId, Via};
 use thurbox::storage::Database;
-use thurbox::sync::SharedSession;
 
 #[path = "support/tmux_server.rs"]
 mod tmux_server;
@@ -104,7 +104,7 @@ impl Instance {
         // session's route — status and the heartbeat are routed separately.
         let mut settings = thurbox::session::settings::Settings::default();
         settings.features.automations = false;
-        thurbox::session::settings::init(settings);
+        thurbox::config::settings::save_settings(&settings).expect("settings.toml");
 
         Self {
             root,
@@ -149,7 +149,7 @@ fn cli(db: &Database, backends: &thurbox::cli::Backends<'_>, args: &[&str]) -> R
     let parsed =
         thurbox::cli::Cli::try_parse_from(["thurbox-cli", "--json"].iter().chain(args).copied())
             .map_err(|e| format!("parse {args:?}: {e}"))?;
-    match thurbox::cli::run(parsed, db, backends) {
+    match thurbox::cli::run(parsed, db, backends, &settings()) {
         Ok(thurbox::cli::Outcome::Ok) => Ok(()),
         Ok(thurbox::cli::Outcome::Failed { message, .. }) => Err(message),
         Err(e) => Err(e.message),
@@ -241,7 +241,7 @@ fn the_registry() -> (
     Arc<RecordingBackend>,
     Arc<RecordingBackend>,
 ) {
-    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured();
+    let (mut backends, _hosts, _warnings) = thurbox::backend::wiring::configured(&settings());
     let local_route = Route::local(Some(Multiplexer::Rmux));
     let local = RecordingBackend::new(&local_route);
     backends.register(local_route, local.clone());
@@ -347,7 +347,7 @@ fn every_lifecycle_verb_reaches_the_backend_the_route_names() {
     // window has closed
     cli(&db, &backends, &["session", "delete", &uuid, "--soft"]).expect("soft delete");
     backdate_delete(&db, id);
-    let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db, backends.get());
+    let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db, backends.get(), 0);
     assert_eq!(
         reaped,
         vec![uuid.clone()],
@@ -475,7 +475,8 @@ fn a_route_nothing_serves_is_refused_by_every_lifecycle_verb() {
     }
     let instance = Instance::new();
     let db = Database::open_in_memory().expect("db");
-    let backends = thurbox::cli::Backends::ready(thurbox::backend::wiring::configured().0);
+    let backends =
+        thurbox::cli::Backends::ready(thurbox::backend::wiring::configured(&settings()).0);
     let repo = instance.repo().display().to_string();
 
     // create
@@ -559,7 +560,7 @@ fn a_route_nothing_serves_is_refused_by_every_lifecycle_verb() {
             "{key}: reap was taken"
         );
         backdate_delete(&db, id);
-        let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db, backends.get());
+        let reaped = thurbox::session_ops::reap_overdue_soft_deletes(&db, backends.get(), 0);
         assert!(reaped.is_empty(), "{key}: the sweep reaped {reaped:?}");
         assert!(row_state(&db, id).deleted);
         instance.assert_tmux_untouched(&format!("{key}: restore and reap"));
@@ -600,4 +601,10 @@ fn a_route_nothing_serves_is_refused_by_every_lifecycle_verb() {
         "",
         "nothing reached for the host over ssh"
     );
+}
+
+/// The settings this instance runs with, read from its `settings.toml` the way
+/// `thurbox-cli` loads them at startup.
+fn settings() -> thurbox::session::settings::Settings {
+    thurbox::config::settings::load_or_seed_with_warnings().0
 }

@@ -9,7 +9,7 @@
 use rusqlite::{params, OptionalExtension};
 
 use crate::session::{AutomationAction, Task, TaskStatus, SOURCE_LOCAL};
-use crate::sync::current_time_millis;
+use crate::storage::current_time_millis;
 
 use super::audit::{AuditAction, EntityType};
 use super::Database;
