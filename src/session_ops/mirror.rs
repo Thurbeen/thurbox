@@ -239,6 +239,9 @@ pub fn session_to_json_assessed(
     // last listed still in flight or scheduled.
     put("idle_proof", json!(hook.idle_proof().map(|p| p.as_str())));
     put("pending", json!(hook.work.pending()));
+    // How many items that list held past the cap of `pending`; non-zero
+    // still means work remains.
+    put("pending_omitted", json!(hook.work.pending_omitted()));
     // Null unless a driver declared one: the agent the hook fields above were
     // resolved against, when that is not the agent the row was created with.
     // Without it a `--command` session's `hook_coverage: "full"` reads as a

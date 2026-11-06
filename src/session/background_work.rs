@@ -194,15 +194,13 @@ impl StopReport {
         matches!((&self.tasks, &self.crons), (Some(t), Some(c)) if t.is_empty() && c.is_empty())
     }
 
-    /// Every listed item, tasks first, kept to [`MAX_IN_FLIGHT`].
-    fn pending(&self) -> Vec<Pending> {
-        self.tasks
-            .iter()
-            .chain(&self.crons)
-            .flatten()
-            .take(MAX_IN_FLIGHT)
-            .cloned()
-            .collect()
+    /// Every listed item, tasks first, kept to [`MAX_IN_FLIGHT`] — and how
+    /// many past the cap were left out.
+    fn pending(&self) -> (Vec<Pending>, usize) {
+        let all = self.tasks.iter().chain(&self.crons).flatten();
+        let total = all.clone().count();
+        let kept = all.take(MAX_IN_FLIGHT).cloned().collect();
+        (kept, total.saturating_sub(MAX_IN_FLIGHT))
     }
 }
 
@@ -263,6 +261,11 @@ pub struct WorkRecord {
     /// What the agent's last `Stop` listed still in flight or scheduled.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pending: Vec<Pending>,
+    /// How many more items that `Stop` listed past [`MAX_IN_FLIGHT`]. The cap
+    /// bounds what is shown, never whether work remains: an omitted item can
+    /// only be cleared by the next `Stop`, so it holds `background` until then.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    omitted: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     idle: Option<IdleProof>,
 }
@@ -315,10 +318,26 @@ impl WorkRecord {
             .collect()
     }
 
+    /// How many items the last `Stop` listed past the cap of
+    /// [`WorkRecord::pending`].
+    pub fn pending_omitted(&self) -> usize {
+        self.omitted
+    }
+
+    /// Whether the last `Stop` listed work that is still held, shown or not.
+    fn listed(&self) -> bool {
+        !self.pending.is_empty() || self.omitted > 0
+    }
+
+    fn forget_listed(&mut self) {
+        self.pending.clear();
+        self.omitted = 0;
+    }
+
     /// Whether work was counted here and all of it has ended, with nothing
     /// listed either.
     fn all_ended(&self) -> bool {
-        self.running.is_empty() && !self.ended.is_empty() && self.pending.is_empty()
+        self.running.is_empty() && !self.ended.is_empty() && !self.listed()
     }
 
     /// Whether `id` is running.
@@ -330,13 +349,13 @@ impl WorkRecord {
     /// one of them is still recognised.
     fn forget_running(&mut self) {
         self.running.clear();
-        self.pending.clear();
+        self.forget_listed();
     }
 
     fn forget_all(&mut self) {
         self.running.clear();
         self.ended.clear();
-        self.pending.clear();
+        self.forget_listed();
     }
 
     fn start(&mut self, id: &str) {
@@ -360,12 +379,13 @@ impl WorkRecord {
 
     /// What a turn ending makes of the record, and the state it ends as.
     fn settle_turn_end(&mut self, stop: Option<&StopReport>) -> &'static str {
-        let listed = stop.map(StopReport::pending).unwrap_or_default();
+        let (listed, omitted) = stop.map(StopReport::pending).unwrap_or_default();
         if !listed.is_empty() {
             self.pending = listed;
+            self.omitted = omitted;
             return "background";
         }
-        self.pending.clear();
+        self.forget_listed();
         if stop.is_some_and(StopReport::proves_idle) {
             // The agent's own account outranks an end edge that never came.
             self.running.clear();
@@ -380,6 +400,10 @@ impl WorkRecord {
         }
         "done"
     }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 fn push_capped(ids: &mut Vec<String>, id: &str) {
@@ -404,8 +428,11 @@ pub fn valid_work_id(id: &str) -> bool {
 /// other reports cannot tell a turn starting from one already under way.
 ///
 /// `stop` is the turn's `Stop` payload, read only for a `done`. Every report
-/// but an echo of the word already stored takes back an [`IdleProof`]; a
-/// `done` may set a new one.
+/// but an echo that is not news takes back an [`IdleProof`]; a `done` may set
+/// a new one.
+///
+/// An echo never replaces what a `Stop` listed: it carries no payload, and the
+/// interface may hand back a word published before that `Stop` was stored.
 pub fn settle_report(
     previous: Option<&str>,
     work: &mut WorkRecord,
@@ -413,11 +440,16 @@ pub fn settle_report(
     from: ReportFrom<'_>,
     stop: Option<&StopReport>,
 ) -> String {
-    // An echo that changes nothing — the word already stored, or a late
-    // `background` for work that has all ended — is not news, and takes back
-    // no proof.
+    // An echo that changes nothing — the word already stored, a late
+    // `background` for work that has all ended, or any word while a `Stop`
+    // proof holds — is not news, and takes back no proof. A `Stop` proof is
+    // only ever set by a local write, so every word it could be echoing was
+    // stored before it; a remote session, whose only reports are echoes,
+    // never holds one.
     if from == ReportFrom::Echo
-        && (previous == Some(reported) || (reported == "background" && work.all_ended()))
+        && (previous == Some(reported)
+            || work.idle == Some(IdleProof::Stop)
+            || (reported == "background" && work.all_ended()))
     {
         return previous.unwrap_or(reported).to_string();
     }
@@ -430,7 +462,9 @@ pub fn settle_report(
             return "background".into();
         }
         ("working", ReportFrom::TurnStart) => work.forget_running(),
-        ("done", ReportFrom::Echo) if !work.is_empty() => return "background".into(),
+        ("done", ReportFrom::Echo) if !work.is_empty() || work.listed() => {
+            return "background".into();
+        }
         ("done", _) => return work.settle_turn_end(stop).to_string(),
         _ => {}
     }
@@ -453,7 +487,7 @@ pub fn settle_claim(previous: Option<&str>, work: &mut WorkRecord) -> Result<(),
     if !matches!(previous, Some("done" | "idle")) {
         return Err(ClaimRefused::TurnNotEnded);
     }
-    if !work.running.is_empty() || !work.pending.is_empty() {
+    if !work.running.is_empty() || work.listed() {
         return Err(ClaimRefused::WorkInFlight);
     }
     if work.idle.is_none() {
@@ -486,11 +520,11 @@ pub fn settle_edge(
             None
         }
         WorkEdge::End => {
-            let listed = !work.pending.is_empty();
+            let listed = work.listed();
             let ended = work.end(id);
             ((ended || listed)
                 && work.is_empty()
-                && work.pending.is_empty()
+                && !work.listed()
                 && previous == Some("background"))
             .then_some("done")
         }
@@ -788,7 +822,7 @@ mod tests {
                 {"id": "c1", "schedule": "*/5 * * * *", "recurring": true, "prompt": "check"}
             ]
         }));
-        let items = both.pending();
+        let (items, _) = both.pending();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].kind, "shell");
         assert_eq!(items[0].description.as_deref(), Some("npm run dev"));
@@ -835,6 +869,96 @@ mod tests {
             "background"
         );
         assert_eq!(work.pending().len(), MAX_IN_FLIGHT);
+        assert_eq!(work.pending_omitted(), 1);
+    }
+
+    /// The cap bounds what is shown, not whether work remains: a cron listed
+    /// past it still holds `background` once every shown item has ended.
+    #[test]
+    fn work_past_the_cap_holds_background_until_the_next_payload() {
+        let tasks: Vec<_> = (0..MAX_IN_FLIGHT)
+            .map(|i| serde_json::json!({"id": format!("s{i}"), "type": "subagent"}))
+            .collect();
+        let report = stop(serde_json::json!({
+            "background_tasks": tasks,
+            "session_crons": [{"id": "c1", "schedule": "*/5 * * * *", "recurring": true}]
+        }));
+        let mut work = WorkRecord::default();
+        settle_report(
+            Some("working"),
+            &mut work,
+            "done",
+            ReportFrom::Agent,
+            Some(&report),
+        );
+        for i in 0..MAX_IN_FLIGHT {
+            assert_eq!(
+                settle_edge(
+                    Some("background"),
+                    &mut work,
+                    WorkEdge::End,
+                    &format!("s{i}")
+                ),
+                None
+            );
+        }
+        assert!(work.pending().is_empty());
+        assert_eq!(work.pending_omitted(), 1);
+        assert_eq!(
+            settle_claim(Some("done"), &mut work),
+            Err(ClaimRefused::WorkInFlight)
+        );
+        let round_trip = WorkRecord::parse(work.to_column().as_deref());
+        assert_eq!(round_trip.pending_omitted(), 1);
+    }
+
+    /// A `done` echo published before a `Stop` that listed work does not
+    /// replace that list, and a claim made after it is still refused.
+    #[test]
+    fn a_late_done_echo_keeps_the_listed_work() {
+        let mut work = WorkRecord::default();
+        let shell = stop(serde_json::json!({
+            "background_tasks": [{"id": "b1", "type": "shell"}],
+            "session_crons": []
+        }));
+        settle_report(
+            Some("working"),
+            &mut work,
+            "done",
+            ReportFrom::Agent,
+            Some(&shell),
+        );
+        assert_eq!(
+            report(Some("background"), &mut work, "done", ReportFrom::Echo),
+            "background"
+        );
+        assert_eq!(work.pending().len(), 1);
+        assert_eq!(
+            settle_claim(Some("background"), &mut work),
+            Err(ClaimRefused::TurnNotEnded)
+        );
+    }
+
+    /// Once a `Stop` proved the session idle, a word published before it and
+    /// echoed late neither moves the state nor takes the proof back.
+    #[test]
+    fn a_late_echo_does_not_undo_a_stop_proof() {
+        let mut work = WorkRecord::default();
+        let empty = stop(serde_json::json!({"background_tasks": [], "session_crons": []}));
+        settle_report(
+            Some("background"),
+            &mut work,
+            "done",
+            ReportFrom::Agent,
+            Some(&empty),
+        );
+        for late in ["background", "working"] {
+            assert_eq!(
+                report(Some("done"), &mut work, late, ReportFrom::Echo),
+                "done"
+            );
+            assert_eq!(work.idle_proof(), Some(IdleProof::Stop));
+        }
     }
 
     #[test]

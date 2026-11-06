@@ -345,7 +345,7 @@ gone — and each one comes with what it takes to judge it:
 | `stopped` | whether the session is parked — `session stop`, no pane |
 | `launch_failure` | why a `failed` session failed, `null` otherwise — see *Launch failures* below |
 | `ready` | whether the session can take input now, for every agent — see *Readiness* below |
-| `activity`, `idle_proof`, `pending`, `state_support` | whether the session is provably at rest, background work included, and what says so — see *Activity* below |
+| `activity`, `idle_proof`, `pending`, `pending_omitted`, `state_support` | whether the session is provably at rest, background work included, and what says so — see *Activity* below |
 | `reports_as` | the agent the hook fields were read against, when a driver declared one |
 
 `state` is always a word, and one of `SessionState`'s — the single
@@ -465,7 +465,9 @@ report of any kind — it describes the turn that ended last and no other:
 - **`full`** — claude. Its `Stop` hook hands thurbox the payload (`session
   signal --state done --stop-payload -`). Either list non-empty stores
   `background` and keeps the items in `pending[]` (`type`, `id`,
-  `description`; `schedule` and `recurring` for a `cron`), up to 64 of them.
+  `description`; `schedule` and `recurring` for a `cron`), up to 64 of them;
+  `pending_omitted` counts the rest, which still hold `background` until the
+  next `Stop`.
   A finished task or a fired cron starts a new turn — with no
   `UserPromptSubmit`; it reports `working` from its first tool call — and
   that turn's `Stop` replaces the list. A recurring cron is listed on every
