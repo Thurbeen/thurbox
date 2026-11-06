@@ -1986,7 +1986,7 @@ const KERNEL_WORKERS: &[(&str, &str, &[&str])] = &[
     ),
     (
         "kernel/terminal",
-        "thread::spawn",
+        "thread::",
         &[
             "kernel/terminal/attach.rs",
             "kernel/terminal/discovery.rs",
@@ -2050,7 +2050,8 @@ fn the_kernel_worker_scan_sees_only_misplaced_production_reaches() {
         found,
         [
             "kernel/snapshot/mod.rs:6 thread::",
-            "kernel/terminal/mod.rs:2 thread::spawn",
+            "kernel/terminal/mod.rs:4 thread::",
+            "kernel/terminal/paint.rs:2 thread::",
         ]
     );
 }
