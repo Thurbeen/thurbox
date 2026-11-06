@@ -1,8 +1,8 @@
 # Controllers
 
-Fleet has three built-in pure controllers and a plugin host with pure admission.
-The Gateway controller is partly implemented. Each guide keeps the controller's
-lifecycle, interface and state-machine diagram together.
+Fleet has built-in pure controllers and a plugin host with pure admission.
+Each guide keeps the controller's lifecycle, interface and state-machine
+diagram together.
 
 | Controller | Resource | Responsibility |
 | --- | --- | --- |

@@ -65,7 +65,9 @@ the corresponding config default. Explicit `model: null` disables an
 inherited model. Explicit `host: "local"` overrides a remote default;
 omitting host inherits it.
 The Task spec, including its reference and whether these fields were present,
-is immutable except `dispatch`. Existing Tasks need no reference and retain
+is immutable except `dispatch` and `forge`; `fleet amend` appends to
+`spec.amendments` (see [Amendments](task.md#amendments)). Existing Tasks
+need no reference and retain
 their original behavior. To dispatch the example, apply the same Task with
 `dispatch: true` after preparing its workspace and providers.
 

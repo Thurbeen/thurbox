@@ -137,7 +137,7 @@ the event to its thread's Conversation. It is a manager verb, like
   leave the chat's type out of an edit.
 - An event in a thread Fleet does not mirror yet creates the Conversation
   only when it could start a Task, earn a refusal, or is Fleet's own
-  Question post. Other chatter is ignored, so a busy channel costs no
+  keyed post. Other chatter is ignored, so a busy channel costs no
   objects. This holds in every channel that a wildcard route covers, and in
   every DM.
 - A redelivered event changes nothing.
@@ -146,7 +146,7 @@ the event to its thread's Conversation. It is a manager verb, like
 | --- | --- | --- |
 | 0 | Written, a duplicate, or ignored | Acknowledges. |
 | 1 | Refused: the thread already holds 100 unread events, the Conversation is being deleted, `verified` is not the account's `inbound`, or the account is not configured | Does not acknowledge. |
-| 4 | Unknown: an unreadable payload or record | Does not acknowledge. The platform redelivers. |
+| 4 | Unknown: an unreadable envelope, payload or record | Does not acknowledge. The platform redelivers. |
 | 5 | A write conflict that the verb's retries did not resolve | Does not acknowledge. The platform redelivers. |
 
 A refused event that the platform stops redelivering is recovered by the
@@ -374,7 +374,7 @@ against the configuration Fleet runs:
 | Condition | True when | False reasons |
 | --- | --- | --- |
 | `Accepted` | The account is valid and some route uses it. | `NoRoute` |
-| `Resolved` | The platform's `whoami` is the configured bot, and `capabilities` answered. | `IdentityMismatch` |
+| `Resolved` | The platform's `whoami` is the configured bot, and `capabilities` answered. | `IdentityMismatch`; Unknown with `Unreachable` when `whoami` or `capabilities` is Unknown |
 | `InboundReady` | Some instance beat `connected`, on the current digest, within three `gateway.beatMs`, and in that time the account had no envelope refused for the listener's own fault: one unreadable as an envelope, or one whose `verified` is not the account's `inbound`. A full queue or an unreadable payload is one thread's trouble and does not count. | `NoListener`, `Connecting`, `Closing`, `ListenerStale`, `ListenerConfigOld`, `DeliveriesRefused` |
 
 A connected listener whose platform app is not subscribed to messages

@@ -11,9 +11,10 @@
 #   fleet-runtime        adapter                   -> api, exec
 #   fleet-forge          adapter                   -> api, exec
 #   fleet-gateway        adapter                   -> api, exec
+#   fleet-plugin         adapter                   -> api, exec
 #   fleet-telemetry      adapter OTLP export, off unless OTEL_* asks
 #   fleet-manager        orchestration             -> api, controllers
-#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge, gateway, telemetry
+#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge, plugin, gateway, telemetry
 #   fleet-arch, fleet-dev  tooling
 
 [crates.fleet-api]
@@ -42,7 +43,8 @@ deps = ["fleet-api"]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec"]
 
-# The only crate that knows `gh` and `glab` exist: every forge call is one
+# The only crate that knows a forge CLI (`gh`, `glab`, `az`, `curl`) exists:
+# every forge call is one
 # bounded process through fleet-exec, and no forge-specific name appears
 # above the port.
 [crates.fleet-forge]

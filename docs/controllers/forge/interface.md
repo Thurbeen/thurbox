@@ -93,15 +93,18 @@ Entries are independent: each is probed, relayed and marked ready on its own, ea
 relay is its own inbox entry naming the change, and a problem on one is
 reported in the condition message and stops nothing else.
 
-Each entry of `status.inbox`, which this controller and `fleet send` append
-to and TaskController removes from:
+Each entry of `status.inbox`, which this controller, GatewayController,
+`fleet send`, `fleet amend` and a plugin append to and TaskController removes
+from:
 
 | Field | Meaning |
 | --- | --- |
-| `key` | Deterministic: `task/<name>/<uid>/relay/<change uid>/<revision>` for a relay or a join, `task/<name>/<uid>/send/<n>` for `fleet send`. Refused if already present in `inbox` or `deliveries`. |
-| `from` | `forge/<change>`, the ChangeRequest's name, or `cli/<user>`. |
+| `key` | Deterministic: `task/<name>/<uid>/relay/<change uid>/<revision>` for a relay or a join, `task/<name>/<uid>/send/<n>` for `fleet send`, `task/<name>/<uid>/amend/<generation>` for `fleet amend`, `task/<name>/<uid>/plugin/<plugin>/<key>` for a plugin's append, `task/<name>/<uid>/gateway/<conversation uid>/<revision>` for a chat relay, `task/<name>/<uid>/gateway/child/<child uid>/<item>` for a child's words. Refused if already present in `inbox` or `deliveries`. |
+| `from` | `forge/<change>`, the ChangeRequest's name; `cli/<user>`; `plugin/<name>`; or `gateway/…` for a chat relay or a child's words. |
 | `text` | The message, delivered as typed. |
 | `about` | For a relay: the mirror's `uid`, `revision` and `head.id` the message was computed from. Absent for `fleet send`. TaskController's `deliveries.revisions` keeps the highest delivered revision per mirror `uid`, so a recreated mirror starts afresh. |
+| `answers` | For `fleet send --answers`: the declared Question ids the entry answers. Absent otherwise. |
+| `amends` | For `fleet amend`: the spec generation it created. Absent otherwise. |
 | `queuedAt` | Unix milliseconds. |
 
 ### Requested probes

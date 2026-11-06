@@ -67,11 +67,13 @@ Each command is one trace. Its root span is `fleet COMMAND`, for example
 | `fleet COMMAND` | none | `fleet.command`, `process.exit.code` |
 | `reconcile pass` | `fleet reconcile`, or none under `fleet up` | `fleet.pass` |
 | `reconcile KIND` | `reconcile pass` | identity, `fleet.controller`, `fleet.outcome` |
-| `effect spawn`, `effect brief`, `effect deliver`, `effect release`, `effect markReady` | `reconcile KIND` | identity, `fleet.effect`, `fleet.outcome` |
+| `effect spawn`, `effect brief`, `effect deliver`, `effect release`, `effect revive`, `effect pause`, `effect resume`, `effect markReady` | `reconcile KIND` | identity, `fleet.effect`, `fleet.outcome` |
 | `forge poll` | `reconcile ChangeRequest` | identity, `fleet.forge.host`, `fleet.outcome` |
 
 The identity attributes are the object's `fleet.kind`, `fleet.name`,
-`fleet.uid` and `fleet.generation`.
+`fleet.uid` and `fleet.generation`. Only the Task effects and mark-ready
+have a span; the Conversation and Gateway controllers' effects and Task
+creation are not traced.
 
 A command with a non-zero exit has the error status. A reconcile that
 fails has the error status.
@@ -79,7 +81,7 @@ fails has the error status.
 | Span | `fleet.outcome` values |
 | --- | --- |
 | `reconcile KIND` | `changed`, `unchanged`, `conflict`, `error`, `leaseLost` |
-| `effect …` | `spawned`, `adopted`, `delivered`, `queued`, `already`, `released`, `markedReady`, `moved`, `failed`, `unknown` |
+| `effect …` | `spawned`, `adopted`, `delivered`, `queued`, `already`, `released`, `revived`, `paused`, `resumed`, `markedReady`, `moved`, `failed`, `unmapped`, `trustUnmapped`, `unknown` |
 | `forge poll` | `known`, `absent`, `timeout`, `incomplete`, `throttled`, `unreadable`, `notLoggedIn`, `refused`, `unavailable` |
 
 The `fleet.controller` values are `TaskController`, `ForgeController`,

@@ -22,8 +22,8 @@ use crate::plan::EffectOutcome;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChangeRef {
-    /// The adapter kind that owns the host: `azure-devops`, `github`,
-    /// `gitlab` or `fake`.
+    /// The adapter kind that owns the host: `azure-devops`,
+    /// `bitbucket-cloud`, `github`, `gitlab` or `fake`.
     pub kind: String,
     pub host: String,
     /// The project path on the host, as the forge spells it (`owner/repo`,

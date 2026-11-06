@@ -12,9 +12,10 @@ queue or create a fresh operational deployment by guessing a path.
 
 Represent one session as a Task with `harness`, `host`, optional `model`,
 `brief`, `workspace` (`dir`, or `repositories` for the runtime to check out),
-optional `outputs` and explicit `dispatch` (see
-docs/task-controller/resource.md). Apply it with `fleet apply -f FILE`. Record its name
-and returned generation. Inspect it with `fleet get task NAME` and
-`fleet status task NAME --json`. Check supported kinds with
-`fleet version --json`; do not invent unsupported fields. Do not push, merge or activate work unless the
-task authorizes it.
+optional `outputs` and explicit `dispatch`. The
+[Task resource](../../../docs/resources/task.md) documents every field. Apply
+it with `fleet apply -f FILE`. Record its name and returned generation.
+Inspect it with `fleet get task NAME` and `fleet status task NAME --json`.
+Check supported kinds with `fleet version --json`; do not invent unsupported
+fields. To add to a brief later, use `fleet amend TASK`; a different brief is
+a new Task. Do not push, merge or activate work unless the task authorizes it.

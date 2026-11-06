@@ -8,9 +8,10 @@ required policies and authorization boundary. Keep secrets in providers.
 ## Work
 
 Create the desired resources with `fleet apply -f FILE`. Inspect their status
-with `fleet status KIND NAME --json`. Controllers reconcile through
-`fleet reconcile` under one manager lease. A worker reports a claim with
-`fleet result`; its owning controller verifies it.
+with `fleet status KIND NAME --json`. Controllers reconcile under
+`fleet up`; use bounded `fleet reconcile` while `up` is stopped. A worker
+reports a claim with `fleet result`; Fleet checks its generation and output
+shape, not its truth.
 
 ## Acceptance
 

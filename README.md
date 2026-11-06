@@ -86,7 +86,8 @@ fleet amend hello --text "Also cover the docs."  # add to the brief; same sessio
 fleet delete task hello                    # release the session, then remove the Task
 ```
 
-`list`, `status` and `version` take `--json`. The worker answers with
+`list`, `status`, `version`, `apply`, `send`, `amend` and `reconcile` take
+`--json`; `get` always prints JSON. The worker answers with
 `fleet result hello --generation N --outcome shipped --summary TEXT`, where
 `N` is `brief.generation` in `fleet status task hello --json`. Run
 `fleet --help` or `fleet COMMAND --help` for every command and flag.
@@ -132,7 +133,7 @@ one-line setup fetches the latest release's installer. To pin a release, set
 `FLEET_VERSION` to its tag:
 
 ```sh
-curl -fsSL https://github.com/Thurbeen/fleet/releases/latest/download/install-release.sh | FLEET_VERSION=v2.2.1 sh
+curl -fsSL https://github.com/Thurbeen/fleet/releases/latest/download/install-release.sh | FLEET_VERSION=v2.22.0 sh
 ```
 
 To inspect before you run it, download `install-release.sh` from the
@@ -181,9 +182,10 @@ resource commands. For `up`, persist that directory in `[data] dir` first: a
 differing runtime override is refused so the VEGA brief and workers use the
 same store. A nonempty directory without this build's store marker, an
 unsupported schema, or corrupt data is refused. Keep private config and
-resources outside a public checkout. Fleet v2 passes no environment to a
-session besides the model variable; credentials stay with the agent and its
-host, never in manifests or briefs.
+resources outside a public checkout. Fleet v2 passes a session only the
+environment its Task, TaskConfig and EnvProviders resolve, plus the model
+variable; credentials stay with the agent and its host, never in manifests
+or briefs.
 
 To switch an existing deployment deliberately:
 

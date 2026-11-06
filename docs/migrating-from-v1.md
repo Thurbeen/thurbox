@@ -56,7 +56,7 @@ Mission Control (thurbox extension)         Forge controllers
 | `--repo`, `--base`, `--branch`, `--add-repo` | `spec.workspace.repositories`, mapped by `runtime.repositories`. |
 | Publish methods and `collect` verification | A worker claim. `fleet declare --change-request URL` makes a [ChangeRequest](resources/change-request.md) that the Forge controller follows. |
 | `shepherd` and its auto-merge | None. Fleet v2 never merges. It can take a draft out of draft under a ready policy. |
-| `owners.conf` origins and relays | Partly the Gateway: [Conversation](resources/conversation.md) and [Listener](resources/listener.md) mirrors. Task creation from a chat is not built yet. |
+| `owners.conf` origins and relays | The Gateway: [Conversation](resources/conversation.md) and [Listener](resources/listener.md) mirrors, with one Task created per admitted thread. |
 | The Kanban board and the queue pane | None. Use `fleet list` and `fleet status`. |
 
 ### Workspaces
@@ -264,8 +264,9 @@ from the VEGA workspace that `fleet init` writes.
 
 - The command is `fleet`, not `uv run fleet`. V2 needs no Python, uv or
   checkout.
-- V2 releases Linux x86_64 and aarch64 binaries only. V1 also supported
-  Windows. V2 has no Windows or macOS release.
+- V2 releases Linux x86_64 and aarch64 binaries, and an experimental macOS
+  Apple Silicon binary. V1 also supported Windows. V2 has no Windows or
+  Intel Mac release.
 - The configuration, resource and store formats are new. There is no
   importer.
 - V2 has no topics, no task dependencies, no auto-merge and no artifact

@@ -3,11 +3,12 @@
 Registered plugin kinds are served alongside Fleet’s built-in resources.
 
 A plugin declares the kinds it reconciles in its manifest, and the store
-serves them beside Task, TaskConfig, EnvProvider and ChangeRequest while the
-plugin is registered. They have Fleet's envelope, a spec the plugin's schema
-validates, and a status the plugin owns. This page defines what is common to
-every plugin kind; the [Plugin controller](../controllers/plugin/README.md)
-defines how they are reconciled.
+serves them beside Task, TaskConfig, EnvProvider, ChangeRequest, Conversation
+and Listener while the plugin is registered. They have Fleet's envelope, a
+spec the plugin's schema validates, and a status the plugin owns. This page
+defines what is common to every plugin kind; the
+[Plugin controller](../controllers/plugin/README.md) defines how they are
+reconciled.
 
 ## Example
 
@@ -35,7 +36,8 @@ the source; the plugin creates the mirrors.
     "task": {"name": "issue-88-review", "uid": "…"},
     "observedGeneration": 1,
     "conditions": [{"type": "Tasked", "status": "True", "reason": "Created",
-                    "message": "Task issue-88-review created", "lastTransitionTime": 1730000000000}],
+                    "message": "Task issue-88-review created", "lastTransitionTime": 1730000000000,
+                    "observedGeneration": 1}],
     "notBefore": 1730000300000,
     "effects": {
       "comment/88/1": {"intent": {"at": 1730000100000, "generation": 1},
@@ -85,7 +87,7 @@ fields the host writes under the same owner:
 | --- | --- |
 | `notBefore` | Earliest next pass, Unix milliseconds: the plan's, else `now + pollMs`. |
 | `effects` | Per effect key: `intent {at, generation}`, written before the effect runs; `receipt {at, outcome}`, written after, `outcome` one of `done`, `failed` or `unknown` with the plugin's payload or reason. Newest 100 keys. |
-| `host` | The host's bookkeeping: `observedAt`, the last pass; `error`, what failed on the last pass and why, absent when nothing did; `verbs`, the outcome of each `creates`, `amends`, `patches`, `appends`, `declares` and `deletes` entry of the last pass, by index. |
+| `host` | The host's bookkeeping: `observedAt`, the last pass; `generation`, the spec generation that pass read; `error`, what failed on the last pass and why, absent when nothing did; `verbs`, the outcome of each `creates`, `amends`, `patches`, `appends`, `declares` and `deletes` entry of the last pass, by index. |
 
 A plan that names a reserved field is refused. `fleet apply` refuses a
 supplied status on every kind.

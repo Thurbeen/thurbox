@@ -1,6 +1,6 @@
 # Gateway controller
 
-Implemented. The installed binary has steps 1 to 11 below: the `[gateway]`
+Implemented. The installed binary has steps 1 to 12 below: the `[gateway]`
 key, the Gateway port, the `fleet-gateway` crate with its fake, Slack and
 Discord adapters, the `Conversation` and `Listener` kinds,
 ConversationController (the mirror, admission, Task creation in each

@@ -20,7 +20,7 @@ from here.
    change a worker opened. The adapter for its host
    parses the URL at apply, and again before the first poll, when the
    controller records it as `status.ref`.
-2. On each due pass the controller asks one probe, `Change { ref }`. The
+2. On each due pass the controller asks one probe, `Change { change }`. The
    manager answers it through the Forge port with one complete observation
    or Unknown.
 3. A Known answer is compared with the stored snapshot. If anything differs,

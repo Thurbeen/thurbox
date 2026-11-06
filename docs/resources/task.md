@@ -48,7 +48,8 @@ except `dispatch` and `forge`. `amendments` grows only through
 | `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. An amendment can add outputs. |
 | `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
 
-`harness` and `host` may not start with `-`. Any other field is refused.
+`harness`, `host` and `model` may not be empty, contain NUL or start with
+`-`. Any other field is refused.
 
 See [TaskConfig](task-config.md) and [EnvProvider](env-provider.md) for provider sources,
 precedence, validation and private launch snapshots.
@@ -64,8 +65,9 @@ A Task names its repositories. The runtime decides how they become files.
 ]}}
 ```
 
-- Each `name` and each `url` is unique in the Task. Each `url` and `ref` is
-  non-empty, has no whitespace and does not start with `-`.
+- Each `name` is a lowercase DNS-like name, unique in the Task. Each `url`
+  is unique in the Task. Each `url` and `ref` is non-empty, has no
+  whitespace and does not start with `-`.
 - A workspace has `dir` or `repositories`, never both.
 - Fleet has no branch, base, worktree or cleanup field. The runtime chooses
   them. The worker reports the change it opened through `fleet declare`.
@@ -84,14 +86,16 @@ A Task names its repositories. The runtime decides how they become files.
 Written by TaskController under the manager lease, except `result` and
 `declared`, which the worker writes through `fleet result` and `fleet
 declare`, `forge`, which the [Forge controller](../controllers/forge/README.md)
-writes, and `inbox`, which nobody owns and which changes only through the
-typed mutations described under [Inbox](#inbox).
+writes, `gateway`, which the
+[Gateway controller](../controllers/gateway/README.md) writes, and `inbox`
+and `answered`, which nobody owns and which change only through the typed
+mutations described under [Inbox](#inbox).
 
 | Field | Meaning |
 | --- | --- |
 | `phase` | Execution phase, defined by the [state machine](../controllers/task/state-machine.md). |
 | `observedGeneration` | The spec generation the controller last acted on. |
-| `conditions` | One entry per [condition type](../controllers/task/state-machine.md#conditions), with `status`, `reason`, `message` and `lastTransitionTime`. |
+| `conditions` | One entry per [condition type](../controllers/task/state-machine.md#conditions), with `status`, `reason`, `message`, `lastTransitionTime` and `observedGeneration`, the spec generation the condition was last set for. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
 | `session` | The session's runtime id, host and key, once spawned or adopted. A Task owns at most one session, from its spawn to its release; see [Session](session.md). |
 | `sessionState` | What the runtime last proved about the session: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. Absent until a pass proved something. A pass whose answers are Unknown keeps the last state. Nothing decides on it; `fleet status` prints it. [Session](session.md#states) defines each state and how it is proved. |
@@ -104,13 +108,13 @@ typed mutations described under [Inbox](#inbox).
 | `catchUps`, `catchUp` | Catch-up notes over the Task's life, which number their keys, and the key of the note owed to a revived or resumed session until its delivery is known. A record from before the rename holds the key as `resume`, under `resume/<n>`; it is read and sent the same way. |
 | `notBefore` | Earliest next reconcile after a failed attempt, in Unix milliseconds. The fixed retry delay is 30 seconds and survives manager restarts. |
 | `sessionCheckedAt` | When a Concluded Task's session was last looked up, in Unix milliseconds. At rest, the next lookup is due 5 minutes later. |
-| `brief` | The key and generation of the newest brief or amendment the worker received, once it has a receipt. A result names this generation. |
+| `brief` | `{key, generation, recovered}`: the key and generation of the newest brief or amendment the worker received, once it has a receipt, and whether that receipt was read back from the session's journal. A result names this generation. |
 | `result` | The worker's claim: outcome, generation, summary, artifacts, outputs. |
-| `inbox` | Messages queued for the session, oldest first: `{key, from, text, about, amends, queuedAt}`. Appended by `fleet send` and `fleet amend`, removed by TaskController once delivered, each through a typed store mutation; never replaced as a list. |
+| `inbox` | Messages queued for the session, oldest first: `{key, from, text, about, answers, amends, queuedAt}`. Appended by `fleet send` and `fleet amend`, removed by TaskController once delivered, each through a typed store mutation; never replaced as a list. |
 | `deliveries` | TaskController's: `receipts`, the newest 100 delivery receipts by inbox key (`{key, from, at, recovered, deliveredVia, mayHold}`, where `deliveredVia` is the runtime's route and `mayHold` says that route can hold the text behind an approval dialog), and `revisions`, per mirror (`about.uid`) the highest `about.revision` delivered, which keeps a duplicate out after its receipt has rotated. |
 | `deliveryAttempts` | TaskController's bookkeeping per inbox entry being delivered: `sends` (bounded at 3), `probeFailures` and `failed`. Removed with the entry. |
 | `declared` | The worker's, through `fleet declare`: facts it declared, each a JSON object with a required string `kind` and nothing else validated. See [Following declared changes](#following-declared-changes). |
-| `forge` | The Forge controller's: one entry per declared change, keyed by ChangeRequest name, with its `uid`, `state`, `cursor`, `gaps`, mark-ready record and `notBefore`, plus that controller's conditions. Absent for a Task that declared nothing. |
+| `forge` | The Forge controller's: `changes`, one entry per declared change keyed by ChangeRequest name, with its `uid`, `state`, `cursor`, `gaps`, `markReady` record and `notBefore`, plus that controller's `conditions`. Absent for a Task that declared nothing. |
 | `gateway` | The [Gateway controller](../controllers/gateway/README.md)'s: its tie to a chat conversation, relay cursor, children and post records, plus that controller's conditions. Absent for a Task that never talks. See [Talking in a conversation](#talking-in-a-conversation). |
 | `answered` | Per Question id, `{key, from, at}`: the inbox entry that answered it, its source and when. No owner; written only by an inbox append carrying `answers`, first answer wins. |
 
@@ -231,6 +235,7 @@ prints the entry as appended.
 | `from` | `cli/<user>` for `fleet send` and `fleet amend`; `forge/<change>` for a relay, the ChangeRequest's name; `plugin/<name>` for a plugin's append or amend. |
 | `text` | The message. The runtime can put its own header before it. For an amendment, the amendment's text; TaskController composes the delivered message from the spec. |
 | `about` | For a relay: the mirror's `uid`, `revision` and `head`. Absent for `fleet send`. |
+| `answers` | The declared Question ids this entry answers: `fleet send --answers ID`, or a plugin append's `answers`. Absent when empty. The store refuses an id that names no declared Question. |
 | `amends` | For an amendment: the spec generation it created. Absent otherwise. |
 | `queuedAt` | Unix milliseconds. |
 
@@ -251,7 +256,9 @@ repeated blindly. An entry that exhausts its sends raises
 `NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing: later
 entries are still delivered. An entry whose journal stays unreadable for 3 reads
 raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent
-again, stays in `status.inbox`, and holds back no later entry. The Thurbox
+again, stays in `status.inbox`, and holds back no later entry. An entry the
+runtime only queued, where the agent does not read it, raises
+`NeedsAttention/DeliveryQueued` naming it, with the same outcome. The Thurbox
 runtime refuses an entry over 16 000 bytes before it types anything, because
 tmux refuses a longer command. More than 20 undelivered entries raise
 `NeedsAttention/InboxFull`. A Concluded Task with a nonempty inbox is due again
@@ -314,7 +321,7 @@ declares, and Fleet relays.
 | `fleet declare --json '{"kind":"Question","id":"q1","text":"…"}'` | `worker` | Ask once. Posted in the tied thread, or, on a Task with no tie and no parent, opens a thread in the questions route's channel and ties the Task to it. Never reposted. |
 | `fleet declare --json '{"kind":"Comment","id":"c1","text":"…"}'` | `worker` | Say something in the tied thread. Never opens a thread. The `id`, unique for the Task, keeps two identical Comments apart. |
 | `fleet declare --json '{"kind":"Draft","id":"d1","title":"…","text":"…"}'` | `worker` | Show a draft for review. Logged in the `gateway.logs` channel, never posted in a thread. |
-| `status.gateway` | GatewayController | `conversation`, the verified tie; `cursor`, the Conversation revision relayed through; `seen`, `declared`, `result`, `changes`, `children` and `posted`, what was read, posted or logged; `posts`, the post, log and reaction effects' intents and receipts; `questions`, each posted Question; `gaps`; `reactions`, how each message of the thread is marked; and its conditions. Absent for a Task that never talks. |
+| `status.gateway` | GatewayController | `conversation`, the verified tie; `cursor`, the Conversation revision relayed through; `seen`, `declared`, `logged`, `result`, `changes`, `ready`, `children` and `posted`, what was read, posted or logged; `posts`, the post, log and reaction effects' intents and receipts; `questions`, each posted Question; `gaps`; `reactions`, how each message of the thread is marked; and its conditions. Absent for a Task that never talks. |
 | `status.answered` | none; inbox appends carrying `answers` | Per Question id `{key, from, at}`, first writer wins. Another channel showing the same Question reads it and stops waiting. |
 | `gateway.fleet.dev/conversation`, `gateway.fleet.dev/conversation-uid` labels | the Conversation's controller, at creation; `apply` refuses both | The Conversation a conversation Task was created for, by name and `uid`. |
 | `gateway.fleet.dev/parent`, `gateway.fleet.dev/parent-uid` labels | whoever creates a child and may already append to the parent's inbox (a person, or a plugin whose Task scope covers the parent), at creation only | The parent Task's name and `uid`. A child never talks in a thread; its parent relays its Questions, Comments, Drafts and results into its own inbox, so naming a parent is writing to it. A verified tie wins over them. |

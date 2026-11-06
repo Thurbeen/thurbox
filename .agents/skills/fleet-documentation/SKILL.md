@@ -14,6 +14,8 @@ Start from the document that owns the subject:
 - [Resources](../../../docs/resources/) owns manifest fields and semantics.
 - [Configuration](../../../docs/configuration/) owns user configuration.
 - [README](../../../README.md) owns installation, examples and cutover.
+- [Migrating from v1](../../../docs/migrating-from-v1.md) owns the mapping
+  from v1 concepts, configuration and commands to v2.
 - [Contracts](../../../crates/CONTRACTS.md) owns integration guarantees and
   implementation evidence.
 

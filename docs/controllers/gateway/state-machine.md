@@ -76,9 +76,14 @@ Behaviour in every phase:
 | waiting | The Conversation names this Task | tied |
 | abandoned | The Conversation later names this Task | tied |
 | abandoned | A later `Question` | opening |
-| abandoned | The Conversation names another Task, or is readably gone past `gateway.retainMs` | none |
+| abandoned | The Conversation is readably gone | none |
+| abandoned | The Conversation names another Task | none, with `ConversationGone` |
 | tied or waiting | The Conversation is readably gone, or names another Task | none, with `ConversationGone` |
 | child | The parent is readably gone | none |
+
+`child` is not a value of `status.gateway.conversation.state`. Fleet decides
+it on each pass from the parent labels and the parent's existence, and a
+child's `conversation` field is absent.
 
 While the tie is `opening`, `opened` or `waiting`, the Task's later
 declarations wait. They are posted in order once the tie is verified. A
@@ -228,7 +233,7 @@ On a Conversation:
 | --- | --- |
 | `Reachable` | The platform's history answered. |
 | `Tied` | A live Task is tied. |
-| `NeedsAttention` | One of `TaskCreateFailed`, `SpoolFull` (the thread's queue of unread events is full), `RouteUnknown` (the route left the config), `MentionsOnly` (the platform delivers only mentions, so only mentions are relayed), `WorkspaceBusy` (another Task holds the thread's own directory), `PostFailed` (three attempts at a refusal or busy notice were refused), `PostUnconfirmed` (a refusal or busy notice has an unknown outcome on a platform where Fleet cannot find it again), `RetireFailed` (three attempts at one step of the thread's retirement were refused). |
+| `NeedsAttention` | One of `TaskCreateFailed`, `RouteUnknown` (the route left the config), `MentionsOnly` (the platform delivers only mentions, so only mentions are relayed), `WorkspaceBusy` (another Task holds the thread's own directory), `PostFailed` (three attempts at a refusal or busy notice were refused), `PostUnconfirmed` (a refusal or busy notice has an unknown outcome on a platform where Fleet cannot find it again), `RetireFailed` (three attempts at one step of the thread's retirement were refused). |
 
 On a Task, under `status.gateway.conditions`:
 

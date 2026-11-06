@@ -34,7 +34,7 @@ clock, disk, environment, configuration, forge or runtime itself.
 
 | State | Probes |
 | --- | --- |
-| Watching or Closed, due | `Change { ref }`. |
+| Watching or Closed, due | `Change { change }`, carrying the `ChangeRef`. |
 | Settled | None. |
 | Deleting | None. |
 
@@ -225,7 +225,7 @@ an error and polls nothing.
 | Writer | May change | Required fencing |
 | --- | --- | --- |
 | `apply` | New ChangeRequest and labels; request deletion | Store validation, exclusive creation. |
-| `declare` | A new ChangeRequest named from the canonical ref, on a Task's behalf | Exclusive creation; an existing object is reused unchanged after its `status.ref` is verified against the URL. |
+| `apply`, through `fleet declare` | A new ChangeRequest named from the canonical ref, on a Task's behalf | Exclusive creation; an existing object is reused unchanged after its `status.ref` is verified against the URL. |
 | `change-request-controller` | All of `status`; deletion of its own object after retention | Current resourceVersion, the object's `uid` and the live manager lease. |
 
 The spec is immutable: any change to it is refused. `ownerReferences` is

@@ -69,12 +69,12 @@ else:
 if there is anything to send:
     append to status.inbox { key: task/<name>/<uid>/relay/<change uid>/<cr.revision>,
                              from: "forge/<change>", text: render(...),
-                             about: {change: cr.uid, revision: cr.revision, head: cr.head.id} }
+                             about: {uid: cr.uid, revision: cr.revision, head: cr.head.id} }
 entry.cursor = cr.revision
 ```
 
 The inbox append and the cursor advance are one CAS write to the Task,
-through the store's typed append mutation. A conflict drops both and the
+through the store's `record_relay` mutation. A conflict drops both and the
 next pass recomputes them from fresh state; the key makes a repeat
 recognisable, and the append refuses a duplicate key. The cursor advances
 whether or not the filters left anything to send.

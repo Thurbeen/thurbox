@@ -41,7 +41,8 @@ a later optimization. A missing or unmatched answer fails the call. A
 
 Every request carries `protocol`, `plugin`, `call` and `id`. Every answer
 carries `id` and either `ok: true` with the call's payload or `ok: false`
-with `why`, which the manager records as `host.error`.
+with `why`. The host treats an `ok: false` answer as a failed call;
+`host.error` records that the call failed, not `why`.
 
 ### `manifest`
 
@@ -234,6 +235,8 @@ config.
 | stdout per process | 8 MiB; past it the process is killed and every unanswered request has failed. |
 | One plan's `status` | 256 KiB. |
 | `creates` per plan | 20; `amends` per plan, 8; `effects` per plan, 8. |
+| Verbs per plan | 200 `patches`, `appends`, `amends`, `declares` and `deletes` together. |
+| Probes per round | 200. |
 | `list` answer | 200 objects. |
 | `status.effects` | Newest 100 keys. |
 | `operation_bound` | One call's worst case; the lease is sized to outlast it, as for the runtime and forge ports. |
@@ -264,7 +267,7 @@ every kind: a mirror's Task outlives the mirror unless the plugin deletes it.
 
 `crates/architecture.toml` gains the crate, its edges, the
 `FieldManager::Plugin` writer and the new forbidden methods for the CLI
-(`manifest`, `observe`, `perform`, `admit`), each with a negative fixture.
+(`call`, `admit`, `plugin_mutate`), each with a negative fixture.
 The purity rules are unchanged: no plugin process is started outside
 `fleet-exec`, and no plugin's name appears above the port except in the
 config.

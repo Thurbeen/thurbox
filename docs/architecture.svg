@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 910" role="img" aria-labelledby="title desc">
 <title id="title">Fleet execution architecture</title>
-<desc id="desc">The CLI constructs store, runtime and forge adapters and calls manager verbs. The manager leases and reconciles Tasks and ChangeRequests through three built-in pure controllers. The Task controller drives sessions through the Runtime port. The ChangeRequest controller mirrors changes through the Forge port. The Forge controller follows declared changes, relays feedback and may request mark-ready. The PluginController host runs registered external controllers: pure plugin decisions pass through a gate before manager-owned writes, while the fleet-plugin adapter runs bounded observe and perform calls through fleet-exec. Runtime and Forge also use fleet-exec for bounded external processes. All layers share fleet-api contracts. The manager also calls the GatewayController, ConversationController and ListenerController, which reach chat platforms through a Gateway port and the fleet-gateway adapters, while a separate listener hands platform events to the fleet gateway receive verb, through which it also reports its own health.</desc>
+<desc id="desc">The CLI constructs store, runtime and forge adapters and calls manager verbs. The manager leases and reconciles Tasks and ChangeRequests through its built-in pure controllers. The Task controller drives sessions through the Runtime port. The ChangeRequest controller mirrors changes through the Forge port. The Forge controller follows declared changes, relays feedback and may request mark-ready. The PluginController host runs registered external controllers: pure plugin decisions pass through a gate before manager-owned writes, while the fleet-plugin adapter runs bounded observe and perform calls through fleet-exec. Runtime and Forge also use fleet-exec for bounded external processes. All layers share fleet-api contracts. The manager also calls the GatewayController, ConversationController and ListenerController, which reach chat platforms through a Gateway port and the fleet-gateway adapters, while a separate listener hands platform events to the fleet gateway receive verb, through which it also reports its own health.</desc>
 <style>
   svg { color-scheme:light dark } .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
   .box{stroke:#7890a6;stroke-width:1.5} .pure{fill:#e9f5ef} .orchestration{fill:#edf3f8} .adapter{fill:#f3f4f5} .process{fill:#fff2de}
@@ -38,7 +38,7 @@
       <text x="260" y="401">TaskController</text><text x="540" y="401">ChangeRequestController</text><text x="820" y="401">ForgeController</text>
       <text x="260" y="423">session lifecycle</text><text x="540" y="423">forge mirror lifecycle</text><text x="820" y="423">follow · relay · mark-ready plan</text>
       <text x="540" y="539">pure decisions → gate · manager writes → fleet-plugin observe / perform</text>
-      <text x="152" y="679">CAS · lease · resources</text><text x="540" y="679">Thurbox or fake host</text><text x="928" y="679">GitHub · GitLab · fake</text>
+      <text x="152" y="679">CAS · lease · resources</text><text x="540" y="679">Thurbox or fake host</text><text x="928" y="674">GitHub · GitLab · Azure DevOps</text><text x="928" y="692">Bitbucket Cloud · fake</text>
     </g>
   </g>
   <g class="arrow">

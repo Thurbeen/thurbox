@@ -34,7 +34,7 @@ On the Discord side, the operator does these steps:
    One guild needs none.
 4. Invite the bot to the one guild with the `bot` scope ([bot authorization
    flow](https://docs.discord.com/developers/topics/oauth2#bot-authorization-flow)).
-   Grant the five permissions below on the route's channels
+   Grant the six permissions below on the route's channels
    ([permissions](https://docs.discord.com/developers/topics/permissions#permissions-bitwise-permission-flags)).
 5. Enable Developer Mode in the Discord client. Copy the guild id, the bot user
    id and the channel ids into `fleet.toml`.
@@ -134,6 +134,8 @@ errors:
 - `a discord account needs a team: its guild id`
 - `a discord account's team and bot are snowflakes`
 - `a discord account needs a curlConfig`
+- `the Discord adapter reads no direct message; "dm:*" needs a slack or fake
+  account`, on a route of the account that lists `"dm:*"`
 - `messageContent is a Discord account's key, not "slack"'s`, on an account of
   another platform
 
@@ -322,4 +324,4 @@ These points are **unverified**:
 | `Resolved` is False with `IdentityMismatch` | `bot` is not the token's bot user. | Set `bot` to the id that `GET /users/@me` returns. |
 | `ListenerConfigOld` after a change of `messageContent` | The digest covers `intents`. | Restart the listener, so it Identifies with the new `intents`. |
 | `NeedsAttention/PostUnconfirmed` | A post stayed Unknown past the nonce window, or after three attempts. | Check the thread, then act as the [Conversation](../../../resources/conversation.md) describes. |
-| A post fails with `HTTP 403 50013 Missing Permissions` | The bot lacks a permission on the channel. | Grant the five permissions under [Setup](#setup). |
+| A post fails with `HTTP 403 50013 Missing Permissions` | The bot lacks a permission on the channel. | Grant the six permissions under [Setup](#setup). |

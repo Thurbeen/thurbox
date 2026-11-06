@@ -1,11 +1,11 @@
 # Fleet architecture
 
-Fleet v2 is a Rust command-line program that persists Tasks and
-ChangeRequests and drives their controllers. A Task contains the execution
-inputs for one agent session: harness, host, workspace, brief and expected
-outputs; the worker reports its own result. A ChangeRequest mirrors one
-change on a forge, read through a Forge port and numbered so consumers diff
-it by one cursor.
+Fleet v2 is a Rust command-line program that persists Tasks, ChangeRequests
+and the other resource kinds, and drives their controllers. A Task contains
+the execution inputs for one agent session: harness, host, workspace, brief
+and expected outputs; the worker reports its own result. A ChangeRequest
+mirrors one change on a forge, read through a Forge port and numbered so
+consumers diff it by one cursor.
 
 ![Execution flow: CLI calls the manager; the manager uses the pure controller, store and runtime ports; the runtime starts bounded processes through fleet-exec](architecture.svg)
 
@@ -21,12 +21,13 @@ same sweep as the Task controller, through the Forge port.
 | --- | --- | --- |
 | [fleet-cli](../crates/fleet-cli/src/main.rs) | Parse arguments, load config, construct adapters, print results | Calls manager verbs; does not write resources or run controller effects directly. |
 | [fleet-manager](../crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/send/result/declare verbs | Reads and writes through `Store`; observes and performs effects through `Runtime`; reads changes and logins and performs the one forge write, mark-ready, through `Forge`. |
-| [fleet-controllers](../crates/fleet-controllers/src/lib.rs) | Pure Task, ChangeRequest and Forge decisions | Receives time and observations as values; returns probes and a plan without I/O. |
+| [fleet-controllers](../crates/fleet-controllers/src/lib.rs) | Pure Task, ChangeRequest, Forge, Gateway, Conversation and Listener decisions, and the plugin admission gate | Receives time and observations as values; returns probes and a plan without I/O. |
 | [fleet-api](../crates/fleet-api/src/lib.rs) | Task, ChangeRequest, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
 | [fleet-store](../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
 | [fleet-runtime](../crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
 | [fleet-forge](../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab`, `az`, externally authenticated `curl`, or the file-backed fake forge, and taking a supported draft out of draft after a fresh read | One bounded observation is complete or Unknown; a write either preserves the head/state guard or fails closed; the only crate that knows a forge CLI's name. |
 | [fleet-gateway](../crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through Slack's Web API or Discord's REST API by `curl`, or through the file-backed fake platform | Every answer is Known or Unknown; a refused write fails closed; the only crate that knows a chat client's name. |
+| [fleet-plugin](../crates/fleet-plugin/src/lib.rs) | Bounded calls to a registered plugin process through the `Plugins` port | The only crate that runs a plugin; every call is one bounded process through fleet-exec. |
 | [fleet-exec](../crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
 | [fleet-telemetry](../crates/fleet-telemetry/src/lib.rs) | The OpenTelemetry SDK and its OTLP/HTTP exporter, installed when the `OTEL_*` variables ask | The only crate that names the SDK or the exporter; export never changes a command's outcome, and shutdown is bounded. |
 
@@ -50,7 +51,7 @@ mutations, and only the manager performs the mark-ready effect.
 ## Desired state, observations and effects
 
 The [controller index](controllers/README.md) links the controller
-guides, including the planned Gateway controller's design. The
+guides. The
 [Task controller documentation](controllers/task/README.md) defines
 the [resource](resources/task.md),
 [state machine](controllers/task/state-machine.md) and

@@ -49,7 +49,8 @@ it, and removed by its own controller after a retention period.
     "lastMessageAt": 1730000400000,
     "notBefore": 1730000760000,
     "conditions": [{"type": "Tied", "status": "True", "reason": "TaskKnown",
-                    "message": "conv-3f9a1c0d2b7e-1", "lastTransitionTime": 1730000301000}]
+                    "message": "conv-3f9a1c0d2b7e-1", "lastTransitionTime": 1730000301000,
+                    "observedGeneration": 1}]
   }
 }
 ```

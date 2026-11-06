@@ -93,7 +93,9 @@ workspace.
 Default init writes a workspace at `$XDG_DATA_HOME/fleet/vega` (fallback
 `~/.local/share/fleet/vega`) and a fresh resource store under the same Fleet
 directory at `store-v1`. The config records absolute paths and a generated
-per-instance session key prefix. `[starter] workspace` selects the workspace.
+per-instance session key prefix. It keeps the starter's
+`runtime.callTimeoutMs = 10000`, below the built-in default of `15000`;
+edit it to change the bound. `[starter] workspace` selects the workspace.
 Its `task.json` is a runnable JSON array containing one Task. Before first
 `up`, edit its brief and customize `AGENTS.md`, prompts and skills.
 To set `spec.model`, first configure the matching `[runtime.modelEnv]`

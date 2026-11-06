@@ -77,8 +77,11 @@ state. The only effect this controller performs is the mark-ready effect.
 TaskController owns `status.phase`, `conditions`, `session`, the spawn,
 brief and release records, and `status.deliveries`. The worker owns
 `status.result` and `status.declared`. ForgeController owns `status.forge`.
-`status.inbox` is touched only through two typed store mutations, append and
-remove, by ForgeController, `fleet send` and TaskController respectively.
+`status.inbox` is touched only through typed store mutations:
+`record_relay` by ForgeController and GatewayController, `append_inbox` by
+`fleet send`,
+`amend_task` by `fleet amend`, `plugin_mutate` by a plugin's append or
+amend, and `record_delivery` by TaskController.
 Each writer names itself and the store refuses a write to a field another
 manager owns. This is the arrangement Kubernetes uses when several
 controllers reconcile one object, a Node or a PersistentVolumeClaim, and the

@@ -7,7 +7,7 @@ from the JSON [Task](../resources/task.md),
 [EnvProvider](../resources/env-provider.md) and
 [ChangeRequest](../resources/change-request.md) resources applied into that
 store.
-`fleet apply` does not load TOML, and `--config` does not apply resources.
+`fleet apply` takes no TOML as input, and `--config` applies no resources.
 There is no `[taskConfig]`, `[envProvider]` or task-template section in TOML.
 There is no telemetry section either: the standard `OTEL_*` variables
 configure [OpenTelemetry export](telemetry.md).
@@ -28,8 +28,9 @@ native config and bundled workspace; see
 [initialization/customization](init.md#configuration-and-customization)
 for data roots, managed files, conflict handling and per-instance paths.
 
-Relative `data.dir`, `runtime.dir` and `starter.workspace` resolve beside the
-TOML file. A runtime executable should be a PATH name or absolute path;
+Relative `data.dir`, `runtime.dir`, `starter.workspace`, a fake forge host's
+`dir` and a fake gateway account's `dir` resolve beside the TOML file. A
+runtime executable should be a PATH name or absolute path;
 `runtime.cli` is passed to process execution without rebasing it beside TOML.
 Provider source paths are always absolute and manager-local, even for remote
 Tasks; they never inherit TOML's relative-path rule.
@@ -252,7 +253,7 @@ envFrom = [{ name = "github-issues-env" }]
 | `program` | yes | Absolute path of the program on the manager, as for an EnvProvider command source: no PATH search, no shell, no rebasing beside TOML. |
 | `args` | `[]` | Arguments before the call name the host appends. |
 | `cwd` | yes | Absolute working directory on the manager. |
-| `callTimeoutMs` | `15000` | Bound for each plugin process; the tree is killed past it, and the manager lease is raised to outlast the port's reported worst case. |
+| `callTimeoutMs` | `15000` | Bound for each plugin process, 1 to 300000; the tree is killed past it, and the manager lease is raised to outlast the port's reported worst case. |
 | `tasks` | `"own"` | Which Tasks the plugin may patch, delete, send to or declare on: `own`, those carrying its `fleet.dev/plugin` label, or `any`. Creating a Task needs no permission beyond this entry. |
 | `passEnv` | `[]` | Variables copied from the manager's environment into the plugin's observer calls only. |
 | `envFrom` | `[]` | EnvProviders whose merged map reaches the observer calls only, resolved per sweep through the provider machinery TaskConfig uses; a provider's command source runs under the same bounds and lease rule. |
@@ -337,7 +338,7 @@ workspace = { dir = "/work/anywhere" }
 
 | Field | Required/default | Meaning |
 | --- | --- | --- |
-| `gateway.callTimeoutMs` | `15000` | Bound for each adapter call; the manager lease is raised to outlast the port's reported worst case. |
+| `gateway.callTimeoutMs` | `15000` | Bound for each adapter call, 1 to 300000; the manager lease is raised to outlast the port's reported worst case. |
 | `gateway.pollMs` | `300000` | How often a Tied Conversation reads its history as a backstop for events a listener missed, where the account has history. A Conversation's `spec.pollMs` overrides it for that thread. It is also the interval at which a create waiting under `WorkspaceBusy`, for a thread's directory that another Task holds, is planned again, the cap on the recovery-read backoff, and how often a Listener asks `whoami` and `capabilities`. |
 | `gateway.activeMs` | `86400000` | How long after a Tied thread's last message its history backstop keeps polling. |
 | `gateway.retainMs` | `604800000` | How long a thread is kept with no message, counted from the later of its last message and its orphaning. Past it, a thread that is Untied, Orphaned or tied to a Concluded Task retires: Fleet deletes its Task, the thread directory that the manager created, and its Conversation. A thread with a running Task is kept. |
@@ -347,7 +348,7 @@ workspace = { dir = "/work/anywhere" }
 | `gateway.reactions` | On: `queued = "hourglass_flowing_sand"`, `working = "eyes"`, `replied = "white_check_mark"` | The reactions that mark a person's message: `queued` while admission holds the request for its Task, `working` once the Task exists or Fleet relayed the message to it, when `queued` is removed, and `replied` once Fleet posted in the thread, when `working` is removed. Each is a platform emoji name, which each adapter maps as its [adapter page](../controllers/gateway/adapters/README.md#capabilities) says. A name left out keeps its default. `false` turns reactions off, and `true` keeps the defaults. Refused when a name is empty or holds whitespace, when two name one emoji, or for another key. |
 | `gateway.accounts.<name>` | One per chat account | `platform` is `slack`, `discord`, or `fake` with a `dir`, in this build, and later `telegram` or `teams`; a platform the build lacks is refused when the manager runs; `team` the platform's workspace identity (Slack: the team or enterprise id, optional; Discord: the guild id, required); `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart (Discord: a snowflake, as is `team`); `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; Discord: `discord-gateway`, an authenticated connection; `fake`: `connection`), and an envelope claiming another is refused; `messageContent`, Discord only, default `false`, whether the application holds the privileged message content intent, which sets the `intents` that `fleet gateway account` prints; `cli`, default `curl`, and the platform's credential reference, here `curlConfig`, required for Slack and Discord, an absolute path Fleet passes to `curl -K` and never reads. The [Slack](../controllers/gateway/adapters/slack.md#configuration) and [Discord](../controllers/gateway/adapters/discord.md#configuration) adapter pages list each platform's keys and errors. |
 | `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
-| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids, `"*"`, the wildcard, or `"dm:*"`, the DM entry (see below); `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir`, an absolute base directory, below which each thread's Tasks get `<dir>/<conversation name>`, created by the manager with the Task on the TaskConfig's host (the thurbox runtime creates it on the local host only), recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel id belongs to at most one route. |
+| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids, `"*"`, the wildcard, or `"dm:*"`, the DM entry (see below); `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir`, an absolute base directory, below which each thread's Tasks get `<dir>/<conversation name>`, created by the manager with the Task on the TaskConfig's host (the thurbox runtime creates it on the local host only), recorded on the Conversation, and removed when the thread retires; Fleet never removes a directory it did not create or the base directory; a thread waits only while another Task holds its own directory, and no two routes' base directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel id belongs to at most one route. A route lists at least one channel and names at least one person in `allow` or one bot in `allowBots`. |
 
 A wildcard route has `"*"` in `channels`. It covers every channel of its
 account that the account's listener delivers, with these exceptions:

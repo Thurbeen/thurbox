@@ -80,7 +80,10 @@ pub struct Plan {
     pub status: Option<serde_json::Value>,
     pub effects: Vec<Effect>,
     pub remove_finalizer: Option<String>,
+    pub delete: bool,                 // other controllers; TaskController leaves it false
     pub delivery: Option<DeliveryReceipt>,
+    pub appends: Vec<InboxEntry>,     // other controllers; TaskController leaves it empty
+    pub creates: Vec<Create>,         // other controllers; TaskController leaves it empty
 }
 ```
 
@@ -91,11 +94,11 @@ pub struct Plan {
 | `remove_finalizer` | Request to remove `fleet.dev/release` after the status and effects; present only for a deleting Task whose release is established. |
 | `delivery` | An inbox entry proven delivered: `{key, at, recovered, deliveredVia, mayHold}`. `deliveredVia` is the runtime's route, when the send named one. `mayHold` is true when that route can hold the text behind an approval dialog; it raises no attention. The manager writes it with `status` as one record-and-remove mutation: the receipt into `status.deliveries`, the entry out of `status.inbox`. |
 
-An action is `Spawn(SpawnSpec)`, `Brief { session, text }`,
-`Release { session }`, `Revive { session }`, `Pause { session }` or
-`Resume { session }`. SpawnSpec carries `host`,
-`key`, `harness`, `dir`, optional `model`, the private environment map and
-`environmentFrozen`. The
+TaskController plans the actions `Spawn(SpawnSpec)`, `Brief { session,
+text }`, `Release { session }`, `Revive { session }`, `Pause { session }`
+and `Resume { session }`. SpawnSpec carries `host`, `key`, `harness`,
+`workspace` (the Task's `dir` or `repositories`), optional `model`, the
+private environment map and `environmentFrozen`. The
 manager injects frozen values and prevents model-variable remapping before
 performing a spawn; environment values are not persisted in effect intents.
 `SessionRef` carries `id`, `host` and `key`; a later session
@@ -137,8 +140,9 @@ the lease; a crashed process leaves an expiring lease. Neither stop deletes
 Tasks or sessions. Bootstrap Task creation uses the manager's `ensure_task`
 verb, retaining an existing Task's immutable inputs and identity.
 
-The CLI's default lease is at least 30 seconds and twice the runtime operation
-bound. An explicitly supplied lease must exceed that bound. A file-store
+The CLI's default lease is at least 30 seconds and twice the longest
+operation bound of the configured ports (runtime, forge, gateway, plugins).
+An explicitly supplied lease must exceed that bound. A file-store
 lease fences store writes and checks before effects; it cannot cancel an
 external action already started. Recovery relies on stable runtime keys.
 
@@ -171,6 +175,8 @@ return `Observation<T>`; a refused effect is
 | `paused` | `SessionRef` | Known true when the runtime holds the session with its agent stopped, by Fleet or anyone else. Known false for a running or lost session. |
 | `pause` | `SessionRef` | `Paused` after the runtime stopped the agent and kept its row, workspace and conversation, or Failed/Unknown. A stopped session is left alone. |
 | `resume` | `SessionRef` | `Resumed` after the runtime started the stopped agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
+| `create_dir` | Host and directory | `Ok(true)` when made, `Ok(false)` when it existed, `Err` with why, or Unknown. Used for a conversation Task's thread directory. |
+| `remove_dir` | Host and directory | `Ok(())` when removed or absent, `Err` with why, or Unknown. |
 
 The thurbox adapter executes bounded `thurbox-cli` calls via `fleet-exec`.
 Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
@@ -287,7 +293,7 @@ permit controller fields to change.
 | Session key | `<name>.<uid>`; the uid prevents a recreated Task adopting an earlier Task's session. |
 | Spawn effect | `task/<name>/<uid>/spawn/<attempt>`. |
 | Brief effect | `task/<name>/<uid>/brief`, reused for every permitted send of that one brief. |
-| Inbox entry | Its own `key`, reused for every permitted send of it: `task/<name>/<uid>/send/<n>` for `fleet send`, `n` the resourceVersion the append was made against; `task/<name>/<uid>/amend/<generation>` for `fleet amend`. |
+| Inbox entry | Its own `key`, reused for every permitted send of it: `task/<name>/<uid>/send/<n>` for `fleet send`, `n` the resourceVersion the append was made against; `task/<name>/<uid>/amend/<generation>` for `fleet amend`; `task/<name>/<uid>/relay/<change uid>/<revision>` for a forge relay; `task/<name>/<uid>/plugin/<plugin>/<key>` for a plugin's append; `task/<name>/<uid>/gateway/<conversation uid>/<revision>` for a chat relay; `task/<name>/<uid>/gateway/child/<child uid>/<item>` for a child's words. |
 | Release effect | `task/<name>/<uid>/release/<attempt>`. |
 | Intent | Action name, timestamp and generation, stored under the effect key. The brief's receipt records the generation of its intent. |
 | Receipt | Action name, timestamp and `Observation<EffectOutcome>`, stored under the effect key. |
@@ -314,11 +320,12 @@ interface without changing what exists:
   controller's.
 - `Probe::Object { kind, name }` is answered by the manager from the store
   before any runtime or forge probe, and `Probe::Whoami { host }` through
-  the `Forge` port, cached for the sweep, as `Probe::Change { ref }` is for
+  the `Forge` port, cached for the sweep, as `Probe::Change { change }` is for
   the [ChangeRequest controller](../change-request/interface.md).
   `AtRest` is reused by ForgeController's `workerIdle` predicate. The
   plan's `delete` field, by which that controller retires its own object,
-  and `appends`, the inbox entries ForgeController lands with its status,
+  `creates`, the Tasks ConversationController creates, and `appends`, the
+  inbox entries ForgeController lands with its status,
   exist.
 - Field managers `ChangeRequestController` and `ForgeController` exist, and
   `Worker` owns `status.declared` as it owns `status.result`.

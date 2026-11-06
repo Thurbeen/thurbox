@@ -50,7 +50,7 @@ observation complete.
 | Type | True means / relevant reason |
 | --- | --- |
 | Reachable | The last poll read the change completely (`Observed`). Unknown with the reason after a timeout (`Timeout`), an incomplete read (`Incomplete`), an unparseable answer (`Unreadable`), a throttled answer (`Throttled`), a missing login (`NotLoggedIn`), a refusal that is not proven absence (`Refused`), a CLI that could not start (`CliUnavailable`) or a URL the adapter could not place (`UrlNotParsed`). |
-| Mergeable | The forge's own answer, as `status.mergeable`: True (`Mergeable`) when the forge says the change can be merged now, False with the forge's reason as a CamelCase word (`Conflicts`, `Blocked`, `CiMustPass`, `Draft`, ...) and the raw reason in the message, Unknown (`Computing`) while the forge is still computing it or has no such answer. Fleet reports it and never acts on it. |
+| Mergeable | The forge's own answer, as `status.mergeable`: True (`Mergeable`) when the forge says the change can be merged now, False with the forge's reason as a CamelCase word (`Conflicts`, `Blocked`, `CiMustPass`, `Draft`, ...; `NotMergeable` when the forge gives none) and the raw reason in the message, Unknown (`Computing`) while the forge is still computing it or has no such answer. Fleet reports it and never acts on it. |
 | Settled | `Merged`, `ClosedGraceExpired` or `Gone`. |
 
 Conditions keep their `lastTransitionTime` unless their status changes, so a

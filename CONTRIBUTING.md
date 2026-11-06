@@ -43,11 +43,10 @@ a tiny workspace with deleted, ignored and filtered suites, failing tests,
 failing doctests, malformed formatting and warning-denied lint/docs.
 
 Native CI runs the full gate on Linux x86_64, Linux aarch64 and macOS
-Apple Silicon (`macos-15`). The macOS CLI/build is experimental; real
-thurbox sessions and operational migration have not passed acceptance.
-Windows and Intel Macs are not released. Every release runner must have
-its Rust checks in CI. Do not duplicate a full gate for a
-reviewer when exact-tree evidence is already available.
+Apple Silicon (`macos-15`). README.md lists the release targets and what
+each has passed. Every release runner must have its Rust checks in CI. Do not
+duplicate a full gate for a reviewer when exact-tree evidence is already
+available.
 
 ## Review rules
 
@@ -79,7 +78,8 @@ restore no pull-request caches.
 Releases follow the thurbox pattern, driven by cocogitto and `cog.toml`.
 Every push to `main` runs the release workflow:
 
-1. `check-release` asks `cog bump --auto --dry-run` for the next version.
+1. `check-release` asks `cog bump --auto --disable-bump-commit --dry-run`
+   for the next version.
    `feat`, `fix`, `perf` and breaking changes bump. The squash-merged pull
    request title is the commit that decides.
 2. The same job releases that version only when shipped files changed since

@@ -43,16 +43,17 @@ policy, and nothing else.
 The [Plugin controller](../docs/controllers/plugin/README.md) hosts external
 controllers. The store serves their schema-validated
 [kinds](../docs/resources/plugin-kinds.md); the manager calls their pure
-`probes` and `reconcile` and bounded `observe` and `perform` through the
-`Plugins` port. A pure gate admits plans before leased status writes and
-atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the host.
-SDKs and issue-specific plugins remain separate projects.
+`probes` and `reconcile` calls and bounded `observe` and `perform` calls through
+the `Plugins` port's one `call`. A pure gate admits plans before leased status
+writes and atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the
+host. SDKs and issue-specific plugins remain separate projects.
 
-The [Gateway controller](../docs/controllers/gateway/README.md) is a design
-whose first three steps are built. The first: the `Gateway` port in
+The [Gateway controller](../docs/controllers/gateway/README.md) is built
+in four steps. The first: the `Gateway` port in
 `fleet_api::gateway`, with the `[gateway]` section's types, its validation
 and the pure admission function; the `fleet-gateway` adapter crate,
-depending on `fleet-api` and `fleet-exec` only, with a file-backed fake
+depending on no Fleet crate but `fleet-api` and `fleet-exec`, with a
+file-backed fake
 that models every `capabilities` combination; the `[gateway]` config,
 loaded and validated by the CLI, each route's brief read with it, whose
 accounts are opened before a manager run so the lease outlasts the port's
@@ -66,10 +67,12 @@ labels name, relays the thread into the inbox under a cursor and a child's
 words into its parent's inbox, from `gateway/` sources ([talking in a
 conversation](#talking-in-a-conversation)); `status.answered`, written only
 by an inbox append that carries `answers`; and the parent labels, which the
-store checks at creation. As designed, the remaining step adds posting (the
-manager performing `Open`, `Receive` and `Post` actions) to
-GatewayController. None of those guarantees hold until implemented with
-their tests.
+store checks at creation. The fourth: posting. GatewayController plans
+`Post`, `Open`, `Receive`, `Log` and `React` actions; the manager performs
+`Post`, `Open`, `Log` and `React` through the `Gateway` port and `Receive`
+through the store, and writes a receipt under each key.
+`e2e_gateway_post`, `e2e_gateway_logs` and `e2e_gateway_reactions` hold it
+to that.
 
 ## Crates and the allowed graph
 
@@ -100,8 +103,9 @@ fleet-dev          tooling        `cargo xtask`: gate and release
   resolved through aliases, globs and re-exports first, across crates.
 - No crate reaches another crate it may not depend on through a third
   crate's re-export.
-- Only the crates listed may name a status-writing field manager: only
-  fleet-controllers names `FieldManager::TaskController`,
+- Only the crates listed may name a status-writing field manager; the
+  check is per crate, and fleet-api, which defines them, may name every
+  one. Only fleet-controllers names `FieldManager::TaskController`,
   `FieldManager::ChangeRequestController`, `FieldManager::ForgeController`,
   `FieldManager::GatewayController`, `FieldManager::ConversationController`
   and `FieldManager::ListenerController`, only fleet-api and fleet-controllers
@@ -147,6 +151,8 @@ spec.env            explicit environment overrides
 spec.harness        the agent harness, explicit or inherited
 spec.host           the runtime host (default "local")
 spec.model          optional; reaches the harness through its model variable
+spec.pauseAfterMs   optional; pause the session once its agent was idle
+                    this long, over the TaskConfig's
 spec.brief          the brief, sent once, never changed
 spec.amendments     append-only additions to the brief, through fleet amend
 spec.workspace      {dir} or {repositories: [{name, url, ref?}]}
@@ -160,15 +166,18 @@ different brief is a different Task. `amendments` only grows, through the
 store's amend mutation (`amend_task` for `fleet amend`, a plugin's `amends[]`
 verb through `plugin_mutate`): `update_spec`, and so `apply` and a plugin
 patch, refuses any change to it, and `apply` keeps the stored amendments
-when a manifest omits them. `harness` and `host` may not start
-with `-`, since both reach the runtime as arguments.
+when a manifest omits them, and a manifest that creates a Task with
+`amendments` is refused. `harness`, `host` and `model` are non-empty and
+may not start with `-`, since they reach the runtime as arguments; whether
+each is present never changes after creation.
 
 `spec.workspace` names what the session works in. It never says how the
 runtime makes it.
 
 - `{dir}` is a directory that exists before the Task. It may not be empty.
 - `{repositories}` names one or more repositories by identity. Each `name`
-  and each `url` is unique in the Task. Each `url` and optional `ref` is
+  is a valid resource name and unique in the Task; each `url` is unique in
+  the Task. Each `url` and optional `ref` is
   non-empty, has no whitespace and does not start with `-`. Fleet does not
   interpret `ref`.
 - A workspace has exactly one of the two forms. Unknown fields are refused.
@@ -185,7 +194,8 @@ finalizer. The manager performs it in this order:
 
 1. **Intent first.** The status carrying each effect's intent is written
    (compare-and-swap, under the lease) before the effect runs.
-2. **Effect.** Spawn, brief or release, each under a deterministic key
+2. **Effect.** Spawn, brief, release, revive, pause or resume, each under a
+   deterministic key
    (`task/<name>/<uid>/<action>[/<attempt>]`).
 3. **Receipt after.** The outcome is written as the key's receipt. An intent
    without a receipt is a question the next pass answers by observing the
@@ -201,6 +211,9 @@ Guarantees, each with its test:
   recovered receipt, not delivered is one more send under the same key, and
   "cannot tell" is retried after a wait. Three unreadable probes raise
   `NeedsAttention(BriefUnconfirmed)`; probes continue so recovery can settle it.
+  A send the runtime only queued, where the agent does not read it, sets
+  `Briefed=False/BriefUndelivered` and raises `NeedsAttention`; it is never
+  sent again and holds the inbox.
 - **Trust before the brief.** The brief is sent only after the runtime
   reports that the session's agent trusts its workspace. A known gap sets
   `WorkspaceTrusted=False`, raises `NeedsAttention/WorkspaceUntrusted` and
@@ -252,23 +265,28 @@ Guarantees, each with its test:
 - **Lost session.** A session the runtime still holds without its agent's
   window, as after a host reboot, sets `SessionLost` and gets nothing sent.
   A dispatched Task plans `Revive` under `revive/<n>`, at once and then
-  after each `RETRY_DELAY_MS`; three revives raise
-  `NeedsAttention/ReviveFailed`, and revives continue. Back, a briefed
+  after each `RETRY_DELAY_MS`; three revives that leave the session lost
+  raise `NeedsAttention/ReviveFailed`, and revives continue. Back, a briefed
   worker is owed one catch-up note under `catchup/<n>`, sent before its inbox
   as an entry is sent. In Briefed the note repeats the brief and its
   generation. Only Spawned, Briefed and Concluded-with-delivery Tasks are
   looked at, so a concluded worker at rest stays at rest. Unknown revives
   nothing, and a revive never makes a second session.
-- **Pause.** With `pauseAfterMs` set, a Briefed or Concluded Task whose
-  agent the runtime reports Known Idle on every pass for `pauseAfterMs`,
-  and on the pass that plans it, plans `Pause` under `pause/<n>`. The
-  session must be observed running, its inbox empty, and no brief, entry,
-  catch-up note, revive or resume in flight. Active or Unknown starts the
-  idle time again from `status.idleSince`. Unknown never pauses, and a
-  runtime that cannot pause answers Unknown. `Paused=True/Idle` changes no
+- **Pause.** With `spec.pauseAfterMs`, or the TaskConfig's `pauseAfterMs`
+  frozen in `status.execution`, a dispatched Briefed or Concluded Task
+  whose agent the runtime reports Known Idle on every pass for
+  `pauseAfterMs`, and on the pass that plans it, plans `Pause` under
+  `pause/<n>`. The session must be observed not stopped and not known
+  lost, its inbox empty, and no brief, entry, catch-up note, revive or
+  resume in flight. Active or Unknown clears `status.idleSince`; the idle
+  time starts again at the next Idle answer. Unknown never pauses, and on
+  a runtime that cannot pause the manager reads the agent's activity as
+  Unknown. `Paused=True/Idle` changes no
   phase and raises no `WorkerGone`, `SessionLost` or revive.
 - **Resume.** An inbox entry for a paused Task plans one `Resume` under
-  `resume/<n>`; entries that arrive meanwhile wait in the inbox. Back
+  `resume/<n>`; entries that arrive meanwhile wait in the inbox. Resumes
+  wait `RETRY_DELAY_MS` between tries; three resumes that leave the session
+  stopped raise `NeedsAttention/ResumeFailed`, and resumes continue. Back
   (`Paused=False/Resumed`), the worker is owed the catch-up note before its
   inbox. A session found stopped by someone else is `Paused=True/External`
   and is resumed by the next entry. Stalled, held and deleting Tasks are
@@ -320,7 +338,8 @@ ChangeRequest. Guarantees, each with its test in `forge_controller`,
   through the Forge port, ensures one ChangeRequest under the derived name
   (an existing one is reused after its `status.ref`, else its own URL, is
   verified) and appends `{kind, url, name}` to `status.declared` as
-  `worker`, with CAS; a repeated URL is a no-op. `--json OBJECT` appends any
+  `worker`, with CAS; a repeated URL, or any URL of the same change, is a
+  no-op. `--json OBJECT` appends any
   object with a string `kind`. Both need a brief receipt and refuse a
   deleting Task, and an ineligible Task creates no orphan; a crash between
   the two steps leaves a ChangeRequest nobody follows, which the next
@@ -331,7 +350,8 @@ ChangeRequest. Guarantees, each with its test in `forge_controller`,
   `task/<name>/<uid>/relay/<change uid>/<revision>` from `forge/<name>`;
   when the mirror has already dropped notes, the message says older notes
   exist on the forge. An object without a `ref` yet, or Unknown, waits;
-  readable absence raises `NeedsAttention/ChangeGone`.
+  readable absence, or an unreadable mirror status, raises
+  `NeedsAttention/ChangeGone`.
 - **Relay by cursor.** Every note with `seq` above the cursor that passes the
   filters (never this Task's own marked words; bots only per `relayBots`;
   never a resolved thread or one this Task already answered in) and every
@@ -391,7 +411,8 @@ ChangeRequest. Guarantees, each with its test in `forge_controller`,
 
 Conditions, under `status.forge.conditions`: `Following`, `Settled`,
 `NeedsAttention` (`RelayGap`, `ChangeGone`, `MarkReadyFailed`,
-`PolicyUnknown`).
+`PolicyUnknown`; `Multiple` when more than one is open, with one line per
+entry in the message; False with `Resolved` once all clear).
 
 ## ChangeRequest
 
@@ -615,16 +636,18 @@ the effect blindly. Guarantees, each with its test in
   capabilities change no mark. Tested in `conversation_controller`'s
   `reactions` module and `e2e_gateway_reactions`.
 
-Conditions: `Reachable`, `Tied`, `NeedsAttention` (`TaskCreateFailed`,
+Conditions: `Reachable`, `Tied` (`TaskKnown`, `Starting`, `Waiting`,
+`Untied`, `TaskGone`), `NeedsAttention` (`TaskCreateFailed`,
 `WorkspaceBusy`, `RouteUnknown`, `MentionsOnly`, `PostFailed`,
-`PostUnconfirmed`).
+`PostUnconfirmed`, `RetireFailed`).
 
 ## Talking in a conversation
 
 GatewayController is a pure function from the Task, the Conversation its
 labels name and the Tasks whose parent labels name it, to a plan: the
-desired `status.gateway` and the inbox entries to land with it. It has no
-effect in this step and no finalizer, and never writes a Conversation.
+desired `status.gateway`, the inbox entries to land with it and its post,
+open, receive, log and reaction effects. It has no finalizer, and never
+writes a Conversation.
 Guarantees, each with its test in `gateway_controller`,
 `e2e_gateway_controller` and `store_contract`:
 
@@ -704,8 +727,10 @@ Guarantees, each with its test in `gateway_controller`,
   writes nothing.
 
 Conditions, under `status.gateway.conditions`: `Tied` (`Verified`,
-`Waiting`, `ConversationGone`), `NeedsAttention` (`RelayGap`,
-`ConversationGone`, `RouteUnknown`, `TooManyChildren`).
+`Waiting`, `Opening`, `Opened`, `Abandoned`, `ConversationGone`),
+`NeedsAttention` (`RelayGap`, `ConversationGone`, `RouteUnknown`,
+`TooManyChildren`, `PostFailed`, `PostUnconfirmed`, `RecoveryIncomplete`,
+`DeclarationInvalid`, `ReceiveFailed`).
 
 ListenerController is a pure function from the Listener, the account as
 the config has it with its digest, and the platform's `whoami` and
@@ -798,16 +823,16 @@ or `Running` by activity, else `Running` on any proof of presence. Unknown
 answers keep the last state. Nothing decides on the state; a view reads it.
 
 `fleet_api::runtime::Runtime`: `host`, `create_dir`, `remove_dir`,
-`spawn`, `find`, `ready`, `workspace_trust`, `brief`, `brief_delivered`,
-`at_rest`, `release`, `lost`, `revive`, `activity`, `paused`, `pause` and
-`resume`, each answering Known or Unknown, and `can_pause`. `create_dir`
-makes a directory with its missing parents on a host and says whether it
-made it; `remove_dir` removes one and what it
-holds, a directory already gone included. The thurbox adapter does both
-on the local host and refuses any other, since thurbox has no verb that
-makes or removes a directory on a remote host.
-Each adapter reports its longest single operation (`operation_bound`), and
-`fleet reconcile` refuses a lease that could not outlast it.
+`prepare_execution`, `env_source`, `spawn`, `find`, `ready`, `workspace_trust`,
+`brief`, `brief_delivered`, `at_rest`, `release`, `lost`, `revive`, `activity`,
+`paused`, `pause` and `resume`, each answering Known or Unknown, and
+`can_pause`. `create_dir` makes a directory with its missing parents on a host
+and says whether it made it; `remove_dir` removes one and what it holds, a
+directory already gone included. The thurbox adapter does both on the local host
+and refuses any other, since thurbox has no verb that makes or removes a
+directory on a remote host. Each adapter reports its longest single operation
+(`operation_bound`), and `fleet reconcile` refuses a lease that could not
+outlast it.
 
 - **thurbox:** every call is one bounded `thurbox-cli … --json`. A session's
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
@@ -958,8 +983,12 @@ and `mark_ready`. `change` answers `Known(Some)` with a complete
 head and state and an intent key, reads both afresh, answers `Moved` when
 either differs (nothing mutated), `MarkedReady { already }` once the change
 is out of draft, Failed when the forge said no, and Unknown only when the
-mutation's answer could not be read. Adapters live in `fleet-forge`, one
-per `[forge.hosts]` entry, chosen by the host a URL or ref names:
+mutation's answer could not be read. An adapter whose forge offers no
+atomic head-and-state precondition answers Failed without reading or
+mutating, and so does an unconfigured host. Adapters live in
+`fleet-forge`, one per `[forge.hosts]` entry, chosen by the host a URL or
+ref names; a `<organization>.visualstudio.com` host falls back to the
+`dev.azure.com` entry:
 
 - **github:** bounded `gh api graphql --hostname <host> --include` calls, one
   query paginated over reviews, comments and review threads; at most six
@@ -972,7 +1001,9 @@ per `[forge.hosts]` entry, chosen by the host a URL or ref names:
   the title updated with its draft marker removed.
 - **azure-devops:** bounded `az devops invoke` calls for hosted Azure DevOps
   Services. Organization/project/repository identities are checked against
-  the URL and every continuation token stays inside the adapter's call bound.
+  the URL. A collection that fills its bounded page is Unknown with
+  `Incomplete`; no continuation is followed. Mark-ready fails closed because
+  the provider exposes no atomic head-and-state precondition.
 - **bitbucket-cloud:** bounded authenticated `curl` reads against
   `https://api.bitbucket.org/2.0/` for `bitbucket.org` only. The adapter
   brackets paginated comments, commit statuses and mergeability checks with
@@ -993,8 +1024,8 @@ than assuming an official provider CLI.
 ## Gateway contract
 
 `fleet_api::gateway::Gateway`: `operation_bound`, `parse`, `event`,
-`whoami`, `capabilities`, `history`, `open` and `post`, each answering
-Known or Unknown; a refused write is `Known(EffectOutcome::Failed)`, and
+`whoami`, `capabilities`, `history`, `open`, `post` and `react`, each
+answering Known or Unknown; a refused write is `Known(EffectOutcome::Failed)`, and
 `open` and `post` answer `Opened { conversation, message, at }` and
 `Posted { message, at }` with the platform's own time. `history` answers a
 complete `History` with its `starter`, `Unsupported` where bots cannot read
@@ -1099,7 +1130,8 @@ A Task manifest:
 
 `fleet reconcile` takes the manager lease, runs passes until nothing changes
 (or `--max-passes`), and gives the lease back. Its default lease is 30 s,
-raised to twice the longest operation of the runtime or the forge port.
+raised to twice the longest operation of the runtime, forge, gateway or
+plugin port.
 
 `fleet init` installs the pinned embedded VEGA starter offline and creates
 native per-user config; `--update` advances unedited managed workspace files
@@ -1136,7 +1168,7 @@ delivery to the same session, its refusals, `--if-generation` and the result
 rules on the fake host; `e2e_forge_controller` covers `fleet declare`,
 the join and the relay against the fake forge and the fake host.
 `e2e_mark_ready` covers the mark-ready effect against the fake forge and
-the fake host, and through the stub `az`, `curl`, `gh` and `glab`.
+the fake host, and through the stub `az`, `gh` and `glab`.
 `e2e_gateway` covers the `[gateway]` section, the receive verb, the
 Conversation mirror and the Listener against the fake gateway;
 `e2e_gateway_controller` covers the tie, the join and the relay into the
