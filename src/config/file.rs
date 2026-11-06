@@ -98,9 +98,9 @@ pub fn compact_toml_error(s: &str) -> String {
 }
 
 /// Point every config path into `dir` until the guard drops. The tests of
-/// each config file isolate through here: their production code reaches
-/// `paths` only through this loader, and the architecture rules hold test code
-/// to the same grants.
+/// each config file isolate through here because the architecture rules hold
+/// test code to production's grants, and most of those files reach `paths`
+/// only through this loader.
 #[cfg(test)]
 pub(crate) fn isolate(dir: &Path) -> crate::paths::TestPathGuard {
     crate::paths::TestPathGuard::new(dir)
@@ -119,9 +119,10 @@ mod tests {
     const SEED: &str = "# n = 1\n";
 
     #[test]
-    fn an_absent_file_is_seeded_and_reads_as_the_defaults() {
+    fn an_absent_file_is_seeded_into_a_directory_it_creates() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = isolate(temp.path());
+        // The config directory does not exist yet: seeding must create it.
+        let _guard = isolate(&temp.path().join("absent"));
         let (probe, warnings) = load_or_seed::<Probe>("probe.toml", SEED, "using defaults");
         assert_eq!((probe, warnings), (Probe::default(), vec![]));
         let seeded = std::fs::read_to_string(path("probe.toml").unwrap()).unwrap();
