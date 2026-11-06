@@ -1960,3 +1960,97 @@ fn collect_files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
     out.sort();
     out
 }
+
+/// Where each off-loop job of the kernel's two runtime stores may live: the
+/// directory, and the files under it that may name each needle in production
+/// code. The store and the paint side never block, so neither starts a thread
+/// of its own — each worker is a file, and a job that reaches the world
+/// without one shows up here rather than as a frozen frame (#1474, #1477).
+const KERNEL_WORKERS: &[(&str, &str, &[&str])] = &[
+    (
+        "kernel/snapshot",
+        "thread::",
+        &[
+            "kernel/snapshot/db.rs",
+            "kernel/snapshot/git.rs",
+            "kernel/snapshot/probe.rs",
+        ],
+    ),
+    // The database is opened and read only by its worker, so a lock held
+    // elsewhere delays a write and never a frame.
+    ("kernel/snapshot", "Database::", &["kernel/snapshot/db.rs"]),
+    (
+        "kernel/snapshot",
+        "crate::git::",
+        &["kernel/snapshot/git.rs"],
+    ),
+    (
+        "kernel/terminal",
+        "thread::spawn",
+        &[
+            "kernel/terminal/attach.rs",
+            "kernel/terminal/discovery.rs",
+            "kernel/terminal/shells.rs",
+        ],
+    ),
+];
+
+/// Every production site under `dir` naming `needle`, as `dir/file.rs:line`
+/// with `/` on every platform, outside the files allowed to.
+fn misplaced(tree: &Tree, dir: &str, needle: &str, allowed: &[&str]) -> Vec<String> {
+    tree.mentions(&[needle], "", false)
+        .into_iter()
+        .map(|(file, line, _)| {
+            let parts: Vec<_> = file.iter().map(|p| p.to_string_lossy()).collect();
+            (parts.join("/"), line)
+        })
+        .filter(|(file, _)| file.starts_with(&format!("{dir}/")) || *file == format!("{dir}.rs"))
+        .filter(|(file, _)| !allowed.contains(&file.as_str()))
+        .map(|(file, line)| format!("{file}:{line} {needle}"))
+        .collect()
+}
+
+/// The snapshot store is split by worker — git stats, pane probes, the
+/// database — and `Terminals` by attach, discovery and paint, so each worker's
+/// reach into the world is in a file of its own and the read model and the
+/// paint path start none.
+#[test]
+fn each_kernel_worker_lives_in_a_file_of_its_own() {
+    let tree = src_tree();
+    for (dir, _, allowed) in KERNEL_WORKERS {
+        for file in *allowed {
+            assert!(
+                src_root().join(file).is_file(),
+                "{file} is named in KERNEL_WORKERS but does not exist under {dir}"
+            );
+        }
+    }
+    let problems: Vec<String> = KERNEL_WORKERS
+        .iter()
+        .flat_map(|(dir, needle, allowed)| misplaced(tree, dir, needle, allowed))
+        .collect();
+    assert!(
+        problems.is_empty(),
+        "move these into the worker that owns them, or extend KERNEL_WORKERS with why:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// The scan behind [`each_kernel_worker_lives_in_a_file_of_its_own`] finds a
+/// worker's reach outside its file, and none of its lookalikes: a comment, a
+/// string, test code, or the worker's own file.
+#[test]
+fn the_kernel_worker_scan_sees_only_misplaced_production_reaches() {
+    let tree = fixture("kernel_workers");
+    let found: Vec<String> = KERNEL_WORKERS
+        .iter()
+        .flat_map(|(dir, needle, allowed)| misplaced(&tree, dir, needle, allowed))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "kernel/snapshot/mod.rs:6 thread::",
+            "kernel/terminal/mod.rs:2 thread::spawn",
+        ]
+    );
+}

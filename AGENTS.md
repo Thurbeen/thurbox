@@ -339,6 +339,8 @@ item by item, in the test's `TRANSITIONAL` table, which must equal what the
 source does — empty since status and the heartbeat went behind the contract
 (ADR-32); `consumers_reach_no_concrete_backend` holds `session_ops`, `cli` and
 `kernel` to reaching no adapter, protocol helper or factory.
+Inside `kernel`, `each_kernel_worker_lives_in_a_file_of_its_own` keeps each
+worker of `kernel::snapshot` and `kernel::terminal` in a file of its own.
 `docs/CONSTITUTION.md` §2 lists the same graph. The full rule, the module
 responsibilities and the event loop are in the `thurbox-kernel` skill.
 
