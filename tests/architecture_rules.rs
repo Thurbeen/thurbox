@@ -1769,11 +1769,16 @@ fn dependency_crates() -> Vec<String> {
     crates
 }
 
+/// Each site in `session`, as `dir/file.rs:line what` with `/` on every
+/// platform, so a fixture's expectation reads the same on Windows.
 fn in_session(found: Vec<(PathBuf, usize, &str)>) -> Vec<String> {
     found
         .into_iter()
         .filter(|(file, _, _)| file.starts_with("session"))
-        .map(|(file, line, what)| format!("{}:{line} {what}", file.display()))
+        .map(|(file, line, what)| {
+            let file: Vec<_> = file.iter().map(|part| part.to_string_lossy()).collect();
+            format!("{}:{line} {what}", file.join("/"))
+        })
         .collect()
 }
 
