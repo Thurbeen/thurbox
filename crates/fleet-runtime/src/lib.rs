@@ -3,13 +3,18 @@
 //! - [`ThurboxRuntime`]: sessions through `thurbox-cli`, on this machine or a
 //!   host thurbox reaches over SSH or WSL.
 //! - [`FakeRuntime`]: a file-backed fake host for tests and local trials. It
-//!   keeps sessions as records, not processes, and runs nothing.
+//!   keeps sessions as records, not processes, and runs nothing. It is a
+//!   fake workspace adapter too.
+//! - [`WorktreeWorkspaces`]: the workspace port's git worktree adapter, on
+//!   this machine.
 
 pub mod fake;
 pub mod thurbox;
+pub mod worktree;
 
-pub use fake::{FakeHost, FakeRuntime, Fault};
+pub use fake::{FakeHost, FakeRuntime, FakeWorkspace, Fault};
 pub use thurbox::{Cleanup, Repositories, ThurboxConfig, ThurboxRuntime, TrustInterface};
+pub use worktree::{WorktreeConfig, WorktreeWorkspaces};
 
 /// Resolve manager-local explicit sources, never an implicit shell. Errors
 /// deliberately omit child output, paths and parser text (all may contain values).

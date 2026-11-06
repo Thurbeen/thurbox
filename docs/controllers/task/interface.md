@@ -42,7 +42,7 @@ skips a Concluded Task whose inbox is empty, unless one of these holds:
 | Task state | Probes |
 | --- | --- |
 | Pending, `dispatch: false` | None. |
-| Pending, `dispatch: true` | `Host { host }`. |
+| Pending, `dispatch: true` | `Host { host }`; `FindWorkspace { host, key }` while a materialize has no Known receipt. |
 | Spawning | `Find { host, key }`. |
 | Spawned | `Find`; `Lost`, `WorkspaceTrust` and `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
 | Briefed, no worker result for `status.brief.generation` | `Find`; `Lost`; `Paused`; the delivery probes below; `Activity` when the session may be paused. |
@@ -50,7 +50,7 @@ skips a Concluded Task whose inbox is empty, unless one of these holds:
 | Concluded, session recheck due | `Find`. |
 | Concluded, session may be paused or a pause or resume in flight | `Find` when the recheck is due; `Lost`; `Paused`; `Activity` when the session may be paused. |
 | Concluded otherwise, or Stalled | None. |
-| Deleting, regardless of phase | `Find`; `AtRest` when a session is recorded. |
+| Deleting, regardless of phase | `Find`; `AtRest` when a session is recorded; `FindWorkspace` while a materialize has no Known receipt. |
 
 The inbox probes, for the oldest entry not given up on: `Ready` for the
 recorded session, and `BriefDelivered` under the entry's key when it was
@@ -61,7 +61,8 @@ session may be paused when the conditions in
 apart from its activity.
 
 `Observations` holds `host`, `find`, `ready`, `workspace_trust`,
-`brief_delivered`, `at_rest`, `lost`, `paused` and `activity`. The manager
+`brief_delivered`, `at_rest`, `lost`, `paused`, `activity` and
+`workspace`. The manager
 answers `Activity` with Unknown on a runtime that cannot pause.
 Each is optional: `None` means no answer was supplied, not a negative answer.
 Each supplied answer is an [Observation](../../../crates/fleet-api/src/observation.rs):
@@ -160,10 +161,10 @@ return `Observation<T>`; a refused effect is
 | `prepare_execution` | Resolved execution | Freeze the runtime model-variable mapping into its private environment, or Unknown. |
 | `env_source` | Explicit file/command source | Bounded manager-local JSON string map, or redacted Unknown. |
 | `host` | Host name | Whether the runtime can reach it. |
-| `spawn` | `SpawnSpec` | `Spawned { session, adopted }`, `Unmapped { url }` for a repository the runtime has no source for, `TrustUnmapped { harness }` for a harness it knows no workspace-trust interface for, or Failed/Unknown. |
+| `spawn` | `SpawnSpec`, with `ready` when Fleet made the workspace | `Spawned { session, adopted }`, `Unmapped { url }` for a repository the runtime has no source for, `TrustUnmapped { harness }` for a harness it knows no workspace-trust interface for, or Failed/Unknown. |
 | `find` | Host and session key | Optional session under that key, or Unknown. |
 | `ready` | `SessionRef` | Whether the session's agent can take a message now. A working turn can take one; a dialog that holds the agent cannot. |
-| `workspace_trust` | `SessionRef` and the Task's workspace | `Trusted { how }`, `Untrusted { gap, why }` with gap `Unsupported` or `Mismatch`, or Unknown. |
+| `workspace_trust` | `SessionRef`, the Task's workspace and the `ready` workspace Fleet made, if any | `Trusted { how }`, `Untrusted { gap, why }` with gap `Unsupported` or `Mismatch`, or Unknown. |
 | `brief` | Session, text and intent key | `Delivered { already, via, may_hold }`, `Queued { why }`, or Failed/Unknown. `via` names the runtime's route. `may_hold` is true when the route can hold the text behind an approval dialog. `Queued` means the runtime kept the text where its agent does not read it. |
 | `brief_delivered` | Session and intent key | Whether that brief was delivered, or Unknown. |
 | `at_rest` | `SessionRef` | Whether it is safe to release that recorded session, or Unknown. |
@@ -223,6 +224,25 @@ agent. Explicit provider commands still run through the same bounded executor
 with either adapter; command resolution requires a lease above 20000 ms and
 renews it per source. Both implement the same port; neither is called from
 pure code.
+
+### Workspace port
+
+Source: [Workspaces](../../../crates/fleet-api/src/workspace.rs). The manager
+holds this port only when the config has a `[workspaces]` section. Without
+it, `TaskInput.materialize` is false and the controller plans no workspace
+effect. The [workspace contract](../../../crates/CONTRACTS.md#workspace-contract)
+states the adapter rules.
+
+| Method | Input | Answer |
+| --- | --- | --- |
+| `operation_bound` | None | Worst-case duration of one call, in milliseconds. The lease must outlast it. |
+| `materialize` | Host, workspace key and the Task's repositories | `Materialized { workspace, adopted }`, `Unmapped { url }`, or Failed/Unknown. |
+| `find` | Host and workspace key | The whole workspace under the key, `Known(None)` when none is whole, or Unknown. |
+| `clean` | `WorkspaceRef` | `Deleted`, also for a workspace already gone, or Failed/Unknown. |
+
+The controller asks `FindWorkspace` only while a materialize has no Known
+receipt. The manager performs `Materialize` and `CleanWorkspace` as it
+performs a spawn: intent first, then the effect, then the receipt.
 
 ### Workspace trust
 

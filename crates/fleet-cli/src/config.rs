@@ -23,6 +23,11 @@ pub struct Config {
     pub data: Data,
     #[serde(default)]
     pub runtime: Option<RuntimeConfig>,
+    /// The `[workspaces]` section: the adapter through which Fleet makes a
+    /// `{repositories}` workspace before the spawn. Absent: the runtime
+    /// makes it.
+    #[serde(default)]
+    pub workspaces: Option<WorkspacesConfig>,
     #[serde(default)]
     pub starter: Option<StarterConfig>,
     #[serde(default)]
@@ -128,6 +133,25 @@ pub struct RuntimeConfig {
     pub workspace_trust: BTreeMap<String, String>,
 }
 
+/// The `[workspaces]` section.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspacesConfig {
+    /// `worktree`, or `fake` for tests and trials.
+    pub kind: String,
+    /// fake: the fake host's directory, relative to this file.
+    pub dir: Option<PathBuf>,
+    /// worktree: the directory that holds every workspace on the local
+    /// host, relative to this file. Sources come from `runtime.repositories`.
+    pub root: Option<PathBuf>,
+    /// worktree: the `git` executable, a path or a name on PATH.
+    pub git: Option<String>,
+    /// worktree: the bound on every `git` command.
+    pub call_timeout_ms: Option<u64>,
+    /// worktree: the first part of every workspace branch.
+    pub branch_prefix: Option<String>,
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Config, String> {
         let text = std::fs::read_to_string(path)
@@ -156,6 +180,11 @@ impl Config {
             && let Some(d) = &rt.dir
         {
             rt.dir = Some(base.join(d));
+        }
+        if let Some(ws) = config.workspaces.as_mut() {
+            for d in [&mut ws.dir, &mut ws.root].into_iter().flatten() {
+                *d = base.join(&*d);
+            }
         }
         if let Some(starter) = config.starter.as_mut() {
             starter.workspace = base.join(&starter.workspace);
@@ -231,6 +260,7 @@ impl Config {
             version: CONFIG_VERSION,
             data: Data::default(),
             runtime: None,
+            workspaces: None,
             starter: None,
             forge: None,
             plugins: BTreeMap::new(),

@@ -8,7 +8,7 @@
 #   fleet-controllers    pure   decisions          -> api
 #   fleet-exec           adapter the one process spawner
 #   fleet-store          adapter                   -> api
-#   fleet-runtime        adapter                   -> api, exec
+#   fleet-runtime        adapter runtime, workspaces -> api, exec
 #   fleet-forge          adapter                   -> api, exec
 #   fleet-gateway        adapter                   -> api, exec
 #   fleet-plugin         adapter                   -> api, exec
@@ -191,3 +191,13 @@ why = "only the manager performs the open, post and react effects, through the p
 path = "fleet_api::plugin::Plugins"
 allowed = ["fleet-api", "fleet-plugin", "fleet-manager", "fleet-cli"]
 why = "only the manager may invoke plugin observer and effect calls"
+
+# The Workspaces port makes and removes the files a Session works in. As the
+# Forge port, it is defined by the API, implemented by fleet-runtime, wired by
+# the CLI and performed by the manager alone, after the intent is written and
+# the lease renewed: no controller holds a handle that could make or remove a
+# workspace.
+[[restricted]]
+path = "fleet_api::workspace::Workspaces"
+allowed = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-cli"]
+why = "only the manager performs the materialize and clean effects, through the port the CLI wired"

@@ -126,6 +126,9 @@ pub struct Manager<'a> {
         &'a [fleet_api::plugin::Registration],
     )>,
     pub forge: Option<&'a dyn Forge>,
+    /// The workspace port; `None` when the config has no `[workspaces]`, in
+    /// which case the runtime makes every workspace itself.
+    pub workspaces: Option<&'a dyn fleet_api::workspace::Workspaces>,
     /// The `[forge]` defaults a ChangeRequest spec may override.
     pub change_request_defaults: ChangeRequestDefaults,
     /// The `[forge]` relay defaults a Task's `spec.forge` may override, and
@@ -1872,6 +1875,7 @@ impl Manager<'_> {
             task: obj,
             observations: Observations::default(),
             now: self.clock.now(),
+            materialize: self.workspaces.is_some(),
         };
         let ctl = TaskController;
         for probe in ctl.probes(&input)? {
@@ -1885,7 +1889,11 @@ impl Manager<'_> {
             for effect in &mut plan.effects {
                 if let Action::Spawn(spawn) = &mut effect.action {
                     spawn.harness = execution.harness.clone();
-                    spawn.host = execution.host.clone();
+                    // A workspace Fleet made decides the host it runs on.
+                    spawn.host = spawn
+                        .ready
+                        .as_ref()
+                        .map_or_else(|| execution.host.clone(), |w| w.host.clone());
                     spawn.model = execution.model.clone();
                     spawn.environment_frozen = true;
                     spawn.env = execution.env.clone();
@@ -2011,8 +2019,12 @@ impl Manager<'_> {
                 note("ready", o.why());
                 obs.ready = Some(o);
             }
-            Probe::WorkspaceTrust { session, workspace } => {
-                let o = rt.workspace_trust(session, workspace);
+            Probe::WorkspaceTrust {
+                session,
+                workspace,
+                ready,
+            } => {
+                let o = rt.workspace_trust(session, workspace, ready.as_ref());
                 note("workspaceTrust", o.why());
                 obs.workspace_trust = Some(o);
             }
@@ -2035,6 +2047,14 @@ impl Manager<'_> {
                 let o = rt.paused(session);
                 note("paused", o.why());
                 obs.paused = Some(o);
+            }
+            Probe::FindWorkspace { host, key: k } => {
+                let o = match self.workspaces {
+                    Some(w) => w.find(host, k),
+                    None => Observation::unknown("no [workspaces] adapter is configured"),
+                };
+                note(&format!("findWorkspace on {host}"), o.why());
+                obs.workspace = Some(o);
             }
             // A runtime that cannot pause never answers Idle, so Fleet
             // never pauses on it.
@@ -2059,7 +2079,22 @@ impl Manager<'_> {
     }
 
     fn perform(&self, effect: &Effect) -> Observation<EffectOutcome> {
+        let no_port = || {
+            Observation::Known(EffectOutcome::Failed {
+                why: "no [workspaces] adapter is configured".into(),
+            })
+        };
         match &effect.action {
+            Action::Materialize {
+                host,
+                key,
+                repositories,
+            } => self
+                .workspaces
+                .map_or_else(no_port, |w| w.materialize(host, key, repositories)),
+            Action::CleanWorkspace { workspace } => {
+                self.workspaces.map_or_else(no_port, |w| w.clean(workspace))
+            }
             Action::Spawn(spec) => self.runtime.spawn(spec),
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
             Action::Release { session } => self.runtime.release(session),

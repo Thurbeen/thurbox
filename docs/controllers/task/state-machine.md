@@ -32,6 +32,12 @@ concludes nothing.
 | --- | --- | --- | --- |
 | Pending | `dispatch: false` | Pending | Set `Spawned=False/AwaitingDispatch`; do not spawn. |
 | Pending | Dispatched; host false, Unknown or unanswered | Pending | Report host condition; do not spawn. |
+| Pending | Dispatched; host reachable; Fleet makes the workspace and `status.workspace` is empty; no materialize in flight | Pending | Increment materialize attempt; set `WorkspaceReady=Unknown/Materializing`; persist the intent and plan `Materialize` under the workspace key. |
+| Pending | Known `Materialized` receipt, or a missing/Unknown receipt with the workspace key found | Spawning | Record `status.workspace`; set `WorkspaceReady=True` (`Materialized` or `Adopted`); plan Spawn with the workspace as `ready`. |
+| Pending | Known failure, or a missing/Unknown receipt with the workspace key proven absent; attempts below 3 | Pending | Set `WorkspaceReady=False/MaterializeRetry`; wait, then materialize again under the next key. |
+| Pending | Known `Unmapped` materialize receipt | Pending | Give the attempt back; raise `NeedsAttention/RepositoryUnmapped`; wait, then materialize again. |
+| Pending | Same failure with 3 materialize attempts spent | Stalled | Set `WorkspaceReady=False/MaterializeFailed`; raise `Stalled/MaterializeAttemptsExhausted` and NeedsAttention. |
+| Pending | Missing/Unknown materialize receipt; workspace key unreadable | Pending | Set `WorkspaceReady=Unknown/WorkspaceUnreadable`; never materialize again blindly. |
 | Pending | Dispatched; host reachable | Spawning | Increment spawn attempt; persist spawn intent and plan Spawn. |
 | Spawning | Known Spawned receipt | Spawned | Record returned SessionRef. |
 | Spawning | Missing/Unknown receipt; session key found | Spawned | Adopt the session and recover its receipt. |
@@ -133,16 +139,17 @@ are last recorded observations; absence of a condition is not a True value.
 | Type | True means / relevant reason |
 | --- | --- |
 | HostReachable | The host answered reachable during the dispatch check. |
+| WorkspaceReady | The workspace Fleet makes is whole: `Materialized` or `Adopted`. Unknown while `Materializing`, `WorkspaceUnreadable`, `Cleaning` or `CleanRetry`. False with `MaterializeRetry`, `MaterializeFailed`, `RepositoryUnmapped` or, after the release, `Cleaned`. Absent when the runtime makes the workspace. |
 | Spawned | The spawn returned a session or the controller adopted its key. |
 | Briefed | The brief has a `ReceiptWritten` or `ReceiptRecovered` record. |
-| Stalled | `SpawnAttemptsExhausted` or `BriefAttemptsExhausted`. |
+| Stalled | `MaterializeAttemptsExhausted`, `SpawnAttemptsExhausted` or `BriefAttemptsExhausted`. |
 | WorkerGone | A readable lookup no longer shows the recorded identity under its key (`SessionGone`). |
 | Concluded | A worker result for `status.brief.generation` was accepted and observed (`ResultRecorded`). False with `Amended` after a delivered amendment re-opened the Task. |
 | Released | A known release completed, or there was nothing to release. |
 | WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
 | SessionLost | The runtime holds the session, but its agent's window is gone (`WindowGone`). False after a lost session is back (`Revived`). |
 | Paused | The runtime holds the session with its agent stopped. `Idle` when Fleet paused it; `External` when Fleet found it stopped. False with `Resumed` once the agent runs again, and with `PauseFailed` after a pause that did not happen. The phase does not change. |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, RepositoryUnmapped, TrustUnmapped, WorkspaceUntrusted, ReviveFailed or ResumeFailed. |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, DeliveryQueued, BriefUndelivered, InboxFull, RepositoryUnmapped, TrustUnmapped, WorkspaceUntrusted, ReviveFailed, ResumeFailed or CleanFailed. |
 
 WorkerGone clears when the exact recorded session is seen again.
 RepositoryUnmapped clears when a later spawn does not answer Unmapped.
@@ -264,7 +271,15 @@ For a recorded session, the controller requires Known at-rest or readable
 absence before planning Release. Thurbox checks that the current key holder
 still has the recorded id before deleting it; a replacement yields Unknown.
 The finalizer remains while release is failed or ambiguous. It is removed
-only after Known Released, or when there is no session to release. The
+only after Known Released, or when there is no session to release.
+
+When Fleet made the workspace, the release is followed by `CleanWorkspace`:
+
+- The finalizer stays until the clean has a `Deleted` receipt.
+- A failed or unknown clean is repeated after each wait. Three raise
+  `NeedsAttention/CleanFailed`.
+- A Task deleted before its materialize has a Known receipt looks the
+  workspace key up first. An unreadable key holds the finalizer. The
 session and its conversation/workspace may be deleted by the runtime, so a
 worker result does not itself authorize release before Task deletion.
 

@@ -94,12 +94,14 @@ pub trait Runtime {
     /// Ready when the agent can take a message now: a working turn can, a
     /// dialog that holds the agent cannot.
     fn ready(&self, session: &SessionRef) -> Observation<bool>;
-    /// Whether the agent in `session` trusts `workspace`, so a brief cannot
-    /// land in a trust prompt. Unknown when the session cannot prove it.
+    /// Whether the agent in `session` trusts `workspace`, or `ready` when
+    /// Fleet made the workspace, so a brief cannot land in a trust prompt.
+    /// Unknown when the session cannot prove it.
     fn workspace_trust(
         &self,
         session: &SessionRef,
         workspace: &Workspace,
+        ready: Option<&crate::workspace::WorkspaceRef>,
     ) -> Observation<WorkspaceTrust>;
     /// Send the brief once under `intent_key`; the session stores the key, so
     /// a second send of the same key is `Delivered { already: true }`.

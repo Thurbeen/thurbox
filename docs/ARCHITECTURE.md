@@ -167,8 +167,9 @@ A Session has two parts:
 
 The runtime port is the only way Fleet reaches a Session. Fleet owns the
 Session's identity, its lifecycle record and every decision about it. The
-runtime owns the agent process, its window, its workspace and its
-conversation, and answers what it can prove.
+runtime owns the agent process, its window and its conversation, and
+answers what it can prove. The runtime also owns the workspace, unless
+Fleet made it through the workspace port.
 
 This split is the first step toward the
 [target architecture](../media/fleet-architecture-doom.svg), where Thurbox
@@ -176,6 +177,57 @@ is one view among others and Fleet runs Sessions behind the runtime port.
 The next steps move the remaining Session responsibilities out of the
 Thurbox runtime adapter, one port call at a time: workspace materialization,
 the agent's lifecycle hooks, and attaching a live terminal.
+
+## Workspaces and the workspace port
+
+A Workspace is the set of files one Session works in. Fleet defines it in
+[fleet-api's workspace module](../crates/fleet-api/src/workspace.rs). A
+Workspace is not a stored kind.
+
+```text
+Task ──owns──▶ Workspace {key, host, dir} ◀──runs in── Session
+  spec.workspace     status.workspace                status.session
+```
+
+- A Task names what its Session works in, in `spec.workspace`.
+- A Task owns at most one Workspace, and its one Session runs in it.
+- The Workspace key is the Session key, `<name>.<uid>`.
+- TaskController is the only writer of `status.workspace`.
+
+The `[workspaces]` section of `fleet.toml` selects who makes a
+`repositories` workspace:
+
+- With the section, Fleet makes it through the workspace port.
+- Without the section, the runtime makes it, as before.
+
+A `dir` workspace exists before the Task. Nothing makes or cleans it.
+
+When Fleet makes the Workspace, its lifecycle follows the Task:
+
+1. TaskController plans `Materialize` under the workspace key, before the
+   spawn.
+2. The spawn gets the ready `{host, dir}`, and the other directories the
+   Session spans. The runtime runs the Session there and makes nothing.
+3. After the release, TaskController plans `CleanWorkspace`. The release
+   finalizer goes only after the clean has a receipt.
+
+The workspace port keeps the rules of the runtime port:
+
+- Every call answers Known or Unknown. Unknown never concludes.
+- A lost materialize is settled by `find` under the key, never by a second
+  blind materialize.
+- A materialize is whole or nothing. A partial Workspace is not found, and
+  the next materialize rolls it back.
+
+The host of a Workspace is observed. `status.workspace.host` is the host
+the adapter reports. Credentials stay with the host and the adapter, and
+Fleet sends none. Each adapter runs bounded commands on its host, so one
+adapter shape can serve a local, SSH, container or VM host.
+
+`fleet-runtime` has two adapters:
+
+- `worktree`: git worktrees on the local host, through `fleet-exec`.
+- `fake`: records on the fake host, for tests and trials.
 
 ## Forge integration
 

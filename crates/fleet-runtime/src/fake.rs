@@ -17,13 +17,15 @@ use std::time::Duration;
 use fleet_api::Observation;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
-use fleet_api::task::SessionRef;
+use fleet_api::task::{RepositoriesWorkspace, SessionRef};
+use fleet_api::workspace::{WorkspaceRef, Workspaces};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Fault {
-    /// `host`, `createDir`, `removeDir`, `spawn`, `find`, `list`, `events`, `ready`,
+    /// `materialize`, `findWorkspace`, `cleanWorkspace` (the workspace
+    /// port), `host`, `createDir`, `removeDir`, `spawn`, `find`, `list`, `events`, `ready`,
     /// `workspaceTrust`, `brief`, `briefDelivered`, `atRest`, `release`,
     /// `lost`, `revive`, `activity`, `paused`, `pause`, `resume`.
     pub call: String,
@@ -83,6 +85,9 @@ pub struct FakeSession {
     pub key: String,
     pub harness: String,
     pub workspace: fleet_api::task::Workspace,
+    /// The workspace Fleet made and the spawn ran the session in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialized: Option<WorkspaceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub ready: bool,
@@ -115,9 +120,24 @@ pub struct FakeSession {
     pub activity: Option<String>,
 }
 
+/// A workspace the fake workspace adapter made: a record, no files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FakeWorkspace {
+    pub workspace: WorkspaceRef,
+    pub repositories: Vec<fleet_api::task::Repository>,
+    /// Set once Fleet cleaned it; a cleaned workspace is not found.
+    #[serde(default)]
+    pub cleaned: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct FakeState {
+    /// Workspaces by key.
+    pub workspaces: BTreeMap<String, FakeWorkspace>,
+    /// Repository URLs the fake workspace adapter has no source for.
+    pub unmapped: Vec<String>,
     /// `up`, `down` or `unknown`; a host not listed is up.
     pub hosts: BTreeMap<String, String>,
     pub sessions: BTreeMap<String, FakeSession>,
@@ -467,6 +487,7 @@ impl Runtime for FakeRuntime {
                 key: spec.key.clone(),
                 harness: spec.harness.clone(),
                 workspace: spec.workspace.clone(),
+                materialized: spec.ready.clone(),
                 model: spec.model.clone(),
                 ready: !s.spawn_not_ready,
                 trusted: !s.spawn_untrusted,
@@ -509,6 +530,7 @@ impl Runtime for FakeRuntime {
         &self,
         session: &SessionRef,
         _workspace: &fleet_api::task::Workspace,
+        _ready: Option<&WorkspaceRef>,
     ) -> Observation<WorkspaceTrust> {
         self.probe("workspaceTrust", |s| match live(s, &session.key) {
             Some(x) if x.trusted => Observation::Known(WorkspaceTrust::Trusted {
@@ -673,6 +695,92 @@ impl Runtime for FakeRuntime {
                 s.log.push(format!("resume {key}"));
             }
             EffectOutcome::Resumed
+        })
+    }
+}
+
+/// The fake workspace adapter: workspaces are records on the fake host, in
+/// the same state file as its sessions, with the same injectable faults.
+impl Workspaces for FakeRuntime {
+    fn materialize(
+        &self,
+        host: &str,
+        key: &str,
+        repositories: &RepositoriesWorkspace,
+    ) -> Observation<EffectOutcome> {
+        let (host, key, repositories) = (host.to_string(), key.to_string(), repositories.clone());
+        // One directory per repository, under the key, as a worktree
+        // adapter lays them out.
+        let root = self.host.dir.join("workspaces").join(&key);
+        let mut dirs = repositories
+            .repositories
+            .iter()
+            .map(|r| root.join(&r.name).to_string_lossy().into_owned());
+        let dir = dirs
+            .next()
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        let extra_dirs: Vec<String> = dirs.collect();
+        self.effect("materialize", move |s| {
+            if let Some(r) = repositories
+                .repositories
+                .iter()
+                .find(|r| s.unmapped.contains(&r.url))
+            {
+                return EffectOutcome::Unmapped { url: r.url.clone() };
+            }
+            if let Some(w) = s.workspaces.get(&key).filter(|w| !w.cleaned) {
+                return EffectOutcome::Materialized {
+                    workspace: Box::new(w.workspace.clone()),
+                    adopted: true,
+                };
+            }
+            let workspace = WorkspaceRef {
+                key: key.clone(),
+                host: host.clone(),
+                dir: dir.clone(),
+                extra_dirs: extra_dirs.clone(),
+                trust_root: None,
+            };
+            s.log.push(format!("materialize {host} {key}"));
+            s.workspaces.insert(
+                key.clone(),
+                FakeWorkspace {
+                    workspace: workspace.clone(),
+                    repositories: repositories.repositories.clone(),
+                    cleaned: false,
+                },
+            );
+            EffectOutcome::Materialized {
+                workspace: Box::new(workspace),
+                adopted: false,
+            }
+        })
+    }
+
+    fn find(&self, host: &str, key: &str) -> Observation<Option<WorkspaceRef>> {
+        self.probe("findWorkspace", |s| {
+            match s.hosts.get(host).map(String::as_str) {
+                Some("down") | Some("unknown") => {
+                    Observation::unknown(format!("host {host}: workspaces unreadable"))
+                }
+                _ => Observation::Known(
+                    s.workspaces
+                        .get(key)
+                        .filter(|w| !w.cleaned && w.workspace.host == host)
+                        .map(|w| w.workspace.clone()),
+                ),
+            }
+        })
+    }
+
+    fn clean(&self, workspace: &WorkspaceRef) -> Observation<EffectOutcome> {
+        let key = workspace.key.clone();
+        self.effect("cleanWorkspace", move |s| {
+            if let Some(w) = s.workspaces.get_mut(&key).filter(|w| !w.cleaned) {
+                w.cleaned = true;
+                s.log.push(format!("cleanWorkspace {key}"));
+            }
+            EffectOutcome::Deleted
         })
     }
 }

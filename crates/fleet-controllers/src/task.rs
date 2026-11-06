@@ -29,6 +29,9 @@ pub struct TaskInput<'a> {
     pub task: &'a Object,
     pub observations: Observations,
     pub now: Millis,
+    /// Whether Fleet materializes a `{repositories}` workspace through the
+    /// workspace port before the spawn. False: the runtime makes it.
+    pub materialize: bool,
 }
 
 /// How many times a spawn or a brief send is tried before the Task stalls,
@@ -69,10 +72,17 @@ pub mod conditions {
     /// The runtime holds the session with its agent stopped: Fleet paused
     /// it while it was idle, or someone else stopped it.
     pub const PAUSED: &str = "Paused";
+    /// Whether the workspace Fleet makes for the session is whole: True
+    /// once made, False once cleaned or refused.
+    pub const WORKSPACE_READY: &str = "WorkspaceReady";
 }
 use conditions::*;
 
 const SPAWN: &str = "spawn";
+const MATERIALIZE: &str = "materialize";
+const CLEAN: &str = "cleanWorkspace";
+/// The NeedsAttention reason once cleans keep failing.
+const CLEAN_FAILED: &str = "CleanFailed";
 /// The reason a spawn waits for the runtime to map a repository.
 const UNMAPPED: &str = "RepositoryUnmapped";
 /// The reason a spawn waits for the runtime to map the harness's trust.
@@ -125,15 +135,24 @@ impl TaskController {
             host: host.clone(),
             key: session_key(input.task),
         };
+        let find_workspace = materialize_in_flight(input.task, &st).then(|| Probe::FindWorkspace {
+            host: spec.host.clone(),
+            key: session_key(input.task),
+        });
         if input.task.is_deleting() {
             let mut probes = vec![find];
             if let Some(s) = &st.session {
                 probes.push(Probe::AtRest { session: s.clone() });
             }
+            probes.extend(find_workspace);
             return Ok(probes);
         }
         Ok(match st.phase {
-            Phase::Pending if spec.dispatch => vec![Probe::Host { host }],
+            Phase::Pending if spec.dispatch => {
+                let mut probes = vec![Probe::Host { host }];
+                probes.extend(find_workspace);
+                probes
+            }
             Phase::Spawning => vec![find],
             Phase::Spawned => {
                 let mut probes = vec![find];
@@ -142,6 +161,7 @@ impl TaskController {
                     probes.push(Probe::WorkspaceTrust {
                         session: s.clone(),
                         workspace: spec.workspace.clone(),
+                        ready: st.workspace.clone(),
                     });
                     probes.push(Probe::Ready { session: s.clone() });
                     let bk = brief_key(input.task);
@@ -379,6 +399,9 @@ impl Pass<'_, '_> {
                 return;
             }
         }
+        if self.makes_workspace() && self.st.workspace.is_none() && !self.materialize() {
+            return;
+        }
         let attempt = self.st.spawn_attempts + 1;
         let key = self.key(SPAWN, Some(attempt));
         self.st.spawn_attempts = attempt;
@@ -392,11 +415,15 @@ impl Pass<'_, '_> {
             "Spawning",
             format!("attempt {attempt}"),
         );
+        let ready = self.st.workspace.clone();
         let spec = SpawnSpec {
-            host: self.spec.host.clone(),
+            host: ready
+                .as_ref()
+                .map_or_else(|| self.spec.host.clone(), |w| w.host.clone()),
             key: session_key(self.input.task),
             harness: self.spec.harness.clone(),
             workspace: self.spec.workspace.clone(),
+            ready,
             model: self.spec.model.clone(),
             env: self.spec.env.clone(),
             environment_frozen: false,
@@ -1445,7 +1472,7 @@ impl Pass<'_, '_> {
         // Nothing was ever spawned: there is no session to release.
         if self.st.session.is_none() && self.st.spawn_attempts == 0 {
             self.cond(RELEASED, ConditionStatus::True, "NothingToRelease", "");
-            self.remove_finalizer = Some(task::RELEASE_FINALIZER.to_string());
+            self.let_go();
             return;
         }
         let pending_spawn = self.st.session.is_none() && self.st.spawn_attempts > 0;
@@ -1467,7 +1494,7 @@ impl Pass<'_, '_> {
         }
         let Some(session) = self.st.session.clone() else {
             self.cond(RELEASED, ConditionStatus::True, "NothingToRelease", "");
-            self.remove_finalizer = Some(task::RELEASE_FINALIZER.to_string());
+            self.let_go();
             return;
         };
         if self.st.release_attempts > 0 {
@@ -1478,7 +1505,7 @@ impl Pass<'_, '_> {
                     ..
                 }) => {
                     self.cond(RELEASED, ConditionStatus::True, "Released", "");
-                    self.remove_finalizer = Some(task::RELEASE_FINALIZER.to_string());
+                    self.let_go();
                     return;
                 }
                 receipt => {
@@ -1552,6 +1579,256 @@ impl Pass<'_, '_> {
             format!("attempt {attempt}"),
         );
         self.intend(key, Action::Release { session });
+    }
+
+    /// Whether Fleet makes this Task's workspace: the workspace port is
+    /// configured and the Task names repositories. A `{dir}` exists before
+    /// the Task and is never made.
+    fn makes_workspace(&self) -> bool {
+        self.input.materialize && matches!(self.spec.workspace, task::Workspace::Repositories(_))
+    }
+
+    /// One step toward a whole workspace; true once `status.workspace`
+    /// holds it. A lost answer is settled by looking the workspace key up,
+    /// never by a blind second materialize.
+    fn materialize(&mut self) -> bool {
+        let attempt = self.st.materialize_attempts;
+        let key = self.key(MATERIALIZE, Some(attempt));
+        if attempt > 0 && self.st.intents.contains_key(&key) {
+            match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
+                Some(Observation::Known(EffectOutcome::Materialized { workspace, adopted })) => {
+                    return self.workspace_ready(
+                        *workspace,
+                        if adopted { "Adopted" } else { "Materialized" },
+                    );
+                }
+                Some(Observation::Known(EffectOutcome::Unmapped { url })) => {
+                    // A configuration gap, not an attempt: given back.
+                    self.st.intents.remove(&key);
+                    self.st.receipts.remove(&key);
+                    self.st.materialize_attempts = attempt - 1;
+                    self.wait_from(self.now());
+                    let why = format!("repository {url} is not in runtime.repositories");
+                    self.cond(
+                        WORKSPACE_READY,
+                        ConditionStatus::False,
+                        UNMAPPED,
+                        why.clone(),
+                    );
+                    self.needs_attention(UNMAPPED, why);
+                    return false;
+                }
+                Some(Observation::Known(EffectOutcome::Failed { why })) => {
+                    self.materialize_retry(&key, &why);
+                    return false;
+                }
+                Some(Observation::Known(other)) => {
+                    self.materialize_retry(&key, &format!("unexpected outcome {other:?}"));
+                    return false;
+                }
+                Some(Observation::Unknown { .. }) | None => {
+                    match self.input.observations.workspace.clone() {
+                        Some(Observation::Known(Some(workspace))) => {
+                            let receipt = Receipt {
+                                action: MATERIALIZE.into(),
+                                at: self.now(),
+                                outcome: Observation::Known(EffectOutcome::Materialized {
+                                    workspace: Box::new(workspace.clone()),
+                                    adopted: true,
+                                }),
+                            };
+                            self.st.receipts.insert(key, receipt);
+                            return self.workspace_ready(workspace, "Adopted");
+                        }
+                        Some(Observation::Known(None)) => {
+                            self.materialize_retry(&key, "no whole workspace holds the key");
+                        }
+                        Some(Observation::Unknown { why }) => {
+                            self.cond(
+                                WORKSPACE_READY,
+                                ConditionStatus::Unknown,
+                                "WorkspaceUnreadable",
+                                why,
+                            );
+                        }
+                        None => {}
+                    }
+                    return false;
+                }
+            }
+        }
+        let attempt = attempt + 1;
+        let key = self.key(MATERIALIZE, Some(attempt));
+        self.st.materialize_attempts = attempt;
+        self.st.not_before = None;
+        self.cond(
+            WORKSPACE_READY,
+            ConditionStatus::Unknown,
+            "Materializing",
+            format!("attempt {attempt}"),
+        );
+        let task::Workspace::Repositories(repositories) = self.spec.workspace.clone() else {
+            return false;
+        };
+        let action = Action::Materialize {
+            host: self.spec.host.clone(),
+            key: session_key(self.input.task),
+            repositories,
+        };
+        self.intend(key, action);
+        false
+    }
+
+    fn workspace_ready(
+        &mut self,
+        workspace: fleet_api::workspace::WorkspaceRef,
+        reason: &str,
+    ) -> bool {
+        self.settle_attention(UNMAPPED);
+        self.cond(
+            WORKSPACE_READY,
+            ConditionStatus::True,
+            reason,
+            workspace.dir.clone(),
+        );
+        self.st.workspace = Some(workspace);
+        true
+    }
+
+    /// A materialize proven not to have left a workspace is tried again
+    /// after [`RETRY_DELAY_MS`], at most [`MAX_ATTEMPTS`] times in all; its
+    /// intent is settled, so the next pass plans the next attempt.
+    fn materialize_retry(&mut self, key: &str, why: &str) {
+        self.st.intents.remove(key);
+        self.settle_attention(UNMAPPED);
+        let attempts = self.st.materialize_attempts;
+        if attempts >= MAX_ATTEMPTS {
+            self.st.phase = Phase::Stalled;
+            self.cond(
+                WORKSPACE_READY,
+                ConditionStatus::False,
+                "MaterializeFailed",
+                why.to_string(),
+            );
+            self.cond(
+                STALLED,
+                ConditionStatus::True,
+                "MaterializeAttemptsExhausted",
+                format!("{attempts} attempts: {why}"),
+            );
+            self.needs_attention("Stalled", "materialize attempts exhausted");
+            return;
+        }
+        self.wait_from(self.now());
+        self.cond(
+            WORKSPACE_READY,
+            ConditionStatus::False,
+            "MaterializeRetry",
+            why.to_string(),
+        );
+    }
+
+    /// The session is released, or there never was one: clean the
+    /// workspace Fleet made, then drop the finalizer.
+    fn let_go(&mut self) {
+        let finalizer = Some(task::RELEASE_FINALIZER.to_string());
+        let workspace = match self.workspace_to_clean() {
+            Ok(Some(w)) => w,
+            Ok(None) => {
+                self.remove_finalizer = finalizer;
+                return;
+            }
+            Err(()) => return,
+        };
+        let attempt = self.st.clean_attempts;
+        if attempt > 0 {
+            let key = self.key(CLEAN, Some(attempt));
+            let receipt = self.st.receipts.get(&key).cloned();
+            if let Some(Receipt {
+                outcome: Observation::Known(EffectOutcome::Deleted),
+                ..
+            }) = receipt
+            {
+                self.st.workspace = None;
+                self.cond(WORKSPACE_READY, ConditionStatus::False, "Cleaned", "");
+                self.remove_finalizer = finalizer;
+                return;
+            }
+            let why = match &receipt {
+                Some(Receipt {
+                    outcome: Observation::Known(EffectOutcome::Failed { why }),
+                    ..
+                }) => why.clone(),
+                Some(Receipt {
+                    outcome: Observation::Unknown { why },
+                    ..
+                }) => format!("outcome unknown: {why}"),
+                Some(_) => "unexpected outcome".to_string(),
+                None => "no receipt (interrupted)".to_string(),
+            };
+            // A clean is harmless to repeat: it is tried again after each
+            // wait, and three failures ask a person to look.
+            if attempt >= MAX_ATTEMPTS {
+                self.needs_attention(CLEAN_FAILED, format!("{attempt} workspace cleans failed"));
+            }
+            self.cond(WORKSPACE_READY, ConditionStatus::Unknown, "CleanRetry", why);
+            match self.st.not_before {
+                Some(t) if t > self.now() => return,
+                Some(_) => self.st.not_before = None,
+                None => {
+                    let at = receipt
+                        .map(|r| r.at)
+                        .or_else(|| self.st.intents.get(&key).map(|i| i.at))
+                        .unwrap_or(0);
+                    if self.wait_from(at) {
+                        return;
+                    }
+                }
+            }
+        }
+        let attempt = attempt + 1;
+        self.st.clean_attempts = attempt;
+        let key = self.key(CLEAN, Some(attempt));
+        self.cond(
+            WORKSPACE_READY,
+            ConditionStatus::Unknown,
+            "Cleaning",
+            format!("attempt {attempt}"),
+        );
+        self.intend(key, Action::CleanWorkspace { workspace });
+    }
+
+    /// The workspace Fleet made, if any: recorded, or still to be learned
+    /// from a materialize whose answer was lost. `Err` while the key cannot
+    /// be read: deletion waits rather than leave a workspace behind.
+    fn workspace_to_clean(&mut self) -> Result<Option<fleet_api::workspace::WorkspaceRef>, ()> {
+        if let Some(w) = &self.st.workspace {
+            return Ok(Some(w.clone()));
+        }
+        let key = self.key(MATERIALIZE, Some(self.st.materialize_attempts));
+        match self.st.receipts.get(&key).map(|r| &r.outcome) {
+            Some(Observation::Known(EffectOutcome::Materialized { workspace, .. })) => {
+                return Ok(Some((**workspace).clone()));
+            }
+            Some(Observation::Known(_)) => return Ok(None),
+            Some(Observation::Unknown { .. }) | None => {}
+        }
+        if !self.st.intents.contains_key(&key) {
+            return Ok(None);
+        }
+        match self.input.observations.workspace.clone() {
+            Some(Observation::Known(found)) => Ok(found),
+            Some(Observation::Unknown { why }) => {
+                self.cond(
+                    WORKSPACE_READY,
+                    ConditionStatus::Unknown,
+                    "WorkspaceUnreadable",
+                    why,
+                );
+                Err(())
+            }
+            None => Err(()),
+        }
     }
 
     fn key(&self, action: &str, attempt: Option<u32>) -> String {
@@ -1637,6 +1914,22 @@ fn activity_probe(
             session: session.clone(),
         });
     }
+}
+
+/// Whether a materialize was sent and its answer is not Known yet.
+fn materialize_in_flight(obj: &Object, st: &TaskStatus) -> bool {
+    let m = &obj.metadata;
+    let key = effect_key(
+        task::KIND,
+        &m.name,
+        &m.uid,
+        MATERIALIZE,
+        Some(st.materialize_attempts),
+    );
+    st.workspace.is_none()
+        && st.materialize_attempts > 0
+        && st.intents.contains_key(&key)
+        && !known_receipt(st, &key)
 }
 
 fn session_key(obj: &Object) -> String {

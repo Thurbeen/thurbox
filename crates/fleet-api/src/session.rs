@@ -13,7 +13,8 @@
 //!
 //! The runtime port ([`crate::runtime::Runtime`]) is the only way Fleet
 //! reaches a Session. Fleet decides; the runtime runs the agent, holds its
-//! window, workspace and conversation, and answers Known or Unknown. Unknown
+//! window and conversation, and its workspace unless Fleet made it (see
+//! [`crate::workspace`]), and answers Known or Unknown. Unknown
 //! never changes a Session's state: a state is a fact the runtime proved, and
 //! a doubt keeps the last one.
 //!

@@ -41,6 +41,7 @@ fn run_at(obj: &Object, obs: Observations, now: u64) -> (Plan, TaskStatus) {
         task: obj,
         observations: obs,
         now,
+        materialize: false,
     };
     let plan = TaskController.reconcile(&input).unwrap();
     let st = match &plan.status {
@@ -59,6 +60,7 @@ fn probes(obj: &Object) -> Vec<Probe> {
         task: obj,
         observations: Observations::default(),
         now: NOW,
+        materialize: false,
     };
     TaskController.probes(&input).unwrap()
 }
@@ -1203,6 +1205,7 @@ fn the_brief_waits_for_the_agent_to_trust_its_workspace() {
     assert!(probes(&obj).contains(&Probe::WorkspaceTrust {
         session: session(),
         workspace: fleet_api::task::Workspace::at("w"),
+        ready: None,
     }));
     let obs = |trust| Observations {
         find: live(),

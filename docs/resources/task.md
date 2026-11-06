@@ -80,6 +80,15 @@ A Task names its repositories. The runtime decides how they become files.
 - Deleting the session cleans the workspace. With thurbox, the worktrees go
   with the session by default. `runtime.workspaceCleanup = "keep"` keeps
   them instead.
+- With a `[workspaces]` section in `fleet.toml`, Fleet makes the workspace
+  itself before the spawn. The runtime then gets a ready directory and makes
+  nothing. Fleet records the workspace in `status.workspace` and cleans it
+  after the release. See
+  [Workspaces and the workspace port](../ARCHITECTURE.md#workspaces-and-the-workspace-port).
+- The `worktree` adapter makes one git worktree per repository, in
+  `<root>/<session key>/<name>`, on the branch `<branchPrefix>/<session key>`.
+  The session runs in the first repository's worktree and spans the others.
+  A clean removes the worktrees and keeps the branch.
 
 ## Status
 
@@ -98,6 +107,8 @@ mutations described under [Inbox](#inbox).
 | `conditions` | One entry per [condition type](../controllers/task/state-machine.md#conditions), with `status`, `reason`, `message`, `lastTransitionTime` and `observedGeneration`, the spec generation the condition was last set for. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
 | `session` | The session's runtime id, host and key, once spawned or adopted. A Task owns at most one session, from its spawn to its release; see [Session](session.md). |
+| `workspace` | The workspace Fleet made for the session: its `key`, the `host` the adapter reported, the `dir` the session runs in, the `extraDirs` of the other repositories it also spans, and an optional `trustRoot`. Absent while the runtime makes the workspace, and after Fleet cleaned it. |
+| `materializeAttempts`, `cleanAttempts` | Materialize attempts, bounded at 3 like spawn attempts, and workspace cleans after the release. A materialize refused for an unmapped repository does not count. Three failed cleans raise `NeedsAttention/CleanFailed`; cleans continue after each wait. |
 | `sessionState` | What the runtime last proved about the session: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. Absent until a pass proved something. A pass whose answers are Unknown keeps the last state. Nothing decides on it; `fleet status` prints it. [Session](session.md#states) defines each state and how it is proved. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
 | `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. A spawn refused for an unmapped repository does not count. |

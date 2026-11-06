@@ -74,6 +74,18 @@ pub struct Effect {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum Action {
+    /// Make the Task's workspace under `key` on `host`, through the
+    /// workspace port, before the spawn.
+    Materialize {
+        host: String,
+        key: String,
+        repositories: crate::task::RepositoriesWorkspace,
+    },
+    /// Remove a workspace Fleet made, through the workspace port, once its
+    /// session is released.
+    CleanWorkspace {
+        workspace: crate::workspace::WorkspaceRef,
+    },
     Spawn(SpawnSpec),
     Brief {
         session: SessionRef,
@@ -181,6 +193,8 @@ pub enum Action {
 impl Action {
     pub fn name(&self) -> &'static str {
         match self {
+            Action::Materialize { .. } => "materialize",
+            Action::CleanWorkspace { .. } => "cleanWorkspace",
             Action::Spawn(_) => "spawn",
             Action::Brief { .. } => "brief",
             Action::Release { .. } => "release",
@@ -208,8 +222,13 @@ pub struct SpawnSpec {
     pub host: String,
     pub key: String,
     pub harness: String,
-    /// What the Task named; the runtime decides how to make it.
+    /// What the Task named; the runtime decides how to make it, unless
+    /// `ready` is set.
     pub workspace: crate::task::Workspace,
+    /// The workspace Fleet made for this session: the runtime runs the
+    /// session in `ready.dir` on `ready.host` and makes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready: Option<crate::workspace::WorkspaceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -331,6 +350,13 @@ pub enum EffectOutcome {
     Failed {
         why: String,
     },
+    /// The workspace is whole under the effect's key; `adopted` when a whole
+    /// one was there already.
+    Materialized {
+        workspace: Box<crate::workspace::WorkspaceRef>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        adopted: bool,
+    },
     /// The runtime maps no source for a repository the workspace names.
     /// Nothing was started: the runtime's configuration lacks the mapping,
     /// and adding it, not a retry, is the fix.
@@ -358,10 +384,17 @@ pub enum Probe {
     Ready {
         session: SessionRef,
     },
-    /// Whether the session's agent trusts the Task's workspace.
+    /// Whether the session's agent trusts the Task's workspace, or the one
+    /// Fleet made for it (`ready`).
     WorkspaceTrust {
         session: SessionRef,
         workspace: crate::task::Workspace,
+        ready: Option<crate::workspace::WorkspaceRef>,
+    },
+    /// The whole workspace under `key` on `host`, through the workspace port.
+    FindWorkspace {
+        host: String,
+        key: String,
     },
     BriefDelivered {
         session: SessionRef,
@@ -438,6 +471,8 @@ pub struct Observations {
     pub lost: Option<Observation<bool>>,
     pub paused: Option<Observation<bool>>,
     pub activity: Option<Observation<crate::runtime::Activity>>,
+    /// `Known(None)` means the host proved no whole workspace holds the key.
+    pub workspace: Option<Observation<Option<crate::workspace::WorkspaceRef>>>,
 }
 
 /// `task/<name>/<uid>/<action>[/<attempt>]`: deterministic, so a repeat is

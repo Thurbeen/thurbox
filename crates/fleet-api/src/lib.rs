@@ -72,6 +72,7 @@ pub mod store;
 pub mod talk;
 pub mod task;
 pub mod validate;
+pub mod workspace;
 
 pub use meta::{API_VERSION, Millis, Object, ObjectMeta, OwnerReference};
 pub use observation::Observation;

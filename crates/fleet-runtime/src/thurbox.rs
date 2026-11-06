@@ -38,6 +38,7 @@ use fleet_api::task::{
     LOCAL_HOST as LOCAL, RepositoriesWorkspace, Repository, SessionRef, Workspace,
     uid_of_session_key,
 };
+use fleet_api::workspace::WorkspaceRef;
 use fleet_exec::{Outcome, Spec, run};
 use serde_json::Value;
 
@@ -113,7 +114,7 @@ impl Repositories {
         Repositories(Arc::new(RwLock::new(map)))
     }
 
-    fn source(&self, url: &str) -> Option<String> {
+    pub(crate) fn source(&self, url: &str) -> Option<String> {
         self.0
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -311,7 +312,15 @@ impl ThurboxRuntime {
     /// The directory the agent keys the session's trust on, as the Task names
     /// it: a `{dir}` itself, or the primary repository's source checkout,
     /// which Codex and Claude Code both use for a worktree of it.
-    fn named_root(&self, workspace: &Workspace) -> Result<String, String> {
+    /// A workspace Fleet made names its own trust root, or is one.
+    fn named_root(
+        &self,
+        workspace: &Workspace,
+        ready: Option<&WorkspaceRef>,
+    ) -> Result<String, String> {
+        if let Some(r) = ready {
+            return Ok(r.trust_root.clone().unwrap_or_else(|| r.dir.clone()));
+        }
         match workspace {
             Workspace::Dir(w) => Ok(w.dir.clone()),
             Workspace::Repositories(w) => match w.repositories.first() {
@@ -324,8 +333,13 @@ impl ThurboxRuntime {
     /// The trust root Fleet hands an agent: resolved through symlinks on
     /// this machine, as the agent resolves its cwd. A filesystem root or this
     /// machine's home is refused: trusting it would trust what it contains.
-    fn trust_root(&self, host: &str, workspace: &Workspace) -> Result<String, String> {
-        let named = lexical(&self.named_root(workspace)?)?;
+    fn trust_root(
+        &self,
+        host: &str,
+        workspace: &Workspace,
+        ready: Option<&WorkspaceRef>,
+    ) -> Result<String, String> {
+        let named = lexical(&self.named_root(workspace, ready)?)?;
         let root = if host == LOCAL {
             canonical(&named)
         } else {
@@ -348,6 +362,7 @@ impl ThurboxRuntime {
         &self,
         session: &SessionRef,
         workspace: &Workspace,
+        ready: Option<&WorkspaceRef>,
         row: &Value,
     ) -> Observation<WorkspaceTrust> {
         let mismatch = |why: String| {
@@ -356,7 +371,7 @@ impl ThurboxRuntime {
                 why,
             })
         };
-        let root = match self.trust_root(&session.host, workspace) {
+        let root = match self.trust_root(&session.host, workspace, ready) {
             Ok(root) => root,
             Err(why) => return mismatch(why),
         };
@@ -375,9 +390,10 @@ impl ThurboxRuntime {
         let Some(cwd) = row["cwd"].as_str() else {
             return Observation::unknown("thurbox does not report the session's directory");
         };
-        let member = match workspace {
-            Workspace::Dir(w) => cwd == w.dir,
-            Workspace::Repositories(w) => {
+        let member = match (ready, workspace) {
+            (Some(r), _) => cwd == r.dir,
+            (None, Workspace::Dir(w)) => cwd == w.dir,
+            (None, Workspace::Repositories(w)) => {
                 let Some(trees) = row["worktrees"].as_array() else {
                     return Observation::unknown("thurbox does not report the session's worktrees");
                 };
@@ -430,6 +446,7 @@ impl ThurboxRuntime {
         &self,
         session: &SessionRef,
         workspace: &Workspace,
+        ready: Option<&WorkspaceRef>,
         row: &Value,
     ) -> Observation<WorkspaceTrust> {
         if row["hook_reported"] == true {
@@ -449,7 +466,8 @@ impl ThurboxRuntime {
             );
         }
         let cwd = row["cwd"].as_str().unwrap_or("its directory");
-        let root = match (workspace, self.named_root(workspace)) {
+        let root = match (workspace, self.named_root(workspace, ready)) {
+            (_, Ok(source)) if ready.is_some() => source,
             (Workspace::Repositories(_), Ok(source)) => source,
             (_, Ok(dir)) => format!("the repository root holding {dir}, or {dir} outside one"),
             (_, Err(why)) => why,
@@ -903,10 +921,28 @@ impl Runtime for ThurboxRuntime {
                 harness: spec.harness.clone(),
             });
         };
-        let workspace = match &spec.workspace {
+        let workspace = match (&spec.ready, &spec.workspace) {
+            // Fleet made the workspace: thurbox only runs the session in it.
+            (Some(r), _) => {
+                if let Some(d) = std::iter::once(&r.dir)
+                    .chain(&r.extra_dirs)
+                    .find(|d| !is_absolute(d))
+                {
+                    return Observation::Known(EffectOutcome::Failed {
+                        why: format!("the workspace {d:?} Fleet made is not an absolute path"),
+                    });
+                }
+                // The other worktrees are spanned as they are: Fleet made
+                // them, so thurbox makes no worktree of its own.
+                let mut args = vec!["--repo-path".to_string(), r.dir.clone()];
+                for d in &r.extra_dirs {
+                    args.extend(["--add-dir".to_string(), d.clone()]);
+                }
+                args
+            }
             // thurbox resolves --repo-path as an absolute path on the target
             // host; a relative one would mean whatever directory fleet ran in.
-            Workspace::Dir(w) if !is_absolute(&w.dir) => {
+            (None, Workspace::Dir(w)) if !is_absolute(&w.dir) => {
                 return Observation::Known(EffectOutcome::Failed {
                     why: format!(
                         "workspace.dir {:?} must be an absolute path on the host for the thurbox runtime",
@@ -914,8 +950,8 @@ impl Runtime for ThurboxRuntime {
                     ),
                 });
             }
-            Workspace::Dir(w) => vec!["--repo-path".to_string(), w.dir.clone()],
-            Workspace::Repositories(w) => match self.worktree_args(&spec.key, w) {
+            (None, Workspace::Dir(w)) => vec!["--repo-path".to_string(), w.dir.clone()],
+            (None, Workspace::Repositories(w)) => match self.worktree_args(&spec.key, w) {
                 Ok(args) => args,
                 Err(outcome) => return Observation::Known(outcome),
             },
@@ -950,7 +986,7 @@ impl Runtime for ThurboxRuntime {
         }
         if *trust == TrustInterface::Codex {
             let trust = self
-                .trust_root(&spec.host, &spec.workspace)
+                .trust_root(&spec.host, &spec.workspace, spec.ready.as_ref())
                 .and_then(|root| codex_override(&root));
             match trust {
                 // `=`: thurbox takes a value starting with `-` only joined.
@@ -1062,6 +1098,7 @@ impl Runtime for ThurboxRuntime {
         &self,
         session: &SessionRef,
         workspace: &Workspace,
+        ready: Option<&WorkspaceRef>,
     ) -> Observation<WorkspaceTrust> {
         let row = match self.get(session) {
             Observation::Known(row) => row,
@@ -1077,8 +1114,8 @@ impl Runtime for ThurboxRuntime {
             return Observation::unknown("thurbox reports no agent for the session");
         };
         match self.cfg.workspace_trust.get(agent) {
-            Some(TrustInterface::Codex) => self.codex_trust(session, workspace, &row),
-            Some(TrustInterface::Claude) => self.claude_trust(session, workspace, &row),
+            Some(TrustInterface::Codex) => self.codex_trust(session, workspace, ready, &row),
+            Some(TrustInterface::Claude) => self.claude_trust(session, workspace, ready, &row),
             Some(TrustInterface::Ungated) => Observation::Known(WorkspaceTrust::Trusted {
                 how: format!("runtime.workspaceTrust says harness {agent} has no trust gate"),
             }),
@@ -1468,18 +1505,38 @@ mod tests {
     fn a_filesystem_root_is_never_a_trust_root() {
         let rt = runtime();
         for dir in ["/", "C:\\", "C:/"] {
-            let err = rt.trust_root("remote", &Workspace::at(dir)).unwrap_err();
+            let err = rt
+                .trust_root("remote", &Workspace::at(dir), None)
+                .unwrap_err();
             assert!(err.contains("never trusted automatically"), "{dir}: {err}");
         }
         assert_eq!(
-            rt.trust_root("remote", &Workspace::at("/work/t")).unwrap(),
+            rt.trust_root("remote", &Workspace::at("/work/t"), None)
+                .unwrap(),
             "/work/t"
         );
         let repos = Workspace::Repositories(workspace(&[
             ("https://example.invalid/a", None),
             ("https://example.invalid/b", None),
         ]));
-        assert_eq!(rt.trust_root("remote", &repos).unwrap(), "/src/a");
+        assert_eq!(rt.trust_root("remote", &repos, None).unwrap(), "/src/a");
+        // A workspace Fleet made names its trust root, or is its own.
+        let mut ready = WorkspaceRef {
+            key: "t.u1".into(),
+            host: "remote".into(),
+            dir: "/w/t.u1/a".into(),
+            extra_dirs: Vec::new(),
+            trust_root: Some("/src/made".into()),
+        };
+        assert_eq!(
+            rt.trust_root("remote", &repos, Some(&ready)).unwrap(),
+            "/src/made"
+        );
+        ready.trust_root = None;
+        assert_eq!(
+            rt.trust_root("remote", &repos, Some(&ready)).unwrap(),
+            "/w/t.u1/a"
+        );
     }
 
     #[test]

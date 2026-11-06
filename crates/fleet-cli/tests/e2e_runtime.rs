@@ -692,6 +692,53 @@ fn map_repositories(env: &Env) {
 }
 
 #[test]
+fn a_workspace_fleet_made_reaches_thurbox_as_a_ready_directory() {
+    let env = Env::thurbox("thurbox-ready-workspace");
+    map_repositories(&env);
+    let mut cfg = std::fs::read_to_string(&env.config).expect("config");
+    cfg.push_str("\n[workspaces]\nkind = \"fake\"\ndir = \"fake\"\n");
+    std::fs::write(&env.config, cfg).expect("config");
+    let mut items = runtime_config();
+    items.as_array_mut().unwrap().push(repositories_task("r1"));
+    env.apply(items).ok();
+    env.reconcile().ok();
+
+    let st = full_status(&env, "r1");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    let dir = st["workspace"]["dir"]
+        .as_str()
+        .expect("a workspace")
+        .to_string();
+    let create = &argv_of(&env, "create")[0];
+    let after = |flag: &str| {
+        create
+            .iter()
+            .position(|a| a == flag)
+            .map(|i| create[i + 1].clone())
+    };
+    // thurbox runs the session in the directory and makes no worktree.
+    assert_eq!(after("--repo-path"), Some(dir), "{create:?}");
+    // Every other worktree Fleet made is spanned as it is.
+    let added: Vec<&String> = create
+        .windows(2)
+        .filter(|w| w[0] == "--add-dir")
+        .map(|w| &w[1])
+        .collect();
+    let extra: Vec<&str> = st["workspace"]["extraDirs"]
+        .as_array()
+        .expect("the other worktrees")
+        .iter()
+        .map(|d| d.as_str().expect("a dir"))
+        .collect();
+    assert_eq!(extra.len(), 1, "{st:#}");
+    assert!(extra[0].ends_with("docs"), "{st:#}");
+    assert_eq!(added, extra, "{create:?}");
+    for flag in ["--worktree-branch", "--base-branch", "--add-repo"] {
+        assert_eq!(after(flag), None, "{create:?}");
+    }
+}
+
+#[test]
 fn a_repositories_workspace_becomes_thurbox_worktrees_the_adapter_names() {
     let env = Env::thurbox("thurbox-repositories");
     map_repositories(&env);

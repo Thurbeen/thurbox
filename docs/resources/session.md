@@ -98,6 +98,8 @@ and `sessionState` through `fleet list task` and `fleet status`.
 This definition is the first step toward the
 [target architecture](../../media/fleet-architecture-doom.svg), where
 Thurbox is one view and Fleet runs Sessions behind the runtime port. The
-following steps add a Workspace that Fleet materializes, an `attach` call on
-the runtime port for a live terminal, and a Fleet-owned multiplexer adapter.
+second step added a Workspace that Fleet materializes; see
+[Workspaces and the workspace port](../ARCHITECTURE.md#workspaces-and-the-workspace-port).
+The following steps add an `attach` call on the runtime port for a live
+terminal, and a Fleet-owned multiplexer adapter.
 See [Sessions and the runtime port](../ARCHITECTURE.md#sessions-and-the-runtime-port).

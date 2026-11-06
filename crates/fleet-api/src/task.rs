@@ -321,6 +321,10 @@ pub struct TaskStatus {
     /// that proved nothing keeps the last state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_state: Option<SessionState>,
+    /// The workspace Fleet made for the session (see [`crate::workspace`]).
+    /// Absent while the runtime makes the workspace itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::workspace::WorkspaceRef>,
     /// Effect intents, written before the effect runs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub intents: BTreeMap<String, Intent>,
@@ -331,6 +335,14 @@ pub struct TaskStatus {
     pub spawn_attempts: u32,
     #[serde(default)]
     pub release_attempts: u32,
+    /// Materialize effects planned for the workspace, bounded like spawn
+    /// attempts; the current one's key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub materialize_attempts: u32,
+    /// Clean effects planned for the workspace after the release; the
+    /// current one's key.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub clean_attempts: u32,
     /// Sends of the brief, bounded like spawn attempts.
     #[serde(default)]
     pub brief_sends: u32,

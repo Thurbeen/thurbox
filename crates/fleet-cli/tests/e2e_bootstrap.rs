@@ -536,6 +536,7 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
             &self,
             _: &SessionRef,
             _: &fleet_api::task::Workspace,
+            _: Option<&fleet_api::workspace::WorkspaceRef>,
         ) -> Observation<fleet_api::runtime::WorkspaceTrust> {
             panic!("already briefed")
         }
@@ -574,6 +575,7 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         clock: clock.as_ref(),
         holder: "lease-clock-test".into(),
         forge: None,
+        workspaces: None,
         change_request_defaults: Default::default(),
         forge_defaults: Default::default(),
         gateway: None,

@@ -194,8 +194,8 @@ finalizer. The manager performs it in this order:
 
 1. **Intent first.** The status carrying each effect's intent is written
    (compare-and-swap, under the lease) before the effect runs.
-2. **Effect.** Spawn, brief, release, revive, pause or resume, each under a
-   deterministic key
+2. **Effect.** Materialize, spawn, brief, release, revive, pause, resume or
+   clean, each under a deterministic key
    (`task/<name>/<uid>/<action>[/<attempt>]`).
 3. **Receipt after.** The outcome is written as the key's receipt. An intent
    without a receipt is a question the next pass answers by observing the
@@ -203,6 +203,20 @@ finalizer. The manager performs it in this order:
 
 Guarantees, each with its test:
 
+- **Workspace once.** With a workspace port, a `{repositories}` Task plans
+  `Materialize` under `materialize/<n>` before its spawn, with the session
+  key as the workspace key. `Spawned` waits until `status.workspace` holds
+  the whole workspace, and the spawn gets it as `ready`. After an unknown
+  materialize outcome the controller looks the workspace key up: found is
+  adopted, absent is retried after `RETRY_DELAY_MS`, unreadable waits.
+  `MAX_ATTEMPTS` refusals stall the Task with
+  `WorkspaceReady=False/MaterializeFailed`. An unmapped repository spends
+  no attempt, as at spawn. After the release, and also when nothing was
+  spawned, `CleanWorkspace` runs under `cleanWorkspace/<n>`. The finalizer
+  goes only after a `Deleted` receipt. A failed or unknown clean is
+  repeated after each wait, and three raise `NeedsAttention/CleanFailed`. A
+  Task deleted while its materialize is unanswered looks the key up first.
+  `task_workspace` and `e2e_workspace` cover each case.
 - **Spawn once.** The session key is `<name>.<uid>`. After an unknown spawn
   outcome the controller looks the key up: found is adopted, absent is retried,
   unreadable waits.
@@ -320,9 +334,9 @@ Guarantees, each with its test:
   changes against what was stored, so a pass that sees nothing new writes
   nothing and the manager goes idle.
 
-Conditions: `HostReachable`, `Spawned`, `WorkspaceTrusted`, `Briefed`,
-`Stalled`, `WorkerGone`, `SessionLost`, `Paused`, `Concluded`, `Released`,
-`NeedsAttention`.
+Conditions: `HostReachable`, `WorkspaceReady`, `Spawned`,
+`WorkspaceTrusted`, `Briefed`, `Stalled`, `WorkerGone`, `SessionLost`,
+`Paused`, `Concluded`, `Released`, `NeedsAttention`.
 
 ## Following declared changes
 
@@ -865,8 +879,11 @@ outlast it.
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process.
 
-The runtime owns the workspace. Fleet passes `spec.workspace` in the spawn
-and deletes the session; every adapter keeps these rules:
+The runtime owns the workspace unless Fleet made it (see
+[Workspace contract](#workspace-contract)). When Fleet made it, the spawn's
+`ready` names the directory, and the runtime runs the session there and
+makes nothing. Otherwise Fleet passes `spec.workspace` in the spawn and
+deletes the session; every adapter keeps these rules:
 
 - **Materialization.** The adapter decides how a workspace becomes files:
   a worktree, a clone, a copy or a restored snapshot. Branches, bases,
@@ -886,8 +903,9 @@ and deletes the session; every adapter keeps these rules:
   workspace-trust interface for is `Known(TrustUnmapped { harness })`. The
   adapter answers both before any external call.
 
-Thurbox maps a `{dir}` to `--repo-path`. It maps `{repositories}` to one
-worktree create:
+Thurbox maps a `{dir}` to `--repo-path`. It maps a ready workspace Fleet
+made to `--repo-path dir` and one `--add-dir` per `extraDirs` entry, and
+makes no worktree. It maps `{repositories}` to one worktree create:
 
 - The first repository's source is `--repo-path`, and its `ref` is
   `--base-branch`.
@@ -973,6 +991,51 @@ These rules hold for every interface:
 `e2e_workspace_trust` covers each interface, adoption, mismatch, Unknown and
 recovery. Its rows and screens come from thurbox-cli 2.76.1, Codex 0.164.0
 and Claude Code 2.1.312.
+
+## Workspace contract
+
+A Workspace is the set of files one Session works in (`fleet_api::workspace`).
+A Task owns at most one. TaskController records it in `status.workspace`
+as `WorkspaceRef`: Fleet's `key`, the `host` the adapter reported, the `dir`
+the session runs in, the `extraDirs` it also spans and an optional
+`trustRoot`. The workspace key is the session key.
+
+`fleet_api::workspace::Workspaces`: `materialize`, `find` and `clean`, each
+answering Known or Unknown, and `operation_bound`. The `[workspaces]`
+section of the config selects the adapter. Without it, Fleet makes no
+workspace. Every adapter keeps these rules:
+
+- **Whole or nothing.** A materialize leaves a whole workspace or nothing.
+  `find` reports a partial workspace as none, and the next `materialize`
+  rolls it back first.
+- **Once per key.** A `materialize` for a key that holds a whole workspace
+  answers `Materialized { adopted: true }` and makes nothing.
+- **Refusal.** A repository the adapter has no source for is
+  `Known(Unmapped { url })`, answered before any command runs. A workspace
+  the adapter cannot make is `Known(Failed)` and leaves nothing.
+- **Observed host.** The adapter reports the host it made the workspace on.
+  Fleet sends no credential: the host and the adapter hold them.
+- **Bounded commands.** Each step is a bounded command on the host, through
+  `fleet-exec`.
+- **Cleanup.** `clean` removes the workspace. A workspace already gone is
+  `Deleted`. Repeating it is harmless.
+
+The `worktree` adapter serves the local host and refuses any other:
+
+- Workspace `key` is the directory `<root>/<key>`. Each repository is a
+  worktree at `<root>/<key>/<name>` on the branch `<branchPrefix>/<key>`
+  of its source checkout, from its `ref` or the source's `HEAD`.
+- `runtime.repositories` maps each URL to its source checkout.
+- The session runs in the first repository's worktree. Its trust root is
+  that repository's source checkout, as for a thurbox worktree.
+- Each other repository's worktree is in `extraDirs`, in the Task's order.
+- The marker `<root>/<key>/.fleet-workspace.json` is written last. A
+  directory without it is partial.
+- A branch left by an earlier attempt is checked out again, so no commit
+  is lost. `clean` removes the worktrees and keeps the branches.
+- A workspace names at most 4 repositories, so one call has a bound.
+
+`worktree_adapter` covers the adapter against real repositories.
 
 ## Forge contract
 
@@ -1179,7 +1242,10 @@ metrics of a Task's lifecycle and of forge polls arrive with their
 identities and outcomes and without a brief, message or environment value;
 nothing is sent when export is off; an unreachable collector changes no
 command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
-`task_controller`, `change_request_controller`, `forge_controller`,
+`e2e_workspace` covers the workspace port against the fake adapter: one
+materialize, the ready spawn, the clean after the release, a crash between
+the materialize and its receipt, a lost request and an unreadable key.
+`task_controller`, `task_workspace`, `change_request_controller`, `forge_controller`,
 `conversation_controller`, `listener_controller` and `gateway_controller`
 test each controller as a pure function, one transition or Unknown per
 case.

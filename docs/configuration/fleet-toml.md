@@ -76,6 +76,12 @@ Fleet installation talking to the same Thurbox hosts needs a distinct
 | `runtime.workspaceCleanup` | Thurbox: `delete` | What deleting a session does to its worktrees. `delete` removes them with the session (`session delete --force`). `keep` leaves them, restorable in thurbox (`session delete --soft`). The setting also applies to `dir` Tasks: `delete` overrides thurbox's own `soft_delete`, so a released session cannot be restored. |
 | `runtime.workspaceTrust` | Thurbox: `codex` is `codex`; `claude` and `claude-code` are `claude` | Harness name to its workspace-trust interface: `codex`, `claude` or `none`. Any other value is refused at load. A Task whose harness is not listed starts no session and waits in Pending with `TrustUnmapped`; the refusal spends no spawn attempt. A running `fleet up` applies a new entry after a restart. See [workspace trust](../../crates/CONTRACTS.md#workspace-trust). |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
+| `workspaces.kind` | Optional | `worktree` or `fake`. With this section, Fleet makes each `repositories` workspace before the spawn and cleans it after the release. Without it, the runtime makes the workspace. See [the workspace port](../../crates/CONTRACTS.md#workspace-contract). |
+| `workspaces.root` | Required for `worktree` | The directory that holds every workspace on the local host, relative to this config file. Sources come from `runtime.repositories`. |
+| `workspaces.git` | Worktree: PATH `git` | The `git` executable. |
+| `workspaces.callTimeoutMs` | Worktree: `30000` | Bound for each `git` command. The manager lease must outlast the adapter's reported worst case. |
+| `workspaces.branchPrefix` | Worktree: `fleet` | The first part of each workspace branch, `<branchPrefix>/<session key>`. Lowercase letters, digits and `-`. |
+| `workspaces.dir` | Required for `fake` | The fake host's directory, relative to this config file. Use `runtime.dir` to share records with the fake runtime. |
 | `starter.workspace` | Required for `up` | Initialized VEGA workspace, relative to this config file. |
 
 `--data-dir` is for explicit store operations. `fleet up` rejects a differing

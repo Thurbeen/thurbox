@@ -28,6 +28,7 @@ use fleet_manager::{
 };
 use fleet_runtime::{
     Cleanup, FakeHost, FakeRuntime, Repositories, ThurboxConfig, ThurboxRuntime, TrustInterface,
+    WorktreeConfig, WorktreeWorkspaces,
 };
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
@@ -574,11 +575,13 @@ fn run(cli: Cli) -> Result<(), Failure> {
             lease_ttl_ms,
             json,
         } => {
-            let runtime = open_runtime(&config)?;
+            let (runtime, map) = open_reloadable_runtime(&config)?;
+            let workspaces = open_workspaces(&config, map.as_ref())?;
             let forge = open_forge(&config)?;
             let gateway = open_gateway(&config)?;
             let bound = runtime
                 .operation_bound()
+                .max(workspaces.as_ref().map_or(0, |w| w.operation_bound()))
                 .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
                 .max(gateway.as_ref().map_or(0, |g| g.operation_bound()))
                 .max(fleet_api::plugin::Plugins::operation_bound(&plugins));
@@ -590,6 +593,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 clock: &SystemClock,
                 holder,
                 forge: forge.as_ref().map(|f| f as &dyn Forge),
+                workspaces: workspaces.as_deref(),
                 change_request_defaults: forge_defaults(&config),
                 forge_defaults: relay_defaults(&config),
                 plugins: Some((&plugins, &registrations)),
@@ -826,6 +830,7 @@ fn cmd_up(
         .as_ref()
         .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
     let (runtime, repositories) = open_reloadable_runtime(config)?;
+    let workspaces = open_workspaces(config, repositories.as_ref())?;
     let mut reload = repositories.map(|map| Reload::new(config_path, config_text, map));
     let forge = open_forge(config)?;
     let gateway = open_gateway(config)?;
@@ -866,6 +871,7 @@ fn cmd_up(
     let ttl = lease_for(
         runtime
             .operation_bound()
+            .max(workspaces.as_ref().map_or(0, |w| w.operation_bound()))
             .max(forge.as_ref().map_or(0, |f| f.operation_bound()))
             .max(gateway.as_ref().map_or(0, |g| g.operation_bound()))
             .max(poll_ms.saturating_mul(2))
@@ -882,6 +888,7 @@ fn cmd_up(
         clock: &SystemClock,
         holder: format!("fleet-up-{}", std::process::id()),
         forge: forge.as_ref().map(|f| f as &dyn Forge),
+        workspaces: workspaces.as_deref(),
         change_request_defaults: forge_defaults(config),
         forge_defaults: relay_defaults(config),
         plugins: Some(plugins),
@@ -1060,8 +1067,60 @@ fn repositories(rt: &config::RuntimeConfig) -> Result<BTreeMap<String, String>, 
     Ok(rt.repositories.clone())
 }
 
-fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
-    open_reloadable_runtime(config).map(|(runtime, _)| runtime)
+/// The workspace port the `[workspaces]` section names, or `None` when the
+/// config has none and the runtime makes every workspace. The worktree
+/// adapter reads `runtime.repositories`, through `map` when the runtime
+/// already holds the reloadable handle to it.
+fn open_workspaces(
+    config: &Config,
+    map: Option<&Repositories>,
+) -> Result<Option<Box<dyn fleet_api::workspace::Workspaces>>, Failure> {
+    let Some(ws) = &config.workspaces else {
+        return Ok(None);
+    };
+    match ws.kind.as_str() {
+        "fake" => {
+            let dir = ws
+                .dir
+                .clone()
+                .ok_or_else(|| fail("workspaces.dir is required for the fake adapter"))?;
+            let host = FakeHost::open(&dir)
+                .map_err(|e| fail(format!("fake host {}: {e}", dir.display())))?;
+            Ok(Some(Box::new(FakeRuntime::new(host))))
+        }
+        "worktree" => {
+            let root = ws
+                .root
+                .clone()
+                .ok_or_else(|| fail("workspaces.root is required for the worktree adapter"))?;
+            let map = match map {
+                Some(m) => m.clone(),
+                None => Repositories::new(match &config.runtime {
+                    Some(rt) => repositories(rt).map_err(fail)?,
+                    None => BTreeMap::new(),
+                }),
+            };
+            let mut cfg = WorktreeConfig::new(root, map);
+            if let Some(git) = &ws.git {
+                cfg.git = git.into();
+            }
+            if let Some(ms) = ws.call_timeout_ms {
+                cfg.call_timeout = std::time::Duration::from_millis(ms);
+            }
+            if let Some(p) = &ws.branch_prefix {
+                if fleet_api::validate::validate_name(p).is_err() {
+                    return Err(fail(format!(
+                        "workspaces.branchPrefix {p:?}: use lowercase letters, digits and '-'"
+                    )));
+                }
+                cfg.branch_prefix = p.clone();
+            }
+            Ok(Some(Box::new(WorktreeWorkspaces::new(cfg))))
+        }
+        other => Err(fail(format!(
+            "unknown workspaces kind {other:?}; this build has worktree and fake"
+        ))),
+    }
 }
 
 /// The runtime, and for thurbox the handle to its repository map.
@@ -1539,6 +1598,7 @@ fn status_summary(obj: &Object) -> Value {
         for k in [
             "session",
             "sessionState",
+            "workspace",
             "execution",
             "brief",
             "result",
@@ -1608,6 +1668,13 @@ fn print_status(s: &Value) {
             "session {id} on {} {}",
             s["session"]["host"].as_str().unwrap_or("-"),
             s["sessionState"].as_str().unwrap_or("(not yet observed)")
+        );
+    }
+    if let Some(dir) = s["workspace"]["dir"].as_str() {
+        println!(
+            "workspace {} on {} at {dir}",
+            s["workspace"]["key"].as_str().unwrap_or("-"),
+            s["workspace"]["host"].as_str().unwrap_or("-")
         );
     }
     if !s["result"].is_null() {
