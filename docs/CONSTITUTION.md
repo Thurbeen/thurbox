@@ -25,7 +25,7 @@ asserts for it (`[path-only: …]` marks the crossings described below):
 ```text
 session              (no crate-internal references — the dependency sink)
 agent                → agent::{generic, provider}       (re-exports only)
-agent::agent_config  → session, paths
+agent::agent_config  → session, paths, shell
 agent::extension_config → session, paths, agent::agent_config
 agent::generic       → session, agent::provider
 agent::hooks_config  → session, paths, agent::agent_config
@@ -251,7 +251,7 @@ binaries have correct versions while keeping the source tree clean.
 
 **Mechanism:**
 
-1. Release workflow (`release.yml`) analyzes commits via `cog bump --auto --dry-run`
+1. Release workflow (`cd.yml`) analyzes commits via `cog bump --auto --dry-run`
 2. Workflow creates lightweight tag (v{version}) and passes version via environment variable
 3. `build.rs` reads `THURBOX_RELEASE_VERSION` and injects into binary
 4. Cargo.toml version remains `0.0.0-dev` (development marker only)
@@ -276,4 +276,4 @@ binaries have correct versions while keeping the source tree clean.
 | Logging off stdout | Code review | — |
 | TDD (Red/Green/Refactor) | `cargo-nextest` + code review | `.config/nextest.toml` |
 | Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |
-| Tag-based versioning | `build.rs` + `release.yml` | `build.rs` + `.github/workflows/release.yml` |
+| Tag-based versioning | `build.rs` + `cd.yml` | `build.rs` + `.github/workflows/cd.yml` |

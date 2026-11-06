@@ -17,10 +17,11 @@ hard-fails on a known binary that is missing from the tarball:
     const BINARIES: [&str; 2] = ["thurbox", "thurbox-cli"];
     // …
     if !src.exists() {
-        return Err(format!("release tarball is missing `{name}`"));
+        return Err(format!("release archive is missing `{name}`"));
     }
 
-`run_auto_update` is best-effort — "failures are logged and swallowed" — so the
+The startup auto-update (`kernel::updates`) runs `perform_update` on a thread
+and only logs a failure (`auto-update failed: …`), so the
 symptom is not an error anybody sees. It is **auto-update silently ceasing to
 work, permanently, on every install already out there**, with the only trace in
 `thurbox.log`. There is no way to push a fix to a client whose updater has

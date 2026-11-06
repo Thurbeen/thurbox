@@ -1097,7 +1097,7 @@ the work wasted only after paying for it.
 **Four things the implementation taught, each caught by a test rather than by
 review:**
 
-- **`taken_at_ms` is published**, and `widgets.relative_time` renders it, so the
+- **`taken_at_ms` is published**, and `widgets.time_ago` renders it, so the
   clock has to advance or "5s ago" freezes. ADR-P29 separates that signal
   from the row generation and scopes it to the panes that read it.
 - **A pure render may read `store`/`state`**, which handlers write. Without that
@@ -1222,7 +1222,7 @@ resets the frame buffer before every draw, so there is nothing stale to erase
 across frames, and a live terminal covers its own rect — the `Clear` was a second
 full-grid write of ~9,000 cells for a frame about to overwrite them. It is kept
 for the branches that do *not* cover their rect, each owning its own clear rather
-than being cleared by the caller: `kernel::terminal::clear_uncovered` for a grid
+than being cleared by the caller: `kernel::terminal::links::clear_uncovered` for a grid
 still smaller than its rect a frame after a resize, and the detached and notice
 widgets for themselves. `normalize_ambiguous_width` also rejects a cell on a
 length compare (`VARIATION_SELECTOR_16_LEN`, derived from the selector rather

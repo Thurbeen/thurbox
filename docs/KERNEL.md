@@ -3,8 +3,9 @@
 thurbox is a session engine with a Lua-driven renderer. The kernel owns no
 pane: the session list, the terminal and every other surface that shows *your
 work* is a plugin under `ui/`. The bundled set is currently **three** — the
-session list, the agent pane and the search strip — plus the new-session flow,
-the confirmation and the restore list, which float rather than filling a slot;
+session list, the agent pane and the search strip — plus five floats that fill
+no slot: the new-session flow, the confirmation, the rename field, the context
+menu and the restore list;
 the interface was cut back to its core, and v1's other surfaces are not
 bundled. It does own the **system modals** — help, settings, the theme picker
 and the interface's own file list — which are chrome about thurbox itself
@@ -50,7 +51,7 @@ clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
    convert   table <-> node              lib/ui        panel, list, cursor, row…
                                          lib/widgets   measure, window, list…
    paint     node -> ratatui             lib/tree      decoration helper
-   host      VM, reload, isolation       plugins/*     3 panes + 3 floats
+   host      VM, reload, isolation       plugins/*     3 panes + 5 floats
    registry  keys, settings, commands
    modals    help, settings, theme, files, palette
    events    derived from the snapshot
@@ -367,7 +368,7 @@ the capture lasts one keystroke.
 **The render path must not read the plugin directory.** inotify reports a *read*
 as an event, so a per-frame reader makes the host look like it is editing its own
 plugins — which pushes the reload debounce forward forever, and auto-reload
-silently never fires while `F5` works perfectly. `layout.lua` is loaded once per
+silently never fires while `F10` works perfectly. `layout.lua` is loaded once per
 reload for exactly this reason.
 
 **A click is routed by identity, not by geometry a plugin declares.** The paint
@@ -467,9 +468,10 @@ conversion less often:
   `20_agent.lua`'s `chrome()` already does, would take a 30-row list from ~90
   nodes to ~32.
 - **Stop probing closed modals.** Every floating plugin is rendered full-screen
-  each frame purely to discover it is not floating. No bundled plugin floats any
-  more, so this costs nothing today — and is the trap to avoid when the modals
-  come back.
+  each frame purely to discover it is not floating. Five bundled plugins float
+  now (the creation flow, the confirmation, the rename field, the context menu
+  and the restore list), so the probe is paid on every frame unless the float
+  declares `pure = true` — which is the lever ADR-P16 added for it.
 
 Dependencies are built with `opt-level = 3` even in dev builds
 (`[profile.dev.package."*"]`), because `cargo run` is the documented way to run

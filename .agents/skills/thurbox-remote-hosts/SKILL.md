@@ -53,7 +53,7 @@ socket = "thurbox"            # optional (default "thurbox") — host `tmux -L` 
 session = "thurbox"           # optional (default "thurbox") — host tmux session name
 worktrees_dir = "/home/me/.local/share/thurbox/worktrees"
                               # optional — abs worktrees dir on the host
-multiplexer = "tmux"          # optional (default "tmux") — set "psmux" for a Windows SSH host
+multiplexer = "tmux"          # optional (default: the host platform's — tmux on POSIX, psmux on Windows); set "psmux" for a Windows SSH host
 platform = "windows"          # optional — "posix"/"windows"; unset = windows iff multiplexer is psmux
 otel_endpoint = "http://localhost:4318"
                               # optional — the host's OTLP collector, as the host reaches it (ADR-36);

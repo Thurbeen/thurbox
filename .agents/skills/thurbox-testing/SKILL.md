@@ -14,8 +14,10 @@ cargo nextest run --all              # Run all tests (preferred runner)
 cargo nextest run -E 'test(name)'    # Run a single test by name
 cargo nextest run --all --profile ci # Run with CI profile
 bats scripts/install.bats             # Test install script (requires bats-core)
-bats extensions/*/scripts/*.bats      # Test the extensions' shell scripts
-just test-scripts                     # Both of the above, the way CI runs them
+just test-scripts                     # The four bats suites CI runs: install.bats,
+                                      # scripts/ci/check-pr-title.bats,
+                                      # packaging/winget/winget.bats and
+                                      # scripts/dev/e2e/windows-vm.bats
 ```
 
 The Nix development shell includes `bashInteractive`, not merely stdenv's
@@ -71,7 +73,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
 - **Lua statics** — `selene ui` (undefined names + the sandbox, via `thurbox.yml`),
   `lua-language-server --check` (types + withheld libraries, via
   `ui/lib/thurbox.d.lua`), `stylua` (format). The three cover different halves;
-  see **Linting & Formatting**.
+  see *Linting & Formatting* in `AGENTS.md`.
 - **`scripts/ci/check-lua-types.sh`** — the definitions' own test. Three panes in
   `tests/fixtures/lua_types/` each misspell one thing the plugin API otherwise
   drops in silence (a node prop, a command option, a theme role) and each must

@@ -177,10 +177,10 @@ roll up to their most-urgent member
 The hooks are wired automatically by the built-in **hooks** extension
 (auto-activated on first run; opt out with `thurbox-cli extension
 deactivate hooks`). How much each agent can report depends on the
-lifecycle surface its CLI exposes — claude, codex, opencode, and
-antigravity report the full range, aider reports blocked, and vibe
-reports everything but blocked. See the per-agent matrix in
-`extensions/hooks/README.md` (and the website's *Agent hooks* page).
+lifecycle surface its CLI exposes; the per-agent facts are owned by
+`docs/AGENTS.md` → *Status hook mechanisms* (the `AGENT_HOOK_COVERAGE`
+table), with the matrix in `extensions/hooks/README.md` (and the
+website's *Agent hooks* page).
 
 **Remote sessions report status too** (same per-agent range): at spawn
 time the hook commands are rewritten to the command the row's backend
@@ -385,7 +385,8 @@ and repo groups inside hosts — so no pair of values contradicts.
 is "which project is this?" — clustering same-repo sessions answers it at a
 glance, and a stable manual order means a row stays where you put it (a
 blinking status dot still flags urgency without yanking the row around). A
-single comparator (`ui::project_list::compute_session_order`) drives both
+single comparator (`ui/lib/session_model.lua`, which orders exactly as v1's
+`ui::project_list::compute_session_order` did) drives both
 rendering and `Ctrl+J`/`Ctrl+K` navigation, so the keyboard always steps
 through the exact order shown.
 
@@ -404,11 +405,12 @@ whichever the agent produces.
 
 The list is manually orderable. With the session list focused,
 `Shift+J`/`Shift+K` move the selected session one row down/up
-(rebindable `SessionListMoveDown`/`SessionListMoveUp`). A move swaps two
+(the `sessions.move_down`/`sessions.move_up` actions, rebindable in
+`ui.json`). A move swaps two
 adjacent **blocks** — a row plus its nested children, so a parent drags
 its whole subtree: root rows swap within their repo group, the **whole
 group** swaps past a group edge, and nested children move among their
-siblings only. `Shift+S` (rebindable `SessionListSortAlphabetically`)
+siblings only. `Shift+S` (`sessions.sort`, rebindable the same way)
 sorts every group's sessions alphabetically by name in one shot,
 preserving group order and parent/child nesting.
 
@@ -446,8 +448,9 @@ nesting is unaffected either way: it is not a repo property.
 Both paths densely renumber every session's `display_order` `0..n` and
 persist it, so the order survives restarts and syncs across instances
 via the existing `data_version` polling. The pure helpers
-(`ui::project_list::move_in_order` / `sort_alphabetically_within_groups`)
-back `App::move_active_session` / `sort_sessions_alphabetically`; storage
+(`order.move_block` / `order.sorted_within_groups` in `ui/lib/order.lua`,
+v1's `ui::project_list::move_in_order` / `sort_alphabetically_within_groups`)
+back the session pane's actions; storage
 is the nullable `sessions.display_order` column (schema v31, `None` =
 never moved).
 
@@ -492,10 +495,12 @@ not applicable.
    answers, and on a native-Windows host, which it never asks, the host
    offers its platform default and its configured choice.
 3. **Repo picker** — fuzzy-searchable list of bookmarked repo
-   paths. `Space` toggles selection, `w` marks the selected repo
+   paths. `Space` toggles selection, `Alt+W` marks the selected repo
    as a worktree base (refused on a known non-git dir, which is
    still selectable as a plain member and rendered with a dim
-   `(dir)` tag), `d` deletes the bookmark, and a path-input field
+   `(dir)` tag), `Alt+D` (or `Delete`) deletes the bookmark — chords
+   rather than letters, because the step types every letter into its
+   search — and a path-input field
    adds new bookmarks: `Tab` accepts the inline autocomplete
    suggestion, or — with nothing to complete — opens a **path
    browser** dropdown listing the typed directory (git repos marked
@@ -676,7 +681,7 @@ self-describing and lets you mix agents across the sidebar
 **Why a bookmark list rather than a path picker every time?** Users
 work on the same handful of repos repeatedly. Bookmarks make the
 common case a 2-keystroke selection while still allowing arbitrary
-paths via the input field. Bookmark deletion (`d`) keeps the list
+paths via the input field. Bookmark deletion (`Alt+D`) keeps the list
 from accumulating stale entries.
 
 ### Agent definitions
@@ -684,7 +689,8 @@ from accumulating stale entries.
 The set of available agents is **data**, not code. On first run
 Thurbox seeds `~/.config/thurbox/agents.toml` with built-in
 definitions for claude, codex, antigravity, opencode, aider, copilot,
-vibe, and pi (`agent::agent_config::load_or_seed`). Editing the file —
+vibe, pi and omp, plus `shell` — a plain interactive shell, not a
+coding agent (`agent::agent_config::load_or_seed`). Editing the file —
 adding an `[[agents]]` entry or tweaking an existing one — extends the
 agent picker with no recompile. Each built-in's exact config and
 behavior (and the checklist for adding a new built-in) is in
@@ -1058,6 +1064,20 @@ scrollback).
 
 ### Keybinding Table
 
+> **v1's table.** The chords in force are what the `F1` help renders from
+> the registry (`src/kernel/registry.rs` plus each pane's `keys`), and the
+> rationale below is why they are what they are. Panes that went with
+> `src/ui` took their chords with them: the tasks pane (`Ctrl+W` / `F5`)
+> is now the unshipped example `examples/panes/tasks`, code review
+> (`Ctrl+X` / `F7`) and the info panel (`Ctrl+B` / `F2`) are out-of-tree
+> plugins, and the file viewer (`F3`) is gone. The repo picker's letter
+> keys became chords (`Alt+W` worktree, `Alt+D` / `Delete` forget, `Alt+P`
+> import, `Ctrl+Enter` / `Alt+Enter` confirm) because the step types every
+> letter into its search; the terminal scrolls with plain `PageUp` /
+> `PageDown` on the agent tab (ten rows a press, `ui/plugins/20_agent.lua`),
+> and the F1 editor's own keys are `j`/`k`, `Enter`/`r`, `d`, `Shift+D` and
+> `Esc` as listed.
+
 All global keybindings use `Ctrl` and follow Vim conventions where
 applicable: `h/j/k/l` for navigation, semantic letters for actions
 (`D`=delete, `N`=new, `R`=restart, `Q`=quit).
@@ -1164,20 +1184,22 @@ the chord you want — the next physical keypress (including chords like
 action's defaults, and `Shift+D` resets every action at once (removing the
 override file). If the chord conflicts it is reassigned from the other action
 and a status toast reports the move. Changes persist immediately to
-`~/.config/thurbox/keybindings.json` (`Action` name → chord strings, e.g.
-`{ "QuitApp": ["ctrl+a"] }`) and take effect on the next keystroke — no
-restart. The file can also be hand-edited directly.
+`ui.json`'s `bindings` (action id → one chord, e.g.
+`{ "sessions.delete": "ctrl+x" }`; v1's `keybindings.json` is migrated once
+and then ignored — see `docs/CONFIG.md`) and take effect on the next
+keystroke — no restart. The file can also be hand-edited directly.
 
-**Context-scoped keys.** Each action belongs to a scope — `Global`,
-`SessionList`, `Automations`, `Tasks`, `FileViewer`, or `Terminal`. Global
+**Context-scoped keys.** Each action belongs to a scope — `global`, or
+`plugin`, which fires only while the declaring pane holds focus
+(`kernel::registry::Scope`). Global
 actions fire anywhere; scoped actions fire only while their pane is focused, so
-the same single-letter key (e.g. `j`) can drive the file viewer, session list,
-automations pane, and tasks pane independently while the terminal still forwards
+the same single-letter key (e.g. `j`) can drive the session list and another
+pane independently while the terminal still forwards
 it to the shell. Conflicts are only flagged between actions whose scopes
-overlap. A handful of stateful keys stay fixed (shown in the F1 panel under
-*Fixed (not rebindable)*): modal selectors (`j`/`k`/`Enter`/`Esc`), the
-automation run-history sub-mode, the file-viewer search sub-mode, and the
-terminal's catch-all PTY forwarding.
+overlap. A handful of keys stay fixed (shown in the F1 panel under
+*Fixed (not rebindable)*): the reserved chords (`Ctrl+Q`, `Ctrl+H`/`Ctrl+L`,
+`F10`, `F12` — `registry::RESERVED`), the modal selectors
+(`j`/`k`/`Enter`/`Esc`) and the terminal's catch-all PTY forwarding.
 
 **Readline editing in modal text fields.** Thurbox's own text inputs
 (session / branch name, repo-picker path & search, automation editor,
@@ -1186,8 +1208,9 @@ line-editing chords, so the muscle memory that works in a terminal works
 there too: `Ctrl+A`/`Ctrl+E` (line start/end), `Ctrl+B`/`Ctrl+F` (move
 by char), `Ctrl+H`/`Ctrl+D` (delete before/under the cursor),
 `Ctrl+W` (delete word), `Ctrl+U`/`Ctrl+K` (kill to line start/end). The
-dispatch lives in one place (`modals::apply_ctrl_line_edit` over the
-`LineEdit` trait), and **every** `Ctrl`+letter is consumed (mapped or
+dispatch lives in one place (`ui/lib/textinput.lua`, as v1's
+`modals::apply_ctrl_line_edit` over the `LineEdit` trait did), and
+**every** `Ctrl`+letter is consumed (mapped or
 swallowed) so a bare control letter never leaks into the field.
 
 ### macOS
@@ -1220,7 +1243,8 @@ exists). Beyond that:
   (`Ctrl+H`/`Ctrl+L`).
 - **Unbound Cmd chords are swallowed**, never forwarded to the PTY:
   injecting the bare letter into the agent would corrupt its input.
-- **F-keys** (`F1`–`F5` alternates) require `Fn` on Mac laptops
+- **F-keys** (the `F1`/`F4`/`F6`/`F8`/`F9` alternates, `F10`, `F12`)
+  require `Fn` on Mac laptops
   unless function keys are set to standard; `Cmd+V` already pastes
   through the terminal's native paste → bracketed paste path.
 
@@ -1243,6 +1267,12 @@ exists). Beyond that:
 ---
 
 ## Session Lifecycle
+
+> The diagram and the four states below are the in-process PTY model thurbox
+> started with. A session now lives in a multiplexer window that outlives the
+> process (ADR-12), and the state a row shows is the hooks-driven vocabulary
+> under *Live status & "needs attention"*; the restart, rename and hooks
+> sections that follow are current.
 
 ```text
 Create (UUID v4) → Running → Idle / Error
@@ -1341,12 +1371,16 @@ and as one JSON object on stdin, inherits the config/data-dir overrides
 so a `thurbox-cli` it runs hits the right database, runs in the primary
 repository (the one path that exists at every event) with no terminal,
 and — for a remote session — runs *locally*, told the host by
-`THURBOX_HOST`. Full reference: `docs/CONFIG.md` → hooks.toml.
+`THURBOX_HOST` — except `session.pre_launch`, which runs in the launch
+directory, on the host for a remote session. Full reference:
+`docs/CONFIG.md` → hooks.toml.
 
 Two additional events share this runner. `session.pre_launch` prepares a
-local create/fork in its final cwd, after worktrees exist and before the agent
-starts; refusal leaves prepared directories for inspection. It does not run on
-restart/start/restore or for remote preparation. `session.state_changed` is a
+create/fork in its final cwd on the machine the agent runs on (for a remote
+session, on that host, in its shell), after worktrees exist and before the
+agent starts; refusal leaves prepared directories for inspection. It does not
+run on restart/start/restore, and a session on a host that shares its sessions
+runs the host's own hooks instead. `session.state_changed` is a
 post-only heartbeat consumer of the event log, with agent and destination-state
 filters. Delivery is at-least-once with `seq` for deduplication; its cursor,
 retention-gap behavior and bounded tick budget are specified in
@@ -1920,7 +1954,9 @@ Rather than a parallel `TaskAction`, a task stores
 Tasks render in a **toggleable right-side column** that sits between
 the terminal and the file viewer — it behaves exactly like the file
 viewer pane. **F5**/`Ctrl+W` shows and hides it (showing it also
-focuses it); while visible it is a stop in the session focus ring, so
+focuses it) — a chord the unshipped example pane `examples/panes/tasks`
+declares, not a global binding; while visible it is a stop in the session
+focus ring, so
 `Ctrl+L`/`Ctrl+H` cycle `SessionList → Terminal → TaskList →
 FileViewer` (each extra column appears only when shown). The column is
 a 20% slice added by `compute_layout` at width ≥ 120.
@@ -2043,14 +2079,15 @@ repository (`git+https://…`).
 
 The extension the documentation presents lives in **its own repository**:
 [Thurbeen/fleet](https://github.com/Thurbeen/fleet), a control-plane
-template you clone and repoint. Its manifest is the format in practice —
-one `[[agents]]` entry, one `[[files]]` payload (`FLEET.md`), three
+template you clone and repoint. Its manifest, at the frozen `v1.0.0` tag
+(fleet's `main` ships no extension), is the format in practice —
+one `[[files]]` payload (`FLEET.rendered.md`), three
 `[[symlinks]]` surfacing it as `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, one
 long-lived `[[sessions]]`, and deliberately no `[[automations]]` because
 the only scheduled candidate pushes to `main`. It ships as
 `extension.toml.in` with a `__REPO_PATH__` placeholder that
-`scripts/install-extension.sh` renders from `git rev-parse
---show-toplevel`, because `{home}` resolves to the extension home and no
+`uv run fleet install-extension` renders with the clone's absolute path,
+because `{home}` resolves to the extension home and no
 token spells "my clone".
 
 Nothing in thurbox knows fleet exists, and that is the point — it is a
@@ -2207,13 +2244,14 @@ take `Ctrl+N` from new-session everywhere. Recorded in `tests/keymap.rs`.
 ## Feature Flags (`[features]` in settings.toml)
 
 > `code_review`, `file_viewer`, `info_panel` and `tasks` gate surfaces the interface
-> no longer draws (`tasks` still gates its CLI). They are accepted and preserved so
+> no longer draws. They are accepted and preserved so
 > an existing file does not fail `thurbox-cli config validate`, and are not listed
 > in the settings panel, since a row that gates nothing reads as broken.
 
 Whole features can be switched off declaratively: `tasks`,
 `automations`, `file_viewer`, `global_search`, `info_panel`,
-`shell_pane`, `mouse`, `notifications` — all default `true`.
+`shell_pane`, `code_review`, `perf_hud`, `mouse`, `notifications` — all
+default `true`.
 `soft_delete` defaults `false` in every build: it is not a pane gate but a
 behaviour switch for TUI `Ctrl+D` and CLI session deletion (confirmation-gated soft-delete with a
 `Ctrl+Z` undo window when on; a confirmation-gated hard delete when
@@ -2285,7 +2323,7 @@ re-toast it.
 
 ## Update Notifications & Auto-Update
 
-Two opt-in `[features]` flags (default `false`, because they reach the
+Two `[features]` flags (on by default since 1.0, although they reach the
 network — see *Feature Flags*) cover staying current:
 
 - **`version_check`** adds an "update available" badge in the TUI header
@@ -2375,13 +2413,13 @@ demand emerges.
 ## Git Worktree Integration
 
 Sessions can optionally run inside git worktrees for branch
-isolation. This is opt-in by marking a repo with `w` in the repo
+isolation. This is opt-in by marking a repo with `Alt+W` in the repo
 picker.
 
 ### Flow
 
 1. `Ctrl+N` triggers session creation and opens the repo picker.
-2. Marking a repo with `w` in the picker routes through the
+2. Marking a repo with `Alt+W` in the picker routes through the
    worktree branch flow.
 3. A base branch selector lists local branches from the selected
    repo.
@@ -2394,7 +2432,9 @@ picker.
 ### Worktree storage
 
 Worktrees are created at
-`<repo>/.git/thurbox-worktrees/<sanitized-branch>`, where `/` in
+`~/.local/share/thurbox/worktrees/<repo-hash>/<sanitized-branch>`
+(`git::worktree::worktree_path`; on a host, under its `worktrees_dir`),
+where `<repo-hash>` is a stable FNV-1a hash of the repo path and `/` in
 branch names is replaced by `-`.
 
 ### Cleanup behavior
@@ -2408,6 +2448,9 @@ branch names is replaced by `-`.
   shutdown.
 
 ### UI indicators
+
+> v1's indicators. The current list row is `<dot> <name> [<status>]` and the
+> branch lives in the info panel — see *Live status & "needs attention"*.
 
 - **Terminal title**: Worktree sessions show the branch in the
   title bar: `my-session [feature/foo] [Running]`.
@@ -2857,7 +2900,7 @@ branch name) is saved in the database and reconstructed on restore.
   self-heal.
   Either way the row **leaves the list on the keystroke** rather than sitting
   there tagged while the teardown runs: the session list drops any session whose `delete` is in flight
-  (`live_sessions()` in `ui/plugins/10_sessions.lua`), so the cursor lands on
+  (`live_sessions()` in `ui/lib/session_model.lua`), so the cursor lands on
   the next session and a repo group whose last session went takes its
   header with it. A delete that *failed* keeps its row — the failure is
   the only thing that says the session is still there.
@@ -3225,9 +3268,12 @@ the offset is 0, new output naturally stays at the bottom.
 
 ### Scroll keybindings
 
-`Shift+Up/Down` scrolls one line, `Shift+PageUp/PageDown` (or
-`Alt+PageUp/PageDown`) scrolls half a page, and the mouse wheel
-scrolls three lines per tick. The `Alt+Page` pair exists because
+`PageUp`/`PageDown` scroll the agent tab ten rows a press
+(`terminal.scroll_up`/`terminal.scroll_down` in `ui/plugins/20_agent.lua`,
+pane-scoped so the shell tab leaves them to the pty), and the mouse wheel
+scrolls a line per report — three per notch on most terminals. v1's
+`Shift+Up/Down`, `Shift+Page` and `Alt+Page` pairs went with its key
+table; the `Alt+Page` pair existed because
 Terminal.app and iTerm2 claim `Shift+Page` for their own scrollback,
 so on macOS those chords never reach Thurbox (`Fn+Option+Up/Down`
 on a Mac laptop).
@@ -3236,7 +3282,7 @@ before forwarding to the PTY. This matches the mental model of
 "I'm reading history, and when I start typing I'm back in the
 present."
 
-**Why Shift, not Ctrl?**
+**Why Shift, not Ctrl (v1)?**
 
 Ctrl-prefixed keys are reserved for Thurbox global commands.
 Shift+arrow and Shift+Page are the conventional scrollback
@@ -3451,7 +3497,9 @@ The dispatcher thread (`crate::notifications::start`) starts only when
 disabled. Knobs live in the `[notifications]` block of `settings.toml`
 (`also_on_waiting` / `suppress_for_active` / `sound` /
 `min_interval_secs` / `backend`) — see [CONFIG.md](CONFIG.md). `backend`
-forces the delivery path (`auto` / `dbus` / `windows` / `macos`) or
+forces the delivery path (`auto` / `dbus` / `windows`;
+`session::settings::NotificationBackend` has no `macos` value — `auto` is
+what picks the native banner there) or
 silently drops everything (`off`, a soft switch distinct from the
 `[features]` flag, which stops the dispatcher thread entirely).
 
@@ -3774,6 +3822,13 @@ a line you type and submit with `Enter` still submits. Rationale: ADR-4 in
 
 ## Mouse Navigation
 
+> The per-frame click registry named below (`App::click_targets`,
+> `ClickAction`, `RowHitbox`) is v1's. The kernel now hit-tests the node tree
+> a pane returns and delivers the press as `hit` (`docs/PLUGINS.md` → Clicks);
+> the rules below — wheel folding, double-click, drag, modal swallowing — are
+> what that path keeps, and the *Click registry, pills, collapse chevron*
+> subsection is v1's chrome.
+
 The whole TUI is clickable. Every list renderer reports the screen
 rect of each row it draws; `App::view` records them per frame in a
 click registry (`App::click_targets`, mirroring `scrollbar_hits`)
@@ -3876,6 +3931,12 @@ The whole subsystem is gated by `[features] mouse` in settings.toml
 the terminal keeps its native mouse behavior.
 
 ### Click registry, pills, collapse chevron, and the central tab strip
+
+> **v1's chrome.** What survives: `F9` toggles the session column
+> (`sessions.toggle_panel`), the agent pane offers its shell as a tab on its
+> own border (`Ctrl+T` / `F8`), and the action band's pills are declared by
+> the panes (`docs/PLUGINS.md`). The review tab, the `ClickAction` registry
+> and the footer's `Info`/`Files`/`Tasks` pills went with their panes.
 
 One per-frame click-target registry backs every clickable surface — rows, footer
 pills, modal buttons and fields, the collapse chevron, and the central-pane tabs:
@@ -4028,7 +4089,8 @@ else's arrangement.
 
 `Ctrl+Click` in the terminal pane opens the link under the cursor.
 Two kinds resolve, and an **OSC 8 hyperlink wins** where both cover
-a cell (`App::url_at_click`):
+a cell (`Terminals::url_at` in `kernel::terminal::links`, v1's
+`App::url_at_click`):
 
 - **OSC 8 hyperlinks** — an agent renders a markdown link as
   `OSC 8 ; ; <url>` + label + `OSC 8 ; ;`, so the screen holds only
@@ -4122,7 +4184,7 @@ Three properties keep this safe and cheap:
   cursor. The pass saves and restores the position itself instead of leaving it
   to the next `draw`: any number of frames may pass before that one, and every
   one of them is a frame with a stray caret.
-- **Validated against what was drawn** (`helpers::drawn_label_cells`): a
+- **Validated against what was drawn** (`kernel::terminal::links::drawn_label_cells`): a
   candidate is emitted only if the frame's cells still print that label
   there, so a covering overlay, a scrolled pane, or a repainted row
   yields nothing instead of escapes written over current content. A label
@@ -4183,7 +4245,7 @@ The click **always toasts its outcome**, so a resolved link that
 couldn't be acted on is never indistinguishable from a click on plain
 text (it used to be: the opener was spawned with its result discarded).
 
-`helpers::open_url` hands the URL to the platform opener — `open` on
+`coordinator::chrome::open_url` hands the URL to the platform opener — `open` on
 macOS, `cmd /C start` on Windows, `xdg-open` elsewhere. On Linux/BSD it
 first checks there is something to open *into* (`DISPLAY`,
 `WAYLAND_DISPLAY`, or a `BROWSER` the user set): a thurbox running on a
@@ -4191,7 +4253,8 @@ headless or SSH host has none, where spawning `xdg-open` either fails or
 — worse — succeeds and does nothing.
 
 With no browser reachable the URL goes to the **clipboard** instead
-(`App::write_clipboard`, the same native → OSC 52 path `Ctrl+C` uses).
+(`App::open_or_copy_link` → `clipboard::copy`, the same native → OSC 52
+path `Ctrl+C` uses).
 That is what makes the feature work over SSH at all: the OSC 52 leg
 travels to the terminal the user is sitting at, so the URL lands in
 *their* clipboard, ready to paste into a real browser. The toast names

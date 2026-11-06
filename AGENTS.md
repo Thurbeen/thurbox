@@ -39,7 +39,7 @@ cargo build --release                # Release build (LTO, stripped)
 To **run thurbox in an isolated sandbox** use `scripts/dev/sandbox.sh` (a.k.a.
 `just sandbox*`). By default it does **thurbox-only isolation**: redirects only
 thurbox's config/data into the sandbox (via the `THURBOX_CONFIG_DIR`/
-`THURBOX_DATA_DIR` overrides paths.rs honors) while keeping your real `HOME` —
+`THURBOX_DATA_DIR` overrides `src/paths/` honors) while keeping your real `HOME` —
 so your authenticated agent CLIs (claude/codex/…) work — and puts dev
 `target/debug` first on PATH so an agent hook's `thurbox-cli` hits the sandbox DB.
 It also names the sandbox's tmux socket outright (`THURBOX_SOCKET`, `=
@@ -109,8 +109,8 @@ cargo clippy --all-targets --all-features -- -D warnings  # Lint
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features  # Docs
 rumdl check .                        # Markdown lint (.rumdl.toml)
 rumdl fmt .                          # Markdown auto-fix
-selene ui                            # Lua lint (selene.toml + thurbox.yml)
-stylua ui                            # Lua format (stylua.toml); --check in CI
+selene ui examples                   # Lua lint (selene.toml + thurbox.yml)
+stylua ui examples                   # Lua format (stylua.toml); --check in CI
 # A RELATIVE --configpath resolves against the server's own install dir, is
 # silently not found, and then reports every injected global as undefined (79
 # phantom findings). `just lint` passes an absolute one:

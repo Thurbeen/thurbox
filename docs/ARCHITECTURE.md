@@ -85,7 +85,9 @@ and writes when they arrive.
 blocking side effect off the UI thread, so neither rendering nor
 `Ctrl+N` ever freezes. Each operation owns an in-flight guard + result
 receiver on `App`, kicks off the blocking work, and applies the result
-when `tick()` polls `try_recv()`:
+when `tick()` polls `try_recv()`. (The names in this list are v1's; the
+kernel keeps the shape as its worker stores and the coordinator's workers,
+ADR-22 and ADR-23.)
 
 - **Worktree sync** (`Ctrl+S`) — `git rebase` per worktree
   (`worktree_sync_rx`, the original instance of the pattern).
@@ -287,12 +289,15 @@ terminal while developing.
 
 | Profile | `opt-level` | LTO | Strip | Debug | Use case |
 |---|---|---|---|---|---|
-| `dev` | 0 | off | no | yes | Fast iteration |
+| `dev` | 1 (dependencies 3) | off | no | yes | Fast iteration |
 | `test` | 1 | off | no | yes | Faster tests, still debuggable |
 | `release` | 3 | full | yes | no | Distribution binary |
 | `release-with-debug` | 3 | full | no | yes | Profiling / flamegraph |
 
-**Why**: `test` at opt-level 1 catches optimization-dependent bugs
+**Why**: `dev` is at opt-level 1, with dependencies at 3, because v2
+renders through an embedded Lua VM on every frame and `cargo run` is the
+documented way to run it (`Cargo.toml` says why). `test` at opt-level 1
+catches optimization-dependent bugs
 earlier while keeping compile times reasonable. The release profile
 strips everything for a minimal binary. `release-with-debug` exists
 specifically for `perf` / `flamegraph` workflows.
@@ -1518,16 +1523,18 @@ I/O coordination.
 **Choice**: Headless automation lives in a separate binary
 (`thurbox-cli`) that shares the same SQLite database as the TUI.
 It exposes `session`, `automation`, `task`, `message`, `editor`,
-`config`, `extension`, `version`, `update`, and `notify` management
-as subcommands, printing JSON results.
+`agent`, `config`, `extension`, `version`, `update`, `notify`, `perf`,
+`watch`, `runtime`, `plugin`, `ui`, `schema` and `doctor` as subcommands
+(`thurbox-cli --help`), printing JSON results.
 
 **Why**: A separate binary keeps scripting/automation out of the
 TUI's event loop. The TUI already polls `PRAGMA data_version`
 on every tick (~10 ms event-loop cadence) (ADR-7b), so changes
 made by `thurbox-cli` appear
 automatically — no new synchronization mechanism is needed. The
-`cli` module imports `storage`, `session`, `session_ops`, `sync`,
-and `backend::tmux`, but never `app` or `ui`, so it can operate
+`cli` module imports `storage`, `session`, `session_ops` and `sync`,
+reaches the backend contract and registry by fully-qualified path only
+and never an adapter (`tests/architecture_rules.rs`), so it can operate
 without a terminal UI.
 
 **Rejected**:
@@ -1542,6 +1549,11 @@ without a terminal UI.
 ---
 
 ## ADR-14: Centralized Theme Module
+
+> **Superseded by ADR-23.** The constants below were v1's. The kernel publishes
+> theme *roles* to plugins (`thurbox.theme`, `kernel::theme::palette_roles`); the
+> 36 built-in palettes live in `session::theme_config`, and a user's own in
+> `~/.config/thurbox/themes.toml`.
 
 **Choice**: All UI colors are defined as associated constants on a
 `Theme` struct in `kernel::theme` (v1 kept it in `src/ui/theme.rs`).
@@ -1578,7 +1590,8 @@ trivially testable. Composite styles (e.g., `focused_title()`) are
 at creation time; each agent runs with its own default config.
 Agents are described as **data** in `~/.config/thurbox/agents.toml`
 (sibling of any other config), seeded with built-ins (claude,
-codex, antigravity, opencode, aider, copilot, vibe, pi, omp) on first run via
+codex, antigravity, opencode, aider, copilot, vibe, pi, omp, and a plain
+`shell` — `docs/AGENTS.md`) on first run via
 `agent::agent_config::load_or_seed`. An `AgentDef` carries a
 `command`, `args` (always passed — bake in flags like a model
 here if you want), and argument-template groups (`resume_args`,
@@ -2661,7 +2674,8 @@ stays that instance's, or two instances focused on one pane would trade it every
 frame. Before focus counted, a session focused after another instance had sized
 it stayed at that size until the first keystroke. Every instance's vt100 grid
 follows the pane's **real** size, read from `%layout-change` and delivered to
-the pane's reader in the same channel as its output (`PaneEvent`), so the size
+the pane's reader in the same channel as its output (`PaneChunk::Resized`,
+ADR-12), so the size
 changes between the last byte written for the old one and the first written for
 the new. An instance whose rect differs from the grid paints the bottom rows of
 a taller grid and blank margins around a smaller one, and says on its bottom row

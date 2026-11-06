@@ -531,8 +531,9 @@ Codex session whose report was retired by submitted input.
 When it is noticed. `session get` (unless `--no-verify`) looks at the pane of
 the session it reads, so a driver polling `get` sees `failed` on its first poll
 after the death; `session list --verify`, `session wait` and `watch` look too,
-and so does the reconcile tick (the interface's worker and the headless
-heartbeat, every minute), which is what records it for a plain `session list`.
+and so does the reconcile tick (the interface's worker every few seconds, the
+headless heartbeat every minute), which is what records it for a plain
+`session list`.
 A pane that dies within the spawn's 50 ms startup check never becomes a
 session: `session create` itself fails with the pane's output.
 
@@ -694,7 +695,9 @@ Fetch and fast-forward before `session create`, and verify
 **[Fleet](https://github.com/Thurbeen/fleet)** is all of the above,
 maintained. It is also the worked example of a thurbox extension — the one
 the rest of the documentation points at, since `extensions/` in the thurbox
-repo holds only the built-ins.
+repo holds only the built-ins. The manifest that example reads is the one at
+fleet's `v1.0.0` tag (`extension.toml.in`); the `main` installer below sets up
+no extension, so read the manifest at that tag.
 
 ```sh
 curl -LsSf https://raw.githubusercontent.com/Thurbeen/fleet/main/install.sh | sh
