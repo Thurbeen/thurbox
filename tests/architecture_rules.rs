@@ -1961,32 +1961,24 @@ fn collect_files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
     out
 }
 
-/// Where each off-loop job of the kernel's two runtime stores may live: the
-/// directory, and the files under it that may name each needle in production
-/// code. The store and the paint side never block, so neither starts a thread
-/// of its own — each worker is a file, and a job that reaches the world
-/// without one shows up here rather than as a frozen frame (#1474, #1477).
-const KERNEL_WORKERS: &[(&str, &str, &[&str])] = &[
+/// Where each off-loop job of the kernel's two runtime stores may start a
+/// thread: the directory, and the files under it allowed to name `thread::` in
+/// production code. The store and the paint side never block, so neither
+/// starts one of its own — each worker is a file, and a job that reaches the
+/// world without one shows up here rather than as a frozen frame (#1474,
+/// #1477). A text scan, because `std` is outside the crate graph the resolver
+/// follows.
+const KERNEL_THREADS: &[(&str, &[&str])] = &[
     (
         "kernel/snapshot",
-        "thread::",
         &[
             "kernel/snapshot/db.rs",
             "kernel/snapshot/git.rs",
             "kernel/snapshot/probe.rs",
         ],
     ),
-    // The database is opened and read only by its worker, so a lock held
-    // elsewhere delays a write and never a frame.
-    ("kernel/snapshot", "Database::", &["kernel/snapshot/db.rs"]),
-    (
-        "kernel/snapshot",
-        "crate::git::",
-        &["kernel/snapshot/git.rs"],
-    ),
     (
         "kernel/terminal",
-        "thread::",
         &[
             "kernel/terminal/attach.rs",
             "kernel/terminal/discovery.rs",
@@ -1995,19 +1987,56 @@ const KERNEL_WORKERS: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
-/// Every production site under `dir` naming `needle`, as `dir/file.rs:line`
-/// with `/` on every platform, outside the files allowed to.
-fn misplaced(tree: &Tree, dir: &str, needle: &str, allowed: &[&str]) -> Vec<String> {
-    tree.mentions(&[needle], "", false)
-        .into_iter()
-        .map(|(file, line, _)| {
-            let parts: Vec<_> = file.iter().map(|p| p.to_string_lossy()).collect();
-            (parts.join("/"), line)
-        })
-        .filter(|(file, _)| file.starts_with(&format!("{dir}/")) || *file == format!("{dir}.rs"))
-        .filter(|(file, _)| !allowed.contains(&file.as_str()))
-        .map(|(file, line)| format!("{file}:{line} {needle}"))
-        .collect()
+/// What one worker alone may reach, resolved through imports and aliases: the
+/// directory, the resolved path the reach starts with, and the one file allowed
+/// to make it. The database is opened and read only by its worker, so a lock
+/// held elsewhere delays a write and never a frame; naming the type to hand a
+/// connection over is not a reach.
+const KERNEL_REACHES: &[(&str, &str, &str)] = &[
+    (
+        "kernel/snapshot",
+        "storage::Database::",
+        "kernel/snapshot/db.rs",
+    ),
+    ("kernel/snapshot", "git::", "kernel/snapshot/git.rs"),
+];
+
+/// `file` relative to `root`, with `/` on every platform.
+fn relative(root: &Path, file: &Path) -> String {
+    let file = file.strip_prefix(root).unwrap_or(file);
+    let parts: Vec<_> = file.iter().map(|p| p.to_string_lossy()).collect();
+    parts.join("/")
+}
+
+/// Every production site breaking [`KERNEL_THREADS`] or [`KERNEL_REACHES`] in
+/// `tree`, as `dir/file.rs:line what`.
+fn misplaced_kernel_work(tree: &Tree) -> Vec<String> {
+    let mut found = Vec::new();
+    for (file, line, needle) in tree.mentions(&["thread::"], "", false) {
+        let file = relative(Path::new(""), &file);
+        let allowed = KERNEL_THREADS
+            .iter()
+            .find(|(dir, _)| file.starts_with(&format!("{dir}/")))
+            .map(|(_, allowed)| *allowed);
+        if allowed.is_some_and(|allowed| !allowed.contains(&file.as_str())) {
+            found.push(format!("{file}:{line} {needle}"));
+        }
+    }
+    for reference in tree.references(&["kernel", "git", "storage"]) {
+        if reference.test {
+            continue;
+        }
+        let file = relative(&tree.root, &reference.file);
+        let path = reference.path.join("::");
+        for (dir, reach, allowed) in KERNEL_REACHES {
+            if file.starts_with(&format!("{dir}/")) && path.starts_with(reach) && file != *allowed {
+                found.push(format!("{file}:{} {path}", reference.line));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
 }
 
 /// The snapshot store is split by worker — git stats, pane probes, the
@@ -2016,40 +2045,37 @@ fn misplaced(tree: &Tree, dir: &str, needle: &str, allowed: &[&str]) -> Vec<Stri
 /// paint path start none.
 #[test]
 fn each_kernel_worker_lives_in_a_file_of_its_own() {
-    let tree = src_tree();
-    for (dir, _, allowed) in KERNEL_WORKERS {
-        for file in *allowed {
-            assert!(
-                src_root().join(file).is_file(),
-                "{file} is named in KERNEL_WORKERS but does not exist under {dir}"
-            );
-        }
-    }
-    let problems: Vec<String> = KERNEL_WORKERS
+    let named = KERNEL_THREADS
         .iter()
-        .flat_map(|(dir, needle, allowed)| misplaced(tree, dir, needle, allowed))
-        .collect();
+        .flat_map(|(_, allowed)| allowed.iter())
+        .chain(KERNEL_REACHES.iter().map(|(_, _, allowed)| allowed));
+    for file in named {
+        assert!(
+            src_root().join(file).is_file(),
+            "{file} is named in KERNEL_THREADS or KERNEL_REACHES but does not exist"
+        );
+    }
+    let problems = misplaced_kernel_work(src_tree());
     assert!(
         problems.is_empty(),
-        "move these into the worker that owns them, or extend KERNEL_WORKERS with why:\n  {}",
+        "move these into the worker that owns them, or extend KERNEL_THREADS or KERNEL_REACHES \
+         with why:\n  {}",
         problems.join("\n  ")
     );
 }
 
-/// The scan behind [`each_kernel_worker_lives_in_a_file_of_its_own`] finds a
-/// worker's reach outside its file, and none of its lookalikes: a comment, a
-/// string, test code, or the worker's own file.
+/// The scans behind [`each_kernel_worker_lives_in_a_file_of_its_own`] find a
+/// worker's reach outside its file — through a `Builder`, an alias or a renamed
+/// import too — and none of its lookalikes: a comment, a string, test code,
+/// the type named to pass a connection on, or the worker's own file.
 #[test]
 fn the_kernel_worker_scan_sees_only_misplaced_production_reaches() {
-    let tree = fixture("kernel_workers");
-    let found: Vec<String> = KERNEL_WORKERS
-        .iter()
-        .flat_map(|(dir, needle, allowed)| misplaced(&tree, dir, needle, allowed))
-        .collect();
     assert_eq!(
-        found,
+        misplaced_kernel_work(&fixture("kernel_workers")),
         [
-            "kernel/snapshot/mod.rs:6 thread::",
+            "kernel/snapshot/mod.rs:13 thread::",
+            "kernel/snapshot/mod.rs:14 git::stats",
+            "kernel/snapshot/mod.rs:15 storage::Database::open",
             "kernel/terminal/mod.rs:4 thread::",
             "kernel/terminal/paint.rs:2 thread::",
         ]
