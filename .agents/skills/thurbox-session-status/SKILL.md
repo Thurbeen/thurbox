@@ -61,8 +61,8 @@ nothing.
 reached **always appears in the list**, tagged `Unreachable`, rather than
 silently vanishing. v2 gets there by derivation rather than by a synthetic row:
 `kernel::terminal` records the attach failure for that session, and
-`snapshot::with_reachability` folds "a remote backend plus a live attach error"
-into the published status. So the row is the ordinary row — no second `Session`
+`kernel::host::publish` folds "a remote backend plus a live attach error"
+into the published status with `session::with_reachability`. So the row is the ordinary row — no second `Session`
 kind, no dead input channel to guard, and nothing on the loop that can block on
 ssh. (v1 inserted a `Session::placeholder`; the constructor is still in
 `src/backend/pane.rs` and has no caller.)
@@ -118,8 +118,9 @@ exactly one group. Only a surface holding the terminals can fill it, so a
 headless reader publishes none and `ui.status` falls back to the static answer —
 the same line the CLI already draws at the folds it cannot make.
 
-The frames are `theme.spinner` in `ui/lib/theme.lua` and the pane picks one from the elapsed
-time it is handed (`status_glyph` in `10_sessions.lua`); the clock behind that is
+The frames are `theme.spinner` in `ui/lib/theme.lua`, and `theme.status` there
+picks one from the elapsed time the sessions pane hands it
+(`ui.status(status, elapsed, printing)` in `ui/plugins/10_sessions.lua`); the clock behind that is
 the kernel's shared **animation tick** (`kernel::host::ANIMATION_HZ` = 8), which
 the loop advances **only while something is actually animating** — a free-running
 one invalidated every `pure` pane on every idle frame (ADR-P16). The filled `●`
@@ -381,7 +382,7 @@ own, which is the point.
   at the two folds it cannot make.
 - **Per-session only.** Status renders on the session's own row (and in the
   ` Sessions ` panel border title, one dot per session). Repo-group headers
-  (`group_header_line` in `10_sessions.lua`) carry **no** status — a rolled-up
+  (`header_label` in `ui/lib/session_model.lua`) carry **no** status — a rolled-up
   group dot would restate what every member row shows. Status only recolors — it
   **never** reorders rows (the order is status-independent).
 - **Colours** are tunable theme fields: `status_working` / `status_blocked`
@@ -487,7 +488,7 @@ run on 2.1.308: `SubagentStart` → `Stop` → `SubagentStop` → `Stop`, one
   report one finished subagent back makes tool calls of its own while others
   still run, and those must stay counted. `idle` (claude's
   `SessionStart`, a new process) forgets all of it; `session stop` and a
-  restart (`clear_hook_state`) clear the column; and `contradicts` lets `session get --verify` report a dead or
+  restart (`clear_hook_state`) clear the column; and `contradicts` lets `session get` (or `session list --verify`) report a dead or
   missing pane against it. `with_output_quiescence` does **not** fold
   `background`: quiet output is not evidence (the work runs out of the pane's
   sight), and a missing quiet answer is not either — an interface that has not

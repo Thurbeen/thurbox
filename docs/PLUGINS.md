@@ -530,7 +530,7 @@ Every kind takes a **`frame`**, and a frame is the whole border vocabulary:
 frame = {
   title = { { text = " Sessions ", style = badge } },  -- styled runs, not a string
   title_align = "right",                               -- left | center | right
-  border_type = "square",                              -- rounded (default) | square
+  border_type = "square",                              -- rounded (default) | square | thick
   border_style = { fg = theme.accent },
   padding = 1,
   overlay = {
@@ -1893,8 +1893,8 @@ recorded. If a decision is what you want to undo, undo it in the Interface tab.
 
 ## Examples you can install
 
-Two example panes under `examples/panes/`, neither of them bundled, plus two more under
-`examples/lua/` you copy by hand. They exist because "every pane is a file" is
+Two example panes under `examples/panes/`, neither of them bundled, plus four files
+under `examples/lua/` you copy by hand. They exist because "every pane is a file" is
 easier to believe from a pane you added yourself than from prose.
 
 **They are examples, not a catalogue.** They are here to be read and copied from,
@@ -2300,5 +2300,5 @@ your own.
 
 The Neovim package managers this borrows from make it the headline feature. Here it
 would optimise nothing: a disabled plugin is never read, an unplaced pane never
-renders, and the bundled set is 19 files. A load scheduler would add machinery and
+renders, and the bundled set is 30 files. A load scheduler would add machinery and
 a new class of "why is my pane missing".

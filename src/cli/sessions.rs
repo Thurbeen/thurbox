@@ -777,7 +777,7 @@ pub enum OnExisting {
     /// Tear the existing session down first (as `delete --force` would), then
     /// create. Its worktree goes with it.
     Replace,
-    /// Refuse, naming the session in the way. Exit 1, nothing created.
+    /// Refuse, naming the session in the way. Exit 5, nothing created.
     Fail,
 }
 

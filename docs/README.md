@@ -21,10 +21,12 @@ operational guidance (build commands, module layout, event loop), see
 | [RELEASING.md](RELEASING.md) | What a release may and may not change about the artifacts | Changing the release workflow or a published artifact |
 | [REVIEW.md](REVIEW.md) | The per-path house rules a change is reviewed against, and which document owns which class of fact | Encoding a new house rule, or moving what a document owns |
 
-Two files here are not rationale: [TUTORIAL.md](TUTORIAL.md), the onboarding
+Three files here are not rationale: [TUTORIAL.md](TUTORIAL.md), the onboarding
 walkthrough (its screenshots are generated — see
-`scripts/demo/record-tutorial.sh`), and [DEVELOPMENT.md](DEVELOPMENT.md), the
-dev-environment guide.
+`scripts/demo/record-tutorial.sh`), [DEVELOPMENT.md](DEVELOPMENT.md), the
+dev-environment guide, and
+[BENCHMARK-MULTIPLEXERS.md](BENCHMARK-MULTIPLEXERS.md), the results and method
+of `just bench-multiplexers`.
 
 ## Keeping docs current
 

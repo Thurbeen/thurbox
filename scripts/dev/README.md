@@ -103,6 +103,8 @@ than the whole binary; both are explained in `docs/PERFORMANCE.md`.
 | Script | What it does |
 |---|---|
 | `sandbox.sh` | run the dev TUI/CLI against an isolated sandbox (`just sandbox*`); launched from the sandbox root so the interface directory is isolated too, not just the database |
+| `demo-repo.sh` | seed a demo repository + sessions into the sandbox (`sandbox.sh --demo` / `--demo-big`, `just sandbox-demo*`) |
+| `reap-tmux-servers.sh` | reap orphaned *test* tmux servers a signal left behind (`just reap-tmux`, Linux; `--dry-run` lists) |
 | `render-og-image.sh` | rasterize the website OpenGraph card |
 | `lib/sandbox-env.sh` | shared isolation helper sourced by `sandbox.sh` and `scripts/demo/record.sh` |
 

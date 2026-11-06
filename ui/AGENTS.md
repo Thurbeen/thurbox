@@ -146,7 +146,7 @@ install one — neither fails, because you may have meant it.
 
 ## Make the pane cost what changed, not what exists
 
-`render` runs on the UI thread up to thirty times a second. Three habits keep a
+`render` runs on the UI thread up to sixty times a second. Three habits keep a
 pane from being the thing that makes the whole interface feel slow:
 
 - **Declare `pure = true` unless the render writes.** The kernel then reuses

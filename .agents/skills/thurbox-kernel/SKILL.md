@@ -229,8 +229,10 @@ alias and re-export laundering, and test-only edges.
   workers (`mod`), then `commands`, `publish`, `draw`, `input`, `mouse`, `focus`,
   `events` (the one dispatch point, and the kernel events derived from the
   loop's own signals) and `interface` — plus `boot` (the startup sequence `main` delegates to),
-  `chrome` (the terminal/error-panel/perf-HUD helpers) and `editor` (the
-  `Ctrl+O` command resolution). Still one model and one loop — splitting `App`
+  `chrome` (the terminal/error-panel/perf-HUD helpers), `editor` (the
+  `Ctrl+O` command resolution), `control` (applying `thurbox-cli ui` requests on
+  the loop, ADR-33) and `paste` (rebuilding a paste from the key stream the
+  Windows console delivers). Still one model and one loop — splitting `App`
   itself is what ADR-22 rejected, and the invariants that matter hold *across*
   these groups.
 - **`ui/`** (Lua, not Rust) — `layout.lua` is the arrangement; `lib/` holds
@@ -240,7 +242,8 @@ alias and re-export laundering, and test-only edges.
   `order` and `session_model` (the session list's model, with its memo),
   `pathpicker` and `repo_picker` (the creation flow's); `plugins/` holds the
   panes.
-- **`cli/`** — `thurbox-cli` subcommands, including `plugin dir|new|check|list|events|install|sync|update|remove`
+- **`cli/`** — `thurbox-cli` subcommands, including
+  `plugin dir|new|check|list|events|install|sync|update|remove|available`
   for writing an interface with no TTY.
 
 ### Event Loop (`src/main.rs` + `src/coordinator/`)

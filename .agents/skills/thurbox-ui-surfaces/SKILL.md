@@ -14,14 +14,16 @@ keys in their declaration table; the kernel resolves a press to an action and ha
 it back to the plugin that claimed it. There is no hardcoded table to keep in step
 with a help screen, because the help modal renders the registry.
 
-Global chords (kernel-owned):
+Global chords in the shipped interface (the kernel's own, plus the two session
+chords the bundled panes declare — `Ctrl+N` is `70_new_session`'s and
+`Ctrl+J`/`Ctrl+K` are `10_sessions`', so each is an ordinary plugin binding):
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+Q` | Quit (detach sessions) |
-| `Ctrl+N` | New session (the creation flow) |
+| `Ctrl+N` | New session (the creation flow; declared by `70_new_session`) |
 | `Ctrl+H` / `Ctrl+L` | Focus previous / next pane |
-| `Ctrl+J` / `Ctrl+K` | Select next / previous session |
+| `Ctrl+J` / `Ctrl+K` | Select next / previous session (declared by `10_sessions`) |
 | `Ctrl+,` / `F6` | Settings (`]` for the Interface tab) |
 | `Ctrl+Y` / `F4` | Theme picker |
 | `Ctrl+P` | Command palette — every action, filtered as you type |
@@ -225,9 +227,10 @@ live half and toasts, noting a restart when `restart_only_differs` says so.
 > `[features] code_review`, `file_viewer`, `tasks`, `info_panel` and
 > `global_search` gated surfaces the interface no longer draws, and
 > `three_panel_min_cols` sized a column that no longer exists. None of the six is
-> read by anything: they are parsed so an existing `settings.toml` keeps loading
-> rather than failing on an unknown key, and setting one does nothing in either
-> direction. The settings panel does not offer them.
+> read by the kernel: they are parsed so an existing `settings.toml` keeps loading
+> rather than failing on an unknown key, and published in `thurbox.settings` for a
+> pane to honour, but setting one changes nothing the kernel draws. The settings
+> panel does not offer them.
 
 
 ## Global search

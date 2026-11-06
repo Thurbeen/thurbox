@@ -26,9 +26,11 @@ Related docs:
 ## Where the built-ins live
 
 The built-in registry is **not** hand-constructed in Rust. It is an embedded
-TOML document, `BUILTIN_AGENTS_TOML`, in
-[`src/agent/agent_config.rs`](../src/agent/agent_config.rs). `builtin_registry()`
-parses that string, and `seed_agents_toml()` writes it verbatim to
+TOML document in [`src/agent/agent_config.rs`](../src/agent/agent_config.rs):
+`builtin_agents_toml()` joins `BUILTIN_AGENTS_HEAD` (the coding agents), the
+`shell` entry spelled for this platform (`SHELL_AGENT_TOML`) and
+`BUILTIN_AGENTS_TAIL` (the commented examples). `builtin_registry()` parses
+that string, and `seed_agents_toml()` writes it verbatim to
 `~/.config/thurbox/agents.toml` on first run. So the same text is both the
 in-binary fallback and the seed the user then edits — keep it authoritative.
 
@@ -91,8 +93,9 @@ does not alter the running process; a later restart uses the persisted new name.
 The same snapshot is available to every agent and direct command as
 `THURBOX_SESSION_NAME`.
 
-The `ui-skill` and `sessions-skill` extensions install into `~/.claude/skills`
-only. Link their skills into each additional directory:
+The `ui-skill` and `sessions-skill` extensions install Claude's copy into
+`~/.claude/skills` only, never into another `CLAUDE_CONFIG_DIR`. Link their
+skills into each additional directory:
 
 ```bash
 mkdir -p ~/.claude-work/skills
@@ -393,11 +396,11 @@ embedded hook assets live in
     fifth, so `kimi-hooks.toml` must never grow one (a test pins this).
     *Experimental.*
   - `antigravity` (`agy`): merged into the shared `~/.gemini/settings.json` (agy
-    adopted claude's hook schema — PreToolUse/PostToolUse→working,
-    Notification→blocked, Stop→done; no UserPromptSubmit, so working fires at the
-    first tool call). PostToolUse is the edge out of blocked: no agent here has a
-    "permission granted" event, so the tool completing is the first thing said
-    once the prompt is answered.
+    adopted claude's hook schema — SessionStart→idle,
+    PreToolUse/PostToolUse→working, Notification→blocked, Stop→done; no
+    UserPromptSubmit, so working fires at the first tool call). PostToolUse is
+    the edge out of blocked: no agent here has a "permission granted" event, so
+    the tool completing is the first thing said once the prompt is answered.
 - **`external_files` (drop a standalone managed file into the agent's config
   dir)** — refused if a non-managed file already exists there (the agent goes
   *unreported*, never *broken*).
@@ -537,7 +540,7 @@ recompile (that's the whole point of agents-as-data). But promoting a CLI to a
 shipped **built-in** touches several places that are **not** kept in sync
 automatically. Work the checklist top to bottom:
 
-1. **Seed entry** — add an `[[agents]]` block to `BUILTIN_AGENTS_TOML` in
+1. **Seed entry** — add an `[[agents]]` block to `BUILTIN_AGENTS_HEAD` in
    [`src/agent/agent_config.rs`](../src/agent/agent_config.rs). Set `command`,
    the resume/fork/new-session groups, and `resume_latest` per the ID model
    above. Add a short comment explaining the CLI's resume/fork semantics, as the
@@ -615,8 +618,9 @@ different questions:
   session reads `failed`. See [CONFIG.md](CONFIG.md#templates-argument-order-and-setup).
 - **A `session.pre_launch` hook in the user's `hooks.toml`** is *policy around
   launches*: one command for whichever agents it names, run by thurbox outside
-  the pane, on local create/fork only, before the window exists; a refusal
-  leaves the prepared directories for inspection.
+  the pane, on create/fork only, on the machine the agent runs on (a remote
+  session's host), before the window exists; a refusal leaves the prepared
+  directories for inspection.
 
 ```toml
 [[hooks]]
@@ -774,10 +778,11 @@ A missed end edge is forgotten by the next prompt (`UserPromptSubmit` marks
 its `working` as a turn start with `THURBOX_SIGNAL_TURN=start`; the main
 agent's own tool calls, such as those of the turn that reports a finished
 subagent back, forget nothing), by the agent starting again (`SessionStart` →
-`idle`), by `session stop` and by a restart; `session get --verify` reports a dead pane as
-contradicting it. The interface does not fold `background` by the terminal:
-the work runs out of the pane's sight, and an interface that has not attached
-yet has no answer either. Because `session signal` publishes to the pane's
+`idle`), by `session stop` and by a restart; `session get` (which probes the
+pane by default) reports a dead pane as contradicting it. The interface does
+not fold `background` by the terminal: the work runs out of the pane's sight,
+and an interface that has not attached yet has no answer either. Because
+`session signal` publishes to the pane's
 status channel after it stores, a late `background` read back from that
 channel — by the interface or by `automation tick`'s status poll — is refused
 once the session's counted work has all ended.

@@ -20,8 +20,8 @@
 #
 #   OUTPUT_DIR  where PNGs + manifest.json go (default: <repo>/target/ui-review/screenshots)
 #   --theme     thurbox TUI theme string (default: doom; e.g. "Tokyo Night")
-#   --width     VHS viewport width  in px (default 1920; keep >=120 cols equivalent)
-#   --height    VHS viewport height in px (default 1080)
+#   --width     VHS viewport width  in px (default 1500; keep >=120 cols equivalent)
+#   --height    VHS viewport height in px (default 940)
 #
 # Output: logs to stderr; on success prints the screenshots dir to stdout and writes
 # <OUTPUT_DIR>/manifest.json. Exit 0 = ok, 1 = recoverable, 2 = fatal preflight error.

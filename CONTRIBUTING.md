@@ -20,35 +20,18 @@ technical merits, and help newcomers find their footing.
 
 ## Development environment
 
-The reproducible dev environment is a **Nix flake** pinning the Rust toolchain,
-`tmux`, `shellcheck`, Node, the cargo tooling, `just` and the demo stack.
-
-```bash
-nix develop          # enter the shell
-direnv allow         # ...or, with direnv, auto-enter on cd (see .envrc)
-```
-
-No Nix? `scripts/install-dev-tools.sh` installs the dev tools (including
-`prek`). You will also need `tmux >= 3.2`, `shellcheck`, `bats`, Node + npm (for
-the website linters), `git`, and the three Lua gates `just lint` runs (`selene`,
-`stylua`, `lua-language-server`).
-
-MSRV is Rust 1.95, Edition 2021. The full walkthrough — including the runtime
-sandbox for trying thurbox in isolation — is in
-[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+The reproducible dev environment is a **Nix flake** (`nix develop`, or
+`direnv allow` once); `scripts/install-dev-tools.sh` is the non-Nix fallback.
+MSRV is Rust 1.95, Edition 2021. [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
+owns the setup — the toolchain, what to install without Nix, the `just` task
+list, and the runtime sandbox for trying thurbox in isolation — so it is not
+restated here.
 
 ## Everyday tasks (`just`)
 
-`just` is the task entrypoint — run it with no arguments for the full list.
-
-| Task | What it does |
-|------|--------------|
-| `just build` | build the dev binaries (`thurbox` + `thurbox-cli`) |
-| `just test` | `cargo nextest run --all` |
-| `just lint` | fmt-check + clippy + cargo-deny + rumdl + shellcheck + selene, stylua and lua-language-server |
-| `just fmt` | format Rust + website |
-| `just arch` | architecture-rule + rustdoc checks |
-| `just sandbox` | run thurbox in an isolated dev sandbox |
+`just` is the task entrypoint — run it with no arguments for the full list, or
+read the table in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#2-everyday-tasks--just).
+The two to know before a pull request are `just lint` and `just test`.
 
 ## Coding agents
 
@@ -174,7 +157,8 @@ rumdl check .                                              # markdown lint
 npm run lint:website                                       # website linters
 ```
 
-`just lint` bundles the Rust + shell checks.
+`just lint` bundles all of these except the website linters, plus cargo-deny
+and the three Lua gates (`selene`, `stylua`, `lua-language-server`).
 
 ## Pre-commit hooks
 
@@ -187,7 +171,8 @@ prek install
 
 - **commit-msg** — conventional-commit validation (`cog verify`)
 - **pre-commit** — fmt, clippy, check, nextest, architecture rules, cargo-deny,
-  rustdoc, bats, shellcheck, rumdl, prettier, htmlhint, stylelint, eslint
+  rustdoc, bats, shellcheck, rumdl, selene, stylua, prettier, htmlhint,
+  stylelint, eslint
 
 There is no **pre-push** stage. The hook that used it walked the branch's own
 commit messages, and squash merge discards those — see below.
@@ -273,7 +258,8 @@ Comments explain **why**, not **what** — see the Comments section of
 
 ## Architecture
 
-Module dependencies are one-directional (`session ← agent ← kernel ← main`) and
+Module dependencies are one-directional (`session ← agent ← kernel ←
+coordinator`) and
 enforced by `tests/architecture_rules.rs`: a new module fails that test until
 its dependencies are declared in the allowlist. The graph is documented in the
 Module Dependency Rules section of [`AGENTS.md`](AGENTS.md) and, with the full

@@ -9,7 +9,8 @@ isolated sandbox.
 
 The `flake.nix` provides the tools CI uses — the Rust toolchain (read from
 `rust-toolchain.toml`), interactive Bash, `tmux`, `shellcheck`, `bats`, Node,
-`cargo-nextest`, `cargo-deny`, `cocogitto`, `just`, and the demo stack
+`cargo-nextest`, `cargo-deny`, `cocogitto`, `just`, the three Lua gates
+(`selene`, `stylua`, `lua-language-server`), `sqlite`, `jq`, and the demo stack
 (`vhs`/`ffmpeg`/`ttyd`). Interactive Bash is explicit because the real-pane
 tests exercise Readline's bracketed-paste mode; Nix's stdenv Bash omits those
 interactive builtins.
@@ -28,9 +29,8 @@ nix develop           # enter the pinned shell
 direnv allow          # auto-enters the shell on `cd` (see .envrc)
 ```
 
-A couple of tools aren't packaged in nixpkgs yet (`prek`, `rumdl`, nightly
-`cargo-pup`); the shell prints a hint to install them via
-`scripts/install-dev-tools.sh`.
+Two tools aren't packaged in nixpkgs yet (`prek`, `rumdl`); the shell prints a
+hint to install them via `scripts/install-dev-tools.sh`.
 
 ### Fallback: no Nix
 
@@ -56,15 +56,20 @@ records version evidence and RMUX platform limits.
 |------|--------------|
 | `just build` | build the dev binaries (`thurbox` + `thurbox-cli`) |
 | `just test` | `cargo nextest run --all` |
-| `just test-scripts` | the bats suites: `scripts/install.bats` + the pull-request-title checker (needs `bats`) |
+| `just test-one NAME` | one test by name (`cargo nextest run -E 'test(NAME)'`) |
+| `just test-scripts` | the four bats suites: `scripts/install.bats`, the pull-request-title checker, `packaging/winget/winget.bats`, `scripts/dev/e2e/windows-vm.bats` (needs `bats`) |
 | `just lint` | fmt-check + clippy + cargo-deny + rumdl + shellcheck + selene, stylua and lua-language-server |
-| `just fmt` | format Rust + website |
+| `just fmt` / `just fmt-lua` | format Rust + website / format the Lua interface |
+| `just lua-api` | regenerate `thurbox.d.lua`, `thurbox.yml` and the selene probe from `src/kernel/lua_api.rs` |
 | `just arch` | architecture-rule + rustdoc checks |
 | `just hooks-install` | `prek install` |
 | `just smoke` | black-box TUI test: the real binary on a pty (`tests/tui_e2e.rs`) |
 | `just reap-tmux` | reap orphaned *test* tmux servers a signal left behind (below) |
 | `just bench` | what a frame costs, piece by piece (`benches/frame_cost.rs`) |
+| `just bench-multiplexers` | thurbox against raw tmux and Herdr (`docs/BENCHMARK-MULTIPLEXERS.md`) |
 | `just perf` | what the whole binary costs under load (`scripts/dev/perf-run.sh`) |
+| `just lab HOST` | drive the e2e tests against a real SSH host (`scripts/dev/e2e/real-host.sh`) |
+| `just tui-ui` | run the dev TUI against this checkout's `ui/` (`THURBOX_UI_DIR`) |
 | `just sandbox*` | dev runtime sandbox (below) |
 
 ### `just reap-tmux` — the servers a guard could not reap
@@ -271,13 +276,15 @@ scripts/dev/sandbox.sh                 # persistent "default" profile, launch th
 scripts/dev/sandbox.sh --fresh         # throwaway env, wiped on exit
 scripts/dev/sandbox.sh --profile foo   # a named persistent profile
 scripts/dev/sandbox.sh --isolate-home  # full hermetic isolation (fresh HOME; agents have NO creds)
+scripts/dev/sandbox.sh --demo          # seed a demo repo + sessions (scripts/dev/demo-repo.sh), then launch
+scripts/dev/sandbox.sh --demo-big      # …and a 400-file repo whose diff is past the 4 MiB cap
 scripts/dev/sandbox.sh --shell         # a shell with the sandbox env (run thurbox-cli by hand)
 scripts/dev/sandbox.sh -- session list # run a thurbox-cli command in the sandbox
 scripts/dev/sandbox.sh --clean [name]  # kill + wipe a persistent profile
 ```
 
-Or via `just`: `just sandbox`, `just sandbox-fresh`,
-`just sandbox-shell`, `just sandbox-clean [profile]`.
+Or via `just`: `just sandbox`, `just sandbox-fresh`, `just sandbox-demo`,
+`just sandbox-demo-big`, `just sandbox-shell`, `just sandbox-clean [profile]`.
 
 The sandbox points `THURBOX_CONFIG_DIR` at its own root, so the interface
 materialises at `<sandbox>/thurbox-config/ui/` along with agents, settings and the
