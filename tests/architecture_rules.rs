@@ -262,13 +262,80 @@ const MODULE_RULES: &[ModuleRules] = &[
             "session",
             "paths",
             "shell",
-            "agent::host_path",
-            "agent::preflight",
             "backend::contract",
             "backend::identity",
             "backend::tmux_compat::control_mode",
             "backend::instance",
             "backend::tmux_compat::transport",
+        ],
+        allowed_path_only: &[],
+    },
+    // Which server a backend talks to: the socket directory it was found in, and
+    // the search for a server whose socket file went missing.
+    ModuleRules {
+        name: "backend::tmux_compat::server::locator",
+        allowed: &[
+            "backend::tmux_compat::server",
+            "session",
+            "agent::host_path",
+            "backend::contract",
+            "backend::instance",
+            "backend::tmux_compat::transport",
+        ],
+        allowed_path_only: &[],
+    },
+    // Bringing the server and the thurbox session into being, configuring them,
+    // and admitting a server new enough to be talked to.
+    ModuleRules {
+        name: "backend::tmux_compat::server::bootstrap",
+        allowed: &[
+            "backend::tmux_compat::server",
+            "session",
+            "agent::preflight",
+            "backend::tmux_compat::control_mode",
+        ],
+        allowed_path_only: &[],
+    },
+    // The control-mode connection, opened apart from the server it reaches, and
+    // the one-shot commands run without one.
+    ModuleRules {
+        name: "backend::tmux_compat::server::connection",
+        allowed: &[
+            "backend::tmux_compat::server",
+            "backend::contract",
+            "backend::tmux_compat::control_mode",
+        ],
+        allowed_path_only: &[],
+    },
+    // Opening windows and the program each runs, and retiring a window that
+    // duplicates a session's stamp (ADR-25).
+    ModuleRules {
+        name: "backend::tmux_compat::server::spawn",
+        allowed: &[
+            "backend::tmux_compat::server",
+            "session",
+            "agent::host_path",
+            "backend::contract",
+            "backend::identity",
+            "backend::tmux_compat::control_mode",
+        ],
+        allowed_path_only: &[],
+    },
+    // Window size, and which client's size a window follows.
+    ModuleRules {
+        name: "backend::tmux_compat::server::sizing",
+        allowed: &["backend::tmux_compat::server", "backend::contract"],
+        allowed_path_only: &[],
+    },
+    // Hook status and the heartbeat behind the contract (ADR-32).
+    ModuleRules {
+        name: "backend::tmux_compat::server::status",
+        allowed: &[
+            "backend::tmux_compat::server",
+            "session",
+            "shell",
+            "backend::contract",
+            "backend::tmux_compat::control_mode",
         ],
         allowed_path_only: &[],
     },

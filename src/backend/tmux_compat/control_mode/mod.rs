@@ -170,7 +170,7 @@ macro_rules! sizer_option {
 }
 
 /// The window option naming the client that sizes a window, when several
-/// thurbox instances show it — see `Server::resize`.
+/// thurbox instances show it — see `Server::resize_window`.
 pub const SIZER_OPTION: &str = sizer_option!();
 
 /// The format subscription reporting [`SIZED_BY`] per pane, so an instance can
@@ -305,7 +305,7 @@ pub(in crate::backend) fn title_seed_bytes(host_short: &str, title: &str) -> Vec
 
 /// Who sizes a pane, as far as anybody else is concerned: the
 /// [`SIZER_OPTION`] while more than one client is attached, and nobody once a
-/// client is alone — an alone client may size any pane (`Server::resize`),
+/// client is alone — an alone client may size any pane (`Server::resize_window`),
 /// so a name left behind by an instance that has gone no longer counts. tmux
 /// re-evaluates a subscription as clients come and go, which is what tells the
 /// instance left behind that the size is its own again.

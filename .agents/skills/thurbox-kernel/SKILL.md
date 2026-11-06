@@ -101,11 +101,29 @@ backend::tmux_compat nothing — declares the three below (tmux protocol helper)
   ::control_mode     shell, backend::contract,
                      backend::tmux_compat::transport
   ::server           session, paths, shell,            (the shared server,
-                     agent::{host_path,preflight},      generic over the mux)
-                     backend::{contract,identity,
-                     instance},
-                     backend::tmux_compat::{control_mode,
+                     backend::{contract,identity,       generic over the mux:
+                     instance},                         `Server<M>`, its
+                     backend::tmux_compat::{control_mode, `Connection` and the
+                     transport}                         role-trait impls)
+    ::locator        session, agent::host_path,        (which server: the
+                     backend::{contract,instance},      socket dir, the search)
+                     backend::tmux_compat::{server,
                      transport}
+    ::bootstrap      session, agent::preflight,        (server + session made,
+                     backend::tmux_compat::{server,     configured, admitted)
+                     control_mode}
+    ::connection     backend::contract,                (connecting, apart from
+                     backend::tmux_compat::{server,     the server; one-shots)
+                     control_mode}
+    ::spawn          session, agent::host_path,        (windows, their program,
+                     backend::{contract,identity},      duplicate retirement)
+                     backend::tmux_compat::{server,
+                     control_mode}
+    ::sizing         backend::contract,                (window size, the sizer)
+                     backend::tmux_compat::server
+    ::status         session, shell, backend::contract, (hook status, heartbeat)
+                     backend::tmux_compat::{server,
+                     control_mode}
   ::transport        shell, agent::preflight
 backend::tmux        session, shell, backend::contract, (the tmux adapter)
                      backend::tmux_compat::{control_mode,
