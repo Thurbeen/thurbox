@@ -1895,24 +1895,6 @@ impl<M: TmuxCompatible> Server<M> {
         Ok(())
     }
 
-    /// Kill the window a pane is in with a one-shot command rather than
-    /// through control mode.
-    ///
-    /// The teardown path's kill on a host. Opening control mode needs
-    /// [`ensure_ready`](WindowLifecycle::ensure_ready) — and that *creates* the
-    /// server and the thurbox session when they are absent, so tearing a
-    /// session down on a host would leave an empty server behind. The window
-    /// rather than the pane, so a window somebody split does not keep a
-    /// process running in its other pane. One already gone is not an error:
-    /// the teardown got what it wanted.
-    fn kill_window_oneshot(&self, pane: &str) -> Result<()> {
-        let (verb, target) = self.kill_command(pane)?;
-        match self.run_tmux(&[verb, "-t", &target]) {
-            Err(e) if !typed_absence(&e) => Err(e),
-            _ => Ok(()),
-        }
-    }
-
     /// Execute a tmux command on the thurbox socket and check for errors.
     fn run_tmux(&self, args: &[&str]) -> Result<std::process::Output> {
         let output = self
@@ -3707,14 +3689,11 @@ impl<M: TmuxCompatible> WindowLifecycle for Server<M> {
             // session where they are absent — how tearing a session down came
             // to leave empty servers on other people's machines.
             self.known_socket()?;
-            return match self.transport.is_remote() {
-                true => Ok(self.kill_window_oneshot(backend_id)?),
-                false => self.kill_window_at(backend_id).map_err(Into::into),
-            };
+            return Ok(self.kill_window_at(backend_id)?);
         }
         // Admitted before the reader is let go: a refused kill leaves the pane
         // running, and it must keep its reader.
-        // The window, not only the pane — see `kill_window_oneshot`.
+        // The window, not only the pane — see `kill_window_at`.
         let (verb, target) = self.kill_command(backend_id)?;
         let _ = self.unregister_pane(backend_id);
         match self.ctrl_command(&format!("{verb} -t {target}")) {
@@ -5187,24 +5166,22 @@ impl<M: TmuxCompatible> Server<M> {
         }
     }
 
-    /// Kill the window `target` is in, with a one-shot command. One already
-    /// gone is not an error.
+    /// Kill the window `target` is in with a one-shot command rather than
+    /// through control mode — on this machine and on a host alike.
+    ///
+    /// The teardown path's kill. Opening control mode needs
+    /// [`ensure_ready`](WindowLifecycle::ensure_ready) — and that *creates* the
+    /// server and the thurbox session when they are absent, so tearing a
+    /// session down would leave an empty server behind. The window rather than
+    /// the pane, so a window somebody split does not keep a process running in
+    /// its other pane. One already gone is not an error: the teardown got what
+    /// it wanted.
     fn kill_window_at(&self, target: &str) -> Result<()> {
         let (verb, target) = self.kill_command(target)?;
-        let output = self
-            .mux_command(&[verb, "-t", &target])?
-            .output()
-            .with_context(|| format!("Failed to run {} {verb}", M::MULTIPLEXER.name()))?;
-        if !output.status.success()
-            || (M::EXIT_ZERO_ERRORS && mux_reported_error(&output, self.transport.is_ssh(), false))
-        {
-            return match self.command_failure(&[verb, "-t", &target], &output) {
-                crate::backend::contract::BackendError::Absent(_) => Ok(()),
-                error => Err(error.into()),
-            };
+        match self.run_tmux(&[verb, "-t", &target]) {
+            Err(e) if !typed_absence(&e) => Err(e),
+            _ => Ok(()),
         }
-
-        Ok(())
     }
 }
 
@@ -7491,6 +7468,30 @@ done
             crate::session::settings::default_scrollback_lines(),
         );
         assert!(backend.hook_states().is_err());
+    }
+
+    /// The teardown's kill takes one path on this machine and on a host: a
+    /// multiplexer that cannot be launched is the missing dependency it is,
+    /// named as such, wherever the server runs.
+    #[test]
+    fn a_teardown_kill_names_a_missing_multiplexer() {
+        let backend = TestBackend::with_transport(
+            TmuxTransport::local("thurbox-test-no-such-multiplexer"),
+            "thurbox-test",
+            "thurbox-test",
+            "local:tmux",
+            crate::session::settings::default_scrollback_lines(),
+        );
+        let error = backend
+            .kill("%1")
+            .expect_err("nothing to launch")
+            .to_string();
+        assert!(
+            error.contains(
+                "thurbox-test-no-such-multiplexer (thurbox's multiplexer) is not installed"
+            ),
+            "{error}"
+        );
     }
 
     /// A multiplexer binary that answers every command it is not told about
