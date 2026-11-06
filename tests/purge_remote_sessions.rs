@@ -25,7 +25,7 @@ impl Env {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let guard = thurbox::paths::TestPathGuard::new(temp.path());
-        let hosts = thurbox::agent::host_config::hosts_config_path().unwrap();
+        let hosts = thurbox::config::hosts::hosts_config_path().unwrap();
         std::fs::create_dir_all(hosts.parent().unwrap()).unwrap();
         std::fs::write(
             hosts,

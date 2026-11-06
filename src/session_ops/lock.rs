@@ -46,7 +46,7 @@ const TTL_FLOOR_MS: u64 = 5 * 60 * 1000;
 /// `session.pre_restore` outlived it.
 fn ttl_ms() -> u64 {
     // Fully-qualified per the session_ops → agent path-only architecture rule.
-    let hooks = crate::agent::hooks_config::load_or_seed();
+    let hooks = crate::config::hooks::load_or_seed();
     let budget: std::time::Duration = hooks.hooks.iter().map(|h| h.timeout()).sum();
     TTL_FLOOR_MS.saturating_add(budget.as_millis() as u64)
 }
@@ -282,7 +282,7 @@ mod tests {
     fn a_lock_outlasts_the_hooks_the_operation_will_wait_on() {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let path = crate::agent::hooks_config::hooks_config_path().expect("hooks path");
+        let path = crate::config::hooks::hooks_config_path().expect("hooks path");
         std::fs::create_dir_all(path.parent().expect("config dir")).expect("mkdir");
         std::fs::write(
             &path,

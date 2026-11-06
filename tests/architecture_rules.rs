@@ -56,14 +56,14 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
-    // Coding-agent definitions and their config: agents.toml, extensions,
-    // hooks, settings, themes, preflight, self-update. Never a session
-    // backend: those live in their own nodes below, and a backend may read an
-    // agent's config, so the reverse would be a cycle.
+    // Coding-agent definitions: the agents.toml registry, extensions,
+    // preflight and the host-path translation every launch goes through.
+    // Never a session backend: those live in their own nodes below, and a
+    // backend may read an agent's config, so the reverse would be a cycle.
     //
     // Every file is a node of its own (`SUBMODULE_GOVERNED`), so a grant names
-    // the config it reads and a file added here is reachable by nobody until
-    // that is decided. The root only re-exports the provider types.
+    // what it reads and a file added here is reachable by nobody until that is
+    // decided. The root only re-exports the provider types.
     ModuleRules {
         name: "agent",
         allowed: &["agent::generic", "agent::provider"],
@@ -71,31 +71,17 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "agent::agent_config",
-        allowed: &["session", "paths", "shell"],
+        allowed: &["session", "shell", "config::file"],
         allowed_path_only: &[],
     },
     ModuleRules {
         name: "agent::extension_config",
-        allowed: &["session", "paths", "agent::agent_config"],
+        allowed: &["session", "paths", "agent::agent_config", "config::file"],
         allowed_path_only: &[],
     },
     ModuleRules {
         name: "agent::generic",
         allowed: &["session", "agent::provider"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::hooks_config",
-        allowed: &["session", "paths", "agent::agent_config"],
-        allowed_path_only: &[],
-    },
-    // hosts.toml, and the cached registry of it every process shares. Its own
-    // node so that reading global host config is a visible decision: the
-    // backend contract and the pure registry must not. `shell` for the one
-    // `wsl.exe` constructor every launch goes through (`shell::wsl_exe`).
-    ModuleRules {
-        name: "agent::host_config",
-        allowed: &["session", "paths", "shell", "agent::agent_config"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -124,33 +110,68 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::self_update",
+        name: "agent::toml_merge",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    // thurbox's own config files beside config.toml. `config::file` is the one
+    // loader: where a file lives, seeding it, parsing it with unknown keys
+    // reported, and writing it back atomically. Each file is a node of its own
+    // so a consumer names the config it reads; none reaches another, so a
+    // file's degradation is its own.
+    ModuleRules {
+        name: "config",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "config::file",
+        allowed: &["paths"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "config::hooks",
+        allowed: &["session", "config::file"],
+        allowed_path_only: &[],
+    },
+    // hosts.toml, and the cached registry of it every process shares. Its own
+    // node so that reading global host config is a visible decision: the
+    // backend contract and the pure registry must not. `shell` for the one
+    // `wsl.exe` constructor every launch goes through (`shell::wsl_exe`).
+    ModuleRules {
+        name: "config::hosts",
+        allowed: &["session", "paths", "shell", "config::file"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "config::settings",
+        allowed: &["session", "config::file"],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "config::themes",
+        allowed: &["session", "config::file"],
+        allowed_path_only: &[],
+    },
+    // Self-update: whether a newer release exists, and installing it.
+    ModuleRules {
+        name: "update",
+        allowed: &[],
+        allowed_path_only: &[],
+    },
+    ModuleRules {
+        name: "update::self_update",
         allowed: &[
             "session",
             "paths",
             "shell",
             "agent::extension_config",
-            "agent::version_check",
+            "update::version_check",
         ],
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::settings_config",
-        allowed: &["session", "paths", "agent::agent_config"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::themes_config",
-        allowed: &["session", "paths", "agent::agent_config"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::toml_merge",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::version_check",
+        name: "update::version_check",
         allowed: &["session", "paths", "agent::extension_config"],
         allowed_path_only: &[],
     },
@@ -214,12 +235,12 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[
             "session",
             "shell",
-            "agent::host_config",
             "backend::contract",
-            "backend::registry",
-            "backend::tmux",
             "backend::psmux",
+            "backend::registry",
             "backend::rmux",
+            "backend::tmux",
+            "config::hosts",
         ],
         allowed_path_only: &[],
     },
@@ -357,20 +378,20 @@ const MODULE_RULES: &[ModuleRules] = &[
             "agent::agent_config",
             "agent::extension_config",
             "agent::generic",
-            "agent::hooks_config",
-            "agent::host_config",
             "agent::host_path",
             "agent::json_merge",
             "agent::preflight",
             "agent::provider",
-            "agent::self_update",
-            "agent::settings_config",
             "agent::toml_merge",
-            "agent::version_check",
             "backend::contract",
             "backend::identity",
             "backend::instance",
             "backend::registry",
+            "config::hooks",
+            "config::hosts",
+            "config::settings",
+            "update::self_update",
+            "update::version_check",
         ],
     },
     // Thin headless dispatch — must not depend on TUI or the live backend.
@@ -397,19 +418,20 @@ const MODULE_RULES: &[ModuleRules] = &[
         // Path-only, like the agent config, so the crossing stays visible at each call
         // site.
         allowed_path_only: &[
+            "kernel",
             "agent::agent_config",
             "agent::extension_config",
-            "agent::hooks_config",
-            "agent::host_config",
             "agent::preflight",
-            "agent::self_update",
-            "agent::settings_config",
-            "agent::themes_config",
-            "agent::version_check",
             "backend::contract",
             "backend::instance",
             "backend::registry",
-            "kernel",
+            "config::file",
+            "config::hooks",
+            "config::hosts",
+            "config::settings",
+            "config::themes",
+            "update::self_update",
+            "update::version_check",
         ],
     },
     // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
@@ -446,17 +468,17 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[
             "agent::agent_config",
             "agent::extension_config",
-            "agent::host_config",
             "agent::host_path",
             "agent::preflight",
-            "agent::self_update",
-            "agent::settings_config",
-            "agent::themes_config",
-            "agent::version_check",
             "backend::contract",
             "backend::identity",
             "backend::pane",
             "backend::registry",
+            "config::hosts",
+            "config::settings",
+            "config::themes",
+            "update::self_update",
+            "update::version_check",
         ],
     },
     // Leaf utilities.
@@ -491,11 +513,6 @@ const MODULE_RULES: &[ModuleRules] = &[
     ModuleRules {
         name: "coordinator",
         allowed: &[
-            "agent::input",
-            "agent::settings_config",
-            "backend::instance",
-            "backend::output_wake",
-            "backend::wiring",
             "clipboard",
             "kernel",
             "paths",
@@ -505,6 +522,11 @@ const MODULE_RULES: &[ModuleRules] = &[
             "storage",
             "telemetry",
             "ui_control",
+            "agent::input",
+            "backend::instance",
+            "backend::output_wake",
+            "backend::wiring",
+            "config::settings",
         ],
         allowed_path_only: &[],
     },
@@ -544,7 +566,7 @@ const EXEMPT: &[&str] = &["bin", "lib", "main"];
 /// its own, so a new file there is a decision rather than something its
 /// parent's rule silently covers. An inline `mod x { … }` belongs to the file
 /// that holds it.
-const SUBMODULE_GOVERNED: &[&str] = &["backend", "agent"];
+const SUBMODULE_GOVERNED: &[&str] = &["backend", "agent", "config", "update"];
 
 /// A crossing that breaks a rule today, is known, and is scheduled to go.
 ///
@@ -995,7 +1017,7 @@ const NEUTRAL_FILES: &[&str] = &["session/route.rs", "backend/contract.rs"];
 const HOST_OR_MUX_SPECIFIC: &[&str] = &[
     "shell",
     "session::host_def",
-    "agent::host_config",
+    "config::hosts",
     "backend::tmux",
     "backend::psmux",
     "backend::tmux_compat",
@@ -1601,13 +1623,13 @@ struct InPlaceWrite {
 
 const IN_PLACE_ALLOWED: &[InPlaceWrite] = &[
     InPlaceWrite {
-        file: "agent/self_update.rs",
+        file: "update/self_update.rs",
         call: "fs::copy",
         sites: 1,
         why: "copies the new binary onto a staged .new file that is renamed into place",
     },
     InPlaceWrite {
-        file: "agent/version_check.rs",
+        file: "update/version_check.rs",
         call: "fs::write",
         sites: 1,
         why: "a cache: one that fails to parse is fetched again",

@@ -2113,7 +2113,7 @@ fn read_hosts(
     served: &std::collections::HashSet<crate::session::Route>,
     probe: bool,
 ) -> Vec<HostRow> {
-    let (registry, _warnings) = crate::agent::host_config::cached_registry();
+    let (registry, _warnings) = crate::config::hosts::cached_registry();
     hosts_from(&registry.hosts, served, probe)
 }
 

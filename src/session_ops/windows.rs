@@ -21,7 +21,7 @@ pub(crate) fn backend_for<'r>(
     backend_type: &str,
 ) -> Result<&'r std::sync::Arc<dyn crate::backend::SessionBackend>, crate::session_ops::OpError> {
     let route = crate::session::Route::parse(backend_type).map_err(|e| e.to_string())?;
-    let (hosts, _warnings) = crate::agent::host_config::cached_registry();
+    let (hosts, _warnings) = crate::config::hosts::cached_registry();
     if let Some(name) = route.host() {
         if hosts.host_of(&route).is_none() {
             return Err(format!("host '{name}' is not in hosts.toml").into());

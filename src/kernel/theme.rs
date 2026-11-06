@@ -6,7 +6,7 @@
 //!
 //! Nothing here is reimplemented. `session::theme_config` is pure data and
 //! already reachable from the kernel: it carries all 36 presets and a 31-role
-//! palette, `agent::themes_config` reads the user's `themes.toml`, and the
+//! palette, `config::themes` reads the user's `themes.toml`, and the
 //! choice lives in `metadata.active_theme` exactly where v1 put it. So a v1
 //! user's themes and current selection carry over untouched.
 
@@ -59,7 +59,7 @@ impl Themes {
     /// skipped, and a recorded choice that no longer resolves falls back to the
     /// default. Losing the interface over a colour would be absurd.
     pub fn load(db: Option<&Database>) -> Self {
-        let (custom, warnings) = crate::agent::themes_config::load_or_seed_with_warnings();
+        let (custom, warnings) = crate::config::themes::load_or_seed_with_warnings();
 
         let mut choices: Vec<ThemeChoice> = ThemePreset::all()
             .iter()
@@ -365,7 +365,7 @@ mod tests {
     fn preset_identifiers_still_resolve() {
         // A persisted v1 choice must stay valid, or every user loses their theme
         // on upgrade.
-        let (custom, _) = crate::agent::themes_config::load_or_seed_with_warnings();
+        let (custom, _) = crate::config::themes::load_or_seed_with_warnings();
         for preset in ThemePreset::all() {
             let name = ThemeEntry::from_preset(*preset).name;
             let resolved = resolve(Some(&name), &custom);

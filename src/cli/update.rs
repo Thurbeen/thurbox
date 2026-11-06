@@ -32,7 +32,7 @@ pub fn run(args: UpdateArgs) -> CommandOutput {
 /// disabled path is testable without depending on the process-global default
 /// (the flag is on by default for 1.0).
 fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
-    let current = crate::agent::version_check::current_version();
+    let current = crate::update::version_check::current_version();
 
     if !enabled {
         let hint = "update is disabled. Enable it by setting \
@@ -47,8 +47,8 @@ fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
         );
     }
 
-    match crate::agent::self_update::perform_update(args.force) {
-        Ok(crate::agent::self_update::UpdateOutcome::Updated { from, to }) => {
+    match crate::update::self_update::perform_update(args.force) {
+        Ok(crate::update::self_update::UpdateOutcome::Updated { from, to }) => {
             let human = kv(&[
                 ("from", from.clone()),
                 ("to", to.clone()),
@@ -66,7 +66,7 @@ fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
                 human,
             )
         }
-        Ok(crate::agent::self_update::UpdateOutcome::UpToDate { current, latest }) => {
+        Ok(crate::update::self_update::UpdateOutcome::UpToDate { current, latest }) => {
             CommandOutput::new(
                 json!({
                     "version": current,
@@ -80,7 +80,7 @@ fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
             ),
             )
         }
-        Ok(crate::agent::self_update::UpdateOutcome::SkippedMajor { current, latest }) => {
+        Ok(crate::update::self_update::UpdateOutcome::SkippedMajor { current, latest }) => {
             // Reported, not installed: `latest` is a new major line. Name both
             // ways across, and pin by the running version rather than deriving
             // its major — the exact tag is what an installer wants anyway.
@@ -101,7 +101,7 @@ fn run_with(args: UpdateArgs, enabled: bool) -> CommandOutput {
                 format!("thurbox {current} (latest: {latest})\n{note}"),
             )
         }
-        Ok(crate::agent::self_update::UpdateOutcome::SkippedDevBuild { current }) => {
+        Ok(crate::update::self_update::UpdateOutcome::SkippedDevBuild { current }) => {
             CommandOutput::new(
                 json!({
                     "version": current,

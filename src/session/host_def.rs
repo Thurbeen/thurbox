@@ -2,7 +2,7 @@
 //! thurbox can run sessions on: SSH machines and local WSL distros.
 //!
 //! Loaded from `~/.config/thurbox/hosts.toml` by
-//! [`crate::agent::host_config`] (and, for WSL, auto-discovered there too).
+//! [`crate::config::hosts`] (and, for WSL, auto-discovered there too).
 //! Kept here in `session` (the dependency sink) so both `agent` (which builds
 //! the tmux backend) and `git` (which runs `git` on the host for remote
 //! worktrees) can depend on the same type without crossing the
@@ -44,7 +44,7 @@ fn is_current_wsl_distro(distro: &str) -> bool {
 /// The row rewrites the one-time WSL repair owes, decided by the registry.
 ///
 /// Pure data, and here rather than in `storage` or `agent` because both need
-/// to name it: `agent::host_config::wsl_repair_plan` decides it from
+/// to name it: `config::hosts::wsl_repair_plan` decides it from
 /// `hosts.toml`, and `storage` applies it — and `storage` may reference
 /// `session` but not `agent`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -352,7 +352,7 @@ impl HostRegistry {
     /// The route's `ssh:`/`wsl:` prefix is **not** checked against the host's
     /// own [`kind`](HostDef::kind): `ssh:ubuntu` finds a host named `ubuntu`
     /// even if it is a WSL distro. That is deliberate — a name is unique across
-    /// kinds (`host_config::load_all` dedupes by it), and the only way the two
+    /// kinds (`config::hosts::load_all` dedupes by it), and the only way the two
     /// disagree is a persisted `backend_type` written before the host's kind
     /// was changed, where resolving to the host that now carries that name is
     /// what lets the session re-adopt instead of going unreachable.

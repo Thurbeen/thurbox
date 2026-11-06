@@ -752,7 +752,7 @@ pub fn mirror_host(
 ) -> Result<MirrorReport, crate::session_ops::OpError> {
     let backend = host.backend_name();
     let (active, deleted) = host_lists(host, cli, &backend)?;
-    let transitive = if crate::agent::settings_config::load_quiet()
+    let transitive = if crate::config::settings::load_quiet()
         .remote
         .transitive_sessions
     {
@@ -1324,7 +1324,7 @@ pub fn sync(
     only: Option<&str>,
     adopt: bool,
 ) -> Result<Vec<MirrorReport>, crate::session_ops::OpError> {
-    let hosts = crate::agent::host_config::load_all();
+    let hosts = crate::config::hosts::load_all();
     let targets: Vec<HostDef> = match only {
         Some(name) => vec![hosts.resolve(name).cloned().ok_or_else(|| {
             format!(
@@ -1395,7 +1395,7 @@ pub fn sync(
 /// this machine watching it, it does not end its work. So nothing reaches the
 /// host and no worktree is touched.
 pub fn forget_removed_hosts(db: &Database) -> Vec<MirrorReport> {
-    let served = match crate::agent::host_config::served_host_names() {
+    let served = match crate::config::hosts::served_host_names() {
         Ok(served) => served,
         Err(e) => {
             tracing::warn!("rows of removed hosts kept — the host registry could not be read: {e}");

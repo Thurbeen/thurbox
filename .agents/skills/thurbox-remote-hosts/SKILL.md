@@ -198,7 +198,7 @@ real host by `scripts/dev/e2e/real-host.sh <host> transfer-test`.
 Each host registers one backend per adapter, named by its route
 (`ssh:<name>:<mux>` / `wsl:<name>:<mux>`, `backend::wiring`'s table, built from a
 `BackendSpec` of route, launcher, platform and host), registered lazily from
-`host_config::load_all_with_warnings`: discovery/down hosts must
+`config::hosts::load_all_with_warnings`: discovery/down hosts must
 not block startup, so `check_available`/`ensure_ready` are deferred to first use
 — looking a backend up is a map read, and the blocking `ensure_ready` runs on the
 attach worker in `kernel::terminal` (and on the spawn worker for a fresh
@@ -215,7 +215,7 @@ session), never on the loop, ADR-P12).
   the injected registry, refusing a route none serves (ADR-29);
   `session_ops::server_key`
   compares two rows' servers whatever spelling each carries. A host name may
-  not contain `:` (refused at load). **Loading**: `agent::host_config::load_all{,_with_warnings}`
+  not contain `:` (refused at load). **Loading**: `config::hosts::load_all{,_with_warnings}`
   = configured hosts + `discover_wsl_hosts()` (deduped; a configured entry
   wins), with every entry claiming the current distro settled first
   (`settle_wsl_self_hosts` / `wsl_hosts_from`): a loopback dropped, a
@@ -227,7 +227,7 @@ session), never on the loop, ADR-P12).
   **both** startups that open the database (`coordinator::boot` and
   `bin/thurbox-cli`), because the mark is written by whichever gets there first.
   What it rewrites is a `session::WslRepairPlan` decided by the registry as
-  callers *see* it — `agent::host_config::wsl_repair_plan` settles then
+  callers *see* it — `config::hosts::wsl_repair_plan` settles then
   augments with discovery, the loader's own two steps in order:
   - Candidates = `wsl:$WSL_DISTRO_NAME` **plus** each dropped loopback's own
     `backend_name()` (a hand-written `name = "self", distro = "<us>"` wrote
@@ -320,7 +320,7 @@ session), never on the loop, ADR-P12).
   are forgotten, never tombstoned — a tombstone would be pushed back as a
   delete once the host is configured again (`mirror::forget_removed_hosts`,
   from `mirror::sync` and the TUI boot). Rows only this database records are
-  kept. `host_config::served_host_names` is `Err`, and nothing is forgotten,
+  kept. `config::hosts::served_host_names` is `Err`, and nothing is forgotten,
   when `hosts.toml` does not parse, WSL cannot be listed, or thurbox runs
   inside WSL with no `wsl.exe` on `PATH`; a loopback entry's rows are left to
   the WSL repair.
@@ -659,7 +659,7 @@ session), never on the loop, ADR-P12).
   borrowed worktrees (`created_by_thurbox = false`, so a fallback teardown on
   B removes nothing) — but only under `settings.toml` `[remote]
   transitive_sessions = true` (`Transitive::Show`). The default, `false`
-  (`Transitive::Hide`, read per pass by `settings_config::load_quiet`), takes
+  (`Transitive::Hide`, read per pass by `config::settings::load_quiet`), takes
   only own rows and **forgets** the transitive ones held on that backend
   (`Database::forget_session`, event reason `forgotten`) — never a tombstone,
   which the next pass would push to B as a delete of a live session.

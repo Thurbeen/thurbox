@@ -75,9 +75,9 @@ impl Config {
     /// Returns the warnings the loader produced (an unknown key, a value out of
     /// range) so the caller can surface them as startup notices.
     pub fn load() -> (Self, Vec<String>) {
-        let (settings, warnings) = crate::agent::settings_config::load_or_seed_with_warnings();
+        let (settings, warnings) = crate::config::settings::load_or_seed_with_warnings();
         crate::session::settings::init(settings.clone());
-        let path = crate::agent::settings_config::settings_config_path();
+        let path = crate::config::settings::settings_config_path();
         let stamp = path.as_deref().and_then(modified);
         (
             Self {
@@ -142,7 +142,7 @@ impl Config {
         // on every poll until it is fixed.
         self.stamp = Some(stamp);
 
-        let (fresh, warnings) = crate::agent::settings_config::load_or_seed_with_warnings();
+        let (fresh, warnings) = crate::config::settings::load_or_seed_with_warnings();
         if let Some(first) = warnings.first() {
             // The loader falls back to defaults per bad key rather than failing,
             // so this is a report, not a refusal.

@@ -28,7 +28,7 @@ fn isolate() -> tempfile::TempDir {
 }
 
 fn write_settings(body: &str) {
-    let path = thurbox::agent::settings_config::settings_config_path().expect("settings path");
+    let path = thurbox::config::settings::settings_config_path().expect("settings path");
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("mkdir");
     }
@@ -36,7 +36,7 @@ fn write_settings(body: &str) {
 }
 
 fn read_settings() -> String {
-    let path = thurbox::agent::settings_config::settings_config_path().expect("settings path");
+    let path = thurbox::config::settings::settings_config_path().expect("settings path");
     std::fs::read_to_string(path).expect("read settings.toml")
 }
 
@@ -117,7 +117,7 @@ fn a_live_change_on_disk_applies_without_a_restart() {
     write_settings("[features]\nsoft_delete = false\n");
     // The poll is throttled and mtime-based; a fresh read is what the loop would
     // eventually do, so drive `adopt` with what the file now says.
-    let (fresh, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    let (fresh, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert_eq!(config.adopt(fresh), Reloaded::Live);
     assert!(!config.features().soft_delete);
 }
@@ -131,7 +131,7 @@ fn a_clipboard_change_on_disk_is_taken_into_force() {
     let (mut config, _) = Config::load();
 
     write_settings("[clipboard]\nprovider = \"osc52\"\ncopy_on_select = false\n");
-    let (fresh, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    let (fresh, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert_eq!(config.adopt(fresh), Reloaded::Live);
     assert_eq!(
         config.in_force().clipboard.provider,
@@ -147,7 +147,7 @@ fn a_restart_only_change_is_reported_rather_than_implied() {
     let (mut config, _) = Config::load();
 
     write_settings("scrollback_lines = 50000\n");
-    let (fresh, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    let (fresh, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert_eq!(config.adopt(fresh), Reloaded::NeedsRestart);
     assert_eq!(
         config.in_force().scrollback_lines,
@@ -184,7 +184,7 @@ fn our_own_write_is_not_reported_as_an_outside_edit() {
 
     let mut edited = Settings::default();
     edited.features.soft_delete = false;
-    thurbox::agent::settings_config::save_settings(&edited).expect("save");
+    thurbox::config::settings::save_settings(&edited).expect("save");
     config.mark_saved();
 
     assert_eq!(
@@ -212,7 +212,7 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     let mut draft = config.on_disk().clone();
     draft.features.mouse = false;
     assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
-    thurbox::agent::settings_config::save_settings(&draft).expect("save");
+    thurbox::config::settings::save_settings(&draft).expect("save");
 
     // The next visit, with the modal (and its draft) long since dropped: change
     // something else entirely.
@@ -221,9 +221,9 @@ fn a_saved_restart_only_change_is_not_reverted_by_the_next_save() {
     // Still `NeedsRestart`: the earlier change is pending until the next launch,
     // and saying otherwise would report it as applied.
     assert_eq!(config.adopt(draft.clone()), Reloaded::NeedsRestart);
-    thurbox::agent::settings_config::save_settings(&draft).expect("save");
+    thurbox::config::settings::save_settings(&draft).expect("save");
 
-    let (next_launch, _) = thurbox::agent::settings_config::load_or_seed_with_warnings();
+    let (next_launch, _) = thurbox::config::settings::load_or_seed_with_warnings();
     assert!(
         !next_launch.features.mouse,
         "the restart-only change was reverted by an unrelated later save"
@@ -260,7 +260,7 @@ fn saving_preserves_the_files_comments() {
     );
     let mut edited = Settings::default();
     edited.features.soft_delete = false;
-    thurbox::agent::settings_config::save_settings(&edited).expect("save");
+    thurbox::config::settings::save_settings(&edited).expect("save");
 
     let written = read_settings();
     assert!(

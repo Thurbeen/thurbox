@@ -150,7 +150,7 @@ function Get-LockingProcess {
 # running from, so updating while thurbox (or a thurbox-cli a hook started) was
 # running died with Remove-Item's access-denied trace. Windows does let such a
 # file be renamed, so each one is moved aside to .<name>.old - the backup name
-# the in-app updater (src/agent/self_update.rs) uses - and the new one moved
+# the in-app updater (src/update/self_update.rs) uses - and the new one moved
 # in. A backup a process still runs from stays until the next update.
 function Install-Archive {
     param([string]$ZipPath, [string]$Destination)

@@ -13,7 +13,7 @@ its own binaries on startup.
 The updater in the *already installed* binary decides what to install, and it
 hard-fails on a known binary that is missing from the tarball:
 
-    // src/agent/self_update.rs
+    // src/update/self_update.rs
     const BINARIES: [&str; 2] = ["thurbox", "thurbox-cli"];
     // …
     if !src.exists() {
@@ -75,7 +75,7 @@ It is taken in one `DELETE … RETURNING`, so it acts once.
 
 ### Auto-update does not cross a major, and that has to be shipped to v1
 
-`agent::version_check::crosses_major` stops `perform_update` installing a release
+`update::version_check::crosses_major` stops `perform_update` installing a release
 whose major is higher than the running binary's; it is reported instead
 (`UpdateOutcome::SkippedMajor`, `thurbox-cli update --force` to take it anyway).
 This is what makes "stay on 1.x" a property of the binary rather than a setting

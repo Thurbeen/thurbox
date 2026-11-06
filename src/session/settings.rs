@@ -2,7 +2,7 @@
 //! plus the `[features]` whole-feature switches.
 //!
 //! Pure data + parsing, per the `session/` architecture rule; the file IO and
-//! seeding live in `crate::agent::settings_config`. Only knobs a user
+//! seeding live in `crate::config::settings`. Only knobs a user
 //! plausibly wants to change are exposed — timing/buffer internals stay
 //! hardcoded. The loaded value is published process-wide via [`init`] /
 //! [`global`] because the consumers span modules that must not know about each

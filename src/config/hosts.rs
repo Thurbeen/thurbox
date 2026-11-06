@@ -178,7 +178,7 @@ config_version = 1
 /// Path to the remote-host config file: `~/.config/thurbox/hosts.toml`
 /// (sibling of `config.toml`).
 pub fn hosts_config_path() -> Option<PathBuf> {
-    crate::paths::config_file().map(|p| p.with_file_name("hosts.toml"))
+    super::file::path("hosts.toml")
 }
 
 /// Load the remote-host registry, seeding the config file with a commented-out
@@ -215,38 +215,18 @@ pub fn load_or_seed_with_warnings() -> (HostRegistry, Vec<String>) {
 /// genuinely remote session — silently, once, and unrecoverably. Everything
 /// else wants the degraded registry and a warning.
 fn load_or_seed_result() -> Result<(HostRegistry, Vec<String>), String> {
-    let Some(path) = hosts_config_path() else {
-        return Err("Could not resolve hosts.toml path; no remote hosts".into());
-    };
-
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create config dir for hosts.toml: {e}"))?;
-        }
-        crate::paths::write_atomically(&path, SEED_HOSTS_TOML)
-            .map_err(|e| format!("Failed to seed hosts.toml: {e}"))?;
-        tracing::info!(path = %path.display(), "Seeded hosts.toml (no active hosts)");
-        return Ok((HostRegistry::default(), Vec::new()));
+    let degraded = |e: String| format!("{e}; no remote hosts");
+    match super::file::read_or_seed("hosts.toml", SEED_HOSTS_TOML).map_err(degraded)? {
+        Some(contents) => parse_hosts(&contents).map_err(degraded),
+        None => Ok((HostRegistry::default(), Vec::new())),
     }
-
-    let contents =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read hosts.toml: {e}"))?;
-    parse_hosts(&contents).map_err(|e| format!("{e}; no remote hosts"))
 }
 
 /// `hosts.toml`'s contents as the registry thurbox serves, and every warning
 /// owed about them: unknown keys, and any entry refused outright. `Err` is a
 /// file that does not parse.
 pub fn parse_hosts(contents: &str) -> Result<(HostRegistry, Vec<String>), String> {
-    let (mut registry, mut warnings) =
-        super::agent_config::parse_toml_reporting_unknown::<HostRegistry>(contents, "hosts.toml")
-            .map_err(|e| {
-            format!(
-                "hosts.toml: {}",
-                super::agent_config::compact_toml_error(&e.to_string())
-            )
-        })?;
+    let (mut registry, mut warnings) = super::file::parse::<HostRegistry>(contents, "hosts.toml")?;
     warnings.extend(registry.refuse_unroutable_names());
     Ok((registry, warnings))
 }
@@ -843,7 +823,7 @@ mod tests {
     #[test]
     fn an_unenumerable_wsl_yields_no_plan_at_all() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         let path = hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
@@ -982,7 +962,7 @@ mod tests {
     #[test]
     fn an_unparseable_hosts_toml_yields_no_plan_at_all() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
         let path = hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "[[hosts]\nname = \"MagicDebian\"\n").unwrap();
@@ -1046,7 +1026,7 @@ mod tests {
     #[test]
     fn load_or_seed_writes_file_when_absent_and_stays_empty() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hosts_config_path().unwrap();
         assert!(!path.exists());
@@ -1062,7 +1042,7 @@ mod tests {
     #[test]
     fn load_or_seed_falls_back_on_malformed_file() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1074,7 +1054,7 @@ mod tests {
     #[test]
     fn load_or_seed_reads_configured_host() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

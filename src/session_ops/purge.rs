@@ -548,7 +548,7 @@ mod delegated_purge_tests {
     fn a_delegated_purge_never_force_deletes_a_host_row_restored_after_selection() {
         let temp = tempfile::tempdir().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let hosts = crate::agent::host_config::hosts_config_path().unwrap();
+        let hosts = crate::config::hosts::hosts_config_path().unwrap();
         std::fs::create_dir_all(hosts.parent().unwrap()).unwrap();
         std::fs::write(
             hosts,
@@ -589,7 +589,7 @@ mod delegated_purge_tests {
     fn a_retention_purge_checks_the_hosts_own_deletion_age() {
         let temp = tempfile::tempdir().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let hosts = crate::agent::host_config::hosts_config_path().unwrap();
+        let hosts = crate::config::hosts::hosts_config_path().unwrap();
         std::fs::create_dir_all(hosts.parent().unwrap()).unwrap();
         std::fs::write(
             hosts,

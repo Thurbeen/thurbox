@@ -630,7 +630,7 @@ fn spawn(
         &agent_def,
         &req.name,
         host.as_ref(),
-        &crate::agent::settings_config::load_quiet().telemetry,
+        &crate::config::settings::load_quiet().telemetry,
     );
 
     report(SpawnPhase::Backend);
@@ -2308,7 +2308,7 @@ fn resolve_backend(
     let (_, host_def) = resolve_host_flag(host)?;
     // Nothing named, locally: what is installed here decides, so a machine
     // with only RMUX runs RMUX rather than failing on a missing tmux.
-    let configured = crate::agent::settings_config::load_quiet()
+    let configured = crate::config::settings::load_quiet()
         .multiplexer
         .or_else(|| {
             let installed = crate::agent::preflight::local_multiplexers();
@@ -2344,7 +2344,7 @@ fn resolve_host_flag(
     let Some(name) = host_name.filter(|n| !n.is_empty()) else {
         return Ok((crate::session::Route::local(None).format(), None));
     };
-    let registry = crate::agent::host_config::load_all();
+    let registry = crate::config::hosts::load_all();
     match registry.resolve(name) {
         Some(h) => Ok((h.backend_name(), Some(h.clone()))),
         None => {
@@ -2840,7 +2840,7 @@ mod tests {
     fn resolve_host_flag_reads_configured_host() {
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let path = crate::agent::host_config::hosts_config_path().unwrap();
+        let path = crate::config::hosts::hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
@@ -2862,7 +2862,7 @@ mod tests {
         // one lookup now.
         let temp = tempfile::TempDir::new().unwrap();
         let _guard = crate::paths::TestPathGuard::new(temp.path());
-        let path = crate::agent::host_config::hosts_config_path().unwrap();
+        let path = crate::config::hosts::hosts_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,

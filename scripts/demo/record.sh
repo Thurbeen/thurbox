@@ -125,7 +125,7 @@ DB_FILE="$XDG_DATA_HOME/thurbox-dev/thurbox.db"  # SQLite db (dev_build subdir)
 mkdir -p "$CFG_DIR"
 
 # Hide `wsl.exe` from the demo's PATH. WSL distros are AUTO-discovered (no config
-# to isolate — `host_config::discover_wsl_hosts` shells out to `wsl.exe -l -q`
+# to isolate — `config::hosts::discover_wsl_hosts` shells out to `wsl.exe -l -q`
 # whenever it resolves on PATH), so on a WSL box every discovered distro becomes a
 # host and Ctrl+N opens the "Run On" host picker *before* the repo picker. That
 # extra modal shifts every subsequent keystroke in the spawn tapes by one step, so

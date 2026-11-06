@@ -641,7 +641,7 @@ fn establish(host: &HostDef) -> Usable {
 /// host schema is still refused: it may not know what we send, and
 /// provisioning our version is what upgrades it.
 pub fn compatible(cli: &CliInfo) -> Result<(), String> {
-    let ours = crate::agent::version_check::current_version();
+    let ours = crate::update::version_check::current_version();
     let (ours_major, theirs_major) = (major_of(ours), major_of(&cli.version));
     if ours_major != theirs_major {
         return Err(format!(
@@ -1435,7 +1435,7 @@ fn legacy_absence(message: &str) -> bool {
 }
 
 /// `(os, arch)` as the host's shell spells them (`uname -sm`, or
-/// `windows <PROCESSOR_ARCHITECTURE>`), for [`crate::agent::self_update::target_triple`].
+/// `windows <PROCESSOR_ARCHITECTURE>`), for [`crate::update::self_update::target_triple`].
 fn host_platform(host: &HostDef) -> Result<(String, String), String> {
     let script = match HostShell::for_host(host) {
         HostShell::PowerShell => "Write-Output \"windows $env:PROCESSOR_ARCHITECTURE\"",
@@ -1527,7 +1527,7 @@ fn install(host: &HostDef) -> Result<String, String> {
         return dest;
     }
     let (os, arch) = host_platform(host)?;
-    let target = crate::agent::self_update::target_triple(&os, &arch)?;
+    let target = crate::update::self_update::target_triple(&os, &arch)?;
     let bin_dir = format!("{}/{HOST_BIN_DIR}", host_data_dir(host)?);
     let shell = HostShell::for_host(host);
     let cli_name = match shell {
@@ -1537,7 +1537,7 @@ fn install(host: &HostDef) -> Result<String, String> {
     let dest = format!("{bin_dir}/{cli_name}");
 
     if crate::agent::extension_config::is_dev_build() {
-        let ours = crate::agent::self_update::current_target()?;
+        let ours = crate::update::self_update::current_target()?;
         if ours != target {
             return Err(format!(
                 "development build: no release archive to provision a {target} host with \
@@ -1559,8 +1559,8 @@ fn install(host: &HostDef) -> Result<String, String> {
         return Ok(dest);
     }
 
-    let version = crate::agent::version_check::current_version();
-    let archive = crate::agent::self_update::fetch_archive(version, target)?;
+    let version = crate::update::version_check::current_version();
+    let archive = crate::update::self_update::fetch_archive(version, target)?;
     let bytes = std::fs::read(&archive.path)
         .map_err(|e| format!("read {}: {e}", archive.path.display()))?;
     let remote_archive = format!("{bin_dir}/{}", archive.name);
@@ -1790,7 +1790,7 @@ pub(crate) mod fake {
     pub fn cli() -> super::CliInfo {
         super::CliInfo {
             path: "/home/me/.local/share/thurbox/bin/thurbox-cli".into(),
-            version: crate::agent::version_check::current_version().into(),
+            version: crate::update::version_check::current_version().into(),
             tmux_socket: Some("thurbox".into()),
             data_dir: Some("/home/me/.local/share/thurbox".into()),
             tmux_tmpdir: Some("/home/me/.local/share/thurbox/tmux".into()),
@@ -2129,7 +2129,7 @@ mod tests {
 
     #[test]
     fn compatibility_needs_the_same_major_and_a_schema_no_older() {
-        let ours = crate::agent::version_check::current_version();
+        let ours = crate::update::version_check::current_version();
         let schema = crate::storage::SCHEMA_VERSION;
         assert!(compatible(&cli(ours, Some(schema))).is_ok());
         // A host that upgraded first (#1429).
@@ -2412,7 +2412,7 @@ mod tests {
         format!(
             "#!/bin/sh\necho '{{\"version\":\"{}\",\"tmux_socket\":\"thurbox\",\
              \"schema_version\":{}}}'\n",
-            crate::agent::version_check::current_version(),
+            crate::update::version_check::current_version(),
             crate::storage::SCHEMA_VERSION
         )
     }
@@ -2542,7 +2542,7 @@ mod tests {
             Usable::Yes(found) => {
                 assert_eq!(
                     found.version,
-                    crate::agent::version_check::current_version()
+                    crate::update::version_check::current_version()
                 )
             }
             Usable::No(reason) => panic!("locked out by its own broken CLI: {reason}"),

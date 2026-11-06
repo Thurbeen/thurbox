@@ -870,7 +870,7 @@ fn version_flag_reports_the_injected_version_not_the_dev_marker() {
     let rendered = Cli::try_parse_from(["thurbox-cli", "--version"])
         .unwrap_err()
         .to_string();
-    let expected = crate::agent::version_check::current_version();
+    let expected = crate::update::version_check::current_version();
     assert_eq!(
         rendered.trim(),
         format!("thurbox-cli {expected}"),
@@ -889,7 +889,7 @@ fn version_flag_reports_the_injected_version_not_the_dev_marker() {
         &src[start..src[start..].find(")]").expect("attribute end") + start]
     };
     assert!(
-        command_attr.contains("version = crate::agent::version_check::current_version()"),
+        command_attr.contains("version = crate::update::version_check::current_version()"),
         "the Cli #[command(..)] must name the injected version explicitly; \
          a bare `version` falls back to CARGO_PKG_VERSION. Got: {command_attr:?}"
     );

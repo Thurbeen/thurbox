@@ -25,22 +25,25 @@ asserts for it (`[path-only: …]` marks the crossings described below):
 ```text
 session              (no crate-internal references — the dependency sink)
 agent                → agent::{generic, provider}       (re-exports only)
-agent::agent_config  → session, paths, shell
-agent::extension_config → session, paths, agent::agent_config
+agent::agent_config  → session, shell, config::file
+agent::extension_config → session, paths, agent::agent_config, config::file
 agent::generic       → session, agent::provider
-agent::hooks_config  → session, paths, agent::agent_config
-agent::host_config   → session, paths, shell, agent::agent_config
 agent::host_path     → session, shell
 agent::input         (no crate-internal references)
 agent::json_merge    (no crate-internal references)
 agent::preflight     → session, paths, agent::agent_config
 agent::provider      → session
-agent::self_update   → session, paths, shell,
-                       agent::{extension_config, version_check}
-agent::settings_config → session, paths, agent::agent_config
-agent::themes_config → session, paths, agent::agent_config
 agent::toml_merge    (no crate-internal references)
-agent::version_check → session, paths, agent::extension_config
+config               (declares the modules below — no references)
+config::file         → paths                (the one loader: seed, parse, save)
+config::hooks        → session, config::file
+config::hosts        → session, paths, shell, config::file
+config::settings     → session, config::file
+config::themes       → session, config::file
+update               (declares the modules below — no references)
+update::self_update  → session, paths, shell, agent::extension_config,
+                       update::version_check
+update::version_check → session, paths, agent::extension_config
 backend              → backend::{contract, pane, registry}   (re-exports only)
 backend::contract    (no crate-internal references)
 backend::identity    → backend::contract
@@ -49,7 +52,7 @@ backend::pane        → session, backend::{contract, identity, osc8, output_wak
 backend::osc8        → session
 backend::output_wake (no crate-internal references)
 backend::registry    → session, backend::contract
-backend::wiring      → session, shell, agent::host_config,
+backend::wiring      → session, shell, config::hosts,
                        backend::{contract, registry, tmux, psmux, rmux}
 backend::tmux_compat (declares the modules below — no references)
   ::control_mode     → shell, backend::contract,
@@ -70,36 +73,37 @@ sync                 → session
 telemetry            → session, storage           (ADR-37/38 OTLP export)
 session_ops          → session, storage, git, sync, paths, workspace, shell
                        [path-only: agent::{agent_config, extension_config,
-                        generic, hooks_config, host_config, host_path,
-                        json_merge, preflight, provider, self_update,
-                        settings_config, toml_merge, version_check},
-                        backend::{contract, identity, instance, registry}]
+                        generic, host_path, json_merge, preflight, provider,
+                        toml_merge}, backend::{contract, identity, instance,
+                        registry}, config::{hooks, hosts, settings},
+                        update::{self_update, version_check}]
 kernel               → session, storage, sync, paths, session_ops, git,
                        notifications, shell
                        [path-only: agent::{agent_config, extension_config,
-                        host_config, host_path, preflight, self_update,
-                        settings_config, themes_config, version_check},
-                        backend::{contract, identity, pane, registry}]
+                        host_path, preflight}, backend::{contract, identity,
+                        pane, registry}, config::{hosts, settings, themes},
+                        update::{self_update, version_check}]
 cli                  → session, storage, session_ops, sync, paths,
                        notifications, ui_control, telemetry
                        [path-only: agent::{agent_config, extension_config,
-                        hooks_config, host_config, preflight, self_update,
-                        settings_config, themes_config, version_check},
-                        backend::{contract, instance, registry}, kernel]
+                        preflight}, backend::{contract, instance, registry},
+                        config::{file, hooks, hosts, settings, themes},
+                        update::{self_update, version_check}, kernel]
 notifications        → session, paths, shell    [path-only: storage]
 clipboard            → session, paths
 workspace            → paths
 paths                (leaf utility — no crate-internal references)
 ui_control           → paths
 shell                → session                 (a host entry → its launcher)
-coordinator          → agent::{input, settings_config},
-                       backend::{instance, output_wake, wiring}, clipboard,
-                       kernel, paths, session, session_ops, shell, storage,
-                       telemetry, ui_control
+coordinator          → agent::input, backend::{instance, output_wake, wiring},
+                       clipboard, config::settings, kernel, paths, session,
+                       session_ops, shell, storage, telemetry, ui_control
 ```
 
-`agent` holds coding-agent definitions and their config and never touches
-`git`, `storage`, `kernel` or `backend`; `session` holds plain data and
+`agent` holds coding-agent definitions and never touches `git`, `storage`,
+`kernel` or `backend`; `config` holds thurbox's own config files, each read
+and written through the one loader `config::file`, and `update` the
+self-update; `session` holds plain data and
 references nothing, which is what lets every other module depend on it.
 `backend` is the session-backend boundary: consumers name its contract
 (`backend::contract`, `backend::identity`, `backend::pane`,
@@ -109,8 +113,8 @@ RMUX adapters are peers: none reaches another, and `backend::tmux_compat`, the
 protocol they speak, reaches none (ADR-31). `session_ops`, `cli` and
 `kernel` reach no adapter, protocol helper or factory at all — not by
 reference, alias or re-export, and not through anything they are granted —
-status and the heartbeat included (ADR-32). Every file of `agent` is a node
-of its own, so a grant names the config it reads.
+status and the heartbeat included (ADR-32). Every file of `agent`, `config`
+and `update` is a node of its own, so a grant names the file it reads.
 
 Some crossings are permitted **by fully-qualified path only**, never by
 `use` — not even a function-local `use` or an alias. The restriction is

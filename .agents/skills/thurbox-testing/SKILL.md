@@ -150,7 +150,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   harness cannot signal a reused pid. Pins recovery on the next update while
   preserving an aged live owner's staging; no network or installed binary is
   touched. A subprocess probe also pins that the system temp fallback never
-  reserves or sweeps unrelated paths. `agent::self_update::tests` covers the same
+  reserves or sweeps unrelated paths. `update::self_update::tests` covers the same
   staging lifecycle in child processes on Unix and native Windows, including normal
   exit, recent work, legacy names, malformed ownership, and symlinks / Windows junctions.
 - **`tests/reap_e2e.rs`** — window-teardown ownership against a *real* tmux on a

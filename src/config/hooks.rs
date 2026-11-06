@@ -164,7 +164,7 @@ config_version = 1
 /// Path to the lifecycle hooks file: `~/.config/thurbox/hooks.toml` (sibling
 /// of `config.toml`; `~/.config/thurbox-dev/hooks.toml` on a dev build).
 pub fn hooks_config_path() -> Option<PathBuf> {
-    crate::paths::config_file().map(|p| p.with_file_name("hooks.toml"))
+    super::file::path("hooks.toml")
 }
 
 /// Load the hooks file, seeding it commented-out when absent. Any read/parse
@@ -182,53 +182,7 @@ pub fn load_or_seed() -> HooksFile {
 /// [`load_or_seed`], also returning user-facing warnings for anything that
 /// silently degraded (parse error → no hooks, seed failure, unknown keys).
 pub fn load_or_seed_with_warnings() -> (HooksFile, Vec<String>) {
-    let Some(path) = hooks_config_path() else {
-        return (
-            HooksFile::default(),
-            vec!["Could not resolve hooks.toml path; no lifecycle hooks".into()],
-        );
-    };
-
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return (
-                    HooksFile::default(),
-                    vec![format!("Failed to create config dir for hooks.toml: {e}")],
-                );
-            }
-        }
-        if let Err(e) = crate::paths::write_atomically(&path, SEED_HOOKS_TOML) {
-            return (
-                HooksFile::default(),
-                vec![format!("Failed to seed hooks.toml: {e}")],
-            );
-        }
-        tracing::info!(path = %path.display(), "Seeded hooks.toml (no active hooks)");
-        return (HooksFile::default(), Vec::new());
-    }
-
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => {
-            match super::agent_config::parse_toml_reporting_unknown::<HooksFile>(
-                &contents,
-                "hooks.toml",
-            ) {
-                Ok((file, warnings)) => (file, warnings),
-                Err(e) => (
-                    HooksFile::default(),
-                    vec![format!(
-                        "hooks.toml: {}; no lifecycle hooks",
-                        super::agent_config::compact_toml_error(&e.to_string())
-                    )],
-                ),
-            }
-        }
-        Err(e) => (
-            HooksFile::default(),
-            vec![format!("Failed to read hooks.toml: {e}")],
-        ),
-    }
+    super::file::load_or_seed("hooks.toml", SEED_HOOKS_TOML, "no lifecycle hooks")
 }
 
 /// The hooks declared for `event`, in file order, read from disk now.
@@ -290,7 +244,7 @@ mod tests {
     #[test]
     fn load_or_seed_writes_file_when_absent_and_stays_empty() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hooks_config_path().unwrap();
         assert!(!path.exists());
@@ -305,7 +259,7 @@ mod tests {
     #[test]
     fn load_or_seed_falls_back_on_malformed_file_naming_it() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hooks_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -323,7 +277,7 @@ mod tests {
     #[test]
     fn an_unknown_event_means_no_hooks_and_a_warning() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hooks_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -341,7 +295,7 @@ mod tests {
     #[test]
     fn hooks_for_returns_the_events_entries_in_file_order() {
         let temp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(temp.path());
+        let _guard = crate::config::file::isolate(temp.path());
 
         let path = hooks_config_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

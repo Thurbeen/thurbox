@@ -796,8 +796,8 @@ runs on — see "The host's platform is its own dimension" below.
 Hosts are declared as data in `~/.config/thurbox/hosts.toml`
 (`session::HostDef { kind: HostKind {Ssh, Wsl}, … }`/`HostRegistry`),
 and WSL distros are additionally **auto-discovered**
-(`agent::host_config::discover_wsl_hosts` via `wsl.exe -l -q`). The
-combined set is loaded by `agent::host_config::load_all`, and each host
+(`config::hosts::discover_wsl_hosts` via `wsl.exe -l -q`). The
+combined set is loaded by `config::hosts::load_all`, and each host
 gets one backend per adapter, named by its route (`ssh:<host>:<mux>` /
 `wsl:<distro>:<mux>`, `backend::wiring`).
 
@@ -877,7 +877,7 @@ WSL needs no credentials at all.
   database first and a headless install need never launch the
   interface). `storage` may reference `session` but not `agent`, so the
   migration cannot decide what to rewrite: that is
-  `agent::host_config::wsl_repair_plan`, which settles the registry and
+  `config::hosts::wsl_repair_plan`, which settles the registry and
   augments it with discovery in the same order the loader does, so what
   it rewrites and what a session resolves against cannot disagree about
   who owns a spelling. Candidates = `wsl:<us>` plus every dropped

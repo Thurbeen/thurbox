@@ -188,7 +188,7 @@ impl std::fmt::Display for CommandError {
 #[derive(Parser, Debug)]
 #[command(
     name = "thurbox-cli",
-    version = crate::agent::version_check::current_version(),
+    version = crate::update::version_check::current_version(),
     about,
     after_help = EXAMPLES
 )]

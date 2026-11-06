@@ -32,7 +32,7 @@ pub fn run(args: VersionArgs) -> CommandOutput {
 /// disabled path is testable without depending on the process-global default
 /// (the flag is on by default for 1.0).
 fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
-    let current = crate::agent::version_check::current_version();
+    let current = crate::update::version_check::current_version();
 
     if !args.check {
         // The extra facts are what a *peer* thurbox reads when it probes this
@@ -80,13 +80,13 @@ fn run_with(args: VersionArgs, enabled: bool) -> CommandOutput {
         );
     }
 
-    match crate::agent::version_check::refresh_cache() {
+    match crate::update::version_check::refresh_cache() {
         Ok((_, Some(status))) => {
             // A new major is reported but never installed for you, so the two
             // cases need different advice — pointing a 1.x user at the plain
             // installer would hand them the 2.x line it is warning them about.
             let latest = &status.latest;
-            let is_major = crate::agent::version_check::crosses_major(current, latest);
+            let is_major = crate::update::version_check::crosses_major(current, latest);
             let (label, upgrade, summary) = if is_major {
                 (
                     "available (new major)",
