@@ -38,7 +38,7 @@ thurbox (interface) ──process: fleet watch / apply / send / delete / attach�
 | Component | Owns | Never owns |
 | --- | --- | --- |
 | Fleet (`crates/fleet-*`) | Tasks (one per session), the store, every decision, harness profiles (launch, resume, trust), agent hooks through `fleet signal`, every decision about workspaces (what, when, whether to clean), the inbox, receipts, the runtime protocol and its conformance suite | Any runtime's code; any Rust dependency on a `runtime-*` crate or `thurbox` |
-| A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, making their workspaces there, its own place config (hosts, images, VM definitions), sources and credentials, bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
+| A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, running workspace recipes there, its own place config (hosts, images, VM definitions), sources and credentials, bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
 | thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, stream panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any runtime code, any Rust dependency on `fleet-*` or `runtime-*` |
 
 Where a fact belongs:
@@ -56,10 +56,10 @@ on every build, the way it checks Fleet's crates today:
 | Crate | May depend on | Must not depend on |
 | --- | --- | --- |
 | `fleet-*` | `fleet-*`, `term-stream`, crates.io | `runtime-*`, `thurbox` |
-| each `runtime-*` | `term-stream`, `workspace-git`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
+| each `runtime-*` | `term-stream`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
 | `term-stream` | crates.io | everything else |
 | `term-holder` | `term-stream`, crates.io | everything else |
-| `workspace-git` | crates.io | everything else |
+| `workspace-git` (the default recipe) | crates.io | everything else |
 | `thurbox` | `term-stream`, crates.io | `fleet-*`, `runtime-*`, `term-holder` |
 
 Components talk only through processes; `term-stream` is a wire format, not
@@ -93,14 +93,14 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | Verb | Required | Answer |
 | --- | --- | --- |
 | `manifest` | yes | protocol version and the verbs supported |
-| `start` | yes | adopts the one live process holding the key, else starts `argv` with `env` in the workspace `ref` this runtime made, or in a `{dir}` |
+| `start` | yes | adopts the one live process holding the key, else starts `argv` with `env` in a workspace a recipe made through this runtime, or in a `{dir}` |
 | `inspect` | yes | `None`, `Running{id}`, `Exited{id, code}` |
 | `stop` | yes | a process already gone counts as stopped |
 | `list` | no | every process key the runtime holds, for the collector |
 | `input` | no | types text, optionally submits |
 | `capture` | no | screen text, cursor, foreground process |
 | `exec` | no | a bounded command, `in: host` or `in: workspace` (inside the place), deadline and output cap |
-| `workspace.*` | no | `materialize`, `find`, `status`, `clean` (see Workspaces) |
+| `workspace.run` | no | runs a workspace recipe's verb where the workspace's files belong (see Workspaces) |
 | `attach` | no | `{stream: {argv}}` or `{tty: {argv}}`: how to open a terminal stream (contract 3) |
 
 Every verb is idempotent by key. The runtime knows no harness, Task or
@@ -268,73 +268,117 @@ draws the snapshot, then passes output through and input back.
 
 ## Workspaces
 
-A workspace is the files one session works in. How they come to exist depends
-on where the session runs: a worktree on the same disk for a tmux session, a
-bind mount or a volume for a container, a clone inside the guest, a shared
-folder or a disk image for a VM. No single mechanism in Fleet fits all of them,
-so the split is the one the rest of this design uses: **Fleet decides, the
-runtime makes.**
+A workspace is the files one session works in, and what is done to them before
+the agent starts: worktrees or clones, dependencies installed, a `.env`
+copied, a database seeded, a dev container built. That preparation is 100%
+the user's to define. It also depends on where the session runs: the same
+disk for a tmux session, a bind mount or a volume for a container, the guest's
+disk or a shared folder for a VM. So three parts share the work:
 
-| Fleet decides | The runtime makes |
-| --- | --- |
-| which repositories, `ref` and `branch`, the workspace key | where the files live and how they get there |
-| when: materialize once before the first start, clean once after release | the paths the process sees them at |
-| when to clean, and the retention of preserved work | the facts (whole, dirty, what is checked out) and preserving work before removing |
-| `status.workspace`, and every retry or wait | the sources and credentials of its place |
+| Fleet decides | A recipe prepares | The runtime places |
+| --- | --- | --- |
+| which recipe, with which repositories and parameters, under which key | what the workspace contains and how it is made, kept and removed | where the recipe runs and where the files live |
+| when: materialize once before the first start, clean once after release | the facts: whole, dirty, what is checked out | the paths the process sees them at |
+| retention of preserved work, `status.workspace`, every retry | preserving work before removing it | the durable place preserved work lands |
 
-### The workspace verbs
+### Recipes
 
-An optional group of the runtime protocol, declared in `manifest`, with the
-same rules as the rest: Known or Unknown, idempotent by key, Unknown never
+A recipe is a program, like a runtime or a plugin: `<recipe> <verb>`, a JSON
+request on stdin, Known or Unknown on stdout, idempotent by key, Unknown never
 concludes.
 
 | Verb | Answer |
 | --- | --- |
-| `workspace.materialize` | `{key, repositories: [{name, url \| path, ref, branch?}]}`, whole or nothing: `Materialized{ref, adopted}`, `Unmapped{repository}`, `Failed{why}` |
-| `workspace.find` | the whole workspace under `key`, or `None`; a partial one is `None` and the next materialize rolls it back |
-| `workspace.status` | per repository: branch, head, dirty, commits not on any remote |
-| `workspace.clean` | `{ref, mode: preserve \| discard}`: `Cleaned{preserved: [{name, ref, commit}]}` |
-| `workspace.list` | every workspace key the runtime holds, for the collector |
+| `manifest` | protocol version, verbs, and a JSON Schema for its `params` |
+| `materialize` | `{key, repositories: [{name, url \| path, ref, branch?}], params}`, whole or nothing: `Materialized{workspace, adopted}`, `Unmapped{repository}`, `Failed{why}` |
+| `find` | the whole workspace under `key`, or `None`; a partial one is `None` and the next `materialize` rolls it back |
+| `status` | per repository: branch, head, dirty, commits not on any remote |
+| `clean` | `{workspace, mode: preserve \| discard}`: `Cleaned{preserved: [{name, ref, commit}]}` |
+| `list` | every workspace key it holds under its root, for the collector |
 
-A workspace `ref` carries an opaque `id` for the runtime, the `dir` and
-`extra_dirs` **as the process sees them**, and the `trustRoot`. Fleet passes
-the `ref` to `start` unchanged, and uses the paths only to build the
-harness's argv (`additional_dir_args`). The runtime that made a workspace is
-the one that starts processes in it.
+A `workspace` answer carries an opaque `id`, the `dir` and `extra_dirs` **as
+the process sees them**, and the `trustRoot`. Fleet passes it to `start`
+unchanged and uses the paths only to build the harness's argv.
 
-Two declarations in `manifest` tell Fleet what it can rely on:
+Recipes are configured by name and chosen per Task:
+
+```toml
+[recipes.node]
+program = ["workspace-git"]            # the default recipe, reused
+setup = [                              # run in the workspace after it is whole
+  "cp ~/.config/app/.env .env",
+  "npm ci",
+]
+timeoutMs = 600000
+
+[recipes.devcontainer]
+program = ["~/.fleet/recipes/devcontainer.sh"]   # a recipe of one's own
+```
+
+```json
+"workspace": { "recipe": "node", "repositories": [{"name": "app", "url": "…"}],
+               "params": { "node": "22" } }
+```
+
+Three levels, each optional:
+
+1. **Configure** `workspace-git`, the default recipe: root, branch prefix,
+   sources, retention.
+2. **Add steps** to any recipe: `setup` runs in the workspace after it is
+   whole and before `Materialized` is answered, so a failing step makes the
+   whole `materialize` fail and roll back; `teardown` runs before `clean`,
+   for what must leave the workspace first (artifacts, logs, a compose stack).
+3. **Replace the recipe**: any program with the verbs above. Its `params` are
+   validated against its own schema at `fleet apply`, as a plugin's kinds
+   are.
+
+A Task with no `recipe` uses the host's default recipe, `workspace-git`
+unless configured otherwise. A `{dir}` Task uses none.
+
+Whatever a recipe does, Fleet keeps its guarantees, because they are the
+recipe contract, checked by `fleet recipe check -- <program>`: two
+materializes with one key leave one workspace; a partial workspace is not
+found; `clean` in `preserve` mode leaves every change reachable from a ref in
+the durable place; `list` names everything it made. That is what lets cleanup
+stay automatic for a recipe Fleet has never seen.
+
+### Where a recipe runs
+
+The runtime decides, with one verb: `workspace.run {recipe, verb, request}`
+runs the recipe at the place its files belong to, with
+`FLEET_WORKSPACE_ROOT` and `FLEET_DURABLE` set, and returns its answer. The
+runtime also makes the recipe's program and `setup` steps available there.
+`start` then makes the workspace's paths visible to the process.
+
+| Runtime | Where `workspace.run` runs the recipe | How the process sees the files |
+| --- | --- | --- |
+| `runtime-mux` | on the host (this machine, ssh, WSL) | same filesystem |
+| `runtime-container`, `bind` | on the docker host | bind mounts at the same paths |
+| `runtime-container`, `volume` | in a one-shot helper container on the key's volume | the volume at `/workspace` |
+| `runtime-vm` | inside the guest, or on the host for a shared folder | the guest's disk, or virtiofs |
+| `runtime-process` | this machine | same filesystem |
+
+So a recipe is written once and runs on every runtime that can reach a shell
+and its tools: the runtime places it, the recipe prepares. A runtime whose
+mechanism has nothing to do with files on a shell (a disk image, a snapshot, a
+remote dev environment) ships its own recipe and is configured to use it.
+
+The runtime's `manifest` declares:
 
 - `workspace.survivesStop`: the files outlive the process. When false, Fleet
   never pauses an idle session of that runtime, because pause is stop.
-- `workspace.durableSource`: where preserved work lands (the host's mirror or
-  checkout, or a remote). A runtime whose files die with the place (a VM disk,
-  a volume) must push there before it removes anything.
+- `workspace.durable`: the place preserved work lands, passed to recipes as
+  `FLEET_DURABLE` (the host's mirror or checkout, or a remote). A runtime
+  whose files die with the place (a VM disk, a volume) names one outside it.
 - `workspace.sharesHost`: the process sees the host's filesystem. Only then
-  is a repository named by `path` accepted, and only then may the interface
-  read the files directly.
+  is a repository named by `path` accepted.
 
-A runtime without the group runs `{dir}` Tasks only; a `{repositories}` Task
-on it waits with `WorkspaceUnsupported`.
+A runtime without `workspace.run` runs `{dir}` Tasks only; a `{repositories}`
+Task on it waits with `WorkspaceUnsupported`.
 
-### How each runtime makes one
+### The default recipe
 
-| Runtime | Where the files are | How |
-| --- | --- | --- |
-| `runtime-mux` | the host (this machine, ssh, WSL) | git worktrees, run on the host |
-| `runtime-container`, `bind` | the docker host | git worktrees on the host, bind-mounted at the same paths |
-| `runtime-container`, `volume` | a volume per key | a clone into the volume by a one-shot helper container, mounted at `/workspace` |
-| `runtime-vm` | the guest's disk | a clone inside the guest, from a mirror the host serves; or a shared folder from the host |
-| `runtime-process` | this machine | git worktrees |
-
-The common case, git worktrees on a filesystem the runtime can run commands
-on, is `workspace-git`: a small program with the four verbs, which a runtime
-runs where its files are: on the host, through `docker run` against a volume,
-inside a guest. `runtime-mux` and `runtime-process` use it as is;
-`runtime-container` and `runtime-vm` use it inside their own placement. A
-runtime with another mechanism (a disk image, a snapshot, a remote dev
-environment) implements the verbs itself.
-
-`workspace-git`'s layout:
+`workspace-git` makes git worktrees. Its layout:
 
 ```text
 <root>/<key>/<name>/                  one real worktree per repository
@@ -389,7 +433,8 @@ materialize ──▶ start(ref) ──▶ (stop / start … pause, resume, revi
 A deletion releases the session and tries `clean` once. Whatever it could not
 finish, an unreachable host, an Unknown answer, a crash between two effects,
 is not a reason to keep the Task: its finalizer goes, and the collector takes
-over. On each sweep, per runtime that implements `list`:
+over. On each sweep, per runtime that implements `list` and per recipe it
+runs:
 
 - every workspace key with no live Task in the store is cleaned in `preserve`
   mode;
