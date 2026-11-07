@@ -85,7 +85,7 @@ opentelemetry-otlp = { version = "0.33.1", default-features = false, features = 
 opentelemetry-appender-tracing = { version = "0.33.1", default-features = false }
 
 # System metrics
-sysinfo = "0.39"
+sysinfo = "0.40"
 
 # Error handling
 anyhow = "1.0"
