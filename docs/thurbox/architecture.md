@@ -1883,7 +1883,7 @@ at TUI startup. An extension's own installer delegates its bootstrap to
 > startup and terminal-side helpers), and there is still exactly one model and
 > one loop. Unlike `app`, the coordinator is **not** `EXEMPT`: it has its own
 > entry in `tests/architecture_rules.rs` listing the layers it wires
-> (`docs/thurbox/constitution.md` §2). The rejected alternatives below still stand.
+> (`docs/constitution.md` T1). The rejected alternatives below still stand.
 
 **Choice**: Keep the single `App` model (ADR-1, TEA) but split its
 ~11.7k-line `app/mod.rs` into per-domain sub-files under `src/app/`,

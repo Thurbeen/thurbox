@@ -14,6 +14,9 @@ it is accepted and not yet implemented.
 | Fleet, the engine | [`fleet/`](fleet/README.md) | its index: architecture, contracts, controllers, resources, configuration |
 | runtimes | [`runtime/`](runtime/README.md) | the runtime protocol and the terminal stream |
 
+One [constitution](constitution.md) holds for all three: shared rules first,
+then each component's own.
+
 ## Decision
 
 1. **This repository becomes the one repository** for thurbox, Fleet and the
@@ -162,11 +165,12 @@ Each step ships alone and starts with its end-to-end test.
 ```text
 docs/
 ├── README.md                  the system: this page
+├── constitution.md            the rules for every component, and each one's own
 ├── components.svg · migration.svg
 ├── thurbox/                   the interface
 │   ├── README.md              its index
 │   ├── architecture.md        decisions, ADR-1 … ADR-41
-│   ├── constitution.md · features.md · performance.md · kernel.md · plugins.md
+│   ├── features.md · performance.md · kernel.md · plugins.md
 │   ├── agents.md · config.md · orchestration.md · releasing.md · review.md
 │   ├── development.md · tutorial.md
 │   └── benchmark-multiplexers.md + benchmark-multiplexers/

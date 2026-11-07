@@ -245,7 +245,7 @@ stays lean.
 If a change invalidates or extends a documented decision, update the relevant
 doc in the **same PR**. Rationale lives in:
 
-- [`docs/thurbox/constitution.md`](docs/thurbox/constitution.md) — non-negotiable principles
+- [`docs/constitution.md`](docs/constitution.md) — non-negotiable principles
 - [`docs/thurbox/architecture.md`](docs/thurbox/architecture.md) — architectural decisions
 - [`docs/thurbox/features.md`](docs/thurbox/features.md) — feature-level design choices
 - [`docs/thurbox/config.md`](docs/thurbox/config.md) — thurbox's own config files, env vars and
@@ -263,7 +263,7 @@ coordinator`) and
 enforced by `tests/architecture_rules.rs`: a new module fails that test until
 its dependencies are declared in the allowlist. The graph is documented in the
 Module Dependency Rules section of [`AGENTS.md`](AGENTS.md) and, with the full
-per-module allowlist, in [`docs/thurbox/constitution.md`](docs/thurbox/constitution.md).
+per-module allowlist, in [`docs/constitution.md`](docs/constitution.md).
 
 ## Pull requests
 

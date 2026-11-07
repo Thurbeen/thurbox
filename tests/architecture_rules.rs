@@ -21,7 +21,7 @@
 //! ways, so a new crossing fails and so does a stale entry.
 //!
 //! The layering mirrors AGENTS.md ("Module Dependency Rules") and
-//! docs/thurbox/constitution.md §2. If a rule change is intentional, update those
+//! docs/constitution.md T1. If a rule change is intentional, update those
 //! docs in the same PR.
 
 #[path = "architecture/resolver.rs"]
@@ -746,7 +746,7 @@ fn every_module_rule_holds() {
         "\narchitecture violation(s), as `from → resolved item @ file:line`:\n{report}\
          Fix the reference, or — if the architecture is changing on purpose — update \
          MODULE_RULES in tests/architecture_rules.rs plus AGENTS.md and \
-         docs/thurbox/constitution.md. A crossing scheduled for removal belongs in TRANSITIONAL, \
+         docs/constitution.md. A crossing scheduled for removal belongs in TRANSITIONAL, \
          naming the task that removes it.\n"
     );
 }
