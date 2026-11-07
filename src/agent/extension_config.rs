@@ -89,7 +89,7 @@ pub struct OfficialExtension {
 /// **empty**: what `extensions/` still holds is the three built-ins (`hooks`,
 /// `ui-skill`, `sessions-skill`), which ship embedded in the binary and auto-activate, so no bare
 /// name resolves to anything. An extension living in its own repository — the
-/// `fleet` control plane is the worked example, see `docs/ORCHESTRATION.md` —
+/// `fleet` control plane is the worked example, see `docs/thurbox/orchestration.md` —
 /// installs by URL, path or `git+<repo>` instead, which needs no entry here.
 ///
 /// The list and the discovery/typo machinery reading it stay because the

@@ -17,7 +17,7 @@
 //! startup: iTerm2 3.5+, kitty, WezTerm and Ghostty report `Cmd`, Terminal.app
 //! does not — and the emulator gets the chord first, so one that swallows its
 //! own unperformed `Cmd+C` keeps it from thurbox whatever is declared here
-//! (`docs/FEATURES.md` → Text Selection and Copy-Paste).
+//! (`docs/thurbox/features.md` → Text Selection and Copy-Paste).
 
 use super::modals::OWNER;
 use super::registry::{binding_from, Binding};

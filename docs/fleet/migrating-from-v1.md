@@ -69,7 +69,7 @@ chooses the branch `<keyPrefix>/<session key>`.
   The first entry is the primary repository. Put more entries for v1's
   `--add-repo`.
 - Map each URL to its local source checkout in
-  [`[runtime.repositories]`](configuration/fleet-toml.md#fields).
+  [`[runtime.repositories]`](configuration.md#fields).
 - Use `{"dir": PATH}` for a directory that exists before the Task. V2 has no
   equivalent of v1's `--add-dir`.
 - `runtime.workspaceCleanup` is the closest equivalent of v1's `ON_LANDED`
@@ -85,7 +85,7 @@ checkout. V2 reads one TOML file. The selection order is `--config PATH`,
 then `FLEET_CONFIG`, then `$XDG_CONFIG_HOME/fleet/config.toml`, falling back
 to `~/.config/fleet/config.toml`. `fleet init` writes that file. V2 refuses
 unknown fields, so you cannot copy v1 keys into it.
-[Native Fleet TOML](configuration/fleet-toml.md) owns every field.
+[Native Fleet TOML](configuration.md#native-fleet-configuration-fleettoml) owns every field.
 
 | v1 file and key | v2 equivalent |
 | --- | --- |
@@ -238,7 +238,7 @@ operator, its steps are:
 4. Edit the generated config: `[runtime.repositories]`, `[forge.hosts]`, and
    `[runtime.modelEnv]` if your Tasks set a model.
 5. Edit the VEGA workspace and its `task.json` before the first `fleet up`.
-   See [Initialization and the VEGA starter](configuration/init.md).
+   See [Initialization and the VEGA starter](configuration.md).
 6. Rehearse your recreated manifests with the fake runtime.
 7. Start `fleet up` in its own terminal. Apply the manifests.
 

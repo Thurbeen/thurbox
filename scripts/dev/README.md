@@ -96,7 +96,7 @@ a release build and timed runs fails on the agent timeout — for a number a
 loaded machine cannot produce honestly anyway. Override with
 `THURBOX_PERF_ALLOW_IN_GATE=1` if you mean it. Its companion is
 `cargo bench --bench frame_cost`, which measures the *pieces* of a frame rather
-than the whole binary; both are explained in `docs/PERFORMANCE.md`.
+than the whole binary; both are explained in `docs/thurbox/performance.md`.
 
 ## Dev utilities (not tests)
 

@@ -125,7 +125,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   `just smoke`. It replaced the bash tmux
   smoke script, which could not see the byte stream and duplicated this harness.
   Keyboard negotiation covers responsive legacy, kitty and silent terminals;
-  `docs/DEVELOPMENT.md` records the reply invariant and execution measurements.
+  `docs/thurbox/development.md` records the reply invariant and execution measurements.
   Two scenarios there cover a **remote session whose link has gone bad**, which
   needs a stand-in that a local tmux cannot supply on its own: `tmux -C
   attach-session` hands its stdin and stdout *file descriptors* to the tmux
@@ -198,7 +198,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   tmux on a throwaway socket (skipped when tmux is absent): starts a server
   whose own `PATH` lacks the agent, then spawns it through `TmuxBackend`'s
   control-mode path with the agent only on thurbox's `PATH`. Pins the fix in
-  `resolve_local_program` (`docs/CONFIG.md` → How `command` is resolved): a
+  `resolve_local_program` (`docs/thurbox/config.md` → How `command` is resolved): a
   local window command used to be left for the multiplexer to resolve, which
   sees the *server's* `PATH` (an attached client's is not copied in), not the
   one thurbox itself was launched with.
@@ -214,7 +214,7 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   window and carry its session stamp.
 - **`tests/path_resolution_absolute.rs`** (unix) — its own test binary because it
   moves the process working directory, which a sibling test in the same binary
-  would see. Pins that `resolve_on_path` (`docs/CONFIG.md` → How `command` is
+  would see. Pins that `resolve_on_path` (`docs/thurbox/config.md` → How `command` is
   resolved) skips an empty `PATH` component rather than joining it as "the
   current directory": that join used to answer with a bare relative name,
   reintroducing the multiplexer-resolves-it dependence the function exists to

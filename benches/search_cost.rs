@@ -4,7 +4,7 @@
 //! unit tests and `tests/search.rs` hold the assertions that are
 //! deterministic. This is the instrument: it fills real vt100 parsers with
 //! agent-shaped output and times what the search does, so the numbers in
-//! `docs/PERFORMANCE.md` can be re-measured rather than trusted.
+//! `docs/thurbox/performance.md` can be re-measured rather than trusted.
 //!
 //! ```sh
 //! cargo bench --bench search_cost                          # 20 sessions × 1000

@@ -81,7 +81,7 @@ becomes the poster, since Doom flashes the whole view red when the player is hit
 
 **The onboarding tutorial's screenshots are a third recorder.**
 `scripts/demo/record-tutorial.sh` writes `media/tutorial/*.png` — one still per
-step of `docs/TUTORIAL.md`, taken by driving the real TUI through the creation flow.
+step of `docs/thurbox/tutorial.md`, taken by driving the real TUI through the creation flow.
 Three things separate it from the tapes. The profile starts with **zero sessions and
 an empty repo memory**, because the tutorial's subject is a first launch. It is not
 VHS: thurbox runs in a detached tmux session, `tmux send-keys` presses the keys, and
@@ -91,7 +91,7 @@ emit. And `HOME` is a short symlink into the sandbox (`/tmp/tutorial-home`) with
 XDG roots under it, because the repo picker and `session list` print absolute paths
 and a `mktemp` name in them is a path no reader recognises as their own. Prose and
 stills are one artifact: **a step that changes needs both re-recorded and rewritten**.
-The walkthrough exists twice — `docs/TUTORIAL.md` for a checkout, and
+The walkthrough exists twice — `docs/thurbox/tutorial.md` for a checkout, and
 `website/docs/tutorial.html` (screenshots copied to `website/assets/tutorial/`,
 page styles in `website/css/tutorial.css`) for the site. They are separate documents
 in different voices, not a generated pair, so **a step edited in one is edited in

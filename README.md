@@ -10,7 +10,7 @@
 [![Discord](https://img.shields.io/discord/1542644702984142928?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/fGumcHaxFY)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Thurbeen_thurbox&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Thurbeen_thurbox)
 
-![Thurbox Demo](./media/thurbox-demo.gif)
+![Thurbox Demo](media/thurbox-demo.gif)
 
 - **Several coding agents at once**, side by side in one terminal — Claude Code, Codex,
   Antigravity, opencode, aider, or any CLI you describe yourself.
@@ -48,7 +48,7 @@ on native Windows), **git**, and at least one coding-agent CLI.
 [RMUX](https://github.com/Helvesec/rmux) **≥ 0.10.0** is an opt-in alternative,
 tested with thurbox on Linux. Install it separately, then select **RMUX**
 after tmux in the new-session picker (**Ctrl+N**); it appears locally when
-`rmux` is on `PATH`. See [multiplexer requirements and setup](docs/CONFIG.md#multiplexer-requirements-and-rmux-setup)
+`rmux` is on `PATH`. See [multiplexer requirements and setup](docs/thurbox/config.md#multiplexer-requirements-and-rmux-setup)
 for verified versions, config defaults, host support, and limits.
 
 **Nix / NixOS:**
@@ -99,7 +99,7 @@ from what is running; `Ctrl+P` is a command palette over the same actions.
 For the same walkthrough with screenshots, see the
 [tutorial](https://thurbox.thurbeen.eu/docs/tutorial.html).
 
-![Session creation](./media/thurbox-session-creation.gif)
+![Session creation](media/thurbox-session-creation.gif)
 
 ## What else it does
 
@@ -156,10 +156,10 @@ Press `F10` and the change is on your screen. If a pane breaks, `Ctrl+,` then
 shipped file, `space` turns yours off.
 
 [The Interface →](https://thurbox.thurbeen.eu/docs/interface.html) ·
-[Writing a pane →](docs/PLUGINS.md) ·
+[Writing a pane →](docs/thurbox/plugins.md) ·
 [Configuration →](https://thurbox.thurbeen.eu/docs/configuration.html)
 
-![Turning a pane off from the Interface tab](./media/thurbox-interface.gif)
+![Turning a pane off from the Interface tab](media/thurbox-interface.gif)
 
 [**Plugins →**](https://thurbox.thurbeen.eu/plugins.html) — official and community
 panes, extensions and other add-ons, with install commands and submission details.
@@ -180,11 +180,11 @@ panes, extensions and other add-ons, with install commands and submission detail
 and an [FAQ](https://thurbox.thurbeen.eu/docs/faq.html).
 
 The rationale behind the decisions is in this repository, under
-[`docs/`](docs/): [CONSTITUTION](docs/CONSTITUTION.md) (non-negotiable
-principles), [ARCHITECTURE](docs/ARCHITECTURE.md), [FEATURES](docs/FEATURES.md),
-[CONFIG](docs/CONFIG.md), [KERNEL](docs/KERNEL.md),
-[PLUGINS](docs/PLUGINS.md), [ORCHESTRATION](docs/ORCHESTRATION.md),
-[DEVELOPMENT](docs/DEVELOPMENT.md) and [RELEASING](docs/RELEASING.md).
+[`docs/`](docs/): [CONSTITUTION](docs/thurbox/constitution.md) (non-negotiable
+principles), [ARCHITECTURE](docs/thurbox/architecture.md), [FEATURES](docs/thurbox/features.md),
+[CONFIG](docs/thurbox/config.md), [KERNEL](docs/thurbox/kernel.md),
+[PLUGINS](docs/thurbox/plugins.md), [ORCHESTRATION](docs/thurbox/orchestration.md),
+[DEVELOPMENT](docs/thurbox/development.md) and [RELEASING](docs/thurbox/releasing.md).
 
 ## Contributing
 

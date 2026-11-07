@@ -76,7 +76,7 @@ below), do the same.
   turn runs, absorbed into `background` once it rests. The end of the last one
   stores `done`; a turn start or `SessionStart` forgets any whose end never
   came. On a remote pane the two edges are the shell's no-op `:` (its status
-  channel holds one word). See `docs/AGENTS.md` → *Background sub-work*.
+  channel holds one word). See `docs/thurbox/agents.md` → *Background sub-work*.
 - **aider** — `--notifications-command` reports the only edge aider exposes:
   blocked (waiting for input).
 - **opencode** — a plugin dropped into `~/.config/opencode/plugin/` (only when

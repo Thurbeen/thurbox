@@ -28,7 +28,7 @@ installs from a URL, a local path, or a repository (`git+https://...`).
   setup. Its assets are `include_str!`d by `session_ops::builtin_hooks`, so
   **the directory is load-bearing: delete a file and the binary stops
   compiling.** Which hook mechanism each agent gets, and the states each can
-  report, is per-agent in `docs/AGENTS.md` → "Status hook mechanisms".
+  report, is per-agent in `docs/thurbox/agents.md` → "Status hook mechanisms".
 - **`extensions/ui-skill/`** *(built-in, on by default)* — it ships no session,
   no automation and no agent. It installs a single **agent skill**,
   `thurbox-ui`, into each coding CLI's *personal* skill directory
@@ -73,7 +73,7 @@ surfacing it as `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, a long-lived lead
 `CONDUCTOR=session`), and deliberately no `[[automations]]` — and it ships its
 manifest as `extension.toml.in` with a `__REPO_PATH__` placeholder that
 `uv run fleet install-extension` renders, because `{home}` resolves to the
-extension home and no token spells "my clone". `docs/ORCHESTRATION.md` → "The
+extension home and no token spells "my clone". `docs/thurbox/orchestration.md` → "The
 reference implementation" owns that story; nothing in thurbox knows fleet
 exists.
 
@@ -143,7 +143,7 @@ reason: what they wire up has to be there before the user knows to ask for it.
 whichever coding CLI the user runs the knowledge of how to edit the interface,
 and `sessions-skill` the knowledge of how to read and message other sessions.
 **Which hook delivery mechanism each built-in *agent* gets (and the exact states
-each can report) is documented per agent in `docs/AGENTS.md` → "Status hook
+each can report) is documented per agent in `docs/thurbox/agents.md` → "Status hook
 mechanisms"** — that is the reference to update when adding an agent.
 Remote sessions are provisioned by
 `session_ops::remote_hooks::provision_agent_hooks_on_host`, rewritten to the
@@ -215,7 +215,7 @@ declares it.
 
 **Installer resolution order, payload flags, versioning/staleness
 (`installed_with`/`is_stale`), and the full self-heal contract are in ADR-21 of
-`docs/ARCHITECTURE.md`.**
+`docs/thurbox/architecture.md`.**
 
 ### User lifecycle hooks stay user-owned
 

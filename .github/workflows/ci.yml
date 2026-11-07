@@ -596,7 +596,7 @@ jobs:
 
   # Informational only — tracks the release binary size so growth is visible in
   # the PR. Deliberately NOT in `all-checks.needs`, so it never blocks a merge.
-  # See docs/PERFORMANCE.md (memory / binary size).
+  # See docs/thurbox/performance.md (memory / binary size).
   binary-size:
     name: Binary Size
     needs: changes

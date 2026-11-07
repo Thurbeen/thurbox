@@ -49,9 +49,9 @@ send/reply/inbox/prune — the inter-session mailbox queue; see below), `editor`
 (get/set the Ctrl+O editor command; `editor mode <auto|terminal|gui>` chooses
 how it launches — terminal editors get a real TTY via a tmux popup or TUI
 suspend, GUI editors spawn detached; see the Editor Integration section of
-`docs/FEATURES.md`), `config`
+`docs/thurbox/features.md`), `config`
 (validate/show/accept-interface — strict-parses every config file / prints the
-effective resolved config / records the interface change as seen; see `docs/CONFIG.md`), `extension`
+effective resolved config / records the interface change as seen; see `docs/thurbox/config.md`), `extension`
 (alias `ext`: install/uninstall/reinstall/list/available/update/activate/
 deactivate/status — manage opt-in extensions; see below), `version`
 (prints the running version; `--check` queries GitHub's latest release —
@@ -66,11 +66,11 @@ startup when the flag is on), `notify`
 and last error; `--test` fires a sample; `send --title --body [--session]
 [--key --min-interval]` delivers one for a script, hook or Exec automation —
 honours both off switches, never touches session state, dedupes a key across
-processes through a lease in `event_cursors`; see `docs/CONFIG.md` →
+processes through a lease in `event_cursors`; see `docs/thurbox/config.md` →
 Scripted notifications), `perf`
 (print the perf snapshot a running TUI publishes while `THURBOX_PERF_LOG`
 or its perf HUD is active; `--plugins` for one row per pane, sorted by cost,
-with hints — see `docs/PERFORMANCE.md`), `plugin`
+with hints — see `docs/thurbox/performance.md`), `plugin`
 (interface plugins without a TTY: `dir` reports the directory in force and
 which of the two rules chose it, `new <name>` writes a starter that already
 loads, `check` loads the interface the way `thurbox` does and exits non-zero on
@@ -79,7 +79,7 @@ printing the `layout.lua` line to add — `list` is the same inventory the setti
 modal's Interface tab shows, and
 `events` lists every event a plugin may subscribe to with its payload, and
 `install|sync|update|remove|available` manage panes from a declarative spec
-— see `docs/PLUGINS.md`), `doctor`
+— see `docs/thurbox/plugins.md`), `doctor`
 (whether **this machine** has what a session needs: the multiplexer and its
 version, every registered agent's `command`, the launcher for each configured
 host, and the full search path. The companion to `session doctor`, which asks
@@ -122,7 +122,7 @@ Three rules it is written under, each of which a change here must keep:
 host's binaries live on the host, and a relative `command` (e.g. `./bin/agent`)
 is resolved from the session's own directory rather than thurbox's — in both
 cases nothing was looked at, and reporting either as `missing` is the
-conflation the module exists to end (see `docs/CONFIG.md` for the full rule).
+conflation the module exists to end (see `docs/thurbox/config.md` for the full rule).
 
 A failure to *launch* the multiplexer goes through
 `preflight::launch_failure`, which turns only a `NotFound` into that sentence
@@ -229,7 +229,7 @@ switch with `--agent-arg=--flag`; values stay literal, including `{home}`.
 It requires an explicit `--agent`, conflicts with `--command`, and refuses a
 shared host whose CLI does not advertise the `agent_args` capability. `session
 get`/`show` and `list` JSON report the arguments. `agents.toml` variants use
-`extends` and `append_args`; see `docs/CONFIG.md`.
+`extends` and `append_args`; see `docs/thurbox/config.md`.
 
 `--agent` names an `agents.toml` entry (an unknown name is refused, never
 replaced by the default); `--command` **is** the definition:
@@ -351,7 +351,7 @@ row), refused with exit 5 while the session reports `working`/`blocked`/
 `background` unless `--wait`. `--json` `outcome` is `cleared`, `waited` or
 `refused`. One owner, `session_ops::restart::restart_fresh`, behind the CLI and
 the interface's `restart` command (`fresh = true`, never waits);
-docs/ORCHESTRATION.md → *Clearing a worker's conversation*.
+docs/thurbox/orchestration.md → *Clearing a worker's conversation*.
 
 ### Session keys — the address a driver finds its sessions by
 
@@ -422,7 +422,7 @@ Each line carries:
 | `event` | `present` (baseline) / `created` / `changed` / `gone` |
 | `reason` | `spawned`, `registered`, `restored` · `state`, `stopped`, `started`, `updated`, `lost`, `exited`, `relaunched` · `soft_deleted`, `force_deleted`, `forgotten` · `host_down`, `host_up` (the host's recorded verdict flipped; no `from_state`/`to_state`) |
 | `from_state`, `to_state` | the transition itself, for a `changed`/`state` event |
-| `exit_code`, `detail` | an `exited` event's status and the pane's last lines (psmux: the agent window reports them on the way out — `docs/ARCHITECTURE.md` → "A psmux agent reports its own exit") |
+| `exit_code`, `detail` | an `exited` event's status and the pane's last lines (psmux: the agent window reports them on the way out — `docs/thurbox/architecture.md` → "A psmux agent reports its own exit") |
 | `state`, `hook_state`, `state_source`, `hook_coverage`, `hook_blocked_is_heuristic`, `hook_state_contradicted`, `detected_agent` | the same gating fields `session get` publishes, so reacting to a `blocked` needs no follow-up call |
 
 `reason` is what a bare event name could not say: a `gone` used to mean both
@@ -879,7 +879,7 @@ the pre-create hooks run, so the placeholder row says so.
 - Proof: `tests/create_e2e.rs` (the pairs fire once each with the facts, a
   hook's `thurbox-cli` finds the row, a veto leaves nothing behind and
   surfaces through the command bus, a post failure leaves the session
-  running); unit tests beside each module. User docs: `docs/CONFIG.md` →
+  running); unit tests beside each module. User docs: `docs/thurbox/config.md` →
   hooks.toml.
 
 `session.pre_launch` additionally runs on create/fork after the final
@@ -1027,7 +1027,7 @@ without double-processing.
   `delivery_note` and `may_hold` — true for `claude-socket`, whose recipient
   can hold the body behind an approval dialog unless its settings carry
   `crossSessionInbound: accept` (a fact about the route; thurbox never sees the
-  dialog, and does not set the setting itself — see `docs/AGENTS.md`). `tests/architecture_rules.rs` keeps the multiplexer (`backend`, `agent`)
+  dialog, and does not set the setting itself — see `docs/thurbox/agents.md`). `tests/architecture_rules.rs` keeps the multiplexer (`backend`, `agent`)
   unreachable from this path.
 
 - **Identity (the registry key, self-knowable).** A session's `SessionId` is
@@ -1048,7 +1048,7 @@ without double-processing.
   calling session.
 
 **Full flag list, the body/kind limits, backpressure cap, and retention/pruning
-are in the Inter-Session Messages section of `docs/FEATURES.md`.**
+are in the Inter-Session Messages section of `docs/thurbox/features.md`.**
 
 The agent-facing summary of this surface — `session list`/`get`/`capture`/
 `exec`/`send`/`wait`, `message send`/`inbox`/`reply`, `ui state`'s

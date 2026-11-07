@@ -44,7 +44,7 @@ pub struct SpawnRequest {
     /// reference into the registry, which is what lets anything at all be a
     /// session — a shell, a REPL, a long-running script. It also has no
     /// conversation address (no resume/fork arg groups), so such a session can
-    /// be restarted but never resumed or forked; see `docs/FEATURES.md`.
+    /// be restarted but never resumed or forked; see `docs/thurbox/features.md`.
     pub command: Option<String>,
     /// Arguments for [`command`](Self::command), one token per element.
     pub args: Vec<String>,

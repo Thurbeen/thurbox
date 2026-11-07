@@ -4,10 +4,10 @@ A Task is one agent session doing one brief. TaskController spawns the
 session on the host the Task names, sends the brief once, delivers what is
 queued in the Task's inbox, records the worker's answer, and deletes the
 session when the Task is deleted. The guarantees behind each step are in
-[the contracts](../CONTRACTS.md). Read the
-[controller overview](../controllers/task/README.md),
-[interface](../controllers/task/interface.md) and
-[state machine](../controllers/task/state-machine.md) for execution semantics.
+[the contracts](../contracts.md). Read the
+[controller overview](../controllers/task.md),
+[interface](../controllers/task.md#task-controller-interface) and
+[state machine](../controllers/task.md#task-state-machine) for execution semantics.
 
 ## Example
 
@@ -40,7 +40,7 @@ except `dispatch` and `forge`. `amendments` grows only through
 | `model` | no | The model the harness runs; it reaches the harness through the variable `runtime.modelEnv` names for it. |
 | `configRef` | no | `{"name":"config"}` references passive execution defaults. |
 | `env` | no | Explicit string environment map; overrides inherited values. |
-| `pauseAfterMs` | no | Pause the session once its agent was idle this long, in milliseconds; at least 1. Overrides the TaskConfig's value. Absent inherits it; with neither, the session is never paused. See [pausing an idle session](../controllers/task/state-machine.md#pausing-an-idle-session). |
+| `pauseAfterMs` | no | Pause the session once its agent was idle this long, in milliseconds; at least 1. Overrides the TaskConfig's value. Absent inherits it; with neither, the session is never paused. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 | `brief` | yes | The brief, sent once to the ready session. It never changes. |
 | `amendments` | no | Additions to the brief, oldest first, each `{text, reason?, outputs?, from, at, generation}`. Only `fleet amend` appends one. See [Amendments](#amendments). |
 | `workspace` | yes | What the session works in: `{"dir": PATH}` or `{"repositories": [{"name", "url", "ref"?}]}`. See [Workspaces](#workspaces). |
@@ -71,14 +71,14 @@ A workspace has exactly one of two forms. Unknown fields are refused.
   is unique in the Task. Each `url` and `ref` is non-empty, has no
   whitespace and does not start with `-`.
 - The first repository is the primary. Its source checkout is the trust
-  root, as [workspace trust](../CONTRACTS.md#workspace-trust)
+  root, as [workspace trust](../contracts.md#workspace-trust)
   states.
 - Fleet does not interpret `ref`. The maker of the workspace decides what it
   means.
 - Fleet has no branch, base, worktree or cleanup field. The maker makes the
   checkout for this Task alone and names its branch. The worker reports the
   change it opened through `fleet declare`.
-- `runtime.repositories` in [`fleet.toml`](../configuration/fleet-toml.md#fields)
+- `runtime.repositories` in [`fleet.toml`](../configuration.md#fields)
   maps each `url` to its source checkout. A Task with an unmapped `url`
   waits with `RepositoryUnmapped`.
 
@@ -86,11 +86,11 @@ One of two makers makes a `repositories` workspace:
 
 - Without a `[workspaces]` section, the runtime makes it at the spawn and
   cleans it when the session is deleted, as `runtime.workspaceCleanup`
-  says. The [runtime contract](../CONTRACTS.md#runtime-contract)
+  says. The [runtime contract](../contracts.md#runtime-contract)
   states how thurbox does this.
 - With a `[workspaces]` section, Fleet makes it before the spawn, records it
   in `status.workspace`, and cleans it after the release. The
-  [workspace contract](../CONTRACTS.md#workspace-contract) states
+  [workspace contract](../contracts.md#workspace-contract) states
   how the `worktree` adapter does this.
 
 `{"dir": PATH}` names a directory that exists before the Task. The session
@@ -98,7 +98,7 @@ works in it as it is.
 
 - Fleet does not create, isolate or clean the directory. Two Tasks can name
   the same directory.
-- A [Gateway route](../configuration/fleet-toml.md#the-gateway-section) with a
+- A [Gateway route](../configuration.md#the-gateway-section) with a
   `dir` workspace is the one exception: the manager creates each thread's
   directory and removes it when the thread retires.
 
@@ -106,17 +106,17 @@ works in it as it is.
 
 Written by TaskController under the manager lease, except `result` and
 `declared`, which the worker writes through `fleet result` and `fleet
-declare`, `forge`, which the [Forge controller](../controllers/forge/README.md)
+declare`, `forge`, which the [Forge controller](../controllers/forge.md)
 writes, `gateway`, which the
-[Gateway controller](../controllers/gateway/README.md) writes, and `inbox`
+[Gateway controller](../controllers/gateway.md) writes, and `inbox`
 and `answered`, which nobody owns and which change only through the typed
 mutations described under [Inbox](#inbox).
 
 | Field | Meaning |
 | --- | --- |
-| `phase` | Execution phase, defined by the [state machine](../controllers/task/state-machine.md). |
+| `phase` | Execution phase, defined by the [state machine](../controllers/task.md#task-state-machine). |
 | `observedGeneration` | The spec generation the controller last acted on. |
-| `conditions` | One entry per [condition type](../controllers/task/state-machine.md#conditions), with `status`, `reason`, `message`, `lastTransitionTime` and `observedGeneration`, the spec generation the condition was last set for. |
+| `conditions` | One entry per [condition type](../controllers/task.md#conditions), with `status`, `reason`, `message`, `lastTransitionTime` and `observedGeneration`, the spec generation the condition was last set for. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
 | `session` | The session's runtime id, host and key, once spawned or adopted. A Task owns at most one session, from its spawn to its release; see [Session](session.md). |
 | `workspace` | The workspace Fleet made for the session: its `key`, the `host` the adapter reported, the `dir` of the primary repository, the `extraDirs` of the other repositories it also spans, and an optional `trustRoot`. Absent while the runtime makes the workspace, and after Fleet cleaned it. |
@@ -138,7 +138,7 @@ mutations described under [Inbox](#inbox).
 | `deliveryAttempts` | TaskController's bookkeeping per inbox entry being delivered: `sends` (bounded at 3), `probeFailures` and `failed`. Removed with the entry. |
 | `declared` | The worker's, through `fleet declare`: facts it declared, each a JSON object with a required string `kind` and nothing else validated. See [Following declared changes](#following-declared-changes). |
 | `forge` | The Forge controller's: `changes`, one entry per declared change keyed by ChangeRequest name, with its `uid`, `state`, `cursor`, `gaps`, `markReady` record and `notBefore`, plus that controller's `conditions`. Absent for a Task that declared nothing. |
-| `gateway` | The [Gateway controller](../controllers/gateway/README.md)'s: its tie to a chat conversation, relay cursor, children and post records, plus that controller's conditions. Absent for a Task that never talks. See [Talking in a conversation](#talking-in-a-conversation). |
+| `gateway` | The [Gateway controller](../controllers/gateway.md)'s: its tie to a chat conversation, relay cursor, children and post records, plus that controller's conditions. Absent for a Task that never talks. See [Talking in a conversation](#talking-in-a-conversation). |
 | `answered` | Per Question id, `{key, from, at}`: the inbox entry that answered it, its source and when. No owner; written only by an inbox append carrying `answers`, first answer wins. |
 
 ## Metadata and ownership
@@ -292,19 +292,19 @@ tmux refuses a longer command. More than 20 entries still to deliver raise
 can never be delivered, so it can never make room. A Concluded Task with a
 nonempty inbox is due again for delivery, and at rest for a session recheck
 every 5 minutes, as the [Task state
-machine](../controllers/task/state-machine.md#transition-rules) describes;
+machine](../controllers/task.md#transition-rules) describes;
 a readable lookup that no longer shows its session is `WorkerGone` and
 `NeedsAttention`, never a respawn. A session that is still there without its
 window, as after a host reboot, is revived to read its inbox. See [after a host
-reboot](../controllers/task/state-machine.md#after-a-host-reboot). A paused
+reboot](../controllers/task.md#after-a-host-reboot). A paused
 session, stopped by Fleet or by anyone else, is resumed to read its inbox.
-See [pausing an idle session](../controllers/task/state-machine.md#pausing-an-idle-session). A Stalled or
+See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). A Stalled or
 deleting Task delivers nothing: a deleting Task refuses `fleet send` and
 releases its session as before.
 
 ## Following declared changes
 
-The [Forge controller](../controllers/forge/README.md), a second controller
+The [Forge controller](../controllers/forge.md), a second controller
 over the Task, reads the changes a worker declared and relays what is new on
 each into the inbox.
 
@@ -316,7 +316,7 @@ each into the inbox.
 
 The Forge controller appends to `status.inbox` as `forge/<change>`, with
 `about` set, in the same write that advances the entry's cursor. The
-[Forge controller interface](../controllers/forge/interface.md#fields-this-controller-reads-and-owns)
+[Forge controller interface](../controllers/forge.md#fields-this-controller-reads-and-owns)
 defines every field of `status.declared` and `status.forge`, with an example
 of a Task following two changes.
 
@@ -331,12 +331,12 @@ without the mark comes back to its author as feedback. Nothing forge-related
 has to be created in advance, and a second Task may declare a change another
 Task opened. No new finalizer and no owner reference: a ChangeRequest
 outlives the Tasks that follow it, and deleting a Task deletes nothing else.
-The [Forge controller interface](../controllers/forge/interface.md#store-port-and-write-ownership)
+The [Forge controller interface](../controllers/forge.md#store-port-and-write-ownership)
 lists the resulting writers.
 
 ## Talking in a conversation
 
-The [Gateway controller](../controllers/gateway/README.md) ties a Task to a
+The [Gateway controller](../controllers/gateway.md) ties a Task to a
 chat thread and relays the thread into its inbox, as the Forge controller
 does for a change. It posts what the Task declares in that thread, and it
 opens a thread for a Question. It posts every Task's Drafts, result and
@@ -359,7 +359,7 @@ declares, and Fleet relays.
 
 Inbox entries from the Gateway come from `gateway/<conversation>` or
 `gateway/child/<child>`, under keys the
-[interface](../controllers/gateway/interface.md#inbox-entries) defines.
+[interface](../controllers/gateway.md#inbox-entries) defines.
 Unknown declaration kinds are ignored, as the Forge controller ignores
 them.
 
@@ -380,7 +380,7 @@ fleet reconcile                      # run the controller under the lease
 
 ## Plugin operations
 
-The [Plugin controller](../controllers/plugin/README.md)
+The [Plugin controller](../controllers/plugin.md)
 lets a registered plugin do to a Task what a person does, through the same
 manager verbs, never through a status write:
 

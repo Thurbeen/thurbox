@@ -2,7 +2,7 @@
 --
 -- A pane that reads EVERY path `thurbox.yml` declares on `thurbox`, each as a
 -- plain dotted path, and must lint CLEAN: a table declared as a bare property
--- rejects exactly the expression `docs/PLUGINS.md` tells an author to write,
+-- rejects exactly the expression `docs/thurbox/plugins.md` tells an author to write,
 -- and nothing in `ui/` would notice (issue #1133). `typos/` holds the other
 -- direction. It ends with the stdlib names no bundled pane happens to name.
 return {

@@ -1,7 +1,7 @@
 //! Whether the binaries a session needs are actually installed.
 //!
 //! thurbox deliberately starts with no multiplexer and no coding agent on the
-//! machine (`docs/CONSTITUTION.md`) — browsing, reading and configuring must
+//! machine (`docs/thurbox/constitution.md`) — browsing, reading and configuring must
 //! work on a fresh box. The cost is that the check used to happen at the worst
 //! possible moment: the user committed to creating a session and got a number
 //! back (`tmux new-window exited exit status: 127`), which names neither the
@@ -184,7 +184,7 @@ impl Dependency<'_> {
     /// Never a package-manager line thurbox has not verified: where the command
     /// depends on a distribution, this names the package and links the
     /// project's own install page instead of guessing an invocation. thurbox
-    /// bakes in no agent knowledge either (`docs/AGENTS.md`), so a missing
+    /// bakes in no agent knowledge either (`docs/thurbox/agents.md`), so a missing
     /// agent is answered with the registry entry that decides what gets run
     /// rather than with an install command for a CLI thurbox does not know.
     pub fn fix(&self) -> String {

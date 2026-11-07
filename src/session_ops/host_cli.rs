@@ -2,7 +2,7 @@
 //! host has none.
 //!
 //! A shareable host's own database is the record of the sessions on it
-//! (`docs/ARCHITECTURE.md` ADR-24), so every write a remote thurbox wants to
+//! (`docs/thurbox/architecture.md` ADR-24), so every write a remote thurbox wants to
 //! make there is a `thurbox-cli` command run *on the host*, and every read is
 //! `session list --json` read back. This module is the one place that knows
 //! how to find that CLI, decide whether it speaks this binary's JSON, install

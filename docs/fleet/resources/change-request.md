@@ -8,7 +8,7 @@ I last looked" with one integer. It performs no effect on the forge.
 `fleet declare` creates one for the change a Task's worker opened; a person
 applies one to watch any change. There is one per change, it has no owner,
 and it outlives the Tasks that follow it: the
-[Forge controller](../controllers/forge/README.md) reads it and never writes
+[Forge controller](../controllers/forge.md) reads it and never writes
 it.
 
 ## Example
@@ -34,7 +34,7 @@ on a Task's behalf. Fixed once created.
 | --- | --- | --- |
 | `url` | yes | The change's URL, the only forge-specific input. The adapter for its host parses it into `status.ref`; a URL it cannot read is refused at apply. |
 | `pollMs` | no | Poll interval while Watching. Default `60000`. |
-| `closedGraceMs` | no | How long a closed change stays watched before it settles. Default `forge.closedGraceMs` from [native config](../configuration/fleet-toml.md#the-forge-section), one week. |
+| `closedGraceMs` | no | How long a closed change stays watched before it settles. Default `forge.closedGraceMs` from [native config](../configuration.md#the-forge-section), one week. |
 | `settledTtlMs` | no | How long a settled ChangeRequest is retained before its controller deletes it. Default `forge.settledTtlMs`, thirty days. |
 
 A URL whose host is not configured under `[forge.hosts]` is refused at apply.
@@ -53,12 +53,12 @@ Bookkeeping:
 
 | Field | Meaning |
 | --- | --- |
-| `phase` | `Watching`, `Closed` or `Settled`, defined by the [state machine](../controllers/change-request/state-machine.md). |
+| `phase` | `Watching`, `Closed` or `Settled`, defined by the [state machine](../controllers/change-request.md#changerequest-state-machine). |
 | `ref` | What the adapter parsed the URL into: `kind`, `host`, `project`, `id`. |
 | `observedAt` | When the forge last answered Known, in Unix milliseconds. |
 | `notBefore` | Earliest next poll, in Unix milliseconds. |
 | `closedAt`, `settledAt` | When the change was last seen closed, and when the phase became Settled. |
-| `conditions` | One entry per [condition type](../controllers/change-request/state-machine.md#conditions). |
+| `conditions` | One entry per [condition type](../controllers/change-request.md#conditions). |
 
 Snapshot:
 
@@ -69,7 +69,7 @@ Snapshot:
 | `everReady` | `true` once the change has been seen in any state other than `draft`. Never returns to `false`. |
 | `head` | The current head: opaque `id` (a SHA, a patchset number, a diff id), `checks` (`none`, `pending`, `passed`, `failed`), `failing` (`[{name, url}]` when failed), `seq` (the revision at which `id`, `checks` or `failing` last changed) and `firstSeenAt`. |
 | `reviewDecision` | `{value, seq}`: `approved`, `changes-requested` or `none`. |
-| `mergeable` | `{value, reason}`: the forge's own answer, `true`, `false` or `null` while the forge is still computing it, with its reason as the forge gives it. See [Mergeable](../controllers/change-request/state-machine.md#conditions). |
+| `mergeable` | `{value, reason}`: the forge's own answer, `true`, `false` or `null` while the forge is still computing it, with its reason as the forge gives it. See [Mergeable](../controllers/change-request.md#conditions). |
 | `threads` | `{unresolved}`: the count of unresolved inline threads over the whole change, not only the retained notes. |
 | `reviews` | Every submitted review on the current head: `id`, `author`, `bot`, `state` (`approved`, `changes-requested`, `commented`), `head`. |
 | `notes` | The newest 100 notes, each a [note](#notes). |
@@ -141,7 +141,7 @@ GitHub, GitLab, hosted Azure DevOps Services and hosted Bitbucket Cloud
 adapters are in scope. Bitbucket Server/Data Center, Gerrit and Phabricator
 are shown so the vocabulary is checked against them; adding one is an adapter
 in `fleet-forge`, not an API change. The
-[adapter truth tables](../controllers/change-request/interface.md#adapter-truth-tables)
+[adapter truth tables](../controllers/change-request.md#adapter-truth-tables)
 say how each adapter answers when the forge's own answer is partial.
 
 ## Metadata and ownership
@@ -182,7 +182,7 @@ fleet list changerequests                     # one line per mirror
 fleet delete changerequest cr-5e1c0a9b7f23    # nothing on the forge changes
 ```
 
-`fleet declare` is the [Forge controller](../controllers/forge/README.md)'s
+`fleet declare` is the [Forge controller](../controllers/forge.md)'s
 verb: it ensures the mirror and records the declaration on the Task.
 [examples/change-request.json](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/examples/change-request.json)
 is a manifest the shipped [example config](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/examples/fleet.toml) applies

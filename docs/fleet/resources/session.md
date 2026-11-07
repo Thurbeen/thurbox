@@ -5,7 +5,7 @@ observes, briefs, sends to and releases. A Session is not a stored kind: a
 Task names its Session in `status.session` and reports what the runtime
 proved about it in `status.sessionState`. The source is
 [fleet-api's session module](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/session.rs); the
-guarantees are in [the runtime contract](../CONTRACTS.md#runtime-contract).
+guarantees are in [the runtime contract](../contracts.md#runtime-contract).
 
 ```text
 Task ──owns one, spawn to release──▶ Session
@@ -66,7 +66,7 @@ says what the runtime proved about the agent. The two move independently.
 | `Briefed` | `Running` | The worker works on the brief. |
 | `Briefed` | `Idle` | The worker waits; with `pauseAfterMs` set, a pause is due after that time. |
 | `Briefed` | `Paused` | Fleet or a person stopped the agent; the next inbox entry resumes it. |
-| `Briefed` | `Lost` | The window is gone; the next pass revives the Session. See [after a host reboot](../controllers/task/state-machine.md#after-a-host-reboot). |
+| `Briefed` | `Lost` | The window is gone; the next pass revives the Session. See [after a host reboot](../controllers/task.md#after-a-host-reboot). |
 | `Briefed` | `Gone` | The row is gone; `WorkerGone` and `NeedsAttention` are raised, nothing respawns. |
 | `Concluded` | `Running` or `Idle` | The worker reported; the Session is retained until the Task is deleted. |
 | `Releasing` | `Gone` | The release landed; the finalizer can go. |
@@ -96,10 +96,10 @@ and `sessionState` through `fleet list task` and `fleet status`.
 ## Next steps
 
 This definition is the first step toward the
-[target architecture](../media/fleet-architecture-doom.svg), where
+[target architecture](../architecture-target.svg), where
 Thurbox is one view and Fleet runs Sessions behind the runtime port. The
 second step added a Workspace that Fleet materializes; see
-[Workspaces and the workspace port](../ARCHITECTURE.md#workspaces-and-the-workspace-port).
+[Workspaces and the workspace port](../architecture.md#workspaces-and-the-workspace-port).
 The following steps add an `attach` call on the runtime port for a live
 terminal, and a Fleet-owned multiplexer adapter.
-See [Sessions and the runtime port](../ARCHITECTURE.md#sessions-and-the-runtime-port).
+See [Sessions and the runtime port](../architecture.md#sessions-and-the-runtime-port).
