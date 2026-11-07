@@ -46,6 +46,9 @@ Every push to `main` automatically triggers the release workflow:
    - Pushes tag to origin
    - Builds binaries for 5 targets (4 Unix `.tar.gz` + 1 Windows `.zip`;
      version passed via environment variable)
+   - Signs `thurbox.exe` and `thurbox-cli.exe` through SignPath (Authenticode)
+     before the Windows zip is packed, once the SignPath settings exist;
+     without them the zip ships unsigned (see *Windows code signing* below)
    - Generates changelog from commits
    - Publishes GitHub Release with binaries and release notes
 
@@ -79,6 +82,35 @@ Each release includes:
     extracted by `install.ps1` / packaged by Chocolatey + winget)
 - `thurbox-v{ver}-checksums.txt` (SHA256 sums for verification)
 - Changelog with categorized commits
+
+### Windows code signing
+
+The Windows leg of `build` signs both executables through SignPath Foundation
+between `cargo build` and `Compress-Archive`, so the zip, `checksums.txt` and
+everything that reads the zip (`install.ps1`, self-update, Windows host
+provisioning, Chocolatey, winget) carry the signed bytes. The order is the
+whole point: a signature applied after packing, or a checksum taken before it,
+ships unsigned files while every job stays green.
+
+- **Gate** — `scripts/ci/signpath-config.sh` reads the secret
+  `SIGNPATH_API_TOKEN` and the variables `SIGNPATH_ORGANIZATION_ID`,
+  `SIGNPATH_PROJECT_SLUG` and `SIGNPATH_SIGNING_POLICY_SLUG`. None set: skip
+  signing with a notice. All set: sign. Some set: fail the job.
+- **Upload** — the unsigned executables go up as `unsigned-<target>`; SignPath
+  fetches them from the run, which is its proof of origin. `checksums` and
+  `publish` copy only `.zip`/`.tar.gz` files, so those bare `.exe`s never reach
+  a release.
+- **Approval** — each request waits up to an hour for a person to approve it in
+  SignPath. A timeout fails the leg before anything is published.
+- **Verification** — the build checks `Get-AuthenticodeSignature` is `Valid`
+  before staging the files. After publish, `verify-windows-release` runs
+  `install.ps1` against the release, which checks the checksums, and then checks
+  the installed executables' signatures when signing is configured.
+- **What SignPath holds** — `packaging/signpath/artifact-configuration.xml` is
+  the project's artifact configuration, kept in the repo for review.
+
+`docs/CODE-SIGNING.md` is the public policy the Foundation requires.
+`tests/release_signing.rs` pins the step order, the gate and the policy link.
 
 ### Distribution Packages
 
