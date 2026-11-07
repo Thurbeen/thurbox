@@ -56,9 +56,10 @@ on every build, the way it checks Fleet's crates today:
 | Crate | May depend on | Must not depend on |
 | --- | --- | --- |
 | `fleet-*` | `fleet-*`, `term-stream`, crates.io | `runtime-*`, `thurbox` |
-| each `runtime-*` | `term-stream`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
+| each `runtime-*` | `term-stream`, `workspace-git`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
 | `term-stream` | crates.io | everything else |
 | `term-holder` | `term-stream`, crates.io | everything else |
+| `workspace-git` | crates.io | everything else |
 | `thurbox` | `term-stream`, crates.io | `fleet-*`, `runtime-*`, `term-holder` |
 
 Components talk only through processes; `term-stream` is a wire format, not
@@ -92,12 +93,13 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | Verb | Required | Answer |
 | --- | --- | --- |
 | `manifest` | yes | protocol version and the verbs supported |
-| `start` | yes | adopts the one live process holding the key, else starts `argv` in `dir` with `env`, `dir` and `extra_dirs` visible to it at the same paths |
+| `start` | yes | adopts the one live process holding the key, else starts `argv` with `env` in the workspace `ref` this runtime made, or in a `{dir}` |
 | `inspect` | yes | `None`, `Running{id}`, `Exited{id, code}` |
 | `stop` | yes | a process already gone counts as stopped |
 | `input` | no | types text, optionally submits |
 | `capture` | no | screen text, cursor, foreground process |
-| `exec` | no | a bounded command on the host (not inside the place), deadline and output cap; how Fleet makes workspaces off this machine |
+| `exec` | no | a bounded command, `in: host` or `in: workspace` (inside the place), deadline and output cap |
+| `workspace.*` | no | `materialize`, `find`, `status`, `clean` (see Workspaces) |
 | `attach` | no | `{stream: {argv}}` or `{tty: {argv}}`: how to open a terminal stream (contract 3) |
 
 Every verb is idempotent by key. The runtime knows no harness, Task or
@@ -265,106 +267,112 @@ draws the snapshot, then passes output through and input back.
 
 ## Workspaces
 
-A workspace is the files one session works in. Today two makers exist:
-thurbox (`src/git/worktree.rs`, the symlink workspace of `src/workspace.rs`)
-and Fleet (`[workspaces]`, otherwise the runtime). This design keeps one.
+A workspace is the files one session works in. How they come to exist depends
+on where the session runs: a worktree on the same disk for a tmux session, a
+bind mount or a volume for a container, a clone inside the guest, a shared
+folder or a disk image for a VM. No single mechanism in Fleet fits all of them,
+so the split is the one the rest of this design uses: **Fleet decides, the
+runtime makes.**
 
-### Who and when
+| Fleet decides | The runtime makes |
+| --- | --- |
+| which repositories, `ref` and `branch`, the workspace key | where the files live and how they get there |
+| when: materialize once before the first start, clean once after release | the paths the process sees them at |
+| whether a workspace may be cleaned (dirty, ahead) and the retention (`onDelete`) | the facts: is it whole, is it dirty, what is checked out |
+| `status.workspace`, and every retry or wait | the sources and credentials of its place |
 
-**Fleet makes every workspace; a runtime never does.** TaskController plans it
-(Thurbeen/fleet#394, carried into the tracking issue):
+### The workspace verbs
+
+An optional group of the runtime protocol, declared in `manifest`, with the
+same rules as the rest: Known or Unknown, idempotent by key, Unknown never
+concludes.
+
+| Verb | Answer |
+| --- | --- |
+| `workspace.materialize` | `{key, repositories: [{name, url \| path, ref, branch?}]}`, whole or nothing: `Materialized{ref, adopted}`, `Unmapped{repository}`, `BranchBusy{repository}`, `Failed{why}` |
+| `workspace.find` | the whole workspace under `key`, or `None`; a partial one is `None` and the next materialize rolls it back |
+| `workspace.status` | per repository: branch, head, dirty, commits not on any remote |
+| `workspace.clean` | `{ref, allowDirty}`: `Cleaned`, or `Dirty` when it re-checks and finds changes and `allowDirty` is false |
+
+A workspace `ref` carries an opaque `id` for the runtime, the `dir` and
+`extra_dirs` **as the process sees them**, and the `trustRoot`. Fleet passes
+the `ref` to `start` unchanged, and uses the paths only to build the
+harness's argv (`additional_dir_args`). The runtime that made a workspace is
+the one that starts processes in it.
+
+Two declarations in `manifest` tell Fleet what it can rely on:
+
+- `workspace.survivesStop`: the files outlive the process. When false, Fleet
+  never pauses an idle session of that runtime, because pause is stop.
+- `workspace.sharesHost`: the process sees the host's filesystem. Only then
+  is a repository named by `path` accepted, and only then may the interface
+  read the files directly.
+
+A runtime without the group runs `{dir}` Tasks only; a `{repositories}` Task
+on it waits with `WorkspaceUnsupported`.
+
+### How each runtime makes one
+
+| Runtime | Where the files are | How |
+| --- | --- | --- |
+| `runtime-mux` | the host (this machine, ssh, WSL) | git worktrees, run on the host |
+| `runtime-container`, `bind` | the docker host | git worktrees on the host, bind-mounted at the same paths |
+| `runtime-container`, `volume` | a volume per key | a clone into the volume by a one-shot helper container, mounted at `/workspace` |
+| `runtime-vm` | the guest's disk | a clone inside the guest, from a mirror the host serves; or a shared folder from the host |
+| `runtime-process` | this machine | git worktrees |
+
+The common case, git worktrees on a filesystem the runtime can run commands
+on, is `workspace-git`: a small program with the four verbs, which a runtime
+runs where its files are: on the host, through `docker run` against a volume,
+inside a guest. `runtime-mux` and `runtime-process` use it as is;
+`runtime-container` and `runtime-vm` use it inside their own placement. A
+runtime with another mechanism (a disk image, a snapshot, a remote dev
+environment) implements the verbs itself.
+
+`workspace-git`'s layout:
 
 ```text
-materialize ──▶ start ──▶ (stop / start … pause, resume, revive) ──▶ release ──▶ clean
-   once            the workspace is untouched by every stop and start        once
+<root>/<key>/<name>/                  one real worktree per repository
+<root>/<key>/.fleet-workspace.json    written last; without it the workspace is partial
+<root>/.sources/<digest>.git          a bare mirror, when no checkout is mapped
 ```
 
-`start` receives `dir` and `extra_dirs` ready, and makes nothing. A `{dir}`
-workspace exists before the Task; nothing makes or cleans it.
+- One repository: the session runs in `<root>/<key>/<name>`. Several: in
+  `<root>/<key>`, where every worktree is a real subdirectory, so thurbox's
+  symlink workspace goes.
+- Branches: no `branch` makes `<prefix>/<task name>` from `ref`; a new name
+  makes that branch; an existing branch is checked out, and one checked out
+  elsewhere answers `BranchBusy`.
+- `clean` removes worktrees, never branches: commits stay in the source.
 
-### Where
-
-The workspace is made on the Task's **host**: the machine the runtime runs its
-places on, never inside an ephemeral place.
-
-| Host | How Fleet runs the git commands |
-| --- | --- |
-| this machine | directly, through `fleet-exec` |
-| any other | through the runtime's `exec`, which runs on the host (ssh host, WSL distro, the machine running docker, a persistent VM) |
-
-So there is one workspace adapter, `git`, and two transports. A runtime needs
-nothing for workspaces beyond `exec`, and one contract on `start`: **the
-process sees `dir` and `extra_dirs` at the same paths.**
-
-| Runtime | How the paths reach the process |
-| --- | --- |
-| `runtime-mux` | same filesystem |
-| `runtime-container` | bind mounts at the same paths |
-| `runtime-vm` | a shared folder (virtiofs), or the guest is the host and `exec` runs in it |
-
-A container is recreated freely; its workspace survives on the host.
-
-### Sources
-
-A repository is named by identity (`url`) or, for one with no remote, by
-`path` on the host. On the host, its source is:
-
-1. a checkout mapped in config (`[hosts.<name>.sources]`, today
-   `runtime.repositories`), used as it is;
-2. otherwise a bare mirror Fleet keeps at `<root>/.sources/<digest>.git`,
-   cloned once and fetched before each materialize, with the host's own
-   credentials.
-
-A repository with neither is `RepositoryUnmapped`, as today. thurbox's
-new-session picker sends the identity of the directory the user picked: its
-`origin` URL, else its path.
-
-### Layout
+### Lifecycle
 
 ```text
-<root>/<key>/                 the session's directory for more than one repository
-<root>/<key>/<name>/          one real worktree per repository
-<root>/<key>/.fleet-workspace.json   written last; without it the workspace is partial
+materialize ──▶ start(ref) ──▶ (stop / start … pause, resume, revive) ──▶ release ──▶ status ──▶ clean
+   once                    the workspace is untouched                              Fleet decides   once
 ```
 
-- One repository: the session runs in `<root>/<key>/<name>`.
-- Several: it runs in `<root>/<key>`, where every worktree is a real
-  subdirectory. thurbox's symlink workspace goes, and with it the symlink
-  trust prompts it needed `--add-dir` for.
-- A plain directory that is not a repository is an extra dir, given to the
-  agent through the harness profile's `additional_dir_args`, never linked.
-- The trust root is the primary repository's source, as today.
+- After an Unknown `materialize`, Fleet asks `find`, never materializes
+  blindly again.
+- Before cleaning, Fleet reads `status`. Uncommitted changes or unpushed
+  commits make the Task wait with `NeedsAttention/WorkspaceDirty` until a
+  person commits, pushes, discards, or deletes with `--force`
+  (`allowDirty: true`). `clean` re-checks, so a change made in between
+  answers `Dirty` rather than being lost.
+- `spec.workspace.onDelete: keep` leaves the files and forgets them.
+- thurbox's soft delete stops the Task and sets `dispatch: false`; restoring
+  starts it again in the same workspace.
 
-### Branches
-
-Per repository the Task says `ref` (the base, default the remote's default
-branch) and optionally `branch`:
-
-| `branch` | Worktree |
-| --- | --- |
-| absent | a new branch `<prefix>/<task name>` from `ref` |
-| a new name | a new branch of that name from `ref` |
-| an existing branch | that branch checked out; one already checked out elsewhere is `NeedsAttention/BranchBusy` |
-
-### Cleaning
-
-`clean` removes the worktrees and the directory, never a branch: commits stay
-in the source. A worktree with uncommitted changes is not removed;
-the Task waits with `NeedsAttention/WorkspaceDirty` until a person commits,
-discards or deletes with `--force`. Fleet today removes with `--force`; that
-changes.
-
-`spec.workspace.onDelete` is `clean` (the default) or `keep`. `keep` leaves the
-files and forgets them. thurbox's soft delete is not a delete: it stops the
-Task and sets `dispatch: false`, so restoring it is starting it again in the
-same workspace.
+A `{dir}` workspace exists before the Task and is the user's: nothing makes,
+checks or cleans it, and the runtime must see it (`sharesHost`, or a runtime
+that mounts it).
 
 ### Reading a workspace from the interface
 
-The diff and review views read files where the workspace is. thurbox never
-reaches a host itself: it asks `fleet workspace exec <task> -- git …`, which
-runs on the host through the same transport. On this machine that is a local
-process.
+The diff and review views need the files. thurbox asks
+`fleet workspace exec <task> -- git …`, which Fleet runs through the
+runtime's `exec` with `in: workspace`: inside the container or the guest,
+or on the host. `exec` therefore takes a scope, `host` or `workspace`.
 
 ## Where the SQLite tables go
 
