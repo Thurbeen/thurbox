@@ -3435,4 +3435,3 @@ release channels where they are.
   every migration step would span repositories. Still open later, since
   nothing links across.
 - *Keep thurbox's ad-hoc sessions* (#401 D5): keeps SQLite and a second engine.
-
