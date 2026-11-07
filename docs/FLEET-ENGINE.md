@@ -92,12 +92,12 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | Verb | Required | Answer |
 | --- | --- | --- |
 | `manifest` | yes | protocol version and the verbs supported |
-| `start` | yes | adopts the one live process holding the key, else starts `argv` in `dir` with `env` |
+| `start` | yes | adopts the one live process holding the key, else starts `argv` in `dir` with `env`, `dir` and `extra_dirs` visible to it at the same paths |
 | `inspect` | yes | `None`, `Running{id}`, `Exited{id, code}` |
 | `stop` | yes | a process already gone counts as stopped |
 | `input` | no | types text, optionally submits |
 | `capture` | no | screen text, cursor, foreground process |
-| `exec` | no | a bounded command on the host, deadline and output cap |
+| `exec` | no | a bounded command on the host (not inside the place), deadline and output cap; how Fleet makes workspaces off this machine |
 | `attach` | no | `{stream: {argv}}` or `{tty: {argv}}`: how to open a terminal stream (contract 3) |
 
 Every verb is idempotent by key. The runtime knows no harness, Task or
@@ -263,6 +263,109 @@ through `WiredPane`. They stay. What changes is the source:
 A plain terminal uses the same stream: `fleet attach <task>` without `--json`
 draws the snapshot, then passes output through and input back.
 
+## Workspaces
+
+A workspace is the files one session works in. Today two makers exist:
+thurbox (`src/git/worktree.rs`, the symlink workspace of `src/workspace.rs`)
+and Fleet (`[workspaces]`, otherwise the runtime). This design keeps one.
+
+### Who and when
+
+**Fleet makes every workspace; a runtime never does.** TaskController plans it
+(Thurbeen/fleet#394, carried into the tracking issue):
+
+```text
+materialize ──▶ start ──▶ (stop / start … pause, resume, revive) ──▶ release ──▶ clean
+   once            the workspace is untouched by every stop and start        once
+```
+
+`start` receives `dir` and `extra_dirs` ready, and makes nothing. A `{dir}`
+workspace exists before the Task; nothing makes or cleans it.
+
+### Where
+
+The workspace is made on the Task's **host**: the machine the runtime runs its
+places on, never inside an ephemeral place.
+
+| Host | How Fleet runs the git commands |
+| --- | --- |
+| this machine | directly, through `fleet-exec` |
+| any other | through the runtime's `exec`, which runs on the host (ssh host, WSL distro, the machine running docker, a persistent VM) |
+
+So there is one workspace adapter, `git`, and two transports. A runtime needs
+nothing for workspaces beyond `exec`, and one contract on `start`: **the
+process sees `dir` and `extra_dirs` at the same paths.**
+
+| Runtime | How the paths reach the process |
+| --- | --- |
+| `runtime-mux` | same filesystem |
+| `runtime-container` | bind mounts at the same paths |
+| `runtime-vm` | a shared folder (virtiofs), or the guest is the host and `exec` runs in it |
+
+A container is recreated freely; its workspace survives on the host.
+
+### Sources
+
+A repository is named by identity (`url`) or, for one with no remote, by
+`path` on the host. On the host, its source is:
+
+1. a checkout mapped in config (`[hosts.<name>.sources]`, today
+   `runtime.repositories`), used as it is;
+2. otherwise a bare mirror Fleet keeps at `<root>/.sources/<digest>.git`,
+   cloned once and fetched before each materialize, with the host's own
+   credentials.
+
+A repository with neither is `RepositoryUnmapped`, as today. thurbox's
+new-session picker sends the identity of the directory the user picked: its
+`origin` URL, else its path.
+
+### Layout
+
+```text
+<root>/<key>/                 the session's directory for more than one repository
+<root>/<key>/<name>/          one real worktree per repository
+<root>/<key>/.fleet-workspace.json   written last; without it the workspace is partial
+```
+
+- One repository: the session runs in `<root>/<key>/<name>`.
+- Several: it runs in `<root>/<key>`, where every worktree is a real
+  subdirectory. thurbox's symlink workspace goes, and with it the symlink
+  trust prompts it needed `--add-dir` for.
+- A plain directory that is not a repository is an extra dir, given to the
+  agent through the harness profile's `additional_dir_args`, never linked.
+- The trust root is the primary repository's source, as today.
+
+### Branches
+
+Per repository the Task says `ref` (the base, default the remote's default
+branch) and optionally `branch`:
+
+| `branch` | Worktree |
+| --- | --- |
+| absent | a new branch `<prefix>/<task name>` from `ref` |
+| a new name | a new branch of that name from `ref` |
+| an existing branch | that branch checked out; one already checked out elsewhere is `NeedsAttention/BranchBusy` |
+
+### Cleaning
+
+`clean` removes the worktrees and the directory, never a branch: commits stay
+in the source. A worktree with uncommitted changes is not removed;
+the Task waits with `NeedsAttention/WorkspaceDirty` until a person commits,
+discards or deletes with `--force`. Fleet today removes with `--force`; that
+changes.
+
+`spec.workspace.onDelete` is `clean` (the default) or `keep`. `keep` leaves the
+files and forgets them. thurbox's soft delete is not a delete: it stops the
+Task and sets `dispatch: false`, so restoring it is starting it again in the
+same workspace.
+
+### Reading a workspace from the interface
+
+The diff and review views read files where the workspace is. thurbox never
+reaches a host itself: it asks `fleet workspace exec <task> -- git …`, which
+runs on the host through the same transport. On this machine that is a local
+process.
+
 ## Where the SQLite tables go
 
 | Table | Destination |
@@ -273,7 +376,7 @@ draws the snapshot, then passes output through and input back.
 | `sessions`: `stopped_at`, `lost_at`, `teardown_owed`, `relaunch_held_at` | Task conditions, receipts, finalizers |
 | `sessions`: `parent_session_id` | a parent label on the Task |
 | `sessions`: `display_order`, `seen_at` | thurbox interface file |
-| `worktrees` | Fleet's workspace port |
+| `worktrees` | Fleet's workspace port (see Workspaces) |
 | `session_meta`, `session_events`, `session_relaunches`, `session_intents`, `session_loss_suspects`, `session_lifecycle_clock` | dropped: Fleet's receipts and Known/Unknown observation |
 | `session_messages` | `status.inbox`, `fleet send` |
 | `tasks` | Tasks with `dispatch: false` |
