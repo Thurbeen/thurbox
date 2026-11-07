@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 622" role="img" aria-labelledby="title desc">
+<title id="title">Task controller state machine</title>
+<desc id="desc">Normal phases are Pending, Spawning, Spawned, Briefed and Concluded. A result for the current brief generation concludes a Task; a delivered amendment re-opens a Concluded Task to Briefed. Proven spawn failure retries Pending with a wait, then stalls after three attempts; a needed retry after three brief sends stalls. Deletion from any phase enters Releasing, then removes the record once release is established. Unknown delivery and failed release retry after waits and raise attention, without becoming terminal phases. An idle Briefed or Concluded session may be paused and resumed when an inbox entry arrives; Paused is a condition, and the phase does not change.</desc>
+<style>
+  svg { color-scheme:light dark }
+  @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { svg &gt; rect{fill:#101820} svg &gt; g{fill:#e6edf3} [stroke="#7890a6"]{stroke:#71869a} [stroke="#405367"]{stroke:#a9bdd0} [stroke="#c9d3dd"]{stroke:#405367} [fill="#405367"]{fill:#a9bdd0} [fill="#edf3f8"]{fill:#1d2a36} [fill="#e9f5ef"]{fill:#173b2d} [fill="#fff2de"]{fill:#493517} [fill="#f0edfa"]{fill:#30294a} }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#405367"/></marker></defs>
+<rect width="1040" height="622" rx="12" fill="#ffffff"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" fill="#182b3d">
+<text x="24" y="35" font-size="21" font-weight="700">Task phases and recovery</text>
+<text x="24" y="60" font-size="14">A phase records progress; a condition records evidence or a problem.</text>
+<g stroke="#7890a6" stroke-width="1.5" fill="#edf3f8">
+<rect x="25" y="150" width="150" height="68" rx="8"/><rect x="235" y="150" width="150" height="68" rx="8"/>
+<rect x="445" y="150" width="150" height="68" rx="8"/><rect x="655" y="150" width="150" height="68" rx="8"/>
+<rect x="865" y="150" width="150" height="68" rx="8" fill="#e9f5ef"/>
+<rect x="325" y="350" width="180" height="68" rx="8" fill="#fff2de"/>
+<rect x="655" y="350" width="180" height="68" rx="8" fill="#f0edfa"/>
+<rect x="900" y="350" width="115" height="68" rx="8" fill="#e9f5ef"/>
+</g>
+<g text-anchor="middle" font-size="17" font-weight="650">
+<text x="100" y="177">Pending</text><text x="310" y="177">Spawning</text><text x="520" y="177">Spawned</text>
+<text x="730" y="177">Briefed</text><text x="940" y="177">Concluded</text>
+<text x="415" y="377">Stalled</text><text x="745" y="377">Releasing</text><text x="958" y="377">Removed</text>
+</g>
+<g text-anchor="middle" font-size="12">
+<text x="100" y="199">await dispatch / host</text><text x="310" y="199">resolve spawn receipt</text><text x="520" y="199">ready → send → receipt</text>
+<text x="730" y="199">worker executing</text><text x="940" y="199">result retained</text>
+<text x="415" y="399">no automatic new run</text><text x="745" y="399">finalizer holds record</text><text x="958" y="399">not a phase</text>
+</g>
+<g fill="none" stroke="#405367" stroke-width="1.8" marker-end="url(#arrow)">
+<path d="M175 184 H233"/><path d="M385 184 H443"/><path d="M595 184 H653"/><path d="M805 184 H863"/>
+<path d="M310 150 V105 H100 V148"/>
+<path d="M310 218 V300 H365 V348"/>
+<path d="M520 218 V300 H465 V348"/>
+<path d="M745 304 V348"/>
+<path d="M940 150 V122 H730 V148" stroke-dasharray="6 4"/>
+<path d="M835 384 H898"/>
+</g>
+<g font-size="12" fill="#405367" text-anchor="middle">
+<text x="205" y="170">spawn</text><text x="415" y="170">session</text><text x="625" y="170">receipt</text><text x="835" y="170">result@G</text>
+<text x="205" y="95">proven failure / absence: wait, retry below 3 attempts</text>
+<text x="246" y="265">3 failed spawns</text><text x="580" y="255">retry needed</text><text x="580" y="273">after 3 sends</text>
+<text x="835" y="114">amendment delivered: re-open</text>
+<text x="745" y="284">Deletion from ANY phase</text><text x="867" y="374">released</text>
+</g>
+<path d="M25 449 H1015" stroke="#c9d3dd"/>
+<g font-size="14">
+<text x="25" y="480" font-weight="650">Waiting is not another phase</text>
+<text x="25" y="505">Delivery Unknown: stay Spawned, wait and probe. Release failed: stay Releasing, wait and retry.</text>
+<text x="25" y="529">After 3 failures, these recovery paths also raise NeedsAttention. Spawn and send effects remain bounded.</text>
+<text x="25" y="553">Retry delay: 30 seconds, persisted as notBefore. WorkerGone is a condition; Unknown never proves absence.</text>
+<text x="25" y="577">Idle Briefed or Concluded: paused after pauseAfterMs, resumed by an inbox entry. Paused is a condition.</text>
+<text x="25" y="604" font-size="12">result@G: a result for status.brief.generation G. An amendment moves G once it is delivered.</text>
+</g>
+</g>
+</svg>
