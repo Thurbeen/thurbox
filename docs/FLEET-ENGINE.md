@@ -144,6 +144,11 @@ terminal is a full runtime:
   checks; without `attach`, no live view, and thurbox shows the Task without
   a terminal.
 
+The default install configures `runtime-mux` and nothing else. With no
+multiplexer on the machine, Fleet does not fall back to another runtime: the
+first `start` answers the missing dependency by name, as `preflight` does
+today, and other runtimes are opt-in in `[runtimes.<name>]`.
+
 ### Attaching
 
 thurbox works without knowing any runtime. It runs `attach`'s `argv` in a
@@ -219,8 +224,6 @@ Each step ships alone and starts with its end-to-end test.
 - Shared hosts (ADR-24): one Fleet store per operator is assumed.
 - The tmux server `runtime-mux`'s windows live on: its own socket, since the
   interface no longer connects to it.
-- Which runtime the default install configures when no multiplexer is
-  present: none, or `runtime-process`.
 - Latency of the `view` bridge against today's in-process control mode, to
   measure in step 5 against PERFORMANCE.md's frame floors.
 - Windows (psmux) at the cutover, or after Linux and macOS.
