@@ -5,9 +5,8 @@ kinds and drives their controllers, one agent session per Task. These pages
 were imported from [`Thurbeen/fleet`](https://github.com/Thurbeen/fleet) at
 commit
 [`961da39`](https://github.com/Thurbeen/fleet/tree/961da39903338f3fb0493ec5a34aa8417cb98d89)
-(2026-11-06), ahead of the crates, which
-[step 3 of the migration](../README.md#migration) brings here with their
-history. Until then, links to Fleet source are pinned to that commit. How
+(2026-11-06), ahead of the crates, which come here later with their
+history ([#1688](https://github.com/Thurbeen/thurbox/issues/1688)). Until then, links to Fleet source are pinned to that commit. How
 Fleet fits between thurbox and the runtimes is [the overview](../README.md).
 
 | Page | Answers |
@@ -15,7 +14,6 @@ Fleet fits between thurbox and the runtimes is [the overview](../README.md).
 | [architecture.md](architecture.md) | The components, boundaries, ports and execution flow, and the target: views and workspaces by recipe |
 | [contracts.md](contracts.md) | What each part guarantees, and which tests hold it to that |
 | [configuration.md](configuration.md) | `fleet init` and the VEGA starter, every `fleet.toml` field, the environment file, OpenTelemetry export |
-| [migrating-from-v1.md](migrating-from-v1.md) | How v1 concepts, configuration and commands map to v2 |
 
 ## Controllers
 

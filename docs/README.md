@@ -2,8 +2,8 @@
 
 thurbox, Fleet and the runtimes are three components that talk only by
 running each other's programs. Each has its own directory here, and this page
-is the whole system: what each owns, how they meet, and the migration that
-gets there. The direction is tracked in
+is the whole system: what each owns and how they meet. The direction and its
+steps are tracked in
 [#1688](https://github.com/Thurbeen/thurbox/issues/1688) and recorded as
 [ADR-41](thurbox/architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes);
 it is accepted and not yet implemented.
@@ -110,42 +110,6 @@ to a repository of its own with nothing to untangle.
 
 `rusqlite` then leaves the dependency tree.
 
-## Migration
-
-![The migration in nine steps: workspace, extract runtime-mux, import Fleet, runtime protocol, views, thurbox on Fleet, migrate sessions, delete the engine, release](migration.svg)
-
-Each step ships alone and starts with its end-to-end test.
-
-1. **Workspace.** Turn this repository into a Cargo workspace, the current
-   code as `crates/thurbox`. No behaviour change.
-2. **Extract `runtime-mux`.** Move all of `src/backend`, control mode and
-   the tmux/psmux/rmux dialects included, into `crates/runtime-mux` with
-   `config::hosts`, `agent::host_path` and `agent::preflight`; inject what it
-   reads from `session::settings`. Add the `architecture.toml` rule. thurbox
-   keeps linking it only until step 5 gives it the `view` process.
-3. **Import Fleet** with its history under `crates/fleet-*`, its docs under
-   `docs/fleet/`. Pin one toolchain (Fleet's); editions may differ per crate.
-   One CI with path filters; component-scoped tags (`thurbox-v*`, `fleet-v*`,
-   `runtime-mux-v*`) with cocogitto's monorepo mode. Transfer Fleet's open issues.
-4. **Runtime protocol.** `runtime-mux` binary; Fleet's generic `exec` runtime
-   kind, `[runtimes.<name>]`, `fleet runtime check`, the reference script.
-   Fleet's P1 to P4 (workspaces, `fleet signal`, harness profiles, delivery by
-   hook) land here if not before.
-5. **Views.** `fleet watch`, `fleet attach`, interactive Tasks without a brief;
-   `term-stream`, `runtime-mux view`, `fleet term-bridge`; thurbox's stream
-   pane beside the control-mode pane, behind a setting, until it measures as
-   fast. `term-holder` and `runtime-container` follow.
-6. **thurbox on Fleet.** `SnapshotSource` and `Executor` traits, then their
-   Fleet implementations; thurbox starts `fleet up`.
-7. **Migrate.** `thurbox-cli migrate fleet`: one Task per live session,
-   adopting its window by stamp and its worktree by path; `agents.toml` into
-   harness profiles. Automations move once the schedule kind exists.
-8. **Delete.** `session_ops`, `storage`, the engine half of `thurbox-cli`, and
-   Fleet's thurbox session adapter.
-9. **Release.** thurbox's archive and packages carry `fleet` and
-   `runtime-mux`; Fleet keeps a standalone archive. Fleet's old install URL
-   and `FLEET_MAJOR` guard point here or are retired.
-
 ## Open
 
 - A schedule kind in Fleet to replace automations.
@@ -155,7 +119,7 @@ Each step ships alone and starts with its end-to-end test.
 - The tmux server `runtime-mux`'s windows live on: its own socket, since the
   interface no longer connects to it.
 - Latency of the `view` bridge against today's in-process control mode, to
-  measure in step 5 against [performance](thurbox/performance.md)'s frame floors.
+  measure against [performance](thurbox/performance.md)'s frame floors.
 - Windows (psmux) at the cutover, or after Linux and macOS.
 - VEGA stays a separate starter repository; Fleetlens moves under
   `extensions/`.
@@ -166,7 +130,7 @@ Each step ships alone and starts with its end-to-end test.
 docs/
 ├── README.md                  the system: this page
 ├── constitution.md            the rules for every component, and each one's own
-├── components.svg · migration.svg
+├── components.svg
 ├── thurbox/                   the interface
 │   ├── README.md              its index
 │   ├── architecture.md        decisions, ADR-1 … ADR-41
@@ -179,7 +143,6 @@ docs/
 │   ├── architecture.md        components, ports, flow, and the target (+ .svg)
 │   ├── contracts.md           guarantees and their tests
 │   ├── configuration.md       init, fleet.toml, environment, telemetry
-│   ├── migrating-from-v1.md
 │   ├── controllers/           one page per controller (+ its state-machine .svg)
 │   └── resources/             one page per resource kind
 └── runtime/                   the runtimes

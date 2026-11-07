@@ -3399,9 +3399,9 @@ is untrusted text, which a pane renders as text.
 
 ## ADR-41: Fleet is thurbox's engine; sessions run on runtimes
 
-> **Accepted, not yet implemented.** The design and the migration are
-> [the documentation overview](../README.md). Once its delete step lands, this
-> supersedes ADR-8, ADR-7b, ADR-8b, ADR-24 and ADR-26.
+> **Accepted, not yet implemented.** The design is
+> [the documentation overview](../README.md), and its steps are tracked in #1688.
+> Once thurbox's own session engine is deleted, this supersedes ADR-8, ADR-7b, ADR-8b, ADR-24 and ADR-26.
 
 **Choice**: thurbox becomes an interface over Fleet. Every session is a Fleet
 Task; thurbox keeps no session state and no SQLite database, and reaches Fleet
@@ -3432,6 +3432,6 @@ release channels where they are.
 - *A multiplexer runtime written inside Fleet* (#1681 step 6): rewrites psmux, WSL and
   ssh handling that `src/backend` already has.
 - *Separate repositories*: equal isolation once contracts are process-only, but
-  every migration step would span repositories. Still open later, since
+  every change across components would span repositories. Still open later, since
   nothing links across.
 - *Keep thurbox's ad-hoc sessions* (#401 D5): keeps SQLite and a second engine.

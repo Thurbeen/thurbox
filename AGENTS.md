@@ -414,7 +414,7 @@ For rationale behind decisions, see `docs/`:
   which class of fact. `.publish.yaml` names it in `review.rules`;
   read the blocks matching the paths you are touching
 - `docs/README.md` — The whole system: thurbox, Fleet and the runtimes, the
-  contracts between them, and the migration (ADR-41)
+  contracts between them (ADR-41)
 - `docs/fleet/` — Fleet's documentation, indexed by `docs/fleet/README.md`
 - `docs/runtime/` — the runtime protocol and the terminal stream
 

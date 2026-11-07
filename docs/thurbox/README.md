@@ -53,8 +53,8 @@ through `WiredPane`. They stay. What changes is the source:
   shows that its history starts now.
 - **Cost**: one extra process and pipe between the multiplexer and the grid.
   Output frames are raw bytes, never base64; a snapshot is sent only on
-  connect and resync. Step 5 measures it against [performance.md](performance.md)'s frame
-  floors before anything is deleted.
+  connect and resync. It is measured against [performance.md](performance.md)'s
+  frame floors before the control-mode pane is deleted.
 
 A plain terminal uses the same stream: `fleet attach <task>` without `--json`
 draws the snapshot, then passes output through and input back.
