@@ -25,9 +25,9 @@ Thurbeen/thurbox#1681 and reshapes the plan tracked in Thurbeen/fleet#401.
 ```text
 thurbox (interface) ──process: fleet watch / apply / send / delete / attach──▶ Fleet (engine)
    │                                                                             │
-   │ attach answer: argv, or a tmux pane to adopt                                │ process: runtime protocol
+   │ runs the attach argv in a pty                                               │ process: runtime protocol
    ▼                                                                             ▼
- terminal (pty or tmux control mode) ◀──────────────────────────────── mux-runtime, or any runtime
+ terminal pane (pty) ◀── one live terminal, whatever the runtime ──── mux-runtime, or any runtime
                                                                       (tmux · psmux · rmux · ssh · WSL)
  coding agent ── fleet signal / fleet result ──▶ Fleet
 ```
@@ -35,8 +35,8 @@ thurbox (interface) ──process: fleet watch / apply / send / delete / attach�
 | Component | Owns | Never owns |
 | --- | --- | --- |
 | Fleet (`crates/fleet-*`) | Tasks (one per session), the store, every decision, harness profiles (launch, resume, trust), agent hooks through `fleet signal`, workspaces and worktrees, the inbox, receipts, the runtime protocol and its conformance suite | Multiplexer code; any Rust dependency on `mux` or `thurbox` |
-| Runtime (`crates/mux`, `crates/mux-runtime`) | Windows by key, host connections (`hosts.toml`), bounded `exec`, the attach address | Tasks, agents, journals, delivery, the interface |
-| thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, the tmux control-mode client, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any Rust dependency on `fleet-*` or `mux` |
+| Runtime (`crates/mux`, `crates/mux-runtime`) | Windows by key, host connections (`hosts.toml`), bounded `exec`, the attach command, every multiplexer dialect and the control-mode client | Tasks, agents, journals, delivery, the interface |
+| thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, pty panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any runtime or multiplexer code, any Rust dependency on `fleet-*` or `mux` |
 
 Where a fact belongs:
 
@@ -91,7 +91,7 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | `input` | no | types text, optionally submits |
 | `capture` | no | screen text, cursor, foreground process |
 | `exec` | no | a bounded command on the host, deadline and output cap |
-| `attach` | no | `{argv, tmux?: {socket, route, pane}}` |
+| `attach` | no | `{argv}`: a command that is the live terminal of the process |
 
 Every verb is idempotent by key. The runtime knows no harness, Task or
 journal: pause is `stop`, resume and revive are `start` with the harness's
@@ -114,11 +114,17 @@ skeleton, the protocol version it targets and that CI.
 
 ### Attaching
 
-thurbox needs no runtime library. With `attach`'s `argv` it opens a pty pane,
-as Program panes already do, which works for any runtime (`ssh -t`,
-`docker exec -it`, `tmux attach`). When the answer carries `tmux`, it adopts
-the pane over its own control-mode client instead. Fleet carries no terminal
-bytes.
+thurbox works without knowing any runtime. It runs `attach`'s `argv` in a
+pty pane, as Program panes already do, and renders it with `vt100`. The same
+code serves every runtime (`docker exec -it`, `ssh -t`, `mux-runtime view`).
+
+Presenting one clean terminal is the runtime's job, not the interface's. For
+the tmux family, `attach` answers `mux-runtime view <key>`: a process that
+bridges the window over the runtime's own control-mode client to its stdin and
+stdout, with no nested status bar or prefix key, and forwards the pty's size.
+Scrollback, resize and reconnection over ssh and WSL stay in the runtime.
+Fleet carries no terminal bytes; the interface carries them from one process
+it started, never from a multiplexer it knows.
 
 ## Where the SQLite tables go
 
@@ -147,10 +153,12 @@ Each step ships alone and starts with its end-to-end test.
 
 1. **Workspace.** Turn this repository into a Cargo workspace, the current
    code as `crates/thurbox`. No behaviour change.
-2. **Extract `mux`.** Move `src/backend` into `crates/mux` with
+2. **Extract `mux`.** Move all of `src/backend`, control mode and the
+   tmux/psmux/rmux dialects included, into `crates/mux` with
    `config::hosts`, `agent::host_path` and `agent::preflight`; inject what it
-   reads from `session::settings`. The tmux control-mode client stays in
-   thurbox. Add the `architecture.toml` rule.
+   reads from `session::settings`. Add the `architecture.toml` rule. Until
+   step 5, thurbox reaches its panes through `mux`'s `view` process rather
+   than by linking it.
 3. **Import Fleet** with its history under `crates/fleet-*`, its docs under
    `docs/fleet/`. Pin one toolchain (Fleet's); editions may differ per crate.
    One CI with path filters; component-scoped tags (`thurbox-v*`, `fleet-v*`,
@@ -160,7 +168,7 @@ Each step ships alone and starts with its end-to-end test.
    Fleet's P1 to P4 (workspaces, `fleet signal`, harness profiles, delivery by
    hook) land here if not before.
 5. **Views.** `fleet watch`, `fleet attach`, interactive Tasks without a brief;
-   thurbox's pty pane on an attach `argv` and adoption of a foreign pane.
+   `mux-runtime view`; thurbox's pty pane on an attach `argv`.
 6. **thurbox on Fleet.** `SnapshotSource` and `Executor` traits, then their
    Fleet implementations; thurbox starts `fleet up`.
 7. **Migrate.** `thurbox-cli migrate fleet`: one Task per live session,
@@ -178,8 +186,10 @@ Each step ships alone and starts with its end-to-end test.
 - Fork and `restart --fresh`: a conversation field on the Task, or dropped.
 - `hooks.toml` beyond `pre_launch`: harness settings or a Fleet plugin.
 - Shared hosts (ADR-24): one Fleet store per operator is assumed.
-- The tmux server Fleet's windows live on: the interface's own (`-L thurbox`)
-  so control mode adopts them without a second connection, assumed.
+- The tmux server Fleet's windows live on: the runtime's own socket, since
+  the interface no longer connects to it.
+- Latency of the `view` bridge against today's in-process control mode, to
+  measure in step 5 against PERFORMANCE.md's frame floors.
 - Windows (psmux) at the cutover, or after Linux and macOS.
 - VEGA stays a separate starter repository; Fleetlens moves under
   `extensions/`.

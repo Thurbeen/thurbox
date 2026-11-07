@@ -3409,7 +3409,8 @@ only through its CLI (`fleet watch`, `apply`, `send`, `delete`, `attach`).
 Fleet reaches sessions only through a process protocol (`start`, `inspect`,
 `stop`, and optionally `input`, `capture`, `exec`, `attach`) that any runtime
 implements. `src/backend` becomes that runtime, `mux` and `mux-runtime`, with
-no knowledge of Fleet, agents or the interface. The three live in this
+no knowledge of Fleet, agents or the interface; the interface knows no
+runtime, and shows a session by running the command `attach` answers in a pty. The three live in this
 repository, Fleet imported with its history, and one `architecture.toml`
 forbids any Rust dependency between them.
 
