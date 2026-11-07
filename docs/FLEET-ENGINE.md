@@ -96,6 +96,7 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | `start` | yes | adopts the one live process holding the key, else starts `argv` with `env` in the workspace `ref` this runtime made, or in a `{dir}` |
 | `inspect` | yes | `None`, `Running{id}`, `Exited{id, code}` |
 | `stop` | yes | a process already gone counts as stopped |
+| `list` | no | every process key the runtime holds, for the collector |
 | `input` | no | types text, optionally submits |
 | `capture` | no | screen text, cursor, foreground process |
 | `exec` | no | a bounded command, `in: host` or `in: workspace` (inside the place), deadline and output cap |
@@ -278,7 +279,7 @@ runtime makes.**
 | --- | --- |
 | which repositories, `ref` and `branch`, the workspace key | where the files live and how they get there |
 | when: materialize once before the first start, clean once after release | the paths the process sees them at |
-| whether a workspace may be cleaned (dirty, ahead) and the retention (`onDelete`) | the facts: is it whole, is it dirty, what is checked out |
+| when to clean, and the retention of preserved work | the facts (whole, dirty, what is checked out) and preserving work before removing |
 | `status.workspace`, and every retry or wait | the sources and credentials of its place |
 
 ### The workspace verbs
@@ -289,10 +290,11 @@ concludes.
 
 | Verb | Answer |
 | --- | --- |
-| `workspace.materialize` | `{key, repositories: [{name, url \| path, ref, branch?}]}`, whole or nothing: `Materialized{ref, adopted}`, `Unmapped{repository}`, `BranchBusy{repository}`, `Failed{why}` |
+| `workspace.materialize` | `{key, repositories: [{name, url \| path, ref, branch?}]}`, whole or nothing: `Materialized{ref, adopted}`, `Unmapped{repository}`, `Failed{why}` |
 | `workspace.find` | the whole workspace under `key`, or `None`; a partial one is `None` and the next materialize rolls it back |
 | `workspace.status` | per repository: branch, head, dirty, commits not on any remote |
-| `workspace.clean` | `{ref, allowDirty}`: `Cleaned`, or `Dirty` when it re-checks and finds changes and `allowDirty` is false |
+| `workspace.clean` | `{ref, mode: preserve \| discard}`: `Cleaned{preserved: [{name, ref, commit}]}` |
+| `workspace.list` | every workspace key the runtime holds, for the collector |
 
 A workspace `ref` carries an opaque `id` for the runtime, the `dir` and
 `extra_dirs` **as the process sees them**, and the `trustRoot`. Fleet passes
@@ -304,6 +306,9 @@ Two declarations in `manifest` tell Fleet what it can rely on:
 
 - `workspace.survivesStop`: the files outlive the process. When false, Fleet
   never pauses an idle session of that runtime, because pause is stop.
+- `workspace.durableSource`: where preserved work lands (the host's mirror or
+  checkout, or a remote). A runtime whose files die with the place (a VM disk,
+  a volume) must push there before it removes anything.
 - `workspace.sharesHost`: the process sees the host's filesystem. Only then
   is a repository named by `path` accepted, and only then may the interface
   read the files directly.
@@ -342,26 +347,58 @@ environment) implements the verbs itself.
   symlink workspace goes.
 - Branches: no `branch` makes `<prefix>/<task name>` from `ref`; a new name
   makes that branch; an existing branch is checked out, and one checked out
-  elsewhere answers `BranchBusy`.
-- `clean` removes worktrees, never branches: commits stay in the source.
+  elsewhere gets `<branch>-<n>` from its head.
+- `clean` in `preserve` mode, per repository: a dirty worktree is committed,
+  untracked files included, through a temporary index onto
+  `refs/fleet/preserved/<key>/<name>` (the branch itself is left as the agent
+  left it); the branch and that ref are pushed to the durable source; then the
+  worktree is removed. Branches are never deleted by `clean`.
+- Retention is pruned by `workspace-git` itself on each call against a
+  source: a preserved ref older than `preserve.days` (default 30) goes, and a
+  `<prefix>/*` branch goes once its head is reachable from a remote ref
+  (pushed or merged). No state in Fleet is needed for it.
 
-### Lifecycle
+### Lifecycle, with no person in the loop
+
+Cleaning never waits for anyone. Nothing is lost because work is preserved
+before files are removed, and nothing stays stuck because a collector finishes
+what a deletion could not.
 
 ```text
-materialize ──▶ start(ref) ──▶ (stop / start … pause, resume, revive) ──▶ release ──▶ status ──▶ clean
-   once                    the workspace is untouched                              Fleet decides   once
+materialize ──▶ start(ref) ──▶ (stop / start … pause, resume, revive) ──▶ release ──▶ clean(preserve)
+   once                    the workspace is untouched                                      once, or the collector
 ```
 
 - After an Unknown `materialize`, Fleet asks `find`, never materializes
   blindly again.
-- Before cleaning, Fleet reads `status`. Uncommitted changes or unpushed
-  commits make the Task wait with `NeedsAttention/WorkspaceDirty` until a
-  person commits, pushes, discards, or deletes with `--force`
-  (`allowDirty: true`). `clean` re-checks, so a change made in between
-  answers `Dirty` rather than being lost.
+- `clean` defaults to `preserve`. Uncommitted changes become a preserved ref
+  and unpushed commits stay on their branch in the durable source, so there is
+  no dirty state to ask about. `fleet delete --discard` asks for `discard`,
+  which skips preserving; nothing else does.
+- `fleet workspace preserved` lists the preserved refs, through the runtime's
+  `exec`, and `fleet workspace restore <ref>` opens a new Task on one.
+- A busy branch does not wait either: when the requested branch is checked
+  out elsewhere, the workspace gets `<branch>-<n>` from that branch's head,
+  and `status.workspace` records the branch it got.
 - `spec.workspace.onDelete: keep` leaves the files and forgets them.
 - thurbox's soft delete stops the Task and sets `dispatch: false`; restoring
   starts it again in the same workspace.
+
+### The collector
+
+A deletion releases the session and tries `clean` once. Whatever it could not
+finish, an unreachable host, an Unknown answer, a crash between two effects,
+is not a reason to keep the Task: its finalizer goes, and the collector takes
+over. On each sweep, per runtime that implements `list`:
+
+- every workspace key with no live Task in the store is cleaned in `preserve`
+  mode;
+- every process key (`list` on processes) with no live Task is stopped.
+
+The store proves the Task's absence (Known); the runtime proves the leftover
+exists (Known). Unknown on either side does nothing until the next sweep. The
+key carries the Task's uid, so a recreated Task with the same name is never
+mistaken for the old one.
 
 A `{dir}` workspace exists before the Task and is the user's: nothing makes,
 checks or cleans it, and the runtime must see it (`sharesHost`, or a runtime
