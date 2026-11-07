@@ -3397,7 +3397,7 @@ the characters that would act on the terminal, reorder the row or hide text,
 though not of everything unusual, and a key carrying one is not published; it
 is untrusted text, which a pane renders as text.
 
-## ADR-41: Fleet is thurbox's engine; the multiplexer runtime is its own component
+## ADR-41: Fleet is thurbox's engine; sessions run on runtimes
 
 > **Accepted, not yet implemented.** The design and the migration are
 > [FLEET-ENGINE.md](FLEET-ENGINE.md). Once its delete step lands, this
@@ -3408,8 +3408,8 @@ Task; thurbox keeps no session state and no SQLite database, and reaches Fleet
 only through its CLI (`fleet watch`, `apply`, `send`, `delete`, `attach`).
 Fleet reaches sessions only through a process protocol (`start`, `inspect`,
 `stop`, and optionally `input`, `capture`, `exec`, `attach`) that any runtime
-implements. `src/backend` becomes that runtime, `mux` and `mux-runtime`, with
-no knowledge of Fleet, agents or the interface; the interface knows no
+implements: a multiplexer, a container, a VM. `src/backend` becomes the first,
+`runtime-mux`, with no knowledge of Fleet, agents or the interface; the interface knows no
 runtime, and shows a session by running the command `attach` answers in a pty. The three live in this
 repository, Fleet imported with its history, and one `architecture.toml`
 forbids any Rust dependency between them.
@@ -3426,7 +3426,10 @@ release channels where they are.
 - *Fleet drives `thurbox-cli runtime`* (Thurbeen/fleet#401 as filed): the
   runtime would stay inside the interface's binary, so Fleet would still need
   thurbox.
-- *A mux runtime written inside Fleet* (#1681 step 6): rewrites psmux, WSL and
+- *One runtime per multiplexer*: tmux, psmux and rmux share one protocol
+  server (ADR-31); splitting them duplicates it, and which one a host runs is
+  a fact of the place, which belongs to the runtime.
+- *A multiplexer runtime written inside Fleet* (#1681 step 6): rewrites psmux, WSL and
   ssh handling that `src/backend` already has.
 - *Separate repositories*: equal isolation once contracts are process-only, but
   every migration step would span repositories. Still open later, since
