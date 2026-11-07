@@ -328,16 +328,14 @@ V2 does not read or migrate v1 queue records or configuration. Root
 `FLEET_MAJOR=2` is the boundary checked by v1 installations containing the
 freeze guard; unpatched clients need the pinned release first. The
 [README](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/README.md) owns frozen v1 installation, explicit v2 installation
-and the deliberate cutover procedure.
-[Migrating from v1](migrating-from-v1.md) maps v1 concepts, configuration and
-commands to v2. Release publication requires native tests
+and the deliberate cutover procedure. Release publication requires native tests
 and installed offline bootstrap acceptance.
 
 ## Toward thurbox's engine
 
 The sections above describe Fleet as it runs today. Fleet is becoming the
 engine behind thurbox ([the overview](../README.md)); these sections are the
-target, and each lands with its [migration step](../README.md#migration). The
+target, tracked in [#1688](https://github.com/Thurbeen/thurbox/issues/1688). The
 runtime side, the protocol and the terminal stream, is
 [Runtimes](../runtime/README.md).
 

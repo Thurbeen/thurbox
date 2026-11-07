@@ -346,7 +346,7 @@ docs/thurbox/orchestration.md the control-plane pattern. docs/thurbox/benchmark-
 owns how thurbox compares with raw tmux and Herdr as a host for agent sessions,
 and the method of the harness under scripts/bench/ that measures it. docs/README.md owns the
 system: the split between thurbox, Fleet and the runtimes, which page owns
-each contract between them, and the migration. docs/fleet/ is Fleet's
+and each contract between them. docs/fleet/ is Fleet's
 documentation and docs/runtime/ the runtimes', each with a README.md index
 saying what its pages own. packaging/README.md owns the
 packaging overview and scripts/dev/README.md the dev-scripts index. README.md

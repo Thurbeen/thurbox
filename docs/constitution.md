@@ -11,8 +11,7 @@ The rules come in two parts:
 - [Per component](#per-component): rules that hold inside one component.
 
 A component's rule may add to a shared rule and never relaxes one. Where a
-mechanism exists in one component only, the enforcement map says so, and the
-[migration](README.md#migration) brings it to the whole workspace.
+mechanism exists in one component only, the enforcement map says so.
 
 ## Every component
 
@@ -378,8 +377,8 @@ to the same by `fleet recipe check`.
 
 | Rule | Enforced by | Where |
 |---|---|---|
-| 1. Components meet only through processes | One `architecture.toml` checked by `fleet-arch` | From migration step 3; today the components are separate repositories |
-| 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox; runtimes from step 4 |
+| 1. Components meet only through processes | One `architecture.toml` checked by `fleet-arch` | Once Fleet's crates are imported; today the components are separate repositories |
+| 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox; runtimes once the runtime protocol ships |
 | 3. Crash-free operation | Code review | All |
 | 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | thurbox CI + pre-commit; Fleet `cargo xtask check` |
 | 5. Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` in each |
@@ -397,5 +396,5 @@ to the same by `fleet recipe check`.
 | F2. One bounded spawner | `fleet-arch` (restricted process APIs) | Fleet |
 | F3. Intent and receipt | Contract tests in `fleet/contracts.md` | Fleet |
 | F4. One writer per field | `fleet-arch` (permitted status writers) | Fleet |
-| R1. A runtime knows no Task | The protocol's schema | From step 4 |
-| R2. Idempotent by key | `fleet runtime check`, `fleet recipe check` | From step 4 |
+| R1. A runtime knows no Task | The protocol's schema | Once the runtime protocol ships |
+| R2. Idempotent by key | `fleet runtime check`, `fleet recipe check` | Once the runtime protocol ships |
