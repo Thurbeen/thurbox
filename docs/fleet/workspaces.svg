@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 620" role="img" aria-labelledby="title desc">
+<title id="title">Workspaces: Fleet decides, a recipe prepares, the runtime places</title>
+<desc id="desc">Fleet decides which recipe, repositories, parameters and key a Task's workspace has, materializes it once before the first start and cleans it once after release, and keeps retention and status. A recipe is a program with the verbs manifest, materialize, find, status, clean and list; it prepares the workspace: worktrees or clones, setup steps such as npm ci, teardown, preserving work before removal. workspace-git is the default recipe; a user configures it, adds setup and teardown steps, or replaces it with a program of their own, validated by fleet recipe check. The runtime places the recipe with its workspace.run verb, running it where the files belong: on the host for runtime-mux, on the docker host for a bind mount, in a helper container on a volume, inside a guest for a VM; start then exposes the paths to the process. Cleaning never waits for a person: clean in preserve mode commits uncommitted work onto a preserved ref and pushes it to the durable place, and the collector cleans every workspace and stops every process whose Task is gone.</desc>
+<style>
+  svg { color-scheme:light dark }
+  .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
+  .box{stroke:#7890a6;stroke-width:1.5}
+  .engine{fill:#e9f5ef} .recipe{fill:#f6ecf7} .runtime{fill:#f3f4f5} .place{fill:#fff2de}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
+  .icon{fill:none;stroke:#405367;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .contract{fill:none;stroke:#7890a6;stroke-width:1.5;stroke-dasharray:6 5}
+  @media (prefers-color-scheme: dark) {
+    .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a}
+    .engine{fill:#173b2d} .recipe{fill:#3a2740} .runtime{fill:#202a33} .place{fill:#493517}
+    .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} .icon{stroke:#a9bdd0} .contract{stroke:#71869a}
+  }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker>
+  <symbol id="i-engine" viewBox="0 0 24 24"><circle class="icon" cx="12" cy="12" r="3"/><path class="icon" d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></symbol>
+  <symbol id="i-recipe" viewBox="0 0 24 24"><path class="icon" d="M6 2h9l5 5v15H6z"/><path class="icon" d="M15 2v5h5M9 12h7M9 16h7"/></symbol>
+  <symbol id="i-git" viewBox="0 0 24 24"><circle class="icon" cx="6" cy="5" r="2.5"/><circle class="icon" cx="6" cy="19" r="2.5"/><circle class="icon" cx="18" cy="9" r="2.5"/><path class="icon" d="M6 7.5v9M18 11.5c0 3-3 4-6 4.5-2 .4-3 1-3 1"/></symbol>
+  <symbol id="i-mux" viewBox="0 0 24 24"><rect class="icon" x="2" y="3" width="20" height="18" rx="2"/><path class="icon" d="M2 9h20M9 9v12M15 9v12"/></symbol>
+  <symbol id="i-container" viewBox="0 0 24 24"><path class="icon" d="M3 8l9-4 9 4v8l-9 4-9-4z"/><path class="icon" d="M3 8l9 4 9-4M12 12v8"/></symbol>
+  <symbol id="i-vm" viewBox="0 0 24 24"><rect class="icon" x="2" y="3" width="20" height="14" rx="2"/><path class="icon" d="M8 21h8M12 17v4"/><rect class="icon" x="6" y="7" width="12" height="6" rx="1"/></symbol>
+  <symbol id="i-broom" viewBox="0 0 24 24"><path class="icon" d="M14 3l7 7M10 7l7 7-6 6-7-7z"/><path class="icon" d="M4 13l7 7M3 21h6"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path class="icon" d="M12 2l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V5z"/><path class="icon" d="M9 12l2 2 4-4"/></symbol>
+</defs>
+<rect class="background" width="1080" height="620" rx="12"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
+  <text x="30" y="36" font-size="21" font-weight="700">Workspaces: Fleet decides, a recipe prepares, the runtime places</text>
+  <text x="30" y="61" font-size="14">Preparation is the user's to define; the guarantees are the recipe contract, checked by fleet recipe check.</text>
+
+  <!-- three columns -->
+  <g class="box">
+    <rect class="engine" x="30" y="90" width="320" height="236" rx="8"/>
+    <rect class="recipe" x="380" y="90" width="320" height="236" rx="8"/>
+    <rect class="runtime" x="730" y="90" width="320" height="236" rx="8"/>
+  </g>
+  <use href="#i-engine" x="48" y="106" width="28" height="28"/>
+  <text x="88" y="125" font-size="17" font-weight="650">Fleet decides</text>
+  <text x="48" y="156" font-size="13">which recipe, repositories, params, key</text>
+  <text x="48" y="176" font-size="13">materialize once before the first start</text>
+  <text x="48" y="196" font-size="13">clean once after release</text>
+  <text x="48" y="216" font-size="13">retention of preserved work</text>
+  <text x="48" y="236" font-size="13">status.workspace · every retry</text>
+  <text x="48" y="266" font-size="12" class="muted">after an Unknown materialize: find,</text>
+  <text x="48" y="284" font-size="12" class="muted">never a second blind materialize</text>
+
+  <use href="#i-recipe" x="398" y="106" width="28" height="28"/>
+  <text x="438" y="125" font-size="17" font-weight="650">a recipe prepares</text>
+  <text x="398" y="156" font-size="13">a program: manifest · materialize · find</text>
+  <text x="398" y="176" font-size="13">status · clean · list</text>
+  <text x="398" y="196" font-size="13">params validated by its own schema</text>
+  <g class="contract"><rect x="398" y="208" width="284" height="104" rx="6"/></g>
+  <text x="412" y="230" font-size="12" font-weight="650" class="muted">three levels, each optional</text>
+  <text x="412" y="252" font-size="13">1 · configure workspace-git, the default</text>
+  <text x="412" y="272" font-size="13">2 · add setup and teardown steps</text>
+  <text x="412" y="292" font-size="13">3 · replace it with any program</text>
+
+  <use href="#i-mux" x="748" y="106" width="28" height="28"/>
+  <text x="788" y="125" font-size="17" font-weight="650">the runtime places</text>
+  <text x="748" y="156" font-size="13">workspace.run {recipe, verb, request}</text>
+  <text x="748" y="176" font-size="13">runs the recipe where the files belong</text>
+  <text x="748" y="196" font-size="13">FLEET_WORKSPACE_ROOT · FLEET_DURABLE</text>
+  <text x="748" y="216" font-size="13">start exposes the paths to the process</text>
+  <text x="748" y="246" font-size="12" class="muted">manifest: survivesStop · durable · sharesHost</text>
+  <text x="748" y="266" font-size="12" class="muted">without workspace.run: {dir} Tasks only</text>
+
+  <g class="arrow"><path d="M350 208 H378"/><path d="M700 208 H728"/></g>
+
+  <!-- where each runtime runs the recipe -->
+  <text x="30" y="362" font-size="14" font-weight="650">Where the recipe runs, and what the process sees</text>
+  <g class="box">
+    <rect class="place" x="30" y="376" width="240" height="96" rx="8"/>
+    <rect class="place" x="290" y="376" width="240" height="96" rx="8"/>
+    <rect class="place" x="550" y="376" width="240" height="96" rx="8"/>
+    <rect class="place" x="810" y="376" width="240" height="96" rx="8"/>
+  </g>
+  <use href="#i-mux" x="46" y="390" width="22" height="22"/>
+  <text x="76" y="406" font-size="14" font-weight="650">runtime-mux</text>
+  <text x="46" y="430" font-size="12">on the host: local, ssh, WSL</text>
+  <text x="46" y="450" font-size="12" class="muted">same filesystem</text>
+  <use href="#i-container" x="306" y="390" width="22" height="22"/>
+  <text x="336" y="406" font-size="14" font-weight="650">container · bind</text>
+  <text x="306" y="430" font-size="12">on the docker host</text>
+  <text x="306" y="450" font-size="12" class="muted">bind mounts at the same paths</text>
+  <use href="#i-container" x="566" y="390" width="22" height="22"/>
+  <text x="596" y="406" font-size="14" font-weight="650">container · volume</text>
+  <text x="566" y="430" font-size="12">a one-shot helper container</text>
+  <text x="566" y="450" font-size="12" class="muted">the key's volume at /workspace</text>
+  <use href="#i-vm" x="826" y="390" width="22" height="22"/>
+  <text x="856" y="406" font-size="14" font-weight="650">runtime-vm</text>
+  <text x="826" y="430" font-size="12">inside the guest, or the host</text>
+  <text x="826" y="450" font-size="12" class="muted">guest disk, or virtiofs</text>
+
+  <!-- cleanup -->
+  <g class="box"><rect class="engine" x="30" y="500" width="500" height="100" rx="8"/><rect class="engine" x="550" y="500" width="500" height="100" rx="8"/></g>
+  <use href="#i-shield" x="46" y="514" width="24" height="24"/>
+  <text x="78" y="531" font-size="14" font-weight="650">clean · preserve, by default</text>
+  <text x="46" y="556" font-size="12">uncommitted work → a preserved ref, pushed to the durable place</text>
+  <text x="46" y="574" font-size="12">branches never deleted · retention pruned by workspace-git</text>
+  <text x="46" y="592" font-size="12" class="muted">only delete --discard skips it · fleet workspace preserved / restore</text>
+  <use href="#i-broom" x="566" y="514" width="24" height="24"/>
+  <text x="598" y="531" font-size="14" font-weight="650">the collector · no person in the loop</text>
+  <text x="566" y="556" font-size="12">a deletion tries clean once and lets the Task go whatever happens</text>
+  <text x="566" y="574" font-size="12">each sweep: every leftover whose Task is gone is cleaned or stopped</text>
+  <text x="566" y="592" font-size="12" class="muted">store proves absence, runtime proves presence · Unknown waits a sweep</text>
+</g>
+</svg>

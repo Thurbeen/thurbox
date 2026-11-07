@@ -5,7 +5,7 @@ sessions, holding them, showing them, typing into them, and surviving a crash.
 Same stand-in agent everywhere, so what differs is the host.
 
 This document retains the historical three-way measurements and their harness.
-The [source-pinned five-way website comparison](../website/docs/performance.html)
+The [source-pinned five-way website comparison](../../website/docs/performance.html)
 adds RMUX, stage-1 deltas, repeated-run noise, received wakeups and remaining gaps.
 Its sixty-five-second host CPU accounting includes short-lived helper processes;
 keep that denominator separate from the older measurements below.
@@ -277,7 +277,7 @@ has been done since.
 
 The question: *can the interface lazily parse sessions that are not on
 screen?* The answer is yes, and the design and its reasons are ADR-P27 in
-[PERFORMANCE.md](PERFORMANCE.md#adr-p27-a-session-nobody-is-looking-at-keeps-no-grid-2026-09-23).
+[performance.md](performance.md#adr-p27-a-session-nobody-is-looking-at-keeps-no-grid-2026-09-23).
 In short: a session off screen for `hidden_terminal_secs` (default 30), or never
 shown, keeps a two-cell parser that still reads its output for the title,
 bells, notifications and the "printing" stamp; showing or searching it rebuilds
@@ -465,7 +465,7 @@ when output landed. Now a key sent to a terminal owes an echo: the loop sleeps
 on the terminal *and* on a pipe that pane's output reader pokes, holds the key's own
 frame for it, and paints it at once by redrawing only that pane over the last
 frame
-([ADR-P28](PERFORMANCE.md#adr-p28-a-keystrokes-echo-is-painted-at-once-2026-09-23)).
+([ADR-P28](performance.md#adr-p28-a-keystrokes-echo-is-painted-at-once-2026-09-23)).
 It is still slower than Herdr and tmux when nothing else is happening. A trace
 of one key from the earlier 3.4 ms run puts ~1.4 ms in re-rendering the pane and
 flushing the frame, ~1.1 ms through tmux's control mode and the threads between

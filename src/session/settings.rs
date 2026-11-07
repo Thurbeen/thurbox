@@ -91,7 +91,7 @@ pub struct Settings {
 /// session, plus the agent's `telemetry_env` / `telemetry_args` from
 /// `agents.toml` for the switches the spec does not cover. Read at each spawn
 /// and restart, so a change applies to the next one; a running agent keeps the
-/// environment it launched with. See ADR-36 in `docs/ARCHITECTURE.md`.
+/// environment it launched with. See ADR-36 in `docs/thurbox/architecture.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TelemetrySettings {
     /// Master switch.
@@ -226,7 +226,7 @@ pub struct FeatureFlags {
     #[serde(default = "default_true")]
     pub code_review: bool,
     /// Perf HUD overlay (F12): live perf counters + frame/tick timing. Opening
-    /// it also turns on wall-clock timing collection (see docs/PERFORMANCE.md).
+    /// it also turns on wall-clock timing collection (see docs/thurbox/performance.md).
     #[serde(default = "default_true")]
     pub perf_hud: bool,
     /// Mouse support: terminal mouse capture plus all click/scroll/hover

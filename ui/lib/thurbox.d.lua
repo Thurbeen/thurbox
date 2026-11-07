@@ -798,7 +798,7 @@
 ---@class (exact) thurbox.Granted
 ---@field run? boolean
 ---@field program? boolean
----@field sessions? boolean Verbs that drive an agent or lose something for good are applied (docs/PLUGINS.md).
+---@field sessions? boolean Verbs that drive an agent or lose something for good are applied (docs/thurbox/plugins.md).
 ---@field files? boolean `files` is present.
 
 --- Everything readable. Rebuilt each publish; a group whose inputs did not move

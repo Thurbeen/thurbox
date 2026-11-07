@@ -83,7 +83,7 @@ repos:
       - id: bash-install-tests
         name: Bash install script tests
         # From PATH: an absolute ~/.local/bin path fails under the flake (nix store),
-        # under the package-manager route docs/DEVELOPMENT.md documents, and in CI.
+        # under the package-manager route docs/thurbox/development.md documents, and in CI.
         entry: bats scripts/install.bats
         language: system
         files: scripts/install\.(sh|bats)

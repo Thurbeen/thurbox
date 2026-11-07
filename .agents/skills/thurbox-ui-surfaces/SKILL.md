@@ -53,7 +53,7 @@ A topmost open floating plugin may handle the reserved focus actions through
 without changing pane focus; `false`, no hook, or an error keeps the normal pane
 cycle. Closed and covered floats are not offered it. This is an opt-in hook,
 not a way to claim reserved chords; quit, reload and recovery remain reserved.
-`docs/PLUGINS.md` → Floating views and the native focus cycle has the example.
+`docs/thurbox/plugins.md` → Floating views and the native focus cycle has the example.
 
 Two properties the registry holds and `tests/keymap.rs` asserts:
 
@@ -122,7 +122,7 @@ itself before thurbox sees the key.
 ## Themes
 
 Thirty-six palettes — twenty-eight dark, eight light; the enumeration is in
-`theme` and `docs/FEATURES.md`. Users add their own in
+`theme` and `docs/thurbox/features.md`. Users add their own in
 `~/.config/thurbox/themes.toml` (a built-in `base` plus per-colour overrides); they
 appear in the picker after the built-ins and persist by name exactly like a preset.
 
@@ -218,7 +218,7 @@ present on disk, not loaded, so nothing tried to load it and its error is silent
 until it is switched on. Each of the four keys reloads the interface, so the result
 is on the next frame. The `reload failed` panel is not painted over an open system
 modal — it used to cover this tab, the tool for fixing it; it returns on close.
-Documented for users in `docs/PLUGINS.md` → **When something goes wrong**; the same three answers with no TTY are `plugin list` / `plugin dir` /
+Documented for users in `docs/thurbox/plugins.md` → **When something goes wrong**; the same three answers with no TTY are `plugin list` / `plugin dir` /
 `plugin check`.
 
 `settings.toml` is **live-reloaded** (mtime poll): an outside edit re-applies the
@@ -316,7 +316,7 @@ What survived, because it is not view code:
   target report "no changes" after an agent wrote new ones. There is deliberately no
   body-only `git diff HEAD` helper — having one is how that omission happened.
   Rationale + the rejected temporary-index approach: ADR-P6's diff bullets in
-  `docs/PERFORMANCE.md`.
+  `docs/thurbox/performance.md`.
 
 So a review plugin has its data layer waiting for it. Two rules from the v1 design
 still apply if you build one: **1 logical diff row = 1 selectable unit** (wrapping

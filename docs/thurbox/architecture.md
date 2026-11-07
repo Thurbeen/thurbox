@@ -328,7 +328,7 @@ short single-row upserts, so a bounded wait beats an immediate
 `SQLITE_BUSY` error or an unbounded freeze) plus the WAL-friendly
 performance pragmas `synchronous = NORMAL`, `cache_size`, `mmap_size`,
 and `temp_store = MEMORY` (`storage::schema::initialize`; rationale in
-`docs/PERFORMANCE.md` ADR-P6). The append-only
+`docs/thurbox/performance.md` ADR-P6). The append-only
 **audit log is pruned to 90 days** on `Database::open` — entries
 are debugging breadcrumbs, not compliance data, and unbounded
 growth would bloat the database over months of use.
@@ -504,7 +504,7 @@ its name as public JSON. The backend a row belongs to is its route,
 `TmuxCompatible`) or the tmux adapter, never "any multiplexer". The persisted
 and published spellings — `backend_type`, `backend_id`, `tmux_socket` — predate
 the vocabulary and keep their names, because changing them would break every
-reader of the database and the JSON (`docs/CONFIG.md` → Relocating an
+reader of the database and the JSON (`docs/thurbox/config.md` → Relocating an
 instance).
 
 **Key design decisions**:
@@ -624,7 +624,7 @@ both, and is what thurbox injects into each session it spawns so an in-session
 `thurbox-cli` is *told* the socket rather than re-deriving it from a tmux
 server's inherited environment. `version --json` reports the name in force —
 never assume it. Relocation is not a migration: an instance moved before this
-existed keeps its old sessions on the old server (docs/CONFIG.md → Relocating
+existed keeps its old sessions on the old server (docs/thurbox/config.md → Relocating
 an instance).
 
 **Output streaming**: `%output` notifications from control mode,
@@ -1466,7 +1466,7 @@ trigger-maintained row and hook-liveness generations. Perf telemetry changes
 neither; a same-state hook updates cached liveness without a full rebuild.
 Triggers conservatively cover other table changes, including older writers.
 Additive migrations re-assert the triggers so new columns remain covered.
-See ADR-P6 and ADR-P11 in `docs/PERFORMANCE.md`.
+See ADR-P6 and ADR-P11 in `docs/thurbox/performance.md`.
 
 *This supersedes the original TOML file-based approach. The migration
 to SQLite resolved race conditions where concurrent `save_state()` calls
@@ -1607,7 +1607,7 @@ at creation time; each agent runs with its own default config.
 Agents are described as **data** in `~/.config/thurbox/agents.toml`
 (sibling of any other config), seeded with built-ins (claude,
 codex, antigravity, opencode, aider, copilot, vibe, pi, omp, and a plain
-`shell` — `docs/AGENTS.md`) on first run via
+`shell` — `docs/thurbox/agents.md`) on first run via
 `agent::agent_config::load_or_seed`. An `AgentDef` carries a
 `command`, `args` (always passed — bake in flags like a model
 here if you want), and argument-template groups (`resume_args`,
@@ -1883,7 +1883,7 @@ at TUI startup. An extension's own installer delegates its bootstrap to
 > startup and terminal-side helpers), and there is still exactly one model and
 > one loop. Unlike `app`, the coordinator is **not** `EXEMPT`: it has its own
 > entry in `tests/architecture_rules.rs` listing the layers it wires
-> (`docs/CONSTITUTION.md` §2). The rejected alternatives below still stand.
+> (`docs/constitution.md` T1). The rejected alternatives below still stand.
 
 **Choice**: Keep the single `App` model (ADR-1, TEA) but split its
 ~11.7k-line `app/mod.rs` into per-domain sub-files under `src/app/`,
@@ -2002,14 +2002,14 @@ native focus cycle through the bounded `on_focus_cycle("next"|"previous")` hook.
 The kernel routes the direction and preserves pane focus when consumed; Lua
 owns target order, selection and wrapping. Declining retains the ordinary pane
 cycle. This extends the plugin API without giving the kernel a card or row model;
-quit, reload and recovery keys remain reserved. See `docs/PLUGINS.md`.
+quit, reload and recovery keys remain reserved. See `docs/thurbox/plugins.md`.
 
 **The name is the constraint on how this shipped.** The updater in an installed
 binary hard-fails on a known binary missing from a release archive and swallows the
 error, so an archive that dropped the name `thurbox` would silently end auto-update
 for every install already out there, unfixably. The kernel therefore inherited the
 name rather than shipping beside it, and a profile with v1 history meets a one-time
-gate (`kernel::consent`) before anything changes. See `docs/RELEASING.md`.
+gate (`kernel::consent`) before anything changes. See `docs/thurbox/releasing.md`.
 
 **Cost, accepted**: a frame is more expensive — every pane is a Lua call returning a
 table that is converted and painted — so the loop settles aggressively and every
@@ -2457,7 +2457,7 @@ mechanisms now, and they answer different halves:
 
 - **The row is held for the length of a restart.** `restart::hold_restart` is
   `session_ops::lock` on the session id — the lease a name's creator takes
-  (docs/FEATURES.md → "Two creators never reach an `--on-existing`") on a row
+  (docs/thurbox/features.md → "Two creators never reach an `--on-existing`") on a row
   rather than a name — and a
   `restart --if-missing` declines a row somebody else is replacing the window
   of. It is the only thing the two processes share, and it is what stops a
@@ -2566,7 +2566,7 @@ active host session.
 `Command::Reap` is the one command the bus keeps no
 in-flight record of — it recurs forever with nobody waiting on it, and a row
 there is drawn, captioned and counted as activity (ADR-P22 in
-`docs/PERFORMANCE.md`). Alongside it, a caller that changes **one column** of a
+`docs/thurbox/performance.md`). Alongside it, a caller that changes **one column** of a
 session row uses a targeted setter (`claim_backend_id`, `set_session_shell`,
 `set_display_order`) rather than the full-row `upsert_session`.
 
@@ -2758,7 +2758,7 @@ Windows host the last instance to paint still wins, as before.
 **Choice**: `sessions.backend_type` is parsed by exactly one function,
 `session::Route::parse`, into a **machine** (local, `ssh:<host>`,
 `wsl:<distro>`) and an optional **multiplexer**; `Route::format` is its only
-writer. The grammar and each spelling's meaning are in `docs/CONFIG.md` →
+writer. The grammar and each spelling's meaning are in `docs/thurbox/config.md` →
 *Multiplexer choice and existing sessions*. A row written before routes named
 their multiplexer is **unqualified**, and `Route::multiplexer` settles it the
 way such rows were always read: the platform default locally, psmux for a host
@@ -3007,7 +3007,7 @@ unverified. `Rmux::check_banner` rejects versions below 0.10.0; the server
 reports a tmux compatibility version, so it cannot supply the RMUX floor.
 The [0.10.0 release](https://github.com/Helvesec/rmux/releases/tag/v0.10.0)
 changed the daemon wire protocol from 5 to 8 and rejects 0.9.x daemons.
-See [CONFIG.md](CONFIG.md#multiplexer-requirements-and-rmux-setup) for
+See [config.md](config.md#multiplexer-requirements-and-rmux-setup) for
 installation, selection, and the verified version table.
 
 ## ADR-32: Hook status and the heartbeat are the route's backend's
@@ -3163,7 +3163,7 @@ server the moment it resumed.
 **Limits**: psmux has no socket directory and is untouched; RMUX is unmeasured
 and keeps tmux's default. A socket moved to a directory thurbox does not look
 in is still a server it cannot reach. The orphan left by an older build next to
-a live server is reported in the log and documented (`docs/CONFIG.md` → An
+a live server is reported in the log and documented (`docs/thurbox/config.md` → An
 orphaned tmux server); killing it is the only remedy.
 
 ## ADR-35: A session's key is its address; its name is a label
@@ -3285,12 +3285,12 @@ The `hooks` consumer now uses that same lease/cursor pair for
 the cursor's SQLite transaction, so delivery is at-least-once and carries
 `seq` for script-side deduplication. Watch and waits keep a process-local
 sequence number and share the bounded event reader and JSON projection with
-hooks. The limits and lifecycle rules live in [CONFIG.md](CONFIG.md#hookstoml)
-and [ORCHESTRATION.md](ORCHESTRATION.md#bounded-waits-and-read-side-evidence).
+hooks. The limits and lifecycle rules live in [config.md](config.md#hookstoml)
+and [orchestration.md](orchestration.md#bounded-waits-and-read-side-evidence).
 
 **Limits**: plain HTTP only. No TLS stack is in the tree, so an `https`
 backend is reached through a local Collector. A Prometheus backend needs the
-Collector's `deltatocumulative` processor (sample config in `docs/CONFIG.md`).
+Collector's `deltatocumulative` processor (sample config in `docs/thurbox/config.md`).
 If the metrics export succeeds and the log export then fails, the next tick
 counts that batch's metrics again. Agent attributes and the shared-host test
 both read the session row. An event whose row was removed (`forgotten`) before
@@ -3396,3 +3396,42 @@ any broken pane does, and the inventory names it. A meta value is stripped of
 the characters that would act on the terminal, reorder the row or hide text,
 though not of everything unusual, and a key carrying one is not published; it
 is untrusted text, which a pane renders as text.
+
+## ADR-41: Fleet is thurbox's engine; sessions run on runtimes
+
+> **Accepted, not yet implemented.** The design is
+> [the documentation overview](../README.md), and its steps are tracked in #1688.
+> Once thurbox's own session engine is deleted, this supersedes ADR-8, ADR-7b, ADR-8b, ADR-24 and ADR-26.
+
+**Choice**: thurbox becomes an interface over Fleet. Every session is a Fleet
+Task; thurbox keeps no session state and no SQLite database, and reaches Fleet
+only through its CLI (`fleet watch`, `apply`, `send`, `delete`, `attach`).
+Fleet reaches sessions only through a process protocol (`start`, `inspect`,
+`stop`, and optionally `input`, `capture`, `exec`, `attach`) that any runtime
+implements: a multiplexer, a container, a VM. `src/backend` becomes the first,
+`runtime-mux`, with no knowledge of Fleet, agents or the interface; the interface knows no
+runtime, and shows a session by running the command `attach` answers in a pty. The three live in this
+repository, Fleet imported with its history, and one `architecture.toml`
+forbids any Rust dependency between them.
+
+**Why**: thurbox and Fleet each held the same session facts, and every
+readiness fix had to agree across both (#1604, #1607, #1665). One owner removes
+the second copy. A process protocol keeps Fleet usable without thurbox and
+makes a new runtime one script. One repository keeps the many cross-component
+changes of the migration in one change and one CI, and keeps the stars and
+release channels where they are.
+
+**Rejected alternatives**:
+
+- *Fleet drives `thurbox-cli runtime`* (Thurbeen/fleet#401 as filed): the
+  runtime would stay inside the interface's binary, so Fleet would still need
+  thurbox.
+- *One runtime per multiplexer*: tmux, psmux and rmux share one protocol
+  server (ADR-31); splitting them duplicates it, and which one a host runs is
+  a fact of the place, which belongs to the runtime.
+- *A multiplexer runtime written inside Fleet* (#1681 step 6): rewrites psmux, WSL and
+  ssh handling that `src/backend` already has.
+- *Separate repositories*: equal isolation once contracts are process-only, but
+  every change across components would span repositories. Still open later, since
+  nothing links across.
+- *Keep thurbox's ad-hoc sessions* (#401 D5): keeps SQLite and a second engine.

@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 640" role="img" aria-labelledby="title desc">
+<title id="title">thurbox, Fleet and runtimes: three components, two process contracts</title>
+<desc id="desc">thurbox, the interface, is a Fleet client: it watches Tasks with fleet watch, issues apply, send and delete, and opens a session's terminal stream with fleet attach. Fleet, the engine, owns Tasks, the store, every decision, harness profiles, hooks, recipes and the inbox, and reaches sessions only through a runtime protocol: start, inspect, stop, and the optional input, capture, exec, attach, list and workspace.run. A runtime is any program that runs one keyed process at a place: runtime-mux over tmux, psmux and rmux on this machine, ssh hosts and WSL; runtime-container over docker or podman; runtime-vm; or a shell script. The coding agent reports to Fleet with fleet signal and fleet result. No Rust dependency crosses between the three.</desc>
+<style>
+  svg { color-scheme:light dark }
+  .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
+  .box{stroke:#7890a6;stroke-width:1.5}
+  .interface{fill:#edf3f8} .engine{fill:#e9f5ef} .runtime{fill:#f3f4f5} .place{fill:#fff2de} .agent{fill:#f6ecf7}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
+  .icon{fill:none;stroke:#405367;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .iconfill{fill:#405367}
+  .contract{fill:none;stroke:#7890a6;stroke-width:1.5;stroke-dasharray:6 5}
+  @media (prefers-color-scheme: dark) {
+    .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a}
+    .interface{fill:#1d2a36} .engine{fill:#173b2d} .runtime{fill:#202a33} .place{fill:#493517} .agent{fill:#3a2740}
+    .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} .icon{stroke:#a9bdd0} .iconfill{fill:#a9bdd0} .contract{stroke:#71869a}
+  }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker>
+  <!-- icons: 24x24 boxes -->
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect class="icon" x="2" y="4" width="20" height="16" rx="2"/><path class="icon" d="M6 9l3 3-3 3M12 15h6"/></symbol>
+  <symbol id="i-engine" viewBox="0 0 24 24"><circle class="icon" cx="12" cy="12" r="3"/><path class="icon" d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></symbol>
+  <symbol id="i-mux" viewBox="0 0 24 24"><rect class="icon" x="2" y="3" width="20" height="18" rx="2"/><path class="icon" d="M2 9h20M9 9v12M15 9v12"/></symbol>
+  <symbol id="i-container" viewBox="0 0 24 24"><path class="icon" d="M3 8l9-4 9 4v8l-9 4-9-4z"/><path class="icon" d="M3 8l9 4 9-4M12 12v8"/></symbol>
+  <symbol id="i-vm" viewBox="0 0 24 24"><rect class="icon" x="2" y="3" width="20" height="14" rx="2"/><path class="icon" d="M8 21h8M12 17v4"/><rect class="icon" x="6" y="7" width="12" height="6" rx="1"/></symbol>
+  <symbol id="i-script" viewBox="0 0 24 24"><path class="icon" d="M6 2h9l5 5v15H6z"/><path class="icon" d="M15 2v5h5M9 13l2 2-2 2M13 17h3"/></symbol>
+  <symbol id="i-robot" viewBox="0 0 24 24"><rect class="icon" x="4" y="8" width="16" height="12" rx="2"/><path class="icon" d="M12 8V4M9 4h6"/><circle class="iconfill" cx="9" cy="14" r="1.5"/><circle class="iconfill" cx="15" cy="14" r="1.5"/></symbol>
+  <symbol id="i-store" viewBox="0 0 24 24"><ellipse class="icon" cx="12" cy="6" rx="8" ry="3"/><path class="icon" d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+</defs>
+<rect class="background" width="1180" height="640" rx="12"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
+  <text x="30" y="36" font-size="21" font-weight="700">Three components, two process contracts</text>
+  <text x="30" y="61" font-size="14">Each talks to the next by running a program. No Rust dependency crosses a border.</text>
+
+  <!-- thurbox -->
+  <g class="box"><rect class="interface" x="30" y="96" width="260" height="118" rx="8"/></g>
+  <use href="#i-terminal" x="48" y="112" width="28" height="28"/>
+  <text x="88" y="130" font-size="17" font-weight="650">thurbox · interface</text>
+  <text x="48" y="160" font-size="13">TUI · Lua kernel · stream panes</text>
+  <text x="48" y="180" font-size="13">interface state in plain files</text>
+  <text x="48" y="200" font-size="12" class="muted">no sessions, no SQLite, no runtime code</text>
+
+  <!-- agent -->
+  <g class="box"><rect class="agent" x="30" y="420" width="260" height="86" rx="8"/></g>
+  <use href="#i-robot" x="48" y="438" width="28" height="28"/>
+  <text x="88" y="456" font-size="17" font-weight="650">coding agent</text>
+  <text x="48" y="486" font-size="13">in the session the runtime started</text>
+
+  <!-- Fleet -->
+  <g class="box"><rect class="engine" x="450" y="96" width="320" height="410" rx="8"/></g>
+  <use href="#i-engine" x="468" y="112" width="28" height="28"/>
+  <text x="508" y="130" font-size="17" font-weight="650">Fleet · engine</text>
+  <use href="#i-store" x="468" y="156" width="22" height="22"/>
+  <text x="500" y="172" font-size="13">store · one Task per session</text>
+  <text x="468" y="200" font-size="13">controllers · every decision</text>
+  <text x="468" y="222" font-size="13">harness profiles · launch, resume, trust</text>
+  <text x="468" y="244" font-size="13">hooks · fleet signal, fleet result</text>
+  <text x="468" y="266" font-size="13">recipes · what a workspace holds</text>
+  <text x="468" y="288" font-size="13">inbox · receipts · the collector</text>
+  <text x="468" y="318" font-size="12" class="muted">runtime protocol + conformance suite</text>
+  <text x="468" y="336" font-size="12" class="muted">fleet runtime check · fleet recipe check</text>
+  <g class="contract"><rect x="468" y="356" width="284" height="132" rx="6"/></g>
+  <text x="482" y="378" font-size="12" font-weight="650" class="muted">runtime protocol · one process per call</text>
+  <text x="482" y="400" font-size="13">start · inspect · stop</text>
+  <text x="482" y="420" font-size="12" class="muted">required: a Task runs on these alone</text>
+  <text x="482" y="444" font-size="13">input · capture · exec · attach</text>
+  <text x="482" y="464" font-size="13">list · workspace.run</text>
+  <text x="482" y="482" font-size="12" class="muted">optional, declared in manifest</text>
+
+  <!-- runtimes -->
+  <g class="box">
+    <rect class="runtime" x="900" y="96" width="260" height="88" rx="8"/>
+    <rect class="runtime" x="900" y="204" width="260" height="88" rx="8"/>
+    <rect class="runtime" x="900" y="312" width="260" height="88" rx="8"/>
+    <rect class="runtime" x="900" y="420" width="260" height="86" rx="8"/>
+  </g>
+  <use href="#i-mux" x="916" y="110" width="26" height="26"/>
+  <text x="952" y="128" font-size="15" font-weight="650">runtime-mux · default</text>
+  <text x="916" y="154" font-size="12">tmux · psmux · rmux</text>
+  <text x="916" y="172" font-size="12" class="muted">this machine · ssh hosts · WSL</text>
+
+  <use href="#i-container" x="916" y="218" width="26" height="26"/>
+  <text x="952" y="236" font-size="15" font-weight="650">runtime-container</text>
+  <text x="916" y="262" font-size="12">docker · podman</text>
+  <text x="916" y="280" font-size="12" class="muted">term-holder keeps the screen</text>
+
+  <use href="#i-vm" x="916" y="326" width="26" height="26"/>
+  <text x="952" y="344" font-size="15" font-weight="650">runtime-vm</text>
+  <text x="916" y="370" font-size="12">a VM or microVM</text>
+  <text x="916" y="388" font-size="12" class="muted">term-holder in the guest</text>
+
+  <use href="#i-script" x="916" y="434" width="26" height="26"/>
+  <text x="952" y="452" font-size="15" font-weight="650">any program</text>
+  <text x="916" y="478" font-size="12">a shell script that passes the check</text>
+  <text x="916" y="496" font-size="12" class="muted">from the runtime template</text>
+
+  <!-- arrows -->
+  <g class="arrow">
+    <path d="M290 126 H448"/>
+    <path d="M448 158 H290"/>
+    <path d="M290 190 H448"/>
+    <path d="M760 140 H898"/>
+    <path d="M760 248 H898"/>
+    <path d="M760 356 H898"/>
+    <path d="M760 463 H898"/>
+    <path d="M290 463 H448"/>
+    <path d="M290 440 V340 H448"/>
+  </g>
+  <g class="muted" font-size="11">
+    <text x="296" y="117">watch · apply · send · delete</text>
+    <text x="296" y="175">attach → a terminal stream</text>
+    <text x="296" y="454">fleet signal · fleet result</text>
+    <text x="296" y="333">harness profile → argv</text>
+    <text x="766" y="131">runtime protocol</text>
+    <text x="766" y="239">runtime protocol</text>
+    <text x="766" y="347">runtime protocol</text>
+    <text x="766" y="454">runtime protocol</text>
+  </g>
+
+  <!-- footer -->
+  <g class="box"><rect class="place" x="30" y="540" width="1120" height="70" rx="8"/></g>
+  <text x="48" y="566" font-size="14" font-weight="650">Where a fact belongs</text>
+  <text x="48" y="590" font-size="13">survives an interface restart, or another client needs it → Fleet · how to reach a terminal or a host → the runtime · how this user looks at things → thurbox, in a file</text>
+</g>
+</svg>

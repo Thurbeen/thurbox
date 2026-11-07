@@ -1,7 +1,7 @@
 # Feature Decisions
 
 Design rationale for user-facing behavior.
-For architectural choices, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For architectural choices, see [architecture.md](architecture.md).
 
 > **Read this first.** Much of the reasoning below was written while the interface
 > was Rust (v1). The interface is now a Lua plugin kernel (ADR-23), so a section may
@@ -78,14 +78,14 @@ action nothing declares is dropped, the same rule that keeps Sort and Undo out
 when they would do nothing. Its owner reads the pressed row from
 the action's `args.session_id`, so it acts on the row that was clicked even if
 the cursor moved. The contract is *Adding entries to the sessions menu* in
-`docs/PLUGINS.md`.
+`docs/thurbox/plugins.md`.
 
 **Why opened at the pointer, and closed by a click elsewhere?** That is what a
 context menu is. The kernel supplies only the mechanism — the pressed cell on
 `hit`, `float.at`, and `on_outside` for the float holding the pointer — so the
 menu itself stays a plain Lua float (`ui/plugins/64_menu.lua`) that any pane can
 fill. A terminal that keeps the right button for itself never sends the press;
-see *The right button* in `docs/PLUGINS.md`.
+see *The right button* in `docs/thurbox/plugins.md`.
 
 ### Fuzzy search
 
@@ -137,7 +137,7 @@ persisted columns onto a `SessionState` once per tick:
 | `running` | accent | `◉`, spinner while its pane prints | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
 | `uncovered` | muted grey | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | muted grey | `◌` | the agent *can* report and has not yet |
-| `failed` | `status_error` (red) | `✗` | the launch died before the agent reported anything — a failed `setup`, or an early exit ([Launch failures](ORCHESTRATION.md#launch-failures)) |
+| `failed` | `status_error` (red) | `✗` | the launch died before the agent reported anything — a failed `setup`, or an early exit ([Launch failures](orchestration.md#launch-failures)) |
 
 Those last three are drawn apart from `idle` on purpose, and it took a bug to
 prove why: the interface derived its dot from the hook columns alone, so a
@@ -178,7 +178,7 @@ The hooks are wired automatically by the built-in **hooks** extension
 (auto-activated on first run; opt out with `thurbox-cli extension
 deactivate hooks`). How much each agent can report depends on the
 lifecycle surface its CLI exposes; the per-agent facts are owned by
-`docs/AGENTS.md` → *Status hook mechanisms* (the `AGENT_HOOK_COVERAGE`
+`docs/thurbox/agents.md` → *Status hook mechanisms* (the `AGENT_HOOK_COVERAGE`
 table), with the matrix in `extensions/hooks/README.md` (and the
 website's *Agent hooks* page).
 
@@ -464,7 +464,7 @@ spatial map you can build muscle memory against.
 
 ## Session Creation
 
-![Session creation workflow](../media/thurbox-session-creation.gif)
+![Session creation workflow](../../media/thurbox-session-creation.gif)
 
 `Ctrl+N` walks through a series of modals to configure a new
 session. Each step has a sensible default and can be skipped when
@@ -573,7 +573,7 @@ something installed a second later), so the answer is a warning on the choice,
 not a refusal of it. The empty session list carries the same line, since that is
 the one screen a first run always reaches, and `thurbox-cli doctor` answers the
 whole question directly. See
-[CONFIG.md](CONFIG.md#what-happens-when-it-is-not-installed) for the cost model
+[config.md](config.md#what-happens-when-it-is-not-installed) for the cost model
 (a `stat` walk on the kernel's schedule behind a 10-second window — never on a
 render, a keystroke or a list row) and for why a remote host or a relative
 `command` is reported as *unknown* rather than missing.
@@ -657,7 +657,7 @@ holding one symlink per repo, with the agent's cwd set there. Every
 agent then sees each repo as a subdirectory. Agents that check resolved symlink
 targets can declare `additional_dir_args` in `agents.toml`; Claude's built-in
 definition grants each member's checkout path with `--add-dir`, preserving the
-selected permission mode (see [directory scope](AGENTS.md#multi-repo-directory-scope)).
+selected permission mode (see [directory scope](agents.md#multi-repo-directory-scope)).
 The workspace is only symlinks, rebuilt
 idempotently on each launch and removed (without touching the repos)
 when the session is deleted. Single-repo sessions launch directly in
@@ -694,7 +694,7 @@ coding agent (`agent::agent_config::load_or_seed`). Editing the file —
 adding an `[[agents]]` entry or tweaking an existing one — extends the
 agent picker with no recompile. Each built-in's exact config and
 behavior (and the checklist for adding a new built-in) is in
-[AGENTS.md](AGENTS.md).
+[agents.md](agents.md).
 
 Each definition (`session::AgentDef`) carries:
 
@@ -724,7 +724,7 @@ picks up registry edits while replaying those literal arguments, and forking
 copies them without converting the session into a raw command. Hook coverage
 and Codex conversation binding follow the inherited family. The format,
 validation, extension-patch order and delegated capability are documented in
-[CONFIG.md](CONFIG.md#agentstoml).
+[config.md](config.md#agentstoml).
 
 Only `claude` and `pi` accept the thurbox-generated id at creation
 (`--session-id {id}`), so they resume/fork by that exact id. Codex
@@ -746,7 +746,7 @@ restart decides resume-or-not by; Codex's saved conversation id is
 dropped for the same reason. A multi-repo session's workspace is named by
 that id, so it is rebuilt under the new one and the old one removed (local
 hosts, as delete does). The busy rule and the `--json` outcomes are in
-[ORCHESTRATION.md](ORCHESTRATION.md#clearing-a-workers-conversation).
+[orchestration.md](orchestration.md#clearing-a-workers-conversation).
 
 Example:
 
@@ -845,7 +845,7 @@ Headless: `thurbox-cli session create --host devbox --repo-path
 A session that runs on a host is a row in **that host's** thurbox
 database, whoever created it — a thurbox running on the host and one
 reaching it as `ssh:<name>` see the same list, and either side can
-create, delete, restart or restore. ADR-24 in `docs/ARCHITECTURE.md`
+create, delete, restart or restore. ADR-24 in `docs/thurbox/architecture.md`
 has the rationale; the shape:
 
 - **Mirror.** A remote thurbox mirrors the host's `session list
@@ -989,7 +989,7 @@ has the rationale; the shape:
   status, and that is reported as a refused launch rather than a broken
   binary: the host is backed off and **not** re-provisioned, because a
   fresh copy would be refused too. The reason names the policy, and
-  the repair is on the host (see `docs/CONFIG.md`).
+  the repair is on the host (see `docs/thurbox/config.md`).
 - **Status.** Hooks on a shared host call the host's own `thurbox-cli
   session signal`, which writes the host's database (mirrored at 10 s)
   **and** the pane option a remote observer's control-mode subscription
@@ -1186,7 +1186,7 @@ override file). If the chord conflicts it is reassigned from the other action
 and a status toast reports the move. Changes persist immediately to
 `ui.json`'s `bindings` (action id → one chord, e.g.
 `{ "sessions.delete": "ctrl+x" }`; v1's `keybindings.json` is migrated once
-and then ignored — see `docs/CONFIG.md`) and take effect on the next
+and then ignored — see `docs/thurbox/config.md`) and take effect on the next
 keystroke — no restart. The file can also be hand-edited directly.
 
 **Context-scoped keys.** Each action belongs to a scope — `global`, or
@@ -1373,7 +1373,7 @@ repository (the one path that exists at every event) with no terminal,
 and — for a remote session — runs *locally*, told the host by
 `THURBOX_HOST` — except `session.pre_launch`, which runs in the launch
 directory, on the host for a remote session. Full reference:
-`docs/CONFIG.md` → hooks.toml.
+`docs/thurbox/config.md` → hooks.toml.
 
 Two additional events share this runner. `session.pre_launch` prepares a
 create/fork in its final cwd on the machine the agent runs on (for a remote
@@ -1384,8 +1384,8 @@ runs the host's own hooks instead. `session.state_changed` is a
 post-only heartbeat consumer of the event log, with agent and destination-state
 filters. Delivery is at-least-once with `seq` for deduplication; its cursor,
 retention-gap behavior and bounded tick budget are specified in
-[CONFIG.md](CONFIG.md#hookstoml). `session wait` and `send --wait-turn` consume
-the same stream; [ORCHESTRATION.md](ORCHESTRATION.md#bounded-waits-and-read-side-evidence)
+[config.md](config.md#hookstoml). `session wait` and `send --wait-turn` consume
+the same stream; [orchestration.md](orchestration.md#bounded-waits-and-read-side-evidence)
 covers their exit codes and the output/transcript read fields.
 
 Deliberately not the same thing as the built-in `hooks` *extension*
@@ -1394,7 +1394,7 @@ installs into the agent CLIs so they can report status.
 
 The four `post_*` events are also delivered to interface plugins under the
 same names (`events = { "session.post_create" }` + `on_event`, see
-`docs/PLUGINS.md` → Events), so a shell hook and a Lua handler learn one
+`docs/thurbox/plugins.md` → Events), so a shell hook and a Lua handler learn one
 vocabulary. A `pre_*` hook has no Lua form: a plugin cannot answer, so it
 cannot veto.
 
@@ -1676,7 +1676,7 @@ each part. `AGENTS.md` keeps a summary and points here.
   (base resolution, commit listing, the diffs — over SSH for a remote session)
   on a background worker with a "Building diff…" loading state, applied by
   `App::poll_review_build` per tick — the pane opens instantly (ADR-P8,
-  `docs/PERFORMANCE.md`).
+  `docs/thurbox/performance.md`).
 - **v1 follow-ups** (named, not silently dropped): range/multi-line comments,
   token-level intra-line word diffs on a paired row (v1 aligns whole lines
   positionally, not sub-line), grammar-aware syntax
@@ -2032,7 +2032,7 @@ an `extension.toml` manifest declares the agents to register, the files
 to lay down, and the sessions and automations to keep alive, and
 `thurbox-cli extension install` reads it. thurbox knows the format,
 never a specific extension. The format, the lifecycle commands and the
-self-heal contract are in `docs/CONFIG.md` → `extensions/`.
+self-heal contract are in `docs/thurbox/config.md` → `extensions/`.
 
 ### What ships in the repo
 
@@ -2041,7 +2041,7 @@ embedded in the binary and auto-activated, because what they wire up has
 to be there before a user knows to ask for it:
 
 - **`hooks`** — status-hook delivery for the built-in agents, so session
-  status works with no setup. Per-agent detail is in `docs/AGENTS.md` →
+  status works with no setup. Per-agent detail is in `docs/thurbox/agents.md` →
   "Status hook mechanisms".
 - **`ui-skill`** — it ships no session, no automation and no agent. It
   installs a single **agent skill**, `thurbox-ui`, into each coding CLI's
@@ -2091,7 +2091,7 @@ because `{home}` resolves to the extension home and no
 token spells "my clone".
 
 Nothing in thurbox knows fleet exists, and that is the point — it is a
-template, not a feature. `docs/ORCHESTRATION.md` → "The reference
+template, not a feature. `docs/thurbox/orchestration.md` → "The reference
 implementation" owns the full walkthrough.
 
 ### Removed
@@ -2195,7 +2195,7 @@ than about a millisecond, caches it until the pane prints again and then reads
 only what was printed, and matches on up to four threads. A terminal printing
 re-runs the same query at most once a second. Caps: 50 hits per session, 200 in
 all, each line windowed to 160 characters around its first hit. Measured
-numbers are in `docs/PERFORMANCE.md`.
+numbers are in `docs/thurbox/performance.md`.
 
 ### Live preview, open & cancel
 
@@ -2259,7 +2259,7 @@ off — see *Explicit close vs quit*). Two flags reach the network and
 were opt-in before 1.0 — now both default on:
 `version_check` (the "update available" badge +
 `thurbox-cli version --check`) and `auto_update` (silent self-update on
-startup + `thurbox-cli update`). See `docs/CONFIG.md`.
+startup + `thurbox-cli update`). See `docs/thurbox/config.md`.
 
 **Decision: flags are UI-level gates, not data switches.** A disabled
 feature hides its pane, consumes its keybinding with an explanatory
@@ -2336,7 +2336,7 @@ network — see *Feature Flags*) cover staying current:
   bypasses the up-to-date and dev-build guards. On Windows the artifact is
   a zip, and a running `thurbox.exe` cannot be renamed over, so the swap
   there moves the old binary aside as `.thurbox.exe.old` first, and rolls
-  both binaries back if either fails — see `[features]` in `docs/CONFIG.md`.
+  both binaries back if either fails — see `[features]` in `docs/thurbox/config.md`.
 
 Both are on by default for 1.0 so a fresh install stays current on its
 own; set them to `false` if you'd rather make no network calls or have
@@ -2575,10 +2575,10 @@ mirror holds no environment snapshot: its `session show` reports `env: null`,
 and exec requests must run on the owner. Caller-side launch plans can read
 telemetry labels from the owner; request a plan there for the complete saved
 account environment.
-See [CONFIG.md](CONFIG.md#agentstoml) for precedence and host-home expansion.
+See [config.md](config.md#agentstoml) for precedence and host-home expansion.
 
 A ready-made form ships as the `shell` built-in, whose `command` is the
-platform's own interactive shell (see [AGENTS.md](AGENTS.md)).
+platform's own interactive shell (see [agents.md](agents.md)).
 
 ### A launch recipe is not a conversation
 
@@ -3128,7 +3128,7 @@ the send still reports `claude-socket`, since the socket accepted it, and says
 `may_hold: true` (and, in text, that the message may wait on a prompt).
 Thurbox does not set it. A user who wants it puts it in their own Claude
 settings, because self-heal rewrites the hooks extension's managed `claude.json`
-— see the claude section of [AGENTS.md](AGENTS.md).
+— see the claude section of [agents.md](agents.md).
 
 ### Delivered rows and unread counts
 
@@ -3303,7 +3303,7 @@ historical output.
 
 ## Theme System
 
-![Theme switcher](../media/thurbox-theme.gif)
+![Theme switcher](../../media/thurbox-theme.gif)
 
 All UI colors are centralized via a semantic palette:
 `theme` holds the presets and the user's overrides,
@@ -3394,7 +3394,7 @@ the long list rather than scrolling a flat one:
 > focus on "is it drawn?" makes an alternate unreachable. The `Ctrl+H`/`Ctrl+L`
 > cycle is the other side of that: it stops once per switch slot, on its default
 > occupant, so walking the columns never swaps the terminal for an alternate; one is
-> opened by its own key or pill. See `docs/KERNEL.md`.
+> opened by its own key or pill. See `docs/thurbox/kernel.md`.
 
 Panels use a tri-state focus system (`Focused`, `Active`,
 `Inactive`), mapped in `ui/lib/chrome.lua`. The kernel publishes one `focused`
@@ -3491,12 +3491,12 @@ it) and the opt-in `on_automation_failure` alert, which the tick sends
 through the same function. Both deliver synchronously, honour the same
 switches, and deduplicate a key through a lease in `event_cursors`, so a
 repeat is dropped across processes; see
-[CONFIG.md → Scripted notifications](CONFIG.md#scripted-notifications).
+[config.md → Scripted notifications](config.md#scripted-notifications).
 The dispatcher thread (`crate::notifications::start`) starts only when
 `[features] notifications = true`, so the feature is zero-overhead when
 disabled. Knobs live in the `[notifications]` block of `settings.toml`
 (`also_on_waiting` / `suppress_for_active` / `sound` /
-`min_interval_secs` / `backend`) — see [CONFIG.md](CONFIG.md). `backend`
+`min_interval_secs` / `backend`) — see [config.md](config.md). `backend`
 forces the delivery path (`auto` / `dbus` / `windows`;
 `session::settings::NotificationBackend` has no `macos` value — `auto` is
 what picks the native banner there) or
@@ -3816,7 +3816,7 @@ gathered run that carries a line break is handed over as one paste (so an agent
 shows it as a paste, not as typing). Everything else is left exactly as it was
 — every editing key passes straight through, ordinary typing is untouched, and
 a line you type and submit with `Enter` still submits. Rationale: ADR-4 in
-`docs/ARCHITECTURE.md`.
+`docs/thurbox/architecture.md`.
 
 ---
 
@@ -3824,7 +3824,7 @@ a line you type and submit with `Enter` still submits. Rationale: ADR-4 in
 
 > The per-frame click registry named below (`App::click_targets`,
 > `ClickAction`, `RowHitbox`) is v1's. The kernel now hit-tests the node tree
-> a pane returns and delivers the press as `hit` (`docs/PLUGINS.md` → Clicks);
+> a pane returns and delivers the press as `hit` (`docs/thurbox/plugins.md` → Clicks);
 > the rules below — wheel folding, double-click, drag, modal swallowing — are
 > what that path keeps, and the *Click registry, pills, collapse chevron*
 > subsection is v1's chrome.
@@ -3935,7 +3935,7 @@ the terminal keeps its native mouse behavior.
 > **v1's chrome.** What survives: `F9` toggles the session column
 > (`sessions.toggle_panel`), the agent pane offers its shell as a tab on its
 > own border (`Ctrl+T` / `F8`), and the action band's pills are declared by
-> the panes (`docs/PLUGINS.md`). The review tab, the `ClickAction` registry
+> the panes (`docs/thurbox/plugins.md`). The review tab, the `ClickAction` registry
 > and the footer's `Info`/`Files`/`Tasks` pills went with their panes.
 
 One per-frame click-target registry backs every clickable surface — rows, footer
@@ -4172,7 +4172,7 @@ them, so nothing in that path can put an escape on the wire — the identical
 text in a pane was not Ctrl+Click-able while an agent's transcript was, and
 on a remote host the outer terminal is the only leg with a browser to reach.
 The verb's nodes are read out of the drawn frame like a session's runs, and
-`docs/PLUGINS.md` has the authoring side.
+`docs/thurbox/plugins.md` has the authoring side.
 
 Three properties keep this safe and cheap:
 

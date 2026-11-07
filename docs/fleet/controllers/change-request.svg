@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 420" role="img" aria-labelledby="title desc">
+<title id="title">ChangeRequest controller state machine</title>
+<desc id="desc">Watching polls the forge every interval and writes only when the snapshot changes. A merged change settles. A closed change enters Closed, polled at ten times the interval; reopened within the grace it returns to Watching, otherwise it settles. Unknown answers change a condition and never a phase.</desc>
+<style>
+  svg { color-scheme:light dark }
+  @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { svg &gt; rect{fill:#101820} svg &gt; g{fill:#e6edf3} [stroke="#7890a6"]{stroke:#71869a} [stroke="#405367"]{stroke:#a9bdd0} [stroke="#c9d3dd"]{stroke:#405367} [fill="#405367"]{fill:#a9bdd0} [fill="#edf3f8"]{fill:#1d2a36} [fill="#e9f5ef"]{fill:#173b2d} [fill="#fff2de"]{fill:#493517} }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#405367"/></marker></defs>
+<rect width="1040" height="420" rx="12" fill="#ffffff"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" fill="#182b3d">
+<text x="24" y="35" font-size="21" font-weight="700">ChangeRequest phases</text>
+<text x="24" y="60" font-size="14">A phase records how closely the change is watched; the snapshot records what the forge last said.</text>
+<g stroke="#7890a6" stroke-width="1.5" fill="#edf3f8">
+<rect id="watching" x="80" y="150" width="170" height="68" rx="8"/>
+<rect id="closed" x="435" y="150" width="170" height="68" rx="8" fill="#fff2de"/>
+<rect id="settled" x="790" y="150" width="170" height="68" rx="8" fill="#e9f5ef"/>
+</g>
+<g text-anchor="middle" font-size="17" font-weight="650">
+<text x="165" y="177">Watching</text><text x="520" y="177">Closed</text><text x="875" y="177">Settled</text>
+</g>
+<g text-anchor="middle" font-size="12">
+<text x="165" y="199">poll every pollMs</text><text x="520" y="199">poll every 10 × pollMs</text><text x="875" y="199">deleted after settledTtlMs</text>
+</g>
+<g fill="none" stroke="#405367" stroke-width="1.8" marker-end="url(#arrow)">
+<path id="to-closed" d="M250 172 H433"/>
+<path id="to-settled-grace" d="M605 172 H788"/>
+<path id="to-settled-merged" d="M165 150 V100 H875 V148"/>
+<path id="reopened" d="M520 218 V270 H165 V220"/>
+<path id="self-poll" d="M120 218 V250 H60 V184 H78"/>
+</g>
+<g font-size="12" fill="#405367" text-anchor="middle">
+<text x="341" y="162">closed</text>
+<text x="696" y="162">grace expired</text>
+<text x="520" y="92">merged: final</text>
+<text x="342" y="286">reopened within the grace: revision bumps so consumers notice</text>
+<text x="92" y="268">no change: no write</text>
+</g>
+<path d="M25 318 H1015" stroke="#c9d3dd"/>
+<g font-size="14">
+<text x="25" y="348" font-weight="650">Unknown is a condition, not a phase</text>
+<text x="25" y="373">A timeout, an incomplete read, a throttled answer or a missing login sets Reachable=Unknown, leaves the snapshot untouched and waits.</text>
+<text x="25" y="397">Every poll that changes the snapshot increments revision; every new or changed item carries that number as seq.</text>
+</g>
+</g>
+</svg>

@@ -31,7 +31,7 @@
 //!
 //! What it cannot cover is `SIGKILL`, which runs no destructor:
 //! `scripts/dev/reap-tmux-servers.sh` (`just reap-tmux`) is the sweep for
-//! that, and `docs/DEVELOPMENT.md` says when to run it.
+//! that, and `docs/thurbox/development.md` says when to run it.
 
 #![allow(dead_code)]
 

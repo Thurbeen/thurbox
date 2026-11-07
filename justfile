@@ -3,7 +3,7 @@
 # Enter the pinned toolchain first with `nix develop` (or `direnv allow`); these
 # tasks assume the dev tools (cargo-nextest, cargo-deny, rumdl, shellcheck, selene,
 # stylua, …)
-# are on PATH. See docs/DEVELOPMENT.md.
+# are on PATH. See docs/thurbox/development.md.
 
 # Default: show the task list.
 default:
@@ -141,7 +141,7 @@ reap-tmux *ARGS:
 bench:
     cargo bench --bench frame_cost
 
-# raw tmux vs Herdr vs thurbox as hosts for agent sessions (docs/BENCHMARK-MULTIPLEXERS.md).
+# raw tmux vs Herdr vs thurbox as hosts for agent sessions (docs/thurbox/benchmark-multiplexers.md).
 # `just bench-multiplexers --quick --reps 1` to try it; the full run takes a while.
 bench-multiplexers *ARGS:
     scripts/bench/run.sh {{ARGS}}

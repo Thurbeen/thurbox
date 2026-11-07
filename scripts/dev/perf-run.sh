@@ -168,7 +168,7 @@ machine, and a gate is the opposite of one.
 Nothing here needs it to pass. The deterministic coverage is ordinary tests --
 `cargo nextest run --all` -- and the perf claims are asserted on counters and
 change-signals in tests/kernel_frame_cost.rs and tests/kernel_perf.rs, never on
-a clock (docs/PERFORMANCE.md, ADR-P5).
+a clock (docs/thurbox/performance.md, ADR-P5).
 
 To take a reading by hand, on a machine you are not otherwise using:
     just perf -n 19 -p 3 -s 255x62

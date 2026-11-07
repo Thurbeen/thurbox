@@ -45,7 +45,7 @@ runs — `selene`, `stylua` and `lua-language-server`. Run `npm ci` once, or
 `just fmt`'s website half exits 127 on a fresh checkout.
 
 For opt-in RMUX sessions, install RMUX >= 0.10.0 separately; the dev flake
-provides tmux. [CONFIG.md](CONFIG.md#multiplexer-requirements-and-rmux-setup)
+provides tmux. [config.md](config.md#multiplexer-requirements-and-rmux-setup)
 records version evidence and RMUX platform limits.
 
 ## 2. Everyday tasks — `just`
@@ -66,7 +66,7 @@ records version evidence and RMUX platform limits.
 | `just smoke` | black-box TUI test: the real binary on a pty (`tests/tui_e2e.rs`) |
 | `just reap-tmux` | reap orphaned *test* tmux servers a signal left behind (below) |
 | `just bench` | what a frame costs, piece by piece (`benches/frame_cost.rs`) |
-| `just bench-multiplexers` | thurbox against raw tmux and Herdr (`docs/BENCHMARK-MULTIPLEXERS.md`) |
+| `just bench-multiplexers` | thurbox against raw tmux and Herdr (`docs/thurbox/benchmark-multiplexers.md`) |
 | `just perf` | what the whole binary costs under load (`scripts/dev/perf-run.sh`) |
 | `just lab HOST` | drive the e2e tests against a real SSH host (`scripts/dev/e2e/real-host.sh`) |
 | `just tui-ui` | run the dev TUI against this checkout's `ui/` (`THURBOX_UI_DIR`) |
@@ -97,7 +97,7 @@ different questions: the bench times the *pieces* of a frame against the real
 reports CPU. Neither is in CI — wall-clock timing stays out of the gate
 (ADR-P5) — and a claim from either is a paired before/after at a stated
 terminal size and session count, never a single absolute number. Both are
-explained in [`docs/PERFORMANCE.md`](PERFORMANCE.md).
+explained in [`docs/thurbox/performance.md`](performance.md).
 
 ### PTY test negotiation
 
@@ -268,7 +268,7 @@ the dev `target/debug` first on `PATH`, so an agent's status hook calls *this*
 `thurbox-cli` and writes to the sandbox DB the TUI reads. The tmux socket is
 scoped twice over: a private `TMUX_TMPDIR`, and `THURBOX_SOCKET` naming the
 server outright — a relocated `THURBOX_DATA_DIR` derives a socket of its own
-(`docs/CONFIG.md` → Relocating an instance), and teardown kills the socket by
+(`docs/thurbox/config.md` → Relocating an instance), and teardown kills the socket by
 name.
 
 ```bash

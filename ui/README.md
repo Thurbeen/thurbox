@@ -326,7 +326,7 @@ palette with no chord. The list of events is `thurbox-cli plugin events`.
 `on_focus_cycle` (the topmost open float's native Ctrl+H/Ctrl+L cycle), and
 `on_event`. Return `true` from `on_focus_cycle("next"|"previous")` after moving
 your selected item; return `false` to keep the pane cycle. See
-[the plugin reference](../docs/PLUGINS.md#floating-views-and-the-native-focus-cycle).
+[the plugin reference](../docs/thurbox/plugins.md#floating-views-and-the-native-focus-cycle).
 
 **A menu at the pointer**: from `on_context`, leave `store.menu` holding
 `at = { x = hit.screen_x, y = hit.screen_y }` and
@@ -345,7 +345,7 @@ store["sessions.menu_extra"] = extra
 The sessions column appends them to a row's menu. An entry whose action no
 plugin declares (in `keys` or `commands`) is dropped. Your `on_action` reads the
 pressed row from the action's `args.session_id`. The full contract is in
-`docs/PLUGINS.md` → *The right button*.
+`docs/thurbox/plugins.md` → *The right button*.
 
 `thurbox.granted` tells you which capabilities *this* file has been granted
 (`granted.run`, `granted.program`, `granted.sessions`, `granted.files`). It exists
@@ -404,7 +404,7 @@ These are the ones that cost real time.
   Invalid session options fail the call before queueing. Use stable per-target
   keys and `run_forget(key)` for retired keys; forgetting discards queued work
   and late answers, but does not cancel active commands. See
-  [Running a program](../docs/PLUGINS.md#running-a-program).
+  [Running a program](../docs/thurbox/plugins.md#running-a-program).
 - **Asking every frame is correct.** `run(...)` and the `store.want_*` reads are
   designed to be called on every render: a fresh answer is a table lookup, not a
   process. Do not try to call them "only once" — you will get a pane that never
@@ -528,6 +528,6 @@ error of the selected row, so the broken file is the first thing on the list.
 
 ## Full documentation
 
-- `docs/PLUGINS.md` in the thurbox repository — writing a plugin, start to finish
-- `docs/KERNEL.md` — the kernel's shape and why it refuses things
+- `docs/thurbox/plugins.md` in the thurbox repository — writing a plugin, start to finish
+- `docs/thurbox/kernel.md` — the kernel's shape and why it refuses things
 - `examples/lua/composite.lua` — a worked example that runs programs

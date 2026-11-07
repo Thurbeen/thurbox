@@ -7,7 +7,7 @@ Thurbox is agent-neutral: it knows nothing about a coding agent's model,
 prompts, permissions, or tools — only how to launch the CLI and how that CLI
 resumes, forks, and reports status. Every agent is **data**, not code. The
 built-ins are just the entries thurbox ships pre-seeded; a user adds their own
-by editing `agents.toml` (see [CONFIG.md](CONFIG.md#agentstoml) for the file
+by editing `agents.toml` (see [config.md](config.md#agentstoml) for the file
 format). This document is the single source of truth for **what each built-in's
 data actually is and why**, and it exists because adding a new built-in touches
 several files that are *not* updated automatically — see
@@ -15,18 +15,18 @@ several files that are *not* updated automatically — see
 
 Related docs:
 
-- [CONFIG.md → agents.toml](CONFIG.md#agentstoml) — the config-file format and
+- [config.md → agents.toml](config.md#agentstoml) — the config-file format and
   per-field syntax (`{id}` substitution, `resume_latest`, `hook_schema`).
-- [FEATURES.md → Agent definitions](FEATURES.md#agent-definitions) — the
+- [features.md → Agent definitions](features.md#agent-definitions) — the
   agents-as-data design.
-- [ARCHITECTURE.md](ARCHITECTURE.md) — the `session::AgentDef` purity rule.
+- [architecture.md](architecture.md) — the `session::AgentDef` purity rule.
 - `../.agents/skills/thurbox-agents/` → *Agent Definitions* — the in-repo
   working reference.
 
 ## Where the built-ins live
 
 The built-in registry is **not** hand-constructed in Rust. It is an embedded
-TOML document in [`src/agent/agent_config.rs`](../src/agent/agent_config.rs):
+TOML document in [`src/agent/agent_config.rs`](../../src/agent/agent_config.rs):
 `builtin_agents_toml()` joins `BUILTIN_AGENTS_HEAD` (the coding agents), the
 `shell` entry spelled for this platform (`SHELL_AGENT_TOML`) and
 `BUILTIN_AGENTS_TAIL` (the commented examples). `builtin_registry()` parses
@@ -36,7 +36,7 @@ in-binary fallback and the seed the user then edits — keep it authoritative.
 
 Status hooks (working / blocked / done) are wired **separately** by the built-in
 **hooks** extension, whose per-agent mechanism is declared in
-[`extensions/hooks/extension.toml`](../extensions/hooks/extension.toml). An
+[`extensions/hooks/extension.toml`](../../extensions/hooks/extension.toml). An
 `AgentDef` says *how to launch* an agent; the hooks manifest says *how that agent
 reports state back*. Adding a built-in agent means touching **both**.
 
@@ -62,7 +62,7 @@ Ten entries ship pre-seeded — nine coding agents and a plain shell.
 applied only while `[telemetry]` is on; `copilot`, `omp` and `opencode` need
 only the spec's `OTEL_EXPORTER_OTLP_*` variables, which every session gets, and
 `antigravity`, `pi` and `aider` have no native OTel. See
-[CONFIG.md](CONFIG.md#telemetry--opentelemetry-for-sessions).
+[config.md](config.md#telemetry--opentelemetry-for-sessions).
 
 ### Several Claude accounts
 
@@ -188,7 +188,7 @@ directory (a shell barely notices — its history and cwd live on disk),
 `session fork` gives you a second shell beside it, and `session create --resume`
 silently starts fresh rather than attaching to anything (only a raw
 `--command` session refuses `--resume` outright; see
-[FEATURES.md](FEATURES.md#a-launch-recipe-is-not-a-conversation)). Nothing
+[features.md](features.md#a-launch-recipe-is-not-a-conversation)). Nothing
 wires status hooks for it either, so a `shell` session reports `hook_state: null`
 until something in it calls `thurbox-cli session signal` — which anything in
 the pane can, since
@@ -297,10 +297,10 @@ all the same, so a session running one — started from a `--command` shell, a
 custom `agents.toml` entry, or an outside driver — reports state whoever launched
 it. Naming the agent on the row (`session create --reports-as grok`) is what
 resolves the coverage. All are declared in
-[`extensions/hooks/extension.toml`](../extensions/hooks/extension.toml); the
+[`extensions/hooks/extension.toml`](../../extensions/hooks/extension.toml); the
 embedded hook assets live in
-[`extensions/hooks/`](../extensions/hooks/) and are `include_str!`'d by
-[`src/session_ops/builtin_hooks.rs`](../src/session_ops/builtin_hooks.rs).
+[`extensions/hooks/`](../../extensions/hooks/) and are `include_str!`'d by
+[`src/session_ops/builtin_hooks.rs`](../../src/session_ops/builtin_hooks.rs).
 
 - **`agent_patches` (arg injection)** — appends args to the agent's launch
   command, reversibly.
@@ -531,7 +531,7 @@ dir, so a rebrand sharing that dir already reports without it. `hook_schema`
 says nothing about accounts: thurbox reads no agent credentials and asks no
 provider for quotas, which is the job of a plugin such as `thurbox-info-panel`.
 See
-[CONFIG.md](CONFIG.md#agentstoml) and the `AgentDef.hook_schema` doc comment.
+[config.md](config.md#agentstoml) and the `AgentDef.hook_schema` doc comment.
 
 ## Adding a new built-in agent
 
@@ -541,26 +541,26 @@ shipped **built-in** touches several places that are **not** kept in sync
 automatically. Work the checklist top to bottom:
 
 1. **Seed entry** — add an `[[agents]]` block to `BUILTIN_AGENTS_HEAD` in
-   [`src/agent/agent_config.rs`](../src/agent/agent_config.rs). Set `command`,
+   [`src/agent/agent_config.rs`](../../src/agent/agent_config.rs). Set `command`,
    the resume/fork/new-session groups, and `resume_latest` per the ID model
    above. Add a short comment explaining the CLI's resume/fork semantics, as the
    existing entries do. **Decide the ID model first** — whether the CLI can pin a
    session id — because it determines the conversation argument groups.
 
 2. **Status hooks** — add the wiring to
-   [`extensions/hooks/extension.toml`](../extensions/hooks/extension.toml) and
-   the hook asset file under [`extensions/hooks/`](../extensions/hooks/). Pick the
+   [`extensions/hooks/extension.toml`](../../extensions/hooks/extension.toml) and
+   the hook asset file under [`extensions/hooks/`](../../extensions/hooks/). Pick the
    mechanism from [Status hook mechanisms](#status-hook-mechanisms):
    `agent_patches` if hooks are launch flags, `config_merges` if they live in a
    shared config file thurbox must not clobber, `external_files` for a standalone
    drop into the agent's own config dir. Register any new embedded asset with an
    `include_str!` in
-   [`src/session_ops/builtin_hooks.rs`](../src/session_ops/builtin_hooks.rs), and
+   [`src/session_ops/builtin_hooks.rs`](../../src/session_ops/builtin_hooks.rs), and
    add its row to `AGENT_HOOK_COVERAGE` in
-   [`src/session/hook_status.rs`](../src/session/hook_status.rs) (the drift test
+   [`src/session/hook_status.rs`](../../src/session/hook_status.rs) (the drift test
    fails until it matches the payload), and — for a `config_merges` /
    `external_files` wiring — the matching entry in `remote_asset_for`
-   ([`src/session_ops/remote_hooks.rs`](../src/session_ops/remote_hooks.rs)), so
+   ([`src/session_ops/remote_hooks.rs`](../../src/session_ops/remote_hooks.rs)), so
    remote sessions get the same payload (a test fails until local and remote
    agree). Bump the hooks extension `version`. Skipping this step means the new
    agent launches fine but **never shows working/blocked/done**.
@@ -573,9 +573,9 @@ automatically. Work the checklist top to bottom:
 3. **Docs — update every list of built-ins** (these are prose, not generated, so
    they drift):
    - [The built-in agents](#the-built-in-agents) table above.
-   - [CONFIG.md → agents.toml](CONFIG.md#agentstoml) — the parenthetical list and
+   - [config.md → agents.toml](config.md#agentstoml) — the parenthetical list and
      the "N built-ins" count.
-   - [FEATURES.md → Agent definitions](FEATURES.md#agent-definitions) — the prose
+   - [features.md → Agent definitions](features.md#agent-definitions) — the prose
      list and the pinned-id sentence.
    - `../.agents/skills/thurbox-agents/` → *Agent Definitions* and
      *Custom-agent status hooks* — the built-in lists and the resume/fork
@@ -615,7 +615,7 @@ different questions:
   launches*: shell steps run in the agent's own pane, in its launch directory
   and environment, on every launch (create, restart, start, restore, fork) and
   on the host the agent runs on. A failing step aborts the launch and the
-  session reads `failed`. See [CONFIG.md](CONFIG.md#templates-argument-order-and-setup).
+  session reads `failed`. See [config.md](config.md#templates-argument-order-and-setup).
 - **A `session.pre_launch` hook in the user's `hooks.toml`** is *policy around
   launches*: one command for whichever agents it names, run by thurbox outside
   the pane, on create/fork only, on the machine the agent runs on (a remote
@@ -632,7 +632,7 @@ timeout_secs = 10
 
 Either way the script is yours: Thurbox supplies the final cwd and worktree
 paths without knowing an agent's trust-file format. See
-[CONFIG.md](CONFIG.md#hookstoml) for the hook's contract.
+[config.md](config.md#hookstoml) for the hook's contract.
 
 ### Replacing a launch wrapper
 

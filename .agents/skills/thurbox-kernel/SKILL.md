@@ -489,7 +489,7 @@ remote binary cannot be checked from this machine.
 `presence` is three-valued (`present`/`missing`/`unknown`) because a remote
 host's binaries, and a relative `command`'s (resolved from the session's own
 directory), were never looked at, and `unknown` is not `missing` (see
-`docs/CONFIG.md`).
+`docs/thurbox/config.md`).
 
 **Panes are installable** (`kernel::packages`, `session::plugin_spec`). `plugins.toml`
 in the interface directory lists a `src` (a bare name resolving to `examples/panes/<name>`
@@ -567,7 +567,7 @@ if the key is reused. Active captures keep their slots until finish/timeout;
 there is no remote cancellation promise. Plugins must bound desired keys and
 forget retired ones: queue/answer counts have no automatic cap. Request identity
 lives only with retained entries and active work, with no tombstone map. Full
-result and lifetime semantics are owned by `docs/PLUGINS.md`.
+result and lifetime semantics are owned by `docs/thurbox/plugins.md`.
 
 **Every plugin runs in its own `_ENV`** (`host::api::plugin_env`): one Lua state
 is shared, so identity is bound where a function is made, never read from who is
@@ -649,8 +649,8 @@ event loop. The local transport lives in `ui_control`, outside the session
 backend, and `thurbox-cli ui` selects the target interface explicitly when
 more than one is reachable. A key declared `release = true` passes
 `{ event = "press" }` and later `{ event = "release" }` through the same
-table (`coordinator::input::Holds`; `docs/PLUGINS.md` → **Keys**).
+table (`coordinator::input::Holds`; `docs/thurbox/plugins.md` → **Keys**).
 
-- `docs/KERNEL.md` — the kernel's shape, its five rules, and the traps
-- `docs/PLUGINS.md` — writing a plugin; **Start here** needs no TTY, and **Traps**
+- `docs/thurbox/kernel.md` — the kernel's shape, its five rules, and the traps
+- `docs/thurbox/plugins.md` — writing a plugin; **Start here** needs no TTY, and **Traps**
   lists the mistakes that are invisible until runtime

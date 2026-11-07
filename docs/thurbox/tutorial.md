@@ -41,7 +41,7 @@ Homebrew, AUR, Nix, winget and Chocolatey are on the
 You also need:
 
 - **tmux ≥ 3.2** (or [psmux ≥ 3.3.8](https://github.com/psmux/psmux) on native Windows, or
-  opt-in [RMUX ≥ 0.10.0](CONFIG.md#multiplexer-requirements-and-rmux-setup)) —
+  opt-in [RMUX ≥ 0.10.0](config.md#multiplexer-requirements-and-rmux-setup)) —
   it is what keeps your agents alive when thurbox is closed
 - **git**
 - **at least one coding-agent CLI** — `claude`, `codex`, `agy`, `opencode`,
@@ -57,7 +57,7 @@ the agents it knows, the themes, and the interface itself.
 thurbox
 ```
 
-![An empty thurbox: the session list on the left, an empty agent pane on the right](../media/tutorial/01-first-launch.png)
+![An empty thurbox: the session list on the left, an empty agent pane on the right](../../media/tutorial/01-first-launch.png)
 
 Two panes between two bars: the **session list** on the left, the **agent
 terminal** on the right, and the keys you need on the footer. There are no
@@ -69,7 +69,7 @@ Press **`Ctrl+N`**. The creation flow opens on the repo step, with its search
 focused: type any part of a repository's path and the list narrows to the
 fuzzy matches, best first.
 
-![The repo picker, with only the interface directory in it](../media/tutorial/02-repo-picker.png)
+![The repo picker, with only the interface directory in it](../../media/tutorial/02-repo-picker.png)
 
 The list is thurbox's **repo memory** — the repositories you have used before.
 On a fresh install it holds one row you did not add: your own interface
@@ -82,7 +82,7 @@ all your remembered repositories share (home, while there are none), so a bare
 name lands next to them; typing `/` or `~` first replaces it with a path of
 your own:
 
-![Typing ~/code/ into the Add Repo Path field](../media/tutorial/03-add-repo-path.png)
+![Typing ~/code/ into the Add Repo Path field](../../media/tutorial/03-add-repo-path.png)
 
 Two ways to finish from here:
 
@@ -93,7 +93,7 @@ Two ways to finish from here:
 - **`Tab`** browses instead — a listing of that directory, marking which
   subdirectories are git repositories:
 
-![The browse dropdown listing ~/code, with ●git beside two entries](../media/tutorial/04-browse-directory.png)
+![The browse dropdown listing ~/code, with ●git beside two entries](../../media/tutorial/04-browse-directory.png)
 
 `↑`/`↓` move, `Enter` on a `●git` row picks it (`Enter` on a plain folder
 descends into it).
@@ -101,7 +101,7 @@ descends into it).
 Either way the repository lands in memory, **selected** (`[x]`), with the cursor
 on it — and stays there for next time:
 
-![The repository added to the list and selected](../media/tutorial/05-repo-added.png)
+![The repository added to the list and selected](../../media/tutorial/05-repo-added.png)
 
 The footer names the rest of what this step does. Letters always go to the
 search, so the list's own keys are ones you cannot type:
@@ -124,12 +124,12 @@ With the repository selected, press **`Alt+W`**. The `[wt]` mark means this sess
 gets a **git worktree of its own** rather than your checkout — the agent works
 on its own branch, in its own directory, and your working tree is untouched.
 
-![The selected repository marked [wt] for worktree mode](../media/tutorial/06-worktree-mode.png)
+![The selected repository marked [wt] for worktree mode](../../media/tutorial/06-worktree-mode.png)
 
 Press **`Enter`** when the selection is right. Because a worktree needs
 something to branch from, the next step asks which branch:
 
-![The base branch step, offering main](../media/tutorial/07-base-branch.png)
+![The base branch step, offering main](../../media/tutorial/07-base-branch.png)
 
 `j`/`k` navigate, `Enter` selects. (Without worktree mode this step does not
 appear at all — the session simply runs in the repository as it is.)
@@ -140,24 +140,24 @@ Name the session after the **work**, not the tool — the list reads as a backlo
 that way. `Enter` on an empty field accepts the suggested name (the
 repository's own), so you can press straight through.
 
-![The session name step with rate-limit typed](../media/tutorial/08-session-name.png)
+![The session name step with rate-limit typed](../../media/tutorial/08-session-name.png)
 
 The branch name comes next, prefilled from the name you just gave:
 
-![The branch name step, prefilled with rate-limit](../media/tutorial/09-branch-name.png)
+![The branch name step, prefilled with rate-limit](../../media/tutorial/09-branch-name.png)
 
 Then the agent. This is the list from `~/.config/thurbox/agents.toml` — the
 built-ins thurbox seeds, plus any CLI you have described yourself. (With only
 one agent defined, this step is skipped.)
 
-![The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp, shell](../media/tutorial/10-agent-picker.png)
+![The agent picker listing claude, codex, antigravity, opencode, aider, copilot, vibe, pi, omp, shell](../../media/tutorial/10-agent-picker.png)
 
 `Enter` creates everything: the worktree, the tmux window, and the agent
 running inside it.
 
 ## 5. You have a session
 
-![The session list with one session, beside a live agent terminal](../media/tutorial/11-session-running.png)
+![The session list with one session, beside a live agent terminal](../../media/tutorial/11-session-running.png)
 
 What you are looking at:
 
@@ -178,7 +178,7 @@ a reboot, or a week away.
 `Ctrl+N` again. The repository is in memory now, so there is nothing to type:
 `space` to select it, `Enter`, and through the same steps.
 
-![The repo picker with the remembered repository listed](../media/tutorial/12-repo-remembered.png)
+![The repo picker with the remembered repository listed](../../media/tutorial/12-repo-remembered.png)
 
 That is the shape of a working day — one session per piece of work, each on its
 own branch, all alive at once.
@@ -189,7 +189,7 @@ The authoritative list is **`F1`** (or `Ctrl+G`), which renders the live key
 registry, so it can never drift from what is actually bound. Every chord in it
 is rebindable from that screen.
 
-![The keybindings help, rendered from the live registry](../media/tutorial/14-keybindings.png)
+![The keybindings help, rendered from the live registry](../../media/tutorial/14-keybindings.png)
 
 The ones worth knowing on day one:
 
@@ -221,7 +221,7 @@ agents, branches and repositories — and the text on each session's screen, whi
 is how you find the session with the error in it. Matches highlight **inside**
 the panes rather than being reprinted:
 
-![Search, with the query rate and its match highlighted](../media/tutorial/13-search.png)
+![Search, with the query rate and its match highlighted](../../media/tutorial/13-search.png)
 
 ## The same thing from the command line
 
@@ -254,7 +254,7 @@ thurbox-cli session capture <uuid>
 thurbox-cli session delete <uuid>
 ```
 
-![thurbox-cli session list, a headless session create, and the list again](../media/tutorial/15-cli.png)
+![thurbox-cli session list, a headless session create, and the list again](../../media/tutorial/15-cli.png)
 
 Everything else lives under the same tree: `thurbox-cli config show` prints
 every resolved path, `thurbox-cli plugin dir` prints the interface directory,
@@ -265,15 +265,15 @@ and `thurbox-cli --help` lists the rest (`automation`, `task`, `message`,
 
 - **Make it yours** — every pane is a Lua file in a directory you own. Ask an
   agent in any session to change it, or read
-  [docs/PLUGINS.md](PLUGINS.md). `Ctrl+,` then `]` lists every pane and turns
+  [docs/thurbox/plugins.md](plugins.md). `Ctrl+,` then `]` lists every pane and turns
   one off; `F10` reloads.
 - **Run a fleet** — [Recipe: provision a monorepo headless](https://thurbox.thurbeen.eu/docs/recipes.html#monorepo)
-  and [docs/ORCHESTRATION.md](ORCHESTRATION.md).
+  and [docs/thurbox/orchestration.md](orchestration.md).
 - **Work on another machine** — declare an SSH host or a WSL distro in
   `~/.config/thurbox/hosts.toml` and sessions run there while the TUI stays
-  local ([docs/CONFIG.md](CONFIG.md)).
-- **Configure it** — [docs/CONFIG.md](CONFIG.md) is every config file, env var
-  and setting in one place; [docs/FEATURES.md](FEATURES.md) is why each one
+  local ([docs/thurbox/config.md](config.md)).
+- **Configure it** — [docs/thurbox/config.md](config.md) is every config file, env var
+  and setting in one place; [docs/thurbox/features.md](features.md) is why each one
   behaves the way it does.
 
 Regenerate every screenshot on this page with:

@@ -43,7 +43,7 @@ const LOG_FILES_KEPT: usize = 30;
 /// leak. A month still holds the log of whatever a user is reporting.
 ///
 /// The name has to stay `thurbox.log.<date>`: that spelling is what
-/// `docs/PERFORMANCE.md` tells a reader to open, and it is also what the
+/// `docs/thurbox/performance.md` tells a reader to open, and it is also what the
 /// pruning above matches on, so a different prefix would silently orphan every
 /// file written by an earlier release instead of retiring it.
 fn log_appender(dir: PathBuf) -> tracing_appender::rolling::RollingFileAppender {
@@ -615,7 +615,7 @@ mod tests {
     /// data dir grew a file per day for good; and the cap only retires a file it
     /// recognises, so a prefix that stopped spelling `thurbox.log.<date>` would
     /// leave every older file orphaned *and* break the path
-    /// `docs/PERFORMANCE.md` hands the reader. Pruning happens as the appender
+    /// `docs/thurbox/performance.md` hands the reader. Pruning happens as the appender
     /// is built, which is what makes this observable without waiting a day.
     #[test]
     fn the_log_appender_keeps_a_months_worth_and_no_more() {

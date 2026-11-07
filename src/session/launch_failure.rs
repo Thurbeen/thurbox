@@ -15,7 +15,7 @@
 //!
 //! The record is a contract: `session get`/`list --json` publish it as
 //! `launch_failure` with exactly the fields of [`LaunchFailure`], and
-//! `docs/ORCHESTRATION.md` documents them for drivers.
+//! `docs/thurbox/orchestration.md` documents them for drivers.
 
 use serde::{Deserialize, Serialize};
 

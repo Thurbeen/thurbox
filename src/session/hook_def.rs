@@ -326,11 +326,11 @@ mod tests {
     #[test]
     fn the_documented_to_states_are_exactly_the_accepted_ones() {
         // A Windows checkout may carry the doc with CRLF line endings.
-        let doc = include_str!("../../docs/CONFIG.md").replace("\r\n", "\n");
+        let doc = include_str!("../../docs/thurbox/config.md").replace("\r\n", "\n");
         let row = doc
             .lines()
             .find(|line| line.starts_with("| `to` |"))
-            .expect("CONFIG.md documents the `to` field");
+            .expect("docs/thurbox/config.md documents the `to` field");
         let listed = row
             .split_once("`session.state_changed`:")
             .and_then(|(_, rest)| rest.split_once(';'))

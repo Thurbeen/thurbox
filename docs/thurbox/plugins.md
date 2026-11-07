@@ -30,7 +30,7 @@ thurbox-cli plugin check        # does it load? exits non-zero if not
 thurbox-cli plugin list         # every file, where it came from, is it drawn
 ```
 
-`plugin new` writes [`examples/lua/plugin.lua`](../examples/lua/plugin.lua) under your
+`plugin new` writes [`examples/lua/plugin.lua`](../../examples/lua/plugin.lua) under your
 chosen name — a pane that renders, declares a key and a setting, and comments the
 one rule that catches everybody (see **Traps**). Edit it, run `check`, and it is
 live on the next save: the interface watches the directory.
@@ -821,7 +821,7 @@ command, closing leaves focus at the destination it requested. No `focusable`
 declaration or `command("focus")` is needed to receive this hook: `floats = true`
 and an open rendered float are enough.
 
-The sample [card float](../tests/fixtures/float_focus/91_cards.lua) opens with
+The sample [card float](../../tests/fixtures/float_focus/91_cards.lua) opens with
 Ctrl+B, cycles three targets in both directions, closes with Escape, and uses
 `e` to exercise the empty-view fallback.
 
@@ -1910,10 +1910,10 @@ below.
 
 | Example file | What it is |
 |---|---|
-| [`plugin.lua`](../examples/lua/plugin.lua) | what `plugin new` writes: a pane, a key, a setting |
-| [`composite.lua`](../examples/lua/composite.lua) | the worked `run` example — git status and log, on the session's own host |
-| [`events.lua`](../examples/lua/events.lua) | the worked `on_event` example — selects a session the moment it blocks, with a palette command to switch it off |
-| [`layout.lua`](../examples/lua/layout.lua) | an arrangement putting the two panes above in a column beside the agent |
+| [`plugin.lua`](../../examples/lua/plugin.lua) | what `plugin new` writes: a pane, a key, a setting |
+| [`composite.lua`](../../examples/lua/composite.lua) | the worked `run` example — git status and log, on the session's own host |
+| [`events.lua`](../../examples/lua/events.lua) | the worked `on_event` example — selects a session the moment it blocks, with a palette command to switch it off |
+| [`layout.lua`](../../examples/lua/layout.lua) | an arrangement putting the two panes above in a column beside the agent |
 
 Together they are one demo:
 

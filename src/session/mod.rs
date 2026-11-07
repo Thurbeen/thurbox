@@ -127,7 +127,7 @@ pub const TURN_STATES: [&str; 4] = ["working", "blocked", "done", "idle"];
 /// A recipe is deliberately not a conversation: it says how to start a process,
 /// never how to resume one. Resuming and forking are the [`AgentDef`] arg
 /// groups' job, which is why a command session can be restarted but not
-/// resumed — see `docs/FEATURES.md`.
+/// resumed — see `docs/thurbox/features.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct LaunchRecipe {
     /// The executable, as given. Resolved on `PATH` by the multiplexer at

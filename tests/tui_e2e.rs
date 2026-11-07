@@ -10513,7 +10513,7 @@ const ECHO_KEYS: u64 = 20;
 /// `KEEP_FRAME_WHILE_TYPING`).
 ///
 /// Asserted on the loop's counters rather than on the clock (ADR-P5): the
-/// benchmark measures how long an echo takes (docs/BENCHMARK-MULTIPLEXERS.md),
+/// benchmark measures how long an echo takes (docs/thurbox/benchmark-multiplexers.md),
 /// and this pins that nothing puts it back on a floor.
 fn assert_every_echo_painted_at_once(profile: &Profile) {
     let (echoes, echo_frames) = echo_counters(profile, ECHO_KEYS);
@@ -10531,7 +10531,7 @@ fn assert_every_echo_painted_at_once(profile: &Profile) {
 fn a_keystrokes_echo_is_painted_without_waiting_for_the_output_floor() {
     // Output is paced at 30 frames a second (ADR-P17) because nobody reads a
     // scrolling log faster. The echo of a key is output too, and pacing it
-    // put 25–48 ms on every keystroke (docs/BENCHMARK-MULTIPLEXERS.md): the
+    // put 25–48 ms on every keystroke (docs/thurbox/benchmark-multiplexers.md): the
     // keystroke's own frame painted at once, the echo landed just after it and
     // then waited out the floor from that frame (ADR-P28).
     // After the 20 ordinary keys, answer the first key of a two-key batch at

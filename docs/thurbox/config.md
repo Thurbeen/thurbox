@@ -3,7 +3,7 @@
 Every knob thurbox reads, where it lives, and how it behaves. One file
 per audience/lifecycle: hand-edited registries are TOML, the
 machine-written keybindings are JSON, and concurrently-written runtime
-state lives in SQLite (see ADR-8/ADR-19 in `ARCHITECTURE.md` for the
+state lives in SQLite (see ADR-8/ADR-19 in [architecture.md](architecture.md) for the
 rationale).
 
 `ui/plugins.toml` and `ui/plugins.lock` are the one pair that share a
@@ -236,7 +236,7 @@ fork keep that snapshot, so changing `agents.toml` cannot move an existing
 session to another account. When that snapshot moves an agent's config
 directory (`CODEX_HOME`), each launch merges Thurbox's status hooks into the
 selected directory too; see
-[Several Claude accounts](AGENTS.md#several-claude-accounts). Existing sessions created before this feature keep
+[Several Claude accounts](agents.md#several-claude-accounts). Existing sessions created before this feature keep
 their saved environment; create a new session to select an agent's new defaults.
 
 With shared-host delegation, the host's own registry supplies its agent defaults;
@@ -257,7 +257,7 @@ plan on the owning instance for that complete environment. `session exec` on
 the caller refuses an unavailable saved environment.
 These values are visible in JSON and stored in the database: select account
 configuration directories here, rather than storing tokens. See
-[Several Claude accounts](AGENTS.md#several-claude-accounts).
+[Several Claude accounts](agents.md#several-claude-accounts).
 
 `telemetry_env` and `telemetry_args` apply only while `settings.toml`'s
 [`[telemetry]`](#telemetry--opentelemetry-for-sessions) is on, with
@@ -273,7 +273,7 @@ also supplied in memory to existing `name = "claude"`, `command = "claude"`
 entries that omit it. Explicit `[]` opts out, and custom definitions can declare
 their own group. Restart affected sessions after upgrading. This changes
 directory scope, preserving the permission mode and deny/ask rules; see
-[Multi-repo directory scope](AGENTS.md#multi-repo-directory-scope).
+[Multi-repo directory scope](agents.md#multi-repo-directory-scope).
 
 `{id}` is substituted with the thurbox-generated session UUID, and `{name}`
 with the display name captured for that launch. Substitution happens inside
@@ -309,7 +309,7 @@ the `thurbox-agents` skill for the `resume_latest` semantics.
 
 Three fields let one entry say what used to need a wrapper script in front of
 the CLI (the worked example replacing one is
-[Replacing a launch wrapper](AGENTS.md#replacing-a-launch-wrapper)):
+[Replacing a launch wrapper](agents.md#replacing-a-launch-wrapper)):
 
 ```toml
 [[agents]]
@@ -384,7 +384,7 @@ telemetry and `--agent-arg` arguments still follow everything.
 - **Failure.** A step exiting non-zero aborts the launch; the agent never
   starts. The pane prints `thurbox: setup step <n> failed (exit <status>)` and
   stays on screen, and the session reads
-  [`failed`](ORCHESTRATION.md#launch-failures) with that status and the pane's
+  [`failed`](orchestration.md#launch-failures) with that status and the pane's
   last lines. That state is recorded for local sessions; on an SSH or WSL host
   only one that shares its sessions records it (on the host). Elsewhere a
   failed setup still stops the launch and stays on the pane, but the session
@@ -417,7 +417,7 @@ the life of that server, and the spawn fails with a shell's `command not found`
 
 That is not the only thing a 127 there can mean, and thurbox does not read the
 exit status as the verdict at all — see
-[FEATURES.md](FEATURES.md#session-creation) for the hook that also produces
+[features.md](features.md#session-creation) for the hook that also produces
 one.
 
 Resolution is **best-effort and never a new way to fail**: a `command` that is
@@ -486,7 +486,7 @@ by name. Set `hook_schema = "claude"` on a **rebranded** agent (one whose
 `command` runs `claude` under a different `name`) and it inherits claude's hook
 wiring — the `--settings` patch locally, and the same rewrite on a remote/WSL
 host. It names the *family* to imitate, not a boolean; see
-[AGENTS.md](AGENTS.md#hook_schema-custom-rebrands-only) for which family is
+[agents.md](agents.md#hook_schema-custom-rebrands-only) for which family is
 actually useful today and why.
 
 The seeded file also ships two commented, copy-pasteable templates
@@ -498,7 +498,7 @@ to exactly the ten built-ins (nine coding agents plus `shell`).
 For **each built-in's** exact config and runtime behavior (resume/fork
 semantics, ID model, and which status-hook mechanism it uses), and the
 checklist for **adding a new built-in**, see
-[AGENTS.md](AGENTS.md).
+[agents.md](agents.md).
 
 ## hosts.toml
 
@@ -687,9 +687,9 @@ when psmux's floor rose to 3.3.8 (#1557).
 
 | Multiplexer | Minimum | Code enforcing it | Upstream evidence |
 | --- | --- | --- | --- |
-| [tmux](https://github.com/tmux/tmux) | 3.2 | [`MIN_TMUX_VERSION` and `check_min_version`](../src/backend/tmux.rs) | [3.2 changes](https://github.com/tmux/tmux/blob/3.2/CHANGES): control-client flow control and format subscriptions |
-| [psmux](https://github.com/psmux/psmux) | 3.3.8 | [`MIN_PSMUX_VERSION`, `check_psmux_version` (server) and `check_psmux_binary` (binary)](../src/backend/psmux.rs) | [3.3.8 release](https://github.com/psmux/psmux/releases/tag/v3.3.8): pane-slot targets (`thurbox:.%3`) resolve to that pane; [3.3.7](https://github.com/psmux/psmux/releases/tag/v3.3.7): dead warm-pane fix (psmux#450) |
-| [RMUX](https://github.com/Helvesec/rmux) | 0.10.0 | [`Rmux::check_banner`](../src/backend/rmux.rs) | [0.10.0 release](https://github.com/Helvesec/rmux/releases/tag/v0.10.0): wire protocol 8, incompatible with 0.9.x daemons |
+| [tmux](https://github.com/tmux/tmux) | 3.2 | [`MIN_TMUX_VERSION` and `check_min_version`](../../src/backend/tmux.rs) | [3.2 changes](https://github.com/tmux/tmux/blob/3.2/CHANGES): control-client flow control and format subscriptions |
+| [psmux](https://github.com/psmux/psmux) | 3.3.8 | [`MIN_PSMUX_VERSION`, `check_psmux_version` (server) and `check_psmux_binary` (binary)](../../src/backend/psmux.rs) | [3.3.8 release](https://github.com/psmux/psmux/releases/tag/v3.3.8): pane-slot targets (`thurbox:.%3`) resolve to that pane; [3.3.7](https://github.com/psmux/psmux/releases/tag/v3.3.7): dead warm-pane fix (psmux#450) |
+| [RMUX](https://github.com/Helvesec/rmux) | 0.10.0 | [`Rmux::check_banner`](../../src/backend/rmux.rs) | [0.10.0 release](https://github.com/Helvesec/rmux/releases/tag/v0.10.0): wire protocol 8, incompatible with 0.9.x daemons |
 
 For tmux, the limiting features are `refresh-client -f pause-after=5`,
 `refresh-client -A` (pane monitoring/resume), and `refresh-client -B`
@@ -697,7 +697,7 @@ For tmux, the limiting features are `refresh-client -f pause-after=5`,
 `send-keys -H` and pane options in 3.0; `set-clipboard external` in 2.6;
 `resize-window` in 2.9. These are recorded in the same upstream changelog.
 The mouse-state seed in
-[`pane_state_seed`](../src/backend/tmux_compat/server.rs) uses six
+[`pane_state_seed`](../../src/backend/tmux_compat/server.rs) uses six
 `#{mouse_*_flag}` formats: all are present in upstream
 [3.2 format.c](https://github.com/tmux/tmux/blob/3.2/format.c).
 The changelog records the SGR/UTF-8 mouse formats in 3.0; the source confirms
@@ -724,7 +724,7 @@ psmux 3.3.8 on Windows 11 (ADR-13), and RMUX 0.10.0 on Linux
 evidence, not a claim that every platform was retested for this doc change.
 The latest upstream stable releases checked on 2026-10-03 were tmux 3.7c,
 psmux 3.3.8, and RMUX 0.10.0; psmux 3.4.0 followed on 2026-10-13, and
-[`psmux-pane-routing.ps1`](../scripts/dev/e2e/psmux-pane-routing.ps1) passes
+[`psmux-pane-routing.ps1`](../../scripts/dev/e2e/psmux-pane-routing.ps1) passes
 against 3.3.8 and 3.4.0 on Windows 11.
 
 RMUX is a Rust terminal multiplexer with a tmux-compatible command interface.
@@ -766,7 +766,7 @@ RMUX 0.10.0 rejects `pause-after`, `refresh-client -A`, and subscriptions
 (`refresh-client -B`). Thurbox omits those commands, uses one reply block for
 command lists, and polls pane liveness and remote hook options. Output buffering
 therefore relies on RMUX rather than tmux's pause/resume mechanism. See
-[ADR-31](ARCHITECTURE.md#adr-31-tmux-and-psmux-are-peer-adapters-over-one-tmux-protocol-server)
+[ADR-31](architecture.md#adr-31-tmux-and-psmux-are-peer-adapters-over-one-tmux-protocol-server)
 and [#1320](https://github.com/Thurbeen/thurbox/pull/1320).
 
 If RMUX is absent from the local picker, check `rmux -V` in the environment
@@ -781,7 +781,7 @@ multiplexer when attaching manually or stopping a server.
 A socket learned from a host's own CLI (`version --json`'s `tmux_socket`) is
 kept per **host**, not per route: it is the address of the thurbox instance
 there (ADR-12), which every multiplexer on that host runs under. Why routes
-are read this way, and what it costs, is ADR-28 in `docs/ARCHITECTURE.md`.
+are read this way, and what it costs, is ADR-28 in `docs/thurbox/architecture.md`.
 
 Manual deletion of an agent pane or window means the agent should run again.
 Once the backend **confirms absence**, Thurbox relaunches the same session ID,
@@ -849,7 +849,7 @@ event do not run. **A `post_*` hook is informational**: every one runs,
 a failure is logged to `thurbox.log` and carried in the CLI's JSON
 (`hook_failures`), and never fails the operation. Each `post_*` is also
 delivered to interface plugins as an event of the same name (`events = {
-"session.post_create" }` + `on_event`; `docs/PLUGINS.md` → Events) — the
+"session.post_create" }` + `on_event`; `docs/thurbox/plugins.md` → Events) — the
 Lua side of the same vocabulary, informational for the same reason.
 
 **Preparation before launch.** `session.pre_launch` runs on create
@@ -1041,7 +1041,7 @@ lines of history, so switching to a session hidden longer than this takes that
 long to draw. A search whose strip was just opened reads each such session the
 same way before the first keystroke. `0` keeps every grid for as long as the
 session runs, which is how thurbox behaved before (ADR-P27 in
-[PERFORMANCE.md](PERFORMANCE.md)). psmux (Windows) cannot hand a pane back in
+[performance.md](performance.md)). psmux (Windows) cannot hand a pane back in
 step with its output, so its sessions always keep their grids. Read at startup.
 
 ### `git_poll_secs` — how much `git` thurbox runs
@@ -1110,7 +1110,7 @@ effect in either direction. Same for `three_panel_min_cols` above.
 | Key | Default | Controls |
 |-----|---------|----------|
 | `shell_pane` | `true` | per-session shell toggle (`Ctrl+T`) |
-| `perf_hud` | `true` | perf HUD overlay (`F12`): live perf counters, frame/tick timing and the per-pane cost table (see `docs/PERFORMANCE.md`) |
+| `perf_hud` | `true` | perf HUD overlay (`F12`): live perf counters, frame/tick timing and the per-pane cost table (see `docs/thurbox/performance.md`) |
 | `automations` | `true` | heartbeat arming, by the TUI on startup and by `automation create`/`edit` (the CLI stays fully functional) |
 | `mouse` | `true` | mouse capture: clicks, wheel, drag-select, hover, scrollbars |
 | `notifications` | `true` | OS desktop notifications when a session needs attention |
@@ -1281,7 +1281,7 @@ path this instance has to it — a host reached directly wins over the same
 session seen through another — and every action on it reaches the host that
 owns it. A row seen through another host has no terminal attached here. Read
 by every mirror pass, so a change applies on the next one (within 10 s in the
-TUI). [FEATURES.md](FEATURES.md) → *Shared sessions*
+TUI). [features.md](features.md) → *Shared sessions*
 has the rule.
 
 ### `[telemetry]` — OpenTelemetry for sessions
@@ -1381,7 +1381,7 @@ re-reads the table on every run, so a change applies within a minute.
 - A turn runs from entering `working` to leaving it, and `outcome` is the state
   it left to. `thurbox.blocked.duration` is time spent waiting on a human. A
   stop, a loss or a delete in between ends either one unmeasured.
-- `reason` is the [`watch`](ORCHESTRATION.md#watch-for-everything-that-is-not-a-report)
+- `reason` is the [`watch`](orchestration.md#watch-for-everything-that-is-not-a-report)
   vocabulary: `spawned`, `restored`,
   `stopped`, `lost`, `soft_deleted`, …
 - `per_session = true` adds `thurbox.session.id` to every metric. Each session
@@ -1473,7 +1473,7 @@ into `Blocked` (the agent needs input or approval) and, with
 `also_on_waiting = true`, also when it finishes a turn (`Working → Done`).
 The edge is detected once per tick in `kernel::notify`, reading the same
 `SessionState` the session-list status icon draws, so the banner can
-never drift from the list (see `docs/FEATURES.md` → *Why the transition is
+never drift from the list (see `docs/thurbox/features.md` → *Why the transition is
 observed in one place*) — then deduped per session (`min_interval_secs`)
 and skipped for the session you're currently viewing (`suppress_for_active`).
 The notification body is the agent's last OSC 9 / OSC 777 message when
@@ -1579,7 +1579,7 @@ by **agent hooks** that call `thurbox-cli session signal --state
 <working|blocked|done|idle|background>`. Sub-work a turn may outlive is
 reported by its edges, `--work-start <id>` / `--work-end <id>`; a `done` while
 any is in flight is stored as `background` (see
-[AGENTS.md](AGENTS.md#background-sub-work)). The state is persisted on the `sessions` row
+[agents.md](agents.md#background-sub-work)). The state is persisted on the `sessions` row
 (`hook_state`, `hook_state_at`, `seen_at` — schema v34) and survives the TUI
 being closed; a hook fired headlessly is picked up via `PRAGMA data_version`.
 Identity comes from the injected `THURBOX_SESSION` env var, so a hook passes
@@ -1597,14 +1597,14 @@ the two silences behind it (`uncovered`, `unreported`); both are spelled apart
 from `status_idle`, which is the agent's own report that it is at rest.
 `status_error` is the role of a failed *command* in the list and of the one
 session state that is a failure: `failed`, a launch that died before its agent
-reported anything (see [Launch failures](ORCHESTRATION.md#launch-failures)).
+reported anything (see [Launch failures](orchestration.md#launch-failures)).
 
 The wiring is applied **only to agents thurbox launches** — it never edits your
 own global agent config (e.g. your personal `~/.claude/settings.json`). thurbox's
 managed hook config lives per agent, applied by injecting a flag into
 `agents.toml` or by a reversible merge into / managed file in the agent's own
 config dir. Which mechanism and file each agent uses is
-[AGENTS.md → Status hook mechanisms](AGENTS.md#status-hook-mechanisms); claude's
+[agents.md → Status hook mechanisms](agents.md#status-hook-mechanisms); claude's
 is the `--settings` flag naming `~/.config/thurbox/hooks/claude.json`.
 
 The home dir is `~/.config/thurbox/hooks` on a release build and
@@ -1701,7 +1701,7 @@ manifest while preserving existing absolute overrides and run history.
 
 The example below is modelled on
 [fleet](https://github.com/Thurbeen/fleet), the control-plane template that is
-the worked example of an installable extension (`docs/ORCHESTRATION.md`). Its
+the worked example of an installable extension (`docs/thurbox/orchestration.md`). Its
 real manifest uses `[[agents]]`, one `[[files]]`, three `[[symlinks]]` and one
 `[[sessions]]`; the other entries here are illustrative, so every field the
 format supports is shown once:
@@ -1886,7 +1886,7 @@ thurbox process reads it when it next starts.
 | `editor_mode` | `thurbox-cli editor mode <auto\|terminal\|gui>` | how `Ctrl+O` runs the editor: `auto` (default) detects terminal vs GUI and gives terminal editors a real TTY (tmux popup / TUI suspend); `terminal` forces the TTY path; `gui` forces detached |
 | `active_extensions` | `thurbox-cli extension activate/deactivate` | JSON array of active extensions to self-heal |
 | `builtin_hooks_optout` | `thurbox-cli extension deactivate hooks` | `1` when the user opted out of the auto-activated hooks extension |
-| `perf_snapshot` | the TUI, while perf timing is active (`THURBOX_PERF_LOG` or an open perf HUD) | JSON perf snapshot read by `thurbox-cli perf` (see `docs/PERFORMANCE.md`) |
+| `perf_snapshot` | the TUI, while perf timing is active (`THURBOX_PERF_LOG` or an open perf HUD) | JSON perf snapshot read by `thurbox-cli perf` (see `docs/thurbox/performance.md`) |
 | `host_probe_backoff:<backend>` | the teardown sweep, when a host's windows could not be listed | `<attempted_at_millis>:<failures>` — how long that host is left alone before the sweep asks again (ADR-26). Not user-set; the row is deleted the first time the host answers |
 | `session_reap_backoff:<session id>` | the teardown sweep, when a soft-deleted row's reap did not reach its host | `<attempted_at_millis>:<failures>` — the same curve, per row rather than per host, for a host that answers `list-windows` while its own `thurbox-cli` does not run (ADR-26). Not user-set; the row is deleted the moment the reap comes off, and by a restore, which ends the delete it belonged to |
 
@@ -1922,7 +1922,7 @@ User-set (read by thurbox):
 | `VISUAL`, then `EDITOR` | `Ctrl+O` editor when `editor_command` is unset |
 | `SHELL` | the `Ctrl+T` companion shell pane (fallback `/bin/sh`). For a remote/WSL session the pane uses the **host's** `$SHELL` as an interactive login shell (the SSH-login environment), not the local one. |
 | `RUST_LOG` | log filter for `thurbox.log` |
-| `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, per-session `restore_adopt`/`adopt_split` lines, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/PERFORMANCE.md`. |
+| `THURBOX_PERF_LOG` | opt-in performance logging: a one-shot `startup` phase breakdown at first paint, per-session `restore_adopt`/`adopt_split` lines, steady-state `perf_window` lines (~10 s cadence), and wall-clock frame/tick timing collection. Any value enables it. See `docs/thurbox/performance.md`. |
 | `THURBOX_SOCKET` | overrides the **local** multiplexer socket name, winning over the data-dir derivation below. For test/sandbox tooling: Unix scoping uses `TMUX_TMPDIR`, but psmux (Windows) resolves every `-L <name>` machine-wide, so this is the only way to fully scope an instance there. Remote hosts are unaffected (socket from `hosts.toml`). Empty = unset. |
 | `TMUX_TMPDIR` | tmux's own: the directory its `tmux-<uid>/<socket>` goes under. When set, thurbox leaves it alone (test and sandbox tooling scope their servers with it); unset, thurbox sets it to `<data dir>/tmux` for every tmux command it runs — see [Where the tmux socket lives](#where-the-tmux-socket-lives). Empty = unset. |
 | `THURBOX_UI_INSTANCE` | selects a running TUI for `thurbox-cli ui state` and `ui action` when `--instance` is omitted. |
@@ -2093,7 +2093,7 @@ by another thurbox · type here to resize`). Focusing a pane there, or typing in
 it, hands the size over; when the sizing instance goes, the one left takes its own size back.
 The name of the instance sizing a window is the window option `@thurbox_sizer`
 (`tmux -L <socket> show-options -w -t <pane> @thurbox_sizer`). Why it works
-this way, and what it costs, is ADR-27 in `docs/ARCHITECTURE.md`. On a Windows
+this way, and what it costs, is ADR-27 in `docs/thurbox/architecture.md`. On a Windows
 host (psmux) the last instance to paint a pane still sizes it.
 
 ### Where the tmux socket lives

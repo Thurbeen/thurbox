@@ -50,7 +50,7 @@ use super::{AgentRegistry, TURN_STATES};
 /// How the built-in `hooks` extension delivers an agent's status hooks.
 ///
 /// The three mechanisms `extensions/hooks/extension.toml` uses, in the same
-/// order `docs/AGENTS.md` documents them.
+/// order `docs/thurbox/agents.md` documents them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookDelivery {
     /// Args appended to the agent's launch command (`[[agent_patches]]`).
@@ -78,7 +78,7 @@ impl HookDelivery {
 
 /// What one agent's shipped hook payload can report, and how it is delivered.
 ///
-/// The table below is the machine-readable half of `docs/AGENTS.md` → *Status
+/// The table below is the machine-readable half of `docs/thurbox/agents.md` → *Status
 /// hook mechanisms*; each entry's `states` are exactly the states its payload
 /// in `extensions/hooks/` signals, which a test asserts against the embedded
 /// payloads rather than trusting this list.
@@ -1123,7 +1123,7 @@ impl Assessment {
     }
 
     /// Whether the session can take input now — the agent-agnostic readiness
-    /// contract callers rely on (docs/ORCHESTRATION.md → Readiness).
+    /// contract callers rely on (docs/thurbox/orchestration.md → Readiness).
     ///
     /// Once any hook has reported, the agent's own word decides: `idle` and
     /// `done` are ready, every active state is not. Before the first hook — a

@@ -1176,7 +1176,7 @@ impl<M: TmuxCompatible> Server<M> {
     fn out_of_reach(&self, why: &str) -> anyhow::Error {
         crate::backend::contract::BackendError::Unreachable(format!(
             "{}: {why}; not starting a second server beside it \
-             (see 'An orphaned tmux server' in docs/CONFIG.md)",
+             (see 'An orphaned tmux server' in docs/thurbox/config.md)",
             self.name
         ))
         .into()

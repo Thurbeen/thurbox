@@ -28,7 +28,7 @@ module exists to prevent:
 | `running` | `status_running` (accent) | `◉`, animated while its pane prints | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
 | `uncovered` | `status_unknown` (muted) | `◌` | this agent is wired to report nothing, so its silence means nothing |
 | `unreported` | `status_unknown` (muted) | `◌` | the agent *can* report and has not yet |
-| `failed` | `status_error` | `✗` | the launch died before the agent reported anything: a failed agents.toml `setup` step, or a hook-covered agent whose pane died with no report. Recorded once (`thurbox.launch_failure` meta + a `changed`/`launch_failed` event) by `session_ops::launch_failure` — the reconcile tick, `session get`, `list --verify`, `wait`, `watch`, and `session exited` on psmux — and published as `launch_failure` (`reason`, `exit_code`, `output`, `pane`, `at`). Outranks everything but `stopped`; the next launch clears it, and a record naming a pane the row has left is ignored. See docs/ORCHESTRATION.md → Launch failures |
+| `failed` | `status_error` | `✗` | the launch died before the agent reported anything: a failed agents.toml `setup` step, or a hook-covered agent whose pane died with no report. Recorded once (`thurbox.launch_failure` meta + a `changed`/`launch_failed` event) by `session_ops::launch_failure` — the reconcile tick, `session get`, `list --verify`, `wait`, `watch`, and `session exited` on psmux — and published as `launch_failure` (`reason`, `exit_code`, `output`, `pane`, `at`). Outranks everything but `stopped`; the next launch clears it, and a record naming a pane the row has left is ignored. See docs/thurbox/orchestration.md → Launch failures |
 | `stopped` | — | — | parked by `session stop`: no process at all, which is why it outranks whatever the hook columns still hold |
 
 **Only `stopped` carries no dot**, because a parked session is at rest by
@@ -46,7 +46,7 @@ agent-agnostic "can take input now" answer `session get`/`list` publish:
 `idle`/`done` are ready, active states and a parked or agent-less pane are not,
 and a `running` session no hook has reported on is ready once its composer is
 drawn — the probe reads the input line (`composer::shows_prompt`) only then.
-`null` means nothing could say. The contract is docs/ORCHESTRATION.md →
+`null` means nothing could say. The contract is docs/thurbox/orchestration.md →
 Readiness.
 
 The interface now derives through the same `Assessment` the CLI does
@@ -168,7 +168,7 @@ own, which is the point.
   wired and nothing signals. Two answers, both additive: `THURBOX_SESSION` is in
   the pane env and inherited by every child, so anything in there can call
   `thurbox-cli session signal --state <s>` with **no arguments** (documented as
-  a stable contract in `docs/CONFIG.md`); and failing that, a pane whose
+  a stable contract in `docs/thurbox/config.md`); and failing that, a pane whose
   foreground is an agent the registry knows reports `state: "running"` /
   `state_source: "process"` / `hook_corroboration: "foreign-agent"` /
   `detected_agent: "<name>"` — deliberately coarse, since process inspection
@@ -215,7 +215,7 @@ own, which is the point.
   still-probed ids and `apply_hook_states` clearing `detected_agent` in place
   are the supporting hygiene, not the guarantee — the latter is load-bearing
   only because that path corrects its row directly and never reaches `assess`.
-  See `docs/PERFORMANCE.md` → *Freshness is a property of a cached answer*.
+  See `docs/thurbox/performance.md` → *Freshness is a property of a cached answer*.
 - **The callback.** Agents report transitions with
   `thurbox-cli session signal --state <working|blocked|done|idle|background>`
   (`cli::sessions::Action::Signal`). Identity is the injected
@@ -337,7 +337,7 @@ own, which is the point.
   A local session is never unreachable: this is its machine, and a missing pane
   there means the agent was not launched. The rows are read on the snapshot's
   own schedule rather than per frame, gated on `PRAGMA data_version` moving (see
-  `docs/PERFORMANCE.md` ADR-P6) — but the quiescence fallback is re-derived
+  `docs/thurbox/performance.md` ADR-P6) — but the quiescence fallback is re-derived
   every tick, since output moves between reads. `done` shows as `Done` (blue)
   **whether focused or not** — so a turn you're watching visibly completes — and
   becomes `Idle` only when you **move focus off it** (acknowledge it): the focus

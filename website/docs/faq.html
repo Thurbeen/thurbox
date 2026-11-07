@@ -79,7 +79,7 @@ breadcrumb: 'FAQ'
   found (on <code>PATH</code> locally, by the host probe on a host), and thurbox rejects versions below 0.10.0. An old 0.9.x
   daemon is incompatible with a 0.10.0 client. Finish or save agents' work before
   stopping that server for an upgrade. See
-  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/CONFIG.md#multiplexer-requirements-and-rmux-setup">the upgrade procedure and known limits</a>.
+  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/config.md#multiplexer-requirements-and-rmux-setup">the upgrade procedure and known limits</a>.
 </p>
 
 <h2 id="persistence">Do my sessions survive a crash or restart?</h2>
@@ -101,7 +101,7 @@ breadcrumb: 'FAQ'
   Find it with <code>ps -axo pid,args | grep '[t]mux -L thurbox'</code>: a server whose
   socket file is missing is the orphan. Once a second server owns the path, killing
   the orphan (<code>kill &lt;pid&gt;</code>) is the only option. See
-  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/CONFIG.md#an-orphaned-tmux-server">docs/CONFIG.md &rarr; An orphaned tmux server</a>.
+  <a href="https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/config.md#an-orphaned-tmux-server">docs/thurbox/config.md &rarr; An orphaned tmux server</a>.
 </p>
 
 <h2 id="license">Is Thurbox free and open source?</h2>

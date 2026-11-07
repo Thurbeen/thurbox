@@ -1,12 +1,44 @@
 # Constitution
 
-Non-negotiable rules that define what Thurbox **must** always be.
-Each principle has an automated enforcement mechanism
-— if it can't be enforced, it doesn't belong here.
+Non-negotiable rules for everything in this repository: thurbox, Fleet and
+the runtimes. Each rule has an automated enforcement mechanism, or names the
+review that enforces it. A rule that nothing can enforce does not belong here.
 
-## Principles
+The rules come in two parts:
 
-### 1. Crash-free operation
+- [Every component](#every-component): rules that hold for thurbox, Fleet and
+  every runtime alike.
+- [Per component](#per-component): rules that hold inside one component.
+
+A component's rule may add to a shared rule and never relaxes one. Where a
+mechanism exists in one component only, the enforcement map says so.
+
+## Every component
+
+### 1. Components meet only through processes
+
+thurbox, Fleet and each runtime call each other by running a program and
+reading its answer. No Rust dependency crosses from one component to another.
+The contracts are the [views](fleet/architecture.md#views), the
+[runtime protocol](runtime/README.md#the-runtime-protocol), the
+[terminal stream](runtime/README.md#the-terminal-stream) and the
+[recipe contract](fleet/architecture.md#recipes).
+
+A wire format is not a component: `term-stream` holds only frame types and
+their codec, and any component may depend on it.
+
+### 2. An unanswered question is Unknown
+
+A question that got no proof is Unknown. It is never read as "no", "absent"
+or "idle". Unknown never concludes anything and never triggers a destructive
+effect. A later observation answers it.
+
+Fleet carries this in its `Observation` type. thurbox's backend contract
+carries it in `WindowLifecycle::discover`, where an empty list means the
+backend proved it holds nothing and an unreachable host is an error. Every
+runtime carries it in its answers.
+
+### 3. Crash-free operation
 
 Errors are displayed in the UI (status bar / footer), never via panics.
 A panic is a bug. The panic hook installed by `coordinator::boot` restores
@@ -16,7 +48,101 @@ Code review enforces this, not a lint: `clippy::unwrap_used` is not denied,
 and start-up still calls `expect` on resources it cannot run without, such as
 the log file in the data directory.
 
-### 2. Module isolation
+Fleet reports a failure as a command's error output and exit status, and a
+controller's failure as a condition on the resource.
+
+### 4. Zero-warning policy
+
+Both `clippy` and `rustdoc` run with warnings promoted to errors.
+`rumdl` enforces markdown style (100-char line width, consistent
+formatting). If any linter reports warnings, CI fails.
+
+### 5. Permissive licenses only
+
+All dependencies must carry licenses from the allowlist in `deny.toml`.
+Copyleft crates are rejected at PR time.
+
+### 6. Zero known vulnerabilities
+
+`cargo-deny` advisories blocks merges
+when known CVEs affect the dependency tree.
+
+### 7. Conventional commits
+
+Every commit that reaches `main` is validated against the Conventional Commits
+spec by `cocogitto`. Pull requests land by squash merge, so that commit is the
+pull request **title**, and the required `PR Title` check
+(`scripts/ci/check-pr-title.sh`) is what rejects a non-conforming one. The
+`commit-msg` hook holds a branch's own commits to the same spec locally, for a
+legible history; squash discards them, so nothing in CI checks them.
+
+### 8. Test-driven development (Red, Green, Refactor)
+
+All features and bug fixes follow the TDD/BDD cycle:
+
+1. **Red** — Write a failing test that defines the expected behavior.
+2. **Green** — Write the minimum code to make the test pass.
+3. **Refactor** — Clean up while keeping tests green.
+
+Tests are written *before* or *alongside* the implementation,
+never as an afterthought. If a bug is reported,
+the fix starts with a test that reproduces it.
+
+A change to a contract starts with an end-to-end test across the components
+it joins.
+
+### 9. Deterministic CI: scripts over LLMs
+
+CI pipelines must be reproducible and deterministic. Every check is a
+script or tool that produces the same result given the same input.
+LLM-generated judgments (code review bots, AI-powered linters)
+are never gating — they may advise, but deterministic tools
+(`clippy`, `nextest`, `cargo-deny`, `cog`, `rumdl`, `shellcheck`)
+make the pass/fail decision.
+Changes to CI configuration require careful review
+because a broken pipeline affects every contributor.
+
+A gate is never weakened to make a change pass.
+
+### 10. Tag-based versioning
+
+Version numbers are determined by git tags, not Cargo.toml.
+The release workflow analyzes conventional commits, creates tags automatically,
+and builds binaries with versions injected at build time.
+No version bump commits pollute the git history.
+
+**Why:** Automated version commits add noise without value. Tags are the
+natural place for release markers. Build-time version detection ensures
+binaries have correct versions while keeping the source tree clean.
+
+**Mechanism:**
+
+1. Release workflow (`cd.yml`) analyzes commits via `cog bump --auto --dry-run`
+2. Workflow creates lightweight tag (v{version}) and passes version via environment variable
+3. `build.rs` reads `THURBOX_RELEASE_VERSION` and injects into binary
+4. Cargo.toml version remains `0.0.0-dev` (development marker only)
+
+**Result:**
+
+- Release builds: version from tag (e.g., 1.0.0)
+- Development builds: version from Cargo.toml (0.0.0-dev)
+
+Each component is versioned by its own tag (`thurbox-v*`, `fleet-v*`,
+`runtime-mux-v*`) once they share this repository; until then each
+repository's `v*` tags apply. Fleet's `Cargo.toml` likewise stays
+`0.0.0-dev`.
+
+### 11. Credentials stay with the agent and the host
+
+No component reads, stores or forwards a coding agent's credentials. Fleet
+sends none to a runtime or a host; thurbox reads no agent account; a runtime
+uses the host's own.
+
+## Per component
+
+### thurbox
+
+#### T1. Module isolation
 
 Domain dependency flow is one-directional. Every module under `src/` has
 exactly one line here, and each line is the rule `tests/architecture_rules.rs`
@@ -140,32 +266,7 @@ today and is scheduled to go is listed item by item, with the task that
 removes it, in the test's `TRANSITIONAL` table; the table must equal the
 crossings the source makes, and it ends empty.
 
-### 3. Zero-warning policy
-
-Both `clippy` and `rustdoc` run with warnings promoted to errors.
-`rumdl` enforces markdown style (100-char line width, consistent
-formatting). If any linter reports warnings, CI fails.
-
-### 4. Permissive licenses only
-
-All dependencies must carry licenses from the allowlist in `deny.toml`.
-Copyleft crates are rejected at PR time.
-
-### 5. Zero known vulnerabilities
-
-`cargo-deny` advisories blocks merges
-when known CVEs affect the dependency tree.
-
-### 6. Conventional commits
-
-Every commit that reaches `main` is validated against the Conventional Commits
-spec by `cocogitto`. Pull requests land by squash merge, so that commit is the
-pull request **title**, and the required `PR Title` check
-(`scripts/ci/check-pr-title.sh`) is what rejects a non-conforming one. The
-`commit-msg` hook holds a branch's own commits to the same spec locally, for a
-legible history; squash discards them, so nothing in CI checks them.
-
-### 7. The interface is a plugin kernel, and its five rules hold
+#### T2. The interface is a plugin kernel, and its five rules hold
 
 The interface is Lua on a Rust kernel (ADR-23). v1's TEA loop — a single
 `App` model with `update()`/`view()` — was the sanctioned pattern until
@@ -198,7 +299,7 @@ with a mechanism rather than a review habit:
 
 No ad-hoc event handlers, no component-local state, no callback chains.
 
-### 8. Backend-first session model
+#### T3. Backend-first session model
 
 Coding-agent sessions run via a `SessionBackend` trait (four roles —
 `PaneStream`, `WindowLifecycle`, `PaneIo`, `StatusChannel` — plus a
@@ -218,70 +319,82 @@ a pane or a worktree, and self-heal, the sweeps and the repairs read the rows
 to decide what to recreate, reap or repair (ADR-26). A host's own database owns
 its sessions; another instance is a client of it (ADR-24).
 
-### 9. Logging never touches stdout
+This rule holds until [ADR-41](thurbox/architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes)
+lands: sessions then belong to Fleet and run on a runtime, and thurbox keeps
+no session rows.
+
+#### T4. Logging never touches stdout
 
 Stdout belongs to the TUI. All diagnostic output goes to the log file
 at `~/.local/share/thurbox/thurbox.log`.
 
-### 10. Test-driven development (Red, Green, Refactor)
+### Fleet
 
-All features and bug fixes follow the TDD/BDD cycle:
+#### F1. Decisions are pure; adapters do the I/O
 
-1. **Red** — Write a failing test that defines the expected behavior.
-2. **Green** — Write the minimum code to make the test pass.
-3. **Refactor** — Clean up while keeping tests green.
+`fleet-api` and `fleet-controllers` are pure: a controller receives time and
+observations as values and returns probes and a plan. Adapters (store,
+runtime, forge, gateway, plugin) perform every I/O through a port. The manager
+persists plans under the lease; the CLI parses, wires and prints.
+`crates/architecture.toml` declares every crate's allowed dependencies, and
+`fleet-arch` checks crate edges and purity, with positive and negative
+fixtures.
 
-Tests are written *before* or *alongside* the implementation,
-never as an afterthought. If a bug is reported,
-the fix starts with a test that reproduces it.
+#### F2. One process spawner, always bounded
 
-### 11. Deterministic CI — scripts over LLMs
+`fleet-exec` is the only production process spawner. Every call has a bound,
+and timeout or unwind kills the whole process tree. `fleet-arch` checks the
+restricted process APIs.
 
-CI pipelines must be reproducible and deterministic. Every check is a
-script or tool that produces the same result given the same input.
-LLM-generated judgments (code review bots, AI-powered linters)
-are never gating — they may advise, but deterministic tools
-(`clippy`, `nextest`, `cargo-deny`, `cog`, `rumdl`, `shellcheck`)
-make the pass/fail decision.
-Changes to CI configuration require careful review
-because a broken pipeline affects every contributor.
+#### F3. An effect has an intent and a receipt
 
-### 12. Tag-based versioning
+The manager persists a deterministic intent before an external effect and a
+receipt after it. A missing receipt is recovered by observing the effect's
+key, never by repeating the effect blindly. The contract tests named in
+[contracts.md](fleet/contracts.md) hold every effect to this.
 
-Version numbers are determined by git tags, not Cargo.toml.
-The release workflow analyzes conventional commits, creates tags automatically,
-and builds binaries with versions injected at build time.
-No version bump commits pollute the git history.
+#### F4. One writer per status field
 
-**Why:** Automated version commits add noise without value. Tags are the
-natural place for release markers. Build-time version detection ensures
-binaries have correct versions while keeping the source tree clean.
+Each status field has one owner, declared in `crates/architecture.toml` and
+checked by `fleet-arch`. The inbox is the one typed exception, and every
+write to it is a typed store mutation.
 
-**Mechanism:**
+### Runtimes
 
-1. Release workflow (`cd.yml`) analyzes commits via `cog bump --auto --dry-run`
-2. Workflow creates lightweight tag (v{version}) and passes version via environment variable
-3. `build.rs` reads `THURBOX_RELEASE_VERSION` and injects into binary
-4. Cargo.toml version remains `0.0.0-dev` (development marker only)
+#### R1. A runtime knows no Task
 
-**Result:**
+A runtime runs keyed processes and workspace recipes at its places. It knows
+no Task, harness, journal or delivery. The protocol carries none of them.
 
-- Release builds: version from tag (e.g., 1.0.0)
-- Development builds: version from Cargo.toml (0.0.0-dev)
+#### R2. Idempotent by key, and Unknown is not None
 
-## Enforcement Map
+Every verb is idempotent by key: two starts with one key leave one process,
+and a stop of an absent process succeeds. An error answers Unknown, never
+None. `fleet runtime check` holds every runtime to this, and a recipe is held
+to the same by `fleet recipe check`.
 
-| Principle | Enforced by | Config file |
+## Enforcement map
+
+| Rule | Enforced by | Where |
 |---|---|---|
-| Crash-free operation | Code review | — |
-| Module isolation | `tests/architecture_rules.rs` | — |
-| Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit |
-| Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` |
-| Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` |
-| Conventional commits | `scripts/ci/check-pr-title.sh` (required `PR Title` check) + `cog verify` in `commit-msg` | `cog.toml` |
-| Plugin-kernel rules | `tests/kernel_mvp.rs` + `thurbox.yml` (selene) + `.luarc.json` (luals) | `thurbox.yml` |
-| Backend-first model | Code review | — |
-| Logging off stdout | Code review | — |
-| TDD (Red/Green/Refactor) | `cargo-nextest` + code review | `.config/nextest.toml` |
-| Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |
-| Tag-based versioning | `build.rs` + `cd.yml` | `build.rs` + `.github/workflows/cd.yml` |
+| 1. Components meet only through processes | One `architecture.toml` checked by `fleet-arch` | Once Fleet's crates are imported; today the components are separate repositories |
+| 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox; runtimes once the runtime protocol ships |
+| 3. Crash-free operation | Code review | All |
+| 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | thurbox CI + pre-commit; Fleet `cargo xtask check` |
+| 5. Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` in each |
+| 6. Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` in each |
+| 7. Conventional commits | `scripts/ci/check-pr-title.sh` (required `PR Title` check) + `cog verify` in `commit-msg` | `cog.toml` in each |
+| 8. Test first | `cargo-nextest` + code review | `.config/nextest.toml` |
+| 9. Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |
+| 10. Tag-based versioning | `build.rs` + `cd.yml` (thurbox); `cog bump` in `cd.yml` (Fleet) | `.github/workflows/cd.yml` |
+| 11. Credentials stay put | Code review | All |
+| T1. Module isolation | `tests/architecture_rules.rs` | thurbox |
+| T2. Plugin-kernel rules | `tests/kernel_mvp.rs` + `thurbox.yml` (selene) + `.luarc.json` (luals) | thurbox |
+| T3. Backend-first model | Code review | thurbox |
+| T4. Logging off stdout | Code review | thurbox |
+| F1. Pure decisions | `fleet-arch` + `crates/architecture.toml` | Fleet |
+| F2. One bounded spawner | `fleet-arch` (restricted process APIs) | Fleet |
+| F3. Intent and receipt | Contract tests in `fleet/contracts.md` | Fleet |
+| F4. One writer per field | `fleet-arch` (permitted status writers) | Fleet |
+| R1. A runtime knows no Task | The protocol's schema | Once the runtime protocol ships |
+| R2. Idempotent by key | `fleet runtime check`, `fleet recipe check` | Once the runtime protocol ships |
