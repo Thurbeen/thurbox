@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1110 420" role="img" aria-labelledby="title desc">
+<title id="title">The migration in nine steps, each shipping alone</title>
+<desc id="desc">Nine steps, each shipping alone and starting with its end-to-end test. One: turn the repository into a Cargo workspace. Two: extract runtime-mux from src/backend. Three: import Fleet with its history. Four: the runtime protocol, runtime-mux binary, Fleet's generic runtime kind, fleet runtime check. Five: views, with fleet watch, fleet attach, term-stream, runtime-mux view and the stream pane. Six: thurbox on Fleet through SnapshotSource and Executor. Seven: migrate live sessions into Tasks. Eight: delete session_ops, storage and Fleet's thurbox adapter. Nine: release with fleet and runtime-mux in thurbox's packages. Steps one, two and three can proceed in parallel; four needs two and three; five needs four; six needs five; seven needs six; eight needs seven; nine needs eight.</desc>
+<style>
+  svg { color-scheme:light dark }
+  .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
+  .box{stroke:#7890a6;stroke-width:1.5}
+  .repo{fill:#f3f4f5} .engine{fill:#e9f5ef} .interface{fill:#edf3f8} .release{fill:#fff2de}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
+  .num{fill:#405367} .numtext{fill:#fff}
+  @media (prefers-color-scheme: dark) {
+    .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a}
+    .repo{fill:#202a33} .engine{fill:#173b2d} .interface{fill:#1d2a36} .release{fill:#493517}
+    .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} .num{fill:#a9bdd0} .numtext{fill:#101820}
+  }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker></defs>
+<rect class="background" width="1110" height="420" rx="12"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
+  <text x="30" y="36" font-size="21" font-weight="700">Migration: nine steps, each shipping alone</text>
+  <text x="30" y="61" font-size="14">Every step starts with its end-to-end test. Nothing is deleted before the stream pane measures as fast.</text>
+
+  <g class="box">
+    <rect class="repo" x="30" y="90" width="250" height="64" rx="8"/>
+    <rect class="repo" x="30" y="170" width="250" height="64" rx="8"/>
+    <rect class="repo" x="30" y="250" width="250" height="64" rx="8"/>
+    <rect class="engine" x="310" y="170" width="230" height="64" rx="8"/>
+    <rect class="engine" x="590" y="170" width="230" height="64" rx="8"/>
+    <rect class="interface" x="590" y="250" width="230" height="64" rx="8"/>
+    <rect class="interface" x="870" y="250" width="210" height="64" rx="8"/>
+    <rect class="interface" x="870" y="170" width="210" height="64" rx="8"/>
+    <rect class="release" x="870" y="90" width="210" height="64" rx="8"/>
+  </g>
+  <g class="num"><circle cx="52" cy="112" r="11"/><circle cx="52" cy="192" r="11"/><circle cx="52" cy="272" r="11"/><circle cx="332" cy="192" r="11"/><circle cx="612" cy="192" r="11"/><circle cx="612" cy="272" r="11"/><circle cx="892" cy="272" r="11"/><circle cx="892" cy="192" r="11"/><circle cx="892" cy="112" r="11"/></g>
+  <g class="numtext" font-size="12" font-weight="700" text-anchor="middle">
+    <text x="52" y="116">1</text><text x="52" y="196">2</text><text x="52" y="276">3</text><text x="332" y="196">4</text><text x="612" y="196">5</text><text x="612" y="276">6</text><text x="892" y="276">7</text><text x="892" y="196">8</text><text x="892" y="116">9</text>
+  </g>
+  <g font-size="14" font-weight="650">
+    <text x="72" y="117">Cargo workspace</text><text x="72" y="197">extract runtime-mux</text><text x="72" y="277">import Fleet</text>
+    <text x="352" y="197">runtime protocol</text><text x="632" y="197">views</text><text x="632" y="277">thurbox on Fleet</text>
+    <text x="912" y="277">migrate sessions</text><text x="912" y="197">delete the engine</text><text x="912" y="117">release</text>
+  </g>
+  <g font-size="12" class="muted">
+    <text x="48" y="140">crates/thurbox · no behaviour change</text>
+    <text x="48" y="220">src/backend → crates/runtime-mux</text>
+    <text x="48" y="300">with history · docs/fleet · one CI</text>
+    <text x="328" y="220">[runtimes.&lt;n&gt;] · runtime check</text>
+    <text x="608" y="220">watch · attach · stream pane</text>
+    <text x="608" y="300">SnapshotSource · Executor · fleet up</text>
+    <text x="888" y="300">one Task per live session</text>
+    <text x="888" y="220">session_ops · storage · adapter</text>
+    <text x="888" y="140">fleet + runtime-mux shipped</text>
+  </g>
+  <g class="arrow">
+    <path d="M280 202 H308"/><path d="M280 282 H294 V202 H308"/>
+    <path d="M540 202 H588"/><path d="M705 234 V248"/><path d="M820 282 H868"/><path d="M975 250 V236"/><path d="M975 170 V156"/>
+  </g>
+  <text x="30" y="362" font-size="13">1, 2 and 3 are independent. 4 needs 2 and 3. Each later step needs the one before it.</text>
+  <text x="30" y="386" font-size="13" class="muted">Fleet's own prerequisites (workspaces by recipe, fleet signal, harness profiles, delivery by hook) land in 4 if not before.</text>
+</g>
+</svg>

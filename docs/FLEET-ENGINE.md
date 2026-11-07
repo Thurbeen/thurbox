@@ -25,6 +25,8 @@ Thurbeen/thurbox#1681 and reshapes the plan tracked in Thurbeen/fleet#401.
 
 ## Components
 
+![Three components, two process contracts: thurbox is a Fleet client, Fleet reaches sessions through the runtime protocol, and runtime-mux, runtime-container, runtime-vm or any program serve it](fleet-engine/components.svg)
+
 ```text
 thurbox (interface) ──process: fleet watch / apply / send / delete / attach──▶ Fleet (engine)
    │                                                                             │
@@ -158,6 +160,8 @@ today, and other runtimes are opt-in in `[runtimes.<name>]`.
 
 ## Contract 3: the terminal stream
 
+![The terminal stream: fleet attach answers a stream or a bridged tty command, the view exchanges frames with it, and runtime-mux view, term-holder or fleet term-bridge keeps the screen](fleet-engine/terminal-stream.svg)
+
 Attaching to a tmux window is the easy case: the server keeps the screen,
 accepts several clients and arbitrates their sizes. A container or a VM has
 none of that. `docker attach` replays nothing and shares one size between
@@ -267,6 +271,8 @@ A plain terminal uses the same stream: `fleet attach <task>` without `--json`
 draws the snapshot, then passes output through and input back.
 
 ## Workspaces
+
+![Workspaces: Fleet decides, a recipe prepares, the runtime places; where each runtime runs the recipe; clean preserves work and the collector finishes what a deletion could not](fleet-engine/workspaces.svg)
 
 A workspace is the files one session works in, and what is done to them before
 the agent starts: worktrees or clones, dependencies installed, a `.env`
@@ -478,6 +484,8 @@ or on the host. `exec` therefore takes a scope, `host` or `workspace`.
 `rusqlite` then leaves the dependency tree.
 
 ## Migration
+
+![The migration in nine steps: workspace, extract runtime-mux, import Fleet, runtime protocol, views, thurbox on Fleet, migrate sessions, delete the engine, release](fleet-engine/migration.svg)
 
 Each step ships alone and starts with its end-to-end test.
 
