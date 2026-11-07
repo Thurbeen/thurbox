@@ -37,8 +37,8 @@ thurbox (interface) ──process: fleet watch / apply / send / delete / attach�
 
 | Component | Owns | Never owns |
 | --- | --- | --- |
-| Fleet (`crates/fleet-*`) | Tasks (one per session), the store, every decision, harness profiles (launch, resume, trust), agent hooks through `fleet signal`, workspaces and worktrees, the inbox, receipts, the runtime protocol and its conformance suite | Any runtime's code; any Rust dependency on a `runtime-*` crate or `thurbox` |
-| A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, its own place config (hosts, images, VM definitions), bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
+| Fleet (`crates/fleet-*`) | Tasks (one per session), the store, every decision, harness profiles (launch, resume, trust), agent hooks through `fleet signal`, every decision about workspaces (what, when, whether to clean), the inbox, receipts, the runtime protocol and its conformance suite | Any runtime's code; any Rust dependency on a `runtime-*` crate or `thurbox` |
+| A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, making their workspaces there, its own place config (hosts, images, VM definitions), sources and credentials, bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
 | thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, stream panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any runtime code, any Rust dependency on `fleet-*` or `runtime-*` |
 
 Where a fact belongs:
