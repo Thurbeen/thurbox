@@ -28,9 +28,9 @@ Thurbeen/thurbox#1681 and reshapes the plan tracked in Thurbeen/fleet#401.
 ```text
 thurbox (interface) ──process: fleet watch / apply / send / delete / attach──▶ Fleet (engine)
    │                                                                             │
-   │ runs the attach argv in a pty                                               │ process: runtime protocol
+   │ starts the stream fleet attach names                                        │ process: runtime protocol
    ▼                                                                             ▼
- terminal pane (pty) ◀── one live terminal, whatever the runtime ──── a runtime: runtime-mux,
+ stream pane ◀──── terminal stream frames, whatever the runtime ──── a runtime: runtime-mux,
                                                                       runtime-container, runtime-vm, …
  coding agent ── fleet signal / fleet result ──▶ Fleet
 ```
@@ -39,7 +39,7 @@ thurbox (interface) ──process: fleet watch / apply / send / delete / attach�
 | --- | --- | --- |
 | Fleet (`crates/fleet-*`) | Tasks (one per session), the store, every decision, harness profiles (launch, resume, trust), agent hooks through `fleet signal`, workspaces and worktrees, the inbox, receipts, the runtime protocol and its conformance suite | Any runtime's code; any Rust dependency on a `runtime-*` crate or `thurbox` |
 | A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, its own place config (hosts, images, VM definitions), bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
-| thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, pty panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any runtime code, any Rust dependency on `fleet-*` or `runtime-*` |
+| thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, stream panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any runtime code, any Rust dependency on `fleet-*` or `runtime-*` |
 
 Where a fact belongs:
 
@@ -55,11 +55,14 @@ on every build, the way it checks Fleet's crates today:
 
 | Crate | May depend on | Must not depend on |
 | --- | --- | --- |
-| `fleet-*` | `fleet-*`, crates.io | `runtime-*`, `thurbox` |
-| each `runtime-*` | crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
-| `thurbox` | crates.io | `fleet-*`, `runtime-*` |
+| `fleet-*` | `fleet-*`, `term-stream`, crates.io | `runtime-*`, `thurbox` |
+| each `runtime-*` | `term-stream`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
+| `term-stream` | crates.io | everything else |
+| `term-holder` | `term-stream`, crates.io | everything else |
+| `thurbox` | `term-stream`, crates.io | `fleet-*`, `runtime-*`, `term-holder` |
 
-Components talk only through processes. A component can therefore later move
+Components talk only through processes; `term-stream` is a wire format, not
+a component. A component can therefore later move
 to a repository of its own with nothing to untangle.
 
 ## Contract 1: thurbox to Fleet
@@ -73,7 +76,8 @@ thurbox is a Fleet client and reads nothing of Fleet's store directly.
 - `fleet apply`, `delete`, `send`, `amend`: the interface's commands, behind
   an `Executor` trait (today `src/kernel/command/execute.rs`, which calls
   `session_ops` directly).
-- `fleet attach <task> --json`: forwards the runtime's attach answer.
+- `fleet attach <task> --json`: the command that opens the Task's terminal
+  stream (contract 3).
 - thurbox starts `fleet up` when no manager holds the lease.
 
 An interactive session is a Task with no brief: it spawns and waits for its
@@ -94,7 +98,7 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | `input` | no | types text, optionally submits |
 | `capture` | no | screen text, cursor, foreground process |
 | `exec` | no | a bounded command on the host, deadline and output cap |
-| `attach` | no | `{argv}`: a command that is the live terminal of the process |
+| `attach` | no | `{stream: {argv}}` or `{tty: {argv}}`: how to open a terminal stream (contract 3) |
 
 Every verb is idempotent by key. The runtime knows no harness, Task or
 journal: pause is `stop`, resume and revive are `start` with the harness's
@@ -149,19 +153,115 @@ multiplexer on the machine, Fleet does not fall back to another runtime: the
 first `start` answers the missing dependency by name, as `preflight` does
 today, and other runtimes are opt-in in `[runtimes.<name>]`.
 
-### Attaching
+## Contract 3: the terminal stream
 
-thurbox works without knowing any runtime. It runs `attach`'s `argv` in a
-pty pane, as Program panes already do, and renders it with `vt100`. The same
-code serves every runtime (`docker exec -it`, `ssh -t`, `runtime-mux view`).
+Attaching to a tmux window is the easy case: the server keeps the screen,
+accepts several clients and arbitrates their sizes. A container or a VM has
+none of that. `docker attach` replays nothing and shares one size between
+every client; `docker exec -it` starts a new process instead of reaching the
+agent; a VM offers a serial console or ssh. "Run this command in a pty" is
+therefore not an interface: what a view gets would depend on the runtime.
 
-Presenting one clean terminal is the runtime's job, not the interface's. For
-`runtime-mux`, `attach` answers `runtime-mux view <key>`: a process that
-bridges the window over the runtime's own control-mode client to its stdin and
-stdout, with no nested status bar or prefix key, and forwards the pty's size.
-Scrollback, resize and reconnection over ssh and WSL stay in the runtime.
-Fleet carries no terminal bytes; the interface carries them from one process
-it started, never from a multiplexer it knows.
+What a view needs from a live session, whatever runs it:
+
+1. the screen as it is now, on connect and after a dropped stretch;
+2. the output that follows, in order, with size changes at their place in it;
+3. a way to type, paste and resize;
+4. to leave without stopping the process, and to come back;
+5. other viewers at the same time, with one rule for who sizes the screen.
+
+### The protocol
+
+A stream is a process. The view starts it and speaks over its stdin and
+stdout; it ends when either side closes. Frames are length-prefixed, a type
+byte then a payload: output and input are raw bytes, every other frame a JSON
+object. The vocabulary is thurbox's own `PaneChunk` (`src/backend/contract.rs`),
+which already carries every item in the output's order on one channel:
+
+| Direction | Frame | Payload |
+| --- | --- | --- |
+| down | `hello` | protocol version, capabilities (`snapshot`, `scrollback`, `viewers`, `resize`) |
+| down | `snapshot` | cols, rows, cursor, normal-screen history and rows, alternate rows, styled |
+| down | `output` | bytes |
+| down | `resized` | rows, cols |
+| down | `sized_elsewhere` | whether another viewer sizes the screen |
+| down | `resync` | a snapshot replacing the view's grid after dropped output |
+| down | `state` | title and input modes, to parse but not count as output |
+| down | `exit` | the process's code, or Unknown |
+| up | `input` | bytes, sent as typed |
+| up | `paste` | text, bracketed when the program asked for it |
+| up | `resize` | rows, cols: a request the holder of the screen arbitrates |
+| up | `detach` | leave; the process keeps running |
+
+`snapshot` comes right after `hello` when the capability is there, so a view
+never starts on an empty grid. Sizing follows ADR-27 everywhere: the viewer
+being typed into sizes the screen, the others get `sized_elsewhere`.
+
+`term-stream` is a crate with only the frame types and their codec: no
+process, no runtime, no transport. thurbox, Fleet and every `runtime-*` may
+depend on it, as they may on `serde`.
+
+### The runtime's `attach`
+
+`attach` answers how to open a stream, in one of two shapes:
+
+- `{"stream": {"argv": […]}}`: the command speaks the protocol. This is the
+  full answer.
+- `{"tty": {"argv": […]}}`: a raw interactive command, for a runtime that has
+  nothing better (`docker attach`, `virsh console`, `kubectl attach -it`).
+
+`fleet attach` always hands a view a stream. It passes a `stream` answer
+through, and wraps a `tty` answer in `fleet term-bridge -- <argv>`, which runs
+the command in a local pty, keeps a `vt100` screen of it and speaks the
+protocol. A bridge only knows what it has seen since it started, so its first
+snapshot is blank until the program redraws; it asks for one by resizing.
+That is the price of a runtime without a screen keeper, and `hello` says so.
+
+### Who keeps the screen
+
+| Runtime | Screen keeper | `attach` answers |
+| --- | --- | --- |
+| `runtime-mux` | tmux, psmux, rmux | `stream`: `runtime-mux view <key>`, control mode encoded as frames |
+| `runtime-container`, `runtime-vm` | `term-holder` inside the place | `stream`: `docker exec -i <ctr> term-holder connect <key>`, or the same over ssh or vsock |
+| any runtime, minimal | none | `tty`: bridged by Fleet, no history |
+
+`term-holder` is a small static binary a runtime puts in its place and runs
+the agent under: `term-holder serve <key> -- <argv>`. It owns the pty, keeps
+the screen and its scrollback, accepts several clients on a local socket and
+arbitrates their sizes. `connect` relays one client over stdin and stdout, so
+any byte pipe reaches it: `docker exec -i` without `-t`, ssh, vsock,
+`kubectl exec -i`. The same binary answers `capture` and `input`
+(`term-holder capture <key>`, `term-holder send <key>`), so those verbs are one
+`exec` each in a container or a VM. It plays the part tmux plays for
+`runtime-mux`, for places with no multiplexer. A runtime may still run tmux in
+its place instead.
+
+### What changes in thurbox
+
+Less than it looks: the grid, `vt100`, rendering, size arbitration and the
+performance gates already consume `PaneChunk`s, today from control mode
+through `WiredPane`. They stay. What changes is the source:
+
+- **One pane kind for every session**: a stream pane. It runs the argv from
+  `fleet attach`, decodes frames into the `PaneChunk`s `WiredPane` already
+  takes, and encodes keys, pastes and resizes as frames. Program panes stay
+  as they are.
+- **Gone from thurbox**: the control-mode client, the transports, the
+  multiplexer dialects, discovery and pane location, all now
+  `runtime-mux view`'s.
+- **Disconnects** become one case: the stream ends, the pane shows it is
+  detached, and thurbox asks `fleet attach` again with backoff. Today that is
+  a different path per transport.
+- **Capabilities** the interface reads from `hello`: no `scrollback` hides
+  copy-mode history, no `viewers` warns before a second view, a bridged stream
+  shows that its history starts now.
+- **Cost**: one extra process and pipe between the multiplexer and the grid.
+  Output frames are raw bytes, never base64; a snapshot is sent only on
+  connect and resync. Step 5 measures it against PERFORMANCE.md's frame
+  floors before anything is deleted.
+
+A plain terminal uses the same stream: `fleet attach <task>` without `--json`
+draws the snapshot, then passes output through and input back.
 
 ## Where the SQLite tables go
 
@@ -204,7 +304,9 @@ Each step ships alone and starts with its end-to-end test.
    Fleet's P1 to P4 (workspaces, `fleet signal`, harness profiles, delivery by
    hook) land here if not before.
 5. **Views.** `fleet watch`, `fleet attach`, interactive Tasks without a brief;
-   `runtime-mux view`; thurbox's pty pane on an attach `argv`.
+   `term-stream`, `runtime-mux view`, `fleet term-bridge`; thurbox's stream
+   pane beside the control-mode pane, behind a setting, until it measures as
+   fast. `term-holder` and `runtime-container` follow.
 6. **thurbox on Fleet.** `SnapshotSource` and `Executor` traits, then their
    Fleet implementations; thurbox starts `fleet up`.
 7. **Migrate.** `thurbox-cli migrate fleet`: one Task per live session,
