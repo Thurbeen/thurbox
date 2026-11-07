@@ -21,7 +21,7 @@ Save this as `env-provider.json`:
 ```
 
 Before dispatch, create the referenced file using the
-[environment JSON format](../configuration/environment-json.md), for example
+[environment JSON format](../configuration.md#environment-json-file-and-command-output), for example
 `{"PROJECT_MODE":"review"}`. Use native absolute paths on the manager. On
 Windows, JSON paths need escaped backslashes, for example
 `"C:\\work\\config\\agent-env.json"`.
@@ -78,7 +78,7 @@ intend Fleet to execute. Helpers should only read data: failed/interrupted
 resolution may execute them again before the snapshot is durable.
 
 Commands must exit zero and write one UTF-8 JSON string map to stdout, under
-[the same format and limits](../configuration/environment-json.md) as files.
+[the same format and limits](../configuration.md#environment-json-file-and-command-output) as files.
 Stderr is never included in source errors. Captured command streams are
 bounded by the executor; outputs above 64 KiB are refused. Command sources
 require a manager lease above 20000 ms; the default real-runtime lease meets

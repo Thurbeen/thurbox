@@ -22,7 +22,7 @@ technical merits, and help newcomers find their footing.
 
 The reproducible dev environment is a **Nix flake** (`nix develop`, or
 `direnv allow` once); `scripts/install-dev-tools.sh` is the non-Nix fallback.
-MSRV is Rust 1.95, Edition 2021. [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
+MSRV is Rust 1.95, Edition 2021. [`docs/thurbox/development.md`](docs/thurbox/development.md)
 owns the setup — the toolchain, what to install without Nix, the `just` task
 list, and the runtime sandbox for trying thurbox in isolation — so it is not
 restated here.
@@ -30,7 +30,7 @@ restated here.
 ## Everyday tasks (`just`)
 
 `just` is the task entrypoint — run it with no arguments for the full list, or
-read the table in [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#2-everyday-tasks--just).
+read the table in [`docs/thurbox/development.md`](docs/thurbox/development.md#2-everyday-tasks--just).
 The two to know before a pull request are `just lint` and `just test`.
 
 ## Coding agents
@@ -79,10 +79,10 @@ branch, the two gate steps and the files the review must read. Its lint step
 runs `just lint` plus the rustdoc check, so it needs the same dev toolchain the
 manual workflow does. It does not run the website linters — those need
 `npm ci`, and CI's `website-lint` job covers them. It is external tooling, so
-it is described here rather than in [`docs/CONFIG.md`](docs/CONFIG.md), which
+it is described here rather than in [`docs/thurbox/config.md`](docs/thurbox/config.md), which
 covers thurbox's own configuration.
 
-The project's code-quality rubric is [`docs/REVIEW.md`](docs/REVIEW.md), which
+The project's code-quality rubric is [`docs/thurbox/review.md`](docs/thurbox/review.md), which
 `.publish.yaml` names in `review.rules`: the per-path house rules a reviewer
 reading only the diff could not know, the trees that carry no reviewable
 intent, and the documentation ownership map. There is no review command to run
@@ -97,7 +97,7 @@ source that moves continuously, which is the failure ADR-P20 records — and ask
 a change claiming a performance effect to carry a paired before/after from
 `just bench` or `just perf`. What the gate does *not* do is time anything: that
 would be a flaky assertion about the machine it happened to run on, which
-[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) rules out in ADR-P5. The
+[`docs/thurbox/performance.md`](docs/thurbox/performance.md) rules out in ADR-P5. The
 deterministic half is ordinary test coverage — counters and change-signals in
 `tests/kernel_perf.rs` and `tests/kernel_frame_cost.rs` — and the lint step
 compiles `benches/` through `cargo clippy --all-targets`, so the instrument
@@ -245,12 +245,12 @@ stays lean.
 If a change invalidates or extends a documented decision, update the relevant
 doc in the **same PR**. Rationale lives in:
 
-- [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) — non-negotiable principles
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — architectural decisions
-- [`docs/FEATURES.md`](docs/FEATURES.md) — feature-level design choices
-- [`docs/CONFIG.md`](docs/CONFIG.md) — thurbox's own config files, env vars and
+- [`docs/thurbox/constitution.md`](docs/thurbox/constitution.md) — non-negotiable principles
+- [`docs/thurbox/architecture.md`](docs/thurbox/architecture.md) — architectural decisions
+- [`docs/thurbox/features.md`](docs/thurbox/features.md) — feature-level design choices
+- [`docs/thurbox/config.md`](docs/thurbox/config.md) — thurbox's own config files, env vars and
   DB settings
-- [`docs/REVIEW.md`](docs/REVIEW.md) — the house rules a change is reviewed
+- [`docs/thurbox/review.md`](docs/thurbox/review.md) — the house rules a change is reviewed
   against, and which document owns which class of fact
 
 Comments explain **why**, not **what** — see the Comments section of
@@ -263,7 +263,7 @@ coordinator`) and
 enforced by `tests/architecture_rules.rs`: a new module fails that test until
 its dependencies are declared in the allowlist. The graph is documented in the
 Module Dependency Rules section of [`AGENTS.md`](AGENTS.md) and, with the full
-per-module allowlist, in [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md).
+per-module allowlist, in [`docs/thurbox/constitution.md`](docs/thurbox/constitution.md).
 
 ## Pull requests
 

@@ -95,7 +95,7 @@ pub const SSH_HARDENING_OPTS: [&str; 8] = [
 ///
 /// Without a master connection every remote git call, probe and provisioning
 /// step pays a full TCP + auth handshake — ~300 ms to a LAN host, measured in
-/// `docs/PERFORMANCE.md` — and several paths make many such calls in a row.
+/// `docs/thurbox/performance.md` — and several paths make many such calls in a row.
 /// With one, the second and later round trips cost single-digit milliseconds.
 ///
 /// `%C` is ssh's hash of host+port+user, so the socket path stays short

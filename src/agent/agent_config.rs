@@ -14,7 +14,7 @@ use crate::session::{AgentDef, AgentRegistry};
 ///
 /// Adding a built-in here is only step 1 — status-hook wiring
 /// (`extensions/hooks/extension.toml`) and the doc lists are **not** updated
-/// automatically. See the checklist in `docs/AGENTS.md`.
+/// automatically. See the checklist in `docs/thurbox/agents.md`.
 ///
 /// Kept deliberately small per agent: just the command, plus resume/fork/
 /// session-id groups. `claude` and `pi` pin a thurbox-generated id
@@ -134,7 +134,7 @@ new_session_args = ["--session-id", "{id}"]
 # args are POSIX-quoted, so a literal `~` would never expand); it also
 # translates onto the remote/WSL home. No fork_args: OMP has no way to pin a
 # fork's target file to a thurbox UUID, so Ctrl+F starts a fresh session (see
-# the OMP note in docs/CONFIG.md).
+# the OMP note in docs/thurbox/config.md).
 [[agents]]
 name = "omp"
 command = "omp"
@@ -237,7 +237,7 @@ const BUILTIN_AGENTS_TAIL: &str = r#"# ─────────────�
 # group goes (without it the group comes first). setup runs in the session's
 # directory, with its environment, as one `sh -c` script under `set -e` before
 # the agent starts; a failing step stops the launch and the session reads
-# `failed`. See docs/CONFIG.md → "Templates, argument order and setup".
+# `failed`. See docs/thurbox/config.md → "Templates, argument order and setup".
 #
 # [[agents]]
 # name = "claude-coder"
@@ -826,7 +826,7 @@ vars = { role = "operator" }
     #[test]
     fn the_documented_wrapper_replacement_loads_and_launches_as_described() {
         // A Windows checkout may carry the doc with CRLF line endings.
-        let doc = include_str!("../../docs/AGENTS.md").replace("\r\n", "\n");
+        let doc = include_str!("../../docs/thurbox/agents.md").replace("\r\n", "\n");
         let section = &doc[doc.find("### Replacing a launch wrapper").unwrap()..];
         let start = section.find("```toml\n").unwrap() + "```toml\n".len();
         let example = &section[start..start + section[start..].find("```").unwrap()];

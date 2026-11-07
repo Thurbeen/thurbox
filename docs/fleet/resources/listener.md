@@ -1,7 +1,7 @@
 # Listener resource
 
 A Listener records the inbound health of one chat account for the
-[Gateway controller](../controllers/gateway/README.md). Fleet makes no
+[Gateway controller](../controllers/gateway.md). Fleet makes no
 inbound call: a separate listener program holds the platform's connection
 and hands each delivery to `fleet gateway receive`. Whether that program is
 running, connected and current is what it reports here, and what
@@ -57,7 +57,7 @@ A manifest through `fleet apply` is refused: the config is the only source.
 | `seen` | `listener-controller` | The `beatRevision` last judged, so the Listener is due only when something new was reported. |
 | `observedAt` | `listener-controller` | When `whoami` and `capabilities` last answered Known. |
 | `notBefore` | `listener-controller` | The earlier of the next `gateway.pollMs` and the moment the freshest beat goes stale. |
-| `conditions` | `listener-controller` | `Accepted`, `Resolved` and `InboundReady`, as the [interface](../controllers/gateway/interface.md#listenercontroller) defines them. |
+| `conditions` | `listener-controller` | `Accepted`, `Resolved` and `InboundReady`, as the [interface](../controllers/gateway.md#listenercontroller) defines them. |
 
 `InboundReady` is True only while some instance's beat is `connected`,
 carries the accepted digest and is younger than three `gateway.beatMs` by

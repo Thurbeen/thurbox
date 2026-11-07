@@ -158,7 +158,7 @@ pub enum Action {
     /// `ready` says whether the session can take input now, for every agent:
     /// the hook's `idle`/`done`, or — before any hook — an agent whose empty
     /// composer is drawn. `null` means nothing could say; ask again
-    /// (docs/ORCHESTRATION.md → Readiness).
+    /// (docs/thurbox/orchestration.md → Readiness).
     ///
     /// `activity` says whether the session is provably at rest, background
     /// work included — the field to read before pausing one: `active`
@@ -167,7 +167,7 @@ pub enum Action {
     /// and the pane holds the agent), `unknown` (anything else; never read it
     /// as idle), or `stopped`. `pending` lists what the agent last reported
     /// still in flight or scheduled, and `state_support` how much of this the
-    /// agent reports itself (docs/ORCHESTRATION.md → Activity).
+    /// agent reports itself (docs/thurbox/orchestration.md → Activity).
     Get {
         /// Session UUID.
         uuid: String,
@@ -3558,7 +3558,7 @@ fn worktree_json(w: &crate::session::SharedWorktree) -> Value {
 /// instance's would name a server on the wrong machine.
 ///
 /// The key is still `tmux_socket` although psmux serves it on Windows: it is
-/// public JSON (`docs/CONFIG.md` → Relocating an instance), and the name every
+/// public JSON (`docs/thurbox/config.md` → Relocating an instance), and the name every
 /// tmux-protocol multiplexer takes with `-L`.
 fn socket_of(backend_type: &str) -> Option<String> {
     match crate::session_ops::resolve_host(backend_type) {

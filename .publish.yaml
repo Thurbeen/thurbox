@@ -4,7 +4,7 @@
 #
 # The commands are spelled out rather than discovered from the toolchain, so
 # what runs is the same every time. The house rules the review is held to are
-# prose, in docs/REVIEW.md, which `review.rules` names below.
+# prose, in docs/thurbox/review.md, which `review.rules` names below.
 
 version: 1
 
@@ -16,7 +16,7 @@ review:
     # The house rules a change is reviewed against, scoped per path, plus the
     # trees excluded from review and the documentation ownership map. Read the
     # blocks matching the paths the change touches.
-    - docs/REVIEW.md
+    - docs/thurbox/review.md
     # The agent-facing index into the docs and the per-subsystem skills.
     - AGENTS.md
     # The contribution process: commit conventions, staging discipline, the

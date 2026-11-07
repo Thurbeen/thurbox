@@ -31,7 +31,7 @@ Save this manifest as `task-config.json`:
 | `model` | no | Default model; requires a matching harness variable in native `runtime.modelEnv`. |
 | `envFrom` | no | Ordered references to [EnvProvider](env-provider.md), each `{"name":"provider"}`. |
 | `env` | no | String environment map; overrides all referenced provider values. |
-| `pauseAfterMs` | no | Pause a Task's session once its agent was idle this long, in milliseconds; at least 1. Absent means never. A thurbox that does not report activity never pauses either. See [pausing an idle session](../controllers/task/state-machine.md#pausing-an-idle-session). |
+| `pauseAfterMs` | no | Pause a Task's session once its agent was idle this long, in milliseconds; at least 1. Absent means never. A thurbox that does not report activity never pauses either. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
 
 All fields are optional; unknown fields are refused. Harness/host/model must
 be nonempty, contain no NUL and not start with `-`. References use the same
@@ -40,7 +40,7 @@ is allowed. Names are scoped to the current store; references do not load
 files or fetch resources from a different Fleet installation.
 
 TaskConfig is a JSON resource applied with `fleet apply`, separate from the
-native [Fleet TOML configuration](../configuration/fleet-toml.md). There is
+native [Fleet TOML configuration](../configuration.md#native-fleet-configuration-fleettoml). There is
 no `[taskConfig]` section in that file and no implicit global TaskConfig.
 
 ## Referencing and overriding defaults
@@ -81,7 +81,7 @@ provider.data -> provider.sources (list order)
 
 Later sources win, including case variants, retaining the winning spelling.
 Each map refuses case collisions and invalid names. See the
-[environment JSON format](../configuration/environment-json.md) for key,
+[environment JSON format](../configuration.md#environment-json-file-and-command-output) for key,
 value and size rules. Literal `env` is visible in resource reads and is not
 secret storage. Use external provider sources when values must stay out of
 manifests. The native model-variable selection is frozen with the launch.
@@ -124,7 +124,7 @@ Task. Do not delete its snapshot to refresh credentials mid-run. Thurbox must
 support `session create --env-stdin`; values never enter Task status, effect
 intents, error output or process arguments. The session receives this
 environment, not the manager's `OTEL_*` variables; see
-[telemetry](../configuration/telemetry.md).
+[telemetry](../configuration.md#opentelemetry-export).
 
 ## Commands and compatibility
 

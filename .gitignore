@@ -48,8 +48,9 @@ _site/
 .claude/scheduled_tasks.lock
 .aider*
 
-# Local orchestrator/agent worker workspaces (stray nested checkouts)
-thurbox/
+# Local orchestrator/agent worker workspaces (stray nested checkouts at the
+# root; anchored so docs/thurbox/ is not caught)
+/thurbox/
 
 # Python bytecode cache (from the packaging bump scripts)
 __pycache__/

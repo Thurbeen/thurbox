@@ -906,7 +906,7 @@ pub static GRANTED: Class = Class {
         leaf("run", "boolean").opt(),
         leaf("program", "boolean").opt(),
         leaf("sessions", "boolean").opt().doc(
-            "Verbs that drive an agent or lose something for good are applied (docs/PLUGINS.md).",
+            "Verbs that drive an agent or lose something for good are applied (docs/thurbox/plugins.md).",
         ),
         leaf("files", "boolean").opt().doc("`files` is present."),
     ],
@@ -1147,7 +1147,7 @@ pub fn std_probe() -> String {
         "--\n\
          -- A pane that reads EVERY path `thurbox.yml` declares on `thurbox`, each as a\n\
          -- plain dotted path, and must lint CLEAN: a table declared as a bare property\n\
-         -- rejects exactly the expression `docs/PLUGINS.md` tells an author to write,\n\
+         -- rejects exactly the expression `docs/thurbox/plugins.md` tells an author to write,\n\
          -- and nothing in `ui/` would notice (issue #1133). `typos/` holds the other\n\
          -- direction. It ends with the stdlib names no bundled pane happens to name.\n\
          return {\n  name = \"std_reads\",\n  render = function()\n    local read = {\n",

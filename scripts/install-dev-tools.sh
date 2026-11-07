@@ -8,7 +8,7 @@
 #
 # Use this script if you don't have Nix. It also installs the couple of tools
 # not yet packaged in nixpkgs (prek, rumdl), so the flake's
-# shellHook points here for those. See docs/DEVELOPMENT.md.
+# shellHook points here for those. See docs/thurbox/development.md.
 
 set -e
 

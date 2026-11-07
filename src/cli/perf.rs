@@ -7,7 +7,7 @@
 //! owns the shape; this renders it. This command prints the latest one, so a
 //! running instance can be inspected from outside without tailing
 //! `thurbox.log`. `--plugins` prints the per-pane half. See
-//! `docs/PERFORMANCE.md`.
+//! `docs/thurbox/performance.md`.
 
 use serde_json::{json, Value};
 

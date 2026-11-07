@@ -28,7 +28,7 @@ use regex::Regex;
 /// replaced it. A name belongs here once nothing in the tree mentions it — a
 /// historical mention elsewhere would fail this test, so such a name stays off.
 const RETIRED: &[(&str, &str)] = &[
-    ("V2-KERNEL", "docs/KERNEL.md"),
+    ("V2-KERNEL", "docs/thurbox/kernel.md"),
     (
         "drain_remote_hook_events",
         "Terminals::drain_hook_events (src/kernel/terminal)",
@@ -81,8 +81,12 @@ const TEXT_EXTENSIONS: &[&str] = &[
 
 /// A document's path in the repository, not the tail of a longer one:
 /// `~/.agents/skills/…` is a user's install location, `website/docs/…` is
-/// another tree, and a lowercase `docs/notes.md` is a demo repository's.
-const DOC_PATH: &str = r"(?:^|[^\w.~/-])(docs/[A-Z][A-Z0-9_-]*\.md|\.agents/skills/[a-z0-9-]+)";
+/// another tree, and a `docs/notes.md` outside a component directory is a
+/// demo repository's. A document lives at `docs/README.md` or under one
+/// component's directory (`docs/thurbox/`, `docs/fleet/`, `docs/runtime/`);
+/// an upper-case `docs/<NAME>.md` is still matched, so a reference to a
+/// document from before the component layout fails rather than passes.
+const DOC_PATH: &str = r"(?:^|[^\w.~/-])(docs/[A-Z][A-Z0-9_-]*\.md|docs/(?:thurbox|fleet|runtime)/[\w/.-]*\w\.md|\.agents/skills/[a-z0-9-]+)";
 
 /// A Markdown inline link's target: up to whitespace, a fragment or the
 /// closing parenthesis, whatever title follows it.
@@ -281,7 +285,12 @@ fn the_patterns_catch_what_they_are_for() {
     let hits =
         |s: &str| -> Vec<String> { path.captures_iter(s).map(|m| m[1].to_string()).collect() };
     assert_eq!(hits("see `docs/V2-KERNEL.md`."), ["docs/V2-KERNEL.md"]);
-    assert_eq!(hits("docs/KERNEL.md owns it"), ["docs/KERNEL.md"]);
+    assert_eq!(hits("docs/thurbox/kernel.md owns it"), ["docs/thurbox/kernel.md"]);
+    assert_eq!(
+        hits("see docs/fleet/controllers/task.md."),
+        ["docs/fleet/controllers/task.md"]
+    );
+    assert_eq!(hits("docs/KERNEL.md was its name"), ["docs/KERNEL.md"]);
     assert_eq!(
         hits("the `.agents/skills/thurbox-kernel/` skill"),
         [".agents/skills/thurbox-kernel"]

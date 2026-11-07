@@ -1,0 +1,2304 @@
+# Writing a thurbox plugin
+
+> **The API is settled in its essentials, not frozen.** The four node kinds and
+> the snapshot-read/command-write split are load-bearing and asserted by tests.
+> What still moves is the published `thurbox.*` shape, and `thurbox.api` says
+> how: any release may add a field, and removing one or changing what it means
+> moves that integer. Declare `requires_api = N` in your plugin's table for the
+> contract you wrote against, and a thurbox serving an older one refuses to load
+> it with that reason instead of drawing against a field that is not there.
+> `plugins.lock` records the commit each installed pane resolved to, so pin what
+> you install and re-run `thurbox-cli plugin check` after an upgrade.
+>
+> **Plugins are trusted code.** They run in-process with whatever capabilities
+> the kernel grants, exactly like an extension's shell scripts. Install one the
+> way you would install a shell script from a stranger — which is to say, read
+> it first.
+
+A plugin is one `.lua` file. Drop it in your plugin directory and it loads on the
+next save; there is no build step and no restart.
+
+## Start here
+
+Four commands, and you have a pane on screen. None of them need the interface to
+be running.
+
+```bash
+thurbox-cli plugin dir          # where plugins live, and which rule chose it
+thurbox-cli plugin new notes    # a starter that already loads
+thurbox-cli plugin check        # does it load? exits non-zero if not
+thurbox-cli plugin list         # every file, where it came from, is it drawn
+```
+
+`plugin new` writes [`examples/lua/plugin.lua`](../../examples/lua/plugin.lua) under your
+chosen name — a pane that renders, declares a key and a setting, and comments the
+one rule that catches everybody (see **Traps**). Edit it, run `check`, and it is
+live on the next save: the interface watches the directory.
+
+**Which directory?** Two rules — `THURBOX_UI_DIR` if it is set, otherwise your own
+copy at `~/.config/thurbox/ui`. `plugin dir` reports the one in force *and why*,
+because "my edit did nothing" is almost always the other one.
+
+That third path follows the same rule every other config path does: a **dev
+build** (version `0.0.0-dev`) reads `~/.config/thurbox-dev/ui` instead, beside its
+own `settings.toml` and `agents.toml`, so hacking on the interface from a checkout
+cannot touch the copy your installed thurbox uses. Two things make this easy to
+misread, and both are worth knowing before you conclude a path is wrong:
+
+- **`THURBOX_CONFIG_DIR` wins over both**, and thurbox *injects it into every
+  session it spawns*. So a `thurbox-cli` run from inside a thurbox session
+  resolves against **that session's** config dir, not the dev default — a dev
+  binary invoked there will correctly report the release `ui` directory.
+- **Standing in a checkout changes nothing.** A `./ui` beside the working directory
+  used to win automatically, which is what made the interface the one config that
+  ignored the dev/release split. To work on a checkout's interface, ask for it:
+  `THURBOX_UI_DIR=ui`, or `just tui-ui` in the repository.
+
+`thurbox-cli config show` prints the resolved `ui_dir` and `ui_json` alongside
+every other config path, which is the quickest way to see which set is in play.
+
+Plugins may declare `ui_state = function() return { open = state.open == true,
+selection = state.cursor or 1 } end`. The local `thurbox-cli ui state` snapshot
+calls it on the TUI loop and includes at most 16 scalar fields per plugin, with
+short string keys and values. It is a public projection: return only state a
+local controller needs, never terminal text, credentials, or the whole `store`.
+
+**Editing the interface from some other session.** The interface directory is a
+config path of yours, so a coding agent working in an unrelated repository has no
+reason to know it exists. thurbox handles that for you: the built-in **ui-skill**
+extension is on by default and drops one `SKILL.md` (`thurbox-ui`) into each
+coding CLI's personal skill directory, so the agent loads the short form of this
+page *when* a request is about changing the TUI, in any session. No extra repo
+attached to every session, where it would sit in front of the agent whether or
+not the work is about the TUI.
+
+```bash
+thurbox-cli extension deactivate ui-skill   # not wanted; takes every copy back
+thurbox-cli extension activate ui-skill     # and back on
+```
+
+```text
+<the directory plugin dir reports>/
+  layout.lua                   how the screen is arranged
+  lib/                         shared modules, via require("lib.theme")
+  plugins/*.lua                one file per pane
+```
+
+Inside a running interface, the **settings modal's Interface tab** shows the same
+inventory `plugin list` does, and restores a file you broke. Open settings with
+`Ctrl+,` or `F6`, then `[` / `]` to move between its tabs — or click a heading.
+
+## Traps
+
+Ten mistakes that are invisible until runtime. Each cost real time in the
+changes that built the bundled panes.
+
+**Declaring `pure` when your render is not.** A pane may declare that its render
+is a function of `thurbox.*` and `ctx` and nothing else:
+
+```lua
+return {
+  name = "notes",
+  slot = "left",
+  pure = true,   -- the kernel may reuse the tree I last returned
+  render = function(ctx) ... end,
+}
+```
+
+In exchange the kernel stops calling it on frames where nothing it can read has
+changed — which is most of them, and is the single largest saving available in a
+frame. But nothing checks the claim, and getting it wrong gives you a pane
+painted from a stale tree, with no error anywhere. Two things disqualify a pane:
+
+- **It writes `store` or `state` from inside `render`.** Those writes stop
+  happening on the frames the render is skipped. This is why the bundled search
+  strip is deliberately *not* pure — it leaves its content request in `store`
+  while rendering.
+- **It animates from `ctx.frame`, or from `ctx.elapsed` faster than the shared
+  widgets do.** Animating at the shared rate is fine — the working spinner does,
+  and the session list is pure — because the kernel keys a cached tree on that
+  same tick. Anything finer freezes.
+
+**Reading `ctx.elapsed` is what buys you the animation tick, and only that.**
+The clock advances eight times a second for as long as any session is working,
+so it is the most frequent thing a cached tree can be keyed on. The kernel keys
+your tree on it *if the render that built the tree read `ctx.elapsed`*, and
+otherwise serves that tree across the tick — so a pane that draws no spinner
+pays nothing for one, and a pane that draws a spinner keeps it moving. There is
+nothing to declare and nothing to get wrong in either direction: read the clock
+and you are animated, do not and you are still. Read it under a condition (only
+for a `working` row, say) and the render that first reads it is the one that
+re-keys the entry, so there is no frame on which a stale tree is served.
+
+The mechanism is a metatable on the render context, which has two visible
+consequences: `elapsed` is not a *key* of `ctx`, so it does not appear in
+`pairs(ctx)`; and that metatable is sealed — `getmetatable(ctx)` is `false` and
+`setmetatable(ctx, …)` raises, because one table is shared by every render and a
+plugin replacing it would stop every other pane's clock. Every other field is an
+ordinary one. Ask `ctx` for facts by name.
+
+Reading `store`/`state` is fine, and so is `command(...)` from a handler. If you
+are unsure, leave it undeclared: a pane that says nothing behaves exactly as it
+always has, and the only cost is that it is no faster.
+
+**Reading `state` or `store` hands back a copy.** Mutating it changes nothing —
+the value is simply the old one on the next frame. Write the whole thing back:
+
+```lua
+local flow = state.flow      -- a fresh table, every read
+flow.step = "name"
+state.flow = flow            -- without this line, nothing happened
+```
+
+**Anything a render computes is gone by the time a key arrives.** A value derived
+while drawing lives in a local, and a local is invisible to `on_key` — so share a
+*function*, not a field, and what a key acts on is by construction what was on
+screen.
+
+`state` is the exception, and deliberately so: writes to it land whenever they
+happen, render included. Most panes should not need that — deriving twice is simpler
+than remembering — but a decision only a render can make (a click deferred until an
+incremental parse reaches the row it named) has nowhere else to go. Prefer the shared
+function; reach for `state` when the render is the only place that knows.
+
+**A local used above its definition is `nil`, not an error you can read.** Lua
+resolves a `local function` from where it appears. `selene ui` catches it as an
+undefined variable; the runtime message will not help you.
+
+**`and`/`or` cannot carry a miss.** `matched = searching and fuzzy(q, row) or {}`
+turns a *failed* match (`nil`) into an empty table, which then reads as a match —
+so a filter silently keeps everything. Spell it as an `if`.
+
+**A Lua character class is a set of *bytes*.** `value:match("[▸▾]")` does not mean
+"either of those arrows" — it means any byte occurring in their encodings, which
+matches no arrow and plenty of unrelated things. `#` counts bytes for the same reason,
+so a column computed from it comes out short on any row with `é` or `╭` in it. This
+interface is full of multi-byte glyphs, so both apply constantly: measure with
+`text.width`, and compare whole strings rather than classing them.
+
+**A column is not a character either.** `utf8.len` fixes the byte count and stops
+there: a CJK glyph is one codepoint over *two* columns and a combining mark one
+over none, so a budget counted in codepoints shears every row a double-width name
+appears in. `text.width` / `text.truncate` / `text.pad` measure in columns, with
+the same `unicode-width` the painter uses. The one place codepoints are right is
+`input.cursor`, which is a character offset — `widgets.chars` is that count.
+
+**`ipairs` stops at the first hole.** It is not "iterate the array"; it is "iterate
+until a `nil`". A table built by index where one slot was left empty — a diff row with
+no old side, a session with no worktree — ends the loop early and *silently*, and the
+symptom is never an error: it is a filter that keeps everything, a count that is short,
+or a row reported missing that the screen plainly shows. This has cost real time twice,
+once in a bundled pane and once in a plugin written against it. If a table can have a
+hole, iterate its indices (`for i = 1, n`) or do not leave one.
+
+**A pane in a `switch` slot needs one key that goes both ways.** `command("focus",
+{ text = "<your pane>", toggle = true })` focuses it, and focuses whatever you came
+from when it already has focus. Without `toggle` the pane is a one-way door: the key
+gets you in and only the focus cycle gets you out — and the cycle never gets you in,
+since it passes over a slot's alternates. Do not solve that by focusing a
+named sibling — the only name available is whatever shares the slot in the *default*
+arrangement, which is the user's to change.
+
+**A floating pane needs a slot the arrangement never places.** Otherwise it also
+occupies the centre and competes with the terminal. The bundled floats use
+`slot = "float"`, which `layout.lua` does not place.
+
+**`on_action` must return `false` while a text field has focus** — and that check
+has to be the **first thing it does, for every action**, not a decision made inside
+the handler for a particular one. The order is why: a press is resolved against the
+registry *before* `on_key` is offered it, so by the time your pane sees the letter
+it is already an action. A pane that gates inside `review.refresh` has still
+refreshed by the time it notices the find box had focus — the symptom being that
+typing a word containing `r` does something, and only that letter.
+
+Every letter your pane declares is a letter somebody will type into a search box.
+The flow's `j` moves the list in one focus and types a `j` in another for exactly
+this reason.
+
+**A handler that writes `state` on every event repaints on every event.** Right
+when the event matters and waste when it does not: check the payload first and
+write only what changed. A write that stores the value already there costs
+nothing, but a counter that always moves invalidates every pure pane.
+
+**`session.status` fires for the kernel's own derivations too.** A `working`
+session that goes quiet for ten seconds reads `idle` (the stuck-working
+fallback) and `working` again when it prints; a handler reacting to
+`to == "working"` sees both edges.
+
+## Making a pane fast
+
+The trap above says when `pure` is wrong; this is the positive half — the
+levers, in the order they pay:
+
+1. **`pure = true`** wherever the render only reads. The kernel reuses the last
+   tree until something it read changes and skips your Lua entirely — the
+   single largest saving available, and doubly so for floats, which render
+   every frame even while closed.
+2. **Memoize derived models on published-table identity.** Every gated group
+   (`thurbox.sessions`, `thurbox.theme`, `thurbox.registry`, `thurbox.diffs`,
+   `thurbox.bookmarks`, …) keeps the *same table object* until its data moves,
+   so `rawequal(published, cache.src)` is a sound one-comparison staleness
+   test. Build once into an upvalue, rebuild on identity change. Never key a
+   cache on anything time-based.
+3. **Window before you build.** `ui.list` does this for you — it calls `row`
+   only for the rows it draws — and under it are `widgets.window` and
+   `lib/scroll` for variable-height rows. Either way a thousand-row list costs
+   its ten visible rows.
+4. **Hoist per-row work.** A `store` read crosses the VM boundary; a
+   `theme.role` lookup walks tables; `fuzzy.compile(query)` splits the query
+   once so per-row matching does not. Read once per render, pass down.
+5. **Concatenate through a table.** `s = s .. piece` across a wide row is
+   O(width²); accumulate and `table.concat`, or emit `string.rep` runs.
+6. **Animate off the shared clock only** — `theme.spinner_frame(ctx.elapsed)`
+   follows the kernel's animation tick, which advances only while something is
+   animating. A hand-rolled timer re-renders forever and defeats `pure`. And
+   read `ctx.elapsed` only where you actually animate: reading it is what
+   subscribes your tree to the tick, so hoisting it to the top of a render that
+   usually draws nothing moving costs you the cache eight times a second.
+
+`F12` (the perf HUD) is the check: `renders` climbing on an untouched screen
+means a pane is not settling. To find **which** pane, read the `panes` table
+under the counters — one row per plugin, most expensive first, the worst in red
+and a `!` on any pane with a hint — then run `thurbox-cli perf --plugins` for
+render p50/p95/max, handler time, reuse, `run` durations, `store` writes per
+render and tree size, with each hint spelled out (`--json` to script it). The
+hints name the traps above: not `pure` yet rendering every frame, a float
+rendering while closed, a fresh table written to `store` from a render, a pure
+pane that keeps re-rendering while idle. The bundled panes are worked examples — the
+session list's memoized model (`lib/session_model.lua`), the flow's row cache,
+and the search strip's per-session content memo.
+
+## The directory tells you this too
+
+`AGENTS.md` and `README.md` are delivered into the interface directory itself, so a
+session pointed at it has the rules to hand without finding this file. `AGENTS.md`
+is the one a coding CLI loads on its own; it is deliberately short and covers what
+is easy to get wrong — that "install a plugin" is `thurbox-cli plugin install` and
+not a package manager, that `plugin check` gates every edit, and that adding a pane
+is two edits. `CLAUDE.md` and `GEMINI.md` beside them point at it rather than
+repeating it.
+
+## Your copy of the interface
+
+The bundled panes are not special files. They are written into your directory on
+first run and read back from it, so the interface you were shipped is the
+interface you edit — there is no second, privileged copy running underneath.
+
+| You want to | Do this |
+|---|---|
+| change a bundled pane | edit the file; it reloads on save and is never overwritten again |
+| add one | drop a `.lua` file in `plugins/` |
+| replace one | write your own and **delete** the bundled file |
+| remove one | delete the file |
+| undo either | settings → Interface, select it, `r` |
+| turn one off | settings → Interface, select it, `space` |
+| get back a working interface after a bad edit | [When something goes wrong](#when-something-goes-wrong) |
+
+**Deleting is how you remove.** A file thurbox wrote and can no longer find is
+recorded as removed and is not written again — not on the next start, and not by
+an upgrade that changes it. Nothing is lost by it: the shipped copy is in the
+binary, so `r` in the Interface tab puts it back, and the same key discards your edits
+to a file you would rather have back as it shipped — after asking, since nothing
+keeps the edit.
+
+What an upgrade does to each file follows from the same record:
+
+- **untouched** → updated, so fixes reach you;
+- **edited** → left alone, and reported;
+- **removed** → left removed;
+- **yours** → not touched, ever. Delivery writes only files it ships;
+- **no longer shipped** → taken back if you never changed it, kept if you did.
+  The one exception is `plugins/25_shell.lua`, from v2.32.0's rolled-back layout
+  presets: an edited copy is moved to `plugins/25_shell.lua.bak`, because loaded
+  it fills a slot the classic layout never places.
+
+Removing every pane is allowed and does what it says: nothing draws, the chrome
+still works, and the Interface tab still lists what you removed. It is not treated as a broken
+directory.
+
+## The smallest plugin
+
+```lua
+return {
+  name = "hello",
+  slot = "center",
+  focusable = true,
+
+  render = function(ctx)
+    return { type = "text", text = "hello from " .. ctx.width .. " columns" }
+  end,
+}
+```
+
+`render` returns a plain table describing what to draw. **Lua never holds a
+ratatui object** — that indirection is why reloading is safe, and why a plugin
+that throws costs its own pane and nothing else.
+
+A pane that throws draws an error panel in its own rect, and keeps drawing it
+until it has rendered cleanly for five seconds, so a pane that fails on some
+frames and not others holds one state instead of alternating with every tick.
+A float has no rect of its own to fail in: while it is failing it is not drawn
+and takes no input, and the message band says why, once per failure.
+
+## What you get
+
+| Global | What it is |
+|---|---|
+| `thurbox` | Everything readable: sessions, tasks, automations, repos, agents, hosts, theme, registry, diffs, links |
+| `command(kind, opts)` | The only way to change anything. Enqueues and returns |
+| `state` | Private to your plugin. Survives a reload; **not** a restart |
+| `store` | Shared by every plugin — the bus between them. Same lifetime as `state` |
+| `files.list/read` | Directory entries and file text, rooted at a session's directory. Needs the `files` capability and your trust |
+| `text.width/truncate/pad` | Display width in terminal COLUMNS, and the two cuts that spend a budget in it |
+| `thurbox.api` | The plugin API contract number. It moves only when a published field is removed or changes meaning; `requires_api` in your declaration table names the one you need |
+| `session.meta` | On each `thurbox.sessions` row: the session's `ui.*` meta keys by full key (`meta["ui.note"]`), as `thurbox-cli session meta set <ref> ui.note "…"` wrote them. Absent when there are none. Anyone with the CLI writes these, agents included, so treat them as untrusted text: one line, control and invisible characters (bidi overrides, zero-width spaces, tag characters, Hangul fillers) stripped, at most 256 characters, 32 keys per session. Other keys are never published, nor is a `ui.*` key carrying such a character, and `thurbox.*` keys cannot be set or unset. The bundled list draws `ui.note` muted on the row and groups by `ui.group` |
+| `thurbox.settings` | The settings in force: every `[features]` switch, plus the panel breakpoints and scrollback. Read your own switch and decline to draw when it is off — the kernel gates only what it owns |
+| `thurbox.search` | The content search's answer: lines found in every session's terminals, scrollback included, ranked, each with how far back it is (`back`) and the scroll offset that shows it (`scroll`). Served only while `store.want_content` holds a query (optionally narrowed by `store["want_content.sessions"]`), off the render thread; an empty query reads every history into the cache and matches nothing, so an open search strip is ready before the first keystroke; nil until the first answer lands |
+| `thurbox.bookmarks/browse/branches/worktrees` | The creation flow's reads: remembered repositories, a directory listing, a base-branch list, the worktrees a repo already has — each served only while `store.want_bookmarks`/`want_browse`/`want_branches`/`want_worktrees` asks for it |
+| `require` | Loads **any** `.lua` under the interface directory, and nothing outside it |
+
+**Your globals are your own.** Each plugin runs in an environment of its own: a
+global you assign is invisible to every other plugin, and `require` gives you your
+own copy of a module. Share through `store`. The library everyone reads —
+`string`, `table`, `math`, `coroutine`, `utf8`, `text` — is read-only, so
+`string.upper = …` fails the load rather than changing another pane. This is what
+lets a grant belong to one file: code you write always acts as you, whichever
+pane happens to call it.
+
+That is worth stating on its own, because it is easy to read `require` as "the
+`lib/` the interface shipped": **a pure-Lua library can be vendored into a plugin's
+own repository and required from there**, with no kernel change and no capability.
+`require("your-pane.vendor.thing")` resolves like any other path, and `plugin
+install git+…` is already the delivery mechanism for a repository that carries more
+than one file. A Lua tokenizer, a date library, a pretty-printer — none of those
+need anything added to the sandbox.
+
+What that does *not* reach is native code. `package` is absent, so there is no
+`loadlib` and no C module: anything with a compiled component (tree-sitter, PCRE2)
+is out, and would be out even with a grant, because Lua runs on the loop thread and
+a blocking call there freezes the frame. `run` and a program pane exist precisely
+because they are off the render path by construction.
+
+**There is no filesystem, no process spawning and no network.** Not because they
+are blocked — because they are not there. A capability you were not granted is
+absent from the environment, so there is nothing to call. `io`, `os`, `debug`,
+`dofile`, `loadfile`, `print`, `warn` and `rawset` are all withheld.
+
+You will hear about it before you run it. `selene ui` checks `ui/` against
+`thurbox.yml`, and `lua-language-server --check ui` against `.luarc.json` — between
+them every withheld capability is declared absent, so reaching for one is a lint
+error rather than a nil-index at the moment someone opens your pane. `stylua ui`
+formats. All three run in CI; selene and stylua also run on commit.
+
+## Names, checked before you run
+
+Absence is the loud half. The quiet half is everything that *is* there and is
+simply misspelt: `convert.rs` drops a node key it does not know (deliberately —
+that is how you carry your own bookkeeping on the node table), `command` reads a
+fixed list of option names and collects the rest into an event payload, and a
+theme role no palette defines is nil. All three render something plausible and
+report nothing.
+
+`ui/lib/thurbox.d.lua` is those names written down as lua-language-server types:
+every node prop and the values it accepts, `ctx`, the `hit`/`key`/`wheel`
+payloads, the declaration table, every published `thurbox.*` row, every command
+verb's options, and the theme roles. `.luarc.json` loads it, so an editor opened
+on the repository — or on your own interface directory — has it already.
+
+lua-language-server will not flag an **extra** key in a table constructor, so the
+file is written to catch a typo the other way round:
+
+```lua
+---@type thurbox.TextNode
+local row = { type = "text", txet = "hello" }
+-- Missing required fields in type `thurbox.TextNode`: `text`
+
+command("open", { url = "https://example.com" })
+-- Missing required fields in type `thurbox.cmd.Open`: `text`
+
+local colour = theme.warning
+-- Undefined field `warning`.
+```
+
+The first needs the `---@type` line: without an annotation there is no type to
+check the table against. The second and third need nothing — `command` and
+`lib/theme.lua` are typed already.
+
+Those three examples are literally `tests/fixtures/lua_types/`, and
+`scripts/ci/check-lua-types.sh` fails if any of them stops being reported.
+
+The published half of both files is not written by hand. `src/kernel/lua_api.rs`
+declares the `thurbox.*` shape once, and the generated region of
+`thurbox.d.lua`, the `thurbox.*` entries of `thurbox.yml` and
+`tests/fixtures/lua_std/reads.lua` are rendered from it (`just lua-api`).
+`tests/lua_api.rs` fails when one of them drifts from it, and when a real publish
+serves a key it does not declare.
+
+`selene` checks the same names from the other side, against `thurbox.yml`. That
+file declares **fields**, not only tables, so `thurbox.platform.os`,
+`thurbox.granted.program`, `thurbox.metrics.system.cpu_percent` and
+`thurbox.hover.role` are all checked reads and a misspelt one is an error. A path
+stops being checked at the first `[…]` — `thurbox.sessions[i].name` is yours to
+get wrong — which is why a list is declared only as far as the list itself.
+`tests/fixtures/lua_std/` and `scripts/ci/check-lua-std.sh` are that half's
+probes: `reads.lua` reads every path `thurbox.yml` declares and must lint clean,
+while `typos/` holds one pane per table misspelling one field, each of which must
+not.
+
+## The four node kinds
+
+`text`, `box`, `input`, `surface`. That is the whole vocabulary, and it is meant
+to stay that way.
+
+Lists, gauges, panels, dividers and tables are **not** node kinds — they are
+Lua, composed from the four. When you need a new appearance, add it there. A
+prior version of this design froze its catalog at six kinds and watched it reach
+sixteen, because every new appearance had nowhere else to go and each one cost a
+release. A widget in Lua costs a file save.
+
+The Lua side is two layers. `lib/ui.lua` is the **component layer** — the shapes
+a pane turns out to be, and the conventions that make several panes look like one
+program — and it is what a new pane should reach for first:
+
+```lua
+local ui = require("lib.ui")
+
+ui.panel({ title = "Notes", focused = ctx.focused, body = ui.list({ … }) })
+ui.list({ items = rows, cursor = ui.cursor("notes", rows), row = spans_of, … })
+ui.row({ width = w }):add(name, { fg = theme.text }):trailing(age):spans_list()
+ui.modal({ title = "Pick one", cols = 60, children = { body, ui.footer({ … }) } })
+```
+
+| | what it is |
+|---|---|
+| `ui.panel{title, focused, body, overlay_left, overlay_right, right_column, border, title_align}` | a framed pane in the one focus convention — with focus a thick border and a ` ▸ ` title badge, without it a thin border in `border_unfocused` (`ui/README.md` → Focus) |
+| `ui.list{items, cursor, width, height, row, header, empty, on_overflow, pad, len, fill}` | a scrolling list: variable row heights, the sticky window, the selection bar, hover, and overflow either as marker rows or as `▲ N`/`▼ N` on the frame |
+| `ui.cursor(key, items, opts)` | the selection over a list, with `move`/`select`/`select_by_id`/`follow`. What it remembers is the selected **item**, and the row is re-derived from it on every build, so a list reordered underneath keeps the cursor on the same thing; the remembered row number answers only once that item has gone, and then it names whatever took its place. `opts.steer` names the `store` key another pane moves this list with — and the protocol that tells a foreign write from this list's own echo |
+| `ui.row{width, tone}` | a span builder that knows the row's columns: `:add`, `:gap`, `:button`, `:match`, `:trailing`, `:spans_list` |
+| `ui.empty{title, width, hint, hint_action}` | the one empty state, its chord shown only while something is bound to it |
+| `ui.modal{title, cols, children}` / `ui.footer{actions, primary, cancel}` | a float sized from its children, and hints resolved from the key registry |
+| `ui.status` / `ui.dots` / `ui.rule` / `ui.chord` / `ui.describe` / `ui.follow` / `ui.reset` | a status glyph with its spinner, the border strip of them, a group heading, and the registry lookups |
+
+`lib/widgets.lua` is the **primitive kit** underneath it — measurement,
+windowing, `widgets.list`, `widgets.panel`, `widgets.gauge`. Reach past `ui` for
+what it does not cover:
+
+```lua
+local widgets = require("lib.widgets")
+
+widgets.list({ rows = rows, selected = 3, height = ctx.height - 2 })
+widgets.panel("title", ctx.focused)
+widgets.gauge(0.7, { width = 20 })
+```
+
+`widgets.list` sizes itself — pass `len` or `fill` alongside the rows rather
+than patching the returned table — and windows itself: when the rows outrun
+`height` it spends a line of its own on an `↑ N more` / `↓ N more` marker, so
+the count is exactly what you cannot see and no row is drawn over. Give it
+`selected_style` and `hover_style` and it puts them on the row itself, which is
+the `text` style below. `lib/hover.lua` holds the styles every bundled pane
+lights a row, a pill and a field border with (`hover.row_style`,
+`hover.button_style`, `hover.border`) — `ui/README.md` → Hover.
+
+A `text` node takes a **`style` of its own**, painted across its whole rect
+before the spans go on top:
+
+```lua
+{ type = "text", style = { bg = theme.role("selection_bg"), bold = true },
+  text = { spans } }
+```
+
+That is what a selection bar or a hover band is. The style reaches the right
+edge of the rect whatever the spans say, so nothing has to append a spacer span
+sized by hand — and a span that names a colour keeps it, because the node style
+only supplies what a span left unsaid. A search highlight therefore stays
+visible on the selected row with the bar painting through it.
+
+`input` carries one thing the other three do not: a claim on the **caret**. A
+screen can hold several fields and the terminal has one cursor, so the field
+being typed into says so with `focused = true` and the others say nothing — and
+a field that claims it keeps the caret whether or not it holds text, because a
+field showing its placeholder is still the field you are typing into.
+`lib/textinput.lua` passes its own `focused` option through, so a pane built on
+it already does the right thing; a raw `input` node that never sets the flag
+draws no caret at all, which is visible at once. A caret guessed from the value
+being non-empty is not: it wanders to whichever field happens to hold text.
+
+Every kind takes a **`frame`**, and a frame is the whole border vocabulary:
+
+```lua
+frame = {
+  title = { { text = " Sessions ", style = badge } },  -- styled runs, not a string
+  title_align = "right",                               -- left | center | right
+  border_type = "square",                              -- rounded (default) | square | thick
+  border_style = { fg = theme.accent },
+  padding = 1,
+  overlay = {
+    top_right = dots,        -- painted leftward from before the top-right corner
+    right_column = bar,      -- one run per inner row, down the right border
+  },
+}
+```
+
+`overlay` paints runs onto the frame's *own* border cells, after the block draws
+them — `top_left` and `top_right` along the top border, `bottom_left` and
+`bottom_right` along the bottom, `right_column` down the right one. A status
+strip, a `▲ N` scroll count or a scrollbar there costs no content cell, which is
+the reason it exists: the session list's scroll counts and the terminal pane's
+scrollbar are both border cells, and every row of the pane stays a row. Each slot
+clips between the corners, which are never painted over.
+
+`surface` is the exception that proves the rule: it carries **cells**, for
+content positioned by character measurement rather than by structure — a live
+terminal, or a diff body. You place and frame it; the kernel fills it. `scroll`
+sets how far back a terminal is scrolled, and `mark` names one row (from the top of
+the surface) the kernel draws reversed over whatever the cells are — how the
+terminal pane points at the line a search landed it on.
+
+The cost of that split, which is easy to meet as a mystery rather than as a fact:
+**cells never become nodes, so a surface is invisible to anything that walks the node
+tree** — including your own tests. An assertion that looks for text in the tree finds
+none of a diff body's content and *matches nothing rather than failing*, which reads
+as the feature being broken. Anything asserting on what a surface shows has to go
+through the cells you handed it.
+
+## Sizing, and why your rect is known
+
+Every child of a `box` says how much of the axis it wants:
+
+```lua
+{ len = 3 }      -- exactly three
+{ pct = 50 }     -- half
+{ fill = 2 }     -- twice the share of a fill = 1 sibling
+{ min = 5, max = 20 }
+```
+
+`ctx.width` and `ctx.height` are **your pane's**, not the screen's. The kernel
+resolves every rect before calling you, which is what makes wrapping,
+truncation and scroll windows possible at all.
+
+## Slots: where your pane lands
+
+`slot` names the region of `layout.lua` your plugin draws into. The stock
+arrangement is two columns:
+
+| Slot | Where | Shown when |
+|---|---|---|
+| `sessions` | far left | width ≥ 80 **and** toggled open (F9) |
+| `center` | the remainder | always |
+
+A pane that only ever floats — the new-session flow is the bundled example —
+names a slot nothing places, so it never competes for the centre.
+
+A slot exists because a plugin fills it, not the other way round: v1's `info`,
+`tasks` and `files` columns and its header/footer bands were removed with their
+plugins, and their slots went too — a slot nothing can fill would reserve a rect
+for nothing. **Adding a pane means adding its slot to `layout.lua`**, which is a
+file you edit rather than a layout compiled into the binary.
+
+Several plugins may name the same slot. `center` is a **switch** slot — one
+occupant is visible at a time and focusing one brings it forward. The `ctrl+h` /
+`ctrl+l` cycle walks columns, not panes: it stops **once** per switch slot, on its
+default occupant (the first focusable one — the agent pane in `center`), and from an
+alternate it steps off the slot rather than back to its sibling. An alternate is
+reached only by asking for it — its own key, a pill, or a `focus:<plugin>` click
+role — so a pane that replaces the centre needs one of those or nothing reaches it
+(`plugin check` warns about a pill-less one). A slot the arrangement
+did not place this frame simply does not draw, and focus skips its plugins, so a
+closed column can never hold focus.
+
+The distinction between "not drawn" and "cannot hold focus" is load-bearing:
+focusing a switch alternate is *what makes it drawn*, so the two questions have
+separate answers in `kernel::focus`. Conflating them cost the old plugins pane every
+way in it had — the ring skipped it, and its own opening chord was undone a frame
+later by the guard that keeps focus off closed columns.
+
+A pane may open **its own** column and ask for focus in the same action — show the
+panel, then `command("focus", { text = name })`, the way `65_search.lua` does. The
+slot does not exist until the arrangement runs again, so the kernel holds that
+request for one layout and takes it there; you do not have to wait a frame or press
+the chord twice.
+
+Because layout resolves *before* render, anything the arrangement needs to know
+cannot live inside a render function. Panel visibility therefore lives in
+`lib/panels.lua`, which keeps it in `store` so it survives a reload:
+
+```lua
+local panels = require("lib.panels")
+
+panels.shown("sessions")   -- is the column open?
+panels.toggle("sessions")  -- flip it, returns the new state
+```
+
+### Strips: a row of your own, with no layout edit
+
+A pane that wants a full-width row of its own — an indicator, a ticker — sits
+in a slot nothing else names, and a slot needs the arrangement to place it.
+`plugin install` never writes `layout.lua`, so that used to mean an install
+that loaded and drew nothing until you found the line to add. Declare it a
+strip instead:
+
+```lua
+return {
+  name = "voice",
+  slot = "voice",
+  strip = true,
+  size = { len = 2 },   -- rows; one when unsaid
+  render = function(ctx) ... end,
+}
+```
+
+The kernel lists every strip slot to the arrangement as `ctx.strips`
+(`{ slot, len }`, in load order), and the shipped `layout.lua` places them
+above the bars. A slot is listed once however many strips name it, because
+its panes share one rect: `len` is the sum of their heights in a stack slot
+and the tallest in a `switch` one. The shipped loop also skips a slot the
+arrangement places anywhere else (it runs last and inserts the rows above the
+bars), so pinning a strip elsewhere by hand reserves no second, blank row. Its
+core:
+
+```lua
+for _, strip in ipairs(ctx.strips or {}) do
+  children[#children + 1] = { slot = strip.slot, len = strip.len }
+end
+```
+
+The arrangement is still yours: move the loop, or delete it to keep strips off
+the screen. A `layout.lua` written before strips existed has no loop, and
+`plugin check` says so, naming the loop as the fix rather than a line per
+strip. A float is never a strip: it draws above the arrangement, so a row
+reserved for it would stay empty.
+
+## Colour: name roles, never values
+
+```lua
+local theme = require("lib.theme")
+{ text = "hi", style = { fg = theme.accent } }     -- yes
+{ text = "hi", style = { fg = "#5fafff" } }        -- no
+```
+
+The active theme resolves roles to colours. Naming a role means your pane
+follows every one of the 36 built-in themes and any the user wrote, without you
+knowing they exist. Hardcoding a colour opts out of that for everyone
+downstream — and there is a test that greps the bundled plugins for literals.
+
+## Keys: declare them, don't just handle them
+
+```lua
+keys = {
+  { key = "j", action = "mine.next", desc = "next item" },
+  { key = "ctrl+n", action = "mine.new", desc = "new", scope = "global" },
+},
+
+on_action = function(action)
+  if action == "mine.next" then ... return true end
+  return false
+end,
+```
+
+Declaring keys as data is what lets the kernel list them in help, detect a clash
+with another plugin, and let the user rebind them — none of which it could do if
+they only existed inside `on_key`. Help is a kernel modal rather than a plugin,
+and it renders the registry, so your key appears in it (and becomes rebindable)
+by being declared and nothing else. The same is true of `settings`: declare
+`{ id, desc, default }` and the settings modal grows a row for it. A text setting
+that holds a `;`-separated list of percent-escaped entries can add `list = true`:
+its row then shows how many entries it holds, and the footer spells them out,
+unescaped, while the row is selected. A text setting with a fixed set of values
+declares them as `choices`:
+
+```lua
+settings = {
+  { id = "engine", desc = "speech model", default = "parakeet", choices = { "parakeet", "whisper" } },
+},
+```
+
+The settings modal then steps through them (`Enter`, `Space`, `←`/`→`) instead of
+opening a text field, and lists them in its footer. A value outside them is refused
+— from the modal and from `command("set")` alike — and one stored in `ui.json` that
+the plugin no longer offers falls back to the default. The default must be one of
+the choices, or the plugin fails to load with an error naming the setting.
+
+A plugin can also **write** its own settings — `command("set", { text =
+"yourpane.wrap", flag = true })` for a boolean, `number = 2` for a number, or
+`value = "compact"` for text. A `state` value may hold the requested value until
+the queued command lands; after that, read the registry's value so a change in
+the settings modal is respected. One durable home per setting.
+Plugin-scoped keys fire only while you have focus, so several panes can all
+declare `j`.
+
+Chords are canonicalised, which matters more than it sounds: `shift+j` reaches
+you the same way whether the terminal reports a bare `J` or `j` plus SHIFT, and
+`ctrl+/` works across all three encodings terminals use for it. `cmd+…` is the
+macOS Command key (`super`, `command` and `win` parse as aliases; `cmd` is
+canonical), which arrives only from a terminal speaking the kitty keyboard
+protocol — `on_key` sees it as `key.cmd` beside `key.ctrl`/`key.alt`/`key.shift`.
+
+A global `ctrl+<letter>` is also a chord the agent's own line editing wants
+(`ctrl+r` is reverse-search, `ctrl+d` is EOF). Add `passthrough = true` and a
+focused terminal keeps the keystroke while your action stays reachable from
+every other pane — which is why the panes that do this also declare an F-key
+alternate. It applies only while the bound chord is a bare `ctrl+<letter>`, so a
+user who rebinds you onto `f7` gets the action back in the terminal.
+
+A key can also report being **let go**. Declare `release = true` and the action is
+called twice per keystroke, with a second argument saying which half it is:
+
+```lua
+keys = {
+  { key = "ctrl+space", action = "mine.talk", scope = "global", release = true },
+},
+
+on_action = function(action, args)
+  if action ~= "mine.talk" then return false end
+  local event = args and args.event or "press" -- palette and CLI runs carry none
+  if event == "press" then start() else stop() end
+  return true
+end,
+```
+
+Return `true` from the press, or the release is never delivered: the release goes to
+the plugin that took the press, whichever pane has focus by then, and only to it.
+Where the terminal reports releases, a held key's auto-repeat is swallowed rather than
+fired again. Give `release` to a chord that types nothing — one with `ctrl`, `alt` or
+`super`, or a key such as `f5`: outside Windows, kitty-protocol terminals send a held
+`v`, `shift+a` or `space` as plain text, so each repeat arrives as a fresh
+`{ event = "press" }`. A release nobody is holding goes nowhere — never to a modal, an `on_key`,
+a text field or a session's terminal — and every binding without `release` behaves
+exactly as before (no second argument, and a held key repeats).
+
+Only a terminal that reports releases can deliver one. thurbox asks for them with the
+kitty keyboard protocol (kitty, WezTerm, Ghostty, foot, Alacritty, iTerm2 3.5+), and the
+Windows console reports them by itself; a legacy terminal, `tmux`/`screen` in between,
+or macOS Terminal.app does not. `thurbox.keyboard.releases` says which case you are in:
+`"unsupported"` (only presses will arrive), `"negotiated"` (asked for and accepted, none
+seen yet) or `"reported"` (one has arrived). On `"unsupported"`, and on a terminal that
+accepted the request without honouring it (it stays `"negotiated"`), auto-repeat is
+indistinguishable from pressing again: holding the key delivers a stream of
+`{ event = "press" }` and no release. So offer a hold only once releases are
+`"reported"` or at least `"negotiated"`, fall back to press-to-start/press-to-stop
+otherwise, and in either mode let a second press stop what the first started — that is
+what keeps a release lost to the window losing focus, or a terminal that never sends
+one, from leaving anything stuck. Nothing infers a release from time.
+
+`on_key(key)` still exists for panes that need every keystroke — the terminal
+uses it, alongside `input = "session"` to forward what it does not handle.
+
+## Floating views and the native focus cycle
+
+A floating plugin opts in by declaring `on_focus_cycle(direction)`. The
+kernel offers `"next"` for Ctrl+L and `"previous"` for Ctrl+H to the **topmost
+open float**, before moving between panes. The same hook handles the existing
+`kernel.focus_next` and `kernel.focus_previous` actions in the action catalog.
+Closed floats and floats underneath another float receive nothing.
+Automatic focus repair after a pane is hidden, including on resize, moves pane
+focus without invoking the hook or changing the float's selection.
+
+Return `true` after moving your selection to consume the cycle. Keep your own
+ordered targets and selected item in `state`, and use the same selection for
+keyboard, mouse and render. For example, a card view can wrap in display order:
+
+```lua
+on_focus_cycle = function(direction)
+  local items = state.items or {}
+  if #items == 0 then return false end
+  local step = direction == "next" and 1 or -1
+  state.selected = ((state.selected or 1) - 1 + step) % #items + 1
+  return true
+end,
+```
+
+Return `false` to retain the ordinary pane cycle, including for an empty view
+or an end where your view should let focus leave. A missing hook preserves the
+existing behaviour. A hook error is reported and falls back to the pane cycle;
+the hook runs under the same instruction and memory limits as `on_key`.
+Quit, reload and recovery chords stay kernel-owned; declaring Ctrl+H/Ctrl+L
+in `keys` still cannot override them.
+
+A consumed cycle leaves the underlying pane focus intact, so closing the float
+returns input to that pane. If the hook declines or explicitly issues a focus
+command, closing leaves focus at the destination it requested. No `focusable`
+declaration or `command("focus")` is needed to receive this hook: `floats = true`
+and an open rendered float are enough.
+
+The sample [card float](../../tests/fixtures/float_focus/91_cards.lua) opens with
+Ctrl+B, cycles three targets in both directions, closes with Escape, and uses
+`e` to exercise the empty-view fallback.
+
+## Events: be told, rather than look
+
+```lua
+events = { "session.status", "focus.session" },
+
+on_event = function(name, payload)
+  if name == "session.status" and payload.to == "blocked" then
+    store.focus_session = payload.session
+  end
+end,
+```
+
+A pane used to learn that the world changed only by being rendered and diffing
+the snapshot itself. Declare what you listen for and the kernel calls you **once
+per change**, off the render path, with the tables current: a session appeared,
+disappeared, changed status, name or branch; the selection or the focused pane
+moved; a command a plugin issued finished or failed; a program you started
+ended; the interface reloaded. The
+whole list, with each payload, is `thurbox-cli plugin events` and the last
+section of `F1`.
+
+The kernel **derives** these by diffing the snapshot, so a session made by
+`thurbox-cli`, a cron tick or a second thurbox fires the same `session.created`
+as one the creation flow made. The four `session.post_*` names are the exception
+and the reason there are two spellings: they fire only for an operation *this*
+interface performed, with that operation's facts, and share their names with
+`hooks.toml` so shell and Lua learn one vocabulary. Subscribe to
+`session.created` to hear about every session; to `session.post_create` to hear
+about the one you asked for.
+
+A handler gets exactly what a render gets — the published tables, `state`,
+`store`, `command` — and its return value is ignored: it cannot answer, block or
+veto, only write state and enqueue. It runs under the render's instruction
+budget, and one that throws costs its own subscription for that event: the other
+subscribers still run, your pane still draws, and the failure is reported once
+per event in the message band rather than painted into your rect every frame.
+
+**One event is addressed rather than broadcast.** `program.exited` goes only to
+the plugin whose pane it was. A program pane belongs to the plugin that started
+it and no other plugin can even name it, so the news that it ended has the same
+owner — and two plugins may both call their pane `editor`, which a broadcast
+would have each of them acting on. Every other event is about something every
+pane can already see in the snapshot, and is delivered to every subscriber.
+
+`program.exited` fires for every program **this run of the interface started**,
+however it ended — including one that died before the loop looked at it again,
+and including twice in a row when a program was restarted and its replacement
+also ended before the next look (two programs really did end). One death,
+though, is one event: a program restarted on a *later* frame does not re-announce
+the ending that was already reported, so a handler that restarts on the event
+restarts once. What it does not announce is a corpse adopted from a *previous*
+run: that program stopped while nothing was watching, and reporting it at boot
+would tell a pane its editor had just closed.
+
+**A subscription to a name nothing emits refuses to load** (`plugin check` says
+which), because a handler that never fires is the one failure with no symptom.
+
+**Plugins can talk to each other.** `command("emit", { text = "refresh", scope =
+"x" })` reaches every plugin subscribed to `user.refresh` on the next iteration,
+with the other fields as the payload and `payload.source` set to your name — by
+the kernel, so nobody can forge it. A kernel name cannot be emitted. Emits may
+cascade (a handler emitting to a handler) four generations deep per dispatch;
+the fifth is dropped and reported, so two plugins cannot pin the loop between
+them.
+
+`examples/lua/events.lua` is the worked example: it selects the session that
+just went `blocked`, unless you moved the selection yourself in the last few
+seconds.
+
+## The palette: an action without a chord
+
+```lua
+commands = {
+  { action = "mine.export", desc = "export the list" },
+},
+```
+
+`Ctrl+P` opens the command palette — every plugin's declared keys, every
+`commands` entry, and the kernel's own modals, reload and quit — filtered as you
+type, with the chord beside each row that has one. `Enter` runs the chosen row
+through the same `on_action` a key press takes, **whether or not your pane is
+focused**, so an action must not assume it is (the bundled panes key off `state`
+and `store.selected`, never on focus). A command and a key for one action are
+one row; a user may later bind a chord to a command from `F1`, at which point it
+is a key like any other.
+
+The running interface publishes these declarations through `thurbox-cli ui
+actions` and `thurbox-cli schema`. A plugin action keeps its existing
+`on_action(action)` callback; a typed invocation may pass a read-only second
+argument table. Declare argument and effect metadata alongside keys when an
+action takes input:
+
+```lua
+actions = { { name = "mine.search", effect = "ui-write", args = {
+  { name = "query", kind = "string" },
+} } },
+```
+
+Supported argument kinds are `string` and `uuid`; `required = true` refuses
+an omitted argument. Action IDs reserved by the kernel cannot be claimed by a
+plugin. `thurbox-cli plugin check` warns about raw `on_click` handlers and
+menu or click action names missing from the catalog. Key and scroll handlers
+remain available through addressed `ui input` for the active pane; give
+repeatable controls a declared semantic action.
+
+## Clicks: give the node an identity
+
+The kernel hit-tests the tree it just painted, so a node becomes a click target
+by carrying identity — the same `id` / `class` / `role` a decorator matches on.
+Nothing else is declared, and there is no new node kind.
+
+For the cases where a click should do exactly what a key does, `role` names the
+verb and the kernel answers it without calling you at all:
+
+```lua
+{ type = "text", len = 8, role = "action:themes.open", text = " Theme " }
+{ type = "text", len = 5, role = "key:ctrl+q",         text = " Quit " }
+{ type = "text", len = 7, role = "focus:notes",        text = " Notes " }
+{ type = "text", len = 1, role = "url:" .. mr.url,     text = { … } }
+```
+
+- `action:<id>` runs a declared action, on whichever plugin declared it — so one
+  pane's button can name an action belonging to a pane it has never heard of.
+- `key:<chord>` replays the keystroke through the handler the keyboard uses, so
+  a button and its letter cannot come to mean different things.
+- `focus:<plugin>` focuses that plugin, which in a `switch` slot is also how its
+  view is brought forward.
+- `url:<link>` opens the link, and is the one verb that also changes how the
+  node is *painted* — see below.
+
+A **run inside a line** carries `id`/`role` of its own, and becomes a target over
+the columns it is laid out at:
+
+```lua
+{ type = "text", text = { {
+  { text = " ◀ ", style = accent, role = "action:sessions.toggle_panel" },
+  { text = "F9 ", style = muted,  role = "action:sessions.toggle_panel" },
+} } }
+```
+
+so a chip inside a row needs no node of its own with a hand-counted `len`.
+Adjacent runs carrying the **same** identity coalesce into one hitbox — which is
+what makes that two-colour button one button rather than two halves the pointer
+has to find. It applies to a frame's overlay runs too: the terminal pane's
+scrollbar is one target the length of its column because every row of it names
+the same role.
+
+### `url:` is a link, not just a click
+
+The value is the whole rest of the role, so a url keeps its own `:` and `//`
+(`url:https://example.test/a`, `url:mailto:me@example.test`). A plain click hands
+it to the same opener a `Ctrl+Click` on a link in an agent's transcript rides —
+including the copy-to-clipboard fallback that carries the url back over ssh — so
+a pane's link and a transcript's link cannot open in two different places.
+
+What the other verbs do not do: the node's **drawn cells are re-printed wrapped
+in OSC 8**, so `Ctrl+Click` over them is answered by the terminal thurbox itself
+runs in. That matters because a pane hands the kernel cells and can emit no
+escape of its own, and because on a remote host the outer terminal is the only
+leg with a browser to reach. The chord is resolved against `url:` nodes directly
+as well, so it still works in an emulator with no OSC 8 support, or on a bare
+tty.
+
+Four consequences worth knowing:
+
+- The cells are read back out of the **frame just drawn**, not out of your tree,
+  so a node clipped by its pane, covered by a modal or under a float contributes
+  no link — the same rule an agent's own runs follow.
+- Blank cells are trimmed from either end, because the rect a node was given is
+  wider than the glyphs in it and linking the padding would underline the whole
+  row. Interior blanks stay, so ` Open MR !123 ` links as `Open MR !123`.
+- A node spanning several rows emits one link per row, all naming the same url —
+  which is how a wrapped link is spelled in OSC 8 anyway.
+- The re-print is written **outside the frame diff**, so it has to spend exactly
+  as many columns as the cells it came from. A wide glyph is one cell and two
+  columns, and re-printing it moves the cursor over both — so the blank ratatui
+  leaves beside it is skipped rather than printed. Getting that wrong is
+  permanent, not transient: the next frame repaints only the cells it believes
+  moved, so a row shifted by one column stays shifted.
+
+`command("open", { text = url })` is the imperative half, for a link you open
+from a keypress rather than a click. The field is `text`, not `url`.
+
+Everything else — a list row, most often — is offered to the plugin that painted
+it:
+
+```lua
+on_click = function(hit)
+  -- hit.id, hit.class, hit.role, plus hit.x / hit.y inside the node's own rect
+  -- and hit.w / hit.h, its size; hit.clicks is 2 on a double-click
+  if not hit.id then return false end
+  state.cursor = index_of(hit.id)
+  return true
+end,
+```
+
+`hit.w` / `hit.h` are there so a coordinate can be resolved against the shape it
+landed in without the pane keeping geometry from its last render — which a
+`pure` pane cannot do at all, since `render` may not write.
+
+`hit.clicks` is `2` for the second press on the same node within 400 ms of the
+first, and `1` for any other press — the kernel counts, because a pane has no
+clock outside `render`. A third quick press is `1` again, so a pane that opens
+on `2` opens once. The bundled session list is the worked example: a single
+click selects the row and leaves the keyboard in the column, a double-click also
+hands focus to the agent pane, exactly as Enter does. The node is the same node
+by its `id`, so a row that gained a `selected` class between the two presses
+still doubles; a node with no `id` never reads `2`, and a press anywhere else in
+between — the chrome, a modal, a terminal — makes the next one a first again.
+
+Return `false` and the press falls through, which is what lets the same click
+that focused a terminal also start a drag-selection over it. A pane needs no
+`on_click` to be clickable: any click focuses the pane it lands in first.
+
+Rows built by `widgets.list` already carry `role = "row"` and whatever `id` you
+gave them, so a list is clickable as soon as it has an `on_click`.
+
+**A `surface` can be clicked too, and this is the escape hatch that makes a
+geometry-first pane interactive.** A surface carries an `id` like any other node, the
+paint walk records the rect of anything carrying identity, and `hit.x` / `hit.y` arrive
+*inside* that rect — so a pane resolves a coordinate to whatever it drew there, from the
+map it necessarily already has. Cells have no per-line identity and do not need any: the
+thing that decided where every row went is the thing that receives the coordinate. That
+is what lets a side-by-side diff aim a click at the old or the new column with nothing
+added to the node catalog.
+
+### The right button
+
+A RIGHT press has its own hook, `on_context`, with the same `hit` payload:
+
+```lua
+on_context = function(hit)
+  if not hit.id then return false end
+  store.menu = {                       -- the bundled menu float, at the pointer
+    at = { x = hit.screen_x, y = hit.screen_y },
+    items = {
+      { label = "Open", action = "files.open" },
+      "sep",
+      { label = "Delete", action = "files.delete" },
+    },
+  }
+  return true
+end,
+```
+
+`hit.screen_x`/`hit.screen_y` are the pressed cell on the screen, where
+`hit.x`/`hit.y` are inside the node. The bundled `64_menu` float draws whatever
+`store.menu` holds at that point, moves over it with `j`/`k` or the arrows, and on
+`enter` or a click closes and runs the entry's action through `command("action")`
+— so an entry does exactly what its chord does. `esc`, or a press anywhere else,
+closes it. The sessions column opens its own this way.
+
+Give the menu a `target` (the row's id, say) when the entries are about one
+thing. The menu passes it as the action's read-only `args.target`; the owner
+can refuse when that row has gone before the action lands. The bundled sessions
+menu sets `target_argument = "session_id"`, so its contributed actions receive
+the session UUID as `args.session_id`. The bundled menu also leaves the older
+`store["menu.chosen"]` handoff until edited copies of either bundled pane have
+been migrated; new handlers should use the typed argument.
+
+For a soft delete passed through a confirmation pane, `command("delete")` can
+take `remember = { key = "sessions.deleted", value = id }` inside its options.
+The store write happens when the command is issued, so a preserved older
+confirmation pane retains undo without creating an undo target on cancel.
+
+An entry's `action` has to be one some plugin **declares**, in `keys` or in
+`commands`: that declaration is how `command("action")` finds the pane whose
+`on_action` answers it. An undeclared one falls back to the menu float itself,
+which answers nothing, so the entry closes the menu and does nothing — declare
+`files.open` and `files.delete` in the example above, or they are dead entries.
+
+#### Adding entries to the sessions menu
+
+The sessions column's row menu is open to other plugins. A plugin that owns a
+per-session action offers it by leaving its entries in
+`store["sessions.menu_extra"]`, under its own name. Write it at the top level
+of your file, which runs on every load and reload, or from a handler — never
+from `render`:
+
+```lua
+local extra = store["sessions.menu_extra"] or {}
+extra["auto-continue"] = {
+  { label = "Auto-continue", action = "auto-continue.toggle" },
+}
+store["sessions.menu_extra"] = extra   -- a read is a copy: write it back
+```
+
+Each contributor's list takes the same entries and `"sep"` rules as
+`store.menu.items`. The pane appends them after its own entries when a row's
+menu opens, contributors in name order and each after a rule. Keying the table
+by owner means rewriting your own list never overwrites another plugin's, and
+writing the same list again changes nothing. Write `nil` under your name to
+withdraw.
+
+An entry is shown only if its action is **declared**, in `keys` or in
+`commands`, so a misspelt or removed action is dropped rather than offered as a
+dead entry. A rule left with nothing to separate is dropped with it. A `label`
+that is not a string is ignored, and the entry shows its action's name. Entries
+appear on a row's menu only, never on the menu for empty space. The check reads
+`thurbox.registry.keys` and `thurbox.registry.commands`, the palette's
+chord-less rows.
+
+The pane opens the menu with `target` set to the row that was pressed. Read it
+from the action's typed arguments, since the cursor may have moved by the time
+the action lands:
+
+```lua
+on_action = function(action, args)
+  if action ~= "auto-continue.toggle" then return false end
+  local session = type(args) == "table" and args.session_id
+  session = session or store.selected   -- run from Ctrl+P, not the menu
+  -- …act on `session`…
+  return true
+end,
+```
+
+Its own hook rather than a button field on `hit`, because the two presses do not
+mean the same thing to anyone. Every `on_click` ever written reads "act on this
+row" — open the file, run the action — so a right press arriving there would do
+exactly that, in every pane, the moment the kernel began forwarding it. This way
+a pane that declares no `on_context` never hears a right press at all.
+
+It is a much shorter road than the left button's: no verb is resolved, no link
+is opened, no selection is begun, and **the focus does not move**. What a right
+press means is entirely the pane's to decide.
+
+Not every terminal sends one. The emulator may bind the right button to paste or
+to a menu of its own and never forward it, and nothing here can tell that apart
+from a button nobody pressed — it is the user's setting to make. To check a
+terminal, run `printf '\e[?1000h\e[?1006h'; cat -v` in it and right-click: a
+line like `^[[<2;12;7M` means the press is being forwarded. (`Ctrl-C`, then
+`printf '\e[?1000l\e[?1006l'` to put the terminal back.)
+
+### Dragging
+
+A node whose `role` is exactly `drag` takes **hold of the pointer**: the press
+arms no text selection, and every move until the button comes up is delivered to
+that node as a further click with `hit.dragging = true`. That is the whole of
+what a scrollbar, a slider or a splitter needs from four node kinds — the kernel
+only keeps routing the pointer; what the movement *means* stays the pane's.
+
+```lua
+-- the bundled terminal pane's scrollbar, in outline
+on_click = function(hit)
+  if hit.role ~= "drag" then return false end
+  if not hit.dragging then state.grabbed_at = hit.y - thumb_start() end
+  state.offset = offset_for(hit.y - state.grabbed_at, hit.h)
+  return true
+end,
+```
+
+Two things follow from where the grab is held:
+
+- **A drag that wanders off the node is still that node's**, clamped to the rect
+  it was pressed in. Hit-testing every move afresh would hand the gesture to
+  whatever it wandered onto, which is not what any scrollbar does.
+- **Take the grab offset at the press, not at every move.** Without it the thing
+  being dragged jumps so that the point you grabbed becomes its top — very
+  visible on a tall scrollbar thumb.
+
+It is deliberately not one of the click *verbs*: those name something the kernel
+does on the pane's behalf, and here the kernel does nothing but deliver. The
+bare role composes with the `id` a node already carries, so a pane with two
+draggables tells them apart the way it tells two rows apart.
+
+### The wheel
+
+A wheel tick over a pane is offered to that pane — the one under the pointer,
+not the focused one — before it becomes anything else:
+
+```lua
+on_scroll = function(wheel)
+  -- wheel.up, plus wheel.x / wheel.y inside the pane's own rect
+  state.offset = math.max(0, state.offset + (wheel.up and -1 or 1))
+  return true
+end,
+```
+
+Decline it (`false`, or declare no `on_scroll`) and the kernel synthesizes an
+`up`/`down` keystroke for the pane instead, so a pane that already declares
+those keys scrolls by the wheel with nothing added — and the wheel cannot come
+to mean something its arrow keys do not.
+
+The hook exists for the pane that cannot take that fallback: a pane declaring
+`input = "session"` hands every unclaimed key to the agent, so declaring `up`
+there would take the arrow keys away from whatever is running in it. Without a
+tick of its own the wheel did nothing at all over a live terminal.
+
+Two rules follow from where each half sits:
+
+- **`on_scroll` is one report; the keystroke fallback is one notch.** A detent
+  is several reports (three, for ghostty, kitty and xterm) and the fallback
+  folds them into one step, because a pane that moves a *selection* must not
+  walk three rows per flick. A pane that scrolls by lines wants all three, which
+  is also what a tick forwarded to a pty delivers.
+- **A live terminal that asked for the mouse is served before either.** The
+  kernel forwards the tick to the pty instead, since a program on the alternate
+  screen keeps no scrollback for anyone else to scroll.
+
+Everything here is inert when `[features] mouse` is off — the capture escape is
+never sent, so the terminal keeps its own selection and scrolling.
+
+## Changing things
+
+```lua
+command("delete",  { session = id })
+command("rename",  { session = id, text = "fix-osc52" })       -- refusal: command.failed
+command("create",  { repo = "/src/thing", branch = "feat/x", agent = "claude" })
+command("task",    { number = 3, status = "done" })
+command("theme",   { text = "tokyo-night" })
+command("automation", { number = 4, flag = true })           -- enable; force = run, reset = delete
+command("automation", { action = "create", name = "nightly", trigger = "weekdays",
+                        time = "09:00", prompt = "triage the queue", repo = "/src/thing" })
+command("automation", { action = "edit", number = 4, trigger = "cron:0 18 * * *" })
+```
+
+An automation's fields travel typed — a name or prompt is never read by a shell —
+and are written by the very code `thurbox-cli automation create` and `edit` use
+(`session_ops::automations`), so a cron expression must parse, a timezone must
+exist and a schedule must fire at least once more, whichever of the two wrote
+it. An exec
+automation's `command` is a command line the heartbeat runs, so sending
+`command` at all — on a create, or on an edit even when it is unchanged — needs
+the issuing file to hold `run`; without it the write is refused like any other.
+An edit that leaves the command out needs nothing. A mistake is
+`command.failed`, whose `subject` is `#<id>` (or a create's name), so a pane can
+show it where it was made. `thurbox.automations` carries what an editor needs: the
+`trigger` to hand back, `timezone`, `prompt`, the target (`session`, or `repo` with
+`branch`/`base`/`agent`, or `command`), and `next_run_at`/`last_run_at`.
+
+**Commands never block and never return a result.** They are accepted instantly
+and their effect appears in a later snapshot. Work in flight is readable at
+`thurbox.commands`, so you can draw it rather than leaving an unexplained gap:
+
+```lua
+for _, item in ipairs(thurbox.commands) do
+  -- item.kind, item.session, item.subject, item.host, item.phase, item.error
+end
+```
+
+This is not a limitation to work around. A plugin that could wait would be a
+plugin that can freeze the interface on a slow git fetch or an unreachable SSH
+host.
+
+Two verbs reach outside your own rect:
+
+```lua
+command("message", { text = "nothing to undo" })              -- INFO in the band
+command("message", { text = "no such host", level = "error" })
+command("action",  { text = "help.open" })                    -- as its chord would
+```
+
+`message` puts a sentence in the message band. The band stays kernel-drawn —
+your pane contributes to it as it contributes a pill or a binding, rather than
+spending a row of its own on a message line. `level` is `info` (the default),
+`success` or `error`, and anything else is refused rather than read as `info`: a
+severity nobody badges renders as an ordinary message, which is a message nobody
+notices.
+
+`action` runs a declared action through the very handler a click on a `role =
+"action:…"` node runs, so a **key handler** can open help, settings, themes or
+the palette. Before it, those were reachable only by painting a node and waiting
+for a click — which is why three floats rebuilt a modal shell of their own.
+
+The action goes to whichever plugin declared it — as a key **or** as a chord-less
+palette row in `commands` — so it is also how one pane asks another to act. An
+action carries no argument; leave one in `store` first. The search strip asks the
+terminal pane to scroll to a hit this way: it writes `store["terminal.reveal"]`
+and runs `terminal.reveal`, a palette row the terminal pane declares.
+
+## Floating panes and modals
+
+```lua
+floats = true,   -- declared once: this pane may float
+
+render = function(ctx)
+  if not state.open then return { type = "text", text = "" } end
+  return { float = { width = 50, height = 30 }, type = "box", ... }
+end,
+```
+
+`width`/`height` are percentages of the screen; `cols`/`rows` ask in cells and
+win where both are given. A modal framing a list of a known length wants its
+height in rows — sized by percentage its frame drifts away from its content as
+the terminal grows.
+
+```lua
+{ float = { width = 60, rows = 18 }, ... }   -- v1's modals: 60% wide, height to fit
+```
+
+A modal is *open* on the frames it returns a `float` node, and closed on the
+ones it does not. There is no open/close state for the kernel and your plugin to
+disagree about. While it floats it takes every key — except the reserved ones,
+so it can never trap the user, and except copy and paste, which have to work
+from any pane.
+
+A float is centred unless it names a point to open at:
+
+```lua
+{ float = { at = { x = hit.screen_x, y = hit.screen_y }, cols = 24, rows = 8 }, ... }
+```
+
+It opens with its top-left corner on that cell. Where that would run off the
+screen it opens the other way — to the left of the point, or above it — and is
+then held on screen, so a menu opened in the bottom-right corner is whole.
+
+A float also owns the pointer: a press that misses it is swallowed rather than
+reaching the pane it covers. Declare `on_outside(hit)` to be told about that
+press — either button, `hit.id` nil, `hit.screen_x`/`screen_y` set — which is how
+a menu closes on a click elsewhere. The press is swallowed either way, so closing
+a menu never also selects the row beneath it; a float that declares no
+`on_outside` behaves exactly as before.
+
+## Decorating another pane
+
+```lua
+decorates = "sessions",
+
+decorate = function(tree)
+  local t = require("lib.tree")
+  return t.restyle(tree, function(node) return node.role == "row" end,
+                   { fg = theme.accent, bold = true })
+end,
+```
+
+You receive another plugin's rendered tree and return a modified one, matching
+on the `id`/`class`/`role` nodes carry. This is how search highlights matches
+inside panes it does not own. A decorator that throws costs its decoration, not
+the pane.
+
+## Turning a plugin off
+
+`space` in the Interface tab turns the selected plugin off, and on again. The
+file is not touched: it stays exactly where it is and is simply not loaded. That
+is the thing to reach for when you want a pane gone for an afternoon, when you
+are bisecting a problem, or when a plugin you are writing has broken the
+interface — turning it off is enough to get a working one back, and for a pane you
+wrote it is the *only* way back, since `r` has no shipped copy to restore
+([When something goes wrong](#when-something-goes-wrong)).
+
+**`d` is not that.** It deletes. For a file thurbox ships that is recoverable
+(`r` writes the shipped copy back); for **a file you wrote there is no copy**,
+and the removal is permanent. The confirmation says which one you are about to
+do — read it.
+
+A disabled plugin is genuinely absent, not dormant: it declares no keys, offers
+no settings, occupies no slot and is granted no capability. Two things follow
+that are worth knowing. Its key is **free** while it is off, so another plugin
+may claim it — and turning the first one back on can then surface a conflict that
+did not exist. And a **broken** disabled plugin reports nothing, because nothing
+tried to load it; its error reappears when you turn it on.
+
+## Running a program
+
+A pane over `git status`, `docker compose ps` or `npm outdated` needs to *run*
+those, and Lua here has no process, no filesystem and no network. `run` is the
+one door, and it opens only for a plugin that asks for it and that you have
+trusted.
+
+```lua
+capabilities = { "run" },          -- declare it, or `run` is not a function
+
+render = function(ctx)
+  if not run then                 -- absent until you are trusted; draw that
+    return needs_trust(ctx)
+  end
+  run("status", "git status --porcelain", { session = id, ttl = 2 })
+  local got = (thurbox.runs or {}).status
+  if got and got.state == "done" and got.ok then
+    -- got.stdout, got.stderr, got.status, got.truncated, got.timed_out
+  end
+end,
+```
+
+**Choose where it runs.** `machine = "session"` is the default and requires
+`opts.session` to be a nonempty string ID. Missing, empty or non-string session
+values fail the `run()` call before anything is queued. For a machine-level
+readout with no session, select local execution explicitly:
+
+```lua
+run("quota", "quota-axi --json", { machine = "local", ttl = 60, timeout = 30 })
+```
+
+For a configured or discovered host without a session, use its exact name
+from `thurbox.hosts`:
+
+```lua
+run("quota:devbox", "quota-axi --json --no-credential-refresh", {
+  machine = "host:devbox", ttl = 60, timeout = 30,
+})
+```
+
+**Account quotas are yours to fetch.** Plugin API 3 removed
+`thurbox.metrics.sessions[id].usage`: thurbox no longer reads agent credentials
+or calls a provider's API for every session while the interface is open. A pane
+that drew those windows asks the account-owning tool itself, with a `run` like
+the two above; on API 3 the old field is simply absent, so a pane still reading
+it draws nothing. [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel)
+already does this with `quota-axi`, locally and on every configured host;
+installing it is the migration for its quota readout.
+
+This works with zero sessions and `share_sessions = false`. The command runs
+in the target user's home, with the environment supplied by its transport,
+using POSIX `sh` or Windows PowerShell according to `thurbox.hosts[].platform`.
+No local session config or authentication environment is injected. The name is
+not a session ID or a backend alias: `host:local` names a configured host named
+`local`; `host:ssh:devbox` is invalid. An unknown host produces a `failed`
+answer and never falls back to local execution. The host registry is loaded
+once per process; restart thurbox after changing `hosts.toml`. This API adds no
+host-config hot reload or CLI command.
+
+**Ask on every frame.** `run` does nothing while the answer is fresh *or while a
+run for that key is already going*, so asking is a map lookup rather than a
+process — and asking once, somewhere clever, is how a pane ends up showing
+yesterday's answer forever. The in-flight half matters for a program slower than
+its own `ttl`: without it every frame after the answer went stale would start
+another copy. `refresh = true` overrides freshness; that is what a "reload" key
+does.
+
+**Trusting a plugin** is settings (`Ctrl+,`) → `]` → select it → `t`, then `t`
+again to confirm what the footer says it will hold. The
+Interface tab shows which files ask for a capability, which are trusted, and
+whether a trusted file has changed since you trusted it. Revoking takes effect on
+the next frame.
+
+This is not a sandbox and does not pretend to be one. A program thurbox runs for
+you has your authority, and no gate here changes that — what trust buys is that
+nothing runs *unasked*, per plugin, revocably. Treat a plugin you did not write
+the way you would treat a shell profile someone sent you.
+
+**The kernel's bounds**, which a plugin cannot raise: output is capped per stream
+and flagged when truncated, a run times out (30 s by default, `timeout = n` up to
+ten minutes), and four run at once with the rest queued. A run happens in the
+session's working directory, and for a remote session **on that session's host** —
+which is what makes `docker compose ps` mean the right containers.
+
+**Some programs need this machine instead**: its microphone, its display, its
+clipboard. A remote session's host cannot stand in for those, so ask for the
+machine thurbox runs on:
+
+```lua
+run("start", "thurbox-voice start --session " .. id, { machine = "local" })
+```
+
+It runs in your home directory whatever session is selected, and needs no
+`session`. If you give one anyway, it is not where the program runs; `machine`
+decides that. A `machine` other than `"session"` (the default), `"local"`, or
+`"host:<exact-name>"` fails the call rather than falling back, because guessing would run the program
+somewhere you did not ask for. This grants nothing new: a local session's runs
+already execute here as you, so it is the same `run` capability and the same
+trust.
+
+**Retire keys explicitly.** Answers belong to `(plugin, key)`, not to the
+program or target. A fresh or in-flight key ignores another request even if its
+program or target differs. Use stable target-specific keys. For a retired host
+or provider, call `run_forget(key)` from the same plugin:
+
+```lua
+run_forget("quota:retired-host")
+```
+
+The nonempty string key is required; unknown or repeated keys are a no-op. It
+returns no values. Like `run`, this function is absent without the plugin's
+existing `run` declaration and trust grant. It removes that owner's cached
+answer and queued request; other owners' identical keys are untouched. Both
+operations are asynchronous and preserve Lua call order, so
+`run_forget(key); run(key, program, opts)` starts a new request. Published reads
+reflect forgetting after the coordinator processes it, rather than within the
+issuing handler. An old active completion cannot repopulate a forgotten entry
+or overwrite a new request under the same key. Removing a plugin also discards
+its unserved requests and late completions.
+
+Forgetting **does not cancel active execution**: its capture still occupies one
+of the four slots until completion or timeout. Timeout kills the immediate
+local child (the SSH/WSL transport for a host), without guaranteeing termination
+of descendants or remote commands. There is no public cancel API. Results remain
+`pending`, `failed` with `error`, or `done` with `stdout`, `stderr`, `status`,
+`ok`, `truncated`, and `timed_out`; no freshness timestamp is published. Transport
+nonzero exits are `done` with their stderr/status; timeout has `timed_out = true`,
+`status = nil`, and `ok = false`.
+
+There is no automatic key-count, queue-size, or answer-cache limit. Plugins must
+bound their desired keys and forget retired ones, including after host/provider
+churn. This leaves only their desired answer/queued entries plus at most four
+active captures globally; forgotten keys leave no invalidation tombstones.
+After a Lua VM rebuild or reload, reconcile the plugin's published
+`thurbox.runs` keys against its desired keys: private Lua tracking state may
+have reset while core answers for the surviving plugin path remain.
+Each capture retains at most 256 KiB of bytes per stream before UTF-8 decoding,
+which can expand invalid bytes into replacement characters. The same `run`
+grant authorizes configured hosts without sessions: trust remains shell-level
+user authority, rather than a per-host sandbox.
+
+## Driving sessions and reading files
+
+`command` is every plugin's, but some of its verbs drive an agent or lose something
+for good, and those need the `sessions` capability:
+
+- `send` types into an agent, and `dispatch` types a task into one.
+- `create`, `fork` and `restart` launch an agent.
+- `automation` runs, toggles, deletes or writes an automation, whose prompt the
+  heartbeat types.
+- `delete` with `force = true` removes a worktree that nothing restores.
+- `plugin` restores or removes a file of the interface.
+- `action` naming `kernel.paste` types the clipboard into the focused agent.
+
+Any other `action` runs the handler of the plugin that declared it — but as your
+request. Every request carries the chain of plugins it came through, the one that
+first asked first, and is allowed only with what *every* plugin in that chain
+holds: a pane holding no grant cannot have a trusted one `send` for it, however
+many actions it forwards through, and a trusted pane does not lend its grant to a
+handler it asks. A key or a click the user makes runs the handler under its own
+name.
+
+Two verbs need `run` instead: `open` (a URL carries whatever is in it to the network
+without a click) and writing an exec automation's `command`. `program` needs
+`program`. Every other verb needs no grant, and the kernel lists each one's answer
+explicitly, so a new verb cannot slip through by default. Without the grant the
+command is refused with a message naming the capability, and `command.failed`
+carries it. A soft `delete` and a `restore` need nothing: each is undone by the
+other.
+
+`files.list` and `files.read` need the `files` capability, and are absent until it
+is granted, as `run` is. A session's directory holds its `.env` files and keys, and
+a pane that can read them and `send` could hand them to an agent.
+
+`files.read(session, path)` is asynchronous in plugin API 2. It returns `nil`
+until the worker finishes; request it from `render` to pick up the answer. A
+completed failure raises on a later call (use `pcall` to display it). Paths remain
+relative to the session directory; absolute paths, parent traversal and symlinks
+escaping that directory are refused on the worker.
+
+```lua
+capabilities = { "files" },
+requires_api = 2,
+
+render = function()
+  if not files then
+    return { type = "text", text = "File access requires trust" }
+  end
+  local ok, text = pcall(files.read, id, "NOTES.md")
+  return { type = "text", text = not ok and tostring(text) or text or "Loading…" }
+end,
+```
+
+The host shares one `WorkerStore` across granted plugins: two reusable workers,
+16 retained keys (session directory plus relative path), and a one-second TTL.
+Each plugin may retain at most 16 distinct paths per render; exceeding this
+limit raises an error. The store keeps one deferred admission key, retried
+before refreshes. New completions wake pure panes; demand beyond the shared
+cache limit can churn entries and has no fairness guarantee.
+Repeated requests deduplicate while queued or active. Retained answers refresh
+in the background, keeping the previous answer while refreshing; an unchanged
+answer renews its age without invalidating pure panes. Changed answers repaint
+pure panes too. Completed least-recently-requested entries may be evicted; when
+all entries are pending, a new key returns `nil` and must be retried. A blocked
+read occupies a worker until it returns. Reloading plugins keeps this bounded
+pool. Dependencies retire when a pane stops reading a path, is hidden,
+is reloaded, loses its grant, or loses its session root. Queued retired reads are
+skipped; active ones may finish but their answers are discarded. Dropping the
+host never waits for a blocked read. `files.list` retains its
+synchronous listing contract.
+
+**The panes thurbox ships hold `sessions` without asking** while they are exactly
+what it ships: the confirmation (a force delete, a restart) and the creation flow
+(a create, a fork). Edit one and it is your file, decided like any other — the
+Interface tab marks it untrusted until you press `t`.
+
+The confirmation is the one place a pane without the grant reaches these, by
+leaving a question in `store.confirm`, so it forwards only `delete`, `restart`,
+`restore` and `sync`. Every pane writes `store`, so the question is only its
+author's words. The confirmation therefore words what `y` does itself, from the
+command and the session's name, and names the pane that asked. It learns which
+pane that was from `store_writer("confirm")`, which returns the path of the
+plugin that last wrote a `store` key — or, written for another plugin's request,
+that request's chain (`plugins/a.lua via plugins/b.lua`). That record is made by the writer's own
+view of `store`, so no pane can claim another's. On `y` it issues exactly the
+request it drew, never `store.confirm` read again at the keypress, which a later
+float could have replaced.
+
+## Running a program you interact with
+
+`run` captures a program's output once. It has no stdin and no terminal, so it
+cannot give you `htop`, `lazygit`, a REPL or a log you page through. For those a
+pane holds a **real terminal**: keystrokes go to the program, it is resized to the
+rect, and it keeps running while you work elsewhere.
+
+```lua
+capabilities = { "program" },      -- a DIFFERENT capability from `run`
+focusable = true,                  -- or it can never be typed at
+input = "session",                 -- keys you do not handle go to the surface
+
+render = function(ctx)
+  if not thurbox.granted.program then
+    return needs_trust(ctx)        -- absent until you are trusted; draw that
+  end
+  -- Every frame. Asking for a pane you already have is a map lookup, not a
+  -- second copy of the program.
+  command("program", { text = "watch", repo = "htop", args = { "-d", "10" } })
+  return { type = "surface", program = "watch", fill = 1 }
+end,
+```
+
+The pane is **yours**, not a session's: one instance whatever is selected. You write
+its name and the kernel supplies the owner, so two plugins can both call their pane
+`watch` and get two different programs — and neither can name the other's.
+
+`repo` is the program and `args` its arguments, kept separate because the
+multiplexer quotes each one: a path with a space in it survives that and would not
+survive being concatenated into a command line.
+
+Give one up with `command("program", { text = "watch", action = "close" })`. A
+plugin that is removed, renamed or turned off has its panes released for it.
+
+**Telling a running program something.** Starting is idempotent, so asking again
+with different `args` does nothing — the pane is already there. To change what a
+long-lived program is showing, type at it from any interactive hook —
+`on_key`, `on_action`, `on_click`, `on_context`, `on_outside`, `on_scroll`, or
+`on_event`
+(not from `render`, or it will be re-typed every frame):
+
+```lua
+command("program", { text = "editor", keys = ":e " .. path .. "\r" })
+```
+
+The bytes reach the program's stdin exactly as if they had been typed, so `\r`
+is Enter and `\27` is Escape. On tmux, because a Lua string is bytes, a sequence
+that is not UTF-8 arrives as written; on native Windows, non-UTF-8 bytes are
+lossy-decoded (`String::from_utf8_lossy`) before they are sent. `text` names the
+pane and nothing is started. This
+is what makes an editor pane worth keeping: opening a second file is a line typed
+at the editor you have, not a second one paid for from scratch. It is refused,
+and reported, when no program of that name is running, and when a running one
+cannot take the bytes — more sends in one frame than its input holds refuses the
+rest as a full input channel. It needs the same `program` capability starting one
+does, since driving a live process is the same privilege as beginning it.
+
+Every refusal of a `program` command reaches `command.failed` with `kind =
+"program"`, the pane's name as `subject`, and the reason as `error`.
+
+**Type it, or start it.** Send `keys` *and* a program and the kernel picks: the
+keys go to a pane that is running, and a pane that is not is started from `repo`
+and `args` instead, which is expected to leave it in the state the keys were for.
+A running pane that refuses the keys is reported, never started over.
+
+```lua
+command("program", {
+  text = "editor",
+  repo = "nvim",
+  args = { path },                    -- if it has to be started
+  keys = ":e " .. path .. "\r",       -- if it is already there
+})
+```
+
+Do not try to make this decision in the plugin. Whether a pane is alive is not in
+the snapshot, and a plugin that kept the answer in its own `state` would be wrong
+after an interface reload, which keeps panes but re-runs the file. The kernel is
+asking the pane. The keys are **not** sent to a program it just started: a process
+that has not begun reading yet would lose them.
+
+**Learning that it ended.** A program that exits leaves its pane holding a
+finished screen; the kernel does not reap it, because asking again is what
+restarts it. Subscribe to know:
+
+```lua
+events = { "program.exited" },
+
+on_event = function(name, payload)
+  if name == "program.exited" then       -- payload.name, payload.program
+    state.showing = nil                  -- draw something else, or move on
+  end
+end,
+```
+
+It fires once, on the transition, and only for **your** panes.
+
+**Why `thurbox.granted` and not `if not program then`.** A capability is normally
+withheld by *absence* — that is rule 4, and it is why `run` is simply not a
+function until you are trusted. A program pane is asked for through `command`,
+which every plugin has, so absence cannot express it: without `granted` a pane
+could not tell "you have not trusted me" from "still starting". It grants nothing;
+it reports a decision you already made.
+
+**Why it is not `run`'s grant.** `run` is bounded on every axis that matters —
+capped output, a timeout, four at a time. An interactive program has none of those
+by design, and holds your keyboard as well. Trusting a pane to poll `top` every few
+seconds is not the same decision as letting it hold a process open on your
+keystrokes, so it is asked separately. The Interface tab says which of the two a
+file wants.
+
+**Bounds.** Four panes per plugin — the same number as `run`'s concurrency, so
+there is one to remember. `run`'s others do not transfer: an output cap is
+meaningless for a screen overwritten in place, and a timeout is the opposite of what
+an interactive program wants.
+
+**Lifetime.** Reloading (`F10`) keeps the program running — a reload is an edit to
+a file, and losing your editor to one would make reloading unusable. Quitting
+leaves it running; the next launch finds it again by its window name, so nothing is
+persisted that could go stale. A program that exits on its own is *reported* as
+exited rather than drawn as a frozen screen, and asking again starts it afresh.
+
+**Local only, for now.** A plugin's pane has no session and therefore no host, so
+it runs on this machine in the interface directory. `run` goes remote because a
+session tells it where to; there is nothing here to ask.
+
+## Reserved keys
+
+`ctrl+q` quit · `f10` reload · `ctrl+h` / `ctrl+l` move focus · `f12` perf counters.
+
+These cannot be rebound or consumed, so a misbehaving plugin can never leave the
+user stuck inside it.
+
+**`tab` is not among them**, deliberately. Every coding agent uses it for completion,
+and a full-screen program in a pane needs it too — an automap, a pager, `vim`. So it
+reaches your pane, and a plugin may claim it (the creation flow does). This list used
+to name `tab` as moving focus, which was never true and cost a plugin author real
+time; focus has only ever moved on `ctrl+h`/`ctrl+l`.
+
+**A disabled plugin reports nothing.** Its keys are free while it is off — another
+plugin may claim one, and turning the first back on can then surface a conflict
+that did not exist. And a broken one shows no error, because nothing tried to
+load it; the error reappears when you turn it on.
+
+**A run is not a stream.** It completes, then reports. Watching `docker logs -f`
+is what the shell pane (`Ctrl+T`) is for — it is a real terminal, in the session's
+directory, on the session's machine.
+
+**A plugin must handle not being trusted.** The capability is *absent*, not
+refusing: `run` is nil, so `command`-style error handling never fires. Check for
+it and draw something useful, as `examples/lua/composite.lua` does — that state
+is the first thing every user of your plugin will see.
+
+## When something goes wrong
+
+- A plugin that fails to load leaves the **last good version running**, with the
+  error on screen.
+- A plugin that throws while rendering shows a red panel **in its own rect**.
+- A plugin that never returns is **interrupted** — an unterminated loop costs one
+  pane, not the application. The interruption is a hook installed before each
+  call, and installing it allocates: on a VM too full for it, the call is **not
+  run** and fails with "its instruction budget could not be armed", rather than
+  running without a bound.
+- A plugin that allocates without bound hits a **memory ceiling** and fails. Every
+  plugin shares that VM, so once it is full the interface is **rebuilt** on a fresh
+  one: panes lose what they held in memory. Full means the live heap is at the
+  ceiling, or past nine-tenths of it and still growing; an interface that simply
+  holds a lot from load is left alone. A successful rebuild sends
+  `interface.reloaded` with `reason = "memory"`. If the fresh VM fills right back
+  up, the rebuild is not repeated: an interface that grew back to the same size
+  is kept, and one that fills it to the ceiling again is replaced by the embedded
+  interface until you next reload. Disabled plugins stay disabled, including when
+  recovery uses the embedded interface.
+- If your whole plugin directory will not load, the **embedded copies** run
+  instead, so you can fix the file from inside the thing it broke. An explicit
+  `THURBOX_UI_DIR` keeps its last good interface during ordinary edit reloads;
+  memory recovery must discard the exhausted VM even under that override.
+- If memory recovery cannot load either interface, it leaves a **fresh empty VM**
+  and reports the load failure. The kernel's settings, palette and reload controls
+  remain available. Fixing the edited files and reloading restores the interface;
+  the exhausted VM is never retained as a fallback. Sessions and worktrees are
+  untouched.
+
+### Settings → Interface: the way back
+
+`Ctrl+,` (or `F6`), then `]`. It is **chrome, not a pane** — a recovery tool that
+was itself a plugin could be the thing that is broken, so nothing you do to the
+directory can take it away. It lists the plugins the interface is made of, what
+state each is in and what it asks for. The header line counts what needs you —
+`failed`, `not granted`, `off` — and ends with the directory in force (under your
+home as `~/…`), which is the answer to "my edits did nothing": they are usually
+edits to a file that is not the one loaded.
+
+Rows are **grouped by where they came from**, because that decides what you can do
+with them: `YOURS` (files you wrote), one `PACKAGE · <name>` group per installed
+package, then `SHIPPED`. **Trouble sorts to the top** of each group, so a failure
+never sits below thirty healthy rows. A row names the file (the full path is in the
+details), then one word of state, then — for a file that declares capabilities —
+what it asks for and whether it holds it (`run not granted`, `run+program granted`,
+`run granted, changed`), then `edited` for a shipped or installed file changed here.
+
+The modules, docs, `layout.lua` and `plugins.toml` are **support files**: listed
+under `SUPPORT FILES` when you press `a` (again to fold them), and always when one
+needs attention — failed, deleted, or edited and so restorable.
+
+| | State | Means |
+|---|---|---|
+| `✗` | `failed` | on disk, did not load, and the load error names it. Select the row and the **error is under the list** |
+| `◇` | `not loaded` | a reload is all or nothing, so another file's failure held this one back. The details name that file |
+| `⊘` | `deleted` | thurbox ships it, you deleted it, delivery has stopped writing it |
+| `◌` | `not placed` | it loaded, and `layout.lua` places nothing in its slot — so it never draws |
+| `◍` | `off` | present and intact, deliberately not loaded |
+| `●` | `on screen` | drawing now |
+| `◐` | `on demand` | a float or a modal, at rest |
+| `○` | `hidden` | its slot is placed, but another pane holds it or its column is closed |
+| `·` | `on require`, `in use`, `guide`, `decorates` | not a pane with a slot of its own: a `lib/` module, the layout or manifest, a doc, a decorator |
+
+Under the list, four lines explain the **selected** row: what it is (and the slot a
+pane wants) with its full source and path; why it is in that state — a load error
+wraps over the next lines rather than being cut; the one thing that
+changes it — for a pane that is not placed, the exact `{ slot = "…" }` line to add to
+`layout.lua`; and, for a file that declares capabilities, what it asks to do and
+whether that is granted.
+
+Four keys act on the selected row, and the footer lists only the ones that do
+something there (on a narrow screen it drops `a` and `[/]` first):
+
+| Key | Does |
+|---|---|
+| `r` | **restore** — write the copy thurbox ships back over the file. On an edited file it asks first and says what is lost: nothing keeps a pane's edits, and an edited `layout.lua` is moved to `layout.lua.bak`. A deleted file comes back on the first press |
+| `space` | **turn off / turn on** — the file is untouched, simply not loaded |
+| `d` | **delete** — asked twice, and the confirmation says whether it can be undone |
+| `t` | **grant** / **revoke** the capabilities the file declares. Granting asks first — the footer names the file and what it would hold, `t` again grants, any other key cancels; revoking risks nothing and takes one press |
+
+`a` lists the support files too, and `[`/`]` switch tabs. Each of the four reloads
+the interface, so the result is on screen immediately rather than at the next
+start, and each says what it did.
+
+### What `r` can put back, and what it cannot
+
+`r` means "put back what thurbox ships, and forget what happened to this file",
+which is why it covers both undo cases for a shipped pane — an edit and a
+deletion. It has **nothing to put back for a file thurbox never shipped**, and it
+says so rather than doing something. So which recovery you have depends on where
+the file came from, and the row's group and tail are what tell you:
+
+| The row shows | The file is | The way back |
+|---|---|---|
+| `SHIPPED`, no tail | a bundled pane, as shipped | `r`, though there is nothing to undo |
+| `SHIPPED`, `edited` | a bundled pane you changed | `r` — the shipped copy is in the binary |
+| `SHIPPED`, `deleted` | a bundled pane you deleted | `r` |
+| `YOURS` | one you wrote | **`space`**, then fix the file. `r` reports that thurbox ships no version of it |
+| `PACKAGE · <name>` | an installed pane | `thurbox-cli plugin sync` — the manager that put it there puts it back. `r` says so and refuses |
+
+A pane you wrote yourself is therefore the one case with no restore, and `space`
+is what you reach for: turning it off is enough to get a working interface back
+while you fix it, and it is also how you bisect which of several files is at
+fault. Remember that **a disabled plugin reports nothing** — nothing tried to
+load it, so its error reappears only when you turn it back on.
+
+`layout.lua` and the `lib/` modules are the files whose mistakes cost the whole
+screen rather than one pane; both are ordinary rows here, and both are restorable
+with `r` while they are the ones thurbox shipped. If the *whole* directory will
+not load, the embedded copies are already running — so you are fixing the file
+from inside a working interface, not from a blank one.
+
+### The same answers without a terminal
+
+- `thurbox-cli plugin list` — the inventory above, as text.
+- `thurbox-cli plugin dir` — the directory in force, and which rule chose it.
+- `thurbox-cli plugin check` — loads the interface the way `thurbox` does and
+  exits non-zero on a failure, including on a pane that loaded but which no
+  arrangement places (it prints the `layout.lua` line to add).
+
+None of the three starts a TUI, which is what makes them the tools for a coding
+agent, a CI check, or a terminal you cannot currently trust.
+
+### Two bigger hammers
+
+- **Delete `.bundled.json`** and the next start re-delivers every bundled file,
+  forgetting which ones you had removed. Your own files are untouched.
+- **Delete the whole directory** for the shipped interface exactly as it ships.
+
+Neither touches `ui.json`, which lives beside the directory rather than in it: a
+pane you turned off is still off after both, and a trust you granted is still
+recorded. If a decision is what you want to undo, undo it in the Interface tab.
+
+## Examples you can install
+
+Two example panes under `examples/panes/`, neither of them bundled, plus four files
+under `examples/lua/` you copy by hand. They exist because "every pane is a file" is
+easier to believe from a pane you added yourself than from prose.
+
+**They are examples, not a catalogue.** They are here to be read and copied from,
+not a set thurbox maintains on your behalf — installing one is a convenience over
+`cp`, and it becomes yours the moment you edit it. For panes meant to be *used*
+rather than read, see [Panes that give a v1 surface back](#panes-that-give-a-v1-surface-back)
+below.
+
+| Example | What it is |
+|---|---|
+| `tasks` | v1's tasks pane, rebuilt as a plugin. Reads `thurbox.tasks`, writes `task` commands, needs no capability |
+| `top` | CPU, memory and load as gauges, parsed from `top`. Asks for `run`, so it needs your trust |
+
+| Example file | What it is |
+|---|---|
+| [`plugin.lua`](../../examples/lua/plugin.lua) | what `plugin new` writes: a pane, a key, a setting |
+| [`composite.lua`](../../examples/lua/composite.lua) | the worked `run` example — git status and log, on the session's own host |
+| [`events.lua`](../../examples/lua/events.lua) | the worked `on_event` example — selects a session the moment it blocks, with a palette command to switch it off |
+| [`layout.lua`](../../examples/lua/layout.lua) | an arrangement putting the two panes above in a column beside the agent |
+
+Together they are one demo:
+
+```bash
+thurbox-cli plugin install tasks
+thurbox-cli plugin install top
+cp examples/lua/layout.lua ~/.config/thurbox/ui/layout.lua
+```
+
+Each install prints the `layout.lua` line the pane needs, because a pane whose slot
+nothing places loads cleanly and draws nothing. Press `F10`, then trust
+`85_top.lua` (settings → Interface → `t`) so it may run a program — installing a
+plugin grants it nothing.
+
+`layout.lua` **replaces** the shipped arrangement — delete yours afterwards and the
+Interface tab restores it, so there is nothing here you cannot undo. It is copied
+rather than installed on purpose: the manager never writes your arrangement (see
+below).
+
+Two things they are chosen to show. `tasks.lua` draws the `input` node kind, which
+is the one of the four nothing bundled uses. And `top.lua` reads the machine **the
+selected session runs on**, because `run` executes in that session's directory on
+that session's host — so moving the cursor onto a session over SSH shows the remote
+box's load, with nothing in the plugin knowing what SSH is.
+
+`layout.lua` is the half people forget: adding a pane is two edits, the plugin and
+the slot. Both panes name a slot of their own, and a slot no arrangement places is
+a pane that loads and never draws. `plugin check` **fails** on exactly that and
+prints the line to add, so it is caught rather than puzzled over:
+
+```console
+$ thurbox-cli plugin check
+  ✓ loads — sessions, agent, confirm, search, new_session, tasks
+  ✗ plugins/80_tasks.lua — loaded, but nothing places slot "tasks"
+      add it to layout.lua's children: { slot = "tasks" }
+  (checked at 200x50)
+```
+
+The size is reported because placement depends on it — the shipped arrangement
+drops the session column below 80 columns — so "unplaced" only means anything at a
+size where the slot should have been placed. Floats need no slot and disabled panes
+were never asked for, so neither is reported.
+
+**The quieter sibling: sharing a `switch` slot.** A slot in switch mode shows one
+occupant and keeps the rest as alternates, so a pane that is not first draws nothing
+until it is focused. Unlike an unplaced slot this fails no check — it loads, it is
+placed, `plugin list` says `installed`, and the user's screen is unchanged. It is the
+one install that cannot demonstrate itself, and the person it fools is whoever followed
+your README.
+
+So **declare a pill**. The action band is kernel chrome and enumerates pills as declared
+data, without invoking anything, which makes it the only advertisement that is
+automatic — the tab strip beside the agent's views is that *plugin's* own chrome and
+cannot carry a third occupant:
+
+```lua
+pills = { { action = "mine.open", label = "Mine", priority = 10 } },
+```
+
+A low `priority` is right for anything optional: the band drops the least important
+entries first when it runs out of width, and orders left to right by the same number.
+`plugin check` **warns** about a pane in this state, and `plugin install` says it at the
+moment you install one — but it does not fail either, because you may have meant it.
+
+**The number you declare is a default, not the last word.** Whoever installs your pane
+can reorder the band from the `pills` section of their own `~/.config/thurbox/ui.json`,
+so they never have to edit a file you ship:
+
+```json
+{
+  "pills": { "mine.open": 75 }
+}
+```
+
+An entry is keyed by the pill's `action`, so a reader lists only the buttons they moved
+and every other pill keeps what its plugin declared; deleting the entry gives yours back.
+The section is read at startup, beside `bindings` and `settings`, and what it cannot do
+is invent a button — a priority names a pill that already exists and nothing else. That
+is the same standard the band holds your own declaration to: it draws a pill only when a
+**key** resolves for its action, so a pill pointing at a palette-only `commands` entry is
+dropped exactly like one naming nothing. Give the action a key as well.
+
+The drop stays — a chip that lights on hover and then does nothing costs a press to
+discover — but it is not silent: `plugin check` reports every pill the band dropped, and
+says which of the two mistakes it was, because an action the palette can reach and a
+misspelt one look identical from the outside.
+
+```console
+$ thurbox-cli plugin check
+  ✓ loads — …, notes
+  ! plugins/90_notes.lua — pill "Notes" is not drawn: "notes.open" is a command with no key, …
+  ! plugins/90_notes.lua — pill "Memory" is not drawn: nothing loaded declares "notes.opne" — …
+```
+
+A warning rather than a failure, like the switch-slot case above: the pane still loads
+and still draws, and what is missing is one button.
+
+**Quieter still: a chord somebody else already spent.** Two global claims on
+one chord both load and both are placed, and one of them simply never fires — the
+earlier declaration keeps the key, or a user's rebinding does. Inside your own
+interface that is yours to notice; a *published* pane cannot know which keys its
+users have spent — the code-review pane below takes `Ctrl+X` and `F7` because both
+are free in the interface thurbox ships, which says nothing about yours. So
+`plugin check` reports it, with both claimants and the one that wins:
+
+```console
+$ thurbox-cli plugin check
+  ✓ loads — sessions, agent, confirm, search, new_session, restore, notes, scratch
+  ! plugins/91_scratch.lua — f7 is claimed by both notes.toggle and scratch.toggle; notes.toggle wins (declared in plugins/90_notes.lua)
+```
+
+A warning, like the missing pill and for the same reason — two authors wanting one
+chord is a judgement call, and the user can settle it by rebinding either action in
+the settings panel. The kernel's own chords are in the same registry, so a pane that
+takes `F1` is reported against `kernel` rather than against a file. A chord claimed
+in two *plugin* scopes is not a conflict at all: focus decides, which is why three
+bundled panes can each bind `j`.
+
+## Panes that give a v1 surface back
+
+Two of the surfaces v2 dropped are maintained as panes, each in its own repository
+rather than in the interface directory thurbox ships. They are not examples: they are
+what a plugin looks like when it has to carry v1's behaviour, and they are the answer
+to "code review is gone" and "the info panel is gone".
+
+| Pane | What it gives back |
+|---|---|
+| [`thurbox-code-review`](https://github.com/Thurbeen/thurbox-code-review) | v1's diff reviewer — the branch, a commit or the working changes, a changed-files tree, notes you send back to the agent. Reclaims `Ctrl+X` / `F7` |
+| [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) | v1's info panel — session, git, agent, usage and system readouts in a column beside the terminal. Reclaims `F2` |
+
+Both carry more than one file, so both install by **cloning** the repository
+([A plugin that carries more than Lua](#a-plugin-that-carries-more-than-lua)):
+
+```bash
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-code-review
+thurbox-cli plugin install git+https://github.com/Thurbeen/thurbox-info-panel
+```
+
+They differ in the two ways that matter here, which is most of why they are worth
+reading:
+
+- **Placement.** The review pane takes the `center` switch slot beside the agent and
+  declares a pill, so it needs no `layout.lua` edit and the action band advertises it
+  the moment it is installed — the switch-slot problem above, solved the way that
+  section says to solve it. The info panel is a column, so it needs its one line in
+  `layout.lua`, and its README carries the `max` that stops a label-and-value panel
+  being handed a third of a wide screen.
+- **Capabilities.** The info panel asks for **nothing**: every readout is in the
+  snapshot, including the metrics the kernel gathers on its own workers. The review
+  pane asks for `run`, and only for the two targets the kernel does not compute (the
+  uncommitted working changes, and a single commit) — untrusted it still draws the
+  kernel's `thurbox.diffs`, and the target picker names the choices it cannot serve
+  rather than hiding them. That is the shape to copy for an optional capability.
+
+[`thurbox-automations`](https://github.com/Thurbeen/thurbox-automations) gives back v1's
+automations pane the same way the review pane is placed — the `center` switch slot,
+a pill and a toggle chord (`Alt+A`). The list, the definitions and the run history
+are in the snapshot and every change is an `automation` command; it asks for `run`
+only because writing an exec automation's command requires it, and untrusted it
+manages everything else.
+
+The file viewer, the remaining missing surface, has no pane — by nobody having written
+one rather than by anything withheld: `files.list/read` is published, rooted at a
+session's directory, to a pane granted `files`.
+
+## Managing panes
+
+Composition is written down, in `plugins.toml` beside your panes:
+
+```toml
+# what this interface is made of
+[[plugin]]
+src  = "top"                    # a bare name, a URL, or a path
+file = "plugins/85_top.lua"     # load order lives in the filename
+pin  = "v2.1.0"                 # omit to take the newest at install time
+```
+
+TOML because that is what every hand-edited registry here is, and because a bad
+edit is a parse error naming its line rather than a nil three frames later. A bare
+name resolves to `examples/panes/<name>` in the thurbox repository at **this binary's
+release tag**, the same rule `extension install <name>` follows against
+`extensions/<name>` — a pane reads `thurbox.*`, which is a contract that moves, so
+what a bare name fetches matches the binary asking for it. (For extensions the
+rule currently resolves to nothing: `extensions/` holds only the built-ins,
+which install themselves. Panes are where bare names still have something to
+reach.) Bare names reach the *examples*; anything you
+actually depend on is better named by a URL, a path, or a repository you control.
+
+That tag is also why a bare name can stop resolving: the examples lived under
+`ui-plugins/` before they moved to `examples/panes/`, so a `plugins.lock` written
+by a binary from before the move records a tag whose tree has no `examples/panes/`
+and `plugin sync` reports the pane as not found. Re-run `thurbox-cli plugin install
+<name>` to re-lock it at the current tag, or name a URL or a path in
+`plugins.toml` instead — which is the same advice as the paragraph above, for the
+same reason.
+
+### A plugin that carries more than Lua
+
+A pane that runs a program needs that program, and a pane with data needs the data.
+Neither can arrive as text: the file-by-file path returns a `String` and decodes
+remote output lossily, so a binary through it is **corrupted rather than refused**.
+
+So a plugin with a payload is a **repository**, and installing it clones it:
+
+```bash
+thurbox-cli plugin install git+https://github.com/you/thurbox-widget
+```
+
+Everything the repository holds arrives, in the layout you chose — Lua in whatever
+directories suit it, a program, a data file. Three forms are recognised as a
+repository, all of them explicit: a `git+` prefix, a `.git` suffix, or
+`git@host:path`. A bare `https://…` URL deliberately does **not** clone, because
+that spelling already means "fetch the manifest's files from this base" and
+reinterpreting it by hostname would change what every existing install does.
+
+The working copy lands at `<interface dir>/<name>/`, and **keeps its `.git`**. That
+is what makes `update` a fetch rather than a re-download, and it is what protects
+your edits: git refuses to move a dirty working tree, so a `sync` over a pane you
+changed reports `kept` and leaves it alone. `git diff` shows what you changed and
+`git checkout` undoes it — better than any restore we could offer for a file we
+never shipped.
+
+That protection cuts both ways, and it is the trap for a pane that *generates*
+anything — which is to say, exactly the pane this whole capability invites. A pane that
+runs a program is the pane tempted to build one. **Never write inside your own working
+copy.** A build artefact, a
+downloaded engine, a cache — anything you produce there makes the tree dirty, and a
+dirty tree is exactly what makes `update` report `kept` and refuse to move. Keeping
+your working copy clean is not tidiness; it is what keeps your plugin updatable. Put
+what you generate in `$XDG_CACHE_HOME/<your-plugin>/` (or `~/.cache/<your-plugin>/`),
+outside the interface directory entirely — which the next paragraph is also the reason
+for.
+
+The spec entry names the pane inside the working copy:
+
+```toml
+[[plugin]]
+src  = "git+https://github.com/you/thurbox-widget"
+file = "thurbox-widget/plugins/40_widget.lua"
+```
+
+You rarely write that by hand — `install` finds it, taking the single `.lua` in the
+repository's `plugins/` directory, and asks for `--as plugins/<file>` when there is
+more than one. Its place in the load order still comes from the `40_` prefix, so
+where a plugin came from does not change where it sits. Its own modules are
+requirable by path: `require("thurbox-widget.lib.util")`.
+
+The lock records the **commit**, not the branch. `main` moves; a commit does not, so
+the same spec and lock reproduce the same bytes on another machine. That is also why
+there is no checksum field to maintain: the commit already identifies every byte, and
+it is produced by the source rather than transcribed by hand.
+
+`--pin` takes any of the three, and which one you give decides what `update` does:
+
+| `--pin` | what you get | what `update` does |
+|---|---|---|
+| *(none)* | the default branch's tip | follows it |
+| a branch | that branch's tip | follows that branch |
+| a tag | the tag | stays |
+| a commit — the **full** object id | that commit | stays |
+
+A pin is a pin: `update` on a tagged or committed entry reports `current` rather
+than moving it, so pinning is how you hold a plugin still. Pinning a commit is what
+`--pin` is *for* — it is what the lock writes — and it is worth knowing that `git
+clone --branch` cannot do it: a commit is fetched and checked out after the clone.
+You get one shallow round trip either way; a pin that cannot be obtained fails with
+git's own message and leaves nothing behind.
+
+Give that commit **in full** — 40 characters of sha1, or 64 of sha256. A remote
+serves branches, tags and whole objects and never a prefix of one, so the
+abbreviation `git log` prints reaches nothing, and the failure says so rather than
+blaming a rebase. A tag or branch whose *name* happens to be hex (`20240115`) is a
+name like any other and still installs — only the remote can tell the two apart —
+unless it is exactly an object id's length, where git reads the id it parses as
+and asks for that object rather than for the name.
+
+**Installing a plugin from a repository puts that repository's files on your disk,
+executable bits included.** That is what cloning anything does. What it does *not*
+do is run any of it: nothing executes at install time, and a program still needs the
+`program` capability you grant per file. Treat a repository you did not write the way
+you would treat one you were about to `make` in.
+
+**Picking the right build.** `thurbox.platform` gives you `os` and `arch`, so a
+plugin shipping several binaries chooses for itself:
+
+```lua
+local p = thurbox.platform
+local exe = thurbox.ui_dir .. "/thurbox-widget/bin/" .. p.os .. "-" .. p.arch .. "/widget"
+```
+
+Deliberately not a manifest field. A substitution template states one rule; a pane
+that reads its platform states every rule it actually needs — prefer something
+already on `PATH`, fall back to a portable build, distinguish a libc variant, or draw
+an honest "nothing here for this machine".
+
+**Do not build under the interface directory.** It is watched *recursively*, so an
+`npm install` or a compile there fires thousands of events. `.git` is filtered;
+a plugin's own build tree is not, and filtering every possible one is not a rule worth
+having — the rule is "build somewhere else". The symptom if you ignore this is the
+counter-intuitive one: a burst of events keeps the reload debounce rolling forward, so
+the interface does not reload too often, it **stops reloading at all** while you are
+busy. A pane that fetches or builds its own engine on first run is exactly the case
+that tempts you into it.
+
+**Key releases do not reach a program pane.** thurbox asks its own terminal for
+event types, but a release goes only to a binding declared `release = true` (see
+**Keys**), and a repeat reaches everything else as a press — so a program that
+distinguishes press from release (anything using the kitty keyboard protocol's
+`CSI > 3 u`) sees presses only, and a held key latches. Worth knowing before you build
+a pane whose program wants held keys.
+
+**If you publish one:** shipping a program under a copyleft licence obliges your
+repository to carry that program's corresponding source. That is your obligation, not
+thurbox's, but the mechanism invites it. URLs and filesystem paths work too,
+and a URL ending in `.lua` installs that single file (with `--as` naming where it
+lands).
+
+Beside it, `plugins.lock` records what each entry resolved to and the digest of
+every file delivered. You hand-edit the spec; nothing hand-edits the lock. Commit
+both and the same interface reproduces elsewhere.
+
+```bash
+thurbox-cli plugin install <src> [--as FILE] [--pin V]  # and record it
+thurbox-cli plugin sync                                 # make the directory match the spec
+thurbox-cli plugin update [name]                        # advance a pin, when you ask
+thurbox-cli plugin remove <name>                        # file, spec entry and record
+thurbox-cli plugin available                            # what installs by bare name
+```
+
+`sync` is the one to reach for after editing the spec by hand, and it is the one an
+agent wants: **edit one file, run one command, read the exit status.** It installs
+what is missing, takes back what you removed from the spec, and leaves everything
+else alone — including a pane the spec never listed, which is nobody's to touch.
+Running it twice changes nothing.
+
+Three rules it will not break, all of them the ones delivery already follows:
+
+- **An edit is yours.** A managed file you changed is preserved and reported as
+  `kept`, never overwritten — even when the source has moved on.
+- **A deletion is remembered.** Delete a managed pane and `sync` leaves it deleted.
+  That is how you remove one.
+- **Your arrangement is yours.** Nothing here writes `layout.lua`. Editing Lua is
+  what a coding agent is good at; noticing that a pane silently is not drawing is
+  what it cannot do, so the effort went into `check` instead.
+
+`sync` resolves each entry at the version the **lock** recorded, not at whatever is
+newest — that is what makes it reproducible. Moving forward is `update`, asked for
+explicitly, which reports what moved and from where. An entry the spec *pins* is
+already where you said it should be, so `update` leaves it and says `already
+current`; moving that one means editing the pin and running `sync`.
+
+### Trust for a pane you did not write
+
+`run` is granted per file, so where a file came from is the question to answer
+before granting it. The Interface tab says: a pane from a source reads
+`from <package>` rather than `yours`, with the full source under the list when it
+is selected, and a `lib/<name>/` module a package brought is traced to it too.
+
+The grant itself is recorded against the **source and version** it was made for,
+not against the file's contents alone:
+
+| `src@version` | contents | reads as | granted |
+|---|---|---|---|
+| matches | match | `trusted` — including a reinstall | yes |
+| differs | — | `untrusted`; you are asked again | no |
+| matches | differ | `untrusted · modified` | no |
+
+Both halves matter. Recording only the contents would report every ordinary release
+as tampering and teach you to dismiss the warning. Recording only `src@version`
+would let a source re-tag the same version with something else and keep a
+capability you granted to what that version used to be. That last row is the one to
+notice — it is the same warning as a local edit, because from outside they are
+indistinguishable, and either way the capability is withdrawn until you trust the
+file again. A file you wrote yourself is different: editing it reads
+`trusted · modified` and keeps its grant, since it is yours to change.
+
+What the Interface tab says is what the plugin holds: the grant the kernel enforces
+and the row you read come from one decision (`packages::trust_of`). A grant made to a
+version needs `plugins.lock` to list the file: if the lock is missing, unreadable or
+has no entry for it, the grant is withdrawn rather than judged as if the file were
+your own.
+
+### There is no lazy loading
+
+The Neovim package managers this borrows from make it the headline feature. Here it
+would optimise nothing: a disabled plugin is never read, an unplaced pane never
+renders, and the bundled set is 30 files. A load scheduler would add machinery and
+a new class of "why is my pane missing".

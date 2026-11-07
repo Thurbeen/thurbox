@@ -580,7 +580,7 @@ impl FreshReport {
 /// so it stays agent-neutral (issue #1642).
 ///
 /// A session mid-turn — readiness `false` because its agent reported
-/// `working`, `blocked` or `background` (docs/ORCHESTRATION.md → Readiness) —
+/// `working`, `blocked` or `background` (docs/thurbox/orchestration.md → Readiness) —
 /// is never cut off: it is refused, or with [`WhenBusy::Wait`] restarted once
 /// its state reaches `idle` or `done`. A session that is gone while waited on
 /// has no turn left to cut off and is cleared.
