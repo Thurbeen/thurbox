@@ -503,9 +503,13 @@ fn merged_remote_doc(
     let mut doc = before.clone();
     // Prune both command forms: the pre-rewrite local marker (a stale entry
     // from an older thurbox that shipped the un-rewritten payload) and the
-    // backend's hook command (our own previous version).
+    // backend's hook command (our own previous version). The ownership stamp
+    // catches what calls neither — codex's `SessionStart` group that prints
+    // the idle-claim instruction — which would otherwise be merged in again
+    // beside itself on every provision.
     crate::agent::json_merge::prune_marked(&mut doc, HOOK_SIGNAL_MARKER);
     crate::agent::json_merge::prune_marked(&mut doc, signal);
+    crate::agent::json_merge::prune_marked(&mut doc, MANAGED_MARKER);
     crate::agent::json_merge::merge(&mut doc, &to_merge);
 
     if doc == before {
@@ -649,7 +653,7 @@ pub(crate) fn poll_hook_states(
             // An echo of what `session signal` published, in the order its
             // writers published rather than stored: `signals::report` refuses
             // a late `background` for work that has all ended (issue #1510).
-            match super::signals::report(db, id, &state, ReportFrom::Echo) {
+            match super::signals::report(db, id, &state, ReportFrom::Echo, None) {
                 Ok(reported) => {
                     written +=
                         usize::from(matches!(reported, super::signals::Reported::Stored { .. }))

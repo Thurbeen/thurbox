@@ -390,6 +390,7 @@ gone — and each one comes with what it takes to judge it:
 | `stopped` | whether the session is parked — `session stop`, no pane |
 | `launch_failure` | why a `failed` session failed, `null` otherwise — see *Launch failures* below |
 | `ready` | whether the session can take input now, for every agent — see *Readiness* below |
+| `activity`, `idle_proof`, `pending`, `pending_omitted`, `state_support` | whether the session is provably at rest, background work included, and what says so — see *Activity* below |
 | `reports_as` | the agent the hook fields were read against, when a driver declared one |
 
 `state` is always a word, and one of `SessionState`'s — the single
@@ -483,6 +484,72 @@ some agents (Codex) only fire at their first turn: it is made only for a session
 no hook has reported on, and only by a verb that probes the pane. Once a hook
 has reported, the agent's own word decides and the screen is not read. Poll
 `session get` until `ready` is `true`; `null` is "ask again", never "go".
+
+#### Activity
+
+`activity` is the one answer to "may I pause this session now" — that is,
+`session stop` it without losing work. It is a **supported integration
+point**, like `session signal`, on `session get` and `session list` alike,
+and it is the field to read instead of `state` for that decision: a `done`
+says a turn ended, not that nothing the turn started is still running. A
+Claude turn that ends with a `run_in_background` shell, a Monitor, a
+workflow or a `/loop` cron still pending is `done` to the eye and busy in
+fact, and a resumed Claude does not restart that work.
+
+| `activity` | when |
+|---|---|
+| `active` | the agent is `working` or `blocked`, or rests in `background` — something it started is still running or scheduled |
+| `idle` | the turn ended (`done`/`idle`), the agent proved it left nothing running or scheduled (`idle_proof`), and the pane was looked at and holds the agent |
+| `unknown` | anything else: a turn end with no proof, an agent that never reported, a dead, missing or unchecked pane, a failed launch. **Never read `unknown` as idle** |
+| `stopped` | parked by `session stop`: nothing runs |
+
+`idle_proof` says what proved it, and is taken back by the session's next
+report of any kind — it describes the turn that ended last and no other:
+
+| `idle_proof` | what it is |
+|---|---|
+| `stop` | the agent's own `Stop` payload listed nothing in flight and nothing scheduled — both `background_tasks[]` and `session_crons[]` present and empty |
+| `claim` | the agent claimed the turn left nothing running: its final message ended with the line `[thurbox-idle]`, or `session signal --idle` was sent once the turn had ended |
+| `null` | nothing proved it |
+
+`state_support` is how much of this the agent reports by itself:
+
+- **`full`** — claude. Its `Stop` hook hands thurbox the payload (`session
+  signal --state done --stop-payload -`). Either list non-empty stores
+  `background` and keeps the items in `pending[]` (`type`, `id`,
+  `description`; `schedule` and `recurring` for a `cron`), up to 64 of them;
+  `pending_omitted` counts the rest, which still hold `background` until the
+  next `Stop`.
+  A finished task or a fired cron starts a new turn — with no
+  `UserPromptSubmit`; it reports `working` from its first tool call — and
+  that turn's `Stop` replaces the list. A recurring cron is listed on every
+  `Stop`, so a `/loop` session stays `active` for as long as the loop exists:
+  pausing it would stop the loop. A Claude Code that predates the lists sends
+  none; a missing list is unknown, never empty, so the subagent edges decide
+  `done` versus `background` as before and nothing is proven.
+- **`partial`** — every other wired agent. Its hooks report turns but not
+  what they leave running, so `idle` rests on the agent's claim. codex is
+  told so at launch: its `SessionStart` hook adds an instruction to end a
+  turn that leaves nothing running with the line `[thurbox-idle]`, and its
+  `Stop` hook hands over the payload whose `last_assistant_message` carries
+  it. A line in the reply rather than a command the agent runs: a command is
+  a tool call inside the turn, followed by that call's own hooks, and codex's
+  default `workspace-write` sandbox refuses the write to thurbox's database.
+  The other `partial` agents have no instruction channel yet, so they never
+  read `idle` unless a driver claims it with `session signal --idle`.
+- **`null`** — nothing reports: an agent the hooks extension does not know,
+  or the extension deactivated.
+
+`session signal --idle` is the claim from outside the turn. It is taken only
+once the turn has ended (`done` or `idle`) with nothing counted or listed in
+flight, and refused otherwise (exit 5); it moves no state.
+
+`idle` also needs the pane: `session get` probes it, `session list` only with
+`--verify`, so without it a resting session reads `unknown`. A remote session
+cannot be probed from here, and its status channel carries one word — a remote
+`Stop` still turns a non-empty list into `background`, but neither `pending`
+nor a proof crosses, so a remote session reads `active` or `unknown`, never
+`idle`.
 
 #### Launch failures
 

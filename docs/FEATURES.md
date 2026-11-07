@@ -131,7 +131,7 @@ persisted columns onto a `SessionState` once per tick:
 | `working` | yellow | braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running |
 | `blocked` | red | `◆` | agent needs input or approval |
 | `done` | blue | `●` | a turn just finished; shown until you switch away |
-| `background` | purple | `◎` | the turn is at rest and sub-work it started (claude's background subagents) is still running |
+| `background` | purple | `◎` | the turn is at rest and work it started is still running or scheduled (claude's background tasks, subagents and session crons) |
 | `idle` | green | `○` | acknowledged, never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host is down/offline; placeholder row awaiting reconnect |
 | `running` | accent | `◉`, spinner while its pane prints | an agent holds the pane and nothing has signalled — observed, never a claim about the turn |
@@ -146,6 +146,13 @@ session a harness had launched an agent into — nothing wired, nothing signalle
 reported that it is at rest*; none of the three does. `stopped` (parked by
 `session stop`) is the one word with no dot of its own, because a parked
 session is at rest by definition.
+
+The dot answers "what did the agent last say"; whether a session can be
+paused without losing work is a separate, stricter question, answered headless
+by `session get`'s `activity` (`active` / `idle` / `unknown` / `stopped`).
+`idle` there needs proof that the turn left nothing running — claude's `Stop`
+payload listing no background task and no cron, or an agent's idle claim — and
+`unknown` is never idle ([Activity](ORCHESTRATION.md#activity)).
 
 One enum, so `session get`, `session list`, `thurbox-cli watch` and the session
 list cannot disagree about a row — and since the interface has to answer

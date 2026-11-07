@@ -75,7 +75,9 @@ pub enum Action {
     /// same reason a session nothing has ever signalled for reads `unreported`
     /// / `uncovered` here where `session get` reads `running`: only the probe
     /// can see an agent thurbox never launched. `--verify` gives this listing
-    /// `get`'s answer at `get`'s cost, per session.
+    /// `get`'s answer at `get`'s cost, per session — and `activity` reads
+    /// `idle` only where the pane was looked at, so without it a resting
+    /// session reads `unknown`.
     List {
         /// Only list children of this parent session UUID.
         #[arg(long)]
@@ -157,6 +159,15 @@ pub enum Action {
     /// the hook's `idle`/`done`, or — before any hook — an agent whose empty
     /// composer is drawn. `null` means nothing could say; ask again
     /// (docs/ORCHESTRATION.md → Readiness).
+    ///
+    /// `activity` says whether the session is provably at rest, background
+    /// work included — the field to read before pausing one: `active`
+    /// (working, blocked, or work still running or scheduled), `idle` (the
+    /// turn ended, its agent proved nothing is left — `idle_proof` says how —
+    /// and the pane holds the agent), `unknown` (anything else; never read it
+    /// as idle), or `stopped`. `pending` lists what the agent last reported
+    /// still in flight or scheduled, and `state_support` how much of this the
+    /// agent reports itself (docs/ORCHESTRATION.md → Activity).
     Get {
         /// Session UUID.
         uuid: String,
@@ -695,6 +706,15 @@ pub enum Action {
     /// the last one stores `done`. A turn start (`--turn-start`) or `--state
     /// idle` forgets work whose end never came.
     ///
+    /// A turn's end can carry the agent's own account of what it left running:
+    /// `--state done --stop-payload -` reads claude's `Stop` hook payload, whose
+    /// `background_tasks[]`/`session_crons[]` store `background` when either is
+    /// non-empty and prove the session idle when both are present and empty,
+    /// and whose `last_assistant_message` ending in the line `[thurbox-idle]`
+    /// is the agent's claim that nothing it started is still running. `--idle`
+    /// makes that claim from outside the turn, once it has ended. `session get`
+    /// reports the result as `activity`.
+    ///
     /// This is a **supported integration point**, not an internal of the hooks
     /// extension: $THURBOX_SESSION is set on the pane and inherited by every
     /// process in it, so a driver that launches its own agent there — and that
@@ -708,12 +728,24 @@ pub enum Action {
         /// `background` = the turn is at rest and sub-work it started is still
         /// running.
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(crate::session::HOOK_STATES),
-            required_unless_present_any = ["work_start", "work_end"],
-            conflicts_with_all = ["work_start", "work_end"])]
+            required_unless_present_any = ["work_start", "work_end", "idle"],
+            conflicts_with_all = ["work_start", "work_end", "idle"])]
         state: Option<String>,
+        /// The agent's `Stop` hook payload, as a file or `-` for stdin; only
+        /// with `--state done`. A missing list is read as unknown, never as
+        /// empty, and an unreadable payload as nothing known.
+        #[arg(long, value_name = "PATH", requires = "state")]
+        stop_payload: Option<String>,
+        /// Claim the turn that just ended left nothing running or scheduled —
+        /// no background commands, watchers, subagents, timers or loops. Taken
+        /// only once the turn has ended (`done` or `idle`) with no work known
+        /// to be in flight, and taken back by the session's next report of any
+        /// kind. Moves no state; `session get` reads it as `activity: idle`.
+        #[arg(long, conflicts_with_all = ["work_start", "work_end", "work", "turn_start"])]
+        idle: bool,
         /// Sub-work `<ID>` started; the turn it belongs to ends as
         /// `background` while it runs.
-        #[arg(long, value_name = "ID", conflicts_with = "work_end")]
+        #[arg(long, value_name = "ID", conflicts_with_all = ["work_end", "idle"])]
         work_start: Option<String>,
         /// Sub-work `<ID>` ended; the end of the last one moves a `background`
         /// session to `done`.
@@ -1030,14 +1062,24 @@ pub fn run(
         Action::Doctor { uuid } => super::session_doctor::run(db, backends, uuid.as_deref()),
         Action::Signal {
             state,
+            stop_payload,
+            idle,
             work_start,
             work_end,
             work,
             turn_start,
             session,
         } => {
+            if stop_payload.is_some() && state.as_deref() != Some("done") {
+                return Err(CommandError::with_code(
+                    "--stop-payload describes the end of a turn; pass it with --state done",
+                    super::EXIT_USAGE,
+                ));
+            }
             let report = match (state, work_start, work_end) {
+                (None, None, None) if idle => SignalReport::Claim,
                 (Some(state), _, _) => SignalReport::State {
+                    stop: stop_payload.as_deref().map(read_stop_payload),
                     state,
                     work: work.or_else(|| {
                         std::env::var(SIGNAL_WORK_ENV)
@@ -1051,7 +1093,7 @@ pub fn run(
                 (None, None, Some(id)) => SignalReport::Work(WorkEdge::End, id),
                 (None, None, None) => {
                     return Err(CommandError::with_code(
-                        "pass --state, --work-start or --work-end",
+                        "pass --state, --idle, --work-start or --work-end",
                         super::EXIT_USAGE,
                     ))
                 }
@@ -2288,9 +2330,34 @@ enum SignalReport {
         state: String,
         work: Option<String>,
         turn_start: bool,
+        /// The turn's `Stop` payload, when the hook handed one over.
+        stop: Option<crate::session::background_work::StopReport>,
     },
     /// One edge of a piece of sub-work.
     Work(WorkEdge, String),
+    /// The claim that the turn that ended left nothing running.
+    Claim,
+}
+
+/// Read a `Stop` payload from `path` (`-` for stdin). What cannot be read is
+/// nothing known — the answer that proves nothing — rather than an error: a
+/// hook must not lose the turn's `done` over its payload.
+fn read_stop_payload(path: &str) -> crate::session::background_work::StopReport {
+    use std::io::Read;
+
+    let mut payload = String::new();
+    let read = if path == "-" {
+        std::io::stdin()
+            .take(MAX_HOOK_PAYLOAD)
+            .read_to_string(&mut payload)
+    } else {
+        std::fs::File::open(path)
+            .and_then(|f| f.take(MAX_HOOK_PAYLOAD).read_to_string(&mut payload))
+    };
+    if let Err(e) = read {
+        tracing::debug!("could not read the stop payload: {e}");
+    }
+    crate::session::background_work::StopReport::parse(&payload)
 }
 
 fn run_signal(
@@ -2309,10 +2376,32 @@ fn run_signal(
         .into()
     };
     let (state, moved, work) = match &report {
+        SignalReport::Claim => {
+            use crate::session::background_work::ClaimRefused;
+            let held = match db
+                .claim_idle(target.id)
+                .map_err(|e| format!("claim_idle: {e}"))?
+                .ok_or_else(parked)?
+            {
+                Ok(held) => held,
+                Err(refused) => {
+                    let why = match refused {
+                        ClaimRefused::TurnNotEnded => "its turn has not ended",
+                        ClaimRefused::WorkInFlight => "work it started is still in flight",
+                    };
+                    return Err(CommandError::with_code(
+                        format!("'{}' cannot be claimed idle: {why}", target.name),
+                        super::EXIT_CONFLICT,
+                    ));
+                }
+            };
+            (held, false, None)
+        }
         SignalReport::State {
             state,
             work,
             turn_start,
+            stop,
         } => {
             use crate::session::background_work::{valid_work_id, ReportFrom};
             let from = match work.as_deref().filter(|id| valid_work_id(id)) {
@@ -2321,7 +2410,7 @@ fn run_signal(
                 None => ReportFrom::Agent,
             };
             use crate::session_ops::signals::{report, Reported};
-            let stored = match report(db, target.id, state, from)
+            let stored = match report(db, target.id, state, from, stop.as_ref())
                 .map_err(|e| format!("record the state: {e}"))?
             {
                 Reported::Stored { state, .. } => state,
@@ -2401,6 +2490,13 @@ fn run_signal(
         "session_name": target.name,
         "state": state,
     });
+    if matches!(report, SignalReport::Claim) {
+        json["idle_proof"] = json!("claim");
+        return Ok(CommandOutput::new(
+            json,
+            format!("Claimed '{}' idle.", target.name),
+        ));
+    }
     let human = match work {
         Some((edge, id)) => {
             let edge = match edge {
@@ -3588,6 +3684,10 @@ pub(crate) struct SessionFacts {
     /// The launch failures recorded for the panes the rows point at.
     launch_failures:
         std::collections::HashMap<crate::session::SessionId, crate::session::LaunchFailure>,
+    /// Each row's work column: what is in flight, and what proves it idle.
+    work: std::collections::HashMap<crate::session::SessionId, String>,
+    /// Whether the built-in hooks extension is active.
+    hooks_enabled: bool,
 }
 
 impl SessionFacts {
@@ -3603,6 +3703,8 @@ impl SessionFacts {
             reports_as: db.load_reports_as().unwrap_or_default(),
             command_sessions: db.load_command_sessions().unwrap_or_default(),
             launch_failures: db.load_launch_failures().unwrap_or_default(),
+            work: db.load_work_records().unwrap_or_default(),
+            hooks_enabled: crate::session_ops::builtin_hooks::hooks_enabled(db),
         }
     }
 
@@ -3645,7 +3747,13 @@ impl SessionFacts {
             row.and_then(|r| r.state_at),
             row.and_then(|r| r.seen_at),
             crate::storage::current_time_millis() as i64,
-        );
+        )
+        .with_work(self.work.get(&s.id).map(String::as_str));
+        let hook = if self.hooks_enabled {
+            hook
+        } else {
+            hook.hooks_deactivated()
+        };
         if self.parked.contains(&s.id) {
             return hook.parked();
         }
@@ -3863,6 +3971,8 @@ mod tests {
         let out = run(
             Action::Signal {
                 state: Some("blocked".into()),
+                stop_payload: None,
+                idle: false,
                 work_start: None,
                 work_end: None,
                 work: None,
@@ -3890,6 +4000,8 @@ mod tests {
         let err = run(
             Action::Signal {
                 state: Some("done".into()),
+                stop_payload: None,
+                idle: false,
                 work_start: None,
                 work_end: None,
                 work: None,

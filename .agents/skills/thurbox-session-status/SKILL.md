@@ -22,7 +22,7 @@ module exists to prevent:
 | `working` | yellow | animated braille spinner (`⠋⠙⠹…`; static `◐`) | agent is actively running (hook) |
 | `blocked` | red | `◆` | agent needs input or approval (hook) |
 | `done` | blue | `●` (filled) | a turn just finished; shown until you switch away (hook) |
-| `background` | `status_background` (a purple per preset) | `◎` | the turn is at rest and sub-work it started is still running — claude's background subagents (hook, issue #1510) |
+| `background` | `status_background` (a purple per preset) | `◎` | the turn is at rest and work it started is still running or scheduled — claude's `Stop` payload (`background_tasks[]`, `session_crons[]`) and background subagents (hook, issue #1510) |
 | `idle` | green | `○` (hollow) | acknowledged (you moved off a Done), never active, or at rest |
 | `unreachable` | muted grey | `⊘` | remote host down/offline; the ordinary row, derived from a live attach failure, awaiting reconnect |
 | `running` | `status_running` (accent) | `◉`, animated while its pane prints | an agent holds the pane and nothing has signalled — an observation, never a claim about what it is doing |
@@ -40,6 +40,19 @@ session a harness had launched an agent into, mid-turn, with nothing wired to
 report it. `idle` means *the agent said it is at rest*; none of these three
 does, and spelling them apart is the whole reason the vocabulary has ten words
 instead of six.
+
+**Activity (`activity`).** `Assessment::activity` is the "may I pause it"
+answer `session get`/`list` publish beside `ready`, and is stricter: `active`
+(working/blocked/background), `idle` only when the stored word is a turn end,
+the work column (`background_work`, `session::background_work::WorkRecord`)
+holds an `IdleProof` (`stop`: claude's `Stop` payload listed nothing; `claim`:
+the final message ended with `[thurbox-idle]`, or `session signal --idle` after
+the turn), and the pane probe found the agent; `unknown` otherwise; `stopped`
+when parked. Any later report clears the proof. `pending` (what the last
+`Stop` listed) and `state_support` (`AgentHookCoverage::state_support`:
+`full` for claude, `partial` for the rest, null when unwired or the hooks
+extension is off) ride with it. The contract is docs/ORCHESTRATION.md →
+Activity.
 
 **Readiness (`ready`).** `Assessment::ready` folds the state into the
 agent-agnostic "can take input now" answer `session get`/`list` publish:
@@ -224,6 +237,11 @@ own, which is the point.
   state and the TUI picks it up via `PRAGMA data_version` — works headless.
   (`idle` = agent at rest, e.g. a boot-time hook; `done` = a turn just finished;
   `background` = the turn is at rest and its sub-work is still running.)
+  `--state done --stop-payload -` reads the agent's `Stop` payload (claude's
+  lists; any agent's `last_assistant_message` ending in `[thurbox-idle]`), and
+  `--idle` claims an ended turn left nothing running — both feed `activity`.
+  A remote pane's rewrite (`rewrite_hook_signals`) reduces the payload to
+  `background`/`done` in the shell; no proof crosses the one-word channel.
   **Remote** sessions use a different callback with the same downstream:
   the materialized hook file sets a tmux pane user option instead, delivered
   over the control-mode subscription into the same hook columns (see the

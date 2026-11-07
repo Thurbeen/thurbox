@@ -82,7 +82,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "thurbox-cli session signal --state done >/dev/null 2>&1 || true",
+            "command": "thurbox-cli session signal --state done --stop-payload - >/dev/null 2>&1 || true",
             "timeout": 10
           }
         ]

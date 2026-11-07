@@ -370,10 +370,11 @@ impl Worker {
                 provisional,
                 correction,
             } => {
-                let (stored, at) = match signals::report(database, id, &state, ReportFrom::Echo) {
-                    Ok(signals::Reported::Stored { state, at }) => (state, at),
-                    Ok(_) | Err(_) => return Some(Reply::Rejected),
-                };
+                let (stored, at) =
+                    match signals::report(database, id, &state, ReportFrom::Echo, None) {
+                        Ok(signals::Reported::Stored { state, at }) => (state, at),
+                        Ok(_) | Err(_) => return Some(Reply::Rejected),
+                    };
                 self.stamped.insert(id, (provisional, at));
                 return Some(Reply::Stamped {
                     session: row,

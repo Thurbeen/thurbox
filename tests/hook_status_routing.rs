@@ -543,7 +543,7 @@ fn automation_tick_refuses_a_late_background_for_work_that_ended() {
     db.signal_work_edge(counted, WorkEdge::Start, "a2a3df31469ca24ca")
         .expect("start");
     assert_eq!(
-        thurbox::session_ops::signals::report(&db, counted, "done", ReportFrom::Agent)
+        thurbox::session_ops::signals::report(&db, counted, "done", ReportFrom::Agent, None)
             .expect("stop"),
         thurbox::session_ops::signals::Reported::Stored {
             state: "background".into(),

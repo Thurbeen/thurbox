@@ -26,6 +26,9 @@ use serde_json::Value;
 use thurbox::session::SessionId;
 use thurbox::session::SharedSession;
 
+/// The line codex's injected instruction asks a turn to end with.
+const IDLE_MARKER: &str = thurbox::session::background_work::IDLE_MARKER;
+
 /// The keys codex's `Stop` hook output accepts. Its schema is
 /// `deny_unknown_fields`, so anything else is the same hard failure as plain
 /// text — `hookSpecificOutput`, which every other event takes, included.
@@ -294,6 +297,15 @@ fn status_hooks_say_nothing_on_stdout() {
             };
             for command in commands_for(hooks) {
                 let out = env.fire(&command, id, &body(event));
+                // The one deliberate exception: codex's `SessionStart` prints
+                // the idle-claim instruction, which is exactly what folding
+                // stdout into the model's context is for.
+                if file == "codex-hooks.json" && command.contains(IDLE_MARKER) {
+                    let said = String::from_utf8_lossy(&out.stdout);
+                    assert!(said.contains(IDLE_MARKER), "{said}");
+                    assert!(!command.contains("thurbox-cli"), "{command}");
+                    continue;
+                }
                 assert!(
                     out.stdout.is_empty(),
                     "{file}/{event} writes to stdout, which the agent folds into \

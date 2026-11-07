@@ -306,7 +306,8 @@ embedded hook assets live in
   command, reversibly.
   - `claude`: `--settings {home}/claude.json` (claude *merges* it with the user's
     own settings, never clobbering). Full lifecycle: idle/working/blocked/done,
-    plus `background` (see [Background sub-work](#background-sub-work)).
+    plus `background` from its `Stop` payload and its subagent edges (see
+    [Background sub-work](#background-sub-work)).
     Its tool hooks skip a call whose payload has a top-level `agent_id` and no
     `agent_type` (an `agent_id` inside `tool_input`/`tool_response` does not
     count): the background agent claude starts after a turn (it writes
@@ -363,7 +364,9 @@ embedded hook assets live in
     turn fails with *"hook returned invalid stop hook JSON output"*, and every
     other event folds plain-text stdout into the model's context. Both are why
     every shipped hook command redirects its own output away — see
-    `tests/hook_stdout_contract.rs`. Verified against codex-cli 0.154.0 over
+    `tests/hook_stdout_contract.rs` — except the one `SessionStart` group whose
+    whole purpose is that fold: it prints the idle-claim instruction (see
+    [Background sub-work](#background-sub-work)). Verified against codex-cli 0.154.0 over
     real turns: every event fires; an approval prompt reports `blocked` and
     returns to `working` when granted; a `request_user_input` question reports
     `blocked` until it is answered; and a bare `request_user` matcher registered
@@ -738,15 +741,43 @@ completion signal.
 
 ### Background sub-work
 
-`background` means the turn is at rest and sub-work it started is still
-running. Any agent's hooks may report it with `thurbox-cli session signal
---state background`. It is claimed only where both edges of the sub-work reach
-the parent session:
+`background` means the turn is at rest and work it started is still running
+or scheduled. Any agent's hooks may report it with `thurbox-cli session signal
+--state background`. Two sources claim it.
+
+**The agent's own account (claude).** claude's `Stop` hook passes its payload
+on (`--state done --stop-payload -`), which carries `background_tasks[]` —
+every task in flight: shells, subagents, Monitors, workflows, teammates, cloud
+sessions, MCP tasks — and `session_crons[]`, the CronCreate / ScheduleWakeup /
+`/loop` wake-ups. Either list non-empty stores `background`; both present and
+empty stores `done` and proves the session idle; a missing list (a Claude Code
+that predates it) is unknown and leaves the decision to the edges below.
+Shape read from Claude Code 2.1.318's payload builder; the fixtures are in
+[`tests/fixtures/claude_stop/`](../tests/fixtures/claude_stop/). This is what
+makes claude's `state_support` `full` — see
+[Activity](ORCHESTRATION.md#activity). A finished task or a fired cron starts a
+new turn whose own `Stop` clears it.
+
+**Edges**, where both edges of the sub-work reach the parent session:
 
 | Agent | Start edge | End edge | Maps to |
 |---|---|---|---|
 | `claude` | `SubagentStart` with a non-empty `agent_type` | `SubagentStop`, same `agent_id` | `--work-start <id>` / `--work-end <id>` |
 | every other built-in | — | — | nothing: reports exactly as before |
+
+The other built-ins are `partial`: nothing they report says what a turn left
+running, so idleness rests on a claim. codex's `SessionStart` hook prints an
+instruction (folded into the model's context) to end a turn that leaves
+nothing running with the line `[thurbox-idle]`, and its `Stop` hook hands over
+the payload whose `last_assistant_message` carries it — verified against
+codex-cli 0.154.0's hook schema, whose `Stop` input has that field. The rest
+have no instruction channel thurbox could verify on the versions it was
+written against (none was installed): opencode, pi and omp would need their
+plugin APIs' system-prompt hooks, antigravity, grok and kimi a `SessionStart`
+whose stdout reaches the model and a `Stop` payload carrying the final
+message, copilot (whose `sessionStart` fires after the first prompt) and vibe
+(no session event) another channel altogether, and aider has no turn end to
+attach a claim to.
 
 Evidence: the issue's reproduction on Claude Code 2.1.303 (headless, three
 runs) and a headless run on 2.1.308, both recording `SubagentStart` → `Stop`
@@ -763,10 +794,12 @@ Not mapped, by design:
 
 - claude's own post-turn agent (an `agent_id` with no `agent_type`), whose end
   nothing waits on;
-- `run_in_background` Bash tasks, which fire no end hook in the parent — a
-  session whose turn ended with one running reads `done`;
+- `run_in_background` Bash tasks fire no end hook in the parent, so they are
+  never counted as edges — the `Stop` payload is what reports them;
 - a session on a remote host: its status channel holds one word and cannot
-  count, so the edges are no-ops there.
+  count, so the edges are no-ops there. Its `Stop` is reduced in the shell to
+  `background` (either list non-empty) or `done`; neither `pending` nor a
+  proof crosses.
 
 A permission prompt raised by a background subagent stores `blocked`; the
 subagent's next tool call then stores `working`, and its end moves nothing,
