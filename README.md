@@ -180,7 +180,7 @@ panes, extensions and other add-ons, with install commands and submission detail
 and an [FAQ](https://thurbox.thurbeen.eu/docs/faq.html).
 
 The rationale behind the decisions is in this repository, under
-[`docs/`](docs/): [CONSTITUTION](docs/thurbox/constitution.md) (non-negotiable
+[`docs/`](docs/): [constitution](docs/constitution.md) (non-negotiable
 principles), [ARCHITECTURE](docs/thurbox/architecture.md), [FEATURES](docs/thurbox/features.md),
 [CONFIG](docs/thurbox/config.md), [KERNEL](docs/thurbox/kernel.md),
 [PLUGINS](docs/thurbox/plugins.md), [ORCHESTRATION](docs/thurbox/orchestration.md),

@@ -10,7 +10,6 @@ operational guidance (build commands, module layout, event loop), see
 
 | Document | Purpose | Update when... |
 |---|---|---|
-| [constitution.md](constitution.md) | Core principles | Adding/removing an enforced invariant |
 | [architecture.md](architecture.md) | Architecture decisions, ADR-1 … ADR-41 | Changing a technology or structural pattern |
 | [features.md](features.md) | Feature-level design | Altering keybindings, lifecycle, layout, or UX |
 | [performance.md](performance.md) | Render/tick performance decisions | Changing the render loop, a cache, or a worker cadence |

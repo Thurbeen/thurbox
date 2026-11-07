@@ -1,7 +1,7 @@
 //! Whether the binaries a session needs are actually installed.
 //!
 //! thurbox deliberately starts with no multiplexer and no coding agent on the
-//! machine (`docs/thurbox/constitution.md`) — browsing, reading and configuring must
+//! machine (`docs/constitution.md`) — browsing, reading and configuring must
 //! work on a fresh box. The cost is that the check used to happen at the worst
 //! possible moment: the user committed to creating a session and got a number
 //! back (`tmux new-window exited exit status: 127`), which names neither the

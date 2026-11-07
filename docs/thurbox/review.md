@@ -321,9 +321,10 @@ The placement policy: a duplicate is reduced to a pointer rather than
 synchronized, and a change that invalidates a documented decision updates its
 owner in the same change.
 
-Each class of fact has exactly one owner document. docs/thurbox/constitution.md owns
-core principles. docs/thurbox/architecture.md owns architectural decisions and their
-ADR-NN anchors. docs/thurbox/performance.md owns render-loop and tick performance
+Each class of fact has exactly one owner document. docs/constitution.md owns
+the non-negotiable rules for every component and for each one.
+docs/thurbox/architecture.md owns architectural decisions and their ADR-NN
+anchors. docs/thurbox/performance.md owns render-loop and tick performance
 decisions and their ADR-PNN anchors, and a performance ADR records the
 measurement that produced it - the harness invocation, the terminal size, the
 session count and a paired before/after - so the number can be reproduced
