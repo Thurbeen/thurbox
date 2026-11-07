@@ -343,7 +343,11 @@ sandbox - CONTRIBUTING.md deliberately defers to it rather than restating it,
 so dev-setup facts stay there. docs/RELEASING.md owns the release process and
 docs/ORCHESTRATION.md the control-plane pattern. docs/BENCHMARK-MULTIPLEXERS.md
 owns how thurbox compares with raw tmux and Herdr as a host for agent sessions,
-and the method of the harness under scripts/bench/ that measures it. packaging/README.md owns the
+and the method of the harness under scripts/bench/ that measures it. docs/FLEET-ENGINE.md owns the
+split between thurbox, Fleet and a runtime, the three contracts between
+them, workspace recipes and the migration; its diagrams live in
+docs/fleet-engine/. docs/fleet/ is Fleet's own documentation under Fleet's
+layout, and docs/fleet/README.md says what each of its pages owns. packaging/README.md owns the
 packaging overview and scripts/dev/README.md the dev-scripts index. README.md
 owns the introduction.
 

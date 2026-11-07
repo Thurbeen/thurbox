@@ -412,6 +412,11 @@ For rationale behind decisions, see `docs/`:
   against, the trees excluded from review, and which document owns
   which class of fact. `.publish.yaml` names it in `review.rules`;
   read the blocks matching the paths you are touching
+- `docs/FLEET-ENGINE.md` — Fleet as thurbox's engine: the three components,
+  their contracts, workspace recipes and the migration (diagrams in
+  `docs/fleet-engine/`)
+- `docs/fleet/` — Fleet's own documentation, with its index at
+  `docs/fleet/README.md`
 
 **Rule**: If a code change invalidates or extends a documented
 decision, update the relevant doc in the same PR.
