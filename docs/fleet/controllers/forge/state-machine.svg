@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 400" role="img" aria-labelledby="title desc">
+<title id="title">Forge controller state machine</title>
+<desc id="desc">Each change a worker declares on a Task becomes an entry under status.forge.changes. The entry is Following while its ChangeRequest is open: on every pass the controller relays what is above the entry's cursor into the Task's inbox and may mark a draft ready once. The entry is Settled when the ChangeRequest settles. Deleting the Task deletes nothing else; the ChangeRequest is retained and garbage-collected by its own controller. The Task's own phases belong to the Task controller.</desc>
+<style>
+  svg { color-scheme:light dark }
+  @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { svg &gt; rect{fill:#101820} svg &gt; g{fill:#e6edf3} [stroke="#7890a6"]{stroke:#71869a} [stroke="#405367"]{stroke:#a9bdd0} [stroke="#c9d3dd"]{stroke:#405367} [fill="#405367"]{fill:#a9bdd0} [fill="#edf3f8"]{fill:#1d2a36} [fill="#f5f7fa"]{fill:#18232d} [fill="#e9f5ef"]{fill:#173b2d} }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#405367"/></marker></defs>
+<rect width="1040" height="400" rx="12" fill="#ffffff"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" fill="#182b3d">
+<text x="24" y="35" font-size="21" font-weight="700">One declared change, as an entry under status.forge.changes</text>
+<text x="24" y="60" font-size="14">The Task's phases are the Task controller's; this controller tracks each change the worker declares.</text>
+<g stroke="#7890a6" stroke-width="1.5" fill="#edf3f8">
+<rect id="task" x="40" y="150" width="190" height="68" rx="8" fill="#f5f7fa" stroke-dasharray="5 4"/>
+<rect id="following" x="330" y="150" width="210" height="68" rx="8"/>
+<rect id="settled" x="640" y="150" width="190" height="68" rx="8" fill="#e9f5ef"/>
+<rect id="changerequest" x="330" y="290" width="210" height="60" rx="8" fill="#f5f7fa" stroke-dasharray="5 4"/>
+</g>
+<g text-anchor="middle" font-size="17" font-weight="650">
+<text x="135" y="177">Task</text><text x="435" y="177">Following</text><text x="735" y="177">Settled</text>
+<text x="435" y="314">ChangeRequest</text>
+</g>
+<g text-anchor="middle" font-size="12">
+<text x="135" y="199">any Task, any phase</text><text x="435" y="199">relay · mark ready, every pass</text>
+<text x="735" y="199">merged, closed or gone</text><text x="435" y="336">mirrored by its own controller</text>
+</g>
+<g fill="none" stroke="#405367" stroke-width="1.8" marker-end="url(#arrow)">
+<path id="declare" d="M230 184 H328"/>
+<path id="settle" d="M540 184 H638"/>
+<path id="reads" d="M435 288 V220" stroke-dasharray="5 4"/>
+</g>
+<g font-size="12" fill="#405367" text-anchor="middle">
+<text x="279" y="170">fleet declare</text>
+<text x="589" y="170">settled</text>
+</g>
+<text x="448" y="258" font-size="12" fill="#405367">reads by name; writes nothing to it</text>
+<g font-size="12" fill="#405367">
+<text x="330" y="100">A Task may declare several changes; each entry has its own cursor and mark-ready record.</text>
+<text x="330" y="118">Two Tasks may follow one ChangeRequest; each keeps its own entry on its own object.</text>
+<text x="620" y="300">Deleting the Task deletes nothing else.</text>
+<text x="620" y="318">The ChangeRequest is retained, then</text>
+<text x="620" y="336">garbage-collected by its own controller.</text>
+</g>
+<path d="M25 362 H1015" stroke="#c9d3dd"/>
+<text x="25" y="386" font-size="14">Nothing merges. A relay gap, a failed mark-ready or a gone ChangeRequest raises NeedsAttention under status.forge and waits for a person.</text>
+</g>
+</svg>
