@@ -27,8 +27,8 @@ use fleet_manager::{
     receive, record_result, send,
 };
 use fleet_runtime::{
-    FakeHost, FakeRuntime, FileSignals, Repositories, ThurboxConfig, ThurboxRuntime,
-    TrustInterface, WorktreeConfig, WorktreeWorkspaces,
+    ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals, Repositories, ThurboxConfig,
+    ThurboxRuntime, TrustInterface, WorktreeConfig, WorktreeWorkspaces,
 };
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
@@ -204,6 +204,24 @@ enum Command {
         /// is read from stdin when stdin is not a terminal.
         payload: Option<String>,
     },
+    /// Runtimes: programs that speak the runtime protocol.
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RuntimeCommand {
+    /// Run the conformance suite against a runtime program: `fleet runtime check -- <program> [args]`.
+    Check {
+        /// The bound on each call, in milliseconds.
+        #[arg(long, default_value_t = DEFAULT_CALL_TIMEOUT_MS)]
+        call_timeout_ms: u64,
+        /// The program and the arguments it takes before the verb.
+        #[arg(last = true, required = true)]
+        program: Vec<String>,
+    },
 }
 
 /// What a hook reports (`fleet_api::signal::State`).
@@ -359,6 +377,15 @@ fn run(cli: Cli) -> Result<(), Failure> {
     if let Command::Signal { state, payload } = &cli.command {
         return cmd_signal(*state, payload.as_deref());
     }
+    if let Command::Runtime {
+        command: RuntimeCommand::Check {
+            call_timeout_ms,
+            program,
+        },
+    } = &cli.command
+    {
+        return runtime_check(program, *call_timeout_ms);
+    }
     let explicit_config = cli.config.is_some() || std::env::var_os(config::CONFIG_ENV).is_some();
     let config_path = config::discover(cli.config.clone())
         .map(|p| bootstrap::absolute(&p))
@@ -383,11 +410,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         match done.harness {
             Some(h) => println!(
-                "initialized {}; task.json chooses harness {h} for VEGA and its workers; run fleet up (Thurbox and an authenticated {h} are required)",
+                "initialized {}; task.json chooses harness {h} for VEGA and its workers; run fleet up (runtime-mux, tmux and an authenticated {h} are required)",
                 path.display()
             ),
             None => println!(
-                "initialized {}; run fleet up (Thurbox and an authenticated harness are required)",
+                "initialized {}; run fleet up (runtime-mux, tmux and an authenticated harness are required)",
                 path.display()
             ),
         }
@@ -653,7 +680,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
         }
         Command::Gateway { command } => cmd_gateway(store, &config, command),
-        Command::Version { .. } | Command::Signal { .. } => unreachable_version(),
+        Command::Version { .. } | Command::Signal { .. } | Command::Runtime { .. } => {
+            unreachable_version()
+        }
     }
 }
 
@@ -910,13 +939,13 @@ fn cmd_up(
     match runtime.host(host) {
         Observation::Known(true) => {}
         Observation::Known(false) => {
-            return Err(fail(
-                "Thurbox host/multiplexer unavailable; install/configure Thurbox and an authenticated agent harness, then retry fleet up",
-            ));
+            return Err(fail(format!(
+                "host {host} is unavailable: no runtime configured for it answers; install and configure its runtime (runtime-mux by default) and an authenticated agent harness, then retry fleet up"
+            )));
         }
         Observation::Unknown { why } => {
             return Err(fail(format!(
-                "thurbox prerequisite could not be checked: {why}; install/configure Thurbox and authenticate the agent harness before fleet up"
+                "the runtime of host {host} could not be checked: {why}; install and configure it (runtime-mux by default) and authenticate the agent harness before fleet up"
             )));
         }
     }
@@ -1020,7 +1049,41 @@ fn current_user() -> String {
 }
 
 fn unreachable_version() -> Result<(), Failure> {
-    Err(fail("version is handled before the store opens"))
+    Err(fail(
+        "version, signal and runtime are handled before the store opens",
+    ))
+}
+
+/// `fleet runtime check`: one line per case, and a failure when any fails.
+fn runtime_check(program: &[String], call_timeout_ms: u64) -> Result<(), Failure> {
+    let (exe, args) = program
+        .split_first()
+        .ok_or_else(|| fail("name the runtime program after --"))?;
+    let mut rt = ExecProgram::new(exe.clone(), exe.clone());
+    rt.args = args.to_vec();
+    rt.call_timeout = std::time::Duration::from_millis(call_timeout_ms);
+    let cases = fleet_runtime::exec::check(&rt);
+    let mut failed = 0;
+    for case in &cases {
+        match &case.result {
+            Ok(()) => println!("ok   {}", case.name),
+            Err(why) => {
+                failed += 1;
+                println!("FAIL {}: {why}", case.name);
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(fail(format!(
+            "{failed} of {} conformance cases failed for {exe}",
+            cases.len()
+        )));
+    }
+    println!(
+        "{exe} speaks runtime protocol {}",
+        fleet_runtime::exec::PROTOCOL
+    );
+    Ok(())
 }
 
 fn version(json: bool) -> Result<(), Failure> {
@@ -1031,7 +1094,8 @@ fn version(json: bool) -> Result<(), Failure> {
             "kinds": fleet_api::kinds::BUILT_IN,
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
-            "runtimes": ["thurbox", "fake"],
+            "runtimes": ["exec", "thurbox", "fake"],
+            "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
             "gateways": Platform::ALL,
         }));
@@ -1206,12 +1270,28 @@ fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
 fn open_reloadable_runtime(
     config: &Config,
 ) -> Result<(Box<dyn Runtime>, Option<Repositories>), Failure> {
+    if !config.runtimes.is_empty() {
+        let mut hosts = BTreeMap::new();
+        for (host, h) in &config.hosts {
+            let p = &config.runtimes[&h.runtime];
+            let mut rt = ExecProgram::new(h.runtime.clone(), p.program.clone());
+            rt.args = p.args.clone();
+            rt.call_timeout = std::time::Duration::from_millis(
+                p.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS),
+            );
+            if let Some(prefix) = &p.key_prefix {
+                rt.key_prefix = prefix.clone();
+            }
+            hosts.insert(host.clone(), rt);
+        }
+        return Ok((Box::new(ExecRuntime::new(hosts)), None));
+    }
     let Some(rt) = &config.runtime else {
         return Err(Failure {
             code: exit::ERROR,
             message: "no runtime configured".into(),
             hint: Some(
-                "set [runtime] kind = \"thurbox\" (or \"fake\" with a dir) in the config file"
+                "add [runtimes.mux] program = \"runtime-mux\" and [hosts.local] runtime = \"mux\" to the config file, or run fleet init"
                     .into(),
             ),
         });

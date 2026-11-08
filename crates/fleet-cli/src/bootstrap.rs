@@ -180,6 +180,20 @@ pub type Ask<'a> = &'a dyn Fn(&str) -> Result<Option<String>, String>;
 /// `harness` chooses the coding agent. Without it, an installed `task.json`
 /// keeps its harness, and a new one gets `ask`'s answer or the bundled
 /// default.
+/// `[runtimes.mux]`: the multiplexer runtime, under this instance's key
+/// prefix so two configs on one machine never share a session.
+fn default_runtimes(instance: &str) -> Result<toml::Value, String> {
+    toml::from_str(&format!(
+        "[mux]\nprogram = \"runtime-mux\"\ncallTimeoutMs = 10000\nkeyPrefix = \"f{instance}\"\n"
+    ))
+    .map_err(|e| e.to_string())
+}
+
+/// `[hosts.local]`, served by `runtime-mux`.
+fn default_hosts() -> Result<toml::Value, String> {
+    toml::from_str("[local]\nruntime = \"mux\"\n").map_err(|e| e.to_string())
+}
+
 pub fn init(
     config_path: &Path,
     data_root: &Path,
@@ -328,7 +342,15 @@ pub fn init(
                 None => absolute(data_root)?.join("store-v1"),
             };
             config["data"]["dir"] = toml::Value::String(store_dir.to_string_lossy().into_owned());
-            config["runtime"]["keyPrefix"] = toml::Value::String(format!("f{instance}"));
+            // runtime-mux and nothing else, whatever runtime the pinned
+            // starter names: no fallback, so a missing multiplexer is
+            // reported by name at the first start.
+            let table = config
+                .as_table_mut()
+                .ok_or("config template must be a table")?;
+            table.remove("runtime");
+            table.insert("runtimes".into(), default_runtimes(&instance)?);
+            table.insert("hosts".into(), default_hosts()?);
             // The three shipped ready policies, as the config page shows
             // them; ordinary entries once written.
             let policies = toml::Value::try_from(fleet_api::follow::shipped_policies())

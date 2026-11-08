@@ -1,0 +1,278 @@
+//! The `exec` runtime kind end to end: the real `fleet` binary against the
+//! real `runtime-mux` program and a real tmux on a private socket directory,
+//! and `fleet runtime check` against it and against a runtime that breaks
+//! the protocol.
+//!
+//! Fleet does not link `runtime-mux`: the program is found beside `fleet`
+//! in cargo's target directory (built by a workspace build), or at
+//! `RUNTIME_MUX_BIN`. Without it or without tmux these tests say so and
+//! skip; CI's runtime-protocol job builds it and has tmux.
+
+#![cfg(unix)]
+
+mod support;
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+use support::Env;
+
+fn runtime_mux() -> Option<PathBuf> {
+    let found = std::env::var_os("RUNTIME_MUX_BIN")
+        .map(PathBuf::from)
+        .or_else(|| {
+            Path::new(env!("CARGO_BIN_EXE_fleet"))
+                .parent()
+                .map(|dir| dir.join("runtime-mux"))
+        })
+        .filter(|p| p.is_file());
+    if found.is_none() {
+        eprintln!("skipping: no runtime-mux binary; build it with `cargo build -p runtime-mux`");
+    }
+    found
+}
+
+fn tmux() -> Option<PathBuf> {
+    let found = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("tmux"))
+            .find(|p| p.is_file())
+    });
+    if found.is_none() {
+        eprintln!("skipping: tmux is not installed");
+    }
+    found
+}
+
+/// A private `TMUX_TMPDIR`, short enough for a socket path, whose servers die
+/// with it.
+struct Sockets(PathBuf);
+
+impl Sockets {
+    fn new(name: &str) -> Sockets {
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|d| d.is_dir())
+            .unwrap_or_else(std::env::temp_dir);
+        let dir = base.join(format!("fx-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("socket dir");
+        Sockets(dir)
+    }
+
+    fn tmux(&self, args: &[&str]) -> std::process::Output {
+        Command::new("tmux")
+            .env("TMUX_TMPDIR", &self.0)
+            .env_remove("TMUX")
+            .args(["-L", "runtime-mux"])
+            .args(args)
+            .output()
+            .expect("tmux")
+    }
+}
+
+impl Drop for Sockets {
+    fn drop(&mut self) {
+        let _ = self.tmux(&["kill-server"]);
+        let _ = Command::new("tmux")
+            .env("TMUX_TMPDIR", &self.0)
+            .args(["-L", "runtime-tmux-sh", "kill-server"])
+            .output();
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn the_reference_script_passes_the_conformance_suite() {
+    if tmux().is_none() {
+        return;
+    }
+    if Command::new("jq").arg("--version").output().is_err() {
+        eprintln!("skipping: jq is not installed");
+        return;
+    }
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
+    let sockets = Sockets::new("script");
+    let mut env = Env::new("runtime-check-script");
+    env.set_var("TMUX_TMPDIR", &sockets.0.to_string_lossy());
+    let run = env.fleet(&["runtime", "check", "--", script.to_str().unwrap()]);
+    run.ok()
+        .stdout_has("ok   two starts with one key leave one process")
+        .stdout_has("ok   an exited process answers Exited with its code, or None");
+    assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
+}
+
+/// An environment whose one host, `local`, is served by `runtime-mux`.
+fn mux_env(name: &str, program: &Path, sockets: &Sockets) -> Env {
+    let mut env = Env::new(name);
+    fs::write(
+        &env.config,
+        format!(
+            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n\n[hosts.local]\nruntime = \"mux\"\n",
+            program.display()
+        ),
+    )
+    .expect("config");
+    env.set_var("TMUX_TMPDIR", &sockets.0.to_string_lossy());
+    env
+}
+
+#[test]
+fn runtime_mux_passes_the_conformance_suite() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("check");
+    let env = mux_env("runtime-check", &program, &sockets);
+    let run = env.fleet(&["runtime", "check", "--", program.to_str().unwrap()]);
+    run.ok()
+        .stdout_has("ok   two starts with one key leave one process")
+        .stdout_has("ok   a protocol mismatch answers Unknown")
+        .stdout_has("ok   an error answers Unknown, never None")
+        .stdout_has("ok   a stop of an absent process succeeds");
+    assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
+}
+
+#[test]
+fn a_runtime_that_answers_none_to_everything_fails_the_check() {
+    let env = Env::new("runtime-check-broken");
+    let script = env.root.join("broken.sh");
+    fs::write(
+        &script,
+        "#!/bin/sh\ncat >/dev/null\nif [ \"$1\" = manifest ]; then\n  echo '{\"known\":{\"protocol\":1,\"verbs\":[\"manifest\",\"start\",\"inspect\",\"stop\"]}}'\nelse\n  echo '{\"known\":\"none\"}'\nfi\n",
+    )
+    .expect("script");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let run = env.fleet(&["runtime", "check", "--", script.to_str().unwrap()]);
+    run.code(1)
+        .stdout_has("FAIL a protocol mismatch answers Unknown")
+        .stdout_has("FAIL an error answers Unknown, never None")
+        .stdout_has("ok   inspect of an absent key answers None");
+}
+
+#[test]
+fn a_missing_multiplexer_is_reported_by_name_at_the_first_start() {
+    let Some(program) = runtime_mux() else { return };
+    let sockets = Sockets::new("missing");
+    let mut env = mux_env("runtime-mux-missing", &program, &sockets);
+    let empty = env.root.join("empty-path");
+    fs::create_dir_all(&empty).expect("empty PATH");
+    env.only_on_path(&empty);
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!({"dir": env.root.to_string_lossy()});
+    env.apply(json!([task])).ok();
+    env.reconcile();
+    let status = env.get("t1")["status"].clone();
+    assert!(
+        status.to_string().contains("tmux"),
+        "the status names the missing multiplexer: {status:#}"
+    );
+    assert!(status["session"].is_null(), "{status:#}");
+}
+
+#[test]
+fn a_host_naming_no_runtime_is_refused_at_load() {
+    let env = Env::new("runtime-unnamed");
+    fs::write(
+        &env.config,
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[hosts.local]\nruntime = \"muxx\"\n",
+    )
+    .expect("config");
+    env.fleet(&["list", "task"])
+        .code(1)
+        .stderr_has("hosts.local.runtime \"muxx\" names no [runtimes.muxx]");
+}
+
+#[test]
+fn a_task_starts_and_is_released_through_runtime_mux() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("task");
+    let mut env = mux_env("runtime-mux-task", &program, &sockets);
+    // The harness is the program a session starts; this one waits.
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude-code");
+    fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    env.apply(json!([task])).ok();
+    env.reconcile().ok();
+
+    let session = env.get("t1")["status"]["session"].clone();
+    let id = session["id"].as_str().unwrap_or_default().to_string();
+    assert!(id.starts_with('%'), "a tmux pane: {session:#}");
+    assert_eq!(session["host"], "local", "{session:#}");
+    let uid = env.get("t1")["metadata"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let key = format!("fleet.{uid}");
+    let panes = |format: &str| {
+        String::from_utf8_lossy(&sockets.tmux(&["list-panes", "-a", "-F", format]).stdout)
+            .into_owned()
+    };
+    assert!(
+        panes("#{pane_id} #{pane_current_path}").contains(&format!("{id} {}", work.display())),
+        "{}",
+        panes("#{pane_id} #{pane_current_path}")
+    );
+
+    // A second pass adopts the session rather than starting another.
+    env.reconcile().ok();
+    assert_eq!(env.get("t1")["status"]["session"]["id"], id.as_str());
+    // Beside the session's own first window, which tmux keeps the server on.
+    let listed = panes("#{pane_id} #{window_name}");
+    assert_eq!(
+        listed.lines().filter(|l| l.contains(" tb-")).count(),
+        1,
+        "{listed}"
+    );
+
+    // A running agent is never proven at rest, so the release waits for it;
+    // once it exits, the release stops what is left under the key.
+    env.fleet(&["delete", "task", "t1"]).ok();
+    env.reconcile().ok();
+    assert_eq!(env.get("t1")["status"]["phase"], "Releasing");
+    sockets.tmux(&["send-keys", "-t", &id, "C-c"]);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        env.reconcile();
+        let gone = env.fleet(&["get", "task", "t1"]).code != Some(0);
+        if gone {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{:#}", env.get("t1"));
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let inspect = Command::new(&program)
+        .arg("inspect")
+        .env("TMUX_TMPDIR", &sockets.0)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(json!({"protocol": 1, "key": key}).to_string().as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("inspect");
+    let answer: Value = serde_json::from_slice(&inspect.stdout).expect("JSON");
+    assert_eq!(answer, json!({"known": "none"}), "the release stopped it");
+}

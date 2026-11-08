@@ -21,8 +21,18 @@ pub struct Config {
     pub version: u32,
     #[serde(default)]
     pub data: Data,
+    /// The `[runtime]` section: the thurbox and fake adapters, linked into
+    /// Fleet. Exclusive with `[runtimes]`.
     #[serde(default)]
     pub runtime: Option<RuntimeConfig>,
+    /// The `[runtimes.<name>]` sections: programs that speak the runtime
+    /// protocol.
+    #[serde(default)]
+    pub runtimes: BTreeMap<String, ProgramConfig>,
+    /// The `[hosts.<name>]` sections: the runtime serving each host a Task
+    /// may name.
+    #[serde(default)]
+    pub hosts: BTreeMap<String, HostConfig>,
     /// The `[workspaces]` section: the adapter through which Fleet makes a
     /// `{repositories}` workspace before the spawn. Absent: git worktrees
     /// under `<data dir>/workspaces` (the fake runtime's own host, for the
@@ -131,6 +141,31 @@ pub struct RuntimeConfig {
     pub workspace_trust: BTreeMap<String, String>,
 }
 
+/// One `[runtimes.<name>]` section: a program that speaks the runtime
+/// protocol (docs/runtime/README.md).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProgramConfig {
+    /// The executable, a path or a name on PATH.
+    pub program: String,
+    /// Arguments before the verb.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// The bound on every call.
+    pub call_timeout_ms: Option<u64>,
+    /// The first part of every key Fleet gives the runtime; give a second
+    /// Fleet on the same runtime its own.
+    pub key_prefix: Option<String>,
+}
+
+/// One `[hosts.<name>]` section.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostConfig {
+    /// The `[runtimes.<name>]` that serves the host.
+    pub runtime: String,
+}
+
 /// The `[workspaces]` section.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -179,6 +214,9 @@ impl Config {
         {
             rt.dir = Some(base.join(d));
         }
+        config
+            .check_runtimes()
+            .map_err(|e| format!("config {}: {e}", path.display()))?;
         if let Some(ws) = config.workspaces.as_mut() {
             for d in [&mut ws.dir, &mut ws.root].into_iter().flatten() {
                 *d = base.join(&*d);
@@ -253,11 +291,54 @@ impl Config {
         Ok(config)
     }
 
+    /// `[runtimes]` and `[hosts]` agree: each host names a runtime that is
+    /// there, every runtime serves a host, and `[runtime]` is not beside them.
+    fn check_runtimes(&self) -> Result<(), String> {
+        if self.runtime.is_some() && (!self.runtimes.is_empty() || !self.hosts.is_empty()) {
+            return Err("[runtime] and [runtimes]/[hosts] exclude each other; keep one".into());
+        }
+        for (host, h) in &self.hosts {
+            if !self.runtimes.contains_key(&h.runtime) {
+                return Err(format!(
+                    "hosts.{host}.runtime {:?} names no [runtimes.{}]",
+                    h.runtime, h.runtime
+                ));
+            }
+        }
+        for (name, rt) in &self.runtimes {
+            if rt.program.is_empty() {
+                return Err(format!("runtimes.{name}.program is empty"));
+            }
+            if !self.hosts.values().any(|h| &h.runtime == name) {
+                return Err(format!(
+                    "no host names runtimes.{name}; add [hosts.<name>] runtime = {name:?}"
+                ));
+            }
+            if let Some(ms) = rt.call_timeout_ms
+                && !(1..=300_000).contains(&ms)
+            {
+                return Err(format!("runtimes.{name}.callTimeoutMs must be 1 to 300000"));
+            }
+            if let Some(p) = &rt.key_prefix
+                && (p.len() > 32
+                    || fleet_api::validate::validate_name(p).is_err()
+                    || p.contains('.'))
+            {
+                return Err(format!(
+                    "runtimes.{name}.keyPrefix {p:?}: use at most 32 lowercase letters, digits and '-'"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn empty() -> Config {
         Config {
             version: CONFIG_VERSION,
             data: Data::default(),
             runtime: None,
+            runtimes: BTreeMap::new(),
+            hosts: BTreeMap::new(),
             workspaces: None,
             starter: None,
             forge: None,
