@@ -22,6 +22,22 @@ fn main() {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| SOCKET.to_string());
+    // A start looks the key up and then makes its window, so two at once
+    // could each make one; a stop between them could remove the one the
+    // other just adopted. Both run one at a time per server.
+    let mut _turn = None;
+    if matches!(verb.as_str(), "start" | "stop") {
+        match lock(&socket) {
+            Ok(file) => _turn = Some(file),
+            Err(e) => {
+                println!(
+                    "{}",
+                    serde_json::json!({ "unknown": { "why": format!("cannot take the start lock: {e}") } })
+                );
+                return;
+            }
+        }
+    }
     let settings = MuxSettings {
         socket: Some(socket),
         ..MuxSettings::default()
@@ -30,4 +46,25 @@ fn main() {
     let answer = protocol::serve(registry.default_backend().as_ref(), &verb, &request);
     registry.shutdown_all();
     println!("{answer}");
+}
+
+/// The lock serializing starts and stops on `socket`'s server, held until
+/// the returned file is dropped. It sits where tmux keeps its sockets
+/// (`TMUX_TMPDIR`), so a server in another directory has its own.
+fn lock(socket: &str) -> std::io::Result<std::fs::File> {
+    let dir = std::env::var_os("TMUX_TMPDIR")
+        .filter(|d| !d.is_empty())
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+    #[cfg(unix)]
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let user = unsafe { libc::getuid() }.to_string();
+    #[cfg(not(unix))]
+    let user = std::env::var("USERNAME").unwrap_or_default();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(format!("runtime-mux-{user}-{socket}.lock")))?;
+    file.lock()?;
+    Ok(file)
 }

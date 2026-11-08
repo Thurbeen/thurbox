@@ -363,8 +363,11 @@ impl Pass<'_, '_> {
         let Some(digest) = self.st.prompts.get(key) else {
             return Proof::NotNeeded;
         };
+        // A report older than this send's intent proves an earlier send of
+        // the same text, not this one.
+        let since = self.st.intents.get(key).map_or(0, |i| i.at);
         match &self.input.observations.signals {
-            Some(Observation::Known(r)) if r.prompts.contains(digest) => {
+            Some(Observation::Known(r)) if r.prompted_since(digest, since) => {
                 self.st.prompts.remove(key);
                 Proof::Proven
             }

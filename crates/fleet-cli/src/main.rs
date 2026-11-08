@@ -1229,7 +1229,7 @@ fn open_workspaces(
             let root = ws
                 .root
                 .clone()
-                .ok_or_else(|| fail("workspaces.root is required for the worktree adapter"))?;
+                .unwrap_or_else(|| data_dir.join("workspaces"));
             let map = match map {
                 Some(m) => m.clone(),
                 None => Repositories::new(match &config.runtime {

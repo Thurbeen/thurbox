@@ -600,7 +600,9 @@ impl Runtime for FakeRuntime {
                 let payload =
                     serde_json::json!({"prompt": text, "session_id": format!("conv-{}", x.id)});
                 let signal = fleet_api::signal::Signal::from_hook(
-                    0,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() as u64),
                     fleet_api::signal::State::Prompt,
                     Some(&payload),
                 );

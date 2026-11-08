@@ -420,3 +420,81 @@ fn a_task_on_runtime_mux_reports_through_fleet_signal_and_revives_on_its_convers
         "{status:#}"
     );
 }
+
+/// [`CLAUDE`], except that it logs each line typed to it, and a resumed one
+/// reports nothing at its start, as an agent still starting.
+const SLOW_CLAUDE: &str = r#"#!/bin/sh
+{ printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
+case " $* " in *" --resume "*) ;; *) fleet signal idle ;; esac
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  printf '%s\n' "$line" >> "$PWD/typed.log"
+  fleet signal prompt "{\"prompt\":\"$line\",\"session_id\":\"conv-1\"}"
+  fleet signal idle
+done
+"#;
+
+#[test]
+fn a_revived_agent_is_ready_only_once_it_reports_again() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("restart");
+    let mut env = mux_env("runtime-mux-restart", &program, &sockets);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, SLOW_CLAUDE).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    env.apply(json!([task])).ok();
+    reconcile_until(&env, "briefed", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let typed = || {
+        fs::read_to_string(work.join("typed.log"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    assert_eq!(typed(), 1, "the brief");
+
+    let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
+    let pane = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    sockets.tmux(&["send-keys", "-t", &pane, "C-c"]);
+    reconcile_until(&env, "revived", |_| starts(&work).len() >= 2);
+    // The previous process's last report was idle; the new one has said
+    // nothing, so the catch-up note waits.
+    for _ in 0..3 {
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+    assert_eq!(typed(), 1, "nothing typed before the agent reports");
+
+    // The agent reports its start: the note goes.
+    let file = env
+        .data
+        .join("signals")
+        .join(format!("{}.jsonl", env.session_key("t1")));
+    let mut cmd = env.command(&["signal", "idle"]);
+    cmd.env("FLEET_SIGNAL_FILE", &file);
+    support::wait(cmd.spawn().expect("fleet signal")).ok();
+    reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
+}

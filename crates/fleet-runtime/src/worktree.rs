@@ -246,7 +246,16 @@ impl WorktreeWorkspaces {
         if commit.is_empty() {
             return Ok(());
         }
-        let name = format!("{PRESERVED}/{key}/{}", w.name);
+        // A marker written before worktrees carried their name: the
+        // worktree's directory is `<root>/<key>/<name>`.
+        let repo = match w.name.as_str() {
+            "" => Path::new(&w.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            name => name.to_string(),
+        };
+        let name = format!("{PRESERVED}/{key}/{repo}");
         self.git_out(&w.path, &["update-ref", &name, &commit], &[])
             .map(|_| ())
     }

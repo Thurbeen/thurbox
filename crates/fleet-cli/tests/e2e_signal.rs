@@ -113,3 +113,28 @@ fn a_signal_outside_a_fleet_session_does_nothing() {
     env.fleet(&["signal", "idle"]).ok();
     env.fleet(&["signal", "busy"]).code(2);
 }
+
+#[test]
+fn a_turn_that_ends_with_background_work_is_not_idle_and_never_pauses() {
+    let env = setup("signal-background");
+    env.reconcile().ok();
+    let file = signal_file(&env);
+    // Claude Code's Stop payload lists a shell still running.
+    let stop = json!({"session_id": "c1", "background_tasks": [{"id": "b1", "type": "shell", "status": "running"}], "session_crons": []});
+    signal(&env, &file, &["idle", &stop.to_string()]);
+    env.reconcile().ok();
+    assert_eq!(session_state(&env), "Running");
+    assert!(env.get("t1")["status"]["idleSince"].is_null());
+    // A cron that will wake it later is work too.
+    let cron = json!({"background_tasks": [], "session_crons": [{"id": "k1"}]});
+    signal(&env, &file, &["idle", &cron.to_string()]);
+    env.reconcile().ok();
+    assert_eq!(session_state(&env), "Running");
+    assert_eq!(env.calls("pause"), 0);
+
+    // Nothing left in flight: idle.
+    let done = json!({"background_tasks": [], "session_crons": []});
+    signal(&env, &file, &["idle", &done.to_string()]);
+    env.reconcile().ok();
+    assert_eq!(session_state(&env), "Idle");
+}

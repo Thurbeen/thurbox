@@ -185,3 +185,13 @@ fn a_dir_workspace_is_never_materialized() {
     assert!(st["workspace"].is_null(), "{st:#}");
     assert_eq!(env.calls("materialize"), 0);
 }
+
+#[test]
+fn a_worktree_section_without_a_root_keeps_the_default_root() {
+    let env = Env::new("workspace-default-root");
+    let mut config = fs::read_to_string(&env.config).expect("config");
+    config.push_str("\n[workspaces]\nkind = \"worktree\"\nbranchPrefix = \"work\"\n");
+    fs::write(&env.config, config).expect("config");
+    env.apply(base_config()).ok();
+    env.reconcile().ok();
+}

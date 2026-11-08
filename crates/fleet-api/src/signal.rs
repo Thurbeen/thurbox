@@ -18,7 +18,7 @@
 //! Unknown never concludes: a file Fleet cannot read is Unknown, and a file
 //! the agent never wrote is a session that reported nothing yet.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +45,10 @@ pub enum State {
     Idle,
     /// The agent was given a prompt: a turn starts.
     Prompt,
+    /// The runtime started the agent again, and the agent has reported
+    /// nothing since: what the previous process reported says nothing of
+    /// this one. Written by Fleet, never by a hook.
+    Started,
 }
 
 impl State {
@@ -93,6 +97,21 @@ impl Signal {
                 prompts.extend(list.iter().filter_map(|m| m.as_str()).map(prompt_digest));
             }
         }
+        // Claude Code's `Stop` lists the work its turn left running: a
+        // background shell or subagent, a cron that wakes it later. A stop
+        // would end that work, so the agent is not idle.
+        let in_flight = |list: &str| {
+            payload
+                .and_then(|p| p[list].as_array())
+                .is_some_and(|l| !l.is_empty())
+        };
+        let state = if state == State::Idle
+            && (in_flight("background_tasks") || in_flight("session_crons"))
+        {
+            State::Working
+        } else {
+            state
+        };
         Signal {
             at,
             state,
@@ -107,8 +126,9 @@ impl Signal {
 pub struct Reported {
     /// The last state reported, when any was.
     pub state: Option<State>,
-    /// Every prompt digest reported.
-    pub prompts: BTreeSet<String>,
+    /// Every prompt digest reported, with when it was last reported: a
+    /// send is proven only by a report made after it.
+    pub prompts: BTreeMap<String, Millis>,
     /// The last conversation id reported.
     pub conversation: Option<String>,
 }
@@ -123,7 +143,10 @@ impl Reported {
                 continue;
             };
             r.state = Some(s.state);
-            r.prompts.extend(s.prompts);
+            for digest in s.prompts {
+                let at = r.prompts.entry(digest).or_default();
+                *at = (*at).max(s.at);
+            }
             if s.conversation.is_some() {
                 r.conversation = s.conversation;
             }
@@ -136,12 +159,25 @@ impl Reported {
         match self.state? {
             State::Idle => Some(Activity::Idle),
             State::Working | State::Blocked | State::Prompt => Some(Activity::Active),
+            State::Started => None,
         }
+    }
+
+    /// Whether the agent reported anything since the runtime last started
+    /// it.
+    pub fn reported(&self) -> bool {
+        self.state.is_some_and(|s| s != State::Started)
     }
 
     /// Whether the agent's prompt hook reported being given `text`.
     pub fn prompted(&self, text: &str) -> bool {
-        self.prompts.contains(&prompt_digest(text))
+        self.prompts.contains_key(&prompt_digest(text))
+    }
+
+    /// Whether the agent's prompt hook reported the prompt `digest` at or
+    /// after `since`, when the send it proves was intended.
+    pub fn prompted_since(&self, digest: &str, since: Millis) -> bool {
+        self.prompts.get(digest).is_some_and(|at| *at >= since)
     }
 }
 

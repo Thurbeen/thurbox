@@ -300,3 +300,61 @@ fn what_the_runtime_cannot_answer_is_unknown() {
         );
     }
 }
+
+#[test]
+fn concurrent_starts_with_one_key_leave_one_process() {
+    let Some(rt) = Runtime::new() else { return };
+    for round in 0..5 {
+        let key = format!("race.r{round}");
+        let answers: Vec<Value> = std::thread::scope(|s| {
+            let calls: Vec<_> = (0..4)
+                .map(|_| s.spawn(|| rt.start(&key, &["sleep", "300"])))
+                .collect();
+            calls.into_iter().map(|c| c.join().unwrap()).collect()
+        });
+        let ids: Vec<(String, bool)> = answers.iter().map(started).collect();
+        assert!(ids.iter().all(|(id, _)| *id == ids[0].0), "{answers:?}");
+        assert_eq!(
+            ids.iter().filter(|(_, adopted)| !adopted).count(),
+            1,
+            "{answers:?}"
+        );
+        assert!(rt.inspect(&key)["known"]["running"].is_object(), "{key}");
+    }
+}
+
+#[test]
+fn exec_output_past_the_cap_is_dropped_and_the_command_still_finishes() {
+    let Some(rt) = Runtime::new() else { return };
+    let ran = rt.call(
+        "exec",
+        json!({"protocol": 1, "in": "host", "argv": ["head", "-c", "4000000", "/dev/zero"], "timeoutMs": 10000, "outputCap": 16}),
+    );
+    let exited = &ran["known"]["exited"];
+    assert_eq!(exited["code"], 0, "{ran}");
+    assert_eq!(exited["stdout"].as_str().map(str::len), Some(16), "{ran}");
+}
+
+#[test]
+fn exec_answers_by_its_deadline_when_an_escaped_child_holds_its_output() {
+    let Some(rt) = Runtime::new() else { return };
+    if runtime_mux::path_lookup::resolve_on_path("setsid").is_none() {
+        eprintln!("skipping: setsid is not installed");
+        return;
+    }
+    let started = Instant::now();
+    let ran = rt.call(
+        "exec",
+        json!({"protocol": 1, "in": "host", "argv": ["sh", "-c", "setsid sleep 20 & echo hi"], "timeoutMs": 1000}),
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "answered after {:?}: {ran}",
+        started.elapsed()
+    );
+    let answer = &ran["known"];
+    let stdout = answer["exited"]["stdout"]
+        .as_str()
+        .or(answer["timedOut"]["stdout"].as_str());
+    assert_eq!(stdout, Some("hi\n"), "{ran}");
+}

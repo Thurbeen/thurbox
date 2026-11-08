@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -47,6 +48,9 @@ const DEFAULT_CAPTURE_LINES: u32 = 50;
 const DEFAULT_OUTPUT_CAP: usize = 1024 * 1024;
 const MAX_OUTPUT_CAP: usize = 16 * 1024 * 1024;
 const MAX_EXEC_TIMEOUT_MS: u64 = 600_000;
+
+/// How long `exec` waits for its output past the deadline.
+const READ_GRACE: Duration = Duration::from_millis(200);
 
 fn known(value: Value) -> Value {
     json!({ "known": value })
@@ -404,7 +408,9 @@ fn capture(backend: &dyn SessionBackend, request: Capture) -> Value {
 }
 
 /// One bounded command on this machine: its process group is killed past the
-/// deadline, and once it exits, and each stream is kept up to the cap.
+/// deadline, and once it exits, and each stream is kept up to the cap. The
+/// answer comes by the deadline even when a child that left the group holds
+/// a stream open: what was read by then is the output.
 fn exec(request: Exec) -> Value {
     let cap = request
         .output_cap
@@ -426,13 +432,23 @@ fn exec(request: Exec) -> Value {
         Err(e) => return known(json!({ "failed": { "why": e.to_string() } })),
     };
     let read = |pipe: Option<Box<dyn Read + Send>>| {
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let (done, finished) = mpsc::channel::<()>();
+        let into = Arc::clone(&kept);
         std::thread::spawn(move || {
-            let mut kept = Vec::new();
-            if let Some(pipe) = pipe {
-                let _ = pipe.take(cap as u64).read_to_end(&mut kept);
+            let Some(mut pipe) = pipe else { return };
+            // The pipe is drained to its end, past the cap: a command that
+            // writes more than is kept still finishes as it would.
+            let mut chunk = [0u8; 64 * 1024];
+            while let Ok(n @ 1..) = pipe.read(&mut chunk) {
+                if let Ok(mut kept) = into.lock() {
+                    let room = cap.saturating_sub(kept.len());
+                    kept.extend_from_slice(&chunk[..n.min(room)]);
+                }
             }
-            String::from_utf8_lossy(&kept).into_owned()
-        })
+            let _ = done.send(());
+        });
+        (kept, finished)
     };
     let stdout = read(
         child
@@ -457,10 +473,15 @@ fn exec(request: Exec) -> Value {
     // Whatever the command left in its group goes with it, so no grandchild
     // holds a pipe open past the bound.
     kill_tree(&mut child);
-    let (stdout, stderr) = (
-        stdout.join().unwrap_or_default(),
-        stderr.join().unwrap_or_default(),
-    );
+    let text = |(kept, finished): (Arc<Mutex<Vec<u8>>>, mpsc::Receiver<()>)| {
+        // A killed command's pipes close at once: the grace only lets a
+        // reader take what was already written.
+        let until = deadline.max(Instant::now() + READ_GRACE);
+        let _ = finished.recv_timeout(until.saturating_duration_since(Instant::now()));
+        let kept = kept.lock().map(|k| k.clone()).unwrap_or_default();
+        String::from_utf8_lossy(&kept).into_owned()
+    };
+    let (stdout, stderr) = (text(stdout), text(stderr));
     match status {
         Some(status) => known(json!({ "exited": {
             "code": status.code(),

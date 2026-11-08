@@ -74,8 +74,12 @@ server of its own, socket `runtime-mux` (`RUNTIME_MUX_SOCKET` names
 another), never on thurbox's interface socket: an inherited
 `THURBOX_SOCKET` is ignored. A process is a window named after its key, and
 a pane kept after its program exits is how `inspect` reports the code; a
-`start` replaces it. `exec` runs `in: host` only, on this machine, and kills
-the command's process group at the deadline. `runtime-mux` runs on this
+`start` replaces it. Starts and stops on one server run one at a time, so
+two starts of one key make one window. `exec` runs `in: host` only, on this
+machine, and kills the command's process group at the deadline. It reads
+each stream to its end and keeps `outputCap` bytes, so a long output does
+not change how the command ends; a child that left the group and holds a
+stream open does not hold the answer past the deadline. `runtime-mux` runs on this
 machine only for now: its ssh and WSL places come with the hosts it reads.
 
 What Fleet's `exec` kind does with the answers:
@@ -91,7 +95,9 @@ What Fleet's `exec` kind does with the answers:
   else Unknown, so a brief waits;
 - delivery is proven by the agent's prompt hook, not by `input`;
 - an `exited` process is lost, since a `stop` leaves `none`: revive is `start`
-  with the profile's resume argv on the conversation the hooks reported;
+  with the profile's resume argv on the conversation the hooks reported. Fleet
+  first marks the restart in the signal file, so readiness and trust wait for
+  the new process's own report;
 - `none` proves nothing about a pause, so Fleet never pauses a session on this
   kind: version 1 has no stop that keeps the key.
 
@@ -277,7 +283,8 @@ A runtime that implements `workspace` holds to these rules, and
 - **Never loses work on release.** Anything the workspace holds that exists
   nowhere else (uncommitted changes, unpushed commits) is preserved before the
   files go, in a durable place outside the workspace. How is the runtime's
-  choice.
+  choice. Files the repository ignores are not work: it declares them
+  disposable.
 - **Never waits for a person.** Release always finishes or answers Unknown.
 
 The `manifest` declares what Fleet may rely on:

@@ -183,8 +183,11 @@ fn prompt_hook(state: &Value, i: usize, text: &str) {
         return;
     }
     let payload = json!({"prompt": text});
-    let signal =
-        fleet_api::signal::Signal::from_hook(0, fleet_api::signal::State::Prompt, Some(&payload));
+    let signal = fleet_api::signal::Signal::from_hook(
+        now(),
+        fleet_api::signal::State::Prompt,
+        Some(&payload),
+    );
     fleet_runtime::signals::append(std::path::Path::new(file), &signal).expect("signal file");
 }
 
@@ -2301,4 +2304,11 @@ mod discord {
             &json!({"id": message, "parent_id": channel, "type": 11, "name": body["name"]}),
         )
     }
+}
+
+/// Wall-clock milliseconds, as `fleet signal` stamps a report.
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }

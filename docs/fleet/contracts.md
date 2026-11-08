@@ -310,9 +310,10 @@ Guarantees, each with its test:
   delivered as the brief is: to a session observed ready on that pass, under
   its key as the runtime intent key, one entry per pass, at most three
   sends. It counts as delivered once the agent's prompt hook reports its
-  digest; a lost answer is settled by that report alone, never resent (the
-  runtime's journal decides only for a harness with no prompt hook). A Known
-  receipt moves the entry's receipt into
+  digest after the send's intent: a report of the same text before it
+  proves an earlier send, not this one. A lost answer is settled by that
+  report alone, never resent (the runtime's journal decides only for a
+  harness with no prompt hook). A Known receipt moves the entry's receipt into
   `status.deliveries` and the entry out of `status.inbox` in one write, and
   drops its intent, receipt and attempt records. Three refused sends raise
   `NeedsAttention/DeliveryFailed` naming the entry, which stays while later
@@ -1002,9 +1003,9 @@ and Claude Code 2.1.312.
 
 `fleet_api::signal::Signals`: `file` names the file a session's hooks
 append to, passed as `FLEET_SIGNAL_FILE` in the spawn's environment, and
-`read` folds it (`Reported`: the last state, every prompt digest, the last
-conversation id). A file never written is Known and empty; a file that
-cannot be read is Unknown. `fleet signal <working|blocked|idle|prompt>
+`read` folds it (`Reported`: the last state, every prompt digest with
+when it was last reported, the last conversation id). A file never
+written is Known and empty; a file that cannot be read is Unknown. `fleet signal <working|blocked|idle|prompt>
 [payload]` appends one line of at most 4 KiB in one write, reads the hook's
 JSON from the argument or stdin, stores prompts only as digests, and does
 nothing when the variable is unset. The `FileSignals` adapter keeps the
@@ -1064,7 +1065,11 @@ The `worktree` adapter serves the local host and refuses any other:
   is lost. `clean` keeps the branches, and first commits what a worktree
   holds that its branch does not, untracked files included, onto
   `refs/fleet/preserved/<key>/<name>` in the source (`git add -A`, then
-  `git stash create`). A preservation that fails fails the clean.
+  `git stash create`). Files the repository ignores are not work: it
+  declares them disposable (build output, caches), and they go with the
+  worktree. A preservation that fails fails the clean. A marker written
+  before worktrees carried their name takes `<name>` from the worktree's
+  directory.
 - Every `git` command runs blind to `GIT_DIR` and the other variables that
   would point it at another repository than its source.
 - A workspace names at most 4 repositories, so one call has a bound.

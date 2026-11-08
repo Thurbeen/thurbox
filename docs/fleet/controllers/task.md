@@ -340,7 +340,7 @@ nothing when the variable is unset:
 | --- | --- | --- | --- |
 | `prompt` | `UserPromptSubmit` | the turn's `input-messages` at `notify` | the agent was given a text: its digest is recorded |
 | `working` | `PreToolUse` | none | a turn runs |
-| `idle` | `Stop` | `notify` (turn complete) | the turn ended; the agent waits |
+| `idle` | `Stop`, `SessionStart` | `notify` (turn complete) | the turn ended; the agent waits. A `Stop` whose `background_tasks` or `session_crons` is not empty is stored as `working`: a stop would end that work |
 | `blocked` | none | none | the agent waits for a person: not idle |
 
 The hook's JSON (stdin, or the last argument for Codex's `notify`) gives

@@ -112,3 +112,22 @@ fn an_inbox_entry_is_delivered_only_once_the_agent_reports_it() {
     assert_eq!(delivered_keys(&env).len(), 1, "{:#}", full_status(&env));
     assert_eq!(env.calls("brief"), 2);
 }
+
+#[test]
+fn an_earlier_report_of_the_same_text_proves_no_later_send() {
+    let env = setup("proof-repeat");
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    env.fleet(&["send", "t1", "same text"]).ok();
+    env.reconcile().ok();
+    assert_eq!(delivered_keys(&env).len(), 1, "{:#}", full_status(&env));
+
+    // The same text again, lost before it reaches the agent: the earlier
+    // report is not this send's.
+    env.host().set_prompt_hook_silent(true).unwrap();
+    env.fault(Fault::new("brief", "unknown"));
+    env.fleet(&["send", "t1", "same text"]).ok();
+    env.reconcile().ok();
+    env.reconcile().ok();
+    assert_eq!(delivered_keys(&env).len(), 1, "{:#}", full_status(&env));
+}

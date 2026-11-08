@@ -21,7 +21,7 @@ use fleet_api::harness::{claude_trust_dialog, codex_trust_dialog, profile};
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::session::uid_of_session_key;
-use fleet_api::signal::{Reported, Signals, State};
+use fleet_api::signal::{Reported, Signal, Signals, State};
 use fleet_api::task::{SessionRef, Workspace};
 use fleet_exec::{Outcome, Spec};
 use serde::Deserialize;
@@ -128,6 +128,12 @@ impl ExecProgram {
     fn key(&self, fleet_key: &str) -> String {
         format!("{}.{}", self.key_prefix, uid_of_session_key(fleet_key))
     }
+}
+
+fn now() -> fleet_api::Millis {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// `f` on a Known value; Unknown stays Unknown.
@@ -332,6 +338,25 @@ impl ExecRuntime {
             Ok(argv) => profile(&spec.harness).resume(&argv, conversation),
             Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
         };
+        // What the previous process reported is not the new one's: its
+        // readiness and trust wait for the new one's own report.
+        if let Some(file) = self
+            .signals
+            .as_ref()
+            .and_then(|s| s.file(&spec.host, &spec.key))
+        {
+            let mark = Signal {
+                at: now(),
+                state: State::Started,
+                prompts: Vec::new(),
+                conversation: None,
+            };
+            if let Err(e) = crate::signals::append(std::path::Path::new(&file), &mark) {
+                return Observation::unknown(format!(
+                    "cannot mark the restart in the signal file: {e}"
+                ));
+            }
+        }
         self.start(&spec, &argv).map(|started| match started {
             Started::Started { .. } => done,
             Started::Failed { why } => EffectOutcome::Failed { why },
@@ -464,8 +489,10 @@ impl Runtime for ExecRuntime {
     fn ready(&self, session: &SessionRef) -> Observation<bool> {
         bind(self.reported(session), |r| match r.state {
             Some(State::Blocked) => Observation::Known(false),
+            Some(State::Started) | None => {
+                Observation::unknown("the agent reported no state since it started")
+            }
             Some(_) => Observation::Known(true),
-            None => Observation::unknown("the agent reported no state yet"),
         })
     }
 
@@ -479,7 +506,7 @@ impl Runtime for ExecRuntime {
         _ready: Option<&fleet_api::workspace::WorkspaceRef>,
     ) -> Observation<WorkspaceTrust> {
         match self.reported(session) {
-            Observation::Known(r) if r.state.is_some() => {
+            Observation::Known(r) if r.reported() => {
                 return Observation::Known(WorkspaceTrust::Trusted {
                     how: "the agent reported its state, past any workspace-trust dialog".into(),
                 });
@@ -560,8 +587,10 @@ impl Runtime for ExecRuntime {
             |found| match found {
                 Inspected::Running { .. } => bind(self.reported(session), |r| match r.state {
                     Some(State::Idle) => Observation::Known(true),
+                    Some(State::Started) | None => {
+                        Observation::unknown("the running agent reported no state since it started")
+                    }
                     Some(_) => Observation::Known(false),
-                    None => Observation::unknown("the running agent reported no state yet"),
                 }),
                 Inspected::Exited { .. } | Inspected::None => Observation::Known(true),
             },

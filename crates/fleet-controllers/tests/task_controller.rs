@@ -1398,7 +1398,7 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
     );
     let mut obs = lost_obs(false);
     obs.signals = Some(Observation::Known(fleet_api::signal::Reported {
-        prompts: [fleet_api::signal::prompt_digest(text)].into(),
+        prompts: [(fleet_api::signal::prompt_digest(text), NOW + RETRY_DELAY_MS)].into(),
         ..Default::default()
     }));
     let (plan, st) = run(&with_status(&obj, &st), obs);
