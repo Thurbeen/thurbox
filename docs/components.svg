@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 640" role="img" aria-labelledby="title desc">
 <title id="title">thurbox, Fleet and runtimes: three components, two process contracts</title>
-<desc id="desc">thurbox, the interface, is a Fleet client: it watches Tasks with fleet watch, issues apply, send and delete, and opens a session's terminal stream with fleet attach. Fleet, the engine, owns Tasks, the store, every decision, harness profiles, hooks, recipes and the inbox, and reaches sessions only through a runtime protocol: start, inspect, stop, and the optional input, capture, exec, attach, list and workspace.run. A runtime is any program that runs one keyed process at a place: runtime-mux over tmux, psmux and rmux on this machine, ssh hosts and WSL; runtime-container over docker or podman; runtime-vm; or a shell script. The coding agent reports to Fleet with fleet signal and fleet result. No Rust dependency crosses between the three.</desc>
+<desc id="desc">thurbox, the interface, is a Fleet client: it watches Tasks with fleet watch, issues apply, send and delete, and opens a session's terminal stream with fleet attach. Fleet, the engine, owns Tasks, the store, every decision, harness profiles, hooks, the workspace URLs and the inbox, and reaches sessions only through a runtime protocol: start, inspect, stop, and the optional input, capture, exec, attach, list and workspace. A runtime is any program that runs one keyed process at a place: runtime-mux over tmux, psmux and rmux on this machine, ssh hosts and WSL; runtime-container over docker or podman; runtime-vm; or a shell script. The coding agent reports to Fleet with fleet signal and fleet result. No Rust dependency crosses between the three.</desc>
 <style>
   svg { color-scheme:light dark }
   .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
@@ -56,16 +56,16 @@
   <text x="468" y="200" font-size="13">controllers · every decision</text>
   <text x="468" y="222" font-size="13">harness profiles · launch, resume, trust</text>
   <text x="468" y="244" font-size="13">hooks · fleet signal, fleet result</text>
-  <text x="468" y="266" font-size="13">recipes · what a workspace holds</text>
+  <text x="468" y="266" font-size="13">workspaces · a list of URLs</text>
   <text x="468" y="288" font-size="13">inbox · receipts · the collector</text>
   <text x="468" y="318" font-size="12" class="muted">runtime protocol + conformance suite</text>
-  <text x="468" y="336" font-size="12" class="muted">fleet runtime check · fleet recipe check</text>
+  <text x="468" y="336" font-size="12" class="muted">fleet runtime check</text>
   <g class="contract"><rect x="468" y="356" width="284" height="132" rx="6"/></g>
   <text x="482" y="378" font-size="12" font-weight="650" class="muted">runtime protocol · one process per call</text>
   <text x="482" y="400" font-size="13">start · inspect · stop</text>
   <text x="482" y="420" font-size="12" class="muted">required: a Task runs on these alone</text>
   <text x="482" y="444" font-size="13">input · capture · exec · attach</text>
-  <text x="482" y="464" font-size="13">list · workspace.run</text>
+  <text x="482" y="464" font-size="13">list · workspace</text>
   <text x="482" y="482" font-size="12" class="muted">optional, declared in manifest</text>
 
   <!-- runtimes -->

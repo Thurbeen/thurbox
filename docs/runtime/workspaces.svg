@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 600" role="img" aria-labelledby="title desc">
+<title id="title">Workspaces: a list of URLs in, directories out</title>
+<desc id="desc">A Task names its workspace as a list of URLs, such as git+https, git+ssh, git+file and file. Fleet checks only that each is an absolute URL, calls the runtime's workspace verb with the Task's key and the URLs before the first start, records the directories it answers, and calls stop with release true after the session is released; a collector does the same for any key whose Task is gone. The runtime makes the workspace its own way: runtime-mux on the host, runtime-container on the docker host or in a volume, runtime-vm inside the guest, using workspace-git for git URLs and configured setup and teardown steps. Its rules: idempotent by key, never removes what it did not make, never loses work on release, never waits for a person. On release workspace-git commits uncommitted work onto a preserved ref and pushes it to a mirror; a new Task restores it by naming that ref in a git+file URL.</desc>
+<style>
+  svg { color-scheme:light dark }
+  .background{fill:#fff} .ink{fill:#182b3d} .muted{fill:#405367}
+  .box{stroke:#7890a6;stroke-width:1.5}
+  .engine{fill:#e9f5ef} .runtime{fill:#f3f4f5} .place{fill:#fff2de} .url{fill:#edf3f8}
+  .arrow{fill:none;stroke:#405367;stroke-width:2;marker-end:url(#arrow)} .arrowhead{fill:#405367}
+  .icon{fill:none;stroke:#405367;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .contract{fill:none;stroke:#7890a6;stroke-width:1.5;stroke-dasharray:6 5}
+  @media (prefers-color-scheme: dark) {
+    .background{fill:#101820} .ink{fill:#e6edf3} .muted{fill:#a9bdd0} .box{stroke:#71869a}
+    .engine{fill:#173b2d} .runtime{fill:#202a33} .place{fill:#493517} .url{fill:#1d2a36}
+    .arrow{stroke:#a9bdd0} .arrowhead{fill:#a9bdd0} .icon{stroke:#a9bdd0} .contract{stroke:#71869a}
+  }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arrowhead" d="M0 0 L10 5 L0 10 Z"/></marker>
+  <symbol id="i-engine" viewBox="0 0 24 24"><circle class="icon" cx="12" cy="12" r="3"/><path class="icon" d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path class="icon" d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path class="icon" d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+  <symbol id="i-mux" viewBox="0 0 24 24"><rect class="icon" x="2" y="3" width="20" height="18" rx="2"/><path class="icon" d="M2 9h20M9 9v12M15 9v12"/></symbol>
+  <symbol id="i-container" viewBox="0 0 24 24"><path class="icon" d="M3 8l9-4 9 4v8l-9 4-9-4z"/><path class="icon" d="M3 8l9 4 9-4M12 12v8"/></symbol>
+  <symbol id="i-vm" viewBox="0 0 24 24"><rect class="icon" x="2" y="3" width="20" height="14" rx="2"/><path class="icon" d="M8 21h8M12 17v4"/><rect class="icon" x="6" y="7" width="12" height="6" rx="1"/></symbol>
+  <symbol id="i-git" viewBox="0 0 24 24"><circle class="icon" cx="6" cy="5" r="2.5"/><circle class="icon" cx="6" cy="19" r="2.5"/><circle class="icon" cx="18" cy="9" r="2.5"/><path class="icon" d="M6 7.5v9M18 11.5c0 3-3 4-6 4.5-2 .4-3 1-3 1"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path class="icon" d="M12 2l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V5z"/><path class="icon" d="M9 12l2 2 4-4"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle class="icon" cx="12" cy="12" r="3"/><path class="icon" d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+</defs>
+<rect class="background" width="1180" height="600" rx="12"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" class="ink">
+  <text x="30" y="36" font-size="21" font-weight="700">Workspaces: a list of URLs in, directories out</text>
+  <text x="30" y="61" font-size="14">Fleet's whole interface is the list and two calls. How the files come to exist is the runtime's.</text>
+
+  <!-- the task's list -->
+  <g class="box"><rect class="url" x="30" y="90" width="330" height="170" rx="8"/></g>
+  <use href="#i-link" x="48" y="106" width="26" height="26"/>
+  <text x="84" y="125" font-size="17" font-weight="650">spec.workspace</text>
+  <g font-size="12" font-family="ui-monospace,SFMono-Regular,Menlo,monospace">
+    <text x="48" y="156">git+https://…/app.git#main</text>
+    <text x="48" y="178">git+ssh://…/lib.git?branch=feat-x</text>
+    <text x="48" y="200">git+file:///…#refs/fleet/preserved/…</text>
+    <text x="48" y="222">file:///home/me/notes</text>
+  </g>
+  <text x="48" y="248" font-size="12" class="muted">the first is where the agent starts</text>
+
+  <!-- fleet -->
+  <g class="box"><rect class="engine" x="420" y="90" width="330" height="170" rx="8"/></g>
+  <use href="#i-engine" x="438" y="106" width="26" height="26"/>
+  <text x="474" y="125" font-size="17" font-weight="650">Fleet</text>
+  <text x="438" y="156" font-size="13">checks each is an absolute URL</text>
+  <text x="438" y="178" font-size="13">before the first start: workspace {key, urls}</text>
+  <text x="438" y="200" font-size="13">records dirs, builds the harness argv</text>
+  <text x="438" y="222" font-size="13">after release: stop {key, release: true}</text>
+  <text x="438" y="248" font-size="12" class="muted">collector: the same for keys with no Task</text>
+
+  <!-- runtime -->
+  <g class="box"><rect class="runtime" x="810" y="90" width="340" height="170" rx="8"/></g>
+  <use href="#i-mux" x="828" y="106" width="26" height="26"/>
+  <text x="864" y="125" font-size="17" font-weight="650">the runtime</text>
+  <text x="828" y="156" font-size="13">Made{dirs, adopted}</text>
+  <text x="828" y="178" font-size="13">Unsupported{url} · Failed{why}</text>
+  <text x="828" y="200" font-size="13">dirs as the process sees them</text>
+  <text x="828" y="222" font-size="13">manifest: schemes · survivesStop</text>
+  <text x="828" y="248" font-size="12" class="muted">customized in its config, or by writing one</text>
+
+  <g class="arrow"><path d="M360 175 H418"/><path d="M750 160 H808"/><path d="M808 200 H752"/></g>
+  <text x="756" y="152" font-size="11" class="muted">urls</text>
+  <text x="762" y="215" font-size="11" class="muted">dirs</text>
+
+  <!-- how each runtime makes it -->
+  <text x="30" y="296" font-size="14" font-weight="650">How each runtime makes it</text>
+  <g class="box">
+    <rect class="place" x="30" y="310" width="270" height="96" rx="8"/>
+    <rect class="place" x="320" y="310" width="270" height="96" rx="8"/>
+    <rect class="place" x="610" y="310" width="270" height="96" rx="8"/>
+    <rect class="place" x="900" y="310" width="250" height="96" rx="8"/>
+  </g>
+  <use href="#i-mux" x="46" y="324" width="22" height="22"/>
+  <text x="76" y="340" font-size="14" font-weight="650">runtime-mux</text>
+  <text x="46" y="364" font-size="12">on the host: local, ssh, WSL</text>
+  <text x="46" y="384" font-size="12" class="muted">the same paths</text>
+  <use href="#i-container" x="336" y="324" width="22" height="22"/>
+  <text x="366" y="340" font-size="14" font-weight="650">runtime-container</text>
+  <text x="336" y="364" font-size="12">on the docker host, or a volume per key</text>
+  <text x="336" y="384" font-size="12" class="muted">bind mounts, or /workspace</text>
+  <use href="#i-vm" x="626" y="324" width="22" height="22"/>
+  <text x="656" y="340" font-size="14" font-weight="650">runtime-vm</text>
+  <text x="626" y="364" font-size="12">inside the guest, or a shared folder</text>
+  <text x="626" y="384" font-size="12" class="muted">the guest's disk, or virtiofs</text>
+  <use href="#i-git" x="916" y="324" width="22" height="22"/>
+  <text x="946" y="340" font-size="14" font-weight="650">workspace-git</text>
+  <text x="916" y="364" font-size="12">git URLs, run where files belong</text>
+  <text x="916" y="384" font-size="12" class="muted">one real worktree per URL</text>
+
+  <!-- rules and customization -->
+  <g class="box"><rect class="engine" x="30" y="430" width="560" height="140" rx="8"/><rect class="runtime" x="610" y="430" width="540" height="140" rx="8"/></g>
+  <use href="#i-shield" x="46" y="444" width="24" height="24"/>
+  <text x="78" y="461" font-size="14" font-weight="650">rules every runtime keeps · fleet runtime check</text>
+  <text x="46" y="488" font-size="12">idempotent by key: the same key answers the same dirs</text>
+  <text x="46" y="508" font-size="12">never removes what it did not make: file:// survives</text>
+  <text x="46" y="528" font-size="12">never loses work: workspace-git preserves it on a ref, pushed to its mirror</text>
+  <text x="46" y="548" font-size="12">never waits for a person: release finishes or answers Unknown</text>
+  <use href="#i-gear" x="626" y="444" width="24" height="24"/>
+  <text x="658" y="461" font-size="14" font-weight="650">customizing</text>
+  <text x="626" y="488" font-size="12">[[workspace.setup]] and [[workspace.teardown]], matched by URL</text>
+  <text x="626" y="508" font-size="12">a failing setup step fails and rolls back the whole call</text>
+  <text x="626" y="528" font-size="12">anything else: a runtime of one's own, from the template</text>
+  <text x="626" y="548" font-size="12" class="muted">restore = a new Task naming the preserved ref</text>
+</g>
+</svg>

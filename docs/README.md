@@ -51,8 +51,8 @@ thurbox (interface) ──process: fleet watch / apply / send / delete / attach�
 
 | Component | Owns | Never owns |
 | --- | --- | --- |
-| Fleet (`crates/fleet-*`) | Tasks (one per session), the store, every decision, harness profiles (launch, resume, trust), agent hooks through `fleet signal`, every decision about workspaces (what, when, whether to clean), the inbox, receipts, the runtime protocol and its conformance suite | Any runtime's code; any Rust dependency on a `runtime-*` crate or `thurbox` |
-| A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, running workspace recipes there, its own place config (hosts, images, VM definitions), sources and credentials, bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
+| Fleet (`crates/fleet-*`) | Tasks (one per session), the store, every decision, harness profiles (launch, resume, trust), agent hooks through `fleet signal`, the workspace URLs, and when to make and release them, the inbox, receipts, the runtime protocol and its conformance suite | Any runtime's code; any Rust dependency on a `runtime-*` crate or `thurbox` |
+| A runtime (`crates/runtime-*`, or any program) | Processes by key on its places, the workspaces they work in (made from URLs, kept, released), its own place config (hosts, images, VM definitions), sources and credentials, bounded `exec`, the attach command, whatever keeps a terminal alive there | Tasks, agents, journals, delivery, the interface |
 | thurbox (`crates/thurbox`) | The TUI, the Lua kernel, rendering, stream panes, interface state in plain files (order, seen marks, bookmarks, review notes, settings, keybindings) | Sessions, SQLite, any runtime code, any Rust dependency on `fleet-*` or `runtime-*` |
 
 Where a fact belongs:
@@ -73,7 +73,7 @@ on every build, the way it checks Fleet's crates today:
 | each `runtime-*` | `term-stream`, crates.io | `fleet-*`, `thurbox`, every other `runtime-*` |
 | `term-stream` | crates.io | everything else |
 | `term-holder` | `term-stream`, crates.io | everything else |
-| `workspace-git` (the default recipe) | crates.io | everything else |
+| `workspace-git` (makes git workspaces; runtimes run it, never link it) | crates.io | everything else |
 | `thurbox` | `term-stream`, crates.io | `fleet-*`, `runtime-*`, `term-holder` |
 
 Components talk only through processes; `term-stream` is a wire format, not
@@ -87,7 +87,7 @@ to a repository of its own with nothing to untangle.
 | Views | thurbox (or any client) → Fleet: `fleet watch`, `apply`, `send`, `delete`, `attach` | [Fleet architecture](fleet/architecture.md#views) |
 | The runtime protocol | Fleet → a runtime: `start`, `inspect`, `stop` and the optional verbs | [Runtimes](runtime/README.md#the-runtime-protocol) |
 | The terminal stream | a view ↔ the process `fleet attach` names | [Runtimes](runtime/README.md#the-terminal-stream) |
-| Recipes | Fleet → a workspace recipe, run by the runtime's `workspace.run` | [Fleet architecture](fleet/architecture.md#workspaces-by-recipe) |
+| Workspaces | Fleet → a runtime: a list of URLs in, one directory per URL out | [Runtimes](runtime/README.md#workspaces) |
 
 ## Where the SQLite tables go
 
@@ -99,7 +99,7 @@ to a repository of its own with nothing to untangle.
 | `sessions`: `stopped_at`, `lost_at`, `teardown_owed`, `relaunch_held_at` | Task conditions, receipts, finalizers |
 | `sessions`: `parent_session_id` | a parent label on the Task |
 | `sessions`: `display_order`, `seen_at` | thurbox interface file |
-| `worktrees` | Fleet's workspace port (see Workspaces) |
+| `worktrees` | the runtime's workspaces ([workspace-git](runtime/README.md#workspace-git-the-default-for-git-urls)) |
 | `session_meta`, `session_events`, `session_relaunches`, `session_intents`, `session_loss_suspects`, `session_lifecycle_clock` | dropped: Fleet's receipts and Known/Unknown observation |
 | `session_messages` | `status.inbox`, `fleet send` |
 | `tasks` | Tasks with `dispatch: false` |
@@ -146,7 +146,7 @@ docs/
 │   ├── controllers/           one page per controller (+ its state-machine .svg)
 │   └── resources/             one page per resource kind
 └── runtime/                   the runtimes
-    └── README.md              protocol, terminal stream, workspace.run (+ .svg)
+    └── README.md              protocol, terminal stream, workspaces (+ .svg)
 ```
 
 Naming: one directory per component, each with a `README.md` index. Pages are

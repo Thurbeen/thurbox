@@ -357,160 +357,62 @@ thurbox is a Fleet client and reads nothing of Fleet's store directly.
 An interactive session is a Task with no brief: it spawns and waits for its
 user.
 
-### Workspaces by recipe
+### Workspaces
 
-![Workspaces: Fleet decides, a recipe prepares, the runtime places; where each runtime runs the recipe; clean preserves work and the collector finishes what a deletion could not](workspaces.svg)
-
-A workspace is the files one session works in, and what is done to them before
-the agent starts: worktrees or clones, dependencies installed, a `.env`
-copied, a database seeded, a dev container built. That preparation is 100%
-the user's to define. It also depends on where the session runs: the same
-disk for a tmux session, a bind mount or a volume for a container, the guest's
-disk or a shared folder for a VM. So three parts share the work:
-
-| Fleet decides | A recipe prepares | The runtime places |
-| --- | --- | --- |
-| which recipe, with which repositories and parameters, under which key | what the workspace contains and how it is made, kept and removed | where the recipe runs and where the files live |
-| when: materialize once before the first start, clean once after release | the facts: whole, dirty, what is checked out | the paths the process sees them at |
-| retention of preserved work, `status.workspace`, every retry | preserving work before removing it | the durable place preserved work lands |
-
-#### Recipes
-
-A recipe is a program, like a runtime or a plugin: `<recipe> <verb>`, a JSON
-request on stdin, Known or Unknown on stdout, idempotent by key, Unknown never
-concludes.
-
-| Verb | Answer |
-| --- | --- |
-| `manifest` | protocol version, verbs, and a JSON Schema for its `params` |
-| `materialize` | `{key, repositories: [{name, url \| path, ref, branch?}], params}`, whole or nothing: `Materialized{workspace, adopted}`, `Unmapped{repository}`, `Failed{why}` |
-| `find` | the whole workspace under `key`, or `None`; a partial one is `None` and the next `materialize` rolls it back |
-| `status` | per repository: branch, head, dirty, commits not on any remote |
-| `clean` | `{workspace, mode: preserve \| discard}`: `Cleaned{preserved: [{name, ref, commit}]}` |
-| `list` | every workspace key it holds under its root, for the collector |
-
-A `workspace` answer carries an opaque `id`, the `dir` and `extra_dirs` **as
-the process sees them**, and the `trustRoot`. Fleet passes it to `start`
-unchanged and uses the paths only to build the harness's argv.
-
-Recipes are configured by name and chosen per Task:
-
-```toml
-[recipes.node]
-program = ["workspace-git"]            # the default recipe, reused
-setup = [                              # run in the workspace after it is whole
-  "cp ~/.config/app/.env .env",
-  "npm ci",
-]
-timeoutMs = 600000
-
-[recipes.devcontainer]
-program = ["~/.fleet/recipes/devcontainer.sh"]   # a recipe of one's own
-```
+A Task names its workspace as a list of URLs. Fleet passes the list to the
+runtime and gets directories back. Everything between, how files come to
+exist, where they live, what is installed, how they are kept and removed, is
+the runtime's. [Runtimes](../runtime/README.md#workspaces) owns that side.
 
 ```json
-"workspace": { "recipe": "node", "repositories": [{"name": "app", "url": "…"}],
-               "params": { "node": "22" } }
+"workspace": [
+  "git+https://github.com/acme/app.git#main",
+  "git+https://github.com/acme/lib.git",
+  "file:///home/me/notes"
+]
 ```
 
-Three levels, each optional:
+- Each entry is an absolute URL. Fleet checks that, and nothing else: the
+  scheme, the reference and any query are the runtime's to read.
+- The first entry is where the agent starts; the others are the extra
+  directories it spans.
+- An empty list means the agent starts in the runtime's default directory.
 
-1. **Configure** `workspace-git`, the default recipe: root, branch prefix,
-   sources, retention.
-2. **Add steps** to any recipe: `setup` runs in the workspace after it is
-   whole and before `Materialized` is answered, so a failing step makes the
-   whole `materialize` fail and roll back; `teardown` runs before `clean`,
-   for what must leave the workspace first (artifacts, logs, a compose stack).
-3. **Replace the recipe**: any program with the verbs above. Its `params` are
-   validated against its own schema at `fleet apply`, as a plugin's kinds
-   are.
+Fleet makes two calls, each idempotent by the Task's key:
 
-A Task with no `recipe` uses the host's default recipe, `workspace-git`
-unless configured otherwise. A `{dir}` Task uses none.
+| When | Call | Answer Fleet records |
+| --- | --- | --- |
+| before the first start | `workspace {key, urls}` | `status.workspace.dirs`: one directory per URL, as the process sees it |
+| after the session is released | `stop {key, release: true}` | the workspace is gone |
 
-Whatever a recipe does, Fleet keeps its guarantees, because they are the
-recipe contract, checked by `fleet recipe check -- <program>`: two
-materializes with one key leave one workspace; a partial workspace is not
-found; `clean` in `preserve` mode leaves every change reachable from a ref in
-the durable place; `list` names everything it made. That is what lets cleanup
-stay automatic for a recipe Fleet has never seen.
+Fleet builds the harness's argv from `dirs` (the first is the working
+directory, the rest go to `additional_dir_args`) and starts the session. A
+stop, a pause, a resume or a revive leaves the workspace alone.
 
-#### The default recipe
+The answers map to conditions and nothing more:
 
-`workspace-git` makes git worktrees. Its layout:
-
-```text
-<root>/<key>/<name>/                  one real worktree per repository
-<root>/<key>/.fleet-workspace.json    written last; without it the workspace is partial
-<root>/.sources/<digest>.git          a bare mirror, when no checkout is mapped
-```
-
-- One repository: the session runs in `<root>/<key>/<name>`. Several: in
-  `<root>/<key>`, where every worktree is a real subdirectory, so thurbox's
-  symlink workspace goes.
-- Branches: no `branch` makes `<prefix>/<task name>` from `ref`; a new name
-  makes that branch; an existing branch is checked out, and one checked out
-  elsewhere gets `<branch>-<n>` from its head.
-- `clean` in `preserve` mode, per repository: a dirty worktree is committed,
-  untracked files included, through a temporary index onto
-  `refs/fleet/preserved/<key>/<name>` (the branch itself is left as the agent
-  left it); the branch and that ref are pushed to the durable source; then the
-  worktree is removed. Branches are never deleted by `clean`.
-- Retention is pruned by `workspace-git` itself on each call against a
-  source: a preserved ref older than `preserve.days` (default 30) goes, and a
-  `<prefix>/*` branch goes once its head is reachable from a remote ref
-  (pushed or merged). No state in Fleet is needed for it.
-
-#### Lifecycle, with no person in the loop
-
-Cleaning never waits for anyone. Nothing is lost because work is preserved
-before files are removed, and nothing stays stuck because a collector finishes
-what a deletion could not.
-
-```text
-materialize ──▶ start(ref) ──▶ (stop / start … pause, resume, revive) ──▶ release ──▶ clean(preserve)
-   once                    the workspace is untouched                                      once, or the collector
-```
-
-- After an Unknown `materialize`, Fleet asks `find`, never materializes
-  blindly again.
-- `clean` defaults to `preserve`. Uncommitted changes become a preserved ref
-  and unpushed commits stay on their branch in the durable source, so there is
-  no dirty state to ask about. `fleet delete --discard` asks for `discard`,
-  which skips preserving; nothing else does.
-- `fleet workspace preserved` lists the preserved refs, through the runtime's
-  `exec`, and `fleet workspace restore <ref>` opens a new Task on one.
-- A busy branch does not wait either: when the requested branch is checked
-  out elsewhere, the workspace gets `<branch>-<n>` from that branch's head,
-  and `status.workspace` records the branch it got.
-- `spec.workspace.onDelete: keep` leaves the files and forgets them.
-- thurbox's soft delete stops the Task and sets `dispatch: false`; restoring
-  starts it again in the same workspace.
+- `Unsupported{url}`: the runtime does not handle that scheme. The Task waits
+  with `WorkspaceUnsupported`; a new URL list or another host lets it go on.
+- `Failed{why}`: the runtime made nothing. The Task waits with
+  `WorkspaceFailed` and retries on its backoff.
+- Unknown: Fleet asks again with the same key, which adopts a workspace that
+  was made.
 
 #### The collector
 
-A deletion releases the session and tries `clean` once. Whatever it could not
-finish, an unreachable host, an Unknown answer, a crash between two effects,
-is not a reason to keep the Task: its finalizer goes, and the collector takes
-over. On each sweep, per runtime that implements `list` and per recipe it
-runs:
+A deletion releases the session and its workspace once. Whatever that could
+not finish (an unreachable host, an Unknown answer, a crash between two
+effects) does not keep the Task: its finalizer goes, and the collector takes
+over. On each sweep, for each runtime that implements `list`, every key with
+no live Task in the store gets `stop {key, release: true}`.
 
-- every workspace key with no live Task in the store is cleaned in `preserve`
-  mode;
-- every process key (`list` on processes) with no live Task is stopped.
-
-The store proves the Task's absence (Known); the runtime proves the leftover
-exists (Known). Unknown on either side does nothing until the next sweep. The
-key carries the Task's uid, so a recreated Task with the same name is never
+The store proves the Task is absent and the runtime proves the leftover
+exists, both Known; Unknown on either side waits for the next sweep. The key
+carries the Task's uid, so a recreated Task with the same name is never
 mistaken for the old one.
-
-A `{dir}` workspace exists before the Task and is the user's: nothing makes,
-checks or cleans it, and the runtime must see it (`sharesHost`, or a runtime
-that mounts it).
 
 #### Reading a workspace from the interface
 
 The diff and review views need the files. thurbox asks
 `fleet workspace exec <task> -- git …`, which Fleet runs through the
-runtime's `exec` with `in: workspace`: inside the container or the guest,
-or on the host. `exec` therefore takes a scope, `host` or `workspace`.
+runtime's `exec` with `in: workspace`.

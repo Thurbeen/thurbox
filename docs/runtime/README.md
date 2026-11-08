@@ -12,8 +12,8 @@ This page owns two contracts and one verb:
 - [the runtime protocol](#the-runtime-protocol), how Fleet drives a runtime;
 - [the terminal stream](#the-terminal-stream), how a view attaches to a
   session on any runtime;
-- [`workspace.run`](#workspaces-where-a-recipe-runs), where a workspace recipe
-  runs and how the process sees its files.
+- [workspaces](#workspaces), how a list of URLs becomes the directories a
+  session works in.
 
 ## The runtime protocol
 
@@ -24,14 +24,14 @@ process per call: `<program> <verb>`, a JSON request on stdin, and on stdout
 | Verb | Required | Answer |
 | --- | --- | --- |
 | `manifest` | yes | protocol version and the verbs supported |
-| `start` | yes | adopts the one live process holding the key, else starts `argv` with `env` in a workspace a recipe made through this runtime, or in a `{dir}` |
+| `start` | yes | adopts the one live process holding the key, else starts `argv` with `env` in the workspace made under that key |
 | `inspect` | yes | `None`, `Running{id}`, `Exited{id, code}` |
-| `stop` | yes | a process already gone counts as stopped |
-| `list` | no | every process key the runtime holds, for the collector |
+| `stop` | yes | a process already gone counts as stopped; `release: true` also removes the key's workspace |
+| `list` | no | every key the runtime holds a process or a workspace for, for the collector |
 | `input` | no | types text, optionally submits |
 | `capture` | no | screen text, cursor, foreground process |
 | `exec` | no | a bounded command, `in: host` or `in: workspace` (inside the place), deadline and output cap |
-| `workspace.run` | no | runs a workspace recipe's verb where the workspace's files belong ([where a recipe runs](#workspaces-where-a-recipe-runs)) |
+| `workspace` | no | `{key, urls}` → one directory per URL, as the process sees it ([workspaces](#workspaces)) |
 | `attach` | no | `{stream: {argv}}` or `{tty: {argv}}`: how to open a terminal stream ([the terminal stream](#the-terminal-stream)) |
 
 Every verb is idempotent by key. The runtime knows no harness, Task or
@@ -172,40 +172,117 @@ any byte pipe reaches it: `docker exec -i` without `-t`, ssh, vsock,
 `runtime-mux`, for places with no multiplexer. A runtime may still run tmux in
 its place instead.
 
-## Workspaces: where a recipe runs
+## Workspaces
 
-Fleet decides what a workspace holds and when, a
-[recipe](../fleet/architecture.md#workspaces-by-recipe) prepares it, and the
-runtime places it.
+![Workspaces: Fleet passes a list of URLs and gets directories back; each runtime makes them its own way, with workspace-git for git URLs; release preserves work and never removes what it did not make](workspaces.svg)
 
-The runtime decides, with one verb: `workspace.run {recipe, verb, request}`
-runs the recipe at the place its files belong to, with
-`FLEET_WORKSPACE_ROOT` and `FLEET_DURABLE` set, and returns its answer. The
-runtime also makes the recipe's program and `setup` steps available there.
-`start` then makes the workspace's paths visible to the process.
+Fleet hands a runtime a list of URLs and gets one directory per URL back
+([the Fleet side](../fleet/architecture.md#workspaces)). Everything else is
+the runtime's: where the files live, how they are made, what is installed,
+how work is kept when they go. That is where a workspace is customized, by
+configuring a runtime or by writing one.
 
-| Runtime | Where `workspace.run` runs the recipe | How the process sees the files |
-| --- | --- | --- |
-| `runtime-mux` | on the host (this machine, ssh, WSL) | same filesystem |
-| `runtime-container`, `bind` | on the docker host | bind mounts at the same paths |
-| `runtime-container`, `volume` | in a one-shot helper container on the key's volume | the volume at `/workspace` |
-| `runtime-vm` | inside the guest, or on the host for a shared folder | the guest's disk, or virtiofs |
-| `runtime-process` | this machine | same filesystem |
+### The verb
 
-So a recipe is written once and runs on every runtime that can reach a shell
-and its tools: the runtime places it, the recipe prepares. A runtime whose
-mechanism has nothing to do with files on a shell (a disk image, a snapshot, a
-remote dev environment) ships its own recipe and is configured to use it.
+`workspace {key, urls}` answers one of:
 
-The runtime's `manifest` declares:
+| Answer | Meaning |
+| --- | --- |
+| `Made{dirs, adopted}` | one directory per URL, in order, as the process sees it; `adopted` when the key's workspace already existed |
+| `Unsupported{url}` | this runtime does not handle that URL |
+| `Failed{why}` | nothing was made, or what was made was rolled back |
 
+`stop {key, release: true}` removes the key's workspace with the process.
+
+A runtime that implements `workspace` holds to these rules, and
+`fleet runtime check` tests each:
+
+- **Idempotent by key.** A second call with the same key answers the same
+  directories, adopted. A partial workspace is never answered: the next call
+  rolls it back and makes it again.
+- **Never removes what it did not make.** A `file://` directory is used as it
+  is and survives every release.
+- **Never loses work on release.** Anything the workspace holds that exists
+  nowhere else (uncommitted changes, unpushed commits) is preserved before the
+  files go, in a durable place outside the workspace. How is the runtime's
+  choice.
+- **Never waits for a person.** Release always finishes or answers Unknown.
+
+The `manifest` declares what Fleet may rely on:
+
+- `workspace.schemes`: the URL schemes the runtime handles, such as
+  `git+https`, `git+ssh`, `git+file`, `file`.
 - `workspace.survivesStop`: the files outlive the process. When false, Fleet
-  never pauses an idle session of that runtime, because pause is stop.
-- `workspace.durable`: the place preserved work lands, passed to recipes as
-  `FLEET_DURABLE` (the host's mirror or checkout, or a remote). A runtime
-  whose files die with the place (a VM disk, a volume) names one outside it.
-- `workspace.sharesHost`: the process sees the host's filesystem. Only then
-  is a repository named by `path` accepted.
+  never pauses an idle session on that runtime, because pause is stop.
 
-A runtime without `workspace.run` runs `{dir}` Tasks only; a `{repositories}`
-Task on it waits with `WorkspaceUnsupported`.
+A runtime without `workspace` runs only Tasks with an empty list.
+
+### URLs
+
+The URL is the whole request: Fleet adds nothing to it.
+
+| URL | What `workspace-git` makes |
+| --- | --- |
+| `git+https://host/org/repo.git` | a worktree on a new branch from the default branch |
+| `git+https://host/org/repo.git#v2` | the same, from `v2` |
+| `git+ssh://git@host/org/repo.git?branch=feat-x#main` | a worktree on `feat-x`, made from `main` when it does not exist |
+| `git+file:///srv/mirrors/repo.git#refs/fleet/preserved/<key>/repo` | a worktree on work an earlier release preserved |
+| `file:///home/me/notes` | nothing: the directory, as it is |
+
+Restoring preserved work is therefore a new Task whose URL names the preserved
+ref; Fleet needs no verb for it.
+
+### How each runtime makes one
+
+| Runtime | Where the files are | How the process sees them |
+| --- | --- | --- |
+| `runtime-mux` | on the host (this machine, ssh, WSL) | the same paths |
+| `runtime-container` | on the docker host, or in a volume per key | bind mounts at the same paths, or the volume at `/workspace` |
+| `runtime-vm` | inside the guest, or on the host for a shared folder | the guest's disk, or virtiofs |
+| `runtime-process` | this machine | the same paths |
+
+### workspace-git, the default for git URLs
+
+`workspace-git` is a small program a runtime runs where its files belong: on
+the host, against a volume, inside a guest. `runtime-mux` and
+`runtime-process` use it directly, and the others inside their own places.
+Its layout:
+
+```text
+<root>/<key>/<name>/                  one real worktree per git URL
+<root>/<key>/.fleet-workspace.json    written last; without it the workspace is partial
+<root>/.sources/<digest>.git          a bare mirror per repository, fetched before each make
+```
+
+- With one URL the session starts in `<root>/<key>/<name>`; with several the
+  first URL's worktree is still the start, and every worktree is a real
+  directory, so thurbox's symlink workspace goes.
+- With no `branch`, the branch is named after the key; an existing branch is
+  checked out, and one checked out elsewhere gets `<branch>-<n>`.
+- On release, a dirty worktree is committed, untracked files included,
+  through a temporary index onto `refs/fleet/preserved/<key>/<name>`; that ref
+  and the branch are pushed to the mirror; then the worktree goes. Branches
+  are never deleted on release.
+- On each call it prunes its own retention: preserved refs older than
+  `preserve.days` (default 30), and branches whose head a remote already has.
+
+### Customizing a workspace
+
+Each runtime offers what fits its places. `runtime-mux` and
+`runtime-process` take steps to run in the workspace once it is whole, and
+before release, matched by URL:
+
+```toml
+[[workspace.setup]]
+match = "git+https://github.com/acme/app.git"
+run = ["cp ~/.config/app/.env .env", "npm ci"]
+
+[[workspace.teardown]]
+match = "git+https://github.com/acme/app.git"
+run = ["docker compose down"]
+```
+
+A failing setup step fails the whole `workspace` call, which rolls back. A
+need no configuration covers is a runtime of one's own: a script that answers
+the protocol, starting from the runtime template, held to the same rules by
+`fleet runtime check`.

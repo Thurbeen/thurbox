@@ -21,8 +21,8 @@ thurbox, Fleet and each runtime call each other by running a program and
 reading its answer. No Rust dependency crosses from one component to another.
 The contracts are the [views](fleet/architecture.md#views), the
 [runtime protocol](runtime/README.md#the-runtime-protocol), the
-[terminal stream](runtime/README.md#the-terminal-stream) and the
-[recipe contract](fleet/architecture.md#recipes).
+[terminal stream](runtime/README.md#the-terminal-stream) and
+[workspaces](runtime/README.md#workspaces).
 
 A wire format is not a component: `term-stream` holds only frame types and
 their codec, and any component may depend on it.
@@ -363,15 +363,15 @@ write to it is a typed store mutation.
 
 #### R1. A runtime knows no Task
 
-A runtime runs keyed processes and workspace recipes at its places. It knows
+A runtime runs keyed processes and makes their workspaces at its places. It knows
 no Task, harness, journal or delivery. The protocol carries none of them.
 
 #### R2. Idempotent by key, and Unknown is not None
 
 Every verb is idempotent by key: two starts with one key leave one process,
 and a stop of an absent process succeeds. An error answers Unknown, never
-None. `fleet runtime check` holds every runtime to this, and a recipe is held
-to the same by `fleet recipe check`.
+None. A release never removes what the runtime did not make and never loses
+work. `fleet runtime check` holds every runtime to this.
 
 ## Enforcement map
 
@@ -397,4 +397,4 @@ to the same by `fleet recipe check`.
 | F3. Intent and receipt | Contract tests in `fleet/contracts.md` | Fleet |
 | F4. One writer per field | `fleet-arch` (permitted status writers) | Fleet |
 | R1. A runtime knows no Task | The protocol's schema | Once the runtime protocol ships |
-| R2. Idempotent by key | `fleet runtime check`, `fleet recipe check` | Once the runtime protocol ships |
+| R2. Idempotent by key | `fleet runtime check` | Once the runtime protocol ships |

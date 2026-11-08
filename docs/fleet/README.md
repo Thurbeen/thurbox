@@ -11,7 +11,7 @@ Fleet fits between thurbox and the runtimes is [the overview](../README.md).
 
 | Page | Answers |
 | --- | --- |
-| [architecture.md](architecture.md) | The components, boundaries, ports and execution flow, and the target: views and workspaces by recipe |
+| [architecture.md](architecture.md) | The components, boundaries, ports and execution flow, and the target: views and workspaces |
 | [contracts.md](contracts.md) | What each part guarantees, and which tests hold it to that |
 | [configuration.md](configuration.md) | `fleet init` and the VEGA starter, every `fleet.toml` field, the environment file, OpenTelemetry export |
 
@@ -51,5 +51,5 @@ One page per kind, because each is a reference read on its own.
 
 [architecture.svg](architecture.svg) is today's execution flow,
 [architecture-target.svg](architecture-target.svg) the target with views and
-runtimes, [workspaces.svg](workspaces.svg) workspaces by recipe, and
+runtimes, and
 `controllers/<name>.svg` each controller's state machine.
