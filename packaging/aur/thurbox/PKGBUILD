@@ -31,7 +31,11 @@ prepare() {
     # under Rust's default rust-lld. Dropping the feature makes
     # libsqlite3-sys use the system libsqlite3.so via pkg-config. This
     # rewrites Cargo.lock, hence --offline (not --frozen) in build().
-    sed -i '/^rusqlite/ s/, features = \["bundled"\]//' crates/thurbox/Cargo.toml
+    # The manifest is crates/thurbox/Cargo.toml from the workspace layout on,
+    # the root one in the releases before it.
+    local manifest=crates/thurbox/Cargo.toml
+    [ -f "$manifest" ] || manifest=Cargo.toml
+    sed -i '/^rusqlite/ s/, features = \["bundled"\]//' "$manifest"
 }
 
 build() {
