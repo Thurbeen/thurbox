@@ -1,11 +1,12 @@
 //! Pausing an idle agent session and resuming it when work arrives, end to
 //! end: the real `fleet` binary, its file store, TaskController and the
-//! thurbox adapter driving the bounded `thurbox-cli` stand-in.
+//! thurbox adapter driving the bounded `thurbox-cli` stand-in. The agent's
+//! activity is what its hooks report through `fleet signal`.
 
 mod support;
 
 use serde_json::{Value, json};
-use support::{Env, assert_condition, object, runtime_config};
+use support::{Env, assert_condition, object, runtime_config, wait};
 
 const PAUSE_AFTER_MS: u64 = 600_000;
 
@@ -43,17 +44,24 @@ fn calls(env: &Env, sub: &str) -> usize {
     env.stub_calls_of(sub)
 }
 
+/// What the agent's hooks report: `idle`, `active` (working), or nothing,
+/// which leaves its report empty.
 fn set_activity(env: &Env, activity: Option<&str>) {
-    env.edit_stub(|s| {
-        for sess in s["sessions"].as_array_mut().unwrap() {
-            match activity {
-                Some(a) => sess["activity"] = json!(a),
-                None => {
-                    sess.as_object_mut().unwrap().remove("activity");
-                }
-            }
+    let file = env
+        .data
+        .join("signals")
+        .join(format!("{}.jsonl", env.session_key("t1")));
+    let state = match activity {
+        Some("idle") => "idle",
+        Some("active") => "working",
+        _ => {
+            let _ = std::fs::remove_file(&file);
+            return;
         }
-    });
+    };
+    let mut cmd = env.command(&["signal", state]);
+    cmd.env("FLEET_SIGNAL_FILE", &file);
+    wait(cmd.spawn().expect("fleet signal")).ok();
 }
 
 /// Let the Task's idle time run past `pauseAfterMs` now, as time would.
@@ -87,6 +95,13 @@ fn stopped(env: &Env) -> bool {
 fn pause(env: &Env, name: &str) {
     env.reconcile().ok();
     assert_eq!(env.status(name)["phase"], "Briefed");
+    assert!(
+        env.stub_sessions()[0]["env"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("FLEET_SIGNAL_FILE")),
+        "the agent was given its signal file"
+    );
     set_activity(env, Some("idle"));
     env.reconcile().ok();
     assert_eq!(calls(env, "stop"), 0, "idle, but not for long enough yet");

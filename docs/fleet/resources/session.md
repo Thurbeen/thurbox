@@ -38,17 +38,20 @@ Task ──owns one, spawn to release──▶ Session
 
 ## States
 
-`status.sessionState` is what the runtime last proved. Each state is one
-Known answer of the runtime port. Unknown answers prove nothing and keep the
-last state. Nothing in Fleet decides on the state; a view reads it.
+`status.sessionState` is what Fleet last proved. Each state is one Known
+answer of the runtime port, or, for the agent's activity, of the agent's own
+hooks through `fleet signal` ([signals](../controllers/task.md#signals)).
+Unknown answers prove nothing and keep the last state. Nothing in Fleet
+decides on the state; a view reads it. Activity is read only of a session
+that may be paused, or while a send waits for its prompt proof.
 
 | State | Meaning | Proved by | Thurbox adapter |
 | --- | --- | --- | --- |
 | `Gone` | A readable session list no longer shows the Session under its key, or shows another Session there. | `find` is `Known(None)`, or names a different Session. | `session list` without the key. |
 | `Lost` | The runtime holds the Session, but its agent's window is gone, as after a host reboot. | `lost` is `Known(true)`. | `session get` reports `hook_corroboration: "missing"` on a session that is not stopped. |
 | `Paused` | The agent is stopped, by Fleet or by anyone else. The row, workspace and conversation are kept. | `paused` is `Known(true)`. | `session get` reports `stopped: true` or `activity: "stopped"`. |
-| `Idle` | The agent waits for input, with no background work to lose. | `activity` is `Known(Idle)`. | `session get` reports `activity: "idle"`. |
-| `Running` | The runtime holds the Session and nothing proves its agent stopped, lost or idle. | `activity` is `Known(Active)`, or any proof of presence: `find` names the Session, `lost` or `paused` is `Known(false)`. | `session get` reports `activity: "active"`, or the row is listed and neither stopped nor missing its window. |
+| `Idle` | The agent waits for input. | Its hooks last reported `idle`. | The same: the adapter reports no activity. |
+| `Running` | The runtime holds the Session and nothing proves its agent stopped, lost or idle. | Its hooks last reported `working`, `prompt` or `blocked`, or any proof of presence: `find` names the Session, `lost` or `paused` is `Known(false)`. | The row is listed and neither stopped nor missing its window. |
 
 The strongest proof wins when one pass answers several probes: `Gone`
 over `Lost`, `Lost` over `Paused`, `Paused` over the agent's activity.

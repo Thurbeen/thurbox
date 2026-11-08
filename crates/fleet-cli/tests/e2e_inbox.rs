@@ -15,10 +15,18 @@ use support::{Env, assert_condition, base_config, task};
 
 /// A Task briefed on the fake host, sent by a known user.
 fn briefed(name: &str) -> Env {
+    briefed_as(name, "claude-code")
+}
+
+/// Briefed, on `harness`: one with no prompt hook leaves a lost answer to
+/// the runtime's journal.
+fn briefed_as(name: &str, harness: &str) -> Env {
     let mut env = Env::new(name);
     env.set_var("USER", "tester");
     env.apply(base_config()).ok();
-    env.apply(task("t1", true)).ok();
+    let mut t = task("t1", true);
+    t["spec"]["harness"] = json!(harness);
+    env.apply(t).ok();
     env.reconcile().ok();
     assert_eq!(env.status("t1")["phase"], "Briefed");
     env
@@ -245,7 +253,7 @@ fn the_inbox_is_bounded_and_drains_one_entry_per_pass() {
 
 #[test]
 fn a_lost_delivery_answer_is_recovered_from_the_journal_without_a_resend() {
-    let env = briefed("inbox-answer-lost");
+    let env = briefed_as("inbox-answer-lost", "aider");
     env.fault(Fault::new("brief", "unknown").performed());
     let entry = send(&env, "Did this arrive?");
     env.reconcile().ok();
@@ -483,8 +491,12 @@ fn on_thurbox_cli_a_message_is_sent_once_and_journaled_under_its_key() {
     assert_eq!(sends(&env).len(), 3, "never sent twice");
 
     // A send that never answered may have enqueued the text: never
-    // repeated; after three unreadable journal reads a person is asked.
-    env.edit_stub(|s| s["sessions"][0]["state"] = json!("idle"));
+    // repeated; after three passes with no report from the agent's prompt
+    // hook a person is asked.
+    env.edit_stub(|s| {
+        s["sessions"][0]["state"] = json!("idle");
+        s["promptHookSilent"] = json!(true);
+    });
     env.stub_fault("message-send", "hang-after", 1);
     let third = send(&env, "Third message.");
     env.reconcile().ok();

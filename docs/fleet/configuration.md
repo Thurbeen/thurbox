@@ -242,12 +242,11 @@ Fleet installation talking to the same Thurbox hosts needs a distinct
 | `runtime.callTimeoutMs` | Thurbox: `15000` | Bound for each Thurbox call; manager lease must outlast the runtime's reported worst case. |
 | `runtime.keyPrefix` | Thurbox: `fleet` | Session identity prefix; at most 32 lowercase letters/digits/`-`, starting/ending with letter/digit. |
 | `runtime.modelEnv` | Thurbox: Claude mappings below | Harness name to supported model environment-variable name. |
-| `runtime.repositories` | Thurbox: empty | Repository URL to its source checkout, an absolute path on the hosts where thurbox or the `worktree` adapter creates worktrees. A relative path is refused at load. A Task's `url` must equal a key byte for byte: Fleet does not normalise a trailing `/`, `.git`, case or an SSH form. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn or materialize attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-runtimerepositories). |
-| `runtime.workspaceCleanup` | Thurbox: `delete` | What deleting a session does to the worktrees thurbox made. A workspace Fleet made through `[workspaces]` is cleaned after the release whatever this says. `delete` removes them with the session (`session delete --force`). `keep` leaves them, restorable in thurbox (`session delete --soft`). Any other value is refused at load. The setting also applies to `dir` Tasks: `delete` overrides thurbox's own `soft_delete`, so a released session cannot be restored. |
+| `runtime.repositories` | Empty | Repository URL to its source checkout, an absolute path on this machine, where the `worktree` adapter creates worktrees. A `file://` URL needs no entry: it names a directory used as it is. A relative path is refused at load. A Task's `url` must equal a key byte for byte: Fleet does not normalise a trailing `/`, `.git`, case or an SSH form. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn or materialize attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-runtimerepositories). |
 | `runtime.workspaceTrust` | Thurbox: `codex` is `codex`; `claude` and `claude-code` are `claude` | Harness name to its workspace-trust interface: `codex`, `claude` or `none`. Any other value is refused at load. A Task whose harness is not listed starts no session and waits in Pending with `TrustUnmapped`; the refusal spends no spawn attempt. A running `fleet up` applies a new entry after a restart. See [workspace trust](contracts.md#workspace-trust). |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
-| `workspaces.kind` | Optional | `worktree` or `fake`. With this section, Fleet makes each `repositories` workspace before the spawn and cleans it after the release. Without it, the runtime makes the workspace. See [the workspace port](contracts.md#workspace-contract). |
-| `workspaces.root` | Required for `worktree` | The directory that holds every workspace on the local host, relative to this config file. Sources come from `runtime.repositories`. |
+| `workspaces.kind` | `worktree`; `fake` with the fake runtime | `worktree` or `fake`. Fleet makes each `repositories` workspace before the spawn and cleans it after the release, with or without this section; the section only picks the adapter and its settings. See [the workspace port](contracts.md#workspace-contract). |
+| `workspaces.root` | Worktree: `<data dir>/workspaces` | The directory that holds every workspace on the local host, relative to this config file. Sources come from `runtime.repositories`. |
 | `workspaces.git` | Worktree: PATH `git` | The `git` executable. |
 | `workspaces.callTimeoutMs` | Worktree: `30000` | Bound for each `git` command. The manager lease must outlast the adapter's reported worst case. |
 | `workspaces.branchPrefix` | Worktree: `fleet` | The first part of each workspace branch, `<branchPrefix>/<session key>`. Lowercase letters, digits and `-`. |
@@ -280,7 +279,8 @@ over the same environment key from providers or Task overrides. For configured
 Tasks, both variable selection and value freeze with the private launch
 snapshot; later TOML mapping changes do not alter that execution.
 
-`runtime.workspaceTrust` extends/overrides the built-in entries. The keys are
+`runtime.workspaceTrust` extends/overrides the built-in entries, which come
+from the [harness profiles](controllers/task.md#harness-profiles). The keys are
 thurbox agent names, so map each alias of an agent, such as
 `codex-coder = "codex"`. Map `codex`
 only to a harness that runs Codex: the interface puts Codex's `-c` option on
@@ -291,6 +291,12 @@ for a harness that has one: that harness can then receive its brief inside a
 trust prompt. Codex keeps only the last `-c projects=` it is given. Keep any
 other roots you trust in the `[projects]` table of Codex's `config.toml`,
 which merges with Fleet's override.
+
+Every session Fleet starts gets `FLEET_SIGNAL_FILE` in its environment: the
+file under `<data dir>/signals` its hooks append to through `fleet signal`
+([signals](controllers/task.md#signals)). `fleet signal` reads nothing else,
+needs no config, and does nothing without the variable, so a hook installed
+for every session of a harness is harmless outside Fleet.
 
 Runtime-specific fields apply only to that runtime. Keep the store and native
 configuration user-private; they contain literal manifests and private launch

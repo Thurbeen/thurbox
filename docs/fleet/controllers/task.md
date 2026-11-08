@@ -22,8 +22,10 @@ that decision through the store and runtime ports.
    the controller plans a spawn under a deterministic session key.
 3. The manager persists the intent, runs the effect and persists its receipt.
    Later passes recover ambiguous effects by their keys.
-4. A ready session receives its brief in its agent's own inbox. Its
-   delivery journal prevents a blind resend when an answer is lost. Messages
+4. A ready session receives its brief in its agent's own inbox. It counts
+   as delivered once the agent's prompt hook reports it through
+   `fleet signal`; a lost answer waits for that report and is never sent
+   again ([proven delivery](#proven-delivery)). Messages
    queued with `fleet send` follow the same way, oldest first, one per pass,
    each under its own key. A working turn receives them too.
 5. The worker reports through `fleet result`. The controller concludes the
@@ -114,7 +116,8 @@ concludes nothing.
 | Spawning | Missing/Unknown receipt; session list unreadable | Spawning | Report Unknown; never infer absence or respawn blindly. |
 | Spawned | Readable lookup lacks the recorded session identity | Spawned | Raise WorkerGone and NeedsAttention; do not send. |
 | Spawned | Known Queued receipt for the brief | Spawned | Set `Briefed=False/BriefUndelivered` and raise `NeedsAttention/BriefUndelivered` with the runtime's note. Never send the brief again, and deliver no inbox entry. |
-| Spawned | Known Delivered receipt, or journal proves delivered | Briefed | Record the brief key and the generation of the brief intent; recovered journal answers become receipts. |
+| Spawned | Known Delivered receipt, and the agent's prompt hook reported the brief (or its harness has none); or, with the answer lost, the hook reported it, or for a harness with no prompt hook the journal proves it | Briefed | Record the brief key and the generation of the brief intent; a recovered delivery becomes a receipt. |
+| Spawned | The brief was sent, or may have been, and the agent's prompt hook has not reported it, or its report cannot be read | Spawned | Set `Briefed=Unknown/AwaitingPrompt`. Never send it again; read the hook's report on the next pass. |
 | Spawned | Workspace trust Known untrusted | Spawned | Set `WorkspaceTrusted=False` with the gap as reason, raise `NeedsAttention/WorkspaceUntrusted`, wait, then probe again. Do not send. |
 | Spawned | Workspace trust Unknown | Spawned | Set `WorkspaceTrusted=Unknown/TrustUnknown`. Do not send and raise no attention. Probe again on the next pass, without a wait. |
 | Spawned | Workspace trust unanswered | Spawned | Do not send. Change nothing. |
@@ -128,7 +131,7 @@ concludes nothing.
 | Spawned, Briefed, or Concluded with a delivery due | Still lost after a revive | unchanged | Wait 30 seconds from the last revive, then revive again. After three revives have left the session lost, each further revive also raises `NeedsAttention/ReviveFailed`. |
 | Spawned, Briefed, or Concluded with a delivery due | Not lost while `SessionLost` is True | unchanged | Set `SessionLost=False/Revived`. When the brief has a receipt, owe a catch-up note under `catchup/<n>`. In Spawned, the brief protocol continues. |
 | Briefed or Concluded | A catch-up note is owed | unchanged | Send the note as an inbox entry is sent, before any inbox entry. In Briefed, the note repeats the brief, the amendments the worker has, and their generation. |
-| Briefed, or Concluded and watched | A pause setting; activity Known Idle without a break for `pauseAfterMs`; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing an idle session](#pausing-an-idle-session). |
+| Briefed, or Concluded and watched | A pause setting; the agent's hooks report Idle without a break for `pauseAfterMs`; the session observed running and not known lost; nothing to deliver or in flight | unchanged | Persist a pause intent and plan `Pause` under `pause/<n>`. See [pausing an idle session](#pausing-an-idle-session). |
 | Briefed or Concluded | Known Paused receipt, or a missing/Unknown receipt with the session observed stopped | unchanged | Set `Paused=True/Idle`. Raise no WorkerGone, SessionLost or revive. |
 | Briefed or Concluded | Failed pause receipt, or a missing/Unknown receipt with the session observed running | unchanged | Set `Paused=False/PauseFailed`. The idle time starts again. |
 | Briefed, or Concluded with a delivery due or watched | Session observed stopped and Fleet did not stop it | unchanged | Set `Paused=True/External`. |
@@ -138,7 +141,7 @@ concludes nothing.
 | Active phase | Accepted worker result for `status.brief.generation` is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
 | Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered before the brief was sent, or while a brief send is unconfirmed. |
 | Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
-| Spawned, Briefed or Concluded | Known Delivered receipt, or journal proves delivered | unchanged | Record the receipt in `status.deliveries` with the runtime's route, and remove the entry, in one write; its intent, receipt and attempt records go with it. |
+| Spawned, Briefed or Concluded | Known Delivered receipt and the agent's prompt hook reported the entry (or its harness has none); or, with the answer lost, the hook reported it, or for a harness with no prompt hook the journal proves it | unchanged | Record the receipt in `status.deliveries` with the runtime's route, and remove the entry, in one write; its intent, receipt and attempt records go with it. Until the hook reports it, the entry waits, is never sent again, and later entries wait behind it. |
 | Spawned, Briefed or Concluded | Known Queued receipt for an entry or a catch-up note | unchanged | Mark it failed and raise `NeedsAttention/DeliveryQueued` with the runtime's note. Never send it again. The entry stays in `status.inbox`, and later entries are still delivered. |
 | Spawned, Briefed or Concluded | Oldest entry is an amendment at or below `status.brief.generation`, or one never sent with a newer amendment queued behind it | unchanged | Record its receipt without a send. The worker has it already, or the newer message carries it. |
 | Briefed | Amendment entry delivered | Briefed | Set `status.brief` to the entry's key and generation. |
@@ -170,7 +173,7 @@ These are controller constants, not extra configuration resources.
 | Spawn failed or was proven absent | A failure receipt, or readable key lookup after an ambiguous spawn | Wait before the next attempt; after the third failed attempt enter Stalled. |
 | Workspace not trusted | A Trusted answer on a later pass | Wait before each probe. A held brief is not a send and spends no attempt; the Task never stalls on it. |
 | Brief send refused | Known failure before confirmed delivery | Wait before retry; every retry needs fresh readiness; at most 3 sends. |
-| Brief send answer missing/Unknown | Read the session's journal under the original brief key | Delivered recovers without sending; proven not delivered permits a ready-session send; Unknown waits and probes again. |
+| Brief send answer missing/Unknown | The agent's prompt hook report of the brief's digest; for a harness with no prompt hook, the session's journal under the original brief key | Reported or Delivered recovers without sending; only a journal can prove it not delivered, which permits a ready-session send; an unreported or Unknown answer waits and reads again, never resends. |
 | Delivery journal unreadable | A later readable journal answer | After 3 failures raise NeedsAttention, but keep probing after each wait. Recovery clears BriefUnconfirmed attention. |
 | Release answer missing/Unknown or failed | Recorded session at rest, or key proven absent; adapter preserves exact identity | Wait once per failed attempt, then retry. After 3 attempts raise NeedsAttention but continue; success releases the finalizer. |
 | Session lookup unreadable | A later readable lookup | Unknown is not absence and does not by itself trigger WorkerGone or permit a blind spawn. |
@@ -205,7 +208,7 @@ are last recorded observations; absence of a condition is not a True value.
 | Type | True means / relevant reason |
 | --- | --- |
 | HostReachable | The host answered reachable during the dispatch check. |
-| WorkspaceReady | The workspace Fleet makes is whole: `Materialized` or `Adopted`. Unknown while `Materializing`, `WorkspaceUnreadable`, `Cleaning` or `CleanRetry`. False with `MaterializeRetry`, `MaterializeFailed`, `RepositoryUnmapped` or, after the release, `Cleaned`. Absent when the runtime makes the workspace. |
+| WorkspaceReady | The workspace Fleet makes is whole: `Materialized` or `Adopted`. Unknown while `Materializing`, `WorkspaceUnreadable`, `Cleaning` or `CleanRetry`. False with `MaterializeRetry`, `MaterializeFailed`, `RepositoryUnmapped` or, after the release, `Cleaned`. Absent for a `dir` workspace. |
 | Spawned | The spawn returned a session or the controller adopted its key. |
 | Briefed | The brief has a `ReceiptWritten` or `ReceiptRecovered` record. |
 | Stalled | `MaterializeAttemptsExhausted`, `SpawnAttemptsExhausted` or `BriefAttemptsExhausted`. |
@@ -296,9 +299,9 @@ The controller plans a pause when all of these hold:
 - The inbox holds no entry to deliver, and no catch-up note is owed.
 - No brief, revive or resume waits for its outcome.
 - The runtime can pause.
-- The runtime reported Known Idle on every pass for `pauseAfterMs`, and on
-  the pass that plans the pause. `status.idleSince` records the first Idle
-  answer. Active, Unknown, a pass that sent something, a recorded result or
+- The agent's own hooks reported Idle (`fleet signal idle`) on every pass
+  for `pauseAfterMs`, and on the pass that plans the pause. `status.idleSince`
+  records the first Idle answer. Active, Unknown, a pass that sent something, a recorded result or
   a pass that does not watch the session clears it.
 - On that pass, the session is observed running and is not known lost.
 
@@ -320,9 +323,68 @@ These rules apply to a paused session:
 
 `pauseAfterMs` absent means that Fleet never pauses the session.
 
-The Thurbox runtime reports activity only from thurbox 2.85.0 or later.
-With an older thurbox, activity is Unknown, so Fleet never pauses. See
-[the runtime port](#runtime-port).
+Activity comes from the agent's hooks, never from the runtime: see
+[signals](#signals). A session whose hooks reported nothing, or whose
+report cannot be read, has Unknown activity, so Fleet never pauses it.
+
+### Signals
+
+The [signal port](../../../crates/fleet-api/src/signal.rs) is how an agent
+reports its state. Each spawn gets `FLEET_SIGNAL_FILE` in its environment:
+`<data dir>/signals/<session key>.jsonl` for a session on this machine. The
+agent's [harness profile](#harness-profiles) installs hooks that run
+`fleet signal <state>`, which appends one JSON line to that file and does
+nothing when the variable is unset:
+
+| State | Claude Code hook | Codex | Means |
+| --- | --- | --- | --- |
+| `prompt` | `UserPromptSubmit` | the turn's `input-messages` at `notify` | the agent was given a text: its digest is recorded |
+| `working` | `PreToolUse` | none | a turn runs |
+| `idle` | `Stop` | `notify` (turn complete) | the turn ended; the agent waits |
+| `blocked` | none | none | the agent waits for a person: not idle |
+
+The hook's JSON (stdin, or the last argument for Codex's `notify`) gives
+the prompt and the conversation id (`session_id`, `thread-id`). The
+`Activity` probe reads the file through the port and answers both the
+activity and the whole report. A file never written is a report of nothing;
+a file that cannot be read is Unknown. A session on another host gets no
+file: reading one there takes the runtime's `exec`, so what Fleet would
+learn from it stays Unknown, and Unknown never concludes.
+
+The controller records the last reported conversation in
+`status.conversation`. A revive or a resume names it, so the runtime starts
+the harness profile's resume argv.
+
+### Proven delivery
+
+A brief, an inbox entry or a catch-up note counts as delivered only once
+the agent's prompt hook reports it, not when the runtime typed it. When the
+controller plans the send it records the text's digest in
+`status.prompts` under the send key, in the same write as the intent. Then:
+
+- A Known Delivered receipt waits for the hook: `Briefed=Unknown/AwaitingPrompt`
+  for the brief; an entry stays first in line.
+- A lost answer is settled by the hook's report alone, as a recovered
+  delivery. It is never sent again, whatever the runtime's journal says.
+- A proven key's digest is dropped; its receipt stands.
+
+A harness with no prompt hook (any but Claude Code and Codex) keeps the
+runtime's answer, and its journal for a lost one.
+
+### Harness profiles
+
+[Harness profiles](../../../crates/fleet-api/src/harness.rs) own how each
+agent is launched, resumed and trusted, so a runtime only runs an argv:
+
+| Harness | Launch argv | Resume argv | Trust |
+| --- | --- | --- | --- |
+| `claude-code`, `claude` | `claude --settings <hooks>` and `--add-dir` per extra directory | the launch argv, then `--resume <conversation>` | its dialog is read from the screen and never answered |
+| `codex` | `codex -c notify=… -c projects=<root>` and `--add-dir` per extra directory | `codex resume <conversation>` and the launch arguments | the `projects=` launch override, for this session only |
+| any other | the harness name | the launch argv: a fresh start | none Fleet knows |
+
+The fake runtime runs the profile's argv. The thurbox runtime keeps
+launching through thurbox's own agent registry, and receives the profile's
+hooks and trust as `--agent-arg`s.
 
 ### Deletion protocol
 
@@ -414,9 +476,10 @@ session may be paused when the conditions in
 apart from its activity.
 
 `Observations` holds `host`, `find`, `ready`, `workspace_trust`,
-`brief_delivered`, `at_rest`, `lost`, `paused`, `activity` and
-`workspace`. The manager
-answers `Activity` with Unknown on a runtime that cannot pause.
+`brief_delivered`, `at_rest`, `lost`, `paused`, `activity`, `signals` and
+`workspace`. The manager answers `Activity` from the signal port, with the
+activity and the whole report (`signals`); the probe is also asked while a
+send waits for its prompt proof.
 Each is optional: `None` means no answer was supplied, not a negative answer.
 Each supplied answer is an [Observation](../../../crates/fleet-api/src/observation.rs):
 
@@ -523,12 +586,11 @@ return `Observation<T>`; a refused effect is
 | `at_rest` | `SessionRef` | Whether it is safe to release that recorded session, or Unknown. |
 | `release` | `SessionRef` | `Released` if deleted or proven absent, or Failed/Unknown. Repeating a completed release is a no-op. |
 | `lost` | `SessionRef` | Known true only when the runtime holds the session and proves its agent's window gone, and nobody stopped it. Known false for a running or stopped session. |
-| `revive` | `SessionRef` | `Revived` after the runtime started the lost session's agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
+| `revive` | `SessionRef` and the reported conversation | `Revived` after the runtime started the lost session's agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
 | `can_pause` | None | Whether the runtime can pause and resume a session. False by default. Fleet never pauses on a runtime that cannot. |
-| `activity` | `SessionRef` | `Active` or `Idle`, or Unknown. Known `Idle` only when the runtime proves that the agent waits with no background work. Unknown never pauses. |
 | `paused` | `SessionRef` | Known true when the runtime holds the session with its agent stopped, by Fleet or anyone else. Known false for a running or lost session. |
 | `pause` | `SessionRef` | `Paused` after the runtime stopped the agent and kept its row, workspace and conversation, or Failed/Unknown. A stopped session is left alone. |
-| `resume` | `SessionRef` | `Resumed` after the runtime started the stopped agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
+| `resume` | `SessionRef` and the reported conversation | `Resumed` after the runtime started the stopped agent again in its own workspace and conversation, under the same identity, or Failed/Unknown. A running session is left alone, so a repeat is harmless. |
 | `create_dir` | Host and directory | `Ok(true)` when made, `Ok(false)` when it existed, `Err` with why, or Unknown. Used for a conversation Task's thread directory. |
 | `remove_dir` | Host and directory | `Ok(())` when removed or absent, `Err` with why, or Unknown. |
 
@@ -560,16 +622,10 @@ not deleted.
 window that is there, even a dead one, is not lost. `revive` runs
 `session restart --if-missing`. A session with no window is at rest.
 `paused` reads `stopped` and `activity` from `session get`: either one
-saying stopped is Known true. `activity` reads the `activity` field:
-`active`, `idle`, `unknown` or `stopped`. Only `idle` is Idle. A missing
-field, `unknown` or `stopped` is Unknown. The adapter never derives Idle
-from `state` or `hook_state`: they read `done` while background shells,
-Monitors or crons are still pending. `pause` runs `session stop` and
+saying stopped is Known true. `pause` runs `session stop` and
 `resume` runs `session start`. Both first check that the key still belongs
 to the recorded id, as `release` does. A stopped session is at rest.
 
-Thurbox reports the `activity` field from 2.85.0 on; earlier releases do
-not have it. Without the field, `activity` is Unknown, and Fleet never pauses a session.
 The fake adapter provides persisted sessions and faults without starting an
 agent. Explicit provider commands still run through the same bounded executor
 with either adapter; command resolution requires a lease above 20000 ms and
@@ -578,11 +634,12 @@ pure code.
 
 #### Workspace port
 
-Source: [Workspaces](../../../crates/fleet-api/src/workspace.rs). The manager
-holds this port only when the config has a `[workspaces]` section. Without
-it, `TaskInput.materialize` is false and the controller plans no workspace
-effect. The [workspace contract](../contracts.md#workspace-contract)
-states the adapter rules.
+Source: [Workspaces](../../../crates/fleet-api/src/workspace.rs). The CLI
+always wires this port: the `[workspaces]` section picks the adapter, and
+without one it is the default (see the [workspace
+contract](../contracts.md#workspace-contract), which states the adapter
+rules). `TaskInput.materialize` is false only for a manager built without
+the port, and the controller then plans no workspace effect.
 
 | Method | Input | Answer |
 | --- | --- | --- |

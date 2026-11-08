@@ -157,20 +157,21 @@ fn a_refused_workspace_is_retried_then_stalls_and_spawns_nothing() {
 }
 
 #[test]
-fn without_a_workspaces_section_the_runtime_still_materializes() {
-    let env = Env::new("workspace-legacy");
+fn without_a_workspaces_section_fleet_still_makes_the_workspace() {
+    let env = Env::new("workspace-default");
     env.apply(base_config()).ok();
     env.apply(repositories_task("t1")).ok();
     env.reconcile().ok();
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
-    assert!(st["workspace"].is_null(), "{st:#}");
-    assert_eq!(env.calls("materialize"), 0);
+    assert_condition(&st, "WorkspaceReady", "True", "Materialized");
+    assert_eq!(env.calls("materialize"), 1);
     let key = env.session_key("t1");
     let session = env.host().session(&key).unwrap().expect("session");
-    assert!(
-        session.materialized.is_none(),
-        "the runtime got the named workspace"
+    assert_eq!(
+        session.materialized.map(|w| w.key),
+        Some(key),
+        "the runtime only runs the session in the workspace Fleet made"
     );
 }
 

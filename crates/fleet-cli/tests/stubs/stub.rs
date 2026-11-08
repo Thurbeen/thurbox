@@ -172,6 +172,22 @@ fn event(state: &mut Value, kind: &str, s: &Value) {
     state["events"].as_array_mut().expect("events").push(e);
 }
 
+/// What the agent's prompt hook does when a text reaches it: report it
+/// through the signal file Fleet passed at create, unless the test silenced
+/// every hook (`promptHookSilent`).
+fn prompt_hook(state: &Value, i: usize, text: &str) {
+    let Some(file) = state["sessions"][i]["signal_file"].as_str() else {
+        return;
+    };
+    if state["promptHookSilent"] == true {
+        return;
+    }
+    let payload = json!({"prompt": text});
+    let signal =
+        fleet_api::signal::Signal::from_hook(0, fleet_api::signal::State::Prompt, Some(&payload));
+    fleet_runtime::signals::append(std::path::Path::new(file), &signal).expect("signal file");
+}
+
 /// One session row as `session list --json` prints it. A session on a host
 /// that cannot be reached reads `unreachable`, as thurbox's do.
 fn row(state: &Value, s: &Value) -> Value {
@@ -180,6 +196,7 @@ fn row(state: &Value, s: &Value) -> Value {
         o.remove("meta");
         o.remove("sent");
         o.remove("env");
+        o.remove("signal_file");
     }
     let host = s["host"].as_str().unwrap_or("local");
     if host_state(state, host) != "up" {
@@ -1254,12 +1271,16 @@ fn answer(
                 .iter()
                 .map(|kv| kv.split('=').next().unwrap_or_default().to_string())
                 .collect();
+            let mut signal_file = Value::Null;
             if args.iter().any(|a| a == "--env-stdin") {
                 let mut input = String::new();
                 std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
                     .expect("environment stdin");
                 let map: std::collections::BTreeMap<String, String> =
                     serde_json::from_str(&input).expect("environment map");
+                if let Some(f) = map.get(fleet_api::signal::SIGNAL_FILE_ENV) {
+                    signal_file = json!(f);
+                }
                 env_names.extend(map.into_keys());
             }
 
@@ -1301,7 +1322,8 @@ fn answer(
                 "name": opt(args, "--name"), "key": key, "host": host,
                 "agent": opt(args, "--agent"), "cwd": cwd, "worktrees": worktrees,
                 "agent_args": agent_args, "hook_reported": hooked,
-                "state": ready, "stopped": false, "meta": {}, "sent": [], "env": env_names
+                "state": ready, "stopped": false, "meta": {}, "sent": [], "env": env_names,
+                "signal_file": signal_file
             });
             if let Some(fields) = state["spawnFields"].as_object() {
                 s.as_object_mut().unwrap().extend(fields.clone());
@@ -1383,6 +1405,7 @@ fn answer(
                     Some(json!({"error": "send: command too long"}).to_string()),
                 );
             }
+            prompt_hook(state, i, &text);
             let s = &mut state["sessions"][i];
             s["sent"].as_array_mut().expect("sent").push(json!(text));
             s["state"] = json!("working");
@@ -1455,6 +1478,9 @@ fn answer(
             }
             let s = s.clone();
             event(state, "state", &s);
+            if via != "mailbox" {
+                prompt_hook(state, i, &body);
+            }
             // As thurbox: may_hold is a fact about the Claude Code route.
             ok(
                 json!({"id": 1, "to_session_id": id, "kind": opt(args, "--kind"),

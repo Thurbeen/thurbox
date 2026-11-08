@@ -735,6 +735,7 @@ fn a_stale_delete_plan_cannot_remove_a_recreated_object() {
         holder: "stale-delete-test".into(),
         forge: Some(forge_port.as_ref()),
         workspaces: None,
+        signals: None,
         change_request_defaults: ChangeRequestDefaults::default(),
         forge_defaults: Default::default(),
         gateway: None,
