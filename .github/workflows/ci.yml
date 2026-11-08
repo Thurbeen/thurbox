@@ -47,6 +47,7 @@ jobs:
       release_line: ${{ steps.filter.outputs.release_line }}
       windows_e2e_probes: ${{ steps.filter.outputs.windows_e2e_probes }}
       nix: ${{ steps.filter.outputs.nix }}
+      fleet: ${{ steps.filter.outputs.fleet }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -55,8 +56,11 @@ jobs:
           # Every filter includes `.github/workflows/ci.yml` so editing the
           # workflow re-runs all jobs — any job's definition may have changed.
           filters: |
+            # thurbox, the interface: its crate and every tree it embeds or
+            # tests against. Fleet's crates have the `fleet` filter below.
             rust:
-              - 'crates/**'
+              - 'crates/thurbox/**'
+              - 'crates/runtime-*/**'
               # The Lua trees are Rust inputs, not merely neighbours: they are
               # `include_str!`d into the binary, and the suite asserts on their
               # CONTENT — `crates/thurbox/tests/new_session.rs` checks a string that exists
@@ -149,6 +153,28 @@ jobs:
               - 'crates/runtime-mux/src/psmux.rs'
               - 'crates/thurbox/src/cli/runtime.rs'
               - '.github/workflows/ci.yml'
+            # Fleet, the engine: its crates, the dependency graph fleet-arch
+            # checks, the trees its tests read (its examples, its installer,
+            # its contract examples in docs/fleet/contracts.md, the skills it
+            # checks Claude Code can find) and the workspace files every crate
+            # builds from.
+            fleet:
+              - 'crates/fleet-*/**'
+              - 'crates/architecture.toml'
+              - 'examples/fleet/**'
+              - 'scripts/fleet/**'
+              - 'docs/fleet/**'
+              - '.agents/skills/**'
+              - '.claude/skills/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/config.toml'
+              - '.config/nextest.toml'
+              - 'deny.toml'
+              - 'clippy.toml'
+              - '.rustfmt.toml'
+              - '.github/workflows/ci.yml'
             # The package builds the crate, so every Rust input is a Nix input
             # too: a new `include_str!` outside the package's source set, or a
             # dependency that needs a system library, breaks only this job.
@@ -189,7 +215,7 @@ jobs:
   fmt:
     name: Rustfmt
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -216,7 +242,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
 
   # The release ships an aarch64 Linux tarball, and `checksums` needs every
   # build leg, so an arch-only break (a `c_char` that is `u8` here but `i8` on
@@ -234,7 +260,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
 
   nextest:
     name: Nextest
@@ -260,7 +286,7 @@ jobs:
       # dbus: `notify_send_e2e` delivers to a private session bus.
       - name: Install tmux, Xvfb and dbus
         run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus
-      - run: cargo nextest run --all --profile ci
+      - run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci
       # The crossterm patch's parser tests live in the vendored crate, which
       # `--all` does not reach: the workspace excludes it, so it builds from its
       # own manifest and lockfile.
@@ -295,7 +321,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --exclude 'fleet-*' --all-targets --all-features -- -D warnings
 
   windows-test:
     name: Windows (tests)
@@ -319,7 +345,7 @@ jobs:
           tool: cargo-nextest
       # --no-fail-fast: surface every native-Windows test failure in one run
       # (the `ci` profile is fail-fast); easier to triage runner-specific issues.
-      - run: cargo nextest run --all --profile ci --no-fail-fast
+      - run: cargo nextest run --workspace --exclude 'fleet-*' --profile ci --no-fail-fast
 
   # No `architecture` job: `tests/architecture_rules.rs` is an ordinary
   # integration test, so `nextest run --all` above already runs it, and the
@@ -341,7 +367,7 @@ jobs:
   deny:
     name: Cargo Deny
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fleet == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -366,7 +392,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo doc --no-deps --all-features
+      - run: cargo doc --workspace --exclude 'fleet-*' --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
 
@@ -628,7 +654,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build release binaries
-        run: cargo build --release --bins
+        run: cargo build --release -p thurbox --bins
       - name: Record binary sizes
         run: |
           {
@@ -673,6 +699,42 @@ jobs:
       - run: nix build -L
       - run: ./result/bin/thurbox-cli version
 
+  # Fleet's crates, on the runners Fleet has always been tested on. Windows is
+  # not one: Fleet does not target it. Its tests run the real cog (the release
+  # tooling) and git.
+  fleet:
+    name: Fleet (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.fleet == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-26.04-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        with:
+          tool: cargo-nextest
+      - uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          install-only: true
+      - run: cargo clippy -p 'fleet-*' --locked --all-targets --all-features -- -D warnings
+      - run: cargo nextest run -p 'fleet-*' --locked --all-features --profile ci --no-fail-fast
+      - run: cargo test -p 'fleet-*' --locked --all-features --doc
+      - run: cargo doc -p 'fleet-*' --locked --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
   all-checks:
     name: All Checks
     if: always()
@@ -694,6 +756,7 @@ jobs:
       - winget-packaging
       - windows-e2e-probes
       - nix
+      - fleet
       - shellcheck
       - lua
       - website-lint

@@ -44,9 +44,13 @@ repos:
         pass_filenames: false
         args: ["--all"]
 
+      # git exports its location variables to a hook, and a test that runs git
+      # in a scratch repository would act on this one instead. Fleet's tests
+      # run git, cog and Fleet's own binaries without scrubbing them, so the
+      # suite starts without them.
       - id: cargo-nextest
         name: Cargo nextest
-        entry: cargo nextest run
+        entry: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX -u GIT_NAMESPACE cargo nextest run
         language: system
         types: [rust]
         pass_filenames: false

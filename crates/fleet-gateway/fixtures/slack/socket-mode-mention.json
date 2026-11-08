@@ -1,0 +1,31 @@
+{
+  "envelope_id": "e0123abcd-0001-4000-8000-000000000001",
+  "type": "events_api",
+  "accepts_response_payload": false,
+  "retry_attempt": 0,
+  "retry_reason": "",
+  "payload": {
+    "token": "verification-token-not-a-secret",
+    "team_id": "T0123ABCD",
+    "api_app_id": "A0123ABCD",
+    "event": {
+      "type": "message",
+      "channel": "C0123ABCD",
+      "user": "U0123ABCD",
+      "text": "<@U0BOT0001> please look at the failing build",
+      "ts": "1730000300.000200",
+      "event_ts": "1730000300.000200",
+      "channel_type": "channel",
+      "client_msg_id": "c0123abc-0000-4000-8000-000000000001",
+      "blocks": []
+    },
+    "type": "event_callback",
+    "event_id": "Ev0123ABCD01",
+    "event_time": 1730000300,
+    "authorizations": [
+      {"enterprise_id": null, "team_id": "T0123ABCD", "user_id": "U0BOT0001", "is_bot": true, "is_enterprise_install": false}
+    ],
+    "is_ext_shared_channel": false,
+    "event_context": "1-message-T0123ABCD-C0123ABCD"
+  }
+}

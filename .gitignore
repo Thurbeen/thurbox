@@ -73,3 +73,16 @@ website/assets/*.mp4
 
 # nix build output
 /result
+
+# Fleet: release output, offline install fixtures and private operator data,
+# which must never enter a public commit.
+/dist/
+/fleet.toml
+/examples/fleet/orchestration/queue/*
+!/examples/fleet/orchestration/queue/POLICY.md
+!/examples/fleet/orchestration/queue/README.md
+!/examples/fleet/orchestration/queue/OPERATOR.example.md
+/examples/fleet/orchestration/playbooks/*
+!/examples/fleet/orchestration/playbooks/_TEMPLATE.md
+/examples/fleet/orchestration/runs/*
+!/examples/fleet/orchestration/runs/_TEMPLATE.md

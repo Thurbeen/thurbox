@@ -1,0 +1,23 @@
+{
+  "envelope_id": "e0123abcd-0001-4000-8000-000000000009",
+  "type": "events_api",
+  "accepts_response_payload": false,
+  "payload": {
+    "token": "verification-token-not-a-secret",
+    "team_id": "T0999ZZZZ",
+    "enterprise_id": "E0123ABCD",
+    "api_app_id": "A0123ABCD",
+    "event": {
+      "type": "message",
+      "channel": "C0999ZZZZ",
+      "user": "U0999ZZZZ",
+      "text": "<@U0BOT0001> are you there?",
+      "ts": "1730000700.000700",
+      "event_ts": "1730000700.000700",
+      "channel_type": "channel"
+    },
+    "type": "event_callback",
+    "event_id": "Ev0123ABCD09",
+    "event_time": 1730000700
+  }
+}

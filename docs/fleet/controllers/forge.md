@@ -322,8 +322,8 @@ lists the fields on the Task.
 
 ### Controller API
 
-Source: [ForgeController](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/src/forge.rs) and
-[the Task's forge fields](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/follow.rs).
+Source: [ForgeController](../../../crates/fleet-controllers/src/forge.rs) and
+[the Task's forge fields](../../../crates/fleet-api/src/follow.rs).
 
 ```rust
 pub struct ForgeInput<'a> {
@@ -533,7 +533,7 @@ a generation it has not seen.
 
 `fleet declare TASK --change-request URL` is a manager verb, like
 `fleet result` (`declare_change_request` in
-[the verbs](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-manager/src/verbs.rs)):
+[the verbs](../../../crates/fleet-manager/src/verbs.rs)):
 
 1. Parse the URL through the Forge port; a host not configured is refused.
 2. Ensure one ChangeRequest exists for it, named from the canonical ref, by

@@ -74,9 +74,10 @@ on every build, the way it checks Fleet's crates today:
 | `workspace-git` (makes git workspaces; runtimes run it, never link it) | crates.io | everything else |
 | `thurbox` | `term-stream`, crates.io | `fleet-*`, `runtime-*`, `term-holder` |
 
-The file is `crates/architecture.toml`. Until Fleet is in the repository,
-`crates/thurbox/tests/crate_graph.rs` checks it against `cargo metadata`, and
-it records the one dependency the table above does not allow yet: `thurbox`
+The file is `crates/architecture.toml`, and `fleet-arch`'s `architecture`
+test checks it. Every crate that is not Fleet's is `role = "component"`: held
+to the crate graph from its manifest, but not to Fleet's own source rules. It
+records the one dependency the table above does not allow yet: `thurbox`
 links `runtime-mux` until Fleet drives the runtimes.
 
 Components talk only through processes; `term-stream` is a wire format, not

@@ -1,0 +1,38 @@
+{
+  "dispatch": {
+    "op": 0,
+    "t": "MESSAGE_CREATE",
+    "s": 42,
+    "d": {
+      "id": "1388888888888888888",
+      "channel_id": "1390000000000000000",
+      "type": 0,
+      "author": {
+        "id": "1220000000000000000",
+        "username": "alex",
+        "global_name": "Alex",
+        "discriminator": "0"
+      },
+      "content": "<@1210000000000000000> hi",
+      "timestamp": "2024-10-27T03:35:00.000000+00:00",
+      "edited_timestamp": null,
+      "tts": false,
+      "mention_everyone": false,
+      "mentions": [
+        {
+          "id": "1210000000000000000",
+          "username": "fleet",
+          "bot": true,
+          "discriminator": "0"
+        }
+      ],
+      "mention_roles": [],
+      "attachments": [],
+      "embeds": [],
+      "pinned": false,
+      "flags": 0,
+      "channel_type": 1
+    }
+  },
+  "parentId": null
+}

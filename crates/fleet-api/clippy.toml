@@ -1,0 +1,25 @@
+# fleet-api is pure: it names types and ports and never performs I/O. clippy
+# enforces that at compile time on resolved paths (aliases and re-exports
+# included); crates/fleet-arch checks the same rule from source and proves it
+# with negative fixtures.
+disallowed-types = [
+  { path = "std::fs::File", reason = "pure crate: no filesystem" },
+  { path = "std::fs::OpenOptions", reason = "pure crate: no filesystem" },
+  { path = "std::process::Command", reason = "pure crate: no processes" },
+  { path = "std::net::TcpStream", reason = "pure crate: no network" },
+  { path = "std::net::TcpListener", reason = "pure crate: no network" },
+  { path = "std::net::UdpSocket", reason = "pure crate: no network" },
+  { path = "std::time::Instant", reason = "pure crate: time is an input" },
+  { path = "std::time::SystemTime", reason = "pure crate: time is an input" },
+]
+disallowed-methods = [
+  { path = "std::fs::read", reason = "pure crate: no filesystem" },
+  { path = "std::fs::read_to_string", reason = "pure crate: no filesystem" },
+  { path = "std::fs::write", reason = "pure crate: no filesystem" },
+  { path = "std::env::var", reason = "pure crate: no environment" },
+  { path = "std::env::var_os", reason = "pure crate: no environment" },
+  { path = "std::env::vars", reason = "pure crate: no environment" },
+  { path = "std::thread::sleep", reason = "pure crate: no clock" },
+  { path = "std::thread::spawn", reason = "pure crate: no threads" },
+  { path = "std::process::exit", reason = "pure crate: no processes" },
+]

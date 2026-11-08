@@ -1,0 +1,3 @@
+[
+  {"apiVersion":"fleet/v1alpha1","kind":"Task","metadata":{"name":"example"},"spec":{"harness":"codex","host":"local","brief":"Inspect the supplied repository and report the result.","workspace":{"dir":"work/example"},"dispatch":false}}
+]

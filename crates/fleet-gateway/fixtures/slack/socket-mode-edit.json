@@ -1,0 +1,37 @@
+{
+  "envelope_id": "e0123abcd-0001-4000-8000-000000000005",
+  "type": "events_api",
+  "accepts_response_payload": false,
+  "payload": {
+    "token": "verification-token-not-a-secret",
+    "team_id": "T0123ABCD",
+    "api_app_id": "A0123ABCD",
+    "event": {
+      "type": "message",
+      "subtype": "message_changed",
+      "hidden": true,
+      "channel": "C0123ABCD",
+      "ts": "1730000420.000500",
+      "event_ts": "1730000420.000500",
+      "channel_type": "channel",
+      "message": {
+        "type": "message",
+        "user": "U0456EFGH",
+        "text": "here is the full log",
+        "ts": "1730000360.000300",
+        "thread_ts": "1730000300.000200",
+        "edited": {"user": "U0456EFGH", "ts": "1730000420.000000"}
+      },
+      "previous_message": {
+        "type": "message",
+        "user": "U0456EFGH",
+        "text": "here is the log",
+        "ts": "1730000360.000300",
+        "thread_ts": "1730000300.000200"
+      }
+    },
+    "type": "event_callback",
+    "event_id": "Ev0123ABCD05",
+    "event_time": 1730000420
+  }
+}

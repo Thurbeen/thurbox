@@ -412,13 +412,13 @@ build OS (ADR-13).
 
 | Rule | Enforced by | Where |
 |---|---|---|
-| 1. Components meet only through processes | `crates/architecture.toml`, checked against `cargo metadata` by `crates/thurbox/tests/crate_graph.rs` and by `fleet-arch` once Fleet is imported | thurbox links `runtime-mux` until Fleet drives the runtimes |
+| 1. Components meet only through processes | `crates/architecture.toml` checked by `fleet-arch`: every other component is `role = "component"`, held to the crate graph from its manifest | The workspace; thurbox links `runtime-mux` until Fleet drives the runtimes |
 | 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox; runtimes once the runtime protocol ships |
 | 3. Crash-free operation | Code review | All |
-| 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | thurbox CI + pre-commit; Fleet `cargo xtask check` |
-| 5. Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` in each |
-| 6. Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` in each |
-| 7. Conventional commits | `scripts/ci/check-pr-title.sh` (required `PR Title` check) + `cog verify` in `commit-msg` | `cog.toml` in each |
+| 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit, over every crate |
+| 5. Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` |
+| 6. Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` |
+| 7. Conventional commits | `scripts/ci/check-pr-title.sh` (required `PR Title` check) + `cog verify` in `commit-msg` | `cog.toml` |
 | 8. Test first | `cargo-nextest` + code review | `.config/nextest.toml` |
 | 9. Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |
 | 10. Tag-based versioning | `build.rs` + `cd.yml` (thurbox); `cog bump` in `cd.yml` (Fleet) | `.github/workflows/cd.yml` |

@@ -1,0 +1,15 @@
+[package]
+name = "fleet-exec"
+description = "The one place fleet starts a process: bounded, its whole tree killed past the bound."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+process-wrap = { workspace = true }
+
+[lints]
+workspace = true
