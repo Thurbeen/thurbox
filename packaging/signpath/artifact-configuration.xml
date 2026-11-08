@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The SignPath project's artifact configuration, kept here so a change to what
+  is signed is reviewed like any other change. SignPath holds the live copy:
+  paste this into the project when it changes (docs/CODE-SIGNING.md).
+
+  The root is a zip because actions/upload-artifact zips what the
+  `Upload the unsigned Windows executables` step in cd.yml uploads, with both
+  executables at its root.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="thurbox.exe">
+      <authenticode-sign/>
+    </pe-file>
+    <pe-file path="thurbox-cli.exe">
+      <authenticode-sign/>
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
