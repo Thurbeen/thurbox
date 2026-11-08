@@ -6,6 +6,27 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 static SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// The variables that point git at another repository than its working
+/// directory. A commit hook exports them, and a child keeping them would run
+/// its `git config` on this repository instead of its scratch one.
+const GIT_LOCATION: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+];
+
+/// A child of these tests: `program`, blind to git's location variables.
+fn scratch(program: impl Into<std::ffi::OsString>, timeout: Duration) -> Spec {
+    let mut s = Spec::new(program, timeout);
+    s.env_remove = GIT_LOCATION.iter().map(|v| v.to_string()).collect();
+    s
+}
 struct Env(PathBuf);
 impl Env {
     fn new() -> Self {
@@ -23,7 +44,7 @@ impl Env {
         fs::write(p, text).unwrap();
     }
     fn call(&self, args: &[&str], env: &[(&str, &str)]) -> (bool, String) {
-        let mut s = Spec::new(env!("CARGO_BIN_EXE_fleet-dev"), Duration::from_secs(120))
+        let mut s = scratch(env!("CARGO_BIN_EXE_fleet-dev"), Duration::from_secs(120))
             .args(args.iter().copied());
         s.cwd = Some(self.0.clone());
         s.env = env
@@ -47,7 +68,7 @@ impl Env {
         }
     }
     fn git(&self, args: &[&str]) {
-        let mut s = Spec::new("git", Duration::from_secs(10)).args(args.iter().copied());
+        let mut s = scratch("git", Duration::from_secs(10)).args(args.iter().copied());
         s.cwd = Some(self.0.clone());
         s.env = vec![
             (
@@ -347,7 +368,7 @@ fn installer(e: &Env, args: &[&str]) -> (bool, String) {
 }
 fn installer_with(e: &Env, args: &[&str], version: Option<&str>) -> (bool, String) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut s = Spec::new("sh", Duration::from_secs(30))
+    let mut s = scratch("sh", Duration::from_secs(30))
         .arg(
             repo.join("scripts/fleet/install-release.sh")
                 .into_os_string(),
@@ -556,7 +577,7 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     fs::rename(e.0.join("releases/v2.0.0"), e.0.join("releases/v1.2.3")).unwrap();
     // Installer below is explicitly asked for a different release via direct fixture call.
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut s = Spec::new("sh", Duration::from_secs(30)).arg(
+    let mut s = scratch("sh", Duration::from_secs(30)).arg(
         repo.join("scripts/fleet/install-release.sh")
             .into_os_string(),
     );
@@ -592,8 +613,7 @@ fn native_gate_executes_fixture_tests_doctests_lint_docs_and_format() {
     let e2e = "#[test]\nfn runs() {\n    assert_eq!(gate_fixture::inc(2), 3);\n}\n";
     e.write("tests/e2e_demo.rs", e2e);
     e.write(".config/nextest.toml", "[profile.ci]\nfail-fast = false\n");
-    let mut s =
-        Spec::new("cargo", Duration::from_secs(30)).args(["generate-lockfile", "--offline"]);
+    let mut s = scratch("cargo", Duration::from_secs(30)).args(["generate-lockfile", "--offline"]);
     s.cwd = Some(e.0.clone());
     assert!(run(&s).success_text().is_some());
     let target = e.0.join("target").to_string_lossy().into_owned();
@@ -987,8 +1007,7 @@ fn release_fixture_checksum_recipe_installs() {
         .find(|l| l.contains("shasum -a 256") && l.contains("checksums.txt"))
         .expect("native release fixture checksum recipe")
         .trim();
-    let mut spec =
-        Spec::new("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
+    let mut spec = scratch("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
     spec.cwd = Some(e.0.clone());
     spec.env.push(("VERSION".into(), "v1.2.3".into()));
     let result = run(&spec);
@@ -1023,13 +1042,12 @@ fn published_installer_installs_its_own_release() {
         .find(|l| l.contains("scripts/install-release.sh") && l.contains("dist/"))
         .expect("the release step that publishes the installer")
         .trim();
-    let mut spec =
-        Spec::new("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
+    let mut spec = scratch("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
     spec.cwd = Some(e.0.clone());
     spec.env.push(("VERSION".into(), "v1.2.3".into()));
     let result = run(&spec);
     assert!(result.success_text().is_some(), "{result:?}");
-    let mut s = Spec::new("sh", Duration::from_secs(30))
+    let mut s = scratch("sh", Duration::from_secs(30))
         .arg(e.0.join("dist/install-release.sh").into_os_string());
     s.env = vec![
         (
@@ -1071,8 +1089,7 @@ fn release_step(e: &Env, job: &str, step: &str, env: &[(&str, &str)]) -> (bool, 
     e.write("output", "");
     let mut paths = vec![e.0.join("fakes")];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let mut s =
-        Spec::new("bash", Duration::from_secs(120)).args(["-eo", "pipefail", "-c", &script]);
+    let mut s = scratch("bash", Duration::from_secs(120)).args(["-eo", "pipefail", "-c", &script]);
     s.cwd = Some(e.0.clone());
     s.env = [
         (
@@ -1197,7 +1214,7 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
     e.git(&["checkout", "-q", "--", ".github/release-readiness.toml"]);
     // create-tag: the action runs `cog bump <bump_args>`, then the tag is pushed.
     let mut bump =
-        Spec::new("cog", Duration::from_secs(60)).args(["bump", "--auto", "--disable-bump-commit"]);
+        scratch("cog", Duration::from_secs(60)).args(["bump", "--auto", "--disable-bump-commit"]);
     bump.cwd = Some(e.0.clone());
     assert!(run(&bump).success_text().is_some(), "cog bump");
     // The create-tag job's checkout is thrown away, with the changelog cog
@@ -1211,7 +1228,7 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
     );
     assert!(ok, "push tag: {out}");
     let rev = |args: &[&str]| {
-        let mut s = Spec::new("git", Duration::from_secs(10)).args(args.iter().copied());
+        let mut s = scratch("git", Duration::from_secs(10)).args(args.iter().copied());
         s.cwd = Some(e.0.clone());
         run(&s).success_text().map(|s| s.trim().to_string())
     };
@@ -1220,7 +1237,7 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
         rev(&["--git-dir", "origin.git", "rev-parse", "v2.2.0^{commit}"]),
         head
     );
-    let mut notes = Spec::new("cog", Duration::from_secs(60)).args(["changelog", "--at", "v2.2.0"]);
+    let mut notes = scratch("cog", Duration::from_secs(60)).args(["changelog", "--at", "v2.2.0"]);
     notes.cwd = Some(e.0.clone());
     let notes = run(&notes).success_text().unwrap_or_default();
     assert!(
@@ -1297,11 +1314,11 @@ fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
     // A missing cog is an unknown decision, never "no release".
     fs::create_dir_all(e.0.join("only-git")).unwrap();
     for tool in ["bash", "git"] {
-        let found =
-            run(&Spec::new("sh", Duration::from_secs(10))
-                .args(["-c", &format!("command -v {tool}")]))
-            .success_text()
-            .unwrap();
+        let found = run(
+            &scratch("sh", Duration::from_secs(10)).args(["-c", &format!("command -v {tool}")])
+        )
+        .success_text()
+        .unwrap();
         std::os::unix::fs::symlink(found.trim(), e.0.join("only-git").join(tool)).unwrap();
     }
     let path = e.0.join("only-git").to_string_lossy().to_string();
@@ -1321,7 +1338,7 @@ fn claude_code_finds_the_repository_skills_through_a_tracked_link() {
         let claude = root.join(".claude/skills").join(&name).join("SKILL.md");
         assert!(claude.is_file(), "Claude Code finds no {name:?}");
         let link = Path::new(".claude/skills").join(&name);
-        let mut s = Spec::new("git", Duration::from_secs(10)).args([
+        let mut s = scratch("git", Duration::from_secs(10)).args([
             std::ffi::OsStr::new("ls-files"),
             std::ffi::OsStr::new("--stage"),
             std::ffi::OsStr::new("--"),
@@ -1337,4 +1354,35 @@ fn claude_code_finds_the_repository_skills_through_a_tracked_link() {
         skills += 1;
     }
     assert!(skills > 0, "the repository has no skills");
+}
+
+/// Run in a child by
+/// `a_git_helper_never_touches_the_repository_its_parent_names`, which
+/// passes it a `GIT_DIR` as a commit hook would.
+#[test]
+#[ignore = "run in a child by a_git_helper_never_touches_the_repository_its_parent_names"]
+fn git_helper_under_an_inherited_git_dir() {
+    let e = Env::new();
+    e.git(&["init", "-q", "-b", "main"]);
+    e.git(&["config", "user.name", "Fixture"]);
+    assert!(e.0.join(".git/config").is_file());
+}
+
+#[test]
+fn a_git_helper_never_touches_the_repository_its_parent_names() {
+    let other = Env::new();
+    other.git(&["init", "-q", "-b", "main"]);
+    let config = other.0.join(".git/config");
+    let before = fs::read_to_string(&config).unwrap();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "git_helper_under_an_inherited_git_dir",
+            "--ignored",
+        ])
+        .env("GIT_DIR", other.0.join(".git"))
+        .output()
+        .unwrap();
+    assert!(child.status.success(), "{child:?}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), before);
 }

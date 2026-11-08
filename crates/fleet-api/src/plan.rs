@@ -104,6 +104,9 @@ pub enum Action {
         session: SessionRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
+        /// What a start of the agent needs, as its spawn had it: a runtime
+        /// that starts a program starts the resume argv from it.
+        launch: SpawnSpec,
     },
     /// Stop the agent of an idle session and keep its row, its workspace
     /// and its conversation. A stopped session is left alone.
@@ -117,6 +120,9 @@ pub enum Action {
         session: SessionRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
+        /// What a start of the agent needs, as its spawn had it: a runtime
+        /// that starts a program starts the resume argv from it.
+        launch: SpawnSpec,
     },
     /// Take a draft change out of draft, through the Forge port: the only
     /// forge write Fleet performs. `expect` is the head and state the
@@ -197,6 +203,17 @@ pub enum Action {
 }
 
 impl Action {
+    /// The start this action makes: a spawn's, or a revive's or a resume's
+    /// again. The manager completes each with the environment it froze.
+    pub fn launch_mut(&mut self) -> Option<&mut SpawnSpec> {
+        match self {
+            Action::Spawn(spec)
+            | Action::Revive { launch: spec, .. }
+            | Action::Resume { launch: spec, .. } => Some(spec),
+            _ => None,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Action::Materialize { .. } => "materialize",
@@ -242,6 +259,21 @@ pub struct SpawnSpec {
     /// The manager already froze runtime model-variable selection with env.
     #[serde(default)]
     pub environment_frozen: bool,
+}
+
+impl SpawnSpec {
+    /// The harness profile's launch argv: its hooks, the trust of the
+    /// workspace root and each other directory the workspace spans.
+    pub fn launch_argv(&self) -> Result<Vec<String>, String> {
+        let (extra, root) = match &self.ready {
+            Some(r) => (
+                r.extra_dirs.clone(),
+                Some(r.trust_root.clone().unwrap_or_else(|| r.dir.clone())),
+            ),
+            None => (Vec::new(), self.workspace.dir().map(str::to_string)),
+        };
+        crate::harness::profile(&self.harness).launch(&extra, root.as_deref())
+    }
 }
 
 /// Written before the effect runs.

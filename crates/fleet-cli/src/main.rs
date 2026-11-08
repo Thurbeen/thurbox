@@ -623,9 +623,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
             lease_ttl_ms,
             json,
         } => {
-            let (runtime, map) = open_reloadable_runtime(&config)?;
-            let workspaces = open_workspaces(&config, &data_dir, map.as_ref())?;
             let signals = open_signals(&data_dir)?;
+            let (runtime, map) = open_reloadable_runtime(&config, &signals)?;
+            let workspaces = open_workspaces(&config, &data_dir, map.as_ref())?;
             let forge = open_forge(&config)?;
             let gateway = open_gateway(&config)?;
             let bound = runtime
@@ -914,9 +914,9 @@ fn cmd_up(
         .starter
         .as_ref()
         .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
-    let (runtime, repositories) = open_reloadable_runtime(config)?;
-    let workspaces = open_workspaces(config, data_dir, repositories.as_ref())?;
     let signals = open_signals(data_dir)?;
+    let (runtime, repositories) = open_reloadable_runtime(config, &signals)?;
+    let workspaces = open_workspaces(config, data_dir, repositories.as_ref())?;
     let mut reload = repositories.map(|map| Reload::new(config_path, config_text, map));
     let forge = open_forge(config)?;
     let gateway = open_gateway(config)?;
@@ -1269,6 +1269,7 @@ fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
 /// The runtime, and for thurbox the handle to its repository map.
 fn open_reloadable_runtime(
     config: &Config,
+    signals: &FileSignals,
 ) -> Result<(Box<dyn Runtime>, Option<Repositories>), Failure> {
     if !config.runtimes.is_empty() {
         let mut hosts = BTreeMap::new();
@@ -1284,7 +1285,8 @@ fn open_reloadable_runtime(
             }
             hosts.insert(host.clone(), rt);
         }
-        return Ok((Box::new(ExecRuntime::new(hosts)), None));
+        let runtime = ExecRuntime::new(hosts).with_signals(signals.clone());
+        return Ok((Box::new(runtime), None));
     }
     let Some(rt) = &config.runtime else {
         return Err(Failure {

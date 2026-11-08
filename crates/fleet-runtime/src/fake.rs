@@ -489,15 +489,8 @@ impl Runtime for FakeRuntime {
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
         let spec = spec.clone();
         // The harness profile's argv, as a runtime that runs a program is
-        // given it: the extra directories spanned, the workspace trusted.
-        let (extra, root) = match &spec.ready {
-            Some(r) => (
-                r.extra_dirs.clone(),
-                Some(r.trust_root.clone().unwrap_or_else(|| r.dir.clone())),
-            ),
-            None => (Vec::new(), spec.workspace.dir().map(str::to_string)),
-        };
-        let argv = match profile(&spec.harness).launch(&extra, root.as_deref()) {
+        // given it.
+        let argv = match spec.launch_argv() {
             Ok(argv) => argv,
             Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
         };
@@ -665,6 +658,7 @@ impl Runtime for FakeRuntime {
         &self,
         session: &SessionRef,
         conversation: Option<&str>,
+        _: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
         let key = session.key.clone();
         let conversation = conversation.map(str::to_string);
@@ -719,6 +713,7 @@ impl Runtime for FakeRuntime {
         &self,
         session: &SessionRef,
         conversation: Option<&str>,
+        _: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
         let key = session.key.clone();
         let conversation = conversation.map(str::to_string);

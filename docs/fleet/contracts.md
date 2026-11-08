@@ -843,7 +843,10 @@ answers keep the last state. Nothing decides on the state; a view reads it.
 `paused`, `pause` and `resume`, each answering Known or Unknown, and
 `can_pause`. A runtime reports no activity: the agent's hooks do. `revive`
 and `resume` take the conversation the hooks last reported, which the
-harness profile's resume argv names. `create_dir` makes a directory with its missing parents on a host
+harness profile's resume argv names, and the spawn's launch (harness,
+workspace, environment), for a runtime that starts the argv itself; the
+manager completes it with the environment it froze and the signal file, as
+for a spawn. `create_dir` makes a directory with its missing parents on a host
 and says whether it made it; `remove_dir` removes one and what it holds, a
 directory already gone included. The thurbox adapter does both on the local host
 and refuses any other, since thurbox has no verb that makes or removes a
@@ -851,6 +854,15 @@ directory on a remote host. Each adapter reports its longest single operation
 (`operation_bound`), and `fleet reconcile` refuses a lease that could not
 outlast it.
 
+- **exec:** every call is one bounded `<program> <verb>` of the
+  [runtime protocol](../runtime/README.md#the-runtime-protocol), the program
+  chosen by the host. `spawn` is `start` of the harness profile's launch argv
+  with the spawn's environment, `FLEET_SIGNAL_FILE` included; `revive` and
+  `resume` are `start` of its resume argv. A session's id is its runtime key,
+  `<keyPrefix>.<uid>`, so a restart keeps it. `ready`, `workspace_trust` and
+  a running agent's `at_rest` read the agent's signals; `lost` is an
+  `exited` process. It cannot pause: `paused` stays Unknown.
+  `e2e_runtime_exec` drives the real `runtime-mux` through it.
 - **thurbox:** every call is one bounded `thurbox-cli … --json`. A session's
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key. The brief's delivery

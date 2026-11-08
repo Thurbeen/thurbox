@@ -194,10 +194,10 @@ fn a_task_starts_and_is_released_through_runtime_mux() {
     };
     let sockets = Sockets::new("task");
     let mut env = mux_env("runtime-mux-task", &program, &sockets);
-    // The harness is the program a session starts; this one waits.
+    // The harness profile's program; this one waits and reports nothing.
     let bin = env.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
-    let harness = bin.join("claude-code");
+    let harness = bin.join("claude");
     fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -212,27 +212,29 @@ fn a_task_starts_and_is_released_through_runtime_mux() {
     env.reconcile().ok();
 
     let session = env.get("t1")["status"]["session"].clone();
-    let id = session["id"].as_str().unwrap_or_default().to_string();
-    assert!(id.starts_with('%'), "a tmux pane: {session:#}");
-    assert_eq!(session["host"], "local", "{session:#}");
     let uid = env.get("t1")["metadata"]["uid"]
         .as_str()
         .unwrap()
         .to_string();
     let key = format!("fleet.{uid}");
+    // The session is the key's, whatever process runs under it.
+    assert_eq!(session["id"], key.as_str(), "{session:#}");
+    assert_eq!(session["host"], "local", "{session:#}");
     let panes = |format: &str| {
         String::from_utf8_lossy(&sockets.tmux(&["list-panes", "-a", "-F", format]).stdout)
             .into_owned()
     };
-    assert!(
-        panes("#{pane_id} #{pane_current_path}").contains(&format!("{id} {}", work.display())),
-        "{}",
-        panes("#{pane_id} #{pane_current_path}")
-    );
+    let listed = panes("#{pane_id} #{pane_current_path}");
+    let id = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
 
     // A second pass adopts the session rather than starting another.
     env.reconcile().ok();
-    assert_eq!(env.get("t1")["status"]["session"]["id"], id.as_str());
+    assert_eq!(env.get("t1")["status"]["session"]["id"], key.as_str());
     // Beside the session's own first window, which tmux keeps the server on.
     let listed = panes("#{pane_id} #{window_name}");
     assert_eq!(
@@ -275,4 +277,146 @@ fn a_task_starts_and_is_released_through_runtime_mux() {
         .expect("inspect");
     let answer: Value = serde_json::from_slice(&inspect.stdout).expect("JSON");
     assert_eq!(answer, json!({"known": "none"}), "the release stopped it");
+}
+
+/// Claude Code as Fleet starts it: it records its argv, reports its start as
+/// its SessionStart hook would, and each line typed to it as its prompt hook
+/// would, through the `fleet` on its PATH and the file Fleet passed it.
+const CLAUDE: &str = r#"#!/bin/sh
+{ printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
+printf '%s' "$FLEET_SIGNAL_FILE" > "$PWD/signal-file"
+fleet signal idle
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  fleet signal prompt "{\"prompt\":\"$line\",\"session_id\":\"conv-1\"}"
+  fleet signal idle
+done
+"#;
+
+/// `env` reconciled until `done` holds, or a panic naming the Task.
+fn reconcile_until(env: &Env, what: &str, done: impl Fn(&Env) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !done(env) {
+        assert!(
+            Instant::now() < deadline,
+            "{what}: {:#}",
+            env.get("t1")["status"]
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        env.reconcile();
+    }
+}
+
+/// The argv of each start of the agent, from its own log.
+fn starts(work: &Path) -> Vec<Vec<String>> {
+    fs::read_to_string(work.join("argv.log"))
+        .unwrap_or_default()
+        .split("--\n")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.lines().map(str::to_string).collect())
+        .collect()
+}
+
+#[test]
+fn a_task_on_runtime_mux_reports_through_fleet_signal_and_revives_on_its_conversation() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("signal");
+    let mut env = mux_env("runtime-mux-signal", &program, &sockets);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, CLAUDE).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    // Watched for idleness, which is what reads the agent's activity.
+    task["spec"]["configRef"] = json!({"name": "pausing"});
+    let config = support::object("TaskConfig", "pausing", json!({"pauseAfterMs": 1}));
+    env.apply(json!([config, task])).ok();
+
+    // Started on the harness profile's launch argv, with the file its hooks
+    // report to; its start report makes it ready, and its prompt hook proves
+    // the brief.
+    reconcile_until(&env, "briefed on the prompt hook's proof", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let first = &starts(&work)[0];
+    let settings: Vec<&String> = first
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "--settings")
+        .map(|(i, _)| &first[i + 1])
+        .collect();
+    // Claude Code keeps the last of several --settings: Fleet passes one.
+    assert_eq!(settings.len(), 1, "{first:?}");
+    let settings: Value = serde_json::from_str(settings[0]).expect("settings JSON");
+    for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"] {
+        let command = settings["hooks"][event][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            command.starts_with("fleet signal "),
+            "{event}: {settings:#}"
+        );
+    }
+    let file = fs::read_to_string(work.join("signal-file")).expect("FLEET_SIGNAL_FILE");
+    assert!(Path::new(&file).is_file(), "the agent reported to {file:?}");
+    reconcile_until(&env, "idle, as its hooks report", |env| {
+        env.get("t1")["status"]["sessionState"] == "Idle"
+    });
+    assert_eq!(env.get("t1")["status"]["conversation"], "conv-1");
+    // Idle long enough, but the runtime cannot tell a stopped session, and
+    // Unknown never pauses.
+    env.reconcile().ok();
+    let status = env.get("t1")["status"].clone();
+    assert!(
+        status["conditions"].as_array().is_some_and(|cs| !cs
+            .iter()
+            .any(|c| c["type"] == "Paused" && c["status"] == "True")),
+        "{status:#}"
+    );
+
+    // The agent exits on its own: the session is lost, and revived by a
+    // start of the resume argv on the conversation its hooks reported,
+    // under the same identity.
+    let id = env.get("t1")["status"]["session"]["id"].clone();
+    let panes = sockets.tmux(&["list-panes", "-a", "-F", "#{pane_id} #{pane_current_path}"]);
+    let listed = String::from_utf8_lossy(&panes.stdout).into_owned();
+    let pane = listed
+        .lines()
+        .find(|l| l.ends_with(&*work.to_string_lossy()))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no pane in {}: {listed}", work.display()))
+        .to_string();
+    sockets.tmux(&["send-keys", "-t", &pane, "C-c"]);
+    reconcile_until(&env, "revived", |_| starts(&work).len() >= 2);
+    let second = &starts(&work)[1];
+    assert_eq!(
+        &second[second.len() - 2..],
+        ["--resume", "conv-1"],
+        "{second:?}"
+    );
+    reconcile_until(&env, "the window back", |env| {
+        support::condition(&env.get("t1")["status"], "SessionLost")["status"] == "False"
+    });
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(status["session"]["id"], id, "{status:#}");
+    assert!(
+        status["conditions"].as_array().is_some_and(|cs| !cs
+            .iter()
+            .any(|c| c["type"] == "WorkerGone" && c["status"] == "True")),
+        "{status:#}"
+    );
 }

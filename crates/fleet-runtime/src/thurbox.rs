@@ -1153,7 +1153,12 @@ impl Runtime for ThurboxRuntime {
     /// worktree, and leaves a running or stopped session alone.
     /// thurbox restarts the agent with its own resume arguments, which it
     /// keeps with the session: the conversation is its to name.
-    fn revive(&self, session: &SessionRef, _: Option<&str>) -> Observation<EffectOutcome> {
+    fn revive(
+        &self,
+        session: &SessionRef,
+        _: Option<&str>,
+        _: &SpawnSpec,
+    ) -> Observation<EffectOutcome> {
         match self.call(&["session", "restart", &session.id, "--if-missing", "--json"]) {
             Answer::Ok(_) => Observation::Known(EffectOutcome::Revived),
             Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
@@ -1187,7 +1192,12 @@ impl Runtime for ThurboxRuntime {
 
     /// `session start`: thurbox puts the pane back and resumes the
     /// conversation, and leaves a running session alone.
-    fn resume(&self, session: &SessionRef, _: Option<&str>) -> Observation<EffectOutcome> {
+    fn resume(
+        &self,
+        session: &SessionRef,
+        _: Option<&str>,
+        _: &SpawnSpec,
+    ) -> Observation<EffectOutcome> {
         if let Some(refused) = self.not_this_session(session) {
             return refused;
         }

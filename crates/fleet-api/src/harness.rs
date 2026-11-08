@@ -13,7 +13,7 @@
 //!
 //! | Harness | Program | Hooks | Trust | Resume |
 //! | --- | --- | --- | --- | --- |
-//! | `claude-code`, `claude` | `claude` | `--settings` hooks: prompt, working, idle | its dialog, read, never answered | `--resume <id>` |
+//! | `claude-code`, `claude` | `claude` | one `--settings` with hooks: start, prompt, working, idle | its dialog, read, never answered | `--resume <id>` |
 //! | `codex` | `codex` | `notify`: idle, with the turn's prompts | `-c projects=…` for the session | `codex resume <id>` |
 //! | any other | the harness name | none | none Fleet knows | a fresh start |
 //!
@@ -89,6 +89,7 @@ impl Profile {
             Kind::Claude => {
                 let hook = |state: &str| serde_json::json!([{"hooks": [{"type": "command", "command": signal_command(state)}]}]);
                 let settings = serde_json::json!({"hooks": {
+                    "SessionStart": hook("idle"),
                     "UserPromptSubmit": hook("prompt"),
                     "PreToolUse": hook("working"),
                     "Stop": hook("idle"),
@@ -216,6 +217,7 @@ mod tests {
         assert_eq!(claude[1], "--settings");
         let settings: serde_json::Value = serde_json::from_str(&claude[2]).unwrap();
         for (event, state) in [
+            ("SessionStart", "idle"),
             ("UserPromptSubmit", "prompt"),
             ("Stop", "idle"),
             ("PreToolUse", "working"),
@@ -229,6 +231,10 @@ mod tests {
             );
         }
         assert_eq!(&claude[3..], ["--add-dir", "/w/docs"]);
+        // Claude Code keeps the last of several `--settings`, so the hooks
+        // are one, and a resume keeps them one.
+        let resumed = profile("claude").resume(&claude, Some("c1"));
+        assert_eq!(resumed.iter().filter(|a| *a == "--settings").count(), 1);
 
         let codex = profile("codex").launch(&[], Some("/w/app")).unwrap();
         assert_eq!(

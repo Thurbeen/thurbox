@@ -78,17 +78,29 @@ a pane kept after its program exits is how `inspect` reports the code; a
 the command's process group at the deadline. `runtime-mux` runs on this
 machine only for now: its ssh and WSL places come with the hosts it reads.
 
-What Fleet's `exec` kind does with the answers until agent signals and harness
-profiles land: a session's argv is its harness name; readiness, workspace
-trust and delivery stay Unknown, so a brief waits; `at_rest` is Known only
-once no process runs under the key, so a release waits for a running agent;
-`lost` is never Known true, so nothing is revived.
+What Fleet's `exec` kind does with the answers:
+
+- `start` runs the harness profile's launch argv
+  ([harness profiles](../fleet/controllers/task.md#harness-profiles)), with
+  `FLEET_SIGNAL_FILE` in `env`;
+- a session's id is its key, so it outlives each process started under it;
+- readiness, workspace trust and an idle agent come from the agent's signals:
+  an agent that reported anything but `blocked` is ready and past any trust
+  dialog, and a running agent is at rest once it last reported `idle`. Before
+  its first report, a trust dialog on its `capture` is Untrusted, and anything
+  else Unknown, so a brief waits;
+- delivery is proven by the agent's prompt hook, not by `input`;
+- an `exited` process is lost, since a `stop` leaves `none`: revive is `start`
+  with the profile's resume argv on the conversation the hooks reported;
+- `none` proves nothing about a pause, so Fleet never pauses a session on this
+  kind: version 1 has no stop that keeps the key.
 
 Agent hooks append to the file Fleet passes as `FLEET_SIGNAL_FILE` in `start`.
-Fleet reads it directly on a local host and through `exec` on a remote one, so
-a local runtime needs nothing for signals. A remote runtime without `exec`
-gives Fleet no signals: what Fleet would learn from them, such as an idle
-agent or a delivered prompt, stays Unknown, and Unknown never concludes.
+Fleet reads it directly on a local host, so a local runtime needs nothing for
+signals. A session on another host gets no file: reading one back through the
+runtime's `exec` is not built yet, so what Fleet would learn from it, such as
+an idle agent or a delivered prompt, stays Unknown, and Unknown never
+concludes.
 
 `fleet runtime check -- <program> [args]` is the conformance suite. It prints
 one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:

@@ -751,12 +751,7 @@ fn a_workspace_fleet_made_reaches_thurbox_as_a_ready_directory() {
 /// `git` in `dir`, blind to any repository a parent process points at.
 fn git(dir: &std::path::Path, args: &[&str]) -> String {
     let mut cmd = std::process::Command::new("git");
-    for var in [
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-    ] {
+    for var in fleet_runtime::worktree::GIT_LOCATION {
         cmd.env_remove(var);
     }
     let out = cmd

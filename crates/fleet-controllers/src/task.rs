@@ -482,20 +482,28 @@ impl Pass<'_, '_> {
             "Spawning",
             format!("attempt {attempt}"),
         );
-        let ready = self.st.workspace.clone();
-        let spec = SpawnSpec {
-            host: ready
-                .as_ref()
-                .map_or_else(|| self.spec.host.clone(), |w| w.host.clone()),
+        let host = self
+            .st
+            .workspace
+            .as_ref()
+            .map_or_else(|| self.spec.host.clone(), |w| w.host.clone());
+        let spec = self.launch(host);
+        self.intend(key, Action::Spawn(spec));
+    }
+
+    /// What a start of the agent on `host` needs: a spawn makes the first,
+    /// a revive or a resume the next ones.
+    fn launch(&self, host: String) -> SpawnSpec {
+        SpawnSpec {
+            host,
             key: session_key(self.input.task),
             harness: self.spec.harness.clone(),
             workspace: self.spec.workspace.clone(),
-            ready,
+            ready: self.st.workspace.clone(),
             model: self.spec.model.clone(),
             env: self.spec.env.clone(),
             environment_frozen: false,
-        };
-        self.intend(key, Action::Spawn(spec));
+        }
     }
 
     fn spawning(&mut self) {
@@ -1237,11 +1245,13 @@ impl Pass<'_, '_> {
         self.st.revivals += 1;
         self.st.revive_attempts += 1;
         let key = self.key(REVIVE, Some(self.st.revivals));
+        let launch = self.launch(session.host.clone());
         self.intend(
             key,
             Action::Revive {
                 session: session.clone(),
                 conversation: self.st.conversation.clone(),
+                launch,
             },
         );
         true
@@ -1464,11 +1474,13 @@ impl Pass<'_, '_> {
         self.st.resumes += 1;
         self.st.resume_attempts += 1;
         let key = self.key(RESUME, Some(self.st.resumes));
+        let launch = self.launch(session.host.clone());
         self.intend(
             key,
             Action::Resume {
                 session: session.clone(),
                 conversation: self.st.conversation.clone(),
+                launch,
             },
         );
     }

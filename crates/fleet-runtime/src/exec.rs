@@ -17,14 +17,18 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use fleet_api::Observation;
+use fleet_api::harness::{claude_trust_dialog, codex_trust_dialog, profile};
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
-use fleet_api::runtime::{Runtime, WorkspaceTrust};
+use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::session::uid_of_session_key;
+use fleet_api::signal::{Reported, Signals, State};
 use fleet_api::task::{SessionRef, Workspace};
 use fleet_exec::{Outcome, Spec};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+
+use crate::signals::FileSignals;
 
 /// The protocol version Fleet speaks; every request carries it, and a
 /// runtime that speaks another answers Unknown.
@@ -201,16 +205,40 @@ pub enum Executed {
     },
 }
 
+/// `capture`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Captured {
+    #[serde(rename_all = "camelCase")]
+    Screen {
+        text: String,
+        cursor_row: Option<u64>,
+    },
+    None,
+}
+
 /// The `exec` kind: one program per host.
 #[derive(Debug, Clone, Default)]
 pub struct ExecRuntime {
     hosts: BTreeMap<String, ExecProgram>,
+    signals: Option<FileSignals>,
 }
 
 impl ExecRuntime {
     /// `hosts` maps each host name a Task may give to the program serving it.
     pub fn new(hosts: BTreeMap<String, ExecProgram>) -> ExecRuntime {
-        ExecRuntime { hosts }
+        ExecRuntime {
+            hosts,
+            signals: None,
+        }
+    }
+
+    /// Read what each agent reports through `fleet signal` from `signals`:
+    /// readiness, workspace trust and rest come from it, as no runtime
+    /// knows the agent.
+    pub fn with_signals(mut self, signals: FileSignals) -> ExecRuntime {
+        self.signals = Some(signals);
+        self
     }
 
     fn program(&self, host: &str) -> Result<&ExecProgram, String> {
@@ -250,10 +278,85 @@ impl ExecRuntime {
         )
     }
 
-    /// The argv a session starts with: the harness, by name. Harness
-    /// profiles, which own launch and resume argv, replace this.
-    fn argv(spec: &SpawnSpec) -> Vec<String> {
-        vec![spec.harness.clone()]
+    /// `start` of `argv` with `spec`'s environment and directory, under its
+    /// key: a spawn, a revive and a resume are each one.
+    fn start(&self, spec: &SpawnSpec, argv: &[String]) -> Observation<Started> {
+        let rt = match self.program(&spec.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::Known(Started::Failed { why }),
+        };
+        if spec.model.is_some() {
+            return Observation::Known(Started::Failed {
+                why: format!(
+                    "runtime {} has no harness-to-variable mapping for spec.model; drop the model or use the thurbox runtime",
+                    rt.name
+                ),
+            });
+        }
+        let dir = match (&spec.ready, &spec.workspace) {
+            (Some(ready), _) => ready.dir.clone(),
+            (None, Workspace::Dir(w)) => w.dir.clone(),
+            (None, Workspace::Repositories(_)) => {
+                return Observation::Known(Started::Failed {
+                    why: format!(
+                        "runtime {} makes no repositories workspace; Fleet's workspace port makes it",
+                        rt.name
+                    ),
+                });
+            }
+        };
+        rt.ask(
+            "start",
+            Self::request(json!({
+                "key": rt.key(&spec.key),
+                "argv": argv,
+                "env": spec.env,
+                "dir": dir,
+            })),
+        )
+    }
+
+    /// Start the agent of `session` again on the harness profile's resume
+    /// argv: a process still running is adopted, so nothing restarts it.
+    fn restart(
+        &self,
+        session: &SessionRef,
+        conversation: Option<&str>,
+        launch: &SpawnSpec,
+        done: EffectOutcome,
+    ) -> Observation<EffectOutcome> {
+        let mut spec = launch.clone();
+        spec.host.clone_from(&session.host);
+        spec.key.clone_from(&session.key);
+        let argv = match spec.launch_argv() {
+            Ok(argv) => profile(&spec.harness).resume(&argv, conversation),
+            Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
+        };
+        self.start(&spec, &argv).map(|started| match started {
+            Started::Started { .. } => done,
+            Started::Failed { why } => EffectOutcome::Failed { why },
+        })
+    }
+
+    /// What the agent's hooks reported through `fleet signal`.
+    fn reported(&self, session: &SessionRef) -> Observation<Reported> {
+        match &self.signals {
+            Some(signals) => signals.read(session),
+            None => Observation::unknown("no signal port: what the agent reports is not read"),
+        }
+    }
+
+    /// The session's identity: the key's, which outlives each process a
+    /// revive or a resume starts under it.
+    fn session(&self, host: &str, key: &str) -> SessionRef {
+        let id = self
+            .program(host)
+            .map_or_else(|_| key.to_string(), |rt| rt.key(key));
+        SessionRef {
+            id,
+            host: host.to_string(),
+            key: key.to_string(),
+        }
     }
 }
 
@@ -336,74 +439,82 @@ impl Runtime for ExecRuntime {
     }
 
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
-        let rt = match self.program(&spec.host) {
-            Ok(rt) => rt,
+        let argv = match spec.launch_argv() {
+            Ok(argv) => argv,
             Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
         };
-        if spec.model.is_some() {
-            return Observation::Known(EffectOutcome::Failed {
-                why: format!(
-                    "runtime {} has no harness-to-variable mapping for spec.model; drop the model or use the thurbox runtime",
-                    rt.name
-                ),
-            });
-        }
-        let dir = match (&spec.ready, &spec.workspace) {
-            (Some(ready), _) => ready.dir.clone(),
-            (None, Workspace::Dir(w)) => w.dir.clone(),
-            (None, Workspace::Repositories(_)) => {
-                return Observation::Known(EffectOutcome::Failed {
-                    why: format!(
-                        "runtime {} makes no repositories workspace; configure [workspaces] so Fleet makes it",
-                        rt.name
-                    ),
-                });
-            }
-        };
-        let request = Self::request(json!({
-            "key": rt.key(&spec.key),
-            "argv": Self::argv(spec),
-            "env": spec.env,
-            "dir": dir,
-        }));
-        rt.ask::<Started>("start", request)
-            .map(|started| match started {
-                Started::Started { id, adopted } => EffectOutcome::Spawned {
-                    session: SessionRef {
-                        id,
-                        host: spec.host.clone(),
-                        key: spec.key.clone(),
-                    },
-                    adopted,
-                },
-                Started::Failed { why } => EffectOutcome::Failed { why },
-            })
+        self.start(spec, &argv).map(|started| match started {
+            Started::Started { adopted, .. } => EffectOutcome::Spawned {
+                session: self.session(&spec.host, &spec.key),
+                adopted,
+            },
+            Started::Failed { why } => EffectOutcome::Failed { why },
+        })
     }
 
     fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>> {
         self.inspect(host, key).map(|found| match found {
             Inspected::None => None,
-            Inspected::Running { id } | Inspected::Exited { id, .. } => Some(SessionRef {
-                id,
-                host: host.to_string(),
-                key: key.to_string(),
-            }),
+            Inspected::Running { .. } | Inspected::Exited { .. } => Some(self.session(host, key)),
         })
     }
 
-    fn ready(&self, _session: &SessionRef) -> Observation<bool> {
-        Observation::unknown(
-            "an exec runtime cannot prove the agent takes input; agent signals can",
-        )
+    /// Ready once the agent reported anything but a wait for a person: its
+    /// start hook reports it before any prompt.
+    fn ready(&self, session: &SessionRef) -> Observation<bool> {
+        bind(self.reported(session), |r| match r.state {
+            Some(State::Blocked) => Observation::Known(false),
+            Some(_) => Observation::Known(true),
+            None => Observation::unknown("the agent reported no state yet"),
+        })
     }
 
+    /// An agent that reported anything runs past any workspace-trust
+    /// dialog: hooks run only in a trusted workspace. Before that, a trust
+    /// dialog on its screen is Untrusted, and Fleet never answers it.
     fn workspace_trust(
         &self,
-        _session: &SessionRef,
+        session: &SessionRef,
         _workspace: &Workspace,
         _ready: Option<&fleet_api::workspace::WorkspaceRef>,
     ) -> Observation<WorkspaceTrust> {
-        Observation::unknown("an exec runtime cannot prove workspace trust; harness profiles can")
+        match self.reported(session) {
+            Observation::Known(r) if r.state.is_some() => {
+                return Observation::Known(WorkspaceTrust::Trusted {
+                    how: "the agent reported its state, past any workspace-trust dialog".into(),
+                });
+            }
+            Observation::Known(_) => {}
+            Observation::Unknown { why } => return Observation::Unknown { why },
+        }
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        let screen = rt.ask::<Captured>(
+            "capture",
+            Self::request(json!({ "key": rt.key(&session.key), "lines": 0 })),
+        );
+        bind(screen, |captured| match captured {
+            Captured::Screen {
+                text, cursor_row, ..
+            } if codex_trust_dialog(&text)
+                || cursor_row
+                    .and_then(|row| usize::try_from(row).ok())
+                    .is_some_and(|row| claude_trust_dialog(&text, row)) =>
+            {
+                Observation::Known(WorkspaceTrust::Untrusted {
+                    gap: TrustGap::Unsupported,
+                    why: format!(
+                        "the agent asks whether to trust its workspace on host {}, and Fleet never answers it: trust the directory once in the session. The brief follows.",
+                        session.host
+                    ),
+                })
+            }
+            _ => Observation::unknown(
+                "the agent has not reported yet and shows no workspace-trust dialog",
+            ),
+        })
     }
 
     fn brief(
@@ -433,21 +544,25 @@ impl Runtime for ExecRuntime {
         })
     }
 
+    /// A runtime cannot read a typed text back; the agent's prompt hook
+    /// proves it, which the manager reads from the signal port.
     fn brief_delivered(&self, _session: &SessionRef, _intent_key: &str) -> Observation<bool> {
         Observation::unknown(
             "an exec runtime cannot read a brief back; the agent's prompt hook can",
         )
     }
 
-    /// Known only when no process runs under the key: an agent that exited,
-    /// or is gone, does no more work. A running one is Unknown, never idle.
+    /// An agent that exited, or is gone, does no more work. A running one is
+    /// at rest once its hooks last reported it idle.
     fn at_rest(&self, session: &SessionRef) -> Observation<bool> {
         bind(
             self.inspect(&session.host, &session.key),
             |found| match found {
-                Inspected::Running { .. } => Observation::unknown(
-                    "an exec runtime cannot prove a running agent is at rest; agent signals can",
-                ),
+                Inspected::Running { .. } => bind(self.reported(session), |r| match r.state {
+                    Some(State::Idle) => Observation::Known(true),
+                    Some(_) => Observation::Known(false),
+                    None => Observation::unknown("the running agent reported no state yet"),
+                }),
                 Inspected::Exited { .. } | Inspected::None => Observation::Known(true),
             },
         )
@@ -463,14 +578,17 @@ impl Runtime for ExecRuntime {
             .map(|Stopped::Stopped| EffectOutcome::Released)
     }
 
+    /// Lost when the runtime holds the key but its process exited: a `stop`
+    /// removes the key, so only the agent's own exit, or a crash, leaves
+    /// one. A key the runtime no longer holds proves nothing either way.
     fn lost(&self, session: &SessionRef) -> Observation<bool> {
-        // An exited process is not proof nobody stopped it on purpose.
         bind(
             self.inspect(&session.host, &session.key),
             |found| match found {
                 Inspected::Running { .. } => Observation::Known(false),
-                _ => Observation::unknown(
-                    "the runtime cannot tell a lost process from a stopped one",
+                Inspected::Exited { .. } => Observation::Known(true),
+                Inspected::None => Observation::unknown(
+                    "the runtime holds nothing under the key, which a stop also leaves",
                 ),
             },
         )
@@ -478,14 +596,22 @@ impl Runtime for ExecRuntime {
 
     fn revive(
         &self,
-        _session: &SessionRef,
-        _conversation: Option<&str>,
+        session: &SessionRef,
+        conversation: Option<&str>,
+        launch: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
-        Observation::Known(EffectOutcome::Failed {
-            why:
-                "an exec runtime revives with the harness's resume argv, which harness profiles own"
-                    .into(),
-        })
+        self.restart(session, conversation, launch, EffectOutcome::Revived)
+    }
+
+    // Not `can_pause`: a pause is a `stop`, after which protocol version 1
+    // holds nothing under the key, so the session would read as gone.
+    fn resume(
+        &self,
+        session: &SessionRef,
+        conversation: Option<&str>,
+        launch: &SpawnSpec,
+    ) -> Observation<EffectOutcome> {
+        self.restart(session, conversation, launch, EffectOutcome::Resumed)
     }
 }
 

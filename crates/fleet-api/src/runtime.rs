@@ -126,12 +126,15 @@ pub trait Runtime {
     fn lost(&self, session: &SessionRef) -> Observation<bool>;
     /// Start a lost session's agent again in its own workspace, resuming its
     /// conversation under the same identity: the harness profile's resume
-    /// argv names `conversation`, when the agent's hooks reported one. A
-    /// running session is left alone, so repeating it is harmless.
+    /// argv names `conversation`, when the agent's hooks reported one, and
+    /// `launch` is what its spawn started, for a runtime that starts the
+    /// argv itself. A running session is left alone, so repeating it is
+    /// harmless.
     fn revive(
         &self,
         session: &SessionRef,
         conversation: Option<&str>,
+        launch: &SpawnSpec,
     ) -> Observation<EffectOutcome>;
     /// Whether this runtime can pause a session and resume it. Fleet never
     /// pauses a session on a runtime that cannot.
@@ -159,6 +162,7 @@ pub trait Runtime {
         &self,
         _session: &SessionRef,
         _conversation: Option<&str>,
+        _launch: &SpawnSpec,
     ) -> Observation<EffectOutcome> {
         Observation::Known(EffectOutcome::Failed {
             why: "this runtime cannot resume a session".into(),

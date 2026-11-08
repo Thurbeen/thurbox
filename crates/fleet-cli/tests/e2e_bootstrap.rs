@@ -581,7 +581,12 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         fn lost(&self, _: &SessionRef) -> Observation<bool> {
             Observation::Known(false)
         }
-        fn revive(&self, _: &SessionRef, _: Option<&str>) -> Observation<EffectOutcome> {
+        fn revive(
+            &self,
+            _: &SessionRef,
+            _: Option<&str>,
+            _: &fleet_api::plan::SpawnSpec,
+        ) -> Observation<EffectOutcome> {
             panic!("the session is running")
         }
     }
@@ -991,12 +996,7 @@ fn app_source(env: &Env) -> String {
             ],
         ] {
             let mut git = std::process::Command::new("git");
-            for var in [
-                "GIT_DIR",
-                "GIT_WORK_TREE",
-                "GIT_INDEX_FILE",
-                "GIT_COMMON_DIR",
-            ] {
+            for var in fleet_runtime::worktree::GIT_LOCATION {
                 git.env_remove(var);
             }
             let out = git.arg("-C").arg(&src).args(args).output().unwrap();

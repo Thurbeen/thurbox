@@ -382,9 +382,14 @@ agent is launched, resumed and trusted, so a runtime only runs an argv:
 | `codex` | `codex -c notify=… -c projects=<root>` and `--add-dir` per extra directory | `codex resume <conversation>` and the launch arguments | the `projects=` launch override, for this session only |
 | any other | the harness name | the launch argv: a fresh start | none Fleet knows |
 
-The fake runtime runs the profile's argv. The thurbox runtime keeps
-launching through thurbox's own agent registry, and receives the profile's
-hooks and trust as `--agent-arg`s.
+Claude Code's hooks report its start (`SessionStart`, as `idle`), each
+prompt, each tool use and each turn's end, all in one `--settings`: Claude
+Code keeps the last of several `--settings` rather than merging them, so a
+second one would drop Fleet's hooks or the other's.
+
+The `exec` runtime kind and the fake runtime run the profile's argv. The
+thurbox runtime keeps launching through thurbox's own agent registry, and
+receives the profile's hooks and trust as `--agent-arg`s.
 
 ### Deletion protocol
 

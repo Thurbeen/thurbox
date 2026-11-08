@@ -1891,13 +1891,17 @@ impl Manager<'_> {
         let mut plan = ctl.reconcile(&input)?;
         if let Some(execution) = effective {
             for effect in &mut plan.effects {
-                if let Action::Spawn(spawn) = &mut effect.action {
+                // A revive or a resume starts where the session is.
+                let first = matches!(effect.action, Action::Spawn(_));
+                if let Some(spawn) = effect.action.launch_mut() {
                     spawn.harness = execution.harness.clone();
                     // A workspace Fleet made decides the host it runs on.
-                    spawn.host = spawn
-                        .ready
-                        .as_ref()
-                        .map_or_else(|| execution.host.clone(), |w| w.host.clone());
+                    if first {
+                        spawn.host = spawn
+                            .ready
+                            .as_ref()
+                            .map_or_else(|| execution.host.clone(), |w| w.host.clone());
+                    }
                     spawn.model = execution.model.clone();
                     spawn.environment_frozen = true;
                     spawn.env = execution.env.clone();
@@ -1906,7 +1910,7 @@ impl Manager<'_> {
         }
         // The file the agent's hooks report to, on the host it runs on.
         for effect in &mut plan.effects {
-            if let Action::Spawn(spawn) = &mut effect.action
+            if let Some(spawn) = effect.action.launch_mut()
                 && let Some(file) = self.signals.and_then(|s| s.file(&spawn.host, &spawn.key))
             {
                 spawn
@@ -2121,12 +2125,18 @@ impl Manager<'_> {
             Action::Revive {
                 session,
                 conversation,
-            } => self.runtime.revive(session, conversation.as_deref()),
+                launch,
+            } => self
+                .runtime
+                .revive(session, conversation.as_deref(), launch),
             Action::Pause { session } => self.runtime.pause(session),
             Action::Resume {
                 session,
                 conversation,
-            } => self.runtime.resume(session, conversation.as_deref()),
+                launch,
+            } => self
+                .runtime
+                .resume(session, conversation.as_deref(), launch),
             // The Forge, Conversation and Gateway controllers' effects,
             // performed by their own steps; TaskController never plans them.
             Action::MarkReady { .. }

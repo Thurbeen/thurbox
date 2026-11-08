@@ -15,12 +15,11 @@ fn text(path: &Path) -> String {
 }
 
 fn sh(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .expect("git");
+    let mut git = std::process::Command::new("git");
+    for var in fleet_runtime::worktree::GIT_LOCATION {
+        git.env_remove(var);
+    }
+    let out = git.arg("-C").arg(dir).args(args).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {out:?}");
 }
 
