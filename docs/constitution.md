@@ -150,82 +150,58 @@ asserts for it (`[path-only: …]` marks the crossings described below):
 
 ```text
 session              (no crate-internal references — the dependency sink;
-                     no process state, env read or rendering crate either)
+                     no process state, env read or rendering crate either;
+                     re-exports runtime-mux's host model and SessionId)
 agent                → agent::{generic, provider}       (re-exports only)
 agent::agent_config  → session, shell, config::file
 agent::extension_config → session, paths, agent::agent_config, config::file
 agent::generic       → session, agent::provider
-agent::host_path     → session, shell
 agent::input         (no crate-internal references)
 agent::json_merge    (no crate-internal references)
-agent::preflight     → session, paths, shell, agent::agent_config
 agent::provider      → session
 agent::toml_merge    (no crate-internal references)
 config               (declares the modules below — no references)
 config::file         → paths                (the one loader: seed, parse, save)
 config::hooks        → session, config::file
-config::hosts        → session, paths, shell, config::file
+config::hosts        → session, config::file  (runtime-mux's loader, bound
+                                                to thurbox's config directory)
 config::settings     → session, config::file
 config::themes       → theme, config::file
 update               (declares the modules below — no references)
 update::self_update  → session, paths, shell, agent::extension_config,
                        update::version_check
 update::version_check → session, paths, agent::extension_config
-backend              → backend::{contract, pane, registry}   (re-exports only)
-backend::contract    (no crate-internal references)
-backend::identity    → backend::contract
-backend::instance    → session, paths                 (ADR-12 socket naming)
-backend::pane        → session, backend::{contract, identity, osc8, output_wake}
-backend::osc8        → session
-backend::output_wake (no crate-internal references)
-backend::registry    → session, backend::contract
-backend::wiring      → session, shell, config::hosts,
-                       backend::{contract, registry, tmux, psmux, rmux}
-backend::tmux_compat (declares the modules below — no references)
-  ::control_mode     → shell, backend::contract,
-                       backend::tmux_compat::transport
-  ::server           → session, paths, shell, agent::{host_path, preflight},
-                       backend::{contract, identity, instance},
-                       backend::tmux_compat::{control_mode, transport}
-  ::transport        → shell, agent::preflight
-backend::tmux        → session, shell, backend::contract,
-                       backend::tmux_compat::{control_mode, server, transport}
-backend::psmux       → session, shell, backend::{contract, instance},
-                       backend::tmux_compat::{control_mode, server, transport}
-backend::rmux        → session, shell, backend::contract,
-                       backend::tmux_compat::{control_mode, server, transport}
+backend              → session, paths, config::hosts  (the gateway to
+                       runtime-mux, and what thurbox injects into it)
 git                  → session, paths, shell
 storage              → session, paths
 telemetry            → session, storage           (ADR-37/38 OTLP export)
 session_ops          → session, storage, git, paths, workspace, shell
                        [path-only: agent::{agent_config, extension_config,
-                        generic, host_path, json_merge, preflight, provider,
-                        toml_merge}, backend::{contract, identity, instance,
-                        registry}, config::{hooks, hosts, settings},
+                        generic, json_merge, provider, toml_merge}, backend,
+                        config::{hooks, hosts, settings},
                         update::{self_update, version_check}]
 kernel               → session, storage, paths, session_ops, git,
                        notifications, shell, theme
-                       [path-only: agent::{agent_config, extension_config,
-                        host_path, preflight}, backend::{contract, identity,
-                        pane, registry}, config::{hosts, settings, themes},
+                       [path-only: agent::{agent_config, extension_config},
+                        backend, config::{hosts, settings, themes},
                         update::{self_update, version_check}]
 cli                  → session, storage, session_ops, paths,
                        notifications, ui_control, telemetry, theme
-                       [path-only: agent::{agent_config, extension_config,
-                        preflight}, backend::{contract, instance, registry},
-                        config::{file, hooks, hosts, settings, themes},
-                        update::{self_update, version_check}, kernel]
+                       [path-only: agent::{agent_config, extension_config},
+                        backend, config::{file, hooks, hosts, settings,
+                        themes}, update::{self_update, version_check}, kernel]
 notifications        → session, paths, shell    [path-only: storage]
 clipboard            → session, paths
 workspace            → paths
 paths                (leaf utility — no crate-internal references)
 ui_control           → paths
-shell                → session                 (a host entry → its launcher,
-                                                the local platform)
+shell                (no crate-internal references — runtime-mux's
+                      launchers and quoting, re-exported)
 theme                (no crate-internal references — the presets)
-coordinator          → agent::input, backend::{instance, output_wake, wiring},
-                       clipboard, config::settings, kernel, paths, session,
-                       session_ops, shell, storage, telemetry, ui_control
+coordinator          → agent::input, backend, clipboard, config::settings,
+                       kernel, paths, session, session_ops, shell, storage,
+                       telemetry, ui_control
 ```
 
 `agent` holds coding-agent definitions and never touches `git`, `storage`,
@@ -233,16 +209,23 @@ coordinator          → agent::input, backend::{instance, output_wake, wiring},
 and written through the one loader `config::file`, and `update` the
 self-update; `session` holds plain data and
 references nothing, which is what lets every other module depend on it.
-`backend` is the session-backend boundary: consumers name its contract
+`backend` is the session-backend boundary as thurbox reaches it: the
+multiplexer runtime, `runtime-mux`, re-exported, with the settings and data
+directory thurbox injects into it. Consumers name its contract
 (`backend::contract`, `backend::identity`, `backend::pane`,
-`backend::registry`), and only the factory, `backend::wiring`, names an
-adapter. Only a composition root may reach the factory. The tmux, psmux, and
-RMUX adapters are peers: none reaches another, and `backend::tmux_compat`, the
-protocol they speak, reaches none (ADR-31). `session_ops`, `cli` and
-`kernel` reach no adapter, protocol helper or factory at all — not by
-reference, alias or re-export, and not through anything they are granted —
-status and the heartbeat included (ADR-32). Every file of `agent`, `config`
-and `update` is a node of its own, so a grant names the file it reads.
+`backend::registry`), and none names an adapter (`backend::tmux`, `psmux`,
+`rmux`), the protocol they speak (`backend::tmux_compat`) or the factory
+(`backend::wiring`); only the composition root, `coordinator`, reaches the
+factory. `session_ops`, `cli` and `kernel` reach none of those at all — not
+by reference, alias or re-export — status and the heartbeat included
+(ADR-32). Every file of `agent`, `config` and `update` is a node of its own,
+so a grant names the file it reads.
+
+The runtime's own modules are held to the same kind of allowlist by
+`crates/runtime-mux/tests/architecture_rules.rs`, listed under
+[R3](#r3-runtime-mux-module-isolation) below: the tmux, psmux and RMUX adapters are
+peers, none reaches another, `tmux_compat`, the protocol they speak, reaches
+none (ADR-31), and only the factory names one.
 
 Some crossings are permitted **by fully-qualified path only**, never by
 `use` — not even a function-local `use` or an alias. The restriction is
@@ -375,11 +358,61 @@ and a stop of an absent process succeeds. An error answers Unknown, never
 None. A release never removes what the runtime did not make and never loses
 work. `fleet runtime check` holds every runtime to this.
 
+#### R3. runtime-mux module isolation
+
+`runtime-mux` depends on no other crate of the repository, and reads nothing
+of the program embedding it: the settings it honours and where that program
+keeps its data are passed in (`MuxSettings`, `HostsConfig`). Inside it, every
+module under `crates/runtime-mux/src/` has one line here, and each line is the
+rule its `tests/architecture_rules.rs` asserts:
+
+```text
+host                 (no crate-internal references — the host model a route
+                     names: host_def, route, multiplexer, platform)
+session_id           (no crate-internal references)
+hyperlink            (no crate-internal references)
+settings             (no crate-internal references — what the embedder injects)
+toml_file            (no crate-internal references)
+path_lookup          (no crate-internal references — PATH, the WSL distro)
+shell                → host
+hosts                → host, path_lookup, shell, toml_file
+host_path            → host, shell
+preflight            → host, path_lookup, shell
+contract             (no crate-internal references)
+identity             → contract
+instance             → host, settings                  (ADR-12 socket naming)
+pane                 → contract, hyperlink, identity, osc8, output_wake,
+                       session_id
+osc8                 → hyperlink
+output_wake          (no crate-internal references)
+registry             → host, contract
+wiring               → host, shell, settings, contract, registry,
+                       tmux, psmux, rmux               (the factory)
+tmux_compat          (declares the modules below — no references)
+  ::control_mode     → shell, contract, tmux_compat::transport
+  ::server           → host, shell, settings, path_lookup, host_path,
+                       preflight, contract, identity, instance, session_id,
+                       tmux_compat::{control_mode, transport}
+  ::transport        → shell, preflight
+tmux                 → host, shell, settings, contract,
+                       tmux_compat::{control_mode, server, transport}
+psmux                → host, shell, settings, contract, instance,
+                       tmux_compat::{control_mode, server, transport}
+rmux                 → host, shell, settings, contract,
+                       tmux_compat::{control_mode, server, transport}
+```
+
+Only the factory, `wiring`, names an adapter, and no module of the runtime
+reaches the factory. A specific multiplexer is named only by `host` (the
+route grammar and its defaults), `preflight`, the factory and the one adapter
+that is it. `host/route.rs` and `contract.rs` reach no launcher, adapter or
+build OS (ADR-13).
+
 ## Enforcement map
 
 | Rule | Enforced by | Where |
 |---|---|---|
-| 1. Components meet only through processes | One `architecture.toml` checked by `fleet-arch` | Once Fleet's crates are imported; today the components are separate repositories |
+| 1. Components meet only through processes | `crates/architecture.toml`, checked against `cargo metadata` by `crates/thurbox/tests/crate_graph.rs` and by `fleet-arch` once Fleet is imported | thurbox links `runtime-mux` until Fleet drives the runtimes |
 | 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox; runtimes once the runtime protocol ships |
 | 3. Crash-free operation | Code review | All |
 | 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | thurbox CI + pre-commit; Fleet `cargo xtask check` |
@@ -400,3 +433,4 @@ work. `fleet runtime check` holds every runtime to this.
 | F4. One writer per field | `fleet-arch` (permitted status writers) | Fleet |
 | R1. A runtime knows no Task | The protocol's schema | Once the runtime protocol ships |
 | R2. Idempotent by key | `fleet runtime check` | Once the runtime protocol ships |
+| R3. runtime-mux module isolation | `crates/runtime-mux/tests/architecture_rules.rs` + `crates/architecture.toml` | runtime-mux |

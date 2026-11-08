@@ -436,7 +436,7 @@ from `sessions`, `vms`, and `containers`.
 ## ADR-11: Trait-based session backends
 
 **Choice**: Session lifecycle is abstracted behind a
-`SessionBackend` trait (`src/backend/contract.rs`). The `Session`
+`SessionBackend` trait (`crates/runtime-mux/src/contract.rs`). The `Session`
 struct wraps the trait and manages reader/writer loops once,
 regardless of which backend is active.
 
@@ -454,7 +454,7 @@ absent. The shared lifecycle asks for outcomes through `SessionBackend` and
 does not send control-mode commands.
 
 **Roles.** `SessionBackend` is four role traits plus a name and a
-`Capabilities` value (the methods themselves are `src/backend/contract.rs`):
+`Capabilities` value (the methods themselves are `crates/runtime-mux/src/contract.rs`):
 
 - `PaneStream` — a pane's output stream: `spawn`, `adopt`, history capture,
   snapshots and state seeding (title and mouse modes), `resize`, `claim_size`,
@@ -2847,7 +2847,7 @@ before refusing.
   production escape hatch. The routing tests run `cli::run` in-process with an
   in-memory backend registered for `local:rmux` and `ssh:<host>:rmux`, which
   also passes the contract suite `TmuxBackend` passes
-  (`tests/support/backend_contract.rs`).
+  (`crates/runtime-mux/tests/support/backend_contract.rs`).
 - **Silent defaults for the lifecycle methods**: `stamp_window`,
   `window_panes`, `set_pane_retention` and `shutdown` used to default to doing
   nothing, which let a stub compile and misbehave. Each backend now says what
@@ -3408,7 +3408,7 @@ Task; thurbox keeps no session state and no SQLite database, and reaches Fleet
 only through its CLI (`fleet watch`, `apply`, `send`, `delete`, `attach`).
 Fleet reaches sessions only through a process protocol (`start`, `inspect`,
 `stop`, and optionally `input`, `capture`, `exec`, `attach`) that any runtime
-implements: a multiplexer, a container, a VM. `src/backend` becomes the first,
+implements: a multiplexer, a container, a VM. thurbox's session backend becomes the first,
 `runtime-mux`, with no knowledge of Fleet, agents or the interface; the interface knows no
 runtime, and shows a session by running the command `attach` answers in a pty. The three live in this
 repository, Fleet imported with its history, and one `architecture.toml`
@@ -3430,7 +3430,7 @@ release channels where they are.
   server (ADR-31); splitting them duplicates it, and which one a host runs is
   a fact of the place, which belongs to the runtime.
 - *A multiplexer runtime written inside Fleet*: rewrites psmux, WSL and
-  ssh handling that `src/backend` already has.
+  ssh handling that `runtime-mux` already has.
 - *Separate repositories*: equal isolation once contracts are process-only, but
   every change across components would span repositories. Still open later, since
   nothing links across.

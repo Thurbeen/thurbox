@@ -423,7 +423,7 @@ pub(crate) fn exec_tail(stream: &[u8]) -> String {
 /// the right DB, and finds the right server" is one property, not two.
 ///
 /// The socket is passed rather than left to be re-derived: the child would
-/// otherwise recompute it (`backend::instance::socket_for`) from an environment that
+/// otherwise recompute it (runtime-mux's `instance::socket_for`) from an environment that
 /// need not match this one — a tmux server carries the env it was started with,
 /// which is the same reason the dirs are pinned here at all.
 pub(crate) fn thurbox_env_overrides() -> Vec<(String, String)> {
@@ -451,7 +451,7 @@ pub(crate) fn thurbox_env_overrides() -> Vec<(String, String)> {
     // both, and they agree — but a child that relocates itself out of this
     // instance (a sandbox, `tests/`, an agent exporting its own
     // `THURBOX_DATA_DIR`) must not keep a socket naming *this* server. Pairing
-    // the two is what lets `backend::instance::socket_for` tell them apart.
+    // the two is what lets runtime-mux's `instance::socket_for` tell them apart.
     if let Some(dir) = crate::paths::data_directory() {
         vars.push((
             crate::backend::instance::SOCKET_OWNER_ENV.into(),
@@ -1121,13 +1121,18 @@ fn shell_for(
     mut def: crate::session::AgentDef,
     platform: crate::session::Platform,
 ) -> crate::session::AgentDef {
-    let stock = crate::session::Platform::ALL
-        .map(|p| crate::shell::HostShell::for_platform(p).interactive_agent());
+    let stock = crate::session::Platform::ALL.map(|p| {
+        crate::agent::agent_config::interactive_shell_agent(crate::shell::HostShell::for_platform(
+            p,
+        ))
+    });
     if stock
         .iter()
         .any(|s| def.is_family(&s.name) && def.command == s.command && def.args == s.args)
     {
-        let own = crate::shell::HostShell::for_platform(platform).interactive_agent();
+        let own = crate::agent::agent_config::interactive_shell_agent(
+            crate::shell::HostShell::for_platform(platform),
+        );
         def.command = own.command;
         def.args = own.args;
     }

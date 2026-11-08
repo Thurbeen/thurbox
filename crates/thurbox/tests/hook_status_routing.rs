@@ -30,7 +30,7 @@ use thurbox::session::SharedSession;
 use thurbox::session::{Multiplexer, Route, SessionId, Via};
 use thurbox::storage::Database;
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 #[path = "support/recording_backend.rs"]

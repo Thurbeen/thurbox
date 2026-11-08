@@ -264,90 +264,69 @@ because the squash throws them away.
 ```text
 node                 may reference                     [fully-qualified path only]
 session              nothing — pure data, the dependency sink (no
-                     process state, no env reads, no rendering crate)
+                     process state, no env reads, no rendering crate;
+                     re-exports runtime-mux's host model and SessionId)
 agent                agent::{generic,provider} (re-exports only)
 agent::*             every file a node: session, paths, shell, config::file
                      and the other agent::* files each declares (NEVER git,
                      NEVER backend)
 config               config::* (declarations only)
 config::*            every file a node: config::file (the one loader, over
-                     paths) plus session (themes: theme instead), and
-                     for hosts paths and shell
+                     paths) plus session (themes: theme instead)
 update               update::* (declarations only)
 update::*            session, paths, shell, agent::extension_config,
                      update::version_check
-backend              backend::{contract,pane,registry} (re-exports only)
-backend::contract    nothing — the role traits and the values crossing them
-backend::identity    backend::contract
-backend::instance    session, paths                    (ADR-12 socket naming)
-backend::pane        session, backend::{contract,identity,osc8,output_wake}
-backend::osc8        session
-backend::output_wake nothing
-backend::registry    session, backend::contract        (a container, no factory)
-backend::wiring      session, shell,                   (the factory: the only
-                     config::hosts,                     node naming an adapter)
-                     backend::{contract,registry,
-                     tmux,psmux,rmux}
-backend::tmux_compat nothing — declares the three below (tmux protocol helper)
-  ::control_mode     shell, backend::contract,
-                     backend::tmux_compat::transport
-  ::server           session, paths, shell,            (the shared server,
-                     agent::{host_path,preflight},      generic over the mux)
-                     backend::{contract,identity,
-                     instance},
-                     backend::tmux_compat::{control_mode,
-                     transport}
-  ::transport        shell, agent::preflight
-backend::tmux        session, shell, backend::contract, (the tmux adapter)
-                     backend::tmux_compat::{control_mode,
-                     server,transport}
-backend::psmux       session, shell, backend::{contract, (the psmux adapter —
-                     instance},
-                     backend::tmux_compat::{control_mode, a peer, never tmux's)
-                     server,transport}
-backend::rmux        session, shell, backend::contract, (the RMUX adapter)
-                     backend::tmux_compat::{control_mode,
-                     server,transport}
+backend              session, paths, config::hosts     (the gateway to
+                                                        runtime-mux, and what
+                                                        thurbox injects)
 git                  session, paths, shell
 storage              session, paths
 telemetry            session, storage                  (ADR-37/38 OTLP export)
 session_ops          session, storage, git, paths,     [agent|config|update::<file>,
-                     workspace, shell                   backend::{contract,identity,
-                                                        instance,registry}]
+                     workspace, shell                   backend]
 kernel               session, storage, paths,          [agent|config|update::<file>,
-                     session_ops, git, notifications,   backend::{contract,identity,
-                     shell, theme                       pane,registry}]
+                     session_ops, git, notifications,   backend]
+                     shell, theme
 cli                  session, storage, session_ops,    [agent|config|update::<file>,
-                     paths, notifications, ui_control,  backend::{contract,instance,
-                     telemetry, theme                   registry}, kernel]
+                     paths, notifications, ui_control,  backend, kernel]
+                     telemetry, theme
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
 ui_control           paths
-shell                session (HostLauncher::for_host, local_platform)
+shell                nothing — runtime-mux's launchers and quoting, re-exported
 theme                nothing — the presets, in ratatui colours
 coordinator          agent::input, config::settings,   (main's body: the loop,
-                     backend::{instance,output_wake,    the workers, the chrome)
-                     wiring}, clipboard, kernel,
+                     backend, clipboard, kernel,        the workers, the chrome)
                      paths, session, session_ops,
                      shell, storage, telemetry,
                      ui_control
 ```
 
+The multiplexer runtime is its own crate, `crates/runtime-mux` (ADR-41), with
+its own allowlist (`crates/runtime-mux/tests/architecture_rules.rs`,
+`docs/constitution.md` R3): the adapters `tmux`, `psmux`, `rmux` are peers
+over the shared `tmux_compat` server, only the factory `wiring` names one, and
+it depends on no other crate of the repository — the settings and data
+directory it needs are injected (`MuxSettings`, `HostsConfig`).
+`crates/architecture.toml` declares which crate may depend on which, and
+`crates/thurbox/tests/crate_graph.rs` holds `cargo metadata` to it.
+
 Enforcement is an **allowlist** over **resolved** edges: every module under
 `src/` needs a `ModuleRules` entry naming what it may reference in *any* form, so
 a new module fails the test until its place is declared, and one loop asserts
 every entry, so no rule can be declared and left unchecked. A node is a top-level
-module or a governed submodule (every file module of `backend` and of `agent`
-is one), and a
+module or a governed submodule (every file module of `agent`, `config` and
+`update` is one), and a
 reference counts where it resolves — through `super::`, brace groups, re-exports
 and `type` aliases. Both the actual and the declared graph must be acyclic, an
 unused grant fails, and the crossings still scheduled for removal are listed,
 item by item, in the test's `TRANSITIONAL` table, which must equal what the
 source does — empty since status and the heartbeat went behind the contract
-(ADR-32); `consumers_reach_no_concrete_backend` holds `session_ops`, `cli` and
-`kernel` to reaching no adapter, protocol helper or factory.
+(ADR-32); `consumers_reach_no_concrete_backend` holds every module but
+`coordinator` to reaching no adapter, protocol helper or factory through the
+`backend` gateway, and `coordinator` to the factory alone.
 Inside `kernel`, `each_kernel_worker_lives_in_a_file_of_its_own` keeps each
 worker of `kernel::snapshot` and `kernel::terminal` in a file of its own.
 `docs/constitution.md` T1 lists the same graph. The full rule, the module

@@ -81,7 +81,7 @@ records version evidence and RMUX platform limits.
 ### `just reap-tmux` — the servers a guard could not reap
 
 Every harness that starts a tmux server holds a `TmuxServer`
-(`tests/support/tmux_server.rs`), whose `Drop` kills it. That covers every way
+(`crates/runtime-mux/tests/support/tmux_server.rs`), whose `Drop` kills it. That covers every way
 a test ends in-process, a panic included, which is what teardown spelled as a
 `cleanup()` call at each exit point did not: the socket file lives in a
 directory the run owns, so a test that skipped its teardown left a server with

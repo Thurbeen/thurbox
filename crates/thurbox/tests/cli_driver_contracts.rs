@@ -15,7 +15,7 @@ use thurbox::session::SessionId;
 use thurbox::session::SharedSession;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;

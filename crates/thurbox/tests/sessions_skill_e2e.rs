@@ -14,7 +14,7 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;

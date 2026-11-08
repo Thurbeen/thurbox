@@ -87,9 +87,9 @@ pub fn run() -> Result<CommandOutput, CommandError> {
 /// all, so an `Unknown` here is treated as a failure too — the only way the
 /// lookup answers that for a bare name is a `PATH` it could not read.
 fn multiplexer_finding() -> Finding {
-    let mux = crate::agent::preflight::local_multiplexer();
-    match crate::agent::preflight::look_up(mux) {
-        crate::agent::preflight::Presence::Present => Finding {
+    let mux = crate::backend::preflight::local_multiplexer();
+    match crate::backend::preflight::look_up(mux) {
+        crate::backend::preflight::Presence::Present => Finding {
             key: "multiplexer".into(),
             level: Level::Ok,
             detail: format!("{mux} is installed{}", version_suffix(mux)),
@@ -97,7 +97,7 @@ fn multiplexer_finding() -> Finding {
         _ => Finding {
             key: "multiplexer".into(),
             level: Level::Fail,
-            detail: crate::agent::preflight::Dependency::LocalMultiplexer.missing_summary(),
+            detail: crate::backend::preflight::Dependency::LocalMultiplexer.missing_summary(),
         },
     }
 }
@@ -135,13 +135,13 @@ fn agent_findings() -> Vec<Finding> {
 /// directory — reported as such rather than guessed.
 fn agent_finding(agent: &crate::session::AgentDef) -> Finding {
     let key = format!("agent:{}", agent.name);
-    match crate::agent::preflight::look_up(&agent.command) {
-        crate::agent::preflight::Presence::Present => Finding {
+    match crate::backend::preflight::look_up(&agent.command) {
+        crate::backend::preflight::Presence::Present => Finding {
             key,
             level: Level::Ok,
             detail: format!("{} runs `{}`", agent.name, agent.command),
         },
-        crate::agent::preflight::Presence::Unknown => Finding {
+        crate::backend::preflight::Presence::Unknown => Finding {
             key,
             level: Level::Ok,
             detail: format!(
@@ -153,12 +153,13 @@ fn agent_finding(agent: &crate::session::AgentDef) -> Finding {
         // The short form: the search path is printed once below, and repeating
         // it on every row of a ten-agent registry buries the name that differs
         // between them.
-        crate::agent::preflight::Presence::Missing => Finding {
+        crate::backend::preflight::Presence::Missing => Finding {
             key,
             level: Level::Warn,
-            detail: crate::agent::preflight::Dependency::Agent {
+            detail: crate::backend::preflight::Dependency::Agent {
                 name: &agent.name,
                 command: &agent.command,
+                registry: crate::agent::agent_config::agents_config_path().as_deref(),
             }
             .missing_summary(),
         },
@@ -179,8 +180,8 @@ fn host_findings() -> Vec<Finding> {
     let mut findings = Vec::new();
     for host in &hosts.hosts {
         let launcher = if host.is_wsl() { "wsl.exe" } else { "ssh" };
-        let present = crate::agent::preflight::look_up(launcher)
-            == crate::agent::preflight::Presence::Present;
+        let present = crate::backend::preflight::look_up(launcher)
+            == crate::backend::preflight::Presence::Present;
         findings.push(Finding {
             key: format!("host:{}", host.name),
             level: if present { Level::Ok } else { Level::Fail },
@@ -191,7 +192,7 @@ fn host_findings() -> Vec<Finding> {
                     host.name, host.name
                 )
             } else {
-                crate::agent::preflight::Dependency::Launcher(launcher).missing_summary()
+                crate::backend::preflight::Dependency::Launcher(launcher).missing_summary()
             },
         });
         if present && host.shareable() {
@@ -306,7 +307,7 @@ fn render(findings: &[Finding], verdict: Level) -> String {
 fn document(findings: &[Finding], verdict: Level) -> Value {
     json!({
         "verdict": verdict.as_str(),
-        "multiplexer": crate::agent::preflight::local_multiplexer(),
+        "multiplexer": crate::backend::preflight::local_multiplexer(),
         "path": crate::paths::path_dirs()
             .iter()
             .map(|p| p.display().to_string())

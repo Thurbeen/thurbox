@@ -78,7 +78,7 @@ silently vanishing. v2 gets there by derivation rather than by a synthetic row:
 into the published status with `session::with_reachability`. So the row is the ordinary row — no second `Session`
 kind, no dead input channel to guard, and nothing on the loop that can block on
 ssh. (v1 inserted a `Session::placeholder`; the constructor is still in
-`src/backend/pane.rs` and has no caller.)
+`crates/runtime-mux/src/pane.rs` and has no caller.)
 
 The attach worker owns the retry: the same failed attempt is left alone for
 `ATTACH_RETRY_INTERVAL` (20 s) and then made again, so a host that was offline at

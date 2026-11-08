@@ -184,7 +184,7 @@ fn run_payload_on(
             // The launcher's shell is a non-login one, so the host's login
             // `PATH` and `path_prepend` go first, as for the agent itself
             // (see `agent::host_path`): a hook must find what the agent finds.
-            let script = match crate::agent::host_path::assignment_for(host) {
+            let script = match crate::backend::host_path::assignment_for(host) {
                 Some(path) => format!("{path}{script}"),
                 None => script,
             };

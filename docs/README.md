@@ -30,7 +30,7 @@ then each component's own.
 4. **A runtime is the abstraction**, not a multiplexer. Fleet and thurbox
    know only "a runtime": a program that runs one keyed process somewhere.
    A multiplexer is one way to do that, a container or a VM another.
-   `runtime-mux`, extracted from `src/backend`, is the first runtime and the
+   `runtime-mux` (`crates/runtime-mux`), extracted from thurbox, is the first runtime and the
    one thurbox ships by default; it is not special.
 
 ## Components
@@ -73,6 +73,11 @@ on every build, the way it checks Fleet's crates today:
 | `term-holder` | `term-stream`, crates.io | everything else |
 | `workspace-git` (makes git workspaces; runtimes run it, never link it) | crates.io | everything else |
 | `thurbox` | `term-stream`, crates.io | `fleet-*`, `runtime-*`, `term-holder` |
+
+The file is `crates/architecture.toml`. Until Fleet is in the repository,
+`crates/thurbox/tests/crate_graph.rs` checks it against `cargo metadata`, and
+it records the one dependency the table above does not allow yet: `thurbox`
+links `runtime-mux` until Fleet drives the runtimes.
 
 Components talk only through processes; `term-stream` is a wire format, not
 a component. A component can therefore later move

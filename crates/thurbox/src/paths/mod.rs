@@ -29,6 +29,14 @@
 //! }
 //! ```
 
+// The name of this build's directories and its CLI, and the PATH and WSL
+// lookups, are the multiplexer runtime's as well: one definition, read here.
+pub use runtime_mux::instance::{app_dir_name, resolve_cli_binary};
+pub use runtime_mux::path_lookup::{
+    current_wsl_distro, is_executable_file, path_dirs, resolve_on_path, which_on_path,
+    WSL_DISTRO_NAME_VAR,
+};
+
 use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -40,20 +48,6 @@ use std::path::{Path, PathBuf};
 pub const CONFIG_DIR_OVERRIDE_ENV: &str = "THURBOX_CONFIG_DIR";
 /// Data counterpart of [`CONFIG_DIR_OVERRIDE_ENV`] (`THURBOX_DATA_DIR`).
 pub const DATA_DIR_OVERRIDE_ENV: &str = "THURBOX_DATA_DIR";
-
-/// Returns "thurbox-dev" for dev builds, "thurbox" for release builds.
-///
-/// Also the name of thurbox's directory on a *host* this build shares sessions
-/// with (`session_ops::host_cli`): a dev build provisions and looks for its
-/// CLI under `thurbox-dev` there, so a dev and a release laptop sharing one
-/// host never overwrite each other's copy.
-pub fn app_dir_name() -> &'static str {
-    if cfg!(dev_build) {
-        "thurbox-dev"
-    } else {
-        "thurbox"
-    }
-}
 
 /// The user's home directory: `$HOME` on Unix, `%USERPROFILE%` on Windows.
 pub fn home_dir() -> Option<PathBuf> {
@@ -171,84 +165,6 @@ fn write_destination(path: &Path) -> std::io::Result<PathBuf> {
     Err(std::io::Error::other("too many config file symlinks"))
 }
 
-/// Whether `exe` resolves on `PATH`. A minimal lookup that avoids pulling in a
-/// `which` crate for a one-off probe (used to detect optional helper binaries
-/// like `wsl.exe` / `powershell.exe`); cheap PATH scan, no process spawn.
-pub fn which_on_path(exe: &str) -> bool {
-    resolve_on_path(exe).is_some()
-}
-
-/// Where `exe` resolves on `PATH`, as a path a caller can hand to something
-/// that does *not* share this process's `PATH` — `backend::tmux`'s
-/// `resolve_local_program`, which hands a local window command to the
-/// multiplexer, is why this exists rather than [`which_on_path`] alone.
-///
-/// `None` when nothing matches, and also when `exe` already carries a path
-/// separator: a caller-supplied path is the caller's decision, and re-resolving
-/// it against `PATH` would be wrong (`./agent` is not `bin/./agent`).
-///
-/// The match is the file being **executable** on Unix, not merely present: a
-/// directory named `claude` on `PATH` is not the agent, and a mode-644 file is
-/// not something `execvp` will run. Verbatim, with no `.exe`/`PATHEXT` munging
-/// — the same lookup `which_on_path` has always done.
-///
-/// A `PATH` component that is not **absolute** is skipped, which includes the
-/// empty one POSIX reads as "the current directory" (`:/usr/bin`, or a stray
-/// trailing colon — an ordinary accident in a shell config). Whose current
-/// directory is the entire question: the answer here is handed to a consumer
-/// with a working directory of its own, so a relative one would be resolved
-/// there — reintroducing exactly the dependence this exists to remove, and
-/// letting a `claude` sitting in the repo being worked on shadow the real one.
-/// Skipping is also the safe half of that choice: declining leaves the caller
-/// with the command it already had, where honouring it would silently launch a
-/// different binary.
-pub fn resolve_on_path(exe: &str) -> Option<PathBuf> {
-    if exe.is_empty() || exe.contains(std::path::MAIN_SEPARATOR) || exe.contains('/') {
-        return None;
-    }
-    path_dirs()
-        .into_iter()
-        .map(|dir| dir.join(exe))
-        .find(|candidate| is_executable_file(candidate))
-}
-
-/// The directories [`resolve_on_path`] searches, in the order it searches them.
-///
-/// Public because a lookup that finds nothing has to be able to say *where it
-/// looked*: an error naming only the binary leaves the reader unable to tell a
-/// missing install from a `PATH` thurbox was started without. Deriving that
-/// list a second time in the message would let the two drift, so the resolver
-/// and the message read the same function.
-///
-/// Empty when `PATH` is unset — which is itself the answer, and reads that way.
-pub fn path_dirs() -> Vec<PathBuf> {
-    let Some(path) = std::env::var_os("PATH") else {
-        return Vec::new();
-    };
-    std::env::split_paths(&path)
-        .filter(|dir| dir.is_absolute())
-        .collect()
-}
-
-/// The environment variable every WSL2 distro's init sets to that distro's own
-/// name. Present only *inside* a distro — not on Windows, not on a plain Linux
-/// or macOS host.
-pub const WSL_DISTRO_NAME_VAR: &str = "WSL_DISTRO_NAME";
-
-/// The WSL distro thurbox is itself running inside, if any.
-///
-/// Read from the environment rather than probed for: `wsl.exe` is on `PATH`
-/// inside a distro (interop), so its presence says a distro is *reachable* and
-/// never which one we are already in. Read here, not in `session`: a
-/// `HostDef` is told the distro (`HostDef::is_wsl_loopback`) rather than
-/// reading process state itself.
-pub fn current_wsl_distro() -> Option<String> {
-    std::env::var(WSL_DISTRO_NAME_VAR)
-        .ok()
-        .map(|d| d.trim().to_string())
-        .filter(|d| !d.is_empty())
-}
-
 /// Run `f` with [`WSL_DISTRO_NAME_VAR`] set to `distro` (or unset, for
 /// `None`), restoring what was there before.
 ///
@@ -293,25 +209,6 @@ pub(crate) fn with_path<T>(path: impl AsRef<OsStr>, f: impl FnOnce() -> T) -> T 
         None => std::env::remove_var("PATH"),
     }
     out
-}
-
-/// Whether `p` is a file this process could `exec`.
-pub(crate) fn is_executable_file(p: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(p) else {
-        return false;
-    };
-    if !meta.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
 }
 
 /// Base directory for config files. `$XDG_CONFIG_HOME` wins on every platform
@@ -448,8 +345,9 @@ fn data_app_dir() -> Option<PathBuf> {
 /// set" is a different question from "this instance was moved".
 ///
 /// A relocated instance keeps its own database, and so its own record of which
-/// sessions exist; `backend::tmux` reads this to put those sessions on a tmux
-/// socket of their own instead of the operator's shared server.
+/// sessions exist; `backend::mux_settings` hands this to the runtime to put
+/// those sessions on a tmux socket of their own instead of the operator's
+/// shared server.
 #[cfg(not(test))]
 pub fn relocated_data_dir() -> Option<PathBuf> {
     let over = std::env::var_os(DATA_DIR_OVERRIDE_ENV);
@@ -646,7 +544,7 @@ pub fn worktrees_directory() -> Option<PathBuf> {
 ///
 /// [`relocated_data_dir`] answers the narrower "was this instance *moved*";
 /// this answers "where is it", which is what a consumer comparing against
-/// somebody else's recorded data dir needs (`backend::instance::socket_for`, deciding
+/// somebody else's recorded data dir needs (runtime-mux's `instance::socket_for`, deciding
 /// whether an inherited socket still belongs to this instance).
 pub fn data_directory() -> Option<PathBuf> {
     data_app_dir()
@@ -1045,29 +943,6 @@ pub fn ensure_safe_relative(rel: &str) -> Result<(), String> {
 pub fn safe_join(base: &Path, rel: &str) -> Result<PathBuf, String> {
     ensure_safe_relative(rel)?;
     Ok(base.join(rel))
-}
-
-/// Resolve the path to the `thurbox-cli` binary that sits next to the currently
-/// running executable (TUI or CLI), falling back to a bare `thurbox-cli` on
-/// `PATH` when resolution fails.
-///
-/// The platform executable suffix (`.exe` on Windows, empty elsewhere) is
-/// applied via [`std::env::consts::EXE_SUFFIX`], so the self/sibling match works
-/// for `thurbox-cli.exe` too.
-pub fn resolve_cli_binary() -> std::path::PathBuf {
-    let cli_name = format!("thurbox-cli{}", std::env::consts::EXE_SUFFIX);
-    if let Ok(exe) = std::env::current_exe() {
-        if exe.file_name().and_then(std::ffi::OsStr::to_str) == Some(cli_name.as_str()) {
-            return exe;
-        }
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join(&cli_name);
-            if sibling.exists() {
-                return sibling;
-            }
-        }
-    }
-    std::path::PathBuf::from(cli_name)
 }
 
 #[cfg(test)]

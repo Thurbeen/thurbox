@@ -146,7 +146,7 @@ jobs:
               - 'scripts/dev/e2e/lib/e2e-common.sh'
               # What the probes compare against: the psmux gate, and the
               # command that reports it.
-              - 'crates/thurbox/src/backend/psmux.rs'
+              - 'crates/runtime-mux/src/psmux.rs'
               - 'crates/thurbox/src/cli/runtime.rs'
               - '.github/workflows/ci.yml'
             # The package builds the crate, so every Rust input is a Nix input

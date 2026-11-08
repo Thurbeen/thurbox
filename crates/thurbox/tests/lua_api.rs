@@ -25,7 +25,7 @@ use thurbox::kernel::snapshot::{
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 fn root() -> PathBuf {
@@ -264,7 +264,7 @@ fn full() -> Snapshot {
         agents: vec![thurbox::kernel::snapshot::AgentRow {
             name: "claude".into(),
             command: "claude".into(),
-            presence: thurbox::agent::preflight::Presence::Present,
+            presence: thurbox::backend::preflight::Presence::Present,
         }],
         hosts: vec![HostRow {
             name: "box".into(),

@@ -24,7 +24,7 @@ use thurbox::session::SharedSession;
 use thurbox::session_ops::mirror::{self, Transitive};
 use thurbox::storage::Database;
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;

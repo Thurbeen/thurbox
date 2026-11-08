@@ -293,7 +293,7 @@ pub struct AgentRow {
     /// whose pane exits instantly, which it reports as a successful create, so
     /// the answer never arrives on its own. Probed on a TTL, never per frame —
     /// see `SnapshotStore::poll_preflight`.
-    pub presence: crate::agent::preflight::Presence,
+    pub presence: crate::backend::preflight::Presence,
 }
 
 /// The local multiplexer every session's window is created in.
@@ -306,7 +306,7 @@ pub struct MuxRow {
     pub binary: String,
     pub configured: Option<String>,
     pub available: Vec<String>,
-    pub presence: crate::agent::preflight::Presence,
+    pub presence: crate::backend::preflight::Presence,
     /// What to do about it, empty when there is nothing to do.
     pub advice: String,
 }
@@ -316,10 +316,10 @@ impl Default for MuxRow {
     /// platform would use, and no claim about whether it is there.
     fn default() -> Self {
         Self {
-            binary: crate::agent::preflight::local_multiplexer().to_string(),
+            binary: crate::backend::preflight::local_multiplexer().to_string(),
             configured: None,
-            available: vec![crate::agent::preflight::local_multiplexer().to_string()],
-            presence: crate::agent::preflight::Presence::Unknown,
+            available: vec![crate::backend::preflight::local_multiplexer().to_string()],
+            presence: crate::backend::preflight::Presence::Unknown,
             advice: String::new(),
         }
     }
@@ -1399,7 +1399,7 @@ impl SnapshotStore {
         let mut moved = mux != self.mux;
         self.mux = mux;
         for row in &mut self.agents {
-            let presence = crate::agent::preflight::look_up(&row.command);
+            let presence = crate::backend::preflight::look_up(&row.command);
             if presence != row.presence {
                 row.presence = presence;
                 moved = true;
@@ -1663,7 +1663,7 @@ fn read_agents(registry: &AgentRegistry) -> Vec<AgentRow> {
         .map(|agent| AgentRow {
             name: agent.name.clone(),
             command: agent.command.clone(),
-            presence: crate::agent::preflight::look_up(&agent.command),
+            presence: crate::backend::preflight::look_up(&agent.command),
         })
         .collect()
 }
@@ -1675,7 +1675,7 @@ fn read_mux(
     configured: Option<String>,
 ) -> MuxRow {
     use crate::session::{Multiplexer, Route};
-    let available: Vec<Multiplexer> = crate::agent::preflight::local_multiplexers()
+    let available: Vec<Multiplexer> = crate::backend::preflight::local_multiplexers()
         .into_iter()
         .filter(|mux| served.contains(&Route::local(Some(*mux))))
         .collect();
@@ -1686,15 +1686,15 @@ fn read_mux(
         .and_then(|name| Multiplexer::parse(name).ok())
         .or_else(|| Multiplexer::preferred(crate::shell::local_platform(), &available))
         .unwrap_or_else(Multiplexer::platform_default);
-    let presence = crate::agent::preflight::look_up(binary.name());
+    let presence = crate::backend::preflight::look_up(binary.name());
     MuxRow {
         binary: binary.name().to_string(),
         configured,
         available: available.iter().map(|mux| mux.name().to_string()).collect(),
         presence,
         advice: match presence {
-            crate::agent::preflight::Presence::Present => String::new(),
-            _ => crate::agent::preflight::Dependency::Multiplexer(binary.name()).fix(),
+            crate::backend::preflight::Presence::Present => String::new(),
+            _ => crate::backend::preflight::Dependency::Multiplexer(binary.name()).fix(),
         },
     }
 }
@@ -1721,9 +1721,9 @@ fn hosts_from(
     hosts
         .iter()
         .map(|host| {
-            let answer = crate::agent::host_path::multiplexers_found(host, probe);
+            let answer = crate::backend::host_path::multiplexers_found(host, probe);
             let found = match &answer {
-                crate::agent::host_path::MuxProbe::Found(found) => Some(found.as_slice()),
+                crate::backend::host_path::MuxProbe::Found(found) => Some(found.as_slice()),
                 _ => None,
             };
             HostRow {
@@ -1741,7 +1741,7 @@ fn hosts_from(
                 .filter(|mux| served.contains(&host.route(Some(*mux))))
                 .map(|mux| mux.name().to_string())
                 .collect(),
-                probing: answer == crate::agent::host_path::MuxProbe::Pending,
+                probing: answer == crate::backend::host_path::MuxProbe::Pending,
             }
         })
         .collect()
@@ -1871,7 +1871,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mux = dir
             .path()
-            .join(crate::agent::preflight::local_multiplexer());
+            .join(crate::backend::preflight::local_multiplexer());
         std::fs::write(&mux, b"#!/bin/sh\n").expect("write");
         #[cfg(unix)]
         {
@@ -1888,7 +1888,7 @@ mod tests {
             );
             assert_eq!(
                 store.current().mux.presence,
-                crate::agent::preflight::Presence::Present,
+                crate::backend::preflight::Presence::Present,
                 "the probe at construction must find the binary that is there"
             );
 
@@ -1903,7 +1903,7 @@ mod tests {
             }
             assert_eq!(
                 store.current().mux.presence,
-                crate::agent::preflight::Presence::Present,
+                crate::backend::preflight::Presence::Present,
                 "the answer moved inside the TTL, so something probed on the tick"
             );
         });
@@ -1931,7 +1931,7 @@ mod tests {
         crate::paths::with_path(dir.path(), || {
             let none = read_mux(&served, None);
             assert!(none.available.is_empty(), "{none:?}");
-            assert_eq!(none.presence, crate::agent::preflight::Presence::Missing);
+            assert_eq!(none.presence, crate::backend::preflight::Presence::Missing);
 
             install("rmux");
             let only_rmux = read_mux(&served, None);
@@ -1939,7 +1939,7 @@ mod tests {
             assert_eq!(only_rmux.binary, "rmux", "the one installed is the default");
             assert_eq!(
                 only_rmux.presence,
-                crate::agent::preflight::Presence::Present
+                crate::backend::preflight::Presence::Present
             );
 
             // psmux is native Windows: a binary of that name on a POSIX PATH
@@ -1963,7 +1963,7 @@ mod tests {
             name: "pending-host".into(),
             ..Default::default()
         };
-        crate::agent::host_path::seed_multiplexers(&probed, Some(vec![Multiplexer::Rmux]));
+        crate::backend::host_path::seed_multiplexers(&probed, Some(vec![Multiplexer::Rmux]));
         let served: std::collections::HashSet<_> = [&probed, &pending]
             .into_iter()
             .flat_map(|host| Multiplexer::ALL.map(|mux| host.route(Some(mux))))

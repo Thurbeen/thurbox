@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::Duration;
 use thurbox::{session::SessionId, storage::Database};
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 struct Env {

@@ -4,19 +4,20 @@ pub mod background_work;
 pub mod extension_def;
 pub mod hook_def;
 pub mod hook_status;
-pub mod host_def;
-pub mod hyperlink;
 pub mod launch_failure;
 pub mod message;
-pub mod multiplexer;
 pub mod op_error;
-pub mod platform;
 pub mod plugin_spec;
 pub mod review;
-pub mod route;
 pub mod settings;
 pub mod shared;
 pub mod task;
+
+// The host model a route names, the hyperlink table a pane fills and the
+// identity a window is stamped with are the multiplexer runtime's; a session
+// is described in its terms, so they are re-exported here.
+pub use runtime_mux::SessionId;
+pub use runtime_mux::{host_def, hyperlink, multiplexer, platform, route};
 
 pub use agent_def::{AgentDef, AgentRegistry};
 pub use automation::{
@@ -73,11 +74,9 @@ pub const RESERVED_META_PREFIX: &str = "thurbox.";
 pub const CODEX_CONVERSATION_META: &str = "thurbox.codex_conversation_id";
 
 use std::collections::{BTreeMap, HashMap};
-use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// Default agent name used when none is configured. Matches the `default`
 /// entry of the seeded `agents.toml`; the live default comes from the loaded
@@ -160,29 +159,6 @@ pub struct WorktreeInfo {
     /// `SharedWorktree` → `WorktreeInfo` → `SharedWorktree` round trip that
     /// restore performs cannot quietly turn a borrowed worktree into ours.
     pub created_by_thurbox: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SessionId(Uuid);
-
-impl Default for SessionId {
-    fn default() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::str::FromStr for SessionId {
-    type Err = uuid::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(Uuid::parse_str(s)?))
-    }
 }
 
 /// Agent metrics collected from the Claude CLI statusline mechanism.

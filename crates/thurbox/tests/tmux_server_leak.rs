@@ -27,8 +27,8 @@
 //! here is its consequence for a test harness, in four tests: the recipe that
 //! avoids the leak driven end to end, a harness panicked on purpose to show
 //! the reap survives it, and two gates — one holding
-//! `tests/support/tmux_server.rs` to the recipe, one holding every harness in
-//! this directory to the guard. Read off the sources rather than by running
+//! `crates/runtime-mux/tests/support/tmux_server.rs` to the recipe, one holding
+//! every harness here and in the runtime's tests to the guard. Read off the sources rather than by running
 //! them, because the leak is silent: a run that leaks still passes every
 //! assertion it makes.
 
@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The guard every harness in this directory reaps through.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -454,9 +454,18 @@ fn scope_failures(src: &str) -> (usize, Vec<String>) {
     (pinned.len(), failures)
 }
 
-/// The guard's own file: the one place a socket is pinned, and the one place
-/// that has to spell the whole recipe out.
-const GUARD: &str = "support/tmux_server.rs";
+/// The guard's own file, from the workspace root: the one place a socket is
+/// pinned, and the one place that has to spell the whole recipe out. The
+/// multiplexer runtime's tests hold it, and thurbox's include it.
+const GUARD: &str = "crates/runtime-mux/tests/support/tmux_server.rs";
+
+/// The directories whose harnesses must pin through [`GUARD`]: thurbox's
+/// tests and the runtime's.
+const HARNESS_DIRS: [&str; 2] = ["crates/thurbox/tests", "crates/runtime-mux/tests"];
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
 
 /// The guard type, as the harnesses spell it.
 const GUARD_TYPE: &str = "TmuxServer";
@@ -476,12 +485,7 @@ const GUARD_TYPE: &str = "TmuxServer";
 /// rule read off raw text is satisfied by prose.
 #[test]
 fn the_guard_scopes_every_socket_it_pins() {
-    let src = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join(GUARD),
-    )
-    .expect("read the guard");
+    let src = std::fs::read_to_string(workspace_root().join(GUARD)).expect("read the guard");
     let (pins, failures) = scope_failures(&src);
     assert!(
         pins > 0,
@@ -518,10 +522,14 @@ fn no_harness_pins_a_socket_outside_the_guard() {
     // and never starts a multiplexer.
     const EXEMPT: [&str; 1] = ["cli_socket_isolation.rs"];
 
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let mut offenders = Vec::new();
     let mut guards = 0usize;
-    for entry in std::fs::read_dir(&dir).expect("read tests/").flatten() {
+    let entries = HARNESS_DIRS.iter().flat_map(|dir| {
+        std::fs::read_dir(workspace_root().join(dir))
+            .expect("read a tests directory")
+            .flatten()
+    });
+    for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.ends_with(".rs") || EXEMPT.contains(&name.as_str()) {
             continue;

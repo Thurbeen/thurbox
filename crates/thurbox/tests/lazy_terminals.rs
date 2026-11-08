@@ -34,7 +34,7 @@ use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::terminal::Terminals;
 use thurbox::session::SessionState;
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -846,7 +846,7 @@ mod remote {
                 ssh_opts: Vec::new(),
             },
             Platform::Posix,
-            thurbox::session::settings::default_scrollback_lines(),
+            &thurbox::backend::mux_settings(&Default::default()),
         ))
     }
 
@@ -1048,9 +1048,8 @@ mod remote {
         let server = TmuxServer::pin("tbx-hidden-local");
         let dir = tempfile::tempdir().expect("tempdir");
         let pane = busy_pane(&server, dir.path(), SESSION);
-        let backend = thurbox::backend::tmux::local(
-            thurbox::session::settings::Settings::default().scrollback_lines,
-        );
+        let backend =
+            thurbox::backend::tmux::local(&thurbox::backend::mux_settings(&Default::default()));
         backend.ensure_ready().expect("attach");
         let session = Session::adopt_dormant(
             "local".into(),

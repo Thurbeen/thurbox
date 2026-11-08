@@ -687,9 +687,9 @@ when psmux's floor rose to 3.3.8 (#1557).
 
 | Multiplexer | Minimum | Code enforcing it | Upstream evidence |
 | --- | --- | --- | --- |
-| [tmux](https://github.com/tmux/tmux) | 3.2 | [`MIN_TMUX_VERSION` and `check_min_version`](../../crates/thurbox/src/backend/tmux.rs) | [3.2 changes](https://github.com/tmux/tmux/blob/3.2/CHANGES): control-client flow control and format subscriptions |
-| [psmux](https://github.com/psmux/psmux) | 3.3.8 | [`MIN_PSMUX_VERSION`, `check_psmux_version` (server) and `check_psmux_binary` (binary)](../../crates/thurbox/src/backend/psmux.rs) | [3.3.8 release](https://github.com/psmux/psmux/releases/tag/v3.3.8): pane-slot targets (`thurbox:.%3`) resolve to that pane; [3.3.7](https://github.com/psmux/psmux/releases/tag/v3.3.7): dead warm-pane fix (psmux#450) |
-| [RMUX](https://github.com/Helvesec/rmux) | 0.10.0 | [`Rmux::check_banner`](../../crates/thurbox/src/backend/rmux.rs) | [0.10.0 release](https://github.com/Helvesec/rmux/releases/tag/v0.10.0): wire protocol 8, incompatible with 0.9.x daemons |
+| [tmux](https://github.com/tmux/tmux) | 3.2 | [`MIN_TMUX_VERSION` and `check_min_version`](../../crates/runtime-mux/src/tmux.rs) | [3.2 changes](https://github.com/tmux/tmux/blob/3.2/CHANGES): control-client flow control and format subscriptions |
+| [psmux](https://github.com/psmux/psmux) | 3.3.8 | [`MIN_PSMUX_VERSION`, `check_psmux_version` (server) and `check_psmux_binary` (binary)](../../crates/runtime-mux/src/psmux.rs) | [3.3.8 release](https://github.com/psmux/psmux/releases/tag/v3.3.8): pane-slot targets (`thurbox:.%3`) resolve to that pane; [3.3.7](https://github.com/psmux/psmux/releases/tag/v3.3.7): dead warm-pane fix (psmux#450) |
+| [RMUX](https://github.com/Helvesec/rmux) | 0.10.0 | [`Rmux::check_banner`](../../crates/runtime-mux/src/rmux.rs) | [0.10.0 release](https://github.com/Helvesec/rmux/releases/tag/v0.10.0): wire protocol 8, incompatible with 0.9.x daemons |
 
 For tmux, the limiting features are `refresh-client -f pause-after=5`,
 `refresh-client -A` (pane monitoring/resume), and `refresh-client -B`
@@ -697,7 +697,7 @@ For tmux, the limiting features are `refresh-client -f pause-after=5`,
 `send-keys -H` and pane options in 3.0; `set-clipboard external` in 2.6;
 `resize-window` in 2.9. These are recorded in the same upstream changelog.
 The mouse-state seed in
-[`pane_state_seed`](../../crates/thurbox/src/backend/tmux_compat/server.rs) uses six
+[`pane_state_seed`](../../crates/runtime-mux/src/tmux_compat/server.rs) uses six
 `#{mouse_*_flag}` formats: all are present in upstream
 [3.2 format.c](https://github.com/tmux/tmux/blob/3.2/format.c).
 The changelog records the SGR/UTF-8 mouse formats in 3.0; the source confirms

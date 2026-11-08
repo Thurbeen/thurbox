@@ -25,7 +25,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -807,9 +807,9 @@ fn a_row_with_no_pane_id_still_resolves_its_own_stamped_window() {
     db.claim_backend_id(session.session_id, "", |_, _| false)
         .expect("clear the pane id");
 
-    let backend = thurbox::backend::tmux::TmuxBackend::local(
-        thurbox::session::settings::default_scrollback_lines(),
-    );
+    let backend = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+        &Default::default(),
+    ));
     let outcome = thurbox::backend::WindowLifecycle::discover(&backend).map(|listing| {
         thurbox::backend::identity::WindowIndex::from_listing(listing)
             .live_agent_window(&session.session_id.to_string(), "stamped")
@@ -1025,9 +1025,9 @@ fn a_teardown_never_brings_a_tmux_server_into_being() {
     assert!(!tmux(&["has-session"]).status.success());
 
     let id = thurbox::session::SessionId::default();
-    let backend = thurbox::backend::tmux::TmuxBackend::local(
-        thurbox::session::settings::default_scrollback_lines(),
-    );
+    let backend = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+        &Default::default(),
+    ));
     let _ = thurbox::backend::WindowLifecycle::locate(
         &backend,
         thurbox::backend::Owner::new(&id.to_string(), "ghost"),

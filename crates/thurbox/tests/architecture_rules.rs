@@ -6,13 +6,13 @@
 //! so the architecture is an explicit decision per module.
 //!
 //! A rule's name is a **node**: a top-level module (`kernel`) or a governed
-//! submodule (`backend::tmux`). A file belongs to the deepest node containing it,
+//! submodule (`agent::agent_config`). A file belongs to the deepest node containing it,
 //! and a reference is judged by the node it *resolves to* (see `resolver`):
 //! `super::`, `self::`, bare child-module paths, nested brace groups, `as`
 //! renames, imported names, `pub use` re-exports and `type` aliases are all
 //! followed, so no import shape and no alias carries a crossing past a rule. A
-//! grant names exactly one node and never its children: allowing `backend`
-//! admits nothing in a governed `backend::tmux`.
+//! grant names exactly one node and never its children: allowing `agent`
+//! admits nothing in a governed `agent::agent_config`.
 //!
 //! The graph is checked as a whole too: the actual production edges and the
 //! declared allowlist must both be acyclic, and every allowance must be used
@@ -38,7 +38,7 @@ use resolver::{cycles, strip_comments_and_strings, Edge, Reference, Tree};
 /// Per-node dependency allowlist.
 struct ModuleRules {
     /// A top-level module (`src/<name>/` or `src/<name>.rs`) or a governed
-    /// submodule path (`backend::tmux`).
+    /// submodule path (`agent::agent_config`).
     name: &'static str,
     /// Nodes this node may reference in any form.
     allowed: &'static [&'static str],
@@ -56,10 +56,10 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[],
         allowed_path_only: &[],
     },
-    // Coding-agent definitions: the agents.toml registry, extensions,
-    // preflight and the host-path translation every launch goes through.
-    // Never a session backend: those live in their own nodes below, and a
-    // backend may read an agent's config, so the reverse would be a cycle.
+    // Coding-agent definitions: the agents.toml registry and extensions.
+    // Never a session backend: the multiplexer runtime (`backend`) is reached
+    // through its own node, and preflight and the host-path translation every
+    // launch goes through are the runtime's.
     //
     // Every file is a node of its own (`SUBMODULE_GOVERNED`), so a grant names
     // what it reads and a file added here is reachable by nobody until that is
@@ -85,11 +85,6 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[],
     },
     ModuleRules {
-        name: "agent::host_path",
-        allowed: &["session", "shell"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
         name: "agent::input",
         allowed: &[],
         allowed_path_only: &[],
@@ -97,11 +92,6 @@ const MODULE_RULES: &[ModuleRules] = &[
     ModuleRules {
         name: "agent::json_merge",
         allowed: &[],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "agent::preflight",
-        allowed: &["session", "paths", "shell", "agent::agent_config"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -134,13 +124,12 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session", "config::file"],
         allowed_path_only: &[],
     },
-    // hosts.toml, and the cached registry of it every process shares. Its own
-    // node so that reading global host config is a visible decision: the
-    // backend contract and the pure registry must not. `shell` for the one
-    // `wsl.exe` constructor every launch goes through (`shell::wsl_exe`).
+    // hosts.toml in thurbox's config directory: the runtime's loader bound to
+    // `config::file`. Its own node so that reading global host config is a
+    // visible decision.
     ModuleRules {
         name: "config::hosts",
-        allowed: &["session", "paths", "shell", "config::file"],
+        allowed: &["session", "config::file"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -175,161 +164,14 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session", "paths", "agent::extension_config"],
         allowed_path_only: &[],
     },
-    // The boundary's root: re-exports of the contract, nothing of its own —
-    // and never an adapter, which would put one a `use` away from every
-    // consumer.
+    // The gateway to the multiplexer runtime (`runtime_mux`, ADR-41): its
+    // re-exports, and what thurbox injects into it — `session` for the settings
+    // type, `paths` for the data directory, `config::hosts` for the hosts the
+    // factory registers. Every crossing into the runtime is an edge to this
+    // node, judged by the item it names (see `CONCRETE_BACKEND`).
     ModuleRules {
         name: "backend",
-        allowed: &["backend::contract", "backend::pane", "backend::registry"],
-        allowed_path_only: &[],
-    },
-    // The contract every adapter implements and the values that cross it.
-    // Names no adapter, no protocol helper and no global config: the bottom of
-    // the boundary.
-    ModuleRules {
-        name: "backend::contract",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    // Which window is whose: thurbox's window-naming convention and the
-    // resolution rule (ADR-25), over the listing the contract defines.
-    ModuleRules {
-        name: "backend::identity",
-        allowed: &["backend::contract"],
-        allowed_path_only: &[],
-    },
-    // The pane machinery every backend's stream is wired into: the reader
-    // loop, the vt100 parser, the signals it raises.
-    ModuleRules {
-        name: "backend::pane",
-        allowed: &[
-            "session",
-            "backend::contract",
-            "backend::identity",
-            "backend::osc8",
-            "backend::output_wake",
-        ],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "backend::osc8",
-        allowed: &["session"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "backend::output_wake",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    // A container of backends. Knows the contract and nothing that builds one.
-    ModuleRules {
-        name: "backend::registry",
-        allowed: &["session", "backend::contract"],
-        allowed_path_only: &[],
-    },
-    // What fills the registry: the only node that names an adapter, and the
-    // only one that reads host config to do it. Referenced only by the
-    // composition roots — see `only_the_composition_roots_name_the_factory`.
-    ModuleRules {
-        name: "backend::wiring",
-        allowed: &[
-            "session",
-            "shell",
-            "backend::contract",
-            "backend::psmux",
-            "backend::registry",
-            "backend::rmux",
-            "backend::tmux",
-            "config::hosts",
-        ],
-        allowed_path_only: &[],
-    },
-    // The tmux command and control-mode protocol tmux and psmux both speak.
-    // Shared grammar, not an adapter: it may know the contract, never an
-    // adapter using it (`the_adapters_are_peers`). Its root only declares the
-    // modules below.
-    ModuleRules {
-        name: "backend::tmux_compat",
-        allowed: &[],
-        allowed_path_only: &[],
-    },
-    // A tmux-protocol server as a session backend, generic over the
-    // multiplexer: everything the adapters share, asking each what its
-    // server can do and never which it is.
-    ModuleRules {
-        name: "backend::tmux_compat::server",
-        allowed: &[
-            "session",
-            "paths",
-            "shell",
-            "agent::host_path",
-            "agent::preflight",
-            "backend::contract",
-            "backend::identity",
-            "backend::tmux_compat::control_mode",
-            "backend::instance",
-            "backend::tmux_compat::transport",
-        ],
-        allowed_path_only: &[],
-    },
-    // Which server an instance's sessions live on (ADR-12).
-    ModuleRules {
-        name: "backend::instance",
-        allowed: &["session", "paths"],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "backend::tmux_compat::control_mode",
-        allowed: &[
-            "shell",
-            "backend::contract",
-            "backend::tmux_compat::transport",
-        ],
-        allowed_path_only: &[],
-    },
-    // How the multiplexer is launched: locally, over ssh, or in a WSL distro.
-    ModuleRules {
-        name: "backend::tmux_compat::transport",
-        allowed: &["shell", "agent::preflight"],
-        allowed_path_only: &[],
-    },
-    // The adapters are peers: each reaches the protocol helper and never the
-    // other; nothing reaches either but the factory.
-    ModuleRules {
-        name: "backend::tmux",
-        allowed: &[
-            "session",
-            "shell",
-            "backend::contract",
-            "backend::tmux_compat::control_mode",
-            "backend::tmux_compat::server",
-            "backend::tmux_compat::transport",
-        ],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "backend::psmux",
-        allowed: &[
-            "session",
-            "shell",
-            "backend::contract",
-            "backend::instance",
-            "backend::tmux_compat::control_mode",
-            "backend::tmux_compat::server",
-            "backend::tmux_compat::transport",
-        ],
-        allowed_path_only: &[],
-    },
-    ModuleRules {
-        name: "backend::rmux",
-        allowed: &[
-            "session",
-            "shell",
-            "backend::contract",
-            "backend::tmux_compat::control_mode",
-            "backend::tmux_compat::server",
-            "backend::tmux_compat::transport",
-        ],
+        allowed: &["session", "paths", "config::hosts"],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -372,15 +214,10 @@ const MODULE_RULES: &[ModuleRules] = &[
             "agent::agent_config",
             "agent::extension_config",
             "agent::generic",
-            "agent::host_path",
             "agent::json_merge",
-            "agent::preflight",
             "agent::provider",
             "agent::toml_merge",
-            "backend::contract",
-            "backend::identity",
-            "backend::instance",
-            "backend::registry",
+            "backend",
             "config::hooks",
             "config::hosts",
             "config::settings",
@@ -415,10 +252,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "kernel",
             "agent::agent_config",
             "agent::extension_config",
-            "agent::preflight",
-            "backend::contract",
-            "backend::instance",
-            "backend::registry",
+            "backend",
             "config::file",
             "config::hooks",
             "config::hosts",
@@ -462,12 +296,7 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed_path_only: &[
             "agent::agent_config",
             "agent::extension_config",
-            "agent::host_path",
-            "agent::preflight",
-            "backend::contract",
-            "backend::identity",
-            "backend::pane",
-            "backend::registry",
+            "backend",
             "config::hosts",
             "config::settings",
             "config::themes",
@@ -486,11 +315,11 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["paths"],
         allowed_path_only: &[],
     },
-    // `session` for the one conversion from a host entry to its launcher
-    // (`HostLauncher::for_host`), which every remote command shares.
+    // The runtime's launchers and quoting rules, re-exported: a node of its
+    // own so a grant still says which modules may launch anything.
     ModuleRules {
         name: "shell",
-        allowed: &["session"],
+        allowed: &[],
         allowed_path_only: &[],
     },
     ModuleRules {
@@ -517,9 +346,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "telemetry",
             "ui_control",
             "agent::input",
-            "backend::instance",
-            "backend::output_wake",
-            "backend::wiring",
+            "backend",
             "config::settings",
         ],
         allowed_path_only: &[],
@@ -560,7 +387,7 @@ const EXEMPT: &[&str] = &["bin", "lib", "main"];
 /// its own, so a new file there is a decision rather than something its
 /// parent's rule silently covers. An inline `mod x { … }` belongs to the file
 /// that holds it.
-const SUBMODULE_GOVERNED: &[&str] = &["backend", "agent", "config", "update"];
+const SUBMODULE_GOVERNED: &[&str] = &["agent", "config", "update"];
 
 /// A crossing that breaks a rule today, is known, and is scheduled to go.
 ///
@@ -672,30 +499,39 @@ fn reconcile(violations: &[Edge], table: &[Transitional]) -> (Vec<Edge>, Vec<Str
     (unlisted, stale)
 }
 
-/// Where `Multiplexer` lives, as a resolved path: its variants are the one
-/// kind of item a node may reach *through* a grant and still not name.
-const MULTIPLEXER: &[&str] = &["session", "multiplexer", "Multiplexer"];
+/// Where `Multiplexer` is reached, as a resolved path: its variants are the
+/// one kind of item a node may reach *through* a grant and still not name.
+/// `session` re-exports it from the runtime, so a path stops at
+/// `session::Multiplexer`; a tree that defines it in `session/multiplexer.rs`
+/// resolves one segment deeper.
+const MULTIPLEXER: &[&[&str]] = &[
+    &["session", "Multiplexer"],
+    &["session", "multiplexer", "Multiplexer"],
+];
 
 /// The multiplexers a route can name. A name here is not an implementation:
 /// which of them work is what the registry says, at runtime.
 const MULTIPLEXER_VARIANTS: &[&str] = &["Tmux", "Psmux", "Rmux", "Herdr"];
 
 /// The nodes that may decide something by naming *one* multiplexer: the route
-/// grammar and its defaults (`session`), the factory that picks an adapter per
-/// multiplexer, and the adapters, each of which is one. Anywhere else, a
+/// grammar and its defaults (`session`) and, in a fixture, the factory. The
+/// runtime's factory and adapters are the only other places one is chosen, and
+/// `runtime-mux`'s own architecture test holds them. Anywhere else, a
 /// `Multiplexer::Psmux` is a consumer choosing behaviour — or an OS — by
 /// multiplexer, which is what the route and the registry exist to decide.
 fn may_name_a_multiplexer(node: &str) -> bool {
-    node == "session" || node == FACTORY || ADAPTERS.contains(&node)
+    node == "session" || node == FACTORY
 }
 
 /// The multiplexer variant a resolved path names, if it names one.
 fn multiplexer_variant(reference: &Reference) -> Option<&str> {
     let path = &reference.path;
-    (path.len() == MULTIPLEXER.len() + 1
-        && path[..MULTIPLEXER.len()].iter().eq(MULTIPLEXER.iter())
-        && MULTIPLEXER_VARIANTS.contains(&path[MULTIPLEXER.len()].as_str()))
-    .then(|| path[MULTIPLEXER.len()].as_str())
+    MULTIPLEXER.iter().find_map(|at| {
+        (path.len() == at.len() + 1
+            && path[..at.len()].iter().eq(at.iter())
+            && MULTIPLEXER_VARIANTS.contains(&path[at.len()].as_str()))
+        .then(|| path[at.len()].as_str())
+    })
 }
 
 /// Every reference to a specific multiplexer from production code in a node
@@ -781,77 +617,29 @@ fn transitional_table_names_only_live_crossings() {
     );
 }
 
-/// The node that builds the registry, naming every concrete adapter.
+/// The factory, as the fixture trees name it: the node that builds the
+/// registry, naming every concrete adapter.
 const FACTORY: &str = "backend::wiring";
 
-/// The concrete adapters. Each is reached only through [`FACTORY`], and each
-/// serves one multiplexer of its own.
-const ADAPTERS: &[&str] = &["backend::tmux", "backend::psmux", "backend::rmux"];
+/// What of the runtime a consumer must never reach by name: one multiplexer's
+/// adapter, the protocol grammar only some multiplexers speak, or the factory
+/// that names them — items of the `backend` gateway. The adapters' own rules
+/// (peers, one multiplexer each, the factory the only one to name them) are
+/// `runtime-mux`'s architecture test.
+const CONCRETE_BACKEND: &[&str] = &["tmux", "psmux", "rmux", "tmux_compat", "wiring"];
 
-/// The tmux command and control-mode protocol both adapters above speak: a
-/// helper either may use, which uses neither.
-const PROTOCOL_HELPER: &str = "backend::tmux_compat";
-
-fn in_protocol_helper(node: &str) -> bool {
-    node == PROTOCOL_HELPER || node.starts_with(&format!("{PROTOCOL_HELPER}::"))
-}
-
-/// Only the composition roots may build the registry — `coordinator` here, and
-/// the exempt crate roots (`main`, `bin/`) — and only the factory may name an
-/// adapter. A consumer that builds its own registry sees a different set of
-/// backends from the one the process was wired with, and one that names an
-/// adapter has stopped using the contract. No factory crossing is
-/// transitional: the registry is built at the roots and injected.
-#[test]
-fn only_the_composition_roots_name_the_factory() {
-    for rules in MODULE_RULES {
-        let grants = || rules.allowed.iter().chain(rules.allowed_path_only);
-        if rules.name != "coordinator" {
-            assert!(
-                !grants().any(|to| *to == FACTORY),
-                "`{}` may reference {FACTORY}; only a composition root may",
-                rules.name
-            );
-        }
-        if rules.name != FACTORY {
-            for adapter in ADAPTERS {
-                assert!(
-                    !grants().any(|to| to == adapter),
-                    "`{}` may reference the adapter {adapter}; only {FACTORY} may",
-                    rules.name
-                );
-            }
-        }
-    }
-    for entry in TRANSITIONAL {
-        assert_ne!(
-            entry.to, FACTORY,
-            "{} → {FACTORY} is not transitional: inject the registry the root built",
-            entry.from
-        );
-    }
-}
-
-/// The nodes that consume backends: the session engine, the CLI and the
-/// kernel. Each is handed a registry and reaches what is in it through the
-/// contract.
-const BACKEND_CONSUMERS: &[&str] = &["session_ops", "cli", "kernel"];
-
-/// One multiplexer's code, or the grammar only some multiplexers speak, or
-/// the factory that names them: what a consumer must never reach by name.
-fn is_concrete_backend(node: &str) -> bool {
-    node == FACTORY || ADAPTERS.contains(&node) || in_protocol_helper(node)
-}
+/// The one node that may build the registry: `main`'s body. The exempt crate
+/// roots (`main`, `bin/`) may too. A consumer that builds its own registry
+/// sees a different set of backends from the one the process was wired with.
+const COMPOSITION_ROOT: &str = "coordinator";
 
 /// Every verb a consumer needs — lifecycle, pane I/O, status delivery and
-/// polling, the heartbeat — goes through the contract, so no consumer can
-/// reach a concrete backend at all.
+/// polling, the heartbeat — goes through the contract, so no module reaches a
+/// concrete backend at all, and only the composition root reaches the factory.
 ///
-/// Checked three ways, because each closes a door the others leave open:
+/// Checked two ways, because each closes a door the other leaves open:
 /// - **references**, resolved through `use`, `super::`, brace groups,
 ///   re-exports and `type` aliases, test code included — what the code does;
-/// - **grants**, followed transitively — what a consumer could start doing
-///   without this file changing, including through a node it is allowed;
 /// - **no grant of a whole parent** that holds files of its own, so a module
 ///   added under `agent` is not reachable until someone decides it is.
 #[test]
@@ -859,32 +647,20 @@ fn consumers_reach_no_concrete_backend() {
     let tree = src_tree();
     let mut found = Vec::new();
     for edge in tree.edges(&node_names(MODULE_RULES)) {
-        if BACKEND_CONSUMERS.contains(&edge.from.as_str()) && is_concrete_backend(&edge.to) {
-            found.push(describe(tree, MODULE_RULES, &edge));
+        if edge.to != "backend" || !CONCRETE_BACKEND.contains(&edge.item.as_str()) {
+            continue;
         }
+        if edge.from == COMPOSITION_ROOT && edge.item == "wiring" {
+            continue;
+        }
+        found.push(describe(tree, MODULE_RULES, &edge));
     }
-    let declared = declared_edges(MODULE_RULES);
-    for consumer in BACKEND_CONSUMERS {
-        let mut reach = vec![consumer.to_string()];
-        let mut seen = BTreeSet::new();
-        while let Some(node) = reach.pop() {
-            if !seen.insert(node.clone()) {
-                continue;
-            }
-            for (from, to) in &declared {
-                if *from == node {
-                    if is_concrete_backend(to) {
-                        found.push(format!("{consumer} may reach {to} (granted to {from})"));
-                    }
-                    reach.push(to.clone());
-                }
-            }
-        }
-        let rules = rules_for(MODULE_RULES, consumer);
+    for rules in MODULE_RULES {
         for to in rules.allowed.iter().chain(rules.allowed_path_only) {
             if SUBMODULE_GOVERNED.contains(to) {
                 found.push(format!(
-                    "{consumer} is granted all of `{to}`; name the submodules it uses"
+                    "{} is granted all of `{to}`; name the submodules it uses",
+                    rules.name
                 ));
             }
         }
@@ -895,177 +671,7 @@ fn consumers_reach_no_concrete_backend() {
     );
     assert!(
         found.is_empty(),
-        "\na consumer reaches a concrete backend:\n  {}\n",
-        found.join("\n  ")
-    );
-}
-
-/// The adapters are peers: neither reaches the other, and the protocol
-/// helper they share reaches neither — in code, test code included, or in a
-/// grant. A quirk of one multiplexer is then a body in its own adapter, never a
-/// branch in code the other runs; and an adapter that serves a second
-/// multiplexer through flags is an adapter missing.
-#[test]
-fn the_adapters_are_peers() {
-    let tree = src_tree();
-    let mut found = Vec::new();
-    for adapter in ADAPTERS {
-        if !tree.has_module(adapter) {
-            found.push(format!(
-                "{adapter} does not exist, so another adapter serves its multiplexer"
-            ));
-        }
-    }
-    let crosses = |from: &str, to: &str| {
-        ADAPTERS.contains(&to)
-            && from != to
-            && (ADAPTERS.contains(&from) || in_protocol_helper(from))
-    };
-    for edge in tree.edges(&node_names(MODULE_RULES)) {
-        if crosses(&edge.from, &edge.to) {
-            found.push(describe(tree, MODULE_RULES, &edge));
-        }
-    }
-    for (from, to) in declared_edges(MODULE_RULES) {
-        if crosses(&from, &to) {
-            found.push(format!("MODULE_RULES lets {from} reach {to}"));
-        }
-    }
-    assert!(
-        found.is_empty(),
-        "\nthe adapters are not peers:\n  {}\n",
-        found.join("\n  ")
-    );
-}
-
-/// The multiplexers each adapter's production code names, and the ones the
-/// factory names — resolved references to `session::Multiplexer`'s variants.
-fn multiplexers_named(tree: &Tree) -> (BTreeMap<&'static str, BTreeSet<String>>, BTreeSet<String>) {
-    let mut owned: BTreeMap<&'static str, BTreeSet<String>> =
-        ADAPTERS.iter().map(|a| (*a, BTreeSet::new())).collect();
-    let mut served = BTreeSet::new();
-    for reference in tree.references(&node_names(MODULE_RULES)) {
-        if reference.test {
-            continue;
-        }
-        let Some(variant) = multiplexer_variant(&reference) else {
-            continue;
-        };
-        if let Some(names) = owned.get_mut(reference.from.as_str()) {
-            names.insert(variant.to_string());
-        }
-        if reference.from == FACTORY {
-            served.insert(variant.to_string());
-        }
-    }
-    (owned, served)
-}
-
-/// One multiplexer, one adapter: each adapter names exactly the multiplexer it
-/// is, no two adapters name the same one, and every multiplexer the factory
-/// serves is one an adapter is. An adapter serving a multiplexer it does not
-/// name is deciding by the binary's *name* instead — `if mux == "psmux"` —
-/// which no resolved reference shows and every rule above would miss.
-#[test]
-fn every_multiplexer_the_factory_serves_has_an_adapter_of_its_own() {
-    let (owned, served) = multiplexers_named(src_tree());
-    let mut found = Vec::new();
-    let mut owner: BTreeMap<String, &str> = BTreeMap::new();
-    for (adapter, names) in &owned {
-        if names.len() != 1 {
-            found.push(format!(
-                "{adapter} names {} multiplexer(s) {names:?}; an adapter is exactly one",
-                names.len()
-            ));
-        }
-        for name in names {
-            if let Some(other) = owner.insert(name.clone(), adapter) {
-                found.push(format!(
-                    "{other} and {adapter} both are Multiplexer::{name}"
-                ));
-            }
-        }
-    }
-    for name in &served {
-        if !owner.contains_key(name) {
-            found.push(format!(
-                "{FACTORY} serves Multiplexer::{name}, which no adapter is (adapters: {owned:?})"
-            ));
-        }
-    }
-    assert!(
-        found.is_empty(),
-        "\na multiplexer is served without an adapter of its own:\n  {}\n",
-        found.join("\n  ")
-    );
-}
-
-/// The files that say where a session runs and what a backend is, for every
-/// host and every multiplexer alike: the route grammar and the contract.
-const NEUTRAL_FILES: &[&str] = &["session/route.rs", "backend/contract.rs"];
-
-/// What a neutral file may not reach: how one kind of host is launched
-/// (`shell`'s ssh/wsl launchers, a host's own `hosts.toml` entry and the
-/// loader of it) or how one multiplexer is driven (an adapter, or the tmux
-/// command grammar two of them share).
-const HOST_OR_MUX_SPECIFIC: &[&str] = &[
-    "shell",
-    "session::host_def",
-    "config::hosts",
-    "backend::tmux",
-    "backend::psmux",
-    "backend::tmux_compat",
-];
-
-/// The route and the contract are the same for every host OS, launcher and
-/// multiplexer (ADR-13): they reach no launcher and no adapter, and decide
-/// nothing by the OS this build was compiled for — a Windows thurbox drives a
-/// Linux host, and a Linux one a Windows host. A platform is a host's, read
-/// from its configuration; a behaviour is a backend's, read from what it can
-/// do.
-#[test]
-fn the_route_and_the_contract_know_no_launcher_adapter_or_build_os() {
-    let tree = src_tree();
-    let root = src_root();
-    let mut found = Vec::new();
-    for reference in tree.references(&node_names(MODULE_RULES)) {
-        let Some(file) = NEUTRAL_FILES
-            .iter()
-            .find(|f| reference.file.ends_with(Path::new(f)))
-        else {
-            continue;
-        };
-        if reference.test {
-            continue;
-        }
-        let path = reference.path.join("::");
-        if let Some(banned) = HOST_OR_MUX_SPECIFIC
-            .iter()
-            .find(|b| path == **b || path.starts_with(&format!("{b}::")))
-        {
-            found.push(format!(
-                "{file}:{} reaches {path} ({banned})",
-                reference.line
-            ));
-        }
-    }
-    for file in NEUTRAL_FILES {
-        let source = fs::read_to_string(root.join(file)).expect("read a neutral file");
-        let stripped = strip_comments_and_strings(&source);
-        let production = stripped.split("#[cfg(test)]").next().unwrap_or_default();
-        for (n, line) in production.lines().enumerate() {
-            if line.contains("cfg(windows)")
-                || line.contains("cfg!(windows)")
-                || line.contains("cfg(not(windows))")
-                || line.contains("cfg(unix)")
-            {
-                found.push(format!("{file}:{} decides by build OS", n + 1));
-            }
-        }
-    }
-    assert!(
-        found.is_empty(),
-        "a neutral file depends on one host or multiplexer:\n  {}",
+        "\na module reaches a concrete backend:\n  {}\n",
         found.join("\n  ")
     );
 }
@@ -1731,6 +1337,9 @@ const SESSION_CRATES: &[&str] = &[
     "chrono",
     "chrono_tz",
     "cron",
+    // The host model, the hyperlink table and `SessionId`, which the runtime
+    // defines and a session is described in: `session` only re-exports them.
+    "runtime_mux",
     "serde",
     "serde_json",
     "toml",

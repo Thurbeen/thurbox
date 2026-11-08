@@ -19,7 +19,7 @@ use thurbox::storage::Database;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
 #[cfg(unix)]
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 #[path = "support/recording_backend.rs"]

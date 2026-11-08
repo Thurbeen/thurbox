@@ -24,7 +24,7 @@ use thurbox::storage::automations::NewAutomation;
 use thurbox::storage::Database;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 #[path = "support/recording_backend.rs"]
@@ -990,9 +990,9 @@ fn reused_spawn_automation_retires_a_silent_codex_idle_report() {
         &fake.to_string_lossy(),
     ]);
     stamp(&format!("{SESSION}:tb-{name}"), &row.id.to_string());
-    let local = thurbox::backend::tmux::TmuxBackend::local(
-        thurbox::session::settings::default_scrollback_lines(),
-    );
+    let local = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+        &Default::default(),
+    ));
     let placed = |id: &str| {
         thurbox::backend::WindowLifecycle::locate(&local, thurbox::backend::Owner::new(id, &name))
             .expect("locate")

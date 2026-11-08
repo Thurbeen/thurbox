@@ -157,7 +157,7 @@ impl Terminals {
             }
             let result = match done.shell {
                 Ok(shell) => {
-                    let pane = shell.backend_id.clone();
+                    let pane = shell.backend_id().to_string();
                     let live = self.live.get_mut(&done.session).unwrap();
                     live.session.install_shell(shell);
                     live.shell = Painted::default();

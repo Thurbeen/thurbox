@@ -119,7 +119,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             .with_ansi(false)
             .with_filter(
                 tracing_subscriber::EnvFilter::from_default_env()
-                    .add_directive("thurbox=debug".parse().unwrap_or_default()),
+                    .add_directive("thurbox=debug".parse().unwrap_or_default())
+                    // The multiplexer runtime logs under its own crate name.
+                    .add_directive("runtime_mux=debug".parse().unwrap_or_default()),
             )
     };
 

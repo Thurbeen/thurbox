@@ -26,7 +26,7 @@ use std::process::Command;
 use thurbox::kernel::terminal::{ProgramKey, Terminals};
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -100,9 +100,9 @@ async fn an_agent_window_keeps_its_corpse_and_a_program_window_does_not() {
     // program: one that exits before tmux finishes setting the window up turns a
     // real failure into a skip.
     let spawned = thurbox::backend::WindowLifecycle::create_window(
-        &thurbox::backend::tmux::TmuxBackend::local(
-            thurbox::session::settings::default_scrollback_lines(),
-        ),
+        &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+            &Default::default(),
+        )),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(
                 "11111111-1111-4111-8111-111111111111",
@@ -252,9 +252,9 @@ async fn an_agent_that_dies_at_once_still_leaves_its_window() {
     thurbox::paths::set_test_dir(dir.path());
 
     let spawned = thurbox::backend::WindowLifecycle::create_window(
-        &thurbox::backend::tmux::TmuxBackend::local(
-            thurbox::session::settings::default_scrollback_lines(),
-        ),
+        &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+            &Default::default(),
+        )),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(
                 "22222222-2222-4222-8222-222222222222",
@@ -315,9 +315,9 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     // The older namesake, from the other session that shares the name. Spawned
     // through the same path, so it is a real one rather than a hand-made window.
     let first = thurbox::backend::WindowLifecycle::create_window(
-        &thurbox::backend::tmux::TmuxBackend::local(
-            thurbox::session::settings::default_scrollback_lines(),
-        ),
+        &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+            &Default::default(),
+        )),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(
                 "33333333-3333-4333-8333-333333333333",
@@ -335,9 +335,9 @@ async fn an_older_namesake_does_not_take_the_new_windows_retention() {
     }
 
     let second = thurbox::backend::WindowLifecycle::create_window(
-        &thurbox::backend::tmux::TmuxBackend::local(
-            thurbox::session::settings::default_scrollback_lines(),
-        ),
+        &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+            &Default::default(),
+        )),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(
                 "44444444-4444-4444-8444-444444444444",
@@ -407,9 +407,9 @@ async fn a_window_is_born_sized_by_hand_and_the_server_is_not() {
     thurbox::paths::set_test_dir(dir.path());
 
     let spawned = thurbox::backend::WindowLifecycle::create_window(
-        &thurbox::backend::tmux::TmuxBackend::local(
-            thurbox::session::settings::default_scrollback_lines(),
-        ),
+        &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+            &Default::default(),
+        )),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(
                 "55555555-5555-4555-8555-555555555555",

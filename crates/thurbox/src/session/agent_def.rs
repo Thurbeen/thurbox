@@ -392,53 +392,9 @@ fn fill_vars(text: &str, vars: &BTreeMap<String, String>) -> String {
     out
 }
 
-/// The line the setup script prints, on the pane, when a step fails — and the
-/// text a launch-failure check looks for to tell a failed setup from an agent
-/// that died on its own. Followed by `<step> failed (exit <status>)`.
-pub const SETUP_FAILURE_MARKER: &str = "thurbox: setup step ";
-
-/// `$0` of the setup shell, as `ps` shows it while the setup runs.
-const SETUP_ARGV0: &str = "thurbox-setup";
-
-/// The `(command, args)` that runs `setup` and then becomes the agent.
-///
-/// `sh -c SCRIPT thurbox-setup COMMAND ARGS…`: the script runs each step in
-/// turn under `set -e` and then `exec "$@"`, so the agent replaces the shell
-/// — same pid, same pane, same environment — and anything appended to `args`
-/// after this still reaches it. The steps are inlined rather than each given
-/// its own `sh -c` so that `set -e` judges them as a script would: a guard
-/// such as `[ -f x ] && x` does not fail the launch when `x` is absent, while
-/// `x` failing does. A failing step leaves [`SETUP_FAILURE_MARKER`] and its
-/// exit status on the pane and ends the shell with that status; the agent
-/// never starts. No setup returns the launch unchanged.
-pub fn wrap_with_setup(setup: &[String], command: &str, args: &[String]) -> (String, Vec<String>) {
-    if setup.is_empty() {
-        return (command.to_string(), args.to_vec());
-    }
-    let mut script = String::from(
-        "thurbox_step=0\n\
-         trap 'thurbox_status=$?; if [ \"$thurbox_status\" -ne 0 ]; then \
-         printf \"\\n%s%s failed (exit %s)\\n\" \"$thurbox_marker\" \"$thurbox_step\" \
-         \"$thurbox_status\" >&2; fi' EXIT\n",
-    );
-    script.push_str(&format!(
-        "thurbox_marker='{SETUP_FAILURE_MARKER}'\nset -e\n"
-    ));
-    for (i, step) in setup.iter().enumerate() {
-        script.push_str(&format!("thurbox_step={}\n{step}\n", i + 1));
-    }
-    script.push_str("trap - EXIT\nexec \"$@\"\n");
-    let wrapped = [
-        "-c".to_string(),
-        script,
-        SETUP_ARGV0.to_string(),
-        command.to_string(),
-    ]
-    .into_iter()
-    .chain(args.iter().cloned())
-    .collect();
-    ("sh".to_string(), wrapped)
-}
+// The setup wrapper is the shell's: one definition, which the runtime's
+// PowerShell counterpart (`HostShell::wrap_setup`) shares its marker with.
+pub use runtime_mux::shell::{wrap_with_setup, SETUP_FAILURE_MARKER};
 
 /// Replace `placeholder` with `value` in every token of `tokens`.
 fn subst(tokens: &[String], placeholder: &str, value: &str) -> Vec<String> {

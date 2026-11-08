@@ -18,7 +18,7 @@ use serde_json::Value;
 use thurbox::session::SessionId;
 use thurbox::session::SharedSession;
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 /// A throwaway thurbox instance: its own config, data and home, so no test here

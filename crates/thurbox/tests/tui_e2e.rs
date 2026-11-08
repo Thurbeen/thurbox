@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use thurbox::backend::tmux_compat::server::TmuxCompatible;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -9991,7 +9991,7 @@ fn armed_flood(deep: bool) -> Option<(Profile, Link, Tui, PathBuf, String)> {
         if deep {
             deepen_remote_downlink(profile);
         }
-        cmd.env("RUST_LOG", "thurbox::backend=debug");
+        cmd.env("RUST_LOG", "runtime_mux=debug");
     })?;
     let flood = profile.path("flood");
     let text: String = (0..FLOOD_LINES)
