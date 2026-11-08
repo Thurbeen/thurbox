@@ -21,7 +21,7 @@
 set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-probes="$root/tests/fixtures/lua_types"
+probes="$root/crates/thurbox/tests/fixtures/lua_types"
 
 if ! command -v lua-language-server > /dev/null 2>&1; then
     printf 'lua-language-server not found — install it (see scripts/install-dev-tools.sh)\n' >&2

@@ -7,7 +7,7 @@
 # $GITHUB_OUTPUT:
 #
 # 1. The version must be on the line the source declares
-#    (`RELEASE_LINE` in src/update/version_check.rs). `cog bump --auto` turns
+#    (`RELEASE_LINE` in crates/thurbox/src/update/version_check.rs). `cog bump --auto` turns
 #    any `BREAKING CHANGE:` footer or `feat!:` into a new major, and a squash
 #    merge carries branch commit bodies into the commit on main, so without
 #    this a stray footer cuts 3.0.0 by itself. With it, a new major needs a
@@ -26,7 +26,7 @@ set -euo pipefail
 
 version="${1:?usage: release-line.sh <version> <channels-major>}"
 channels_major="${2:?usage: release-line.sh <version> <channels-major>}"
-source_file="${THURBOX_RELEASE_LINE_SOURCE:-src/update/version_check.rs}"
+source_file="${THURBOX_RELEASE_LINE_SOURCE:-crates/thurbox/src/update/version_check.rs}"
 
 bare="${version#v}"
 major="${bare%%.*}"

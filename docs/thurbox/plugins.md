@@ -821,7 +821,7 @@ command, closing leaves focus at the destination it requested. No `focusable`
 declaration or `command("focus")` is needed to receive this hook: `floats = true`
 and an open rendered float are enough.
 
-The sample [card float](../../tests/fixtures/float_focus/91_cards.lua) opens with
+The sample [card float](../../crates/thurbox/tests/fixtures/float_focus/91_cards.lua) opens with
 Ctrl+B, cycles three targets in both directions, closes with Escape, and uses
 `e` to exercise the empty-view fallback.
 

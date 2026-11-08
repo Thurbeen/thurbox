@@ -46,7 +46,7 @@
 set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-probes="$root/tests/fixtures/lua_std"
+probes="$root/crates/thurbox/tests/fixtures/lua_std"
 
 if ! command -v selene > /dev/null 2>&1; then
     printf 'selene not found — install it (see scripts/install-dev-tools.sh)\n' >&2

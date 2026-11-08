@@ -13,7 +13,7 @@ setup() {
     GIT_NAMESPACE
 
   REPO="${BATS_TEST_TMPDIR}/repo"
-  mkdir -p "$REPO/src/update"
+  mkdir -p "$REPO/crates/thurbox/src/update"
   cd "$REPO" || exit 1
   git init -q -b main .
   git config user.name tester
@@ -28,7 +28,7 @@ setup() {
 }
 
 line() {
-  printf 'pub const RELEASE_LINE: u64 = %s;\n' "$1" >src/update/version_check.rs
+  printf 'pub const RELEASE_LINE: u64 = %s;\n' "$1" >crates/thurbox/src/update/version_check.rs
 }
 
 @test "a release on the source's line passes" {
@@ -85,14 +85,14 @@ line() {
 }
 
 @test "a source without RELEASE_LINE is an error, not a pass" {
-  : >src/update/version_check.rs
+  : >crates/thurbox/src/update/version_check.rs
   run "$SCRIPT" v2.84.2 2
   [ "$status" -eq 1 ]
   [[ "$output" == *"no 'pub const RELEASE_LINE"* ]]
 }
 
 @test "reads the constant the real source declares" {
-  run env THURBOX_RELEASE_LINE_SOURCE="${BATS_TEST_DIRNAME}/../../src/update/version_check.rs" \
+  run env THURBOX_RELEASE_LINE_SOURCE="${BATS_TEST_DIRNAME}/../../crates/thurbox/src/update/version_check.rs" \
     "$SCRIPT" v2.84.2 2
   [ "$status" -eq 0 ]
   [[ "$output" == *"line=2"* ]]
