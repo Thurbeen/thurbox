@@ -285,7 +285,10 @@ fn the_patterns_catch_what_they_are_for() {
     let hits =
         |s: &str| -> Vec<String> { path.captures_iter(s).map(|m| m[1].to_string()).collect() };
     assert_eq!(hits("see `docs/V2-KERNEL.md`."), ["docs/V2-KERNEL.md"]);
-    assert_eq!(hits("docs/thurbox/kernel.md owns it"), ["docs/thurbox/kernel.md"]);
+    assert_eq!(
+        hits("docs/thurbox/kernel.md owns it"),
+        ["docs/thurbox/kernel.md"]
+    );
     assert_eq!(
         hits("see docs/fleet/controllers/task.md."),
         ["docs/fleet/controllers/task.md"]
