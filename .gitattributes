@@ -1,4 +1,0 @@
-# LF in every checkout, Windows included. Git for Windows turns core.autocrlf
-# on system-wide, which checks text out as CRLF: a `.sh` then fails in bash on
-# its first `\r`, and a record fleet reads carries `\r` into every value.
-* text=auto eol=lf

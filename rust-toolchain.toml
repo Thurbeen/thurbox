@@ -1,6 +1,0 @@
-# The Rust rewrite's toolchain. Checked against the official stable channel
-# (static.rust-lang.org/dist/channel-rust-stable.toml) on 2026-10-22.
-[toolchain]
-channel = "1.99.1"
-components = ["rustfmt", "clippy"]
-profile = "minimal"
