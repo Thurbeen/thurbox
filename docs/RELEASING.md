@@ -75,11 +75,12 @@ It is taken in one `DELETE … RETURNING`, so it acts once.
 
 ### Auto-update does not cross a major, and that has to be shipped to v1
 
-`update::version_check::crosses_major` stops `perform_update` installing a release
-whose major is higher than the running binary's; it is reported instead
-(`UpdateOutcome::SkippedMajor`, `thurbox-cli update --force` to take it anyway).
-This is what makes "stay on 1.x" a property of the binary rather than a setting
-the user has to remember.
+From v2.2.3, `update::version_check::crosses_major` stopped `perform_update`
+installing a release whose major is higher than the running binary's; it was
+reported instead (`UpdateOutcome::SkippedMajor`, `thurbox-cli update --force` to
+take it anyway). It has since become the stricter line rule in "v2 and v3"
+below, which no flag crosses. Either way, this is what makes "stay on 1.x" a
+property of the binary rather than a setting the user has to remember.
 
 **It only protects a binary that carries it.** Every release up to v1.8.7 predates
 this commit, so those installs still resolve `releases/latest` to a 2.x tag and
@@ -124,6 +125,91 @@ tag is pushed by refspec rather than by `ad-m/github-push-action`, which default
 its `branch` to the repository's default: harmless from `main`, where that is the
 ref already checked out, but from `v1.x` it tries to push that branch's tip onto
 `main`, is rejected as a non-fast-forward, and the tag never leaves the runner.
+
+## v2 and v3
+
+3.x (issue #1688: Fleet as thurbox's engine, one repository) is a different
+program under the same binary names, as 2.x was to 1.x. **No 2.x install moves
+to 3.x unless its user reinstalls on purpose.** Everything below exists to keep
+that true for installs whose update code can no longer change.
+
+### What every shipped updater does
+
+Every updater from v1.0.0 to v2.84.x resolves GitHub's `releases/latest`, then
+downloads `releases/download/v<V>/thurbox-v<V>-checksums.txt` with `curl -fsSL`
+(or `wget`) **before** the archive, and returns an error — replacing nothing —
+when that download fails. They differ only in what they do with a newer major:
+
+| Installed | On a 3.x "Latest" |
+|---|---|
+| v1.0.0 – v1.8.7, v2.0.0 – v2.2.2 | no major guard: would install 3.x |
+| v2.2.3 – v2.84.x | `crosses_major`: report 3.x, install nothing, and never see a later 2.x either |
+| this change onwards | the line rule below: install the newest 2.x, report 3.x |
+
+### The line rule (v2 binaries from this change)
+
+`update::version_check::RELEASE_LINE` is the major this source tree releases.
+The update check, the startup auto-update and `thurbox-cli update` read GitHub's
+release **list** and only consider releases on that line, so a 2.x maintenance
+release cut after 3.0.0 — published with `make_latest: false` — is still found
+and installed. A newer major is reported (`thurbox-cli version --check`,
+`thurbox-cli update`, a log line on startup) with a link here, and never
+installed: `--force` reinstalls the newest 2.x, nothing else. The header badge
+only offers the line. **Ship this in a 2.x release before any 3.x release
+exists**: the more installs carry it, the fewer depend on the asset rule below.
+
+### What a 3.x release must do
+
+1. **Never publish an asset named `thurbox-v<V>-checksums.txt`** (name the sums
+   file anything else, for example `thurbox-<V>-sha256sums.txt`). That one name is
+   what every pre-line-rule updater downloads first, so its absence makes all of
+   them fail safe — logged as `auto-update failed`, binaries untouched — whatever
+   `releases/latest` points at. This is the only protection the v1.x and
+   v2.0.0–v2.2.2 installs have, and it is a property of the 3.x release, not of
+   any code they carry.
+2. **"Latest"**: when 3.0.0 becomes GitHub's "Latest", fresh one-liner installs
+   get 3.x, and v2.2.3–v2.84.x installs stop auto-updating (they see 3.x, skip
+   it, and never look for a 2.x) until their user runs a 2.x installer once. That
+   is safe but stale. Keeping "Latest" on 2.x for a while instead keeps those
+   installs on 2.x patches; then the 3.x installer must resolve the newest 3.x tag
+   itself rather than `releases/latest`.
+3. **Package channels**: the existing names — Homebrew `thurbox`, AUR `thurbox`
+   and `thurbox-bin`, Chocolatey `thurbox`, winget `Thurbeen.thurbox` — carry 2.x
+   for good, so `brew upgrade`, an AUR helper, `choco upgrade` or `winget upgrade`
+   never moves anyone across. 3.x ships under names of its own, chosen when it
+   ships. `cd.yml` enforces the first half: `PACKAGE_CHANNELS_MAJOR` is `2`, and
+   only the newest 2.x tag is pushed to those names (`scripts/ci/release-line.sh`),
+   including a 2.x maintenance release cut after 3.x exists.
+4. **Installers**: `scripts/install.{sh,ps1}` install `releases/latest` unless
+   given a version, so a 2.x user re-running the one-liner gets whatever is
+   "Latest". `VERSION=v2.x.y` (`THURBOX_VERSION` on Windows) pins 2.x. A Nix
+   flake input that follows `main` builds 3.x on its next `nix flake update`;
+   point it at `v2.x` or a 2.x tag.
+5. **State**: 3.x must not write anything a 2.x install reads, so both can sit on
+   one machine and 2.x keeps working. Give 3.x its own config directory, data
+   directory and tmux socket, and have it import 2.x state read-only. 2.x
+   already refuses rather than corrupts a database whose `min_reader_version` is
+   above its schema (`storage::schema::MIN_READER_VERSION`), but refusing is not
+   working: sharing `~/.local/share/thurbox/thurbox.db` would end 2.x the day 3.x
+   raised it. The same applies to the `thurbox` tmux socket and the agent hook
+   entries that call `thurbox-cli`.
+
+### Cutting the major, and 2.x after it
+
+`cog bump --auto` turns a `BREAKING CHANGE:` footer or a `feat!:` into a new
+major, and a squash merge can carry a branch commit's body onto `main`. So
+`cd.yml` runs `scripts/ci/release-line.sh` before tagging and **refuses any
+version whose major is not `RELEASE_LINE`** — on a push or a dispatch alike. If a
+breaking footer slips onto `main`, the Release run fails instead of tagging
+3.0.0; cut the 2.x it owed by dispatching with an explicit `version`.
+
+3.0.0 therefore takes two deliberate steps: a reviewed pull request that sets
+`RELEASE_LINE = 3` (and does what the list above asks), then a dispatch of the
+Release workflow with `version: 3.0.0`. Before that pull request lands, branch
+`v2.x` from the last 2.x commit; `cog.toml` already allows `v*.x`. A 2.x
+maintenance release is cut by dispatching `cd.yml` from `v2.x` with an explicit
+version: it is tagged and built, published without "Latest" while a 3.x tag is
+higher, and still pushed to the 2.x package names as the newest 2.x.
 
 ## The Nix flake is not a release channel
 

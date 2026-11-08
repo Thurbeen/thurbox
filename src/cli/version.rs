@@ -1,5 +1,6 @@
 //! `thurbox-cli version [--check]` — print the running version and, with
-//! `--check`, query GitHub for the latest release.
+//! `--check`, query GitHub for the newest release of this binary's major line
+//! (and report, never offer, a newer major).
 //!
 //! `--check` is gated behind the `[features] version_check` flag (on by
 //! default for 1.0, since thurbox now keeps itself current). When the flag is
@@ -74,61 +75,40 @@ pub fn run(args: VersionArgs, enabled: bool) -> CommandOutput {
     }
 
     match crate::update::version_check::refresh_cache() {
-        Ok((_, Some(status))) => {
-            // A new major is reported but never installed for you, so the two
-            // cases need different advice — pointing a 1.x user at the plain
-            // installer would hand them the 2.x line it is warning them about.
-            let latest = &status.latest;
-            let is_major = crate::update::version_check::crosses_major(current, latest);
-            let (label, upgrade, summary) = if is_major {
-                (
-                    "available (new major)",
-                    format!(
-                        "thurbox-cli update --force (v{latest} is a NEW MAJOR — \
-                         not installed automatically)"
-                    ),
-                    format!(
-                        "New major available: {current} → {latest}. Not installed \
-                         automatically — `thurbox-cli update --force` takes it."
-                    ),
-                )
-            } else {
-                (
-                    "available",
-                    "thurbox-cli update".to_string(),
-                    format!("Update available: {current} → {latest}"),
-                )
+        Ok((releases, status)) => {
+            let latest = releases.line.unwrap_or_else(|| current.to_string());
+            let next_major = releases.next_major;
+            let mut summary = match &status {
+                Some(_) => format!("Update available: {current} → {latest}"),
+                None => "Up to date — running the latest release.".to_string(),
             };
-            let human = kv(&[
-                ("current", current.to_string()),
-                ("latest", latest.clone()),
-                ("update", label.to_string()),
-                ("upgrade", upgrade),
-            ]);
+            if let Some(next) = &next_major {
+                summary.push_str(". ");
+                summary.push_str(&super::update::next_major_note(next));
+            }
+            let mut fields = vec![("current", current.to_string()), ("latest", latest.clone())];
+            if status.is_some() {
+                fields.push(("update", "available".to_string()));
+                fields.push(("upgrade", "thurbox-cli update".to_string()));
+            }
+            if let Some(next) = &next_major {
+                fields.push((
+                    "next major",
+                    format!("v{next} (not installed automatically)"),
+                ));
+            }
             CommandOutput::new(
                 json!({
                     "version": current,
                     "latest": latest,
-                    "update_available": true,
-                    "major_upgrade": is_major,
+                    "update_available": status.is_some(),
+                    "next_major": next_major,
                     "check_enabled": true,
                     "summary": summary,
                 }),
-                human,
+                format!("{}\n{summary}", kv(&fields)),
             )
         }
-        Ok((latest, None)) => CommandOutput::new(
-            json!({
-                "version": current,
-                "latest": latest,
-                "update_available": false,
-                "check_enabled": true,
-                "summary": "Up to date — running the latest release.",
-            }),
-            format!(
-                "thurbox {current} (latest: {latest})\nUp to date — running the latest release."
-            ),
-        ),
         Err(e) => CommandOutput::failed(
             json!({
                 "version": current,

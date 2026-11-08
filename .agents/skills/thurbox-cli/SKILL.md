@@ -54,12 +54,13 @@ suspend, GUI editors spawn detached; see the Editor Integration section of
 effective resolved config / records the interface change as seen; see `docs/CONFIG.md`), `extension`
 (alias `ext`: install/uninstall/reinstall/list/available/update/activate/
 deactivate/status — manage opt-in extensions; see below), `version`
-(prints the running version; `--check` queries GitHub's latest release —
+(prints the running version; `--check` queries GitHub's release list for the
+newest release on the binary's major line and reports a newer major —
 gated on `[features] version_check`, on by default for 1.0), `update`
-(downloads, verifies, and replaces the installed binaries with the latest
-release **within the current major** — a new major is reported, never installed,
-because 2.x replaced the whole interface; `--force` bypasses the
-up-to-date/dev-build/major guards; gated on
+(downloads, verifies, and replaces the installed binaries with the newest
+release **of the current major line** (`update::version_check::RELEASE_LINE`) —
+a new major is reported with a link to the migration notes, never installed;
+`--force` bypasses the up-to-date/dev-build guards, never the line; gated on
 `[features] auto_update`, on by default for 1.0; the TUI also runs this silently on
 startup when the flag is on), `notify`
 (diagnose OS desktop notifications: prints the detected delivery backend

@@ -1,13 +1,20 @@
 //! Update check: is a newer thurbox release available?
 //!
 //! This is the side-effect half of the version-deployment indicator (gated
-//! behind `[features] version_check`, on by default for 1.0 — see
+//! behind `[features] version_check`, on by default — see
 //! [`crate::session::settings::FeatureFlags`]). It surfaces two ways:
 //!
 //! - **TUI** — a small "⬆ vX.Y.Z available" badge in the header. The draw loop
 //!   only ever reads a cached result ([`read_cached_status`]); the network
 //!   refresh ([`refresh_cache`]) runs off the render path.
 //! - **CLI** — `thurbox-cli version --check` fetches fresh and reports.
+//!
+//! **A binary only ever updates within its own major line** ([`RELEASE_LINE`]).
+//! The check reads GitHub's release *list* and picks the newest release on the
+//! line, not `releases/latest`: once 3.x is "Latest", a 2.x maintenance release
+//! is published with `make_latest: false` and only the list shows it. A newer
+//! major is reported as [`Releases::next_major`] and never installed — see
+//! `docs/RELEASING.md`, "v2 and v3".
 //!
 //! The pure decision ([`decide_update`]) is built on the existing
 //! [`compare_versions`] / [`is_dev_version`] helpers, so dev builds
@@ -22,9 +29,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::extension_def::{compare_versions, is_dev_version, major_version};
 
-/// GitHub "latest release" endpoint for the thurbox repo (same repo + API as
-/// `scripts/install.sh`).
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Thurbeen/thurbox/releases/latest";
+/// The major version this source tree releases. Auto-update and the update
+/// check only ever consider releases on this line.
+///
+/// It is a constant rather than the running version's major so a development
+/// build (`0.0.0-dev`, no line of its own) still knows which line it belongs to
+/// for `thurbox-cli update --force`. `scripts/ci/check-release-line.sh` reads it
+/// and refuses to cut a release on any other major, which is what makes crossing
+/// a major a source change somebody reviews rather than a commit footer.
+pub const RELEASE_LINE: u64 = 2;
+
+/// Where a user on this line reads what moving to the next major involves.
+pub const MIGRATION_NOTES_URL: &str =
+    "https://github.com/Thurbeen/thurbox/blob/main/docs/RELEASING.md#v2-and-v3";
+
+/// GitHub's release list for the thurbox repo, newest first. One page: a line
+/// with no release among the hundred newest has nothing to offer anyway.
+pub(crate) const RELEASES_URL: &str =
+    "https://api.github.com/repos/Thurbeen/thurbox/releases?per_page=100";
 
 /// How long a cached check stays fresh. The TUI reads the cache on startup and
 /// only refreshes over the network once it is older than this, so a normal
@@ -45,10 +67,22 @@ pub struct UpdateStatus {
     pub latest: String,
 }
 
+/// What the release list offers this binary.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Releases {
+    /// The newest published release on [`RELEASE_LINE`] (no leading `v`).
+    pub line: Option<String>,
+    /// The newest published release on a later major, when there is one. It is
+    /// only ever reported, with [`MIGRATION_NOTES_URL`].
+    pub next_major: Option<String>,
+}
+
 /// On-disk cache of the last successful check.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CachedCheck {
-    /// Latest release tag observed (normalized, no leading `v`).
+    /// Newest release on the line (normalized, no leading `v`). Builds before
+    /// the line rule wrote GitHub's "Latest" here, which can be another major,
+    /// so a reader checks the major rather than trusting the field.
     latest: String,
     /// Unix seconds when the check ran.
     checked_at: u64,
@@ -81,29 +115,6 @@ pub fn decide_update(current: &str, latest: &str) -> Option<UpdateStatus> {
     } else {
         None
     }
-}
-
-/// Whether installing `latest` over `current` would cross a major version.
-///
-/// This is the 1.x → 2.x question, and it is deliberately asked separately from
-/// "is there a newer release". 2.x replaced the whole interface with the plugin
-/// kernel, so an update across that line is not a newer patch of what you are
-/// running — it is a different program wearing the same binary name. Auto-update
-/// therefore reports such a release but does not install it
-/// ([`crate::update::self_update::perform_update`]); the user crosses on purpose.
-///
-/// `false` whenever the question cannot be answered from the two strings — a dev
-/// build, or a version with no readable major — because the guard exists to stop
-/// a *known* boundary crossing, not to block every update it cannot parse (those
-/// are already refused upstream by [`decide_update`]).
-pub fn crosses_major(current: &str, latest: &str) -> bool {
-    if is_dev_version(current.trim()) {
-        return false;
-    }
-    let (Some(c), Some(l)) = (major_version(current), major_version(latest)) else {
-        return false;
-    };
-    l > c
 }
 
 /// The running binary's version (thin wrapper over the shared
@@ -162,39 +173,57 @@ pub fn cache_is_stale() -> bool {
 /// TUI draw loop.
 pub fn read_cached_status() -> Option<UpdateStatus> {
     let cached = read_cache()?;
+    if major_version(&cached.latest) != Some(RELEASE_LINE) {
+        return None;
+    }
     decide_update(current_version(), &cached.latest)
 }
 
-/// Parse the latest release tag out of the GitHub `releases/latest` JSON. Kept
-/// separate from the fetch so it can be unit-tested against a fixed body. Uses
-/// the same field (`tag_name`) the install script scrapes.
-fn parse_tag_name(body: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    let tag = value.get("tag_name")?.as_str()?.trim();
-    if tag.is_empty() {
-        None
-    } else {
-        Some(tag.trim_start_matches('v').to_string())
+/// Pick the newest release on the line, and the newest beyond it, out of the
+/// GitHub release-list JSON. Drafts and pre-releases are not releases a user
+/// is offered. Kept apart from the fetch so it is tested against fixed bodies.
+fn parse_releases(body: &str) -> Option<Releases> {
+    let list: Vec<serde_json::Value> = serde_json::from_str(body).ok()?;
+    let mut releases = Releases::default();
+    for release in &list {
+        let flag = |k: &str| release.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+        if flag("draft") || flag("prerelease") {
+            continue;
+        }
+        let Some(tag) = release.get("tag_name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let version = tag.trim().trim_start_matches('v');
+        let slot = match major_version(version) {
+            Some(m) if m == RELEASE_LINE => &mut releases.line,
+            Some(m) if m > RELEASE_LINE => &mut releases.next_major,
+            _ => continue,
+        };
+        let newer = slot
+            .as_deref()
+            .is_none_or(|have| compare_versions(version, have) == std::cmp::Ordering::Greater);
+        if newer {
+            *slot = Some(version.to_string());
+        }
     }
+    Some(releases)
 }
 
-/// Fetch the latest release tag from GitHub (network). Shells out to
-/// `curl`/`wget`; returns the normalized version (no leading `v`).
-pub fn fetch_latest_release() -> Result<String, String> {
-    let body = crate::agent::extension_config::http_get(LATEST_RELEASE_URL)?;
-    parse_tag_name(&body)
-        .ok_or_else(|| "could not parse latest release tag from GitHub response".to_string())
+/// Fetch the release list from `url` (network; `curl`/`wget`).
+pub fn fetch_releases(url: &str) -> Result<Releases, String> {
+    let body = crate::agent::extension_config::http_get(url)?;
+    parse_releases(&body).ok_or_else(|| "could not parse the GitHub release list".to_string())
 }
 
-/// Fetch the latest release over the network and refresh the on-disk cache.
-/// Returns the fetched latest version plus the update decision (so callers can
-/// report "up to date" with the actual latest version, not just `None`). The
-/// cache is updated regardless, so the TUI badge reflects the newest release.
-pub fn refresh_cache() -> Result<(String, Option<UpdateStatus>), String> {
-    let latest = fetch_latest_release()?;
-    write_cache(&latest);
-    let status = decide_update(current_version(), &latest);
-    Ok((latest, status))
+/// Fetch the release list over the network and refresh the on-disk cache.
+/// Returns what the list offers plus the update decision (so callers can report
+/// "up to date" with the actual newest release, not just `None`).
+pub fn refresh_cache() -> Result<(Releases, Option<UpdateStatus>), String> {
+    let releases = fetch_releases(RELEASES_URL)?;
+    let line = releases.line.clone().unwrap_or_default();
+    write_cache(&line);
+    let status = decide_update(current_version(), &line);
+    Ok((releases, status))
 }
 
 #[cfg(test)]
@@ -233,42 +262,63 @@ mod tests {
         assert!(decide_update("1.0.0", "   ").is_none());
     }
 
-    #[test]
-    fn crossing_into_a_new_major_is_recognised() {
-        assert!(crosses_major("1.8.7", "2.0.0"));
-        assert!(crosses_major("1.8.7", "v2.2.2"));
-        assert!(crosses_major("2.2.2", "3.0.0"));
+    fn release(tag: &str) -> serde_json::Value {
+        serde_json::json!({"tag_name": tag, "draft": false, "prerelease": false})
     }
 
     #[test]
-    fn staying_inside_a_major_is_not_a_crossing() {
-        assert!(!crosses_major("1.8.6", "1.8.7"));
-        assert!(!crosses_major("2.0.0", "2.2.2"));
-        // Same major, and going backwards, are both plainly not crossings.
-        assert!(!crosses_major("2.2.2", "2.2.2"));
-        assert!(!crosses_major("2.0.0", "1.8.7"));
+    fn the_line_and_the_next_major_are_picked_apart() {
+        let body = serde_json::json!([
+            release("v3.1.0"),
+            release("v2.84.2"),
+            release("v3.0.0"),
+            release("v2.84.1"),
+            release("v1.8.7"),
+        ])
+        .to_string();
+        let r = parse_releases(&body).unwrap();
+        assert_eq!(r.line.as_deref(), Some("2.84.2"));
+        assert_eq!(r.next_major.as_deref(), Some("3.1.0"));
     }
 
     #[test]
-    fn unreadable_or_dev_versions_are_not_crossings() {
-        // The guard stops a known boundary crossing; anything it cannot read is
-        // left to `decide_update`, which already refuses these.
-        assert!(!crosses_major("0.0.0-dev", "2.2.2"));
-        assert!(!crosses_major("1.8.7", "main"));
-        assert!(!crosses_major("", "2.0.0"));
+    fn the_newest_on_the_line_wins_whatever_the_list_order() {
+        // GitHub orders by creation date, so a 2.x hotfix of an older minor can
+        // come first; the version, not the position, decides.
+        let body = serde_json::json!([release("v2.9.1"), release("v2.10.0")]).to_string();
+        let r = parse_releases(&body).unwrap();
+        assert_eq!(r.line.as_deref(), Some("2.10.0"));
+        assert_eq!(r.next_major, None);
     }
 
     #[test]
-    fn parses_tag_name_from_release_json() {
-        let body = r#"{"tag_name":"v0.120.0","name":"v0.120.0","draft":false}"#;
-        assert_eq!(parse_tag_name(body).as_deref(), Some("0.120.0"));
+    fn drafts_and_prereleases_are_not_offered() {
+        let body = serde_json::json!([
+            {"tag_name": "v2.99.0", "draft": true, "prerelease": false},
+            {"tag_name": "v3.0.0-rc1", "draft": false, "prerelease": true},
+            release("v2.84.1"),
+        ])
+        .to_string();
+        let r = parse_releases(&body).unwrap();
+        assert_eq!(r.line.as_deref(), Some("2.84.1"));
+        assert_eq!(r.next_major, None);
     }
 
     #[test]
-    fn parse_tag_name_handles_missing_or_blank() {
-        assert!(parse_tag_name(r#"{"message":"Not Found"}"#).is_none());
-        assert!(parse_tag_name(r#"{"tag_name":""}"#).is_none());
-        assert!(parse_tag_name("not json").is_none());
+    fn a_body_that_is_not_a_list_is_an_error() {
+        assert!(parse_releases(r#"{"message":"Not Found"}"#).is_none());
+        assert!(parse_releases("not json").is_none());
+        assert_eq!(parse_releases("[]"), Some(Releases::default()));
+    }
+
+    #[test]
+    fn a_cache_from_before_the_line_rule_never_offers_another_major() {
+        // Builds before this one cached GitHub's "Latest" — a 3.x tag once v3
+        // ships. Reading it must not put a v3 badge on a 2.x install.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::TestPathGuard::new(tmp.path());
+        write_cache("v99.0.0");
+        assert!(read_cached_status().is_none());
     }
 
     #[test]

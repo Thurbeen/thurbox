@@ -40,8 +40,14 @@ Every push to `main` automatically triggers the release workflow:
      single push, so a website-only push landing on an unreleased `src/` commit
      still cuts the release it owes. A forced `workflow_dispatch` version
      **skips** the relevance gate — an explicit human cut is always honoured.
-3. **Automated Release** (if needed):
-   - Determines semantic version (feat→minor, fix/perf→patch, breaking→major)
+3. **Release line** (`check-release`'s `line` step, `scripts/ci/release-line.sh`):
+   the version's major must equal `RELEASE_LINE` in
+   `src/update/version_check.rs`, or the run fails before tagging — so a stray
+   `BREAKING CHANGE:` footer cannot cut the next major. The step also decides
+   `channels` (below). Rules: `docs/RELEASING.md`, "v2 and v3".
+4. **Automated Release** (if needed):
+   - Determines semantic version (feat→minor, fix/perf→patch, breaking→major,
+     which the release-line step then refuses)
    - Creates lightweight git tag: `v{version}` (e.g., v1.0.0)
    - Pushes tag to origin
    - Builds binaries for 5 targets (4 Unix `.tar.gz` + 1 Windows `.zip`;
@@ -83,7 +89,10 @@ Each release includes:
 ### Distribution Packages
 
 After the GitHub Release is published, `cd.yml` also updates the downstream
-package channels (each gated on its secret, skipped on forks):
+package channels (each gated on its secret, skipped on forks, and run only
+when `channels` is true: the version is the newest tag of
+`PACKAGE_CHANNELS_MAJOR`, `2`. These names carry 2.x for good; a new major
+ships under names of its own):
 
 - **Homebrew** (`publish-homebrew`): bumps `version`/`sha256` in
   `packaging/homebrew/Formula/thurbox.rb` (via `packaging/homebrew/bump-formula.py`,
@@ -178,11 +187,14 @@ Thurbox 1.0+ follows [Semantic Versioning](https://semver.org/):
 - **feat**: Minor version bump (1.x.0)
 - **fix, perf**: Patch version bump (1.0.x)
 - **docs, chore, ci, style, test**: No release (appear in next version)
-- **BREAKING CHANGE**: Major version bump (x.0.0)
+- **BREAKING CHANGE**: Major version bump (x.0.0) — **refused** by the
+  release-line step unless `RELEASE_LINE` already names that major
 
-A breaking change bumps the major version automatically via `cog bump --auto`
-(at 1.x+; on a `0.x` line cocogitto maps breaking to a *minor* bump instead, so
-the only way to cross into 1.0 was the explicit-version Release dispatch).
+`cog bump --auto` computes a major bump from a breaking change (at 1.x+; on a
+`0.x` line cocogitto maps breaking to a *minor* bump instead), but a new major
+is only ever cut deliberately: a reviewed PR raising `RELEASE_LINE`, then the
+explicit-version Release dispatch. Maintenance of the older line continues on a
+`v<N>.x` branch, dispatched with an explicit version.
 
 
 ## Installation Script
