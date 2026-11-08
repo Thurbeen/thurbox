@@ -214,7 +214,9 @@ jobs:
 
       - name: Is this release on the source's major line
         id: line
-        if: steps.parse.outputs.should_release == 'true'
+        # Only for a cut that will happen: a span the relevance gate already
+        # suppressed tags nothing, so there is nothing to refuse.
+        if: steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false'
         # `shell: bash` is what turns on pipefail; the default shell would let
         # `tee` swallow the script's refusal.
         shell: bash
