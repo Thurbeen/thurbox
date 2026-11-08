@@ -12,9 +12,9 @@ and the interface's own file list — which are chrome about thurbox itself
 rather than panes (see below). The file list was a pane and is deliberately no
 longer one: it is how a broken interface is recovered, so it must not be a file
 the interface loads. Written for someone about to change the kernel; if you
-want to *write* a plugin, read `docs/PLUGINS.md`.
+want to *write* a plugin, read `docs/thurbox/plugins.md`.
 
-Writing a plugin starts at `docs/PLUGINS.md` — **Start here**, which is four
+Writing a plugin starts at `docs/thurbox/plugins.md` — **Start here**, which is four
 `thurbox-cli plugin` commands and needs no terminal.
 
 Runs as `thurbox`. It **is** the interface now: `src/app/` and `src/ui/` were
@@ -26,7 +26,7 @@ The name matters more than it looks. The updater in an already-installed binary
 hard-fails on a known binary missing from a release archive and swallows the
 error, so an archive that dropped the name `thurbox` would end auto-update for
 every install already out there, silently and unfixably. Inheriting the name was
-the only safe direction — see `docs/RELEASING.md`.
+the only safe direction — see `docs/thurbox/releasing.md`.
 
 A profile with v1 history is asked once, before the interface takes the terminal
 (`kernel::consent`): it names every surface that is gone, says the database is
@@ -39,7 +39,7 @@ the mechanism working as designed:
 reviewer, the first consumer of `thurbox.diffs`) and
 [`thurbox-info-panel`](https://github.com/Thurbeen/thurbox-info-panel) (v1's info
 panel, drawn entirely from the snapshot). Each is its own repository, installed by
-clone — `docs/PLUGINS.md` has the commands and what the two demonstrate.
+clone — `docs/thurbox/plugins.md` has the commands and what the two demonstrate.
 
 ## Shape
 
@@ -84,8 +84,8 @@ appearance had nowhere else to live. `tests/kernel_mvp.rs` asserts the count.
 render context, and the kernel then reuses the tree it last returned while both
 stand — skipping the Lua call and the table→node conversion, which together were
 the largest cost in a frame. Undeclared panes are called on every frame they are
-drawn on, exactly as before. See `docs/PLUGINS.md` → Traps for what disqualifies
-a pane, and ADR-P16 in `docs/PERFORMANCE.md` for the measurements.
+drawn on, exactly as before. See `docs/thurbox/plugins.md` → Traps for what disqualifies
+a pane, and ADR-P16 in `docs/thurbox/performance.md` for the measurements.
 
 **2. Layout resolves before render.** Rects are computed first, then each plugin
 is called with its own. A plugin that does not know its width cannot wrap,
@@ -123,7 +123,7 @@ plugin cannot call something that waits, so the flow asks by leaving a key in
 deduplication, aged answers and a change generation. Its first user is
 `files.read`: resolving a session-rooted path and reading its text both run on a
 worker. A Lua call returns `nil` until ready and uses the cached answer during
-refresh; changed completions invalidate pure panes. See `docs/PLUGINS.md` for
+refresh; changed completions invalidate pure panes. See `docs/thurbox/plugins.md` for
 its bounds and error contract. The existing specialized stores keep their
 scheduling and lifecycle contracts; they are not migrated here.
 
@@ -484,6 +484,6 @@ Nothing measures it. v1's parity test went with v1, so no test compares the
 two: `tests/frames.rs` pins what v2 draws, but against itself rather than
 against what v1 drew. The behavioural gaps — the longer and more serious list —
 are not inventoried anywhere. What exists is prose: the consent gate names every
-surface that is gone (`kernel::consent`), and `docs/FEATURES.md` says per
+surface that is gone (`kernel::consent`), and `docs/thurbox/features.md` says per
 surface what replaced it. Of v1's three paneless surfaces, code review and the
 info panel are out-of-tree panes; the file viewer has no replacement.

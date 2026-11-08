@@ -55,7 +55,7 @@ home = "~/.config/thurbox/hooks"
 # background task (shells, subagents, Monitors, workflows, MCP tasks, …) and
 # session cron (CronCreate, ScheduleWakeup, /loop) still in flight, which is
 # what lets `session get` tell a finished session from one waiting on its own
-# background work (`activity`, docs/ORCHESTRATION.md → Activity). Shape read
+# background work (`activity`, docs/thurbox/orchestration.md → Activity). Shape read
 # from Claude Code 2.1.318.
 [[files]]
 path = "claude.json"

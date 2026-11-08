@@ -67,7 +67,7 @@ distro = "Ubuntu-22.04"       # optional (default = name) — the wsl.exe distro
 ```
 
 Only `name` (+ `destination` for ssh, `kind` for wsl) is required; every other
-field's default is in the comments above and in `docs/CONFIG.md`.
+field's default is in the comments above and in `docs/thurbox/config.md`.
 
 How it works: each tmux-protocol adapter — `TmuxBackend`, `PsmuxBackend`, and `RmuxBackend`,
 all `tmux_compat::Server<M>` — runs over a transport-neutral
@@ -104,7 +104,7 @@ peer adapters answering `TmuxCompatible` (a remote SSH host can also pin
 `multiplexer = "psmux"`); a WSL distro runs its selected multiplexer inside the distro (tmux by default).
 RMUX >= 0.10.0 is opt-in, tested locally on Linux; real SSH, WSL, macOS and
 native Windows integration remain unverified. Installation, selection, version
-evidence and protocol limits live in `docs/CONFIG.md` → *Multiplexer requirements
+evidence and protocol limits live in `docs/thurbox/config.md` → *Multiplexer requirements
 and RMUX setup*. The
 tmux control-mode protocol is identical over SSH and WSL, with
 **psmux divergences** (verified against psmux 3.3.6, each a body in the psmux
@@ -137,7 +137,7 @@ on a read that never returns, which is why discovery reported nothing and no
 pane ever attached on Windows (issue #1168 — the two faults are independent and
 either alone is the whole symptom). Each
 workaround has non-obvious quoting/tokenizing constraints — **read the psmux
-divergences subsection of ADR-13 in `docs/ARCHITECTURE.md` before touching this
+divergences subsection of ADR-13 in `docs/thurbox/architecture.md` before touching this
 path**; delivery is probed by `scripts/dev/e2e/windows-vm.sh test` (probes C, D).
 psmux has **no `remain-on-exit`**, so an agent window closes with its agent
 and reads `Missing` — which is also why `create_window` looks for the window
@@ -208,7 +208,7 @@ session), never on the loop, ADR-P12).
   `HostRegistry` (pure data, in `session/` so both `agent` and `git` can use
   it). A row's `backend_type` is read by one parser, `session::Route`
   (machine × optional multiplexer; grammar and legacy meaning in
-  `docs/CONFIG.md` → *Multiplexer choice and existing sessions*), and
+  `docs/thurbox/config.md` → *Multiplexer choice and existing sessions*), and
   resolved by one resolver, `HostRegistry::host_of` / `qualify`: the host
   comes back as configured, never with a platform read off the route.
   `session_ops::windows::backend_for` finds the backend a row's route names in
@@ -273,7 +273,7 @@ session), never on the loop, ADR-P12).
   and attaching all happen on `kernel::terminal`'s attach worker — the sharpest
   teeth in the loop, since a down host runs out its ssh timeout. So an
   unreachable or slow host never blocks a frame, and nothing is readied that
-  nothing is looking at (ADR-P7/ADR-P12, `docs/PERFORMANCE.md`).
+  nothing is looking at (ADR-P7/ADR-P12, `docs/thurbox/performance.md`).
 - **A connection already open is still not something the loop waits on**
   (ADR-P24). A link that has gone bad stays open and carries nothing, so no ssh
   timeout fires and a round trip made from the loop runs out `COMMAND_TIMEOUT`,
@@ -397,7 +397,7 @@ session), never on the loop, ADR-P12).
   and exec must run on the owning instance. Mirror launch plans can read the
   owner's telemetry attributes; request them on the owner for its complete
   saved account environment.
-  Docs: `docs/FEATURES.md` → Shared sessions.
+  Docs: `docs/thurbox/features.md` → Shared sessions.
 - **Agent config on the host**: agent args referencing thurbox-managed config
   by *local* path (the hooks extension's `--settings <config>/hooks/
   claude.json`) would kill the remote agent on launch ("Settings file not

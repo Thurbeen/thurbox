@@ -12,7 +12,7 @@
 //! ```
 //!
 //! Every phase is named after the thing the loop does, so a row here maps onto
-//! a line in `docs/PERFORMANCE.md` rather than onto a function name that may
+//! a line in `docs/thurbox/performance.md` rather than onto a function name that may
 //! move.
 
 use std::collections::{HashMap, HashSet};

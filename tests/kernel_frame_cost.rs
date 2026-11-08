@@ -1037,7 +1037,7 @@ fn render_at(host: &LuaHost, name: &str, elapsed: f64) -> String {
 #[test]
 fn the_animation_clock_does_not_re_render_a_pane_that_never_reads_it() {
     // The saving. Measured at +51% CPU under load before this held
-    // (docs/PERFORMANCE.md, ADR-P21): every pure pane —
+    // (docs/thurbox/performance.md, ADR-P21): every pure pane —
     // the centre pane and all three closed floats included — re-ran eight
     // times a second to move a spinner none of them draws.
     let (_dir, host) = clock_panes();

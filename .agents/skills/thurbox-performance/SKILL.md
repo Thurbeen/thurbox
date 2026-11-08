@@ -68,7 +68,7 @@ the surprise in that sentence and the biggest single cost in a frame — bigger
 than running the plugins' Lua. `kernel::convert` therefore reads each node's
 fields in **one `pairs` pass** rather than ~25 keyed lookups, and builds its
 error paths as a borrowed chain (`Crumb`) rather than a `String` per node; both
-are measured in `docs/PERFORMANCE.md`. So the loop settles
+are measured in `docs/thurbox/performance.md`. So the loop settles
 aggressively. `draw` compares each plugin's returned tree against the last one and
 only marks the frame changed when it differs; a float does the same against its own
 last tree and rect, and a **chrome band** compares the *cells* it just painted
@@ -247,4 +247,4 @@ handler time, `run` asks, render-time `store` writes and tree size into a
 `perf::plugin_report` ranks it with hints into the one `PluginReport` the HUD's
 `panes` table, the snapshot's `plugins` array and `thurbox-cli perf --plugins`
 read; `time_op` names the plugin whose call was longest. Full rationale:
-`docs/PERFORMANCE.md`.
+`docs/thurbox/performance.md`.

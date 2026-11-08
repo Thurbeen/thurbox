@@ -15,7 +15,7 @@ How thurbox stays responsive and light, and how to measure it. The focus areas
 are **input latency**, **runtime CPU / render cost**, **startup time**, and
 **memory / binary size**. Decisions below follow the mini-ADR format
 (**Choice**, **Why**, **Rejected alternatives**), matching
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+[`architecture.md`](architecture.md).
 
 The guiding principle is **measure first**: every optimization here is backed by
 a deterministic counter or a concrete code fact, and is proven by a test that
@@ -72,7 +72,7 @@ without clearing the screen.
 **One pass rides along after each paint**:
 `App::paint_outer_hyperlinks` re-emits the frame's links — the agent's OSC 8
 runs and the plain-text URLs alike — so the outer terminal can offer its own
-open-link gesture (see the Clickable URLs section of `docs/FEATURES.md`). It is
+open-link gesture (see the Clickable URLs section of `docs/thurbox/features.md`). It is
 bound to the *painted* frames — ratatui rewrites the cells, so the escapes must
 follow each draw — and is gated on `HyperlinkTable::is_empty()` **and** an empty
 scanned-URL list **before** it computes layout or extracts screen rows, so a
@@ -1646,7 +1646,7 @@ alongside the two directions and one test against the real bundled interface.
 is served by a metatable rather than being a key, and that metatable is sealed
 so one plugin cannot replace the `__index` behind every other pane's clock.
 Neither is load-bearing for any pane (nothing iterates or re-metatables a render
-context); both are stated for plugin authors in `docs/PLUGINS.md`, which owns
+context); both are stated for plugin authors in `docs/thurbox/plugins.md`, which owns
 that contract, along with the rule the mechanism creates: reading `ctx.elapsed`
 is what subscribes a tree to the animation tick, so read it where you animate and
 not at the top of a render that usually draws nothing moving.
@@ -1805,8 +1805,8 @@ is unmeasured".
   — every line written down the connection keeps such a place (with none, an
   answer is handed to the next waiter in line and every later response is
   delivered one command off; ADR-12's *Command synchronization* in
-  `docs/ARCHITECTURE.md`).
-  Since ADR-27 (`docs/ARCHITECTURE.md`) the same list also has tmux decide
+  `docs/thurbox/architecture.md`).
+  Since ADR-27 (`docs/thurbox/architecture.md`) the same list also has tmux decide
   whether this instance may size the pane at all — a `set-option -F` and two
   `if-shell`s, still one list, still sent. Its answer is five blocks whichever
   way the decision goes, and `send_command_detached` is told that count, since
@@ -2071,7 +2071,7 @@ the loop, which is most of it.
   strip's memo move only when the answer does.
 - **A history was read under one hold of its parser's lock**: 1.8ms per session
   at 1,000 rows, 16–18ms at 10,000 — a frame's worth of stall for that session's
-  reader and paint. It is now read [`CHUNK_ROWS`](../src/kernel/search.rs) (128)
+  reader and paint. It is now read [`CHUNK_ROWS`](../../src/kernel/search.rs) (128)
   at a time, letting go between chunks and finding its place again by the rows
   it read last if the terminal scrolled meanwhile (rows with text on them, found
   at exactly one place, or the read starts over); a re-run reads only what was
@@ -2234,7 +2234,7 @@ On the benchmark harness, same machine before and after, 50 sessions
 attached and idle went from 104 to 48.3 MiB for the whole host, under Herdr's
 57.4, with CPU and keystroke latency unchanged and the stale first view
 (#1242) gone: see the section revisiting it in
-[BENCHMARK-MULTIPLEXERS.md](BENCHMARK-MULTIPLEXERS.md).
+[benchmark-multiplexers.md](benchmark-multiplexers.md).
 
 **Costs**, measured on 20 sessions of 1,000 history rows at 200x50, release
 build:
@@ -2266,7 +2266,7 @@ which could not be read back is tried again rather than cached empty; and
 
 ## ADR-P28: A keystroke's echo is painted at once (2026-09-23)
 
-**Context**: the multiplexer benchmark (`docs/BENCHMARK-MULTIPLEXERS.md`) put a
+**Context**: the multiplexer benchmark (`docs/thurbox/benchmark-multiplexers.md`) put a
 keystroke's round trip at 25 ms (p95 48) and 42 ms while another session was
 busy, against 1–2 ms for tmux and Herdr, with the samples clustered rather than
 spread. Timestamping each hop of one keystroke inside the binary showed where the
@@ -2362,7 +2362,7 @@ structural:
   pacing one.
 
 **Result** in the multiplexer benchmark, before and after on that machine
-(`docs/BENCHMARK-MULTIPLEXERS.md`, the 2026-09-24 revisit): keystroke to echo
+(`docs/thurbox/benchmark-multiplexers.md`, the 2026-09-24 revisit): keystroke to echo
 24.7 → 3.4 ms idle (Herdr 2.1) and 42.1 → 1.6 ms with another session busy
 (Herdr 0.45); `session create` 95 → 36 ms (Herdr 52); attached CPU unchanged
 within the run-to-run spread. The kept frame
@@ -2547,7 +2547,7 @@ and session count, so both pin theirs.
 A third instrument answers a different question — how thurbox compares with
 the alternatives, not with itself: `just bench-multiplexers` runs raw tmux,
 Herdr and thurbox through the same scenarios with the same stand-in agent.
-Its results and method are in [BENCHMARK-MULTIPLEXERS.md](BENCHMARK-MULTIPLEXERS.md).
+Its results and method are in [benchmark-multiplexers.md](benchmark-multiplexers.md).
 
 **And on a busy machine, trust the counters over the CPU.** A percentage from
 `/proc` is a real measurement of a shared machine: taken while something else was

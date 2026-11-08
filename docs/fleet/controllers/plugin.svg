@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 480" role="img" aria-labelledby="title desc">
+<title id="title">Plugin controller: one object of a plugin kind through one pass</title>
+<desc id="desc">At fleet up each registered plugin's manifest is read once and the store serves its kinds. When an object of a plugin kind is due, the plugin's pure probes function is asked in up to three rounds; store probes are answered from the store and plugin probes through the plugin's bounded observe call. The pure reconcile function returns a plan; a pure gate admits it against the plugin's rights; the status carrying the effect intents is written by compare-and-swap under the lease; then creates, amends, patches, appends, declares and deletes run as manager verbs; then each effect runs through the plugin's bounded perform call and its receipt is written. A deleting object with a finalizer is reconciled until its plan removes the finalizer.</desc>
+<style>
+  svg { color-scheme:light dark }
+  @media (prefers-color-scheme: light) { svg &gt; rect{fill:#fff} svg &gt; g{fill:#182b3d} }
+  @media (prefers-color-scheme: dark) { svg &gt; rect{fill:#101820} svg &gt; g{fill:#e6edf3} [stroke="#7890a6"]{stroke:#71869a} [stroke="#405367"]{stroke:#a9bdd0} [fill="#405367"]{fill:#a9bdd0} [fill="#edf3f8"]{fill:#1d2a36} [fill="#f5f7fa"]{fill:#18232d} [fill="#fbf4e6"]{fill:#3b2d13} }
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#405367"/></marker></defs>
+<rect width="1040" height="480" rx="12" fill="#ffffff"/>
+<g font-family="system-ui,-apple-system,Segoe UI,sans-serif" fill="#182b3d">
+<text x="24" y="35" font-size="21" font-weight="700">One object of a plugin kind, through one pass</text>
+<text x="24" y="60" font-size="14">Pure calls (solid) compute; bounded calls (dashed) read or act. The manager owns every write.</text>
+<g stroke="#7890a6" stroke-width="1.5" fill="#edf3f8">
+<rect x="40" y="90" width="250" height="56" rx="8" fill="#f5f7fa" stroke-dasharray="5 4"/>
+<rect x="330" y="90" width="250" height="56" rx="8" fill="#f5f7fa"/>
+<rect x="40" y="190" width="190" height="56" rx="8"/>
+<rect x="280" y="190" width="180" height="56" rx="8"/>
+<rect x="520" y="176" width="480" height="84" rx="8" fill="#f5f7fa" stroke-dasharray="5 4"/>
+<rect x="40" y="296" width="190" height="72" rx="8"/>
+<rect x="270" y="296" width="200" height="72" rx="8"/>
+<rect x="510" y="296" width="240" height="72" rx="8" fill="#fbf4e6"/>
+<rect x="790" y="296" width="210" height="72" rx="8" fill="#fbf4e6"/>
+<rect x="40" y="404" width="430" height="56" rx="8" fill="#f5f7fa" stroke-dasharray="5 4"/>
+<rect x="510" y="404" width="240" height="56" rx="8" fill="#f5f7fa" stroke-dasharray="5 4"/>
+<rect x="790" y="404" width="210" height="56" rx="8" fill="#fbf4e6"/>
+</g>
+<g font-size="14" text-anchor="middle">
+<text x="165" y="113" font-weight="700">fleet up: manifest</text>
+<text x="165" y="133" font-size="12">once per plugin; unreadable refuses up</text>
+<text x="455" y="113" font-weight="700">store serves the kinds</text>
+<text x="455" y="133" font-size="12">spec validated by the plugin's schema</text>
+<text x="135" y="213" font-weight="700">object due</text>
+<text x="135" y="233" font-size="12">notBefore, generation, deleting</text>
+<text x="370" y="213" font-weight="700">probes (pure)</text>
+<text x="370" y="233" font-size="12">up to 3 rounds</text>
+<text x="760" y="199" font-weight="700">answers</text>
+<text x="760" y="219" font-size="12">object, list: from the store, no lease renewal</text>
+<text x="760" y="239" font-size="12">plugin probes: observe, bounded, Known or Unknown</text>
+<text x="135" y="321" font-weight="700">reconcile (pure)</text>
+<text x="135" y="341" font-size="12">returns a plan</text>
+<text x="370" y="321" font-weight="700">gate admits</text>
+<text x="370" y="341" font-size="12">refused whole,</text>
+<text x="370" y="357" font-size="12">or typed writes</text>
+<text x="630" y="321" font-weight="700">CAS write status</text>
+<text x="630" y="341" font-size="12">with each effect's intent,</text>
+<text x="630" y="357" font-size="12">under the lease</text>
+<text x="895" y="321" font-weight="700">verbs</text>
+<text x="895" y="341" font-size="12">creates, amends, patches,</text>
+<text x="895" y="357" font-size="12">appends, declares, deletes</text>
+<text x="255" y="427" font-weight="700">deleting with a finalizer</text>
+<text x="255" y="447" font-size="12">reconciled each pass until the plan says removeFinalizer</text>
+<text x="630" y="427" font-weight="700">perform (bounded)</text>
+<text x="630" y="447" font-size="12">once per key, never repeated</text>
+<text x="895" y="427" font-weight="700">receipt written</text>
+<text x="895" y="447" font-size="12">done, failed or unknown</text>
+</g>
+<g stroke="#405367" stroke-width="1.6" fill="none" marker-end="url(#arrow)">
+<path d="M290 118 H328"/>
+<path d="M230 218 H278"/>
+<path d="M460 218 H518"/>
+<path d="M600 262 C600 285 430 268 402 248" stroke-dasharray="3 3"/>
+<path d="M370 246 V272 C370 286 200 282 135 294"/>
+<path d="M230 332 H268"/>
+<path d="M470 332 H508"/>
+<path d="M750 332 H788"/>
+<path d="M895 368 C895 392 630 380 630 402"/>
+<path d="M750 432 H788"/>
+</g>
+<text x="470" y="286" font-size="12" fill="#405367">next round, while something is asked</text>
+</g>
+</svg>

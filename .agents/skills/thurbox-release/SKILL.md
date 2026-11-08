@@ -44,7 +44,7 @@ Every push to `main` automatically triggers the release workflow:
    the version's major must equal `RELEASE_LINE` in
    `src/update/version_check.rs`, or the run fails before tagging — so a stray
    `BREAKING CHANGE:` footer cannot cut the next major. The step also decides
-   `channels` (below). Rules: `docs/RELEASING.md`, "v2 and v3".
+   `channels` (below). Rules: `docs/thurbox/releasing.md`, "v2 and v3".
 4. **Automated Release** (if needed):
    - Determines semantic version (feat→minor, fix/perf→patch, breaking→major,
      which the release-line step then refuses)

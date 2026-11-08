@@ -218,16 +218,16 @@ pub fn session_to_json_assessed(
     // verbs describe a parked session exactly as they describe a running one.
     put("stopped", json!(hook.stopped));
     // Why a `failed` session failed — null otherwise. A stable, documented
-    // record (docs/ORCHESTRATION.md → Launch failures): `reason` (`setup` or
+    // record (docs/thurbox/orchestration.md → Launch failures): `reason` (`setup` or
     // `exited`), `exit_code`, `output` (the pane's last lines), `pane` and
     // `at`.
     put("launch_failure", json!(hook.launch_failure));
     // Whether the session can take input now, for every agent alike — the
-    // readiness contract (`Assessment::ready`, docs/ORCHESTRATION.md).
+    // readiness contract (`Assessment::ready`, docs/thurbox/orchestration.md).
     put("ready", json!(hook.ready()));
     // Whether the session is provably at rest, background work included — the
     // answer a consumer pausing idle sessions reads (`Assessment::activity`,
-    // docs/ORCHESTRATION.md → Activity). `unknown` is never idle.
+    // docs/thurbox/orchestration.md → Activity). `unknown` is never idle.
     put("activity", json!(hook.activity().as_str()));
     // `full`: the agent reports its own background work; `partial`: idleness
     // rests on its idle claim; null: nothing is wired to report.

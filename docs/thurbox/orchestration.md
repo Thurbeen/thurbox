@@ -1,8 +1,8 @@
 # Orchestration: the control-plane pattern
 
 Design rationale for running agent sessions across more than one repo.
-For the primitives themselves, see [FEATURES.md](FEATURES.md); for how
-they are built, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For the primitives themselves, see [features.md](features.md); for how
+they are built, see [architecture.md](architecture.md).
 
 The maintained implementation is **[Fleet](https://github.com/Thurbeen/fleet)**:
 a control plane you install with one command, whose lead session, Mission
@@ -357,7 +357,7 @@ Thurbox does not parse agent transcripts to infer state.
 
 These fields are supervision evidence. Sub-work a turn outlives is reported
 as the `background` state; see
-[AGENTS.md](AGENTS.md#background-sub-work).
+[agents.md](agents.md#background-sub-work).
 
 ### The status field is not a completion signal
 

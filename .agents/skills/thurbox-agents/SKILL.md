@@ -10,7 +10,7 @@ description: The declarative coding-agent registry (agents.toml / AgentDef): the
 ## Agent Definitions
 
 > Per-agent reference + the "adding a new built-in" checklist:
-> `docs/AGENTS.md` (each built-in's exact config, ID model, and status-hook
+> `docs/thurbox/agents.md` (each built-in's exact config, ID model, and status-hook
 > mechanism, plus every file to update when promoting a CLI to a built-in).
 
 The set of launchable coding agents is declared **as data** in
@@ -73,8 +73,8 @@ your own `[[agents]]` entry to support any CLI — no recompile.
 
 **Templates, ordering and setup (`vars`, `{session_args}`, `setup`).** What used
 to need a wrapper script as `command` is data now (full contract:
-`docs/CONFIG.md` → Templates, argument order and setup; worked example:
-`docs/AGENTS.md` → Replacing a launch wrapper):
+`docs/thurbox/config.md` → Templates, argument order and setup; worked example:
+`docs/thurbox/agents.md` → Replacing a launch wrapper):
 
 - `vars = { role = "coder" }` fills `{role}` in `command`, `args`, every
   `*_args` group, `env`, `setup` and the telemetry fields — once, on the fully
@@ -167,7 +167,7 @@ the base's patch once, and a full args replacement keeps the patch before its
 own args. Seed compatibility upgrades apply to standalone bases before merging.
 Direct remote TUI input needs the alias in the caller's registry to recognize
 its family; host-only aliases can be created but their family is not mirrored.
-See `docs/CONFIG.md` for the complete contract.
+See `docs/thurbox/config.md` for the complete contract.
 
 **Custom-agent status hooks (`hook_schema`).** thurbox stays agent-neutral, so
 the built-in **hooks** extension wires built-ins and their inherited variants.
@@ -200,7 +200,7 @@ path is `{env:CODEX_HOME:-~/.codex}/hooks.json`, resolved against the saved
 launch env by `adapt_def_for_launch` on every spawn, restart and launch plan —
 `provision_account_hooks_locally` here, `provision_agent_hooks_on_host` on a
 host — so an account reports status and binds the conversation restart resumes.
-See `docs/AGENTS.md` → Several Claude accounts for hooks and UI-skill setup.
+See `docs/thurbox/agents.md` → Several Claude accounts for hooks and UI-skill setup.
 
 **Agent-native telemetry (`telemetry_env` / `telemetry_args`).** Applied only
 while `settings.toml` `[telemetry]` is on (`session_ops::telemetry::apply`, at
@@ -234,7 +234,7 @@ Claude checks resolved symlink targets against working-directory scope. It
 grants only member checkout paths and preserves the permission mode; other
 agents emit no group unless configured. Existing built-in Claude definitions
 gain the group in memory when absent; explicit `[]` opts out. See
-`docs/AGENTS.md` → Multi-repo directory scope for restart and platform limits.
+`docs/thurbox/agents.md` → Multi-repo directory scope for restart and platform limits.
 
 `SessionInfo.cwd` keeps the **primary** repo (display / editor / git context); the
 workspace is a spawn-time process-cwd detail, derived idempotently on every launch

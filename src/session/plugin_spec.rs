@@ -15,7 +15,7 @@
 //! pin  = "v0.3.1"                 # omit to take the newest at install time
 //! ```
 //!
-//! TOML because `docs/CONFIG.md`'s own rule is that hand-edited registries are
+//! TOML because `docs/thurbox/config.md`'s own rule is that hand-edited registries are
 //! TOML, and because a malformed edit becomes a parse error naming its line
 //! rather than a nil three frames later. Pure data here in `session` — the
 //! dependency sink — so the kernel (which classifies a file's origin and resolves

@@ -275,8 +275,8 @@ src/ui/highlight.rs
 src/ui/syntax.rs
 src/session/task.rs
 tests/architecture_rules.rs
-docs/ARCHITECTURE.md
-docs/CONFIG.md
+docs/thurbox/architecture.md
+docs/thurbox/config.md
 README.md
 LICENSE
 "

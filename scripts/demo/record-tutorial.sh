@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate the onboarding tutorial's screenshots (media/tutorial/*.png).
 #
-# One PNG per step of docs/TUTORIAL.md, taken from the REAL TUI: this drives
+# One PNG per step of docs/thurbox/tutorial.md, taken from the REAL TUI: this drives
 # `Ctrl+N` through the creation flow the way a first-time reader does, so a step
 # that stops looking like its screenshot breaks this script rather than quietly
 # ageing the doc.

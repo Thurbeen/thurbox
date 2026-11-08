@@ -140,7 +140,7 @@ const FAILURE_HOLD: Duration = Duration::from_secs(5);
 ///
 /// Typing has to feel instant; watching a log scroll does not, and applying the
 /// 16ms floor to both meant a chatty agent drove ~60 paints a second to show 30
-/// lines. Measured across the interval (`docs/PERFORMANCE.md`, ADR-P17): 62fps
+/// lines. Measured across the interval (`docs/thurbox/performance.md`, ADR-P17): 62fps
 /// costs 21.2% of a core, 30fps costs 14.4% and 20fps 13.1% — most of the saving
 /// arrives by 30, and below it the scroll starts to look stepped rather than
 /// smooth. So: 30fps for output, and a keystroke still repaints on the next

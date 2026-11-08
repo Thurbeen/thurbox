@@ -42,7 +42,7 @@ if [ -z "$line" ]; then
 fi
 
 if [ "$major" != "$line" ]; then
-  echo "::error::refusing to release $version: the source is on the $line.x line (RELEASE_LINE in $source_file). A new major is never cut by a commit message; change RELEASE_LINE in a reviewed pull request and dispatch the Release workflow with the exact version. See docs/RELEASING.md, \"v2 and v3\"." >&2
+  echo "::error::refusing to release $version: the source is on the $line.x line (RELEASE_LINE in $source_file). A new major is never cut by a commit message; change RELEASE_LINE in a reviewed pull request and dispatch the Release workflow with the exact version. See docs/thurbox/releasing.md, \"v2 and v3\"." >&2
   exit 1
 fi
 
