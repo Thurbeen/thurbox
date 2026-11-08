@@ -1,11 +1,12 @@
 //! `thurbox-cli update` — download, verify, and replace the installed binaries
-//! with the latest GitHub release.
+//! with the newest GitHub release of this binary's major line.
 //!
 //! Gated behind the `[features] auto_update` flag (on by default for 1.0,
 //! since thurbox now keeps itself current — it makes a network call and
 //! replaces files on disk). When the flag is off, `update` prints a one-line
 //! hint on how to enable it instead of reaching the network. `--force`
-//! re-downloads and replaces even when up to date or on a development build.
+//! re-downloads and replaces even when up to date or on a development build,
+//! and still never installs another major.
 
 use clap::Args;
 use serde_json::json;
@@ -15,7 +16,8 @@ use super::output::{kv, CommandOutput};
 /// `update` subcommand arguments.
 #[derive(Args, Debug)]
 pub struct UpdateArgs {
-    /// Update even if up to date or on a dev build (re-download + replace).
+    /// Update even if up to date or on a dev build (re-download + replace). Never
+    /// installs another major version.
     #[arg(long)]
     pub force: bool,
 }
@@ -41,57 +43,56 @@ pub fn run(args: UpdateArgs, enabled: bool) -> CommandOutput {
     }
 
     match crate::update::self_update::perform_update(args.force) {
-        Ok(crate::update::self_update::UpdateOutcome::Updated { from, to }) => {
-            let human = kv(&[
+        Ok(crate::update::self_update::UpdateOutcome::Updated {
+            from,
+            to,
+            next_major,
+        }) => {
+            let mut fields = vec![
                 ("from", from.clone()),
                 ("to", to.clone()),
                 ("updated", "true".to_string()),
                 ("note", "restart thurbox to apply".to_string()),
-            ]);
+            ];
+            let mut summary = format!("Updated {from} → {to}. Restart thurbox to apply.");
+            if let Some(next) = &next_major {
+                let note = next_major_note(next);
+                fields.push(("next major", note.clone()));
+                summary.push(' ');
+                summary.push_str(&note);
+            }
             CommandOutput::new(
                 json!({
                     "version": from,
                     "latest": to,
+                    "next_major": next_major,
                     "updated": true,
                     "update_enabled": true,
-                    "summary": format!("Updated {from} → {to}. Restart thurbox to apply."),
+                    "summary": summary,
                 }),
-                human,
+                kv(&fields),
             )
         }
-        Ok(crate::update::self_update::UpdateOutcome::UpToDate { current, latest }) => {
+        Ok(crate::update::self_update::UpdateOutcome::UpToDate {
+            current,
+            latest,
+            next_major,
+        }) => {
+            let mut summary = "Up to date — running the latest release.".to_string();
+            if let Some(next) = &next_major {
+                summary.push(' ');
+                summary.push_str(&next_major_note(next));
+            }
             CommandOutput::new(
                 json!({
                     "version": current,
                     "latest": latest,
+                    "next_major": next_major,
                     "updated": false,
                     "update_enabled": true,
-                    "summary": "Up to date — running the latest release.",
+                    "summary": summary,
                 }),
-                format!(
-                "thurbox {current} (latest: {latest})\nUp to date — running the latest release."
-            ),
-            )
-        }
-        Ok(crate::update::self_update::UpdateOutcome::SkippedMajor { current, latest }) => {
-            // Reported, not installed: `latest` is a new major line. Name both
-            // ways across, and pin by the running version rather than deriving
-            // its major — the exact tag is what an installer wants anyway.
-            let note = format!(
-                "v{latest} is a new major release. thurbox does not cross a major \
-                 version automatically — run `thurbox-cli update --force` to take \
-                 it, or reinstall pinned to v{current} to stay where you are."
-            );
-            CommandOutput::new(
-                json!({
-                    "version": current,
-                    "latest": latest,
-                    "updated": false,
-                    "update_enabled": true,
-                    "major_upgrade": true,
-                    "summary": note,
-                }),
-                format!("thurbox {current} (latest: {latest})\n{note}"),
+                format!("thurbox {current} (latest: {latest})\n{summary}"),
             )
         }
         Ok(crate::update::self_update::UpdateOutcome::SkippedDevBuild { current }) => {
@@ -118,6 +119,17 @@ pub fn run(args: UpdateArgs, enabled: bool) -> CommandOutput {
             format!("update failed: {e}"),
         ),
     }
+}
+
+/// What a user on this line is told about a newer major: that it exists, that
+/// no update command takes it, and where moving is explained.
+pub(super) fn next_major_note(next: &str) -> String {
+    format!(
+        "v{next} is a new major release. thurbox never moves to another major \
+         by itself, and `update` will not install it; moving is a reinstall — \
+         see {}",
+        crate::update::version_check::MIGRATION_NOTES_URL
+    )
 }
 
 #[cfg(test)]

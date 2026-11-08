@@ -937,8 +937,8 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
             best-effort. The replaced binary takes effect on the <strong>next launch</strong>, so the
             TUI shows an &ldquo;Updated to vX.Y.Z &mdash; restart to apply&rdquo; status line.
             <code>thurbox-cli update</code>
-            performs the same update on demand (<code>--force</code> bypasses the up-to-date,
-            dev-build and major-version guards); dev builds (<code>0.0.0-dev</code>) never
+            performs the same update on demand (<code>--force</code> bypasses the up-to-date
+            and dev-build guards, never the major line); dev builds (<code>0.0.0-dev</code>) never
             auto-update.
             <code>version_check</code> and <code>auto_update</code> are independent &mdash; enable
             either or both.
@@ -946,12 +946,11 @@ min_interval_secs   = 5        # per-session floor between notifications</code><
           <div class="info-box">
             <p>
               <strong>Auto-update never crosses a major version.</strong>
-              A new major is reported &mdash; by the badge and by
+              A 2.x install only ever takes 2.x releases. A new major is reported by
               <code>thurbox-cli version --check</code>
-              &mdash; and never installed, because a silent crossing could hand you a different
-              program under the same binary name.
-              <code>thurbox-cli update --force</code>
-              is the deliberate way across.
+              and <code>thurbox-cli update</code> &mdash; and never installed, because a silent
+              crossing could hand you a different program under the same binary name. No flag
+              crosses, <code>--force</code> included: moving to a new major is a reinstall.
             </p>
           </div>
 

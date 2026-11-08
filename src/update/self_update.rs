@@ -12,11 +12,14 @@
 //! - **CLI** — `thurbox-cli update` does the same on demand (`--force` bypasses
 //!   the up-to-date / dev-build guards).
 //!
-//! It reuses the version-check plumbing ([`fetch_latest_release`],
-//! [`decide_update`], [`crosses_major`], [`current_version`]) so dev builds
-//! (`0.0.0-dev`) never auto-update and **a new major is never installed
-//! automatically** — 2.x replaced v1's whole interface, so crossing that line is
-//! the user's decision, not a background download's. It installs what
+//! It reuses the version-check plumbing ([`fetch_releases`],
+//! [`decide_update`], [`current_version`]) so dev builds (`0.0.0-dev`) never
+//! auto-update and **only a release on this binary's own major line is ever
+//! installed** ([`crate::update::version_check::RELEASE_LINE`]) — not by the
+//! startup update, not by `--force`. Each major so far has been a different
+//! program under the same binary name (2.x replaced v1's interface, 3.x
+//! replaces its engine), so crossing one is a reinstall the user chooses, never
+//! a background download. It installs what
 //! `scripts/install.sh` installs — the same release artifacts, the same
 //! target-triple mapping, the same digest verified before anything is replaced.
 //! It does not reach for the same *tools*: downloads go through the
@@ -38,9 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::update::version_check::{
-    crosses_major, current_version, decide_update, fetch_latest_release,
-};
+use crate::update::version_check::{current_version, decide_update, fetch_releases, RELEASES_URL};
 
 /// GitHub release-download base for the thurbox repo (same repo as
 /// `scripts/install.sh`); the per-release directory is `<base>/v{version}/`.
@@ -55,16 +56,24 @@ const BINARIES: [&str; 2] = ["thurbox", "thurbox-cli"];
 /// Outcome of an update attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateOutcome {
-    /// Already on the latest release; nothing was downloaded.
-    UpToDate { current: String, latest: String },
+    /// Already on the newest release of the line; nothing was downloaded.
+    /// `next_major` is a later major line's newest release, reported for the
+    /// user to take on purpose.
+    UpToDate {
+        current: String,
+        latest: String,
+        next_major: Option<String>,
+    },
     /// Binaries were replaced; the new version applies on the next launch.
-    Updated { from: String, to: String },
+    /// `next_major` as in [`UpdateOutcome::UpToDate`].
+    Updated {
+        from: String,
+        to: String,
+        next_major: Option<String>,
+    },
     /// A development build — skipped (its version doesn't order against tags).
     /// Only returned when `force` is false.
     SkippedDevBuild { current: String },
-    /// A newer release exists but it is a new **major**, so it was reported and
-    /// not installed. Only returned when `force` is false.
-    SkippedMajor { current: String, latest: String },
 }
 
 /// Map an OS/arch pair to the release artifact's Rust target triple. Mirrors
@@ -146,10 +155,16 @@ pub fn fetch_archive(version: &str, target: &str) -> Result<FetchedArchive, Stri
     }
     let scratch = ScratchDir::new()?;
     let checksums_path = scratch.path.join(checksums_name(version));
-    crate::agent::extension_config::http_get_to_file(&checksums_url(version), &checksums_path)?;
+    crate::agent::extension_config::http_get_to_file(
+        &checksums_url(RELEASE_BASE, version),
+        &checksums_path,
+    )?;
     let name = archive_name(version, target);
     let path = scratch.path.join(&name);
-    crate::agent::extension_config::http_get_to_file(&archive_url(version, target), &path)?;
+    crate::agent::extension_config::http_get_to_file(
+        &archive_url(RELEASE_BASE, version, target),
+        &path,
+    )?;
     let checksums =
         std::fs::read_to_string(&checksums_path).map_err(|e| format!("read checksums: {e}"))?;
     let expected = parse_checksum(&checksums, &name)
@@ -184,15 +199,12 @@ fn checksums_name(version: &str) -> String {
 }
 
 /// The download URL of whichever archive [`archive_name`] picks for `target`.
-fn archive_url(version: &str, target: &str) -> String {
-    format!(
-        "{RELEASE_BASE}/v{version}/{}",
-        archive_name(version, target)
-    )
+fn archive_url(base: &str, version: &str, target: &str) -> String {
+    format!("{base}/v{version}/{}", archive_name(version, target))
 }
 
-fn checksums_url(version: &str) -> String {
-    format!("{RELEASE_BASE}/v{version}/{}", checksums_name(version))
+fn checksums_url(base: &str, version: &str) -> String {
+    format!("{base}/v{version}/{}", checksums_name(version))
 }
 
 /// Pull the expected SHA256 digest for `artifact` out of a checksums file.
@@ -658,11 +670,13 @@ fn discard_staged(staged: &[(PathBuf, PathBuf, String)]) {
     }
 }
 
-/// Download, verify, extract, and install the latest release in place.
+/// Download, verify, extract, and install the newest release of this binary's
+/// major line in place.
 ///
-/// `force` bypasses the up-to-date, dev-build and major-version guards
-/// (re-downloads + replaces regardless). Staging may be recovered before
-/// verification; any failure before the swap leaves installed binaries untouched.
+/// `force` bypasses the up-to-date and dev-build guards (re-downloads + replaces
+/// regardless) but never the line: no flag installs another major. Staging may
+/// be recovered before verification; any failure before the swap leaves
+/// installed binaries untouched.
 pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
     let current = current_version().to_string();
 
@@ -671,17 +685,48 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
         return Ok(UpdateOutcome::SkippedDevBuild { current });
     }
 
-    let latest = fetch_latest_release()?;
-    if !force && decide_update(&current, &latest).is_none() {
-        return Ok(UpdateOutcome::UpToDate { current, latest });
-    }
+    let install_dir = std::env::current_exe()
+        .map_err(|e| format!("resolve current executable: {e}"))?
+        .parent()
+        .ok_or("running executable has no parent directory")?
+        .to_path_buf();
+    perform_update_from(&ReleaseFeed::github(), &current, &install_dir, force)
+}
 
-    // A new major is a different program under the same binary name — 2.x
-    // replaced v1's compiled-in interface with the plugin kernel — so it is
-    // reported and left for the user to take deliberately. Without this a 1.x
-    // install silently woke up running 2.x.
-    if !force && crosses_major(&current, &latest) {
-        return Ok(UpdateOutcome::SkippedMajor { current, latest });
+/// Where releases are listed and downloaded from: GitHub in production, a
+/// directory of fixture files under `file://` in the updater's own tests, which
+/// is how they drive the whole list-download-verify-install path offline.
+pub(crate) struct ReleaseFeed {
+    releases: String,
+    download: String,
+}
+
+impl ReleaseFeed {
+    fn github() -> Self {
+        Self {
+            releases: RELEASES_URL.to_string(),
+            download: RELEASE_BASE.to_string(),
+        }
+    }
+}
+
+/// [`perform_update`] against an explicit feed, running version and install
+/// directory.
+fn perform_update_from(
+    feed: &ReleaseFeed,
+    current: &str,
+    install_dir: &Path,
+    force: bool,
+) -> Result<UpdateOutcome, String> {
+    let current = current.to_string();
+    let releases = fetch_releases(&feed.releases)?;
+    let latest = releases.line.unwrap_or_else(|| current.clone());
+    if !force && decide_update(&current, &latest).is_none() {
+        return Ok(UpdateOutcome::UpToDate {
+            current,
+            latest,
+            next_major: releases.next_major,
+        });
     }
 
     let target = current_target()?;
@@ -689,10 +734,16 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
 
     // Download checksums + this platform's archive (a tarball, or Windows' zip).
     let checksums_path = scratch.path.join(checksums_name(&latest));
-    crate::agent::extension_config::http_get_to_file(&checksums_url(&latest), &checksums_path)?;
+    crate::agent::extension_config::http_get_to_file(
+        &checksums_url(&feed.download, &latest),
+        &checksums_path,
+    )?;
     let archive = archive_name(&latest, target);
     let archive_path = scratch.path.join(&archive);
-    crate::agent::extension_config::http_get_to_file(&archive_url(&latest, target), &archive_path)?;
+    crate::agent::extension_config::http_get_to_file(
+        &archive_url(&feed.download, &latest, target),
+        &archive_path,
+    )?;
 
     // Verify the download BEFORE touching anything installed.
     let checksums =
@@ -715,16 +766,12 @@ pub fn perform_update(force: bool) -> Result<UpdateOutcome, String> {
         ));
     }
 
-    let install_dir = std::env::current_exe()
-        .map_err(|e| format!("resolve current executable: {e}"))?
-        .parent()
-        .ok_or("running executable has no parent directory")?
-        .to_path_buf();
-    install_binaries(&extract_dir, &install_dir, std::env::consts::EXE_SUFFIX)?;
+    install_binaries(&extract_dir, install_dir, std::env::consts::EXE_SUFFIX)?;
 
     Ok(UpdateOutcome::Updated {
         from: current,
         to: latest,
+        next_major: releases.next_major,
     })
 }
 
@@ -1095,13 +1142,13 @@ mod tests {
             "thurbox-v0.114.0-x86_64-unknown-linux-musl.tar.gz"
         );
         assert_eq!(checksums_name("0.114.0"), "thurbox-v0.114.0-checksums.txt");
-        let url = archive_url("0.114.0", "aarch64-apple-darwin");
+        let url = archive_url(RELEASE_BASE, "0.114.0", "aarch64-apple-darwin");
         assert!(url.starts_with(RELEASE_BASE), "got: {url}");
         assert!(url.contains("/v0.114.0/"), "got: {url}");
         assert!(url.ends_with(".tar.gz"), "got: {url}");
-        assert!(checksums_url("0.114.0").contains("/v0.114.0/"));
+        assert!(checksums_url(RELEASE_BASE, "0.114.0").contains("/v0.114.0/"));
         // The URL follows the artifact, so Windows asks for the zip it is sent.
-        let url = archive_url("0.114.0", "x86_64-pc-windows-msvc");
+        let url = archive_url(RELEASE_BASE, "0.114.0", "x86_64-pc-windows-msvc");
         assert!(
             url.ends_with("/v0.114.0/thurbox-v0.114.0-x86_64-pc-windows-msvc.zip"),
             "got: {url}"
@@ -1424,6 +1471,149 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0",
         )
         .unwrap();
+    }
+
+    /// A release feed on disk, served to the real updater over `file://`.
+    ///
+    /// Each release gets the archive for this platform and a checksums file, the
+    /// same assets `cd.yml` publishes. The binaries inside are text files naming
+    /// their version, so what got installed is read straight off the disk.
+    #[cfg(unix)]
+    struct Feed {
+        root: tempfile::TempDir,
+        install: tempfile::TempDir,
+        _paths: crate::paths::TestPathGuard,
+    }
+
+    #[cfg(unix)]
+    impl Feed {
+        /// `releases` newest first, as GitHub lists them.
+        fn new(releases: &[&str], installed: &str) -> Self {
+            let root = tempfile::TempDir::new().unwrap();
+            let install = tempfile::TempDir::new().unwrap();
+            let paths = crate::paths::TestPathGuard::new(root.path().join("data"));
+            let target = current_target().unwrap();
+            for version in releases {
+                let dir = root.path().join("download").join(format!("v{version}"));
+                let stage = root.path().join("stage").join(version);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::create_dir_all(&stage).unwrap();
+                for name in BINARIES {
+                    std::fs::write(stage.join(name), version).unwrap();
+                }
+                let archive = archive_name(version, target);
+                let ok = Command::new("tar")
+                    .arg("czf")
+                    .arg(dir.join(&archive))
+                    .arg("-C")
+                    .arg(&stage)
+                    .args(BINARIES)
+                    .status()
+                    .unwrap()
+                    .success();
+                assert!(ok, "tar the fixture archive");
+                let digest = sha256_of(&dir.join(&archive)).unwrap();
+                std::fs::write(
+                    dir.join(checksums_name(version)),
+                    format!("{digest}  {archive}\n"),
+                )
+                .unwrap();
+            }
+            let list: Vec<_> = releases
+                .iter()
+                .map(|v| serde_json::json!({"tag_name": format!("v{v}"), "draft": false, "prerelease": false}))
+                .collect();
+            std::fs::write(
+                root.path().join("list.json"),
+                serde_json::to_string(&list).unwrap(),
+            )
+            .unwrap();
+            for name in BINARIES {
+                std::fs::write(install.path().join(name), installed).unwrap();
+            }
+            Self {
+                root,
+                install,
+                _paths: paths,
+            }
+        }
+
+        fn feed(&self) -> ReleaseFeed {
+            let url = |p: &str| format!("file://{}", self.root.path().join(p).display());
+            ReleaseFeed {
+                releases: url("list.json"),
+                download: url("download"),
+            }
+        }
+
+        fn update(&self, current: &str, force: bool) -> Result<UpdateOutcome, String> {
+            perform_update_from(&self.feed(), current, self.install.path(), force)
+        }
+
+        fn installed(&self) -> Vec<String> {
+            BINARIES
+                .iter()
+                .map(|n| std::fs::read_to_string(self.install.path().join(n)).unwrap())
+                .collect()
+        }
+    }
+
+    /// The v2 → v3 boundary: 3.0.0 is GitHub's "Latest", and nothing a 2.x
+    /// updater does — the silent startup update or `thurbox-cli update --force`
+    /// — may put it on disk.
+    #[cfg(unix)]
+    #[test]
+    fn a_v2_install_offered_v3_never_installs_it() {
+        let feed = Feed::new(&["3.0.0", "2.84.1"], "2.84.1");
+        for force in [false, true] {
+            let outcome = feed.update("2.84.1", force).unwrap();
+            // `--force` reinstalls the newest 2.x — here the running one.
+            if let UpdateOutcome::Updated { to, .. } = &outcome {
+                assert_eq!(to, "2.84.1", "force={force}");
+            }
+            assert_eq!(feed.installed(), ["2.84.1", "2.84.1"], "force={force}");
+        }
+        assert_eq!(
+            feed.update("2.84.1", false).unwrap(),
+            UpdateOutcome::UpToDate {
+                current: "2.84.1".into(),
+                latest: "2.84.1".into(),
+                next_major: Some("3.0.0".into()),
+            },
+            "3.0.0 is reported, not offered"
+        );
+    }
+
+    /// A 2.x maintenance release cut after 3.0.0 is not GitHub's "Latest"
+    /// (`cd.yml` publishes it with `make_latest: false`), and a 2.x install must
+    /// still find and take it.
+    #[cfg(unix)]
+    #[test]
+    fn a_v2_install_still_takes_a_2x_release_cut_after_v3() {
+        let feed = Feed::new(&["2.84.2", "3.0.0", "2.84.1"], "2.84.1");
+        let outcome = feed.update("2.84.1", false).unwrap();
+        assert_eq!(
+            outcome,
+            UpdateOutcome::Updated {
+                from: "2.84.1".into(),
+                to: "2.84.2".into(),
+                next_major: Some("3.0.0".into()),
+            },
+            "the 2.x is taken and 3.x still reported"
+        );
+        assert_eq!(feed.installed(), ["2.84.2", "2.84.2"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_v2_install_takes_a_newer_2x_release() {
+        let feed = Feed::new(&["2.84.2", "2.84.1"], "2.84.1");
+        let outcome = feed.update("2.84.1", false).unwrap();
+        assert!(
+            matches!(outcome, UpdateOutcome::Updated { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(feed.installed(), ["2.84.2", "2.84.2"]);
     }
 
     #[test]

@@ -3,9 +3,10 @@
 //! Both switches from `[features]` land here, and they are separate on purpose:
 //! `version_check` only *reports*, `auto_update` also *replaces binaries*. One
 //! makes a network call, the other makes a network call and writes to disk, so
-//! neither is inferred from the other. Neither crosses a **major** version: the
-//! badge shows a 2.x release to a 1.x install, and the installer half declines
-//! it ([`crate::update::version_check::crosses_major`]).
+//! neither is inferred from the other. Neither crosses a **major** version: both
+//! only consider releases on the binary's own line
+//! ([`crate::update::version_check::RELEASE_LINE`]), so the badge never offers
+//! 3.x to a 2.x install and the installer never fetches it.
 //!
 //! Sixth instance of the worker pattern, and the one with the longest tail: a
 //! release download can take a minute on a slow link. Nothing here is waited on —
@@ -19,6 +20,17 @@
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crate::session::settings::FeatureFlags;
+
+/// Note a newer major line in the log: it is never installed, only reported.
+fn log_next_major(next: Option<&str>) {
+    if let Some(next) = next {
+        tracing::info!(
+            "auto-update: v{next} is a new major line — not installed. \
+             Moving to it is a reinstall: {}",
+            crate::update::version_check::MIGRATION_NOTES_URL
+        );
+    }
+}
 
 /// What a worker came back with.
 enum Done {
@@ -71,19 +83,20 @@ impl Updates {
             let tx = updates.sender();
             std::thread::spawn(move || {
                 match crate::update::self_update::perform_update(false) {
-                    Ok(crate::update::self_update::UpdateOutcome::Updated { to, .. }) => {
+                    Ok(crate::update::self_update::UpdateOutcome::Updated {
+                        to,
+                        next_major,
+                        ..
+                    }) => {
+                        log_next_major(next_major.as_deref());
                         // The check's cache is refreshed with it, so the badge
                         // agrees with what is now installed on the next launch.
                         let _ = crate::update::version_check::refresh_cache();
                         let _ = tx.send(Done::Installed(to));
                     }
-                    Ok(crate::update::self_update::UpdateOutcome::SkippedMajor {
-                        current,
-                        latest,
-                    }) => tracing::info!(
-                        "auto-update: v{latest} is a new major over v{current} — reported, \
-                         not installed. `thurbox-cli update --force` takes it."
-                    ),
+                    Ok(crate::update::self_update::UpdateOutcome::UpToDate {
+                        next_major, ..
+                    }) => log_next_major(next_major.as_deref()),
                     // Up to date, or a dev build — `perform_update` skips those
                     // itself, which is why nothing is decided here.
                     Ok(_) => {}

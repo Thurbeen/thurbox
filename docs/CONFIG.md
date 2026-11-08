@@ -1188,22 +1188,25 @@ records the `Ctrl+Z` undo target only after the answer is yes.
 `version_check` (on by default for 1.0) enables the update check — it
 makes a network call. On launch the TUI reads a cached result
 (`~/.local/share/thurbox/version-check.json`) and, if it is older than
-24 h, fires a single best-effort background fetch of GitHub's latest
-release (`api.github.com/repos/Thurbeen/thurbox/releases/latest`, via
-`curl`/`wget` — no new dependency); a newer release shows a `⬆ vX.Y.Z
-available` badge next to the version in the header. The fetch never runs
+24 h, fires a single best-effort background fetch of GitHub's release list
+(`api.github.com/repos/Thurbeen/thurbox/releases?per_page=100`, via
+`curl`/`wget` — no new dependency) and takes the newest release **on the
+binary's own major line**; a newer one shows a `⬆ vX.Y.Z available` badge next
+to the version in the header. The fetch never runs
 on the render path and never blocks startup; failures are silent. Dev
 builds (`0.0.0-dev`) never show the badge. The same flag enables
 `thurbox-cli version --check`, which fetches fresh on demand and reports
-current vs. latest (`thurbox-cli version` with no flag always prints the
-current version, regardless of the flag).
+current vs. latest, plus any newer major with a link to the migration notes
+(`thurbox-cli version` with no flag always prints the current version,
+regardless of the flag).
 
 `auto_update` (on by default for 1.0) goes a step further than
 `version_check`: instead of just showing a badge, the TUI **silently
 updates itself** on startup. On every
 launch (it does **not** reuse the `version_check` badge's 24 h cache — sharing
 that gate let the badge keep the cache "fresh" and starve the updater) it
-fetches the latest release tag; if a newer release exists it downloads that
+fetches the release list; if a newer release exists on the same major line it
+downloads that
 release's tarball + checksums from GitHub Releases (`curl`/`wget`, no new
 dependency), verifies the SHA256 **in process** (`sha2`, so the check does not
 depend on the local `PATH` — shelling out to `sha256sum`/`shasum` made it
@@ -1217,8 +1220,8 @@ terminal and is best-effort (any failure is logged and startup continues on
 the current version). The replaced binary takes effect on the **next launch**
 (the running process keeps its open file), so the TUI shows an "Updated to
 vX.Y.Z — restart to apply" status line. `thurbox-cli update` performs the
-same update on demand (with `--force` to bypass the up-to-date, dev-build and
-major-version guards); dev builds (`0.0.0-dev`) never auto-update. The default install
+same update on demand (with `--force` to bypass the up-to-date and dev-build
+guards — never the major line); dev builds (`0.0.0-dev`) never auto-update. The default install
 location (`~/.local/bin`) is user-writable; a system-wide install in a
 root-owned directory will fail the replace (logged, non-fatal). `version_check`
 and `auto_update` are independent — enable either or both.
@@ -1243,21 +1246,26 @@ fails with an error saying it may be partial. Re-running `install.ps1` over a
 running thurbox works the same way: it renames each installed binary to `.<name>.old` rather
 than deleting it, and names the process to close when even that is refused.
 
-**Auto-update never crosses a major version.** A 1.x install is told that 2.x
-exists (the badge, and `thurbox-cli version --check`, both report it) and is
-never moved onto it; it keeps updating along 1.x. This is not conservatism about
-version numbers — 2.x replaced v1's compiled-in interface with the Lua plugin
-kernel, so a silent crossing would hand someone a different program under the
-same binary name. `thurbox-cli update --force` is the deliberate way across, and
-the first v2 launch of a profile with v1 history still asks before anything
-changes. The guard is `update::version_check::crosses_major`, and it applies to
-every future major too.
+**Auto-update never crosses a major version.** A 2.x install only ever looks at
+2.x releases: it keeps updating along 2.x — including a 2.x maintenance release
+cut after 3.0.0, which GitHub does not mark "Latest" and so is found in the
+release list rather than at `releases/latest` — and is never moved onto 3.x.
+`thurbox-cli version --check` and `thurbox-cli update` say a newer major exists
+and link the migration notes; the header badge only offers the same line. This
+is not conservatism about version numbers — 2.x replaced v1's compiled-in
+interface with the Lua plugin kernel, and 3.x replaces its engine, so a silent
+crossing would hand someone a different program under the same binary name.
+**No flag crosses**, `--force` included: moving to a new major is a reinstall
+(`scripts/install.sh` or the new major's package). The line is
+`update::version_check::RELEASE_LINE`, and the release workflow refuses to cut a
+version off it — `docs/RELEASING.md`, "v2 and v3".
 
 > Only a binary that *carries* the guard is protected by it. Releases up to
-> v1.8.7 predate it, so an existing 1.8.x install with `auto_update = true` will
-> still take 2.x on its next launch until a 1.x maintenance cut ships this
-> commit. Until then, `auto_update = false` in `settings.toml` is the reliable
-> hold — which is exactly what the v1→v2 consent gate writes when you decline.
+> v1.8.7 and v2.0.0–v2.2.2 predate any major guard, and v2.2.3 up to this
+> change follow `releases/latest`; what keeps each of them off 3.x is what a
+> 3.x release publishes, set out in `docs/RELEASING.md`, "v2 and v3". For a
+> 1.x install, `auto_update = false` in `settings.toml` is the reliable hold —
+> which is exactly what the v1→v2 consent gate writes when you decline.
 
 `auto_update = true` also keeps **installed extensions** in step with the
 binary. Extension versions are pinned to the binary's release tag, so an

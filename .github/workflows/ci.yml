@@ -44,6 +44,7 @@ jobs:
       install_ps: ${{ steps.filter.outputs.install_ps }}
       winget: ${{ steps.filter.outputs.winget }}
       pr_title: ${{ steps.filter.outputs.pr_title }}
+      release_line: ${{ steps.filter.outputs.release_line }}
       windows_e2e_probes: ${{ steps.filter.outputs.windows_e2e_probes }}
       nix: ${{ steps.filter.outputs.nix }}
     steps:
@@ -174,6 +175,14 @@ jobs:
               - 'scripts/ci/check-pr-title.bats'
               - 'cog.toml'
               - '.github/workflows/pr-title.yml'
+              - '.github/workflows/ci.yml'
+            # The constant the gate reads lives in the Rust source, so a change
+            # to it reruns the suite that pins how cd.yml interprets it.
+            release_line:
+              - 'scripts/ci/release-line.sh'
+              - 'scripts/ci/release-line.bats'
+              - 'src/update/version_check.rs'
+              - '.github/workflows/cd.yml'
               - '.github/workflows/ci.yml'
 
   # No `check` job. `clippy --all-targets -D warnings` below type-checks the
@@ -384,6 +393,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y bats
       - name: Test the PR title checker
         run: bats scripts/ci/check-pr-title.bats
+
+  release-line:
+    name: Release Line Gate
+    needs: changes
+    if: needs.changes.outputs.release_line == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install bats-core
+        run: sudo apt-get update && sudo apt-get install -y bats
+      - name: Test the release-line gate
+        run: bats scripts/ci/release-line.bats
 
   markdown-lint:
     name: Markdown Lint
@@ -668,6 +689,7 @@ jobs:
       - deny
       - docs
       - pr-title-checker
+      - release-line
       - markdown-lint
       - install-script
       - install-script-ps
