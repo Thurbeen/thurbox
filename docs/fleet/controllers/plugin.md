@@ -314,7 +314,7 @@ Exit code zero and one well-formed answer is an answer. Anything else is a
 failed call, which is never an answer of `unknown` and never a plan.
 
 ```text
-<program> <args...> manifest    stdin: {"protocol":1,"plugin":"github-issues"}
+<program> <args...> manifest    stdin: {"protocol":1,"plugin":"github-issues","call":"manifest","id":"m1"}
 <program> <args...> probes      stdin: one request per line
 <program> <args...> reconcile   stdin: one request per line
 <program> <args...> observe     stdin: one request per line
@@ -334,7 +334,7 @@ with `why`. The host treats an `ok: false` answer as a failed call;
 #### `manifest`
 
 ```json
-{"ok": true, "manifest": {
+{"id": "m1", "ok": true, "manifest": {
   "protocol": 1,
   "name": "github-issues",
   "kinds": [

@@ -44,7 +44,9 @@ Fleet config moves from one `[runtime]` to named `[runtimes.<name>]`, each a
 
 Agent hooks append to the file Fleet passes as `FLEET_SIGNAL_FILE` in `start`.
 Fleet reads it directly on a local host and through `exec` on a remote one, so
-a runtime needs nothing for signals.
+a local runtime needs nothing for signals. A remote runtime without `exec`
+gives Fleet no signals: what Fleet would learn from them, such as an idle
+agent or a delivered prompt, stays Unknown, and Unknown never concludes.
 
 `fleet runtime check -- <program>` is the conformance suite: two starts with
 one key leave one process, a stop of an absent process succeeds, an error

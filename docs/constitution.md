@@ -356,8 +356,10 @@ key, never by repeating the effect blindly. The contract tests named in
 #### F4. One writer per status field
 
 Each status field has one owner, declared in `crates/architecture.toml` and
-checked by `fleet-arch`. The inbox is the one typed exception, and every
-write to it is a typed store mutation.
+checked by `fleet-arch`. The exceptions are the shared writes
+[contracts.md](fleet/contracts.md) lists: the inbox, `status.answered`, a
+Conversation's `status.received` and a Listener's beat fields. Every write to
+one of them is a typed store mutation.
 
 ### Runtimes
 
