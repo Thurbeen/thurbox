@@ -44,10 +44,20 @@ pub fn split(text: &str, limit: usize) -> Vec<String> {
         } else {
             limit.max(1)
         };
+        // A piece cut from a long line inside a fence starts a chunk that
+        // reopens the fence, so it leaves room for that opening too.
+        let piece_room = if in_fence {
+            room.saturating_sub(FENCE.len() + 1).max(1)
+        } else {
+            room
+        };
         let count = line.chars().count();
         let pieces: Vec<String> = if count > room {
             let chars: Vec<char> = line.chars().collect();
-            chars.chunks(room).map(|c| c.iter().collect()).collect()
+            chars
+                .chunks(piece_room)
+                .map(|c| c.iter().collect())
+                .collect()
         } else {
             vec![line.to_string()]
         };
@@ -71,4 +81,33 @@ pub fn split(text: &str, limit: usize) -> Vec<String> {
     }
     let _ = flush(&mut current, &mut current_len, false);
     chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split;
+
+    /// A long line inside a fenced block is cut into pieces, and every chunk
+    /// after the first reopens the fence: each piece must leave room for the
+    /// reopening fence and the closing one, or the chunk exceeds the limit.
+    #[test]
+    fn a_long_line_in_a_fence_stays_within_the_limit() {
+        let limit = 20;
+        let text = format!("```\n{}\n```", "x".repeat(50));
+        let chunks = split(&text, limit);
+        assert!(chunks.len() > 1, "{chunks:?}");
+        for chunk in &chunks {
+            assert!(chunk.chars().count() <= limit, "{chunk:?} is over {limit}");
+            assert!(
+                chunk.starts_with("```") && chunk.ends_with("```"),
+                "{chunk:?}"
+            );
+        }
+        let body: String = chunks
+            .iter()
+            .flat_map(|c| c.lines())
+            .filter(|l| !l.starts_with("```"))
+            .collect();
+        assert_eq!(body, "x".repeat(50));
+    }
 }
