@@ -57,13 +57,13 @@ forge calls when the change has many notes, and one small bookkeeping write.
 
 | Responsibility | Source | Tests |
 | --- | --- | --- |
-| Pure decisions, numbering, cadence and retention | [ChangeRequestController](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/src/change_request.rs) | [Controller transitions](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/tests/change_request_controller.rs) |
-| Resource, status and port types | [ChangeRequest types](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/change_request.rs), [Forge port](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/forge.rs), [plans](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/plan.rs) | [Forge E2E](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_forge.rs) |
-| Sweep by kind, host-ordered deferral, fenced delete | [Manager](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-manager/src/lib.rs) | [Forge E2E](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_forge.rs), [Store contract](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-store/tests/store_contract.rs) |
-| Apply by URL, the derived name, ref verification | [Verbs](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-manager/src/verbs.rs) | [Forge E2E](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_forge.rs) |
-| GitHub through `gh`, GitLab through `glab`, Azure DevOps Services through `az`, Bitbucket Cloud through authenticated `curl`, the fake | [fleet-forge](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-forge/src/lib.rs): [github](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-forge/src/github.rs), [gitlab](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-forge/src/gitlab.rs), [azure-devops](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-forge/src/azure_devops.rs), [bitbucket-cloud](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-forge/src/bitbucket.rs), [fake](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-forge/src/fake.rs) | Truth tables in each adapter's unit tests; [Forge E2E](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_forge.rs) against the stub CLIs |
-| `[forge]` configuration | [CLI config](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/src/config.rs) | [Forge E2E](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_forge.rs) |
-| Crate edges and the field manager | [architecture.toml](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/architecture.toml) | [Architecture suite](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-arch/tests/architecture.rs) |
+| Pure decisions, numbering, cadence and retention | [ChangeRequestController](../../../crates/fleet-controllers/src/change_request.rs) | [Controller transitions](../../../crates/fleet-controllers/tests/change_request_controller.rs) |
+| Resource, status and port types | [ChangeRequest types](../../../crates/fleet-api/src/change_request.rs), [Forge port](../../../crates/fleet-api/src/forge.rs), [plans](../../../crates/fleet-api/src/plan.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
+| Sweep by kind, host-ordered deferral, fenced delete | [Manager](../../../crates/fleet-manager/src/lib.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs) |
+| Apply by URL, the derived name, ref verification | [Verbs](../../../crates/fleet-manager/src/verbs.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
+| GitHub through `gh`, GitLab through `glab`, Azure DevOps Services through `az`, Bitbucket Cloud through authenticated `curl`, the fake | [fleet-forge](../../../crates/fleet-forge/src/lib.rs): [github](../../../crates/fleet-forge/src/github.rs), [gitlab](../../../crates/fleet-forge/src/gitlab.rs), [azure-devops](../../../crates/fleet-forge/src/azure_devops.rs), [bitbucket-cloud](../../../crates/fleet-forge/src/bitbucket.rs), [fake](../../../crates/fleet-forge/src/fake.rs) | Truth tables in each adapter's unit tests; [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) against the stub CLIs |
+| `[forge]` configuration | [CLI config](../../../crates/fleet-cli/src/config.rs) | [Forge E2E](../../../crates/fleet-cli/tests/e2e_forge.rs) |
+| Crate edges and the field manager | [architecture.toml](../../../crates/architecture.toml) | [Architecture suite](../../../crates/fleet-arch/tests/architecture.rs) |
 
 The forge E2E suite drives the built CLI through apply by URL, idempotent
 re-apply, the aliasing refusal, bookkeeping-only polls, numbering of notes,
@@ -167,8 +167,8 @@ external JSON fields.
 
 ### Controller API
 
-Source: [ChangeRequestController](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/src/change_request.rs)
-and [plan types](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/plan.rs).
+Source: [ChangeRequestController](../../../crates/fleet-controllers/src/change_request.rs)
+and [plan types](../../../crates/fleet-api/src/plan.rs).
 
 ```rust
 pub struct ChangeRequestInput<'a> {
@@ -198,7 +198,7 @@ clock, disk, environment, configuration, forge or runtime itself.
 | Deleting | None. |
 
 `ChangeRequestObservations` holds two optional answers. `change`, a
-[`ChangeObservation`](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/forge.rs): `Known(Some)`
+[`ChangeObservation`](../../../crates/fleet-api/src/forge.rs): `Known(Some)`
 carries the adapter's complete, forge-neutral reading of the change;
 `Known(None)` says the forge answered that the change does not exist;
 `Unknown { kind, why, retryAfter }` carries the reason, as the
@@ -219,7 +219,7 @@ object and touches nothing else.
 
 ### Forge port
 
-Source: [`fleet_api::forge::Forge`](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/forge.rs). Every answer is Known or Unknown;
+Source: [`fleet_api::forge::Forge`](../../../crates/fleet-api/src/forge.rs). Every answer is Known or Unknown;
 a refused write is `Known(EffectOutcome::Failed { why })`. A host is always
 a forge hostname, never a runtime host, and every call runs on the machine
 the manager runs on, with that machine's CLI logins.
@@ -240,7 +240,7 @@ answers Known only when it read everything the forge holds for the change;
 if the bound runs out first it answers Unknown with `Incomplete`. The
 controller never numbers a partial read.
 
-Adapters live in the [`fleet-forge`](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-forge/src/lib.rs)
+Adapters live in the [`fleet-forge`](../../../crates/fleet-forge/src/lib.rs)
 crate, which depends on `fleet-api` and `fleet-exec`. The crate also holds
 `ForgeHosts`, the adapters of a configuration's `[forge.hosts]`, which answers
 the port by the host a URL or a ref names. Each observation spends at most
@@ -356,7 +356,7 @@ before and after collecting evidence.
 
 ### Manager execution protocol
 
-Source: [Manager](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-manager/src/lib.rs).
+Source: [Manager](../../../crates/fleet-manager/src/lib.rs).
 
 1. For each due ChangeRequest, renew the lease. When `status.ref` is absent,
    parse `spec.url` through the Forge port and hand the answer in as

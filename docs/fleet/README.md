@@ -1,12 +1,9 @@
 # Fleet
 
 Fleet is the engine behind thurbox: it persists Tasks and the other resource
-kinds and drives their controllers, one agent session per Task. These pages
-were imported from [`Thurbeen/fleet`](https://github.com/Thurbeen/fleet) at
-commit
-[`961da39`](https://github.com/Thurbeen/fleet/tree/961da39903338f3fb0493ec5a34aa8417cb98d89)
-(2026-11-06), ahead of the crates, which come here later with their
-history. Until then, links to Fleet source are pinned to that commit. How
+kinds and drives their controllers, one agent session per Task. Its crates are
+`crates/fleet-*` in this repository, imported from `Thurbeen/fleet` with their
+history, and `crates/architecture.toml` is their dependency graph. How
 Fleet fits between thurbox and the runtimes is [the overview](../README.md).
 
 | Page | Answers |

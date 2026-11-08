@@ -124,7 +124,7 @@ over the shared `tmux_compat` server, only the factory `wiring` names one, and
 it depends on no other crate of the repository — the settings and data
 directory it needs are injected (`MuxSettings`, `HostsConfig`).
 `crates/architecture.toml` declares which crate may depend on which, and
-`crates/thurbox/tests/crate_graph.rs` holds `cargo metadata` to it.
+Fleet's `fleet-arch` (its `architecture` test) holds the workspace to it.
 
 Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
 entry naming what it may reference in *any* form (`use`, `pub use`, brace groups,

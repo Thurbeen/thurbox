@@ -4,7 +4,7 @@ A Session is one running agent. It is the unit the runtime port starts,
 observes, briefs, sends to and releases. A Session is not a stored kind: a
 Task names its Session in `status.session` and reports what the runtime
 proved about it in `status.sessionState`. The source is
-[fleet-api's session module](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/session.rs); the
+[fleet-api's session module](../../../crates/fleet-api/src/session.rs); the
 guarantees are in [the runtime contract](../contracts.md#runtime-contract).
 
 ```text

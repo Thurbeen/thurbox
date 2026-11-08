@@ -1,0 +1,10 @@
+version = 1
+
+[data]
+dir = "data"
+
+[runtime]
+kind = "thurbox"
+cli = "thurbox-cli"
+callTimeoutMs = 10000
+keyPrefix = "fleet"

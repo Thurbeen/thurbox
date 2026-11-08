@@ -1,0 +1,3 @@
+[
+  {"apiVersion":"fleet/v1alpha1","kind":"ChangeRequest","metadata":{},"spec":{"url":"https://forge.example/acme/widgets/pull/7","pollMs":60000}}
+]

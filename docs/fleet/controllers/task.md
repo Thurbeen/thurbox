@@ -41,7 +41,7 @@ retry deadline or run a background watch; the caller invokes it again.
 `fleet up` is the resident alternative: it retains the manager lease and
 periodically invokes bounded sweeps for all due Tasks, independently of agent
 activity. Its default VEGA session is an ordinary Task from the bundled
-starter. See [bootstrap and recovery](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/README.md#build-and-try-it).
+starter. See [bootstrap and recovery](../configuration.md).
 `NeedsAttention` is a condition, not a phase: delivery reads and releases can
 recover while attention is raised. See the [state machine](#task-state-machine)
 for the distinction between bounded sends and continuing recovery attempts.
@@ -50,14 +50,14 @@ for the distinction between bounded sends and continuing recovery attempts.
 
 | Responsibility | Source | Tests |
 | --- | --- | --- |
-| Pure decisions and requested probes | [TaskController](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/src/task.rs) | [Controller transitions](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/tests/task_controller.rs) |
-| Resource and effect types | [Task types](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/task.rs), [plans](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/plan.rs) | [CLI lifecycle](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
-| Lease, status, intent and receipt ordering | [Manager](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-manager/src/lib.rs) | [Store contract](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-store/tests/store_contract.rs), [CLI lifecycle](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
-| Session definition and observed state | [Session](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/session.rs), [TaskController](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/src/task.rs) | [Session unit tests](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/session.rs), [Controller transitions](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/tests/task_controller.rs), [CLI lifecycle](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
-| Session identity and delivery journal | [Thurbox runtime](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-runtime/src/thurbox.rs) | [Runtime E2E](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_runtime.rs) |
-| Workspace trust before the brief | [Runtime port](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/runtime.rs), [Thurbox runtime](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-runtime/src/thurbox.rs) | [Workspace trust E2E](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_workspace_trust.rs), [Controller transitions](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/tests/task_controller.rs) |
-| Pausing an idle session and resuming it | [TaskController](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/src/task.rs), [runtime port](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/runtime.rs), [Thurbox runtime](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-runtime/src/thurbox.rs) | [Pause E2E](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_task_pause.rs), [Controller transitions](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/tests/task_controller.rs) |
-| Inbox: `fleet send`, typed mutations and delivery | [Inbox types](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/inbox.rs), [verbs](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-manager/src/verbs.rs), [store](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-store/src/lib.rs) | [Inbox E2E](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/tests/e2e_inbox.rs), [Store contract](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-store/tests/store_contract.rs), [Controller transitions](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/tests/task_controller.rs) |
+| Pure decisions and requested probes | [TaskController](../../../crates/fleet-controllers/src/task.rs) | [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
+| Resource and effect types | [Task types](../../../crates/fleet-api/src/task.rs), [plans](../../../crates/fleet-api/src/plan.rs) | [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
+| Lease, status, intent and receipt ordering | [Manager](../../../crates/fleet-manager/src/lib.rs) | [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
+| Session definition and observed state | [Session](../../../crates/fleet-api/src/session.rs), [TaskController](../../../crates/fleet-controllers/src/task.rs) | [Session unit tests](../../../crates/fleet-api/src/session.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs), [CLI lifecycle](../../../crates/fleet-cli/tests/e2e_task_lifecycle.rs) |
+| Session identity and delivery journal | [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Runtime E2E](../../../crates/fleet-cli/tests/e2e_runtime.rs) |
+| Workspace trust before the brief | [Runtime port](../../../crates/fleet-api/src/runtime.rs), [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Workspace trust E2E](../../../crates/fleet-cli/tests/e2e_workspace_trust.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
+| Pausing an idle session and resuming it | [TaskController](../../../crates/fleet-controllers/src/task.rs), [runtime port](../../../crates/fleet-api/src/runtime.rs), [Thurbox runtime](../../../crates/fleet-runtime/src/thurbox.rs) | [Pause E2E](../../../crates/fleet-cli/tests/e2e_task_pause.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
+| Inbox: `fleet send`, typed mutations and delivery | [Inbox types](../../../crates/fleet-api/src/inbox.rs), [verbs](../../../crates/fleet-manager/src/verbs.rs), [store](../../../crates/fleet-store/src/lib.rs) | [Inbox E2E](../../../crates/fleet-cli/tests/e2e_inbox.rs), [Store contract](../../../crates/fleet-store/tests/store_contract.rs), [Controller transitions](../../../crates/fleet-controllers/tests/task_controller.rs) |
 
 The lifecycle E2E suite drives the built CLI from apply to result and release,
 including crashes, failed attempts and Unknown observations. The runtime E2E
@@ -326,7 +326,7 @@ With an older thurbox, activity is Unknown, so Fleet never pauses. See
 
 ### Deletion protocol
 
-The [store](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-store/src/lib.rs) adds `fleet.dev/release` at
+The [store](../../../crates/fleet-store/src/lib.rs) adds `fleet.dev/release` at
 Task creation. `fleet delete` marks the Task, then reconciliation takes over.
 No session ever spawned means nothing needs releasing. If a spawn was
 interrupted before its receipt, the controller first looks up its key so it
@@ -360,8 +360,8 @@ JSON fields.
 
 ### Controller API
 
-Source: [TaskController](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/src/task.rs) and
-[plan types](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/plan.rs).
+Source: [TaskController](../../../crates/fleet-controllers/src/task.rs) and
+[plan types](../../../crates/fleet-api/src/plan.rs).
 
 ```rust
 pub struct TaskInput<'a> {
@@ -418,7 +418,7 @@ apart from its activity.
 `workspace`. The manager
 answers `Activity` with Unknown on a runtime that cannot pause.
 Each is optional: `None` means no answer was supplied, not a negative answer.
-Each supplied answer is an [Observation](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/observation.rs):
+Each supplied answer is an [Observation](../../../crates/fleet-api/src/observation.rs):
 
 | Value | Meaning | Safe inference |
 | --- | --- | --- |
@@ -460,7 +460,7 @@ reusing a key does not inherit readiness or at-rest proof for the recorded id.
 
 ### Manager execution protocol
 
-Source: [Manager](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-manager/src/lib.rs).
+Source: [Manager](../../../crates/fleet-manager/src/lib.rs).
 
 1. Acquire the manager lease and list Tasks. A list that is Unknown is not
    treated as an empty list.
@@ -502,8 +502,8 @@ external action already started. Recovery relies on stable runtime keys.
 
 ### Runtime port
 
-Source: [Runtime](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/runtime.rs). Every call acts on
-one Session, defined in [session](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/session.rs):
+Source: [Runtime](../../../crates/fleet-api/src/runtime.rs). Every call acts on
+one Session, defined in [session](../../../crates/fleet-api/src/session.rs):
 the agent a Task owns, named by `SessionRef`. All session operations
 return `Observation<T>`; a refused effect is
 `Known(EffectOutcome::Failed { why })`, distinct from an Unknown outcome.
@@ -578,7 +578,7 @@ pure code.
 
 #### Workspace port
 
-Source: [Workspaces](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/workspace.rs). The manager
+Source: [Workspaces](../../../crates/fleet-api/src/workspace.rs). The manager
 holds this port only when the config has a `[workspaces]` section. Without
 it, `TaskInput.materialize` is false and the controller plans no workspace
 effect. The [workspace contract](../contracts.md#workspace-contract)
@@ -613,8 +613,8 @@ interface and what it proves. The fake adapter answers from each session's
 
 ### Store port and write ownership
 
-Source: [Store](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/store.rs) and
-[worker verbs](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-manager/src/verbs.rs).
+Source: [Store](../../../crates/fleet-api/src/store.rs) and
+[worker verbs](../../../crates/fleet-manager/src/verbs.rs).
 
 | Writer | May change | Required fencing |
 | --- | --- | --- |

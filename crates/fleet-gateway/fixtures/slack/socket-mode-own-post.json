@@ -1,0 +1,29 @@
+{
+  "envelope_id": "e0123abcd-0001-4000-8000-000000000003",
+  "type": "events_api",
+  "accepts_response_payload": false,
+  "payload": {
+    "token": "verification-token-not-a-secret",
+    "team_id": "T0123ABCD",
+    "api_app_id": "A0123ABCD",
+    "event": {
+      "type": "message",
+      "channel": "C0123ABCD",
+      "user": "U0BOT0001",
+      "bot_id": "B0FLEET001",
+      "app_id": "A0123ABCD",
+      "text": "On it. <@U0BOT0001> is me, not a mention.",
+      "ts": "1730000400.000100",
+      "thread_ts": "1730000300.000200",
+      "event_ts": "1730000400.000100",
+      "channel_type": "channel",
+      "metadata": {
+        "event_type": "fleet_post",
+        "event_payload": {"key": "task/conv-3f9a1c0d2b7e-1/01JBX0000000000000000000AB/gateway/comment/c1"}
+      }
+    },
+    "type": "event_callback",
+    "event_id": "Ev0123ABCD03",
+    "event_time": 1730000400
+  }
+}

@@ -131,7 +131,7 @@ do not find VEGA's skills.
 
 The bundled content is MIT licensed at exact source commit
 `3c4798dbdb33672576958cf8f1849c16e519d95d`. The build verifies every allowlisted
-asset against [the provenance hashes](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/bundle/vega/provenance.json)
+asset against [the provenance hashes](../../crates/fleet-cli/bundle/vega/provenance.json)
 and embeds the assets, source manifest and license in the executable. Runtime
 init/update never fetches a branch or downloads content.
 
@@ -311,7 +311,7 @@ kind = "fake"
 dir = "fake-host"
 ```
 
-This is the executable [example config](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/examples/fleet.toml). Fake
+This is the executable [example config](../../examples/fleet/fleet.toml). Fake
 sessions run no agent, although explicitly configured external EnvProvider
 commands still execute locally. Do not treat the fake runtime as a sandbox
 for untrusted helpers.
@@ -403,7 +403,7 @@ precondition.
 `fleet init` writes the three `readyPolicies` tables above into
 the generated config and no `draftPolicy`: a Task is marked ready only once
 it, or the operator's config, names a policy. The shipped
-[example config](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/examples/fleet.toml) adds a fake host,
+[example config](../../examples/fleet/fleet.toml) adds a fake host,
 `forge.example`, with `draftPolicy = "checks"` and the same three policies,
 so a declared draft can be taken out of draft offline.
 

@@ -1,0 +1,44 @@
+{
+  "dispatch": {
+    "op": 0,
+    "t": "MESSAGE_CREATE",
+    "s": 42,
+    "d": {
+      "id": "1333333333333333333",
+      "channel_id": "1300000000000000000",
+      "guild_id": "1200000000000000000",
+      "type": 0,
+      "author": {
+        "id": "1210000000000000000",
+        "username": "fleet",
+        "bot": true,
+        "discriminator": "0"
+      },
+      "content": "Looking into it. <@1210000000000000000>",
+      "timestamp": "2024-10-27T03:35:00.000000+00:00",
+      "edited_timestamp": null,
+      "tts": false,
+      "mention_everyone": false,
+      "mentions": [
+        {
+          "id": "1210000000000000000",
+          "username": "fleet",
+          "bot": true,
+          "discriminator": "0"
+        }
+      ],
+      "mention_roles": [],
+      "attachments": [],
+      "embeds": [],
+      "pinned": false,
+      "flags": 0,
+      "member": {
+        "roles": [],
+        "joined_at": "2024-01-01T00:00:00.000000+00:00"
+      },
+      "channel_type": 11,
+      "nonce": "0123456789abcdef012345678"
+    }
+  },
+  "parentId": "1230000000000000000"
+}

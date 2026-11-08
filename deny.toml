@@ -36,6 +36,8 @@ allow = [
 # Dependency bans
 multiple-versions = "warn"
 wildcards = "warn"
+# Workspace path dependencies carry no version; no member is published.
+allow-wildcard-paths = true
 highlight = "all"
 workspace-default-features = "allow"
 external-default-features = "allow"
@@ -55,3 +57,11 @@ allow-git = []
 github = []
 gitlab = []
 bitbucket = []
+
+# Fleet: jsonschema -> referencing -> fluent-uri uses this MIT No Attribution
+# crate. Its bundled LICENSE grants unrestricted use without an attribution
+# condition.
+[[licenses.exceptions]]
+name = "borrow-or-share"
+version = "=0.2.4"
+allow = ["MIT-0"]

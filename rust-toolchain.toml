@@ -1,12 +1,8 @@
 [toolchain]
-# Use stable Rust by default
-channel = "stable"
-
-# Specify components
+# One pinned toolchain for every crate: Fleet's, since its crates are edition
+# 2024 and need 1.99; thurbox still declares its own MSRV (1.95) in
+# crates/thurbox/Cargo.toml. Checked against the official stable channel
+# (static.rust-lang.org/dist/channel-rust-stable.toml) on 2026-10-22.
+channel = "1.99.1"
 components = ["rustfmt", "clippy", "rust-src"]
-
-# Specify targets if needed
-# targets = ["x86_64-unknown-linux-gnu"]
-
-# Profile (minimal, default, or complete)
-profile = "default"
+profile = "minimal"

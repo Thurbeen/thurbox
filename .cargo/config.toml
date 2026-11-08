@@ -1,0 +1,4 @@
+[alias]
+# fleet-dev builds in its own target dir: the gate it runs rebuilds the
+# workspace, and Windows cannot replace a running executable.
+xtask = "run --locked --package fleet-dev --target-dir target/xtask --"
