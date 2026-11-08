@@ -2071,7 +2071,7 @@ the loop, which is most of it.
   strip's memo move only when the answer does.
 - **A history was read under one hold of its parser's lock**: 1.8ms per session
   at 1,000 rows, 16–18ms at 10,000 — a frame's worth of stall for that session's
-  reader and paint. It is now read [`CHUNK_ROWS`](../../src/kernel/search.rs) (128)
+  reader and paint. It is now read [`CHUNK_ROWS`](../../crates/thurbox/src/kernel/search.rs) (128)
   at a time, letting go between chunks and finding its place again by the rows
   it read last if the terminal scrolled meanwhile (rows with text on them, found
   at exactly one place, or the read starts over); a re-run reads only what was

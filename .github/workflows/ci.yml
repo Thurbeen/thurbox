@@ -56,12 +56,10 @@ jobs:
           # workflow re-runs all jobs — any job's definition may have changed.
           filters: |
             rust:
-              - 'src/**'
-              - 'tests/**'
-              - 'build.rs'
+              - 'crates/**'
               # The Lua trees are Rust inputs, not merely neighbours: they are
               # `include_str!`d into the binary, and the suite asserts on their
-              # CONTENT — `tests/new_session.rs` checks a string that exists
+              # CONTENT — `crates/thurbox/tests/new_session.rs` checks a string that exists
               # only in `ui/plugins/10_sessions.lua`. Without these, a Lua-only
               # change skips clippy, nextest and both Windows jobs, and can
               # red-build main while its own PR is
@@ -78,6 +76,7 @@ jobs:
               - 'extensions/sessions-skill/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - 'rust-toolchain.toml'
               # The patched crossterm `[patch.crates-io]` builds in.
               - 'vendor/**'
               - '.config/nextest.toml'
@@ -109,9 +108,9 @@ jobs:
               - '.luarc.json'
               # The probes that hold the type definitions and the standard
               # library to their jobs, and the scripts that run them.
-              - 'tests/fixtures/lua_types/**'
+              - 'crates/thurbox/tests/fixtures/lua_types/**'
               - 'scripts/ci/check-lua-types.sh'
-              - 'tests/fixtures/lua_std/**'
+              - 'crates/thurbox/tests/fixtures/lua_std/**'
               - 'scripts/ci/check-lua-std.sh'
               - '.github/workflows/ci.yml'
             website:
@@ -147,8 +146,8 @@ jobs:
               - 'scripts/dev/e2e/lib/e2e-common.sh'
               # What the probes compare against: the psmux gate, and the
               # command that reports it.
-              - 'src/backend/psmux.rs'
-              - 'src/cli/runtime.rs'
+              - 'crates/thurbox/src/backend/psmux.rs'
+              - 'crates/thurbox/src/cli/runtime.rs'
               - '.github/workflows/ci.yml'
             # The package builds the crate, so every Rust input is a Nix input
             # too: a new `include_str!` outside the package's source set, or a
@@ -157,12 +156,10 @@ jobs:
               - 'flake.nix'
               - 'flake.lock'
               - 'nix/**'
-              - 'src/**'
-              - 'build.rs'
+              - 'crates/**'
               - 'ui/**'
               - 'examples/**'
               - 'extensions/**'
-              - 'benches/**'
               - 'vendor/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -181,7 +178,7 @@ jobs:
             release_line:
               - 'scripts/ci/release-line.sh'
               - 'scripts/ci/release-line.bats'
-              - 'src/update/version_check.rs'
+              - 'crates/thurbox/src/update/version_check.rs'
               - '.github/workflows/cd.yml'
               - '.github/workflows/ci.yml'
 

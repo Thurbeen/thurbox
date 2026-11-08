@@ -26,7 +26,7 @@ Related docs:
 ## Where the built-ins live
 
 The built-in registry is **not** hand-constructed in Rust. It is an embedded
-TOML document in [`src/agent/agent_config.rs`](../../src/agent/agent_config.rs):
+TOML document in [`src/agent/agent_config.rs`](../../crates/thurbox/src/agent/agent_config.rs):
 `builtin_agents_toml()` joins `BUILTIN_AGENTS_HEAD` (the coding agents), the
 `shell` entry spelled for this platform (`SHELL_AGENT_TOML`) and
 `BUILTIN_AGENTS_TAIL` (the commented examples). `builtin_registry()` parses
@@ -300,7 +300,7 @@ resolves the coverage. All are declared in
 [`extensions/hooks/extension.toml`](../../extensions/hooks/extension.toml); the
 embedded hook assets live in
 [`extensions/hooks/`](../../extensions/hooks/) and are `include_str!`'d by
-[`src/session_ops/builtin_hooks.rs`](../../src/session_ops/builtin_hooks.rs).
+[`src/session_ops/builtin_hooks.rs`](../../crates/thurbox/src/session_ops/builtin_hooks.rs).
 
 - **`agent_patches` (arg injection)** — appends args to the agent's launch
   command, reversibly.
@@ -544,7 +544,7 @@ shipped **built-in** touches several places that are **not** kept in sync
 automatically. Work the checklist top to bottom:
 
 1. **Seed entry** — add an `[[agents]]` block to `BUILTIN_AGENTS_HEAD` in
-   [`src/agent/agent_config.rs`](../../src/agent/agent_config.rs). Set `command`,
+   [`src/agent/agent_config.rs`](../../crates/thurbox/src/agent/agent_config.rs). Set `command`,
    the resume/fork/new-session groups, and `resume_latest` per the ID model
    above. Add a short comment explaining the CLI's resume/fork semantics, as the
    existing entries do. **Decide the ID model first** — whether the CLI can pin a
@@ -558,12 +558,12 @@ automatically. Work the checklist top to bottom:
    shared config file thurbox must not clobber, `external_files` for a standalone
    drop into the agent's own config dir. Register any new embedded asset with an
    `include_str!` in
-   [`src/session_ops/builtin_hooks.rs`](../../src/session_ops/builtin_hooks.rs), and
+   [`src/session_ops/builtin_hooks.rs`](../../crates/thurbox/src/session_ops/builtin_hooks.rs), and
    add its row to `AGENT_HOOK_COVERAGE` in
-   [`src/session/hook_status.rs`](../../src/session/hook_status.rs) (the drift test
+   [`src/session/hook_status.rs`](../../crates/thurbox/src/session/hook_status.rs) (the drift test
    fails until it matches the payload), and — for a `config_merges` /
    `external_files` wiring — the matching entry in `remote_asset_for`
-   ([`src/session_ops/remote_hooks.rs`](../../src/session_ops/remote_hooks.rs)), so
+   ([`src/session_ops/remote_hooks.rs`](../../crates/thurbox/src/session_ops/remote_hooks.rs)), so
    remote sessions get the same payload (a test fails until local and remote
    agree). Bump the hooks extension `version`. Skipping this step means the new
    agent launches fine but **never shows working/blocked/done**.
@@ -753,7 +753,7 @@ sessions, MCP tasks — and `session_crons[]`, the CronCreate / ScheduleWakeup /
 empty stores `done` and proves the session idle; a missing list (a Claude Code
 that predates it) is unknown and leaves the decision to the edges below.
 Shape read from Claude Code 2.1.318's payload builder; the fixtures are in
-[`tests/fixtures/claude_stop/`](../../tests/fixtures/claude_stop/). This is what
+[`tests/fixtures/claude_stop/`](../../crates/thurbox/tests/fixtures/claude_stop/). This is what
 makes claude's `state_support` `full` — see
 [Activity](orchestration.md#activity). A finished task or a fired cron starts a
 new turn whose own `Stop` clears it.

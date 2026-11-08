@@ -19,6 +19,15 @@ the right `command + args`. Each agent uses its own default
 config (bake a model or other flags into the agent's `args` if
 you want them).
 
+## Repository layout
+
+The repository is one Cargo workspace (ADR-41). Each component is a crate under
+`crates/` — today only `crates/thurbox`, the interface — and everything that is
+not a crate stays at the root: `ui/`, `extensions/`, `examples/`, `vendor/`,
+`docs/`, `scripts/`. A bare `src/…` or `tests/…` path in this file, a skill or
+a document under `docs/thurbox/` is the thurbox crate's (`crates/thurbox/src/…`);
+`tests/doc_references.rs` resolves documents' `src/` paths there.
+
 ## Build & Development Commands
 
 The reproducible dev environment is a **Nix flake** (`flake.nix`, pins the Rust

@@ -152,7 +152,7 @@ jobs:
           # otherwise be suppressed as "no shipped artifact changed" — no tag, no
           # binaries, no channel pushes — and the `ui` commit scope cannot separate
           # a pane fix from a website one, so the type gate will not catch it either.
-          SHIPPED_PATHS='^(src/|tests/|ui/|examples/|build\.rs$|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|extensions/|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
+          SHIPPED_PATHS='^(crates/|ui/|examples/|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|Cross\.toml$|extensions/|packaging/|scripts/install\.(sh|ps1)$|\.github/workflows/cd\.yml$)'
 
           LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 

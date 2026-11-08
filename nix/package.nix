@@ -22,13 +22,10 @@ rustPlatform.buildRustPackage {
     fileset = lib.fileset.unions [
       ../Cargo.toml
       ../Cargo.lock
-      ../build.rs
-      ../src
+      ../crates
       ../ui
       ../extensions
       ../examples
-      # Named by Cargo.toml's [[bench]], so the manifest does not load without it.
-      ../benches
       # The `[patch.crates-io]` crates Cargo.toml points at.
       ../vendor
     ];

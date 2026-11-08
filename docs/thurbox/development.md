@@ -3,6 +3,12 @@
 How to set up a reproducible thurbox dev environment and run the app in an
 isolated sandbox.
 
+The repository is one Cargo workspace: thurbox is the member at
+`crates/thurbox`, and the trees that are not a crate (`ui/`, `extensions/`,
+`examples/`, `vendor/`) stay at the root. Cargo commands run from the root and
+cover every member; a source path in these pages (`src/…`, `tests/…`) is the
+thurbox crate's.
+
 ## 1. Toolchain — the dev environment
 
 ### Recommended: Nix flake

@@ -19,10 +19,10 @@
     }:
     let
       # The flake cannot see git tags, so a build from it is never a release:
-      # the base comes from Cargo.toml (`0.0.0-dev`, minus the `-dev` that would
+      # the base comes from crates/thurbox/Cargo.toml (`0.0.0-dev`, minus the `-dev` that would
       # make it a dev build, see nix/package.nix) and the date of the commit
       # it was built from says how new it is.
-      baseVersion = nixpkgs.lib.removeSuffix "-dev" (nixpkgs.lib.importTOML ./Cargo.toml).package.version;
+      baseVersion = nixpkgs.lib.removeSuffix "-dev" (nixpkgs.lib.importTOML ./crates/thurbox/Cargo.toml).package.version;
       date = builtins.substring 0 8 (self.lastModifiedDate or "19700101");
       version = "${baseVersion}-unstable-${builtins.substring 0 4 date}-${builtins.substring 4 2 date}-${builtins.substring 6 2 date}";
 

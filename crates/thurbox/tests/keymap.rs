@@ -1,0 +1,639 @@
+//! v2's keymap against v1's, chord for chord.
+//!
+//! v1's defaults are data — `Action::default_chords_for` — so this does not
+//! restate them in a list of its own where it can be avoided: it walks v1's own
+//! table and asks the v2 registry what each chord does. A key v1 hands to the
+//! agent in a focused terminal (`Action::terminal_passthrough`) has to be
+//! handed over here too, or the agent's line editing quietly stops working the
+//! day the pane it belongs to lands.
+//!
+//! The bundled plugins are loaded exactly as the binary loads them, so this
+//! fails if a plugin drops a chord as readily as if the kernel does.
+
+use std::path::PathBuf;
+
+use ratatui::layout::Rect;
+
+use thurbox::kernel::host::{KeyPress, LuaHost, Published, RenderContext};
+use thurbox::kernel::layout::resolve;
+use thurbox::kernel::registry::{is_ctrl_letter_chord, normalise_chord, Registry, Scope, RESERVED};
+use thurbox::kernel::snapshot::{SessionRow, Snapshot};
+use thurbox::kernel::theme::Themes;
+use thurbox::session::SessionState;
+/// v1's keymap tables, compiled into this test crate only — see the module's
+/// own doc for why the oracle lives here rather than in `src/`.
+#[path = "support/v1_keymap.rs"]
+mod v1_keymap;
+
+use v1_keymap::Action;
+
+fn host() -> LuaHost {
+    let host = LuaHost::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui"));
+    assert!(
+        host.error.is_none(),
+        "the bundled plugins must load: {:?}",
+        host.error
+    );
+    host
+}
+
+fn registry(host: &LuaHost) -> Registry {
+    let mut registry = Registry::default();
+    let (mut bindings, settings) = host.declarations();
+    // As the binary does: the kernel's own chords — the ones that open a system
+    // modal, and the clipboard pair — are declared alongside the plugins', so
+    // they are listed, routed and conflict-checked with everything else.
+    bindings.extend(thurbox::kernel::modals::bindings());
+    bindings.extend(thurbox::kernel::clipboard::bindings());
+    registry.declare(bindings, settings);
+    registry
+}
+
+fn row(name: &str) -> SessionRow {
+    SessionRow {
+        id: format!("{name}-0000-0000-0000-000000000000"),
+        name: name.to_string(),
+        agent: "claude".to_string(),
+        status: SessionState::Idle,
+        cwd: Some(PathBuf::from("/src/thurbox")),
+        repo: Some("thurbox".to_string()),
+        repos: Vec::new(),
+        branch: Some(format!("feat/{name}")),
+        base_branch: None,
+        backend: "local-tmux".to_string(),
+        backend_id: Some("%1".to_string()),
+        remote_host: None,
+        agent_session_id: None,
+        parent_id: None,
+        display_order: None,
+        worktree_count: 1,
+        git: None,
+        stopped: false,
+        hook_state: None,
+        key: None,
+        reports_as: None,
+        detected_agent: None,
+        shell_backend_id: None,
+        member_dirs: Vec::new(),
+        meta: Default::default(),
+    }
+}
+
+fn publish(host: &LuaHost, snapshot: &Snapshot) {
+    let themes = Themes::load(None);
+    let registry = registry(host);
+    let diffs = thurbox::kernel::diff::DiffStore::new();
+    let repos = thurbox::kernel::repos::RepoStore::with_hosts(Default::default());
+    host.publish(&Published {
+        epoch: thurbox::kernel::host::Epoch::always_fresh(),
+        snapshot,
+        attach_errors: &Default::default(),
+        inflight: &[],
+        themes: &themes,
+        registry: &registry,
+        diffs: &diffs,
+        links: &Default::default(),
+        search: None,
+        meta: &Default::default(),
+        metrics: &Default::default(),
+        status_rows: 0,
+        can_open: true,
+        inventory: &[],
+        ui_dir: "ui",
+        settings: &thurbox::session::settings::Settings {
+            features: thurbox::session::settings::FeatureFlags {
+                soft_delete: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        repos: &repos,
+        wants: &Default::default(),
+        focus: None,
+        selection: None,
+        hovered: None,
+        printing: &Default::default(),
+    })
+    .expect("publish");
+}
+
+fn index_of(host: &LuaHost, plugin: &str) -> usize {
+    host.index_of(plugin)
+        .unwrap_or_else(|| panic!("no plugin named {plugin}"))
+}
+
+/// Build the keypress a terminal would deliver for a canonical chord.
+/// Draw the confirmation, which answers only what it drew — as it does every
+/// frame in the running interface — then press `y` on it.
+fn confirm_yes(host: &LuaHost) {
+    let confirm = index_of(host, "confirm");
+    host.render(
+        confirm,
+        RenderContext {
+            width: 80,
+            height: 24,
+            focused: false,
+            elapsed: 0.0,
+            frame: 0,
+        },
+    )
+    .expect("draw the question");
+    host.on_key(confirm, &press("y")).expect("confirm");
+}
+
+fn press(chord: &str) -> KeyPress {
+    let mut key = KeyPress::default();
+    for part in chord.split('+') {
+        match part {
+            "ctrl" => key.ctrl = true,
+            "alt" => key.alt = true,
+            "shift" => key.shift = true,
+            "cmd" => key.cmd = true,
+            name => {
+                key.name = name.to_string();
+                let mut chars = name.chars();
+                key.ch = match (chars.next(), chars.next()) {
+                    (Some(c), None) => Some(c),
+                    _ => None,
+                };
+            }
+        }
+    }
+    key
+}
+
+/// Route a chord the way the binary does for a *global* key: resolve it with
+/// nothing focused, then call the owning plugin's action.
+fn fire(host: &LuaHost, chord: &str) {
+    let registry = registry(host);
+    let binding = registry
+        .resolve(&press(chord), None)
+        .unwrap_or_else(|| panic!("{chord} resolves to nothing"));
+    let index = index_of(host, &binding.plugin);
+    host.on_action(index, &binding.action)
+        .unwrap_or_else(|e| panic!("{chord}: {e}"));
+}
+
+/// Every chord v1's key table calls global **whose owner still exists**, and
+/// what v2 does with it.
+///
+/// Spelled out because the mapping from a v1 `Action` to a v2 plugin action is
+/// the thing under test: inferring it would only prove the inference.
+///
+/// The chords v1 also binds globally but v2 currently answers with nothing are
+/// below, in `CHORDS_AWAITING_THEIR_PANE`. They are listed rather than dropped so
+/// re-adding a pane has an obvious place to reconnect, and so the shortfall is
+/// counted rather than forgotten.
+const GLOBAL_CHORDS: [(&str, &str); 24] = [
+    ("ctrl+n", "new_session.open"),
+    // Reassigned deliberately, not reused quietly: v1 spent it on the
+    // automations pane, and the palette is the way *into* that pane — and every
+    // other — once it returns. See `CHORDS_AWAITING_THEIR_PANE`, which it left.
+    ("ctrl+p", "palette.open"),
+    ("ctrl+u", "restore.open"),
+    // One declaration, three spellings: the kernel folds the encodings a
+    // terminal may deliver `Ctrl+/` as, where v1 bound all three by hand.
+    ("ctrl+/", "search.open"),
+    ("ctrl+7", "search.open"),
+    ("ctrl+_", "search.open"),
+    ("ctrl+d", "sessions.delete"),
+    ("ctrl+r", "sessions.restart"),
+    ("ctrl+f", "sessions.fork"),
+    ("ctrl+s", "sessions.sync"),
+    ("ctrl+o", "sessions.editor"),
+    // Reassigned deliberately, as `ctrl+p` was: v1 held it for a files pane that
+    // exists nowhere now, and `f2`, the other conventional rename key, is still
+    // claimed by the info panel that is maintained out of tree.
+    ("ctrl+e", "sessions.rename"),
+    ("ctrl+z", "sessions.undo"),
+    ("ctrl+j", "sessions.next"),
+    ("ctrl+k", "sessions.previous"),
+    ("ctrl+t", "shell.open"),
+    ("ctrl+y", "themes.open"),
+    ("ctrl+g", "help.open"),
+    ("ctrl+,", "settings.open"),
+    ("f4", "themes.open"),
+    // F-key alternates, which reach a pane from a focused terminal.
+    ("f1", "help.open"),
+    ("f6", "settings.open"),
+    ("f8", "shell.open"),
+    ("f9", "sessions.toggle_panel"),
+];
+
+/// v1 chords with no v2 owner, each named with the pane that would bring it
+/// back. Asserted to be *unbound* — a chord that silently resolved to something
+/// else would be worse than one that does nothing.
+///
+/// `ctrl+p` (the automations pane) and `ctrl+e` (the files pane) were here and
+/// were reassigned on purpose, to the command palette and to renaming a session
+/// (`GLOBAL_CHORDS`): a deliberate, recorded reassignment is the one thing this
+/// list does not forbid.
+const CHORDS_AWAITING_THEIR_PANE: [(&str, &str); 7] = [
+    ("ctrl+w", "tasks"),
+    ("ctrl+x", "review"),
+    ("ctrl+b", "info"),
+    ("f2", "info"),
+    ("f3", "files"),
+    ("f5", "tasks"),
+    ("f7", "review"),
+];
+
+#[test]
+fn every_global_chord_v1_binds_resolves_to_a_v2_action() {
+    let host = host();
+    let registry = registry(&host);
+    for (chord, action) in GLOBAL_CHORDS {
+        let binding = registry
+            .resolve(&press(chord), None)
+            .unwrap_or_else(|| panic!("{chord} is bound to nothing"));
+        assert_eq!(binding.action, action, "{chord}");
+        assert_eq!(
+            binding.scope,
+            Scope::Global,
+            "{chord} must fire from any pane, as it does in v1"
+        );
+    }
+}
+
+#[test]
+fn a_chord_whose_pane_was_removed_is_unbound_rather_than_reused() {
+    // Re-pointing a freed chord at something else would silently change what a
+    // v1 user's muscle memory does. Better that it does nothing until its pane
+    // returns.
+    let host = host();
+    let registry = registry(&host);
+    for (chord, pane) in CHORDS_AWAITING_THEIR_PANE {
+        assert!(
+            registry.resolve(&press(chord), None).is_none(),
+            "{chord} belongs to the {pane} pane; it must stay unbound until that \
+             pane is back, not be reused"
+        );
+    }
+}
+
+#[test]
+fn the_session_list_column_is_hidden_and_restored_by_its_own_key() {
+    // v1's F9 (`Action::ToggleSessionList`) gives the terminal the full width.
+    // The arrangement decides this before any plugin renders, so the toggle has
+    // to move state the arrangement can read — `ui/lib/panels.lua`.
+    let host = host();
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 140,
+        height: 40,
+    };
+    let placed = |host: &LuaHost| -> Vec<String> {
+        resolve(
+            &host.arrangement(area.width, area.height).expect("layout"),
+            area,
+        )
+        .iter()
+        .map(|slot| slot.slot.clone())
+        .collect()
+    };
+
+    assert!(placed(&host).contains(&"sessions".to_string()));
+    fire(&host, "f9");
+    assert!(
+        !placed(&host).contains(&"sessions".to_string()),
+        "F9 should take the session column out of the arrangement"
+    );
+    fire(&host, "f9");
+    assert!(
+        placed(&host).contains(&"sessions".to_string()),
+        "and put it back"
+    );
+}
+
+#[test]
+fn the_session_chords_issue_the_commands_v1_runs() {
+    let host = host();
+    let snapshot = Snapshot {
+        sessions: vec![row("fix-osc52")],
+        ..Snapshot::default()
+    };
+    publish(&host, &snapshot);
+    // Rendering is what settles the cursor onto a row, exactly as a frame does.
+    host.render(
+        index_of(&host, "sessions"),
+        RenderContext {
+            width: 40,
+            height: 12,
+            focused: true,
+            elapsed: 1.0,
+            frame: 1,
+        },
+    )
+    .expect("render the list");
+    host.drain_commands();
+
+    for (chord, kind) in [
+        ("ctrl+d", "delete"),
+        ("ctrl+r", "restart"),
+        ("ctrl+s", "sync"),
+        ("ctrl+o", "editor"),
+    ] {
+        fire(&host, chord);
+        let mut issued = host.drain_commands();
+        if chord != "ctrl+o" {
+            assert!(issued.is_empty(), "{chord} must ask first");
+            confirm_yes(&host);
+            issued = host.drain_commands();
+        }
+        assert_eq!(issued.len(), 1, "{chord} issued {issued:?}");
+        assert_eq!(issued[0].kind(), kind, "{chord}");
+        assert_eq!(issued[0].session(), snapshot.sessions[0].id, "{chord}");
+    }
+
+    // `ctrl+f` is the exception, and matching v1 is why: `fork_active_session`
+    // prepared the spawn and opened the shared Session Name modal prefilled
+    // `<source>-fork`, so a fork was named before it existed. It therefore issues
+    // NOTHING on the keystroke — it leaves the job in `store.fork`, the way an
+    // irreversible change leaves its question in `store.confirm`.
+    fire(&host, "ctrl+f");
+    assert!(
+        host.drain_commands().is_empty(),
+        "ctrl+f must ask for a name before forking, as v1 did"
+    );
+    // What it handed over is asserted where it is consumed: the creation float
+    // opens at its name step with the prefill, which is the v1-visible behaviour
+    // and is checked through the real plugins rather than by reading `store`.
+    let rendered = host
+        .render(
+            index_of(&host, "new_session"),
+            RenderContext {
+                width: 120,
+                height: 40,
+                focused: true,
+                elapsed: 0.0,
+                frame: 2,
+            },
+        )
+        .expect("render the flow");
+    assert!(rendered.float.is_some(), "the flow floats");
+    let tree = format!("{:?}", rendered.node);
+    assert!(
+        tree.contains("fix-osc52-fork"),
+        "the name field is prefilled `<source>-fork`, as v1 prefilled it: {tree}"
+    );
+    assert!(
+        tree.contains("Session Name"),
+        "and it is v1's Session Name step: {tree}"
+    );
+}
+
+#[test]
+fn undo_restores_the_delete_that_was_just_made_and_nothing_else() {
+    // v1's Ctrl+Z is an undo of *your* delete (`App::undo_delete` restores its
+    // own `pending_delete`), not "restore whatever was deleted last" — which
+    // could be another instance's session.
+    let host = host();
+    let snapshot = Snapshot {
+        sessions: vec![row("fix-osc52")],
+        ..Snapshot::default()
+    };
+    publish(&host, &snapshot);
+    host.render(
+        index_of(&host, "sessions"),
+        RenderContext {
+            width: 40,
+            height: 12,
+            focused: true,
+            elapsed: 1.0,
+            frame: 1,
+        },
+    )
+    .expect("render the list");
+    host.drain_commands();
+
+    // Nothing deleted yet: the key says so rather than restoring a stranger.
+    // Silence was indistinguishable from the chord never arriving — Ctrl+Z is
+    // global, so it fires with the column hidden and from a focused terminal.
+    fire(&host, "ctrl+z");
+    let issued = host.drain_commands();
+    assert_eq!(issued.len(), 1, "{issued:?}");
+    assert_eq!(issued[0].kind(), "message");
+
+    fire(&host, "ctrl+d");
+    assert!(host.drain_commands().is_empty());
+    confirm_yes(&host);
+    host.drain_commands();
+    fire(&host, "ctrl+z");
+    let issued = host.drain_commands();
+    assert_eq!(issued.len(), 1, "{issued:?}");
+    assert_eq!(issued[0].kind(), "restore");
+    assert_eq!(issued[0].session(), snapshot.sessions[0].id);
+
+    // One undo per delete: the second press has nothing left to undo, and says
+    // that rather than restoring the row again.
+    fire(&host, "ctrl+z");
+    let issued = host.drain_commands();
+    assert_eq!(issued.len(), 1, "{issued:?}");
+    assert_eq!(issued[0].kind(), "message");
+}
+
+/// Chords v1 hands to the agent that v2 does not yet.
+///
+#[test]
+fn the_chords_v1_leaves_to_the_agent_are_marked_and_no_others_are() {
+    // Read out of v1's own tables rather than restated: a chord that stops
+    // being passthrough there must fail here rather than drift.
+    let host = host();
+    let registry = registry(&host);
+    let mut checked = 0;
+    for action in Action::all() {
+        for chord in action.default_chords_for(false) {
+            let chord = normalise_chord(&chord.display());
+            // v1 gates the deferral on the bound chord being a bare
+            // Ctrl+<letter>, so an F-key alternate is never handed over.
+            if !is_ctrl_letter_chord(&chord) {
+                continue;
+            }
+            let Some(binding) = registry
+                .bindings()
+                .iter()
+                .find(|b| b.chord == chord && b.scope == Scope::Global)
+            else {
+                continue;
+            };
+            // The one deliberate divergence: v1 deferred `ctrl+p` (automations) to
+            // the agent, and the palette on the same chord must NOT be — it has
+            // to open from a focused terminal, which is where the user mostly is.
+            if binding.action == "palette.open" {
+                continue;
+            }
+            assert_eq!(
+                binding.passthrough,
+                action.terminal_passthrough(),
+                "{chord} ({}) does not match v1's {action:?}",
+                binding.action
+            );
+            checked += 1;
+        }
+    }
+    // A mapping that matched nothing would pass vacuously.
+    assert!(checked >= 10, "only {checked} chords were compared");
+}
+
+#[test]
+fn a_bare_ctrl_letter_is_the_only_chord_that_defers() {
+    // The gate v1 applies before handing a key to the pty. Anything else — an
+    // F-key alternate, Ctrl+, , Ctrl+/ — reaches thurbox from the terminal too.
+    for chord in ["ctrl+d", "ctrl+x", "ctrl+w"] {
+        assert!(is_ctrl_letter_chord(chord), "{chord}");
+    }
+    for chord in ["f7", "ctrl+,", "ctrl+/", "ctrl+shift+d", "ctrl+7", "d"] {
+        assert!(!is_ctrl_letter_chord(chord), "{chord}");
+    }
+}
+
+#[test]
+fn no_plugin_claims_a_chord_the_kernel_reserves() {
+    // The escape route: quit, reload, focus movement and the perf HUD must work
+    // whatever a plugin declares, so nothing may shadow them.
+    let host = host();
+    for binding in registry(&host).bindings() {
+        assert!(
+            !RESERVED.contains(&binding.chord.as_str()),
+            "{} claims the reserved chord {}",
+            binding.action,
+            binding.chord
+        );
+    }
+}
+
+#[test]
+fn the_bundled_plugins_agree_on_who_owns_which_chord() {
+    // Two panes declaring `j` is fine — focus decides. A global chord claimed
+    // twice is not, and the shadowed one would silently never fire.
+    let host = host();
+    let registry = registry(&host);
+    assert!(
+        registry.conflicts().is_empty(),
+        "{:?}",
+        registry.conflicts()
+    );
+}
+
+/// Copy and paste are *bindings*, not literal key arms in the loop.
+///
+/// They were matched ahead of the registry, which meant help listed them under
+/// "Fixed (not rebindable)" and a Mac user could not put copy where a Mac user
+/// reaches for it (issue #1024).
+#[test]
+fn copy_and_paste_resolve_through_the_registry_and_can_be_rebound() {
+    use thurbox::kernel::clipboard::{COPY_ACTION, PASTE_ACTION};
+
+    let host = host();
+    let mut registry = registry(&host);
+    for (chord, action) in [("ctrl+c", COPY_ACTION), ("ctrl+v", PASTE_ACTION)] {
+        let binding = registry
+            .resolve(&press(chord), None)
+            .unwrap_or_else(|| panic!("{chord} is bound to nothing"));
+        assert_eq!(binding.action, action, "{chord}");
+        assert_eq!(
+            binding.scope,
+            Scope::Global,
+            "{chord} must fire from any pane, as it did when the loop matched it"
+        );
+    }
+    // Reserved chords are refused; these two are not reserved, which is the
+    // whole difference. Onto `alt+c` rather than an F-key: the free ones are
+    // held for the panes that have not come back (`CHORDS_AWAITING_THEIR_PANE`).
+    registry
+        .rebind(COPY_ACTION, Some("alt+c"))
+        .expect("copy must be rebindable");
+    assert_eq!(
+        registry
+            .resolve(&press("alt+c"), None)
+            .map(|b| b.action.clone()),
+        Some(COPY_ACTION.to_string())
+    );
+}
+
+/// The macOS half of the same issue: `Ctrl+C` is spent on interrupt, so copy
+/// lives on `Cmd+C` — a chord that resolved to nothing because the Command
+/// modifier was dropped before any chord was built.
+#[test]
+fn a_cmd_chord_canonicalises_and_resolves() {
+    use thurbox::kernel::registry::{canonical_chord, normalise_chord};
+
+    assert_eq!(canonical_chord(&press("cmd+c")), "cmd+c");
+    // Both spellings have to agree, or a declared chord never matches its press.
+    assert_eq!(normalise_chord("Cmd+C"), canonical_chord(&press("cmd+c")));
+    assert_eq!(normalise_chord("super+j"), "cmd+j");
+
+    let host = host();
+    let mut registry = registry(&host);
+    registry
+        .rebind(thurbox::kernel::clipboard::COPY_ACTION, Some("cmd+c"))
+        .expect("cmd+c must be bindable");
+    assert_eq!(
+        registry
+            .resolve(&press("cmd+c"), None)
+            .map(|b| b.action.clone()),
+        Some(thurbox::kernel::clipboard::COPY_ACTION.to_string()),
+        "a Cmd chord that resolves to nothing is issue #1024"
+    );
+}
+
+/// The pane's scrollback keys are declared, so help lists them and they move.
+#[test]
+fn the_agent_panes_page_keys_are_declared_rather_than_hidden_in_on_key() {
+    let host = host();
+    let index = index_of(&host, "agent");
+    let bindings = &host.plugins[index].bindings;
+    for chord in ["pageup", "pagedown"] {
+        assert!(
+            bindings.iter().any(|binding| binding.chord == chord),
+            "a key that only exists inside on_key is invisible to help and unrebindable"
+        );
+    }
+}
+
+#[test]
+fn a_bare_d_deletes_nothing_in_the_session_list() {
+    // Deleting is the one destructive thing a focused list can do, and `d` is a
+    // single unmodified keystroke away from `j`/`k`. `Ctrl+D` (and `Shift+D` for
+    // the worktree with it) are the only ways in.
+    let host = host();
+    let snapshot = Snapshot {
+        sessions: vec![row("fix-osc52")],
+        ..Snapshot::default()
+    };
+    publish(&host, &snapshot);
+    host.render(
+        index_of(&host, "sessions"),
+        RenderContext {
+            width: 40,
+            height: 12,
+            focused: true,
+            elapsed: 1.0,
+            frame: 1,
+        },
+    )
+    .expect("render the list");
+    host.drain_commands();
+
+    assert!(
+        registry(&host)
+            .resolve(&press("d"), Some("sessions"))
+            .is_none(),
+        "`d` must not be bound with the session list focused"
+    );
+    host.on_key(index_of(&host, "sessions"), &press("d"))
+        .expect("key");
+    assert!(
+        host.drain_commands().is_empty(),
+        "and the pane must not delete on it either"
+    );
+
+    // The chord that does asks before deleting.
+    fire(&host, "ctrl+d");
+    assert!(host.drain_commands().is_empty());
+    confirm_yes(&host);
+    let issued = host.drain_commands();
+    assert_eq!(issued.len(), 1, "{issued:?}");
+    assert_eq!(issued[0].kind(), "delete");
+}
