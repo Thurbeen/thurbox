@@ -326,7 +326,10 @@ item by item, in the test's `TRANSITIONAL` table, which must equal what the
 source does — empty since status and the heartbeat went behind the contract
 (ADR-32); `consumers_reach_no_concrete_backend` holds every module but
 `coordinator` to reaching no adapter, protocol helper or factory through the
-`backend` gateway, and `coordinator` to the factory alone.
+`backend` gateway, and `coordinator` to the factory alone;
+`runtime_mux_is_named_only_by_its_gateways` keeps the gateway the only way in,
+since the resolver follows no external crate: only `backend` and the modules
+re-exporting a runtime type (`RUNTIME_GATEWAYS`) may name `runtime_mux`.
 Inside `kernel`, `each_kernel_worker_lives_in_a_file_of_its_own` keeps each
 worker of `kernel::snapshot` and `kernel::terminal` in a file of its own.
 `docs/constitution.md` T1 lists the same graph. The full rule, the module

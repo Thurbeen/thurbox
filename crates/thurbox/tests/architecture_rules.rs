@@ -676,6 +676,66 @@ fn consumers_reach_no_concrete_backend() {
     );
 }
 
+/// The modules that may name `runtime_mux` itself: the `backend` gateway, and
+/// the ones re-exporting a runtime type as their own — the shell grammar
+/// (`shell`, `session::agent_def`), the host model and `SessionId`
+/// (`session`), the data directory and binary lookup (`paths`), the hosts
+/// loader (`config::hosts`) and the TOML reader (`config::file`). The resolver
+/// follows only crate-internal paths, so a `runtime_mux::tmux` named anywhere
+/// else would reach an adapter past [`consumers_reach_no_concrete_backend`].
+const RUNTIME_GATEWAYS: &[&str] = &[
+    "backend",
+    "shell",
+    "session",
+    "paths",
+    "config::hosts",
+    "config::file",
+];
+
+/// Each site outside `gateways` that names `runtime_mux` by path or imports it
+/// under any name, as `dir/file.rs:line`, test code included.
+fn runtime_outside_gateways(tree: &Tree, gateways: &[&str]) -> Vec<String> {
+    let mut found = tree.mentions(&["runtime_mux"], "::", true);
+    found.extend(tree.imports(&["runtime_mux"], true));
+    let mut problems: Vec<String> = found
+        .into_iter()
+        .filter(|(file, _, _)| {
+            let mut module: Vec<String> = file
+                .with_extension("")
+                .iter()
+                .map(|part| part.to_string_lossy().into_owned())
+                .collect();
+            if module.last().is_some_and(|last| last == "mod") {
+                module.pop();
+            }
+            let module = module.join("::");
+            !gateways
+                .iter()
+                .any(|g| module == *g || module.starts_with(&format!("{g}::")))
+        })
+        .map(|(file, line, what)| {
+            let file: Vec<_> = file.iter().map(|part| part.to_string_lossy()).collect();
+            format!("{}:{line} {what}", file.join("/"))
+        })
+        .collect();
+    problems.sort();
+    problems.dedup();
+    problems
+}
+
+/// Every crossing into the runtime goes through a gateway, so the resolver —
+/// which sees crate-internal paths only — judges it: a module naming
+/// `runtime_mux` itself, under any alias, would bypass every rule above.
+#[test]
+fn runtime_mux_is_named_only_by_its_gateways() {
+    let problems = runtime_outside_gateways(src_tree(), RUNTIME_GATEWAYS);
+    assert!(
+        problems.is_empty(),
+        "reach the runtime through crate::backend, or extend RUNTIME_GATEWAYS with why:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
 /// Production edges between distinct nodes, one representative site each.
 fn production_graph(tree: &Tree, rules: &[ModuleRules]) -> BTreeMap<(String, String), String> {
     let mut graph = BTreeMap::new();
@@ -1424,6 +1484,21 @@ fn session_is_pure_data() {
         problems.is_empty(),
         "session must stay pure data — move these out, or extend SESSION_CRATES with why:\n  {}",
         problems.join("\n  ")
+    );
+}
+
+/// A consumer naming the runtime directly — by path, or through an alias of
+/// an adapter or of the crate — is found; a gateway, a comment and a string
+/// are not.
+#[test]
+fn runtime_access_outside_the_gateways_is_found() {
+    assert_eq!(
+        runtime_outside_gateways(&fixture("runtime_imports"), &["backend", "session"]),
+        [
+            "kernel/mod.rs:1 runtime_mux",
+            "kernel/mod.rs:2 runtime_mux",
+            "kernel/mod.rs:7 runtime_mux"
+        ]
     );
 }
 
