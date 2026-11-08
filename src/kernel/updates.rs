@@ -21,6 +21,17 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crate::session::settings::FeatureFlags;
 
+/// Note a newer major line in the log: it is never installed, only reported.
+fn log_next_major(next: Option<&str>) {
+    if let Some(next) = next {
+        tracing::info!(
+            "auto-update: v{next} is a new major line — not installed. \
+             Moving to it is a reinstall: {}",
+            crate::update::version_check::MIGRATION_NOTES_URL
+        );
+    }
+}
+
 /// What a worker came back with.
 enum Done {
     /// A refreshed check: the latest release, when it is newer than this build.
@@ -72,20 +83,20 @@ impl Updates {
             let tx = updates.sender();
             std::thread::spawn(move || {
                 match crate::update::self_update::perform_update(false) {
-                    Ok(crate::update::self_update::UpdateOutcome::Updated { to, .. }) => {
+                    Ok(crate::update::self_update::UpdateOutcome::Updated {
+                        to,
+                        next_major,
+                        ..
+                    }) => {
+                        log_next_major(next_major.as_deref());
                         // The check's cache is refreshed with it, so the badge
                         // agrees with what is now installed on the next launch.
                         let _ = crate::update::version_check::refresh_cache();
                         let _ = tx.send(Done::Installed(to));
                     }
                     Ok(crate::update::self_update::UpdateOutcome::UpToDate {
-                        next_major: Some(next),
-                        ..
-                    }) => tracing::info!(
-                        "auto-update: v{next} is a new major line — not installed. \
-                         Moving to it is a reinstall: {}",
-                        crate::update::version_check::MIGRATION_NOTES_URL
-                    ),
+                        next_major, ..
+                    }) => log_next_major(next_major.as_deref()),
                     // Up to date, or a dev build — `perform_update` skips those
                     // itself, which is why nothing is decided here.
                     Ok(_) => {}

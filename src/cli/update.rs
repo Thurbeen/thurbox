@@ -43,22 +43,34 @@ pub fn run(args: UpdateArgs, enabled: bool) -> CommandOutput {
     }
 
     match crate::update::self_update::perform_update(args.force) {
-        Ok(crate::update::self_update::UpdateOutcome::Updated { from, to }) => {
-            let human = kv(&[
+        Ok(crate::update::self_update::UpdateOutcome::Updated {
+            from,
+            to,
+            next_major,
+        }) => {
+            let mut fields = vec![
                 ("from", from.clone()),
                 ("to", to.clone()),
                 ("updated", "true".to_string()),
                 ("note", "restart thurbox to apply".to_string()),
-            ]);
+            ];
+            let mut summary = format!("Updated {from} → {to}. Restart thurbox to apply.");
+            if let Some(next) = &next_major {
+                let note = next_major_note(next);
+                fields.push(("next major", note.clone()));
+                summary.push(' ');
+                summary.push_str(&note);
+            }
             CommandOutput::new(
                 json!({
                     "version": from,
                     "latest": to,
+                    "next_major": next_major,
                     "updated": true,
                     "update_enabled": true,
-                    "summary": format!("Updated {from} → {to}. Restart thurbox to apply."),
+                    "summary": summary,
                 }),
-                human,
+                kv(&fields),
             )
         }
         Ok(crate::update::self_update::UpdateOutcome::UpToDate {

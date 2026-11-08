@@ -65,7 +65,12 @@ pub enum UpdateOutcome {
         next_major: Option<String>,
     },
     /// Binaries were replaced; the new version applies on the next launch.
-    Updated { from: String, to: String },
+    /// `next_major` as in [`UpdateOutcome::UpToDate`].
+    Updated {
+        from: String,
+        to: String,
+        next_major: Option<String>,
+    },
     /// A development build — skipped (its version doesn't order against tags).
     /// Only returned when `force` is false.
     SkippedDevBuild { current: String },
@@ -766,6 +771,7 @@ fn perform_update_from(
     Ok(UpdateOutcome::Updated {
         from: current,
         to: latest,
+        next_major: releases.next_major,
     })
 }
 
@@ -1590,8 +1596,10 @@ cccc3333  thurbox-v0.114.0-aarch64-apple-darwin.tar.gz
             outcome,
             UpdateOutcome::Updated {
                 from: "2.84.1".into(),
-                to: "2.84.2".into()
-            }
+                to: "2.84.2".into(),
+                next_major: Some("3.0.0".into()),
+            },
+            "the 2.x is taken and 3.x still reported"
         );
         assert_eq!(feed.installed(), ["2.84.2", "2.84.2"]);
     }
