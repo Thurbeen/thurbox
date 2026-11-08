@@ -152,7 +152,7 @@ paused without losing work is a separate, stricter question, answered headless
 by `session get`'s `activity` (`active` / `idle` / `unknown` / `stopped`).
 `idle` there needs proof that the turn left nothing running — claude's `Stop`
 payload listing no background task and no cron, or an agent's idle claim — and
-`unknown` is never idle ([Activity](ORCHESTRATION.md#activity)).
+`unknown` is never idle ([Activity](orchestration.md#activity)).
 
 One enum, so `session get`, `session list`, `thurbox-cli watch` and the session
 list cannot disagree about a row — and since the interface has to answer

@@ -14,7 +14,7 @@
 //! line, not `releases/latest`: once 3.x is "Latest", a 2.x maintenance release
 //! is published with `make_latest: false` and only the list shows it. A newer
 //! major is reported as [`Releases::next_major`] and never installed — see
-//! `docs/RELEASING.md`, "v2 and v3".
+//! `docs/thurbox/releasing.md`, "v2 and v3".
 //!
 //! The pure decision ([`decide_update`]) is built on the existing
 //! [`compare_versions`] / [`is_dev_version`] helpers, so dev builds
@@ -41,7 +41,7 @@ pub const RELEASE_LINE: u64 = 2;
 
 /// Where a user on this line reads what moving to the next major involves.
 pub const MIGRATION_NOTES_URL: &str =
-    "https://github.com/Thurbeen/thurbox/blob/main/docs/RELEASING.md#v2-and-v3";
+    "https://github.com/Thurbeen/thurbox/blob/main/docs/thurbox/releasing.md#v2-and-v3";
 
 /// GitHub's release list for the thurbox repo, newest first. One page: a line
 /// with no release among the hundred newest has nothing to offer anyway.

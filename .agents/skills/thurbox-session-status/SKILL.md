@@ -51,7 +51,7 @@ the turn), and the pane probe found the agent; `unknown` otherwise; `stopped`
 when parked. Any later report clears the proof. `pending` (what the last
 `Stop` listed) and `state_support` (`AgentHookCoverage::state_support`:
 `full` for claude, `partial` for the rest, null when unwired or the hooks
-extension is off) ride with it. The contract is docs/ORCHESTRATION.md →
+extension is off) ride with it. The contract is docs/thurbox/orchestration.md →
 Activity.
 
 **Readiness (`ready`).** `Assessment::ready` folds the state into the

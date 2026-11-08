@@ -22,7 +22,7 @@ on:
 # `thurbox`/`thurbox-bin`, Chocolatey `thurbox`, winget `Thurbeen.thurbox`.
 # They stay on it for good, so nobody moves to a new major through a package
 # upgrade they did not choose; a new major ships under names of its own. See
-# docs/RELEASING.md, "v2 and v3".
+# docs/thurbox/releasing.md, "v2 and v3".
 env:
   PACKAGE_CHANNELS_MAJOR: "2"
 

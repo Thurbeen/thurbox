@@ -133,7 +133,7 @@ impl StateSupport {
 }
 
 /// Whether a session can be judged at rest — the answer a consumer deciding to
-/// pause it reads (`session get` → `activity`, docs/ORCHESTRATION.md →
+/// pause it reads (`session get` → `activity`, docs/thurbox/orchestration.md →
 /// Activity). Never derived from silence: `idle` needs proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activity {

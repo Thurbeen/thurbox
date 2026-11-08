@@ -227,7 +227,7 @@ pub fn session_to_json_assessed(
     put("ready", json!(hook.ready()));
     // Whether the session is provably at rest, background work included — the
     // answer a consumer pausing idle sessions reads (`Assessment::activity`,
-    // docs/ORCHESTRATION.md → Activity). `unknown` is never idle.
+    // docs/thurbox/orchestration.md → Activity). `unknown` is never idle.
     put("activity", json!(hook.activity().as_str()));
     // `full`: the agent reports its own background work; `partial`: idleness
     // rests on its idle claim; null: nothing is wired to report.

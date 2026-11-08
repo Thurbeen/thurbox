@@ -753,9 +753,9 @@ sessions, MCP tasks — and `session_crons[]`, the CronCreate / ScheduleWakeup /
 empty stores `done` and proves the session idle; a missing list (a Claude Code
 that predates it) is unknown and leaves the decision to the edges below.
 Shape read from Claude Code 2.1.318's payload builder; the fixtures are in
-[`tests/fixtures/claude_stop/`](../tests/fixtures/claude_stop/). This is what
+[`tests/fixtures/claude_stop/`](../../tests/fixtures/claude_stop/). This is what
 makes claude's `state_support` `full` — see
-[Activity](ORCHESTRATION.md#activity). A finished task or a fired cron starts a
+[Activity](orchestration.md#activity). A finished task or a fired cron starts a
 new turn whose own `Stop` clears it.
 
 **Edges**, where both edges of the sub-work reach the parent session:

@@ -1258,12 +1258,12 @@ crossing would hand someone a different program under the same binary name.
 **No flag crosses**, `--force` included: moving to a new major is a reinstall
 (`scripts/install.sh` or the new major's package). The line is
 `update::version_check::RELEASE_LINE`, and the release workflow refuses to cut a
-version off it — `docs/RELEASING.md`, "v2 and v3".
+version off it — `docs/thurbox/releasing.md`, "v2 and v3".
 
 > Only a binary that *carries* the guard is protected by it. Releases up to
 > v1.8.7 and v2.0.0–v2.2.2 predate any major guard, and v2.2.3 up to this
 > change follow `releases/latest`; what keeps each of them off 3.x is what a
-> 3.x release publishes, set out in `docs/RELEASING.md`, "v2 and v3". For a
+> 3.x release publishes, set out in `docs/thurbox/releasing.md`, "v2 and v3". For a
 > 1.x install, `auto_update = false` in `settings.toml` is the reliable hold —
 > which is exactly what the v1→v2 consent gate writes when you decline.
 
@@ -1997,7 +1997,7 @@ remote pane's rewrite keeps a hook to one bare state word. A turn's end may
 carry the agent's `Stop` payload (`--state done --stop-payload <file|->`), and
 `thurbox-cli session signal --idle` claims, once the turn has ended, that it
 left nothing running or scheduled — what `session get` reads as `activity:
-"idle"` ([Activity](ORCHESTRATION.md#activity)).
+"idle"` ([Activity](orchestration.md#activity)).
 That is the supported way to give thurbox agent state for a session it
 did not wire — for instance one created with a bare interactive shell as
 its "agent" because a harness owns the real launch.
