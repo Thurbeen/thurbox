@@ -1,4 +1,6 @@
 # Maintainer: LeTuR <https://github.com/LeTuR>
+# makepkg reads the metadata variables and provides srcdir and pkgdir.
+# shellcheck shell=bash disable=SC2034,SC2154
 pkgname=thurbox
 pkgver=0.79.46
 pkgrel=1
@@ -20,7 +22,7 @@ source=("$pkgname-$pkgver.tar.gz::https://github.com/Thurbeen/thurbox/archive/re
 sha256sums=('b34a151d9e6909748acffdb6da2094cd323c7b1a3f5ffffc5e21c7360342109b')
 
 prepare() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgname-$pkgver" || return
     export RUSTUP_TOOLCHAIN=stable
     # Fetch with the pristine manifest so --locked is satisfied.
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
@@ -29,11 +31,11 @@ prepare() {
     # under Rust's default rust-lld. Dropping the feature makes
     # libsqlite3-sys use the system libsqlite3.so via pkg-config. This
     # rewrites Cargo.lock, hence --offline (not --frozen) in build().
-    sed -i '/^rusqlite/ s/, features = \["bundled"\]//' Cargo.toml
+    sed -i '/^rusqlite/ s/, features = \["bundled"\]//' crates/thurbox/Cargo.toml
 }
 
 build() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgname-$pkgver" || return
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
@@ -44,7 +46,7 @@ build() {
 }
 
 package() {
-    cd "$pkgname-$pkgver"
+    cd "$pkgname-$pkgver" || return
     install -Dm0755 -t "$pkgdir/usr/bin/" \
         target/release/thurbox \
         target/release/thurbox-cli

@@ -262,7 +262,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y tmux xvfb dbus
       - run: cargo nextest run --all --profile ci
       # The crossterm patch's parser tests live in the vendored crate, which
-      # `--all` does not reach: the root manifest has no [workspace].
+      # `--all` does not reach: the workspace excludes it, so it builds from its
+      # own manifest and lockfile.
       - run: cargo test --locked --manifest-path vendor/crossterm/Cargo.toml --target-dir target --lib thurbox_patch
 
   # Native-Windows gate (psmux backend selection, known-folder paths, toast
