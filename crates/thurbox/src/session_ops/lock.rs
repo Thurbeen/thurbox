@@ -54,7 +54,7 @@ fn ttl_ms() -> u64 {
 /// A held lock, given back when this value is dropped.
 ///
 /// The release is structural rather than a call at each exit point, for the
-/// reason `tests/support/tmux_server.rs` gives about tmux servers: an operation
+/// reason `crates/runtime-mux/tests/support/tmux_server.rs` gives about tmux servers: an operation
 /// that takes a lock runs through `?` and early returns, and a lock leaked by
 /// the one path that did not reach its release holds the subject until it
 /// expires.

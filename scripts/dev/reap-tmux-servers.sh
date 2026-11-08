@@ -2,7 +2,7 @@
 #
 # Reap the test tmux servers a run left behind — the ones a guard could not.
 #
-# `tests/support/tmux_server.rs` kills a harness's server in `Drop`, which
+# `crates/runtime-mux/tests/support/tmux_server.rs` kills a harness's server in `Drop`, which
 # covers every way a test can end *in-process*: returning, asserting, panicking.
 # It cannot cover a signal that runs no destructor — a nextest `slow-timeout`
 # termination, a `kill -9`, a Ctrl-C at the wrong moment, an OOM kill. The
@@ -42,7 +42,7 @@ case "${1:-}" in
 esac
 
 # The suite's own socket names, as globs. Every harness socket in `tests/` and
-# in `src/backend/tmux_compat/control_mode/tests.rs` matches one of these, and nothing else
+# in `crates/runtime-mux/src/tmux_compat/control_mode/tests.rs` matches one of these, and nothing else
 # does: an operator's own server is `thurbox`, a relocated instance's is
 # `thurbox-dev` or `thurbox-<digest>` (ADR-12), and none of those is listed
 # here. Keep it that way — a sweep wide enough to catch `thurbox-dev` is a
@@ -51,7 +51,7 @@ SUITE_SOCKETS=(
     'thurbox-*-e2e'      # create, reap, send-keys, spawn-cmd, program-*, …
     'thurbox-e2e-*'      # tui_e2e, one per process
     'thurbox-*-test'     # attach, capture, hookstate, respawn, watch, …
-    'thurbox-cm-*'       # src/backend/tmux_compat/control_mode/tests.rs
+    'thurbox-cm-*'       # crates/runtime-mux/src/tmux_compat/control_mode/tests.rs
     'thurbox-leak-*'     # tests/tmux_server_leak.rs
     'thurbox-rename-*'   # tests/session_rename.rs
     'thurbox-life-*'     # tests/session_lifetime.rs

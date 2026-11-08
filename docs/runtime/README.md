@@ -3,7 +3,7 @@
 A runtime is any program that runs one keyed process at a place and tells
 Fleet about it: a multiplexer window, a container, a VM, a plain process.
 Fleet reaches every session through it, and neither Fleet nor thurbox links
-any runtime's code. `runtime-mux`, extracted from thurbox's `src/backend`, is
+any runtime's code. `runtime-mux` (`crates/runtime-mux`), extracted from thurbox, is
 the first runtime and the default one. How the runtime fits between thurbox
 and Fleet is the [overview](../README.md).
 
@@ -63,7 +63,7 @@ business.
 
 | Runtime | Place | What keeps the terminal | Today |
 | --- | --- | --- | --- |
-| `runtime-mux` | this machine, ssh hosts, WSL | tmux, psmux, rmux (ADR-31) | `src/backend` |
+| `runtime-mux` | this machine, ssh hosts, WSL | tmux, psmux, rmux (ADR-31) | `crates/runtime-mux` |
 | `runtime-container` | docker or podman, local or remote | the container's pty, or a holder inside it | to write |
 | `runtime-vm` | a VM or microVM | a holder inside the guest | to write |
 | `runtime-process` | this machine, no terminal | none | the reference script's sibling |
@@ -113,7 +113,7 @@ What a view needs from a live session, whatever runs it:
 A stream is a process. The view starts it and speaks over its stdin and
 stdout; it ends when either side closes. Frames are length-prefixed, a type
 byte then a payload: output and input are raw bytes, every other frame a JSON
-object. The vocabulary is thurbox's own `PaneChunk` (`src/backend/contract.rs`),
+object. The vocabulary is thurbox's own `PaneChunk` (`crates/runtime-mux/src/contract.rs`),
 which already carries every item in the output's order on one channel:
 
 | Direction | Frame | Payload |

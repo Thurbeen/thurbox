@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::process::Command;
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -69,9 +69,9 @@ fn clipboard_entries(features: &[String]) -> usize {
 fn spawn(n: usize, dir: &std::path::Path) {
     let id = format!("11111111-1111-4111-8111-{n:012}");
     let spawned = thurbox::backend::WindowLifecycle::create_window(
-        &thurbox::backend::tmux::TmuxBackend::local(
-            thurbox::session::settings::default_scrollback_lines(),
-        ),
+        &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+            &Default::default(),
+        )),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(&id, &format!("features-{n}")),
             role: thurbox::backend::WindowRole::Agent,

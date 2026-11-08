@@ -77,76 +77,54 @@ Empty session queues retire on the worker, without needing the UI to poll.
 ```text
 node                 may reference                     [fully-qualified path only]
 session              nothing — pure data, the dependency sink (no
-                     process state, no env reads, no rendering crate)
+                     process state, no env reads, no rendering crate;
+                     re-exports runtime-mux's host model and SessionId)
 agent                agent::{generic,provider} (re-exports only)
 agent::*             every file a node: session, paths, shell, config::file
                      and the other agent::* files each declares (NEVER git,
                      NEVER backend)
 config               config::* (declarations only)
 config::*            every file a node: config::file (the one loader, over
-                     paths) plus session (themes: theme instead), and
-                     for hosts paths and shell
+                     paths) plus session (themes: theme instead)
 update               update::* (declarations only)
 update::*            session, paths, shell, agent::extension_config,
                      update::version_check
-backend              backend::{contract,pane,registry} (re-exports only)
-backend::contract    nothing — the role traits and the values crossing them
-backend::identity    backend::contract
-backend::instance    session, paths                    (ADR-12 socket naming)
-backend::pane        session, backend::{contract,identity,osc8,output_wake}
-backend::osc8        session
-backend::output_wake nothing
-backend::registry    session, backend::contract        (a container, no factory)
-backend::wiring      session, shell,                   (the factory: the only
-                     config::hosts,                     node naming an adapter)
-                     backend::{contract,registry,
-                     tmux,psmux,rmux}
-backend::tmux_compat nothing — declares the three below (tmux protocol helper)
-  ::control_mode     shell, backend::contract,
-                     backend::tmux_compat::transport
-  ::server           session, paths, shell,            (the shared server,
-                     agent::{host_path,preflight},      generic over the mux)
-                     backend::{contract,identity,
-                     instance},
-                     backend::tmux_compat::{control_mode,
-                     transport}
-  ::transport        shell, agent::preflight
-backend::tmux        session, shell, backend::contract, (the tmux adapter)
-                     backend::tmux_compat::{control_mode,
-                     server,transport}
-backend::psmux       session, shell, backend::{contract, (the psmux adapter —
-                     instance},
-                     backend::tmux_compat::{control_mode, a peer, never tmux's)
-                     server,transport}
-backend::rmux        session, shell, backend::contract, (the RMUX adapter)
-                     backend::tmux_compat::{control_mode,
-                     server,transport}
+backend              session, paths, config::hosts     (the gateway to
+                                                        runtime-mux, and what
+                                                        thurbox injects)
 git                  session, paths, shell
 storage              session, paths
 telemetry            session, storage                  (ADR-37/38 OTLP export)
 session_ops          session, storage, git, paths,     [agent|config|update::<file>,
-                     workspace, shell                   backend::{contract,identity,
-                                                        instance,registry}]
+                     workspace, shell                   backend]
 kernel               session, storage, paths,          [agent|config|update::<file>,
-                     session_ops, git, notifications,   backend::{contract,identity,
-                     shell, theme                       pane,registry}]
+                     session_ops, git, notifications,   backend]
+                     shell, theme
 cli                  session, storage, session_ops,    [agent|config|update::<file>,
-                     paths, notifications, ui_control,  backend::{contract,instance,
-                     telemetry, theme                   registry}, kernel]
+                     paths, notifications, ui_control,  backend, kernel]
+                     telemetry, theme
 notifications        session, paths, shell             [storage]
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
 ui_control           paths
-shell                session (HostLauncher::for_host, local_platform)
+shell                nothing — runtime-mux's launchers and quoting, re-exported
 theme                nothing — the presets, in ratatui colours
 coordinator          agent::input, config::settings,   (main's body: the loop,
-                     backend::{instance,output_wake,    the workers, the chrome)
-                     wiring}, clipboard, kernel,
+                     backend, clipboard, kernel,        the workers, the chrome)
                      paths, session, session_ops,
                      shell, storage, telemetry,
                      ui_control
 ```
+
+The multiplexer runtime is its own crate, `crates/runtime-mux` (ADR-41), with
+its own allowlist (`crates/runtime-mux/tests/architecture_rules.rs`,
+`docs/constitution.md` R3): the adapters `tmux`, `psmux`, `rmux` are peers
+over the shared `tmux_compat` server, only the factory `wiring` names one, and
+it depends on no other crate of the repository — the settings and data
+directory it needs are injected (`MuxSettings`, `HostsConfig`).
+`crates/architecture.toml` declares which crate may depend on which, and
+`crates/thurbox/tests/crate_graph.rs` holds `cargo metadata` to it.
 
 Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
 entry naming what it may reference in *any* form (`use`, `pub use`, brace groups,
@@ -155,7 +133,7 @@ modules have for the library), so a new module fails the test until its place is
 declared. Only the crate roots (`bin`, `lib`, `main`) are `EXEMPT`;
 `coordinator/` has an entry of its own listing the layers it wires, because
 "wires everything" was never the same claim as "may reach anything". `kernel` reaches
-`agent` and `backend::*` by fully-qualified path only — never `use` — so
+`agent` and `backend` by fully-qualified path only — never `use` — so
 every crossing into the side-effect layer is visible at its call site, the rule
 `session_ops` and `cli` already follow. A function-local `use crate::agent::…` (or
 `as` alias) breaks it too. One test, `every_module_rule_holds`, loops over every
@@ -163,7 +141,7 @@ entry — a rule used to be able to exist with no test calling it, which is how
 `kernel` drifted.
 
 A rule names a **node**: a top-level module, or a submodule governed on its own —
-every file module of `backend` and of `agent`, at any depth, is one
+every file module of `agent`, `config` and `update`, at any depth, is one
 (`SUBMODULE_GOVERNED`). A grant covers exactly its node, never the node's children,
 and a reference is judged where it **resolves** (`tests/architecture/resolver.rs`):
 `super::`, `self::`, nested brace groups, `as`, an imported name, a `pub use`
@@ -171,22 +149,30 @@ re-export and a `type` alias are all followed, so no spelling carries a crossing
 past a rule. On top of the allowlist: the production graph and the declared graph
 must both be acyclic (`the_production_graph_is_acyclic`,
 `the_declared_graph_is_acyclic`), every grant must be used by production code
-(`every_allowance_is_used`), only `coordinator` may be granted the factory
-`backend::wiring` and only the factory an adapter
-(`only_the_composition_roots_name_the_factory`), the adapters are peers —
-none reaches another and `backend::tmux_compat` reaches none, test code
-included (`the_adapters_are_peers`) — and each adapter's code names exactly its
-own `Multiplexer` variant (`every_multiplexer_the_factory_serves_has_an_adapter_of_its_own`,
-ADR-31), and the crossings still to be
+(`every_allowance_is_used`), and the crossings still to be
 removed are the `TRANSITIONAL` table — each item saying why it is there and
 what removes it, checked both ways so a new crossing fails and so does a stale
 entry. It is **empty**: lifecycle, pane I/O, platform and finally status and
 the heartbeat (ADR-29, ADR-30, ADR-32) go through the contract, and
-`consumers_reach_no_concrete_backend` holds `session_ops`, `cli` and `kernel`
-to reaching no adapter, protocol helper or factory — by reference, through
-aliases and re-exports, or through any grant transitively. `agent` is
-submodule-governed like `backend`, so a grant names the agent config a node
-reads. Fixture trees under `tests/fixtures/architecture/` pin that the
+`consumers_reach_no_concrete_backend` holds every module but `coordinator` to
+reaching no adapter, protocol helper or factory through the `backend` gateway
+— by reference, through aliases and re-exports — and `coordinator` to the
+factory alone. The resolver follows no external crate, so
+`runtime_mux_is_named_only_by_its_gateways` closes the side door: only
+`backend` and the modules that re-export a runtime type as their own
+(`RUNTIME_GATEWAYS`: `shell`, `session`, `paths`, `config::hosts`,
+`config::file`) may name `runtime_mux`, by path or under any alias. `agent` is submodule-governed, so a grant names the agent
+config a node reads.
+
+The runtime behind the gateway is `crates/runtime-mux`, held by its own
+`tests/architecture_rules.rs` over the same resolver: only the factory
+`wiring` may be granted an adapter and no module the factory
+(`only_the_factory_names_an_adapter`), the adapters are peers — none reaches
+another and `tmux_compat` reaches none, test code included
+(`the_adapters_are_peers`) — each adapter's code names exactly its own
+`Multiplexer` variant
+(`each_multiplexer_is_chosen_only_by_its_adapter_and_the_factory`, ADR-31),
+and the route and contract know no launcher, adapter or build OS. Fixture trees under `tests/fixtures/architecture/` pin that the
 resolver sees the old three-node backend cycle, PR #1272's mux/registry cycles,
 alias and re-export laundering, and test-only edges.
 
@@ -220,7 +206,11 @@ alias and re-export laundering, and test-only edges.
   a fallback with a warning, and writing it back with `paths::write_atomically`.
 - **`update/`** — self-update: `version_check` (is a newer release out) and
   `self_update` (install it).
-- **`backend/`** — the session-backend boundary. `contract` is the
+- **`backend`** — the session-backend boundary: the gateway to the
+  multiplexer runtime, `crates/runtime-mux` (ADR-41), which it re-exports,
+  and what thurbox injects into it (`mux_settings`: `settings.toml`'s
+  scrollback and the data directory; `wiring::configured`: the hosts of
+  `hosts.toml`). In the runtime, `contract` is the
   `SessionBackend` trait every consumer names — the `PaneStream`,
   `WindowLifecycle`, `PaneIo` and `StatusChannel` roles plus a `Capabilities`
   value for what an adapter can do; `registry` holds one backend
@@ -232,7 +222,8 @@ alias and re-export laundering, and test-only edges.
 - **`session/`** — plain data: `SessionId`, `SessionInfo`, `SessionState` and
   the read-time status folds (`hook_status`, the one module the kernel *and*
   the CLI derive a session's state through),
-  `SessionConfig`, `AgentDef`/`AgentRegistry`, `HostDef`/`HostRegistry`,
+  `SessionConfig`, `AgentDef`/`AgentRegistry`, `HostDef`/`HostRegistry` (the
+  last two re-exported from runtime-mux),
   `PluginSpec`/`PluginLock`/`PackageManifest` (`plugin_spec`, so the kernel and the
   CLI share one definition), plus the logic the kernel needs and cannot import
   `agent` for (`hyperlink`, `review`). Holds no process state, reads no

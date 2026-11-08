@@ -2676,6 +2676,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-mux"
+version = "0.0.0-dev"
+dependencies = [
+ "anyhow",
+ "base64 0.23.1",
+ "libc",
+ "proptest",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "unicode-width",
+ "uuid",
+ "vt100",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3232,6 +3252,7 @@ dependencies = [
  "prost",
  "ratatui",
  "regex",
+ "runtime-mux",
  "rusqlite",
  "serde",
  "serde_ignored",

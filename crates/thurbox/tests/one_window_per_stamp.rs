@@ -27,7 +27,7 @@ use thurbox::backend::identity::Located;
 use thurbox::backend::tmux_compat::server as tmux;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -51,9 +51,9 @@ fn have_tmux() -> bool {
 /// locates it: by the row, through the backend.
 fn send_to(session_id: &str, name: &str, text: &str) -> anyhow::Result<()> {
     use thurbox::backend::{PaneIo, WindowLifecycle};
-    let backend = thurbox::backend::tmux::TmuxBackend::local(
-        thurbox::session::settings::default_scrollback_lines(),
-    );
+    let backend = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+        &Default::default(),
+    ));
     let pane = backend
         .locate(thurbox::backend::Owner::new(session_id, name))?
         .agent
@@ -65,9 +65,9 @@ fn send_to(session_id: &str, name: &str, text: &str) -> anyhow::Result<()> {
 /// A window running a program that outlives the test's own commands.
 fn spawn(session_id: &str, name: &str) -> String {
     thurbox::backend::WindowLifecycle::create_window(
-        &thurbox::backend::tmux::TmuxBackend::local(
-            thurbox::session::settings::default_scrollback_lines(),
-        ),
+        &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+            &Default::default(),
+        )),
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new(session_id, name),
             role: thurbox::backend::WindowRole::Agent,
@@ -124,7 +124,7 @@ fn plant_stamp(server: &TmuxServer, pane: &str) {
 fn local_index() -> thurbox::backend::identity::WindowIndex {
     thurbox::backend::identity::WindowIndex::from_listing(
         thurbox::backend::WindowLifecycle::discover(&thurbox::backend::tmux::TmuxBackend::local(
-            thurbox::session::settings::default_scrollback_lines(),
+            &thurbox::backend::mux_settings(&Default::default()),
         ))
         .expect("list windows"),
     )
@@ -133,9 +133,9 @@ fn local_index() -> thurbox::backend::identity::WindowIndex {
 /// Kill the session's agent window, found as every teardown finds it.
 fn kill_agent(session: &str, name: &str) -> anyhow::Result<()> {
     use thurbox::backend::WindowLifecycle;
-    let backend = thurbox::backend::tmux::TmuxBackend::local(
-        thurbox::session::settings::default_scrollback_lines(),
-    );
+    let backend = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+        &Default::default(),
+    ));
     if let Located::At(pane) = backend
         .locate(thurbox::backend::Owner::new(session, name))?
         .agent
@@ -357,9 +357,9 @@ fn observed_unowned_creation_preserves_unrelated_unowned_windows() {
     let server = TmuxServer::pin(SOCKET);
     let _paths = thurbox::paths::TestPathGuard::new(root.path());
     let original = spawn("", "independent-first-unowned");
-    let backend = thurbox::backend::tmux::TmuxBackend::local(
-        thurbox::session::settings::default_scrollback_lines(),
-    );
+    let backend = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+        &Default::default(),
+    ));
     let created = backend.create_window_observed(
         &thurbox::backend::WindowSpec {
             owner: thurbox::backend::Owner::new("", "independent-second-unowned"),

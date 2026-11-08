@@ -207,7 +207,7 @@ won't pay off.
   schedule string. Automations are typically a handful, and ADR-P1 bounds the
   frequency — not worth the split. Left as-is.
 - **vt100 parser lock contention** (`src/app/view.rs` render vs.
-  `src/backend/pane.rs` reader thread): the reader locks the parser per output
+  `crates/runtime-mux/src/pane.rs` reader thread): the reader locks the parser per output
   chunk; the UI locked it per frame. ADR-P1 collapses idle-frame UI locks to
   near zero (`parser_locks_render`), so the contention window shrinks for free.
   Cloning the vt100 screen for lock-free rendering was rejected — the screen is
@@ -2612,7 +2612,7 @@ Measured against this repository's `origin`: **1776 ms, 1954 ms, 2018 ms**
 (three runs). The cost is network-bound and therefore unbounded — for a repo
 on a remote host the call is ssh-wrapped, and a single ssh connect to an
 unroutable address takes exactly **5014 ms** (`ConnectTimeout=5`,
-`src/shell.rs:51`).
+`crates/runtime-mux/src/shell.rs`).
 
 Symptom: the TUI stops painting and stops accepting input for ~2 s after a repo
 is chosen in the new-session flow, longer on a slow network, and ~5 s per
@@ -2640,9 +2640,10 @@ spawn path never received the same treatment.
 
 #### 3. The mailbox wake reports success at a pane nothing is listening to
 
-`send_prompt_now` (`src/backend/tmux_compat/server.rs`) targets the session's tmux window and
-treats a zero exit from `send-keys` as delivery. thurbox sets
-`remain-on-exit=on` on an agent's window (`keeps_dead_pane`, `src/backend/tmux_compat/server.rs`;
+`send_prompt_now` (`crates/runtime-mux/src/tmux_compat/server.rs`) targets the
+session's tmux window and treats a zero exit from `send-keys` as delivery.
+thurbox sets `remain-on-exit=on` on an agent's window (`keeps_dead_pane`,
+`crates/runtime-mux/src/tmux_compat/server.rs`;
 at the time of this measurement it was asked for session-wide in `SESSION_OPTS`,
 which — being a window option — actually reached only whichever window was
 current), so an agent that exits or crashes **leaves its window and pane in

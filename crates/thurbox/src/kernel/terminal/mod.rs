@@ -878,7 +878,7 @@ impl Terminals {
             .session
             .shell_pane
             .as_ref()
-            .map(|pane| pane.backend_id.clone())
+            .map(|pane| pane.backend_id().to_string())
     }
 
     /// Whether a session has a shell pane open.

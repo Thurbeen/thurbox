@@ -40,7 +40,7 @@ use thurbox::backend::tmux::TmuxBackend;
 use thurbox::backend::SessionBackend;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -91,9 +91,9 @@ async fn a_program_that_ends_reports_that_it_ended() {
         return;
     }
 
-    let backend = std::sync::Arc::new(TmuxBackend::local(
-        thurbox::session::settings::default_scrollback_lines(),
-    ));
+    let backend = std::sync::Arc::new(TmuxBackend::local(&thurbox::backend::mux_settings(
+        &Default::default(),
+    )));
     if let Err(e) = backend.ensure_ready() {
         panic!("tmux control mode would not start: {e:#}");
     }

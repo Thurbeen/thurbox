@@ -1,0 +1,22 @@
+# The crates of this repository and the workspace crates each may depend on
+# (ADR-41; docs/README.md has the components and the enforcement table). In
+# the format Fleet's fleet-arch reads; until Fleet is in the repository,
+# crates/thurbox/tests/crate_graph.rs holds `cargo metadata` to it.
+#
+# The graph, bottom up:
+#
+#   runtime-mux   adapter  the multiplexer runtime: tmux, psmux, rmux
+#   thurbox       edge     the TUI and thurbox-cli   -> runtime-mux
+
+# Sessions on a terminal multiplexer, local or on a host over ssh or wsl.exe.
+# Knows nothing of thurbox: what it needs from settings and from where
+# thurbox keeps its files is passed in (`MuxSettings`, `HostsConfig`).
+[crates.runtime-mux]
+role = "adapter"
+deps = []
+
+# Transitional: thurbox links the runtime directly until Fleet drives the
+# runtimes (step 5 of the v3 migration), when this edge goes.
+[crates.thurbox]
+role = "edge"
+deps = ["runtime-mux"]

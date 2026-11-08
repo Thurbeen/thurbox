@@ -24,7 +24,8 @@ static PROVIDER: OnceLock<SdkLoggerProvider> = OnceLock::new();
 
 /// The bridge layer, when `export_diagnostic_logs` is on.
 ///
-/// Its filter is its own: WARN and above, from thurbox's own code only. The
+/// Its filter is its own: WARN and above, from thurbox's own code only (its
+/// multiplexer runtime, `runtime_mux`, included). The
 /// file's `thurbox=debug` is far too much to ship, and the exporter's own
 /// HTTP stack logs through `tracing` too, so letting other targets through
 /// would feed each export back into the next.
@@ -62,7 +63,9 @@ where
         .build();
     let bridge = OpenTelemetryTracingBridge::new(&provider);
     let _ = PROVIDER.set(provider);
-    let filter = Targets::new().with_target("thurbox", LevelFilter::WARN);
+    let filter = Targets::new()
+        .with_target("thurbox", LevelFilter::WARN)
+        .with_target("runtime_mux", LevelFilter::WARN);
     Ok(Some(bridge.with_filter(filter)))
 }
 

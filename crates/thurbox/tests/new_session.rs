@@ -16,7 +16,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use thurbox::agent::preflight::Presence;
+use thurbox::backend::preflight::Presence;
 use thurbox::git::ExistingWorktree;
 use thurbox::kernel::command::{BookmarkEdit, Command, InFlight, Phase};
 use thurbox::kernel::host::{Click, KeyPress, LuaHost, Published, RenderContext};
@@ -476,13 +476,13 @@ fn opening_with_no_hosts_starts_at_the_repositories() {
 fn opening_without_hosts_shows_available_multiplexers_first() {
     let host = host();
     let mut world = World::default();
-    let local = thurbox::agent::preflight::local_multiplexer();
+    let local = thurbox::backend::preflight::local_multiplexer();
     world.snapshot.mux.available = vec![local.into(), "rmux".into()];
     press(&host, &world, "ctrl+n");
     let screen = drawn(&host, &world);
     assert!(screen.contains("Multiplexer"), "{screen}");
     assert!(
-        screen.contains(thurbox::agent::preflight::local_multiplexer()),
+        screen.contains(thurbox::backend::preflight::local_multiplexer()),
         "{screen}"
     );
 }
@@ -1956,7 +1956,7 @@ fn a_plain_selection_names_the_session_then_the_agent() {
             worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
+            multiplexer: Some(thurbox::backend::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
     );
@@ -1997,7 +1997,7 @@ fn an_untouched_name_takes_the_repository_it_just_picked() {
             worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
+            multiplexer: Some(thurbox::backend::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
     );
@@ -2075,7 +2075,7 @@ fn an_existing_worktree_is_offered_under_its_repo_and_opens_with_no_questions() 
             worktree_path: Some("/src/thurbox/.worktrees/dynamic-tooltips".into()),
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
+            multiplexer: Some(thurbox::backend::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
     );
@@ -2187,7 +2187,7 @@ fn a_worktree_selection_asks_for_a_base_branch_and_a_branch_name() {
             worktree_path: None,
             agent: Some("claude".into()),
             host: None,
-            multiplexer: Some(thurbox::agent::preflight::local_multiplexer().into()),
+            multiplexer: Some(thurbox::backend::preflight::local_multiplexer().into()),
             extras: Vec::new(),
         }]
     );

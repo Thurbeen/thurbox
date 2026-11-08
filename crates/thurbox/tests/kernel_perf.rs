@@ -680,7 +680,7 @@ fn the_cli_prints_the_plugin_table_sorted_with_a_stable_json_shape() {
     assert!(plain.human.contains("--plugins"), "{}", plain.human);
 }
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 fn file_store() -> (

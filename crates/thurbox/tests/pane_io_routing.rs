@@ -32,7 +32,7 @@ use thurbox::session::SharedSession;
 use thurbox::session::{Multiplexer, Route, SessionId, Via};
 use thurbox::storage::Database;
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 #[path = "support/recording_backend.rs"]
@@ -648,9 +648,9 @@ fn a_remote_rows_text_never_reaches_a_local_namesake() {
 
     // The local namesake: `tb-x` on this machine's server, unstamped, echoing
     // whatever it is sent.
-    let local = thurbox::backend::tmux::TmuxBackend::local(
-        thurbox::session::settings::default_scrollback_lines(),
-    );
+    let local = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+        &Default::default(),
+    ));
     local.ensure_ready().expect("ready the private server");
     let local_pane = local
         .spawn("tb-x", "cat", &[], None, &Default::default(), 24, 80)
@@ -1521,9 +1521,9 @@ fn a_spawn_automation_never_types_into_a_window_no_row_owns() {
     .expect("create a spawn automation");
     let spawn_id = spawn["id"].as_i64().unwrap();
 
-    let local = thurbox::backend::tmux::TmuxBackend::local(
-        thurbox::session::settings::default_scrollback_lines(),
-    );
+    let local = thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+        &Default::default(),
+    ));
     local.ensure_ready().expect("ready the private server");
     let stranger = local
         .spawn(

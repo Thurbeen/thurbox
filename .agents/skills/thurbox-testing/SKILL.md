@@ -247,7 +247,7 @@ both by re-running the tests that create them in a child process and checking wh
 survived it.
 
 A test that starts a **tmux server does not own its removal** — a guard does.
-`tests/support/tmux_server.rs`'s `TmuxServer` is that guard, every harness in
+`crates/runtime-mux/tests/support/tmux_server.rs`'s `TmuxServer` is that guard, every harness in
 `tests/` holds one, and `tests/tmux_server_leak.rs` is the worked example and
 the gate. Build one with `TmuxServer::pin(SOCKET)` (process-wide, which nextest
 makes safe) or `TmuxServer::private(SOCKET)` plus `server.scope(&mut cmd)` per
@@ -293,7 +293,7 @@ runs a child copy of the test binary that starts a server and panics, then asks
 the **process table** — not tmux, which cannot answer for a socketless server —
 what survived.
 
-`src/backend/tmux_compat/control_mode/tests.rs`'s `ThrowawayServer` is the one harness that
+`crates/runtime-mux/src/tmux_compat/control_mode/tests.rs`'s `ThrowawayServer` is the one harness that
 cannot have a socket directory of its own — the lib's unit tests share a process
 and `TMUX_TMPDIR` is process-wide — so it removes the socket file by hand
 instead.

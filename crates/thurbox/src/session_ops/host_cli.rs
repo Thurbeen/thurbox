@@ -1212,7 +1212,7 @@ fn run_script_classified(
             // create` run here pins whatever `PATH` it inherits on the agent's
             // pane — so the host's login `PATH` goes in first (see
             // `agent::host_path`).
-            let script = match crate::agent::host_path::assignment_for(host) {
+            let script = match crate::backend::host_path::assignment_for(host) {
                 Some(path) => format!("{path}{script}"),
                 None => script.to_string(),
             };

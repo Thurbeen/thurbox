@@ -20,6 +20,10 @@ keywords = ["tui", "agent", "tmux", "git", "cli"]
 categories = ["command-line-utilities"]
 
 [dependencies]
+# The multiplexer runtime: session backends, hosts and launchers (ADR-41).
+# Linked directly until Fleet drives the runtimes; crates/architecture.toml.
+runtime-mux = { path = "../runtime-mux" }
+
 # TUI framework
 ratatui = "0.30"
 crossterm = "0.29"
@@ -120,8 +124,8 @@ notify-rust = "4"
 # The console input mode, for the mouse. Already in the tree (crossterm's own
 # Windows backend is built on it), so this costs no new dependency -- see
 # `coordinator::chrome`'s `windows_console` for what it is needed for.
-# `poll(2)` and a self-pipe, so agent output can wake the render loop
-# (`agent::output_wake`). Already in the tree as a dev-dependency.
+# `poll(2)` on stdin in the render loop (`coordinator`). Already in the tree as
+# a dev-dependency.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -156,6 +160,9 @@ name = "search_cost"
 harness = false
 
 [dev-dependencies]
+# The runtime again, with the hook a test uses to decide as the other OS.
+runtime-mux = { path = "../runtime-mux", features = ["test-support"] }
+
 # Temporary directories. Test-only: every use is inside a `#[cfg(test)]` block or
 # a doctest example, and doctests link dev-dependencies — so this does not need
 # to be built into the shipped binaries.

@@ -1,7 +1,7 @@
 [workspace]
 # One repository for thurbox, Fleet and the runtimes (ADR-41). Each component
 # is a crate under crates/; docs/README.md says which may depend on which.
-members = ["crates/thurbox"]
+members = ["crates/runtime-mux", "crates/thurbox"]
 # The vendored crates are patches, not members: CI runs crossterm's own tests
 # from its own manifest and lockfile.
 exclude = ["vendor/crossterm", "vendor/tui-term"]

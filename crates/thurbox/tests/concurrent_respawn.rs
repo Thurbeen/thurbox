@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::process::Command;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -71,9 +71,9 @@ fn every_session_relaunching_at_once_gets_its_own_window() {
                 // instead of being serialised by thread startup.
                 barrier.wait();
                 thurbox::backend::WindowLifecycle::create_window(
-                    &thurbox::backend::tmux::TmuxBackend::local(
-                        thurbox::session::settings::default_scrollback_lines(),
-                    ),
+                    &thurbox::backend::tmux::TmuxBackend::local(&thurbox::backend::mux_settings(
+                        &Default::default(),
+                    )),
                     &thurbox::backend::WindowSpec {
                         owner: thurbox::backend::Owner::new(&id, &name),
                         role: thurbox::backend::WindowRole::Agent,

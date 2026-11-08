@@ -13,7 +13,7 @@ use thurbox::session::{Multiplexer, Route};
 use thurbox::session_ops::{delete, rename, restart, restore, spawn};
 use thurbox::storage::Database;
 
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 struct RmuxServer {

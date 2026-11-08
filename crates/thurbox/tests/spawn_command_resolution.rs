@@ -35,7 +35,7 @@ use thurbox::backend::{PaneStream, WindowLifecycle};
 use thurbox::backend::tmux::TmuxBackend;
 
 /// The guard every tmux server in this file is reaped by — see its own doc.
-#[path = "support/tmux_server.rs"]
+#[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
 use tmux_server::TmuxServer;
@@ -204,7 +204,7 @@ fn a_local_spawn_finds_the_agent_the_multiplexer_cannot() {
     );
     std::env::set_var("PATH", &path);
 
-    let backend = TmuxBackend::local(thurbox::session::settings::default_scrollback_lines());
+    let backend = TmuxBackend::local(&thurbox::backend::mux_settings(&Default::default()));
     if let Err(e) = backend.ensure_ready() {
         eprintln!("skipping: tmux control mode would not start: {e:#}");
         return;

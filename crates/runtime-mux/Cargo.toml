@@ -1,0 +1,46 @@
+[package]
+name = "runtime-mux"
+version = "0.0.0-dev"
+edition = "2021"
+rust-version = "1.95"
+# Sets the `dev_build` cfg the way thurbox's does: one release version, so
+# the socket and session names a dev build uses stay apart from a release's.
+build = "build.rs"
+authors = ["LeTuR"]
+license = "MIT"
+description = "Agent sessions on a terminal multiplexer (tmux, psmux, rmux), locally or on a remote host"
+repository = "https://github.com/Thurbeen/thurbox"
+publish = false
+
+[lib]
+name = "runtime_mux"
+
+[dependencies]
+anyhow = "1.0"
+# Base64 payload framing for a Windows host's PowerShell launcher (`shell`).
+base64 = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_ignored = "0.1.14"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+toml = "1.0"
+tracing = "0.1"
+unicode-width = "0.2"
+uuid = { version = "1", features = ["v4", "serde"] }
+vt100 = "0.18"
+
+# `poll(2)` and a self-pipe, so agent output can wake the render loop
+# (`output_wake`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1"
+libc = "0.2"
+
+[features]
+# `shell::simulate_local`, for an embedder's own tests to decide as the other
+# OS would. Enabled from thurbox's dev-dependencies only, so no release build
+# carries it.
+test-support = []

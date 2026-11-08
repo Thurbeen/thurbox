@@ -52,7 +52,10 @@ backend contract; only backend::wiring names an adapter, and only a
 composition root names backend::wiring. A new module fails that test until its
 rules entry is declared, and every entry, coordinator's too, is asserted by one
 loop. A crossing that is still allowed is in its TRANSITIONAL table with the
-task that removes it; adding one is a design decision, not a fix.
+task that removes it; adding one is a design decision, not a fix. The runtime
+behind backend is crates/runtime-mux, held to its own tests/architecture_rules.rs:
+the adapters are peers, only its wiring names one, and it reads nothing of
+thurbox - the settings and data directory it needs are passed in.
 
 Anything that touches the world - terminal attach, commands, diffs, metrics,
 git, repository reads, update checks - runs on a worker and publishes back,
@@ -226,7 +229,7 @@ under this project's own pre-commit hook inherits a GIT_DIR pointing at the
 real repository and will rewrite it.
 
 A test that starts a tmux server must hold a TmuxServer guard
-(tests/support/tmux_server.rs) rather than pin a socket and kill it by hand.
+(crates/runtime-mux/tests/support/tmux_server.rs) rather than pin a socket and kill it by hand.
 Teardown written at each exit point is skipped by every path that panics or
 times out, and the server it leaves has lost its socket file with the run's own
 directory, so nothing can connect to reap it. tests/tmux_server_leak.rs gates

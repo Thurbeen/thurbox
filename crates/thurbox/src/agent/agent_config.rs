@@ -143,7 +143,7 @@ new_session_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"]
 "#;
 
 /// The `shell` built-in as seeded, around this machine's
-/// [`crate::shell::HostShell::interactive_agent`] — which a session on a host of the other
+/// [`interactive_shell_agent`] — which a session on a host of the other
 /// platform is given instead when its entry is still this stock one
 /// (`session_ops::resolve_agent_def`).
 ///
@@ -165,13 +165,38 @@ command = "{command}"
 args = {args}
 "#;
 
+/// The built-in `shell` agent: `shell`, interactive.
+///
+/// Both spellings are always compiled in, because the platform that
+/// matters is the session's host, not this build's (#1458): a Linux
+/// thurbox spawning on a Windows host must send it PowerShell.
+///
+/// `-i` is load-bearing on POSIX, not decoration. A plain `bash` in a
+/// pane executes what is sent to it but renders no prompt and no echo,
+/// which starves anything reading the screen to decide whether the
+/// session is ready — the pane looks blank and working at the same time.
+/// On Windows `-NoLogo` only drops the banner; the session is
+/// interactive because no `-Command` is passed.
+pub fn interactive_shell_agent(shell: crate::shell::HostShell) -> AgentDef {
+    let (command, args) = match shell {
+        crate::shell::HostShell::Posix => ("bash", "-i"),
+        crate::shell::HostShell::PowerShell => ("powershell", "-NoLogo"),
+    };
+    AgentDef {
+        name: "shell".into(),
+        command: command.into(),
+        args: vec![args.into()],
+        ..AgentDef::default()
+    }
+}
+
 /// The seed document: the built-in agent definitions as they are written to a
 /// fresh `agents.toml`, and the source [`builtin_registry`] parses.
 ///
 /// A function rather than a `const` because one entry (`shell`) differs by
 /// platform.
 pub fn builtin_agents_toml() -> String {
-    let shell = crate::shell::HostShell::local().interactive_agent();
+    let shell = interactive_shell_agent(crate::shell::HostShell::local());
     let shell = SHELL_AGENT_TOML
         .replace("{command}", &shell.command)
         .replace("{args}", &format!("{:?}", shell.args));

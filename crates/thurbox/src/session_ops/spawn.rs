@@ -823,14 +823,16 @@ fn missing_agent_warning(
     command: &str,
 ) -> Option<String> {
     if host.is_some()
-        || crate::agent::preflight::look_up(command) != crate::agent::preflight::Presence::Missing
+        || crate::backend::preflight::look_up(command)
+            != crate::backend::preflight::Presence::Missing
     {
         return None;
     }
     Some(
-        crate::agent::preflight::Dependency::Agent {
+        crate::backend::preflight::Dependency::Agent {
             name: agent_name,
             command,
+            registry: crate::agent::agent_config::agents_config_path().as_deref(),
         }
         .missing_message(),
     )
@@ -2311,7 +2313,7 @@ fn resolve_backend(
     let configured = crate::config::settings::load_quiet()
         .multiplexer
         .or_else(|| {
-            let installed = crate::agent::preflight::local_multiplexers();
+            let installed = crate::backend::preflight::local_multiplexers();
             crate::session::Multiplexer::preferred(crate::shell::local_platform(), &installed)
                 .map(|mux| mux.name().to_string())
         });
