@@ -24,8 +24,9 @@ pub struct Config {
     #[serde(default)]
     pub runtime: Option<RuntimeConfig>,
     /// The `[workspaces]` section: the adapter through which Fleet makes a
-    /// `{repositories}` workspace before the spawn. Absent: the runtime
-    /// makes it.
+    /// `{repositories}` workspace before the spawn. Absent: git worktrees
+    /// under `<data dir>/workspaces` (the fake runtime's own host, for the
+    /// fake).
     #[serde(default)]
     pub workspaces: Option<WorkspacesConfig>,
     #[serde(default)]
@@ -120,13 +121,10 @@ pub struct RuntimeConfig {
     /// thurbox: the variable each harness reads `Task.spec.model` from.
     #[serde(default)]
     pub model_env: BTreeMap<String, String>,
-    /// thurbox: each repository URL a Task may name, and its source checkout,
-    /// an absolute path on the hosts thurbox creates worktrees on.
+    /// Each repository URL a Task may name, and its source checkout, an
+    /// absolute path on this machine: the worktree adapter's sources.
     #[serde(default)]
     pub repositories: BTreeMap<String, String>,
-    /// thurbox: `delete` (the default) removes a session's worktrees with it;
-    /// `keep` leaves them, restorable in thurbox.
-    pub workspace_cleanup: Option<String>,
     /// thurbox: how each harness is trusted in its workspace: `codex`,
     /// `claude` or `none`, over the built-in entries for those harnesses.
     #[serde(default)]

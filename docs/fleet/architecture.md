@@ -168,15 +168,15 @@ A Session has two parts:
 The runtime port is the only way Fleet reaches a Session. Fleet owns the
 Session's identity, its lifecycle record and every decision about it. The
 runtime owns the agent process, its window and its conversation, and
-answers what it can prove. The runtime also owns the workspace, unless
-Fleet made it through the workspace port.
+answers what it can prove. Fleet makes the workspace through the workspace
+port; the runtime runs the session in it.
 
 This split is the first step toward the
 [target architecture](architecture-target.svg), where Thurbox
 is one view among others and Fleet runs Sessions behind the runtime port.
-The next steps move the remaining Session responsibilities out of the
-Thurbox runtime adapter, one port call at a time: workspace materialization,
-the agent's lifecycle hooks, and attaching a live terminal.
+Workspace materialization, the agent's lifecycle hooks (`fleet signal`),
+proven delivery and the harness profiles have moved out of the Thurbox
+runtime adapter into Fleet; attaching a live terminal is the next step.
 
 ## Workspaces and the workspace port
 
@@ -194,11 +194,9 @@ Task ──owns──▶ Workspace {key, host, dir} ◀──runs in── Sessi
 - The Workspace key is the Session key, `<name>.<uid>`.
 - TaskController is the only writer of `status.workspace`.
 
-The `[workspaces]` section of `fleet.toml` selects who makes a
-`repositories` workspace:
-
-- With the section, Fleet makes it through the workspace port.
-- Without the section, the runtime makes it, as before.
+Fleet makes every `repositories` workspace through the workspace port. The
+`[workspaces]` section of `fleet.toml` only picks the adapter; without it,
+the `worktree` adapter makes it under `<data dir>/workspaces`.
 
 A `dir` workspace exists before the Task. Nothing makes or cleans it.
 

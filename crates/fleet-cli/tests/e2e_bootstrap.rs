@@ -558,7 +558,7 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         fn lost(&self, _: &SessionRef) -> Observation<bool> {
             Observation::Known(false)
         }
-        fn revive(&self, _: &SessionRef) -> Observation<EffectOutcome> {
+        fn revive(&self, _: &SessionRef, _: Option<&str>) -> Observation<EffectOutcome> {
             panic!("the session is running")
         }
     }
@@ -576,6 +576,7 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         holder: "lease-clock-test".into(),
         forge: None,
         workspaces: None,
+        signals: None,
         change_request_defaults: Default::default(),
         forge_defaults: Default::default(),
         gateway: None,
@@ -946,12 +947,47 @@ fn thurbox_bootstrap(name: &str) -> Env {
 
 const APP_URL: &str = "https://example.invalid/org/app";
 
-fn app_source() -> &'static str {
-    if cfg!(windows) {
-        "C:\\src\\app"
-    } else {
-        "/src/app"
+/// A git checkout with one commit, which Fleet's worktree adapter makes
+/// the Task's workspace from.
+fn app_source(env: &Env) -> String {
+    let src = env.root.join("src").join("app");
+    if !src.exists() {
+        fs::create_dir_all(&src).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.test",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "first",
+            ],
+        ] {
+            let mut git = std::process::Command::new("git");
+            for var in [
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_INDEX_FILE",
+                "GIT_COMMON_DIR",
+            ] {
+                git.env_remove(var);
+            }
+            let out = git.arg("-C").arg(&src).args(args).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
     }
+    src.to_string_lossy().into_owned()
+}
+
+/// The directory Fleet made for the Task `name`.
+fn workspace_dir(env: &Env, name: &str) -> Option<String> {
+    env.get(name)["status"]["workspace"]["dir"]
+        .as_str()
+        .map(str::to_string)
 }
 
 fn repositories_task(name: &str) -> serde_json::Value {
@@ -998,7 +1034,7 @@ fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
 fn spawned_reason(env: &Env, name: &str) -> String {
     env.status(name)["conditions"]
         .as_array()
-        .and_then(|cs| cs.iter().find(|c| c["type"] == "Spawned"))
+        .and_then(|cs| cs.iter().find(|c| c["type"] == "WorkspaceReady"))
         .and_then(|c| c["reason"].as_str())
         .unwrap_or("")
         .to_string()
@@ -1032,14 +1068,18 @@ fn up_reloads_runtime_repositories_without_a_restart() {
     up.assert_running();
 
     // A valid edit maps the repository: the same process spawns the Task.
-    fs::write(&env.config, with_mapping(&valid, APP_URL, app_source())).unwrap();
+    fs::write(
+        &env.config,
+        with_mapping(&valid, APP_URL, &app_source(&env)),
+    )
+    .unwrap();
     until_within(Duration::from_secs(60), || {
         env.status("app")["phase"] == "Briefed"
     });
     let create = create_of(&env, "app").expect("app spawned");
     assert_eq!(
         after(&create, "--repo-path"),
-        Some(app_source()),
+        workspace_dir(&env, "app").as_deref(),
         "{create:?}"
     );
     support::assert_condition(
@@ -1060,7 +1100,7 @@ fn up_reloads_runtime_repositories_without_a_restart() {
     let create = create_of(&env, "app2").expect("app2 spawned");
     assert_eq!(
         after(&create, "--repo-path"),
-        Some(app_source()),
+        workspace_dir(&env, "app2").as_deref(),
         "{create:?}"
     );
 

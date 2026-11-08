@@ -98,8 +98,12 @@ pub enum Action {
     /// Start the agent of a session whose window is gone again, in its own
     /// workspace and conversation, under the same identity. A session that
     /// is running is left alone.
+    /// `conversation`: the harness's own id its hooks last reported, which
+    /// the harness profile's resume argv names.
     Revive {
         session: SessionRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
     },
     /// Stop the agent of an idle session and keep its row, its workspace
     /// and its conversation. A stopped session is left alone.
@@ -111,6 +115,8 @@ pub enum Action {
     /// alone.
     Resume {
         session: SessionRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
     },
     /// Take a draft change out of draft, through the Forge port: the only
     /// forge write Fleet performs. `expect` is the head and state the
@@ -411,7 +417,8 @@ pub enum Probe {
     Paused {
         session: SessionRef,
     },
-    /// Whether the session's agent is working or idle.
+    /// What the session's agent reported through `fleet signal`: whether it
+    /// is working or idle, the prompts it was given, its conversation.
     Activity {
         session: SessionRef,
     },
@@ -470,7 +477,10 @@ pub struct Observations {
     pub at_rest: Option<Observation<bool>>,
     pub lost: Option<Observation<bool>>,
     pub paused: Option<Observation<bool>>,
+    /// The agent's activity, as its hooks last reported it.
     pub activity: Option<Observation<crate::runtime::Activity>>,
+    /// Everything the agent's hooks reported, folded.
+    pub signals: Option<Observation<crate::signal::Reported>>,
     /// `Known(None)` means the host proved no whole workspace holds the key.
     pub workspace: Option<Observation<Option<crate::workspace::WorkspaceRef>>>,
 }

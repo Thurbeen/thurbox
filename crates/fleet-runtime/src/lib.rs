@@ -7,14 +7,18 @@
 //!   fake workspace adapter too.
 //! - [`WorktreeWorkspaces`]: the workspace port's git worktree adapter, on
 //!   this machine.
+//! - [`FileSignals`]: the signal port's adapter, one file per session on
+//!   this machine.
 
 pub mod fake;
+pub mod signals;
 pub mod thurbox;
 pub mod worktree;
 
-pub use fake::{FakeHost, FakeRuntime, FakeWorkspace, Fault};
-pub use thurbox::{Cleanup, Repositories, ThurboxConfig, ThurboxRuntime, TrustInterface};
-pub use worktree::{WorktreeConfig, WorktreeWorkspaces};
+pub use fake::{FakeHost, FakeRuntime, FakeSession, FakeWorkspace, Fault};
+pub use signals::FileSignals;
+pub use thurbox::{ThurboxConfig, ThurboxRuntime, TrustInterface};
+pub use worktree::{Repositories, WorktreeConfig, WorktreeWorkspaces};
 
 /// Resolve manager-local explicit sources, never an implicit shell. Errors
 /// deliberately omit child output, paths and parser text (all may contain values).

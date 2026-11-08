@@ -15,6 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 use fleet_api::Observation;
+use fleet_api::harness::profile;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::task::{RepositoriesWorkspace, SessionRef};
@@ -27,7 +28,7 @@ pub struct Fault {
     /// `materialize`, `findWorkspace`, `cleanWorkspace` (the workspace
     /// port), `host`, `createDir`, `removeDir`, `spawn`, `find`, `list`, `events`, `ready`,
     /// `workspaceTrust`, `brief`, `briefDelivered`, `atRest`, `release`,
-    /// `lost`, `revive`, `activity`, `paused`, `pause`, `resume`.
+    /// `lost`, `revive`, `paused`, `pause`, `resume`.
     pub call: String,
     /// `unknown`, `fail` or `abort`.
     pub outcome: String,
@@ -114,10 +115,15 @@ pub struct FakeSession {
     /// it.
     #[serde(default)]
     pub paused: bool,
-    /// `active` or `idle` as the agent reports it; anything else, or none,
-    /// is Unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activity: Option<String>,
+    /// The argv the harness profile launched the agent with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub argv: Vec<String>,
+    /// Each argv a revive or a resume started it again with, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restarts: Vec<Vec<String>>,
+    /// The environment the spawn started the agent with.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 /// A workspace the fake workspace adapter made: a record, no files.
@@ -148,6 +154,10 @@ pub struct FakeState {
     /// Whether a new session's agent waits for a person to trust its
     /// workspace.
     pub spawn_untrusted: bool,
+    /// Whether the agents' prompt hooks stay silent. Otherwise each agent
+    /// reports every text it is given through its signal file, as a coding
+    /// agent's prompt hook does.
+    pub prompt_hook_silent: bool,
     pub next_id: u64,
     /// One line per effect that happened, in order.
     pub log: Vec<String>,
@@ -210,6 +220,11 @@ impl FakeHost {
         self.update(|s| {
             s.hosts.insert(host.into(), state.into());
         })
+    }
+
+    /// Silence, or restore, every agent's prompt hook.
+    pub fn set_prompt_hook_silent(&self, silent: bool) -> io::Result<()> {
+        self.update(|s| s.prompt_hook_silent = silent)
     }
 
     pub fn set_spawn_not_ready(&self, not_ready: bool) -> io::Result<()> {
@@ -473,6 +488,19 @@ impl Runtime for FakeRuntime {
 
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
         let spec = spec.clone();
+        // The harness profile's argv, as a runtime that runs a program is
+        // given it: the extra directories spanned, the workspace trusted.
+        let (extra, root) = match &spec.ready {
+            Some(r) => (
+                r.extra_dirs.clone(),
+                Some(r.trust_root.clone().unwrap_or_else(|| r.dir.clone())),
+            ),
+            None => (Vec::new(), spec.workspace.dir().map(str::to_string)),
+        };
+        let argv = match profile(&spec.harness).launch(&extra, root.as_deref()) {
+            Ok(argv) => argv,
+            Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
+        };
         self.effect("spawn", move |s| {
             if let Some(x) = live(s, &spec.key) {
                 return EffectOutcome::Spawned {
@@ -498,7 +526,9 @@ impl Runtime for FakeRuntime {
                 lost: false,
                 released: false,
                 paused: false,
-                activity: None,
+                env: spec.env.clone(),
+                argv: argv.clone(),
+                restarts: Vec::new(),
             };
             s.log.push(format!("spawn {}", spec.key));
             let r = session_ref(&x);
@@ -571,6 +601,18 @@ impl Runtime for FakeRuntime {
                 };
             }
             x.briefs.push(intent.clone());
+            if !s.prompt_hook_silent
+                && let Some(file) = x.env.get(fleet_api::signal::SIGNAL_FILE_ENV)
+            {
+                let payload =
+                    serde_json::json!({"prompt": text, "session_id": format!("conv-{}", x.id)});
+                let signal = fleet_api::signal::Signal::from_hook(
+                    0,
+                    fleet_api::signal::State::Prompt,
+                    Some(&payload),
+                );
+                let _ = crate::signals::append(Path::new(file), &signal);
+            }
             x.texts.push(text);
             x.at_rest = false;
             s.log.push(format!("brief {key} {intent} ({len} bytes)"));
@@ -619,8 +661,13 @@ impl Runtime for FakeRuntime {
         })
     }
 
-    fn revive(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+    fn revive(
+        &self,
+        session: &SessionRef,
+        conversation: Option<&str>,
+    ) -> Observation<EffectOutcome> {
         let key = session.key.clone();
+        let conversation = conversation.map(str::to_string);
         self.effect("revive", move |s| {
             let ready = !s.spawn_not_ready;
             let Some(x) = s.sessions.get_mut(&key).filter(|x| !x.gone) else {
@@ -631,6 +678,8 @@ impl Runtime for FakeRuntime {
             if x.lost {
                 x.lost = false;
                 x.ready = ready;
+                let argv = profile(&x.harness).resume(&x.argv, conversation.as_deref());
+                x.restarts.push(argv);
                 s.log.push(format!("revive {key}"));
             }
             EffectOutcome::Revived
@@ -639,18 +688,6 @@ impl Runtime for FakeRuntime {
 
     fn can_pause(&self) -> bool {
         true
-    }
-
-    fn activity(&self, session: &SessionRef) -> Observation<fleet_api::runtime::Activity> {
-        use fleet_api::runtime::Activity;
-        self.probe("activity", |s| match live(s, &session.key) {
-            Some(x) => match x.activity.as_deref() {
-                Some("active") => Observation::Known(Activity::Active),
-                Some("idle") => Observation::Known(Activity::Idle),
-                other => Observation::unknown(format!("activity {other:?} does not say")),
-            },
-            None => Observation::unknown("no such session to look at"),
-        })
     }
 
     fn paused(&self, session: &SessionRef) -> Observation<bool> {
@@ -678,8 +715,13 @@ impl Runtime for FakeRuntime {
         })
     }
 
-    fn resume(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+    fn resume(
+        &self,
+        session: &SessionRef,
+        conversation: Option<&str>,
+    ) -> Observation<EffectOutcome> {
         let key = session.key.clone();
+        let conversation = conversation.map(str::to_string);
         self.effect("resume", move |s| {
             let ready = !s.spawn_not_ready;
             let Some(x) = s.sessions.get_mut(&key).filter(|x| !x.gone) else {
@@ -691,7 +733,8 @@ impl Runtime for FakeRuntime {
                 x.paused = false;
                 x.ready = ready;
                 x.at_rest = false;
-                x.activity = None;
+                let argv = profile(&x.harness).resume(&x.argv, conversation.as_deref());
+                x.restarts.push(argv);
                 s.log.push(format!("resume {key}"));
             }
             EffectOutcome::Resumed

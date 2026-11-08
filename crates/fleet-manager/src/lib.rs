@@ -126,9 +126,13 @@ pub struct Manager<'a> {
         &'a [fleet_api::plugin::Registration],
     )>,
     pub forge: Option<&'a dyn Forge>,
-    /// The workspace port; `None` when the config has no `[workspaces]`, in
+    /// The workspace port; `None` only for a manager built without one, in
     /// which case the runtime makes every workspace itself.
     pub workspaces: Option<&'a dyn fleet_api::workspace::Workspaces>,
+    /// The signal port: the file each session's hooks report to, and what
+    /// it says. `None`: no session gets one, and what Fleet would learn
+    /// from it stays Unknown.
+    pub signals: Option<&'a dyn fleet_api::signal::Signals>,
     /// The `[forge]` defaults a ChangeRequest spec may override.
     pub change_request_defaults: ChangeRequestDefaults,
     /// The `[forge]` relay defaults a Task's `spec.forge` may override, and
@@ -1900,6 +1904,16 @@ impl Manager<'_> {
                 }
             }
         }
+        // The file the agent's hooks report to, on the host it runs on.
+        for effect in &mut plan.effects {
+            if let Action::Spawn(spawn) = &mut effect.action
+                && let Some(file) = self.signals.and_then(|s| s.file(&spawn.host, &spawn.key))
+            {
+                spawn
+                    .env
+                    .insert(fleet_api::signal::SIGNAL_FILE_ENV.to_string(), file);
+            }
+        }
         self.perform_plan(obj, plan, lease, ttl, report)
     }
 
@@ -2056,16 +2070,22 @@ impl Manager<'_> {
                 note(&format!("findWorkspace on {host}"), o.why());
                 obs.workspace = Some(o);
             }
-            // A runtime that cannot pause never answers Idle, so Fleet
-            // never pauses on it.
+            // The agent's own hooks report it; the runtime knows nothing of
+            // it. A session that reported nothing yet has no activity.
             Probe::Activity { session } => {
-                let o = if rt.can_pause() {
-                    rt.activity(session)
-                } else {
-                    Observation::unknown("the runtime cannot pause a session")
+                let o = match self.signals {
+                    Some(s) => s.read(session),
+                    None => Observation::unknown("no signal port is configured"),
                 };
-                note("activity", o.why());
-                obs.activity = Some(o);
+                note("signals", o.why());
+                obs.activity = Some(match &o {
+                    Observation::Known(r) => match r.activity() {
+                        Some(a) => Observation::Known(a),
+                        None => Observation::unknown("the agent reported no state yet"),
+                    },
+                    Observation::Unknown { why } => Observation::unknown(why.clone()),
+                });
+                obs.signals = Some(o);
             }
             // Not TaskController's probes: it never asks them.
             Probe::Change { .. }
@@ -2098,9 +2118,15 @@ impl Manager<'_> {
             Action::Spawn(spec) => self.runtime.spawn(spec),
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
             Action::Release { session } => self.runtime.release(session),
-            Action::Revive { session } => self.runtime.revive(session),
+            Action::Revive {
+                session,
+                conversation,
+            } => self.runtime.revive(session, conversation.as_deref()),
             Action::Pause { session } => self.runtime.pause(session),
-            Action::Resume { session } => self.runtime.resume(session),
+            Action::Resume {
+                session,
+                conversation,
+            } => self.runtime.resume(session, conversation.as_deref()),
             // The Forge, Conversation and Gateway controllers' effects,
             // performed by their own steps; TaskController never plans them.
             Action::MarkReady { .. }
