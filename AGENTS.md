@@ -54,6 +54,16 @@ and the `fleet-*` skills own the detail):
   workflows are a test fixture under `crates/fleet-dev/tests/fixtures/` until
   Fleet's release joins this repository's pipeline. The repository's gate
   (`.publish.yaml`, CI) covers Fleet's crates like every other.
+- Fleet reaches sessions through the runtime protocol
+  (`docs/runtime/README.md`): `[runtimes.<name>]` names a program,
+  `[hosts.<name>]` the runtime serving a host, and `fleet-runtime`'s `exec`
+  kind runs `<program> <verb>` through `fleet-exec`. Fleet and a runtime share
+  no Rust type: `fleet runtime check -- <program>` (the conformance suite,
+  `fleet_runtime::exec::check`) and `crates/fleet-cli/tests/e2e_runtime_exec.rs`,
+  which drives the real `runtime-mux` binary on a private tmux socket
+  directory, hold both sides to one protocol. Those tests skip without tmux or
+  without a built `runtime-mux` (`cargo build -p runtime-mux`, or
+  `RUNTIME_MUX_BIN`); CI's `runtime-protocol` job has both.
 - Design pages follow ASD-STE100 Simplified Technical English's writing rules:
   one fact per sentence, active voice, one term per concept, lists for steps.
 
@@ -338,7 +348,10 @@ its own allowlist (`crates/runtime-mux/tests/architecture_rules.rs`,
 `docs/constitution.md` R3): the adapters `tmux`, `psmux`, `rmux` are peers
 over the shared `tmux_compat` server, only the factory `wiring` names one, and
 it depends on no other crate of the repository — the settings and data
-directory it needs are injected (`MuxSettings`, `HostsConfig`).
+directory it needs are injected (`MuxSettings`, `HostsConfig`). Its
+`runtime-mux` program (`src/main.rs`, the composition root, over the
+`protocol` module) answers the runtime protocol on a tmux socket of its own,
+`runtime-mux` (`RUNTIME_MUX_SOCKET` names another), never thurbox's.
 `crates/architecture.toml` declares which crate may depend on which, and
 Fleet's `fleet-arch` (its `architecture` test) holds the workspace to it.
 

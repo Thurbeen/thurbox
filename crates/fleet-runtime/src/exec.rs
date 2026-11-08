@@ -1,0 +1,728 @@
+//! The `exec` runtime kind: any program that speaks the runtime protocol
+//! (docs/runtime/README.md), run as `<program> <verb>` through `fleet-exec`,
+//! one bounded process per call, a JSON request on stdin and
+//! `{"known": …}` or `{"unknown": {"why": …}}` on stdout.
+//!
+//! A host names its runtime in `fleet.toml`, so a Task's `spec.host` chooses
+//! the program. The adapter knows no runtime: what it sends and reads is the
+//! protocol, in serde types of its own. It shares none with any runtime's code;
+//! [`check`] and the end-to-end tests that run `runtime-mux` through this
+//! adapter are what hold the two to one protocol.
+//!
+//! Every failure to get a protocol answer (a program that is not there, a
+//! timeout, a non-zero exit, an answer that does not parse) is Unknown, and
+//! Unknown never concludes.
+
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use fleet_api::Observation;
+use fleet_api::plan::{EffectOutcome, SpawnSpec};
+use fleet_api::runtime::{Runtime, WorkspaceTrust};
+use fleet_api::session::uid_of_session_key;
+use fleet_api::task::{SessionRef, Workspace};
+use fleet_exec::{Outcome, Spec};
+use serde::Deserialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+
+/// The protocol version Fleet speaks; every request carries it, and a
+/// runtime that speaks another answers Unknown.
+pub const PROTOCOL: u64 = 1;
+
+/// The verbs every runtime answers.
+pub const REQUIRED_VERBS: &[&str] = &["manifest", "start", "inspect", "stop"];
+
+/// The most of a runtime's stdout Fleet reads: a `capture` or an `exec` answer
+/// is the largest.
+const ANSWER_CAP: usize = 4 * 1024 * 1024;
+
+/// The calls one port operation can make: `spawn` is a `start`, and nothing
+/// makes more than two.
+const MAX_CALLS_PER_OPERATION: u32 = 2;
+
+/// One program that speaks the protocol, as `[runtimes.<name>]` gives it.
+#[derive(Debug, Clone)]
+pub struct ExecProgram {
+    /// The runtime's name in the config, for messages.
+    pub name: String,
+    /// The executable, a path or a name on PATH.
+    pub program: String,
+    /// Arguments before the verb.
+    pub args: Vec<String>,
+    /// The bound on every call.
+    pub call_timeout: Duration,
+    /// The first part of every key this Fleet gives the runtime: a second
+    /// Fleet on the same runtime takes its own.
+    pub key_prefix: String,
+}
+
+impl ExecProgram {
+    pub fn new(name: impl Into<String>, program: impl Into<String>) -> ExecProgram {
+        ExecProgram {
+            name: name.into(),
+            program: program.into(),
+            args: Vec::new(),
+            call_timeout: Duration::from_secs(15),
+            key_prefix: "fleet".into(),
+        }
+    }
+
+    /// The answer to one call, or why there is none.
+    pub fn call(&self, verb: &str, request: &Value) -> Answer {
+        self.call_raw(verb, request.to_string().into_bytes())
+    }
+
+    fn call_raw(&self, verb: &str, request: Vec<u8>) -> Answer {
+        let mut spec = Spec::new(&self.program, self.call_timeout)
+            .args(&self.args)
+            .arg(verb)
+            .stdin(request);
+        spec.output_limit = Some(ANSWER_CAP);
+        let out = fleet_exec::run(&spec);
+        let Outcome::Exited {
+            code: Some(0),
+            stdout,
+            ..
+        } = &out
+        else {
+            return Answer::Unknown(format!(
+                "runtime {} ({}) {verb}: {}",
+                self.name,
+                self.program,
+                out.failure()
+            ));
+        };
+        match serde_json::from_slice::<Wire>(stdout) {
+            Ok(Wire::Known(value)) => Answer::Known(value),
+            Ok(Wire::Unknown { why }) => {
+                Answer::Unknown(format!("runtime {} {verb}: {why}", self.name))
+            }
+            Err(e) => Answer::Unknown(format!(
+                "runtime {} {verb} answered outside the protocol: {e}",
+                self.name
+            )),
+        }
+    }
+
+    /// A known answer of verb's shape `T`, or Unknown.
+    fn ask<T: DeserializeOwned>(&self, verb: &str, request: Value) -> Observation<T> {
+        match self.call(verb, &request) {
+            Answer::Known(value) => serde_json::from_value(value).map_or_else(
+                |e| {
+                    Observation::unknown(format!(
+                        "runtime {} {verb} answered outside the protocol: {e}",
+                        self.name
+                    ))
+                },
+                Observation::Known,
+            ),
+            Answer::Unknown(why) => Observation::unknown(why),
+        }
+    }
+
+    fn key(&self, fleet_key: &str) -> String {
+        format!("{}.{}", self.key_prefix, uid_of_session_key(fleet_key))
+    }
+}
+
+/// `f` on a Known value; Unknown stays Unknown.
+fn bind<T, U>(o: Observation<T>, f: impl FnOnce(T) -> Observation<U>) -> Observation<U> {
+    match o {
+        Observation::Known(v) => f(v),
+        Observation::Unknown { why } => Observation::Unknown { why },
+    }
+}
+
+/// One call's result: the `known` value, or why it is unknown.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Answer {
+    Known(Value),
+    Unknown(String),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
+enum Wire {
+    Known(Value),
+    Unknown { why: String },
+}
+
+/// `manifest`'s answer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Manifest {
+    pub protocol: u64,
+    pub verbs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Started {
+    Started { id: String, adopted: bool },
+    Failed { why: String },
+}
+
+/// `inspect`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Inspected {
+    None,
+    Running { id: String },
+    Exited { id: String, code: Option<i64> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Stopped {
+    Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Sent {
+    Sent,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Executed {
+    Exited {
+        code: Option<i32>,
+        stdout: String,
+        stderr: String,
+    },
+    TimedOut {
+        stdout: String,
+        stderr: String,
+    },
+    Failed {
+        why: String,
+    },
+}
+
+/// The `exec` kind: one program per host.
+#[derive(Debug, Clone, Default)]
+pub struct ExecRuntime {
+    hosts: BTreeMap<String, ExecProgram>,
+}
+
+impl ExecRuntime {
+    /// `hosts` maps each host name a Task may give to the program serving it.
+    pub fn new(hosts: BTreeMap<String, ExecProgram>) -> ExecRuntime {
+        ExecRuntime { hosts }
+    }
+
+    fn program(&self, host: &str) -> Result<&ExecProgram, String> {
+        self.hosts
+            .get(host)
+            .ok_or_else(|| format!("no runtime serves host {host:?}; name one in [hosts.{host}]"))
+    }
+
+    fn request(fields: Value) -> Value {
+        let mut request = json!({ "protocol": PROTOCOL });
+        if let (Some(r), Value::Object(f)) = (request.as_object_mut(), fields) {
+            r.extend(f);
+        }
+        request
+    }
+
+    fn inspect(&self, host: &str, fleet_key: &str) -> Observation<Inspected> {
+        let rt = match self.program(host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        rt.ask(
+            "inspect",
+            Self::request(json!({ "key": rt.key(fleet_key) })),
+        )
+    }
+
+    fn exec_on(&self, host: &str, argv: &[&str]) -> Observation<Executed> {
+        let rt = match self.program(host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        let timeout = u64::try_from(rt.call_timeout.as_millis()).unwrap_or(u64::MAX) / 2;
+        rt.ask(
+            "exec",
+            Self::request(json!({ "in": "host", "argv": argv, "timeoutMs": timeout.max(1) })),
+        )
+    }
+
+    /// The argv a session starts with: the harness, by name. Harness
+    /// profiles, which own launch and resume argv, replace this.
+    fn argv(spec: &SpawnSpec) -> Vec<String> {
+        vec![spec.harness.clone()]
+    }
+}
+
+impl Runtime for ExecRuntime {
+    fn operation_bound(&self) -> fleet_api::Millis {
+        let longest = self
+            .hosts
+            .values()
+            .map(|rt| fleet_exec::worst_case(rt.call_timeout))
+            .max()
+            .unwrap_or_default();
+        u64::try_from((longest * MAX_CALLS_PER_OPERATION).as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn host(&self, host: &str) -> Observation<bool> {
+        let rt = match self.program(host) {
+            Ok(rt) => rt,
+            Err(_) => return Observation::Known(false),
+        };
+        bind(
+            rt.ask::<Manifest>("manifest", Self::request(json!({}))),
+            |m| {
+                if m.protocol != PROTOCOL {
+                    return Observation::unknown(format!(
+                        "runtime {} speaks protocol {}; Fleet speaks {PROTOCOL}",
+                        rt.name, m.protocol
+                    ));
+                }
+                Observation::Known(true)
+            },
+        )
+    }
+
+    fn create_dir(&self, host: &str, dir: &str) -> Observation<Result<bool, String>> {
+        if !fleet_api::validate::is_absolute_path(dir) {
+            return Observation::Known(Err(format!(
+                "{dir:?} must be an absolute path on the host"
+            )));
+        }
+        let script = "if [ -d \"$1\" ]; then echo kept; else mkdir -p -- \"$1\" && echo made; fi";
+        self.exec_on(host, &["sh", "-c", script, "sh", dir])
+            .map(|ran| match ran {
+                Executed::Exited {
+                    code: Some(0),
+                    stdout,
+                    ..
+                } => Ok(stdout.trim() == "made"),
+                Executed::Exited { stderr, .. } => Err(format!(
+                    "cannot create {dir}: {}",
+                    stderr.lines().next().unwrap_or("mkdir failed")
+                )),
+                Executed::Failed { why } => Err(format!("cannot create {dir}: {why}")),
+                Executed::TimedOut { .. } => Err(format!("creating {dir} timed out")),
+            })
+    }
+
+    fn remove_dir(&self, host: &str, dir: &str) -> Observation<Result<(), String>> {
+        if !fleet_api::validate::is_absolute_path(dir) {
+            return Observation::Known(Err(format!(
+                "{dir:?} must be an absolute path on the host"
+            )));
+        }
+        bind(
+            self.exec_on(host, &["rm", "-rf", "--", dir]),
+            |ran| match ran {
+                Executed::Exited { code: Some(0), .. } => Observation::Known(Ok(())),
+                Executed::Exited { stderr, .. } => Observation::Known(Err(format!(
+                    "cannot remove {dir}: {}",
+                    stderr.lines().next().unwrap_or("rm failed")
+                ))),
+                Executed::Failed { why } => {
+                    Observation::Known(Err(format!("cannot remove {dir}: {why}")))
+                }
+                // Part of it may be gone: only the next call can tell.
+                Executed::TimedOut { .. } => {
+                    Observation::unknown(format!("removing {dir} timed out"))
+                }
+            },
+        )
+    }
+
+    fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
+        let rt = match self.program(&spec.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
+        };
+        if spec.model.is_some() {
+            return Observation::Known(EffectOutcome::Failed {
+                why: format!(
+                    "runtime {} has no harness-to-variable mapping for spec.model; drop the model or use the thurbox runtime",
+                    rt.name
+                ),
+            });
+        }
+        let dir = match (&spec.ready, &spec.workspace) {
+            (Some(ready), _) => ready.dir.clone(),
+            (None, Workspace::Dir(w)) => w.dir.clone(),
+            (None, Workspace::Repositories(_)) => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: format!(
+                        "runtime {} makes no repositories workspace; configure [workspaces] so Fleet makes it",
+                        rt.name
+                    ),
+                });
+            }
+        };
+        let request = Self::request(json!({
+            "key": rt.key(&spec.key),
+            "argv": Self::argv(spec),
+            "env": spec.env,
+            "dir": dir,
+        }));
+        rt.ask::<Started>("start", request)
+            .map(|started| match started {
+                Started::Started { id, adopted } => EffectOutcome::Spawned {
+                    session: SessionRef {
+                        id,
+                        host: spec.host.clone(),
+                        key: spec.key.clone(),
+                    },
+                    adopted,
+                },
+                Started::Failed { why } => EffectOutcome::Failed { why },
+            })
+    }
+
+    fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>> {
+        self.inspect(host, key).map(|found| match found {
+            Inspected::None => None,
+            Inspected::Running { id } | Inspected::Exited { id, .. } => Some(SessionRef {
+                id,
+                host: host.to_string(),
+                key: key.to_string(),
+            }),
+        })
+    }
+
+    fn ready(&self, _session: &SessionRef) -> Observation<bool> {
+        Observation::unknown(
+            "an exec runtime cannot prove the agent takes input; agent signals can",
+        )
+    }
+
+    fn workspace_trust(
+        &self,
+        _session: &SessionRef,
+        _workspace: &Workspace,
+        _ready: Option<&fleet_api::workspace::WorkspaceRef>,
+    ) -> Observation<WorkspaceTrust> {
+        Observation::unknown("an exec runtime cannot prove workspace trust; harness profiles can")
+    }
+
+    fn brief(
+        &self,
+        session: &SessionRef,
+        text: &str,
+        _intent_key: &str,
+    ) -> Observation<EffectOutcome> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        let request = Self::request(json!({
+            "key": rt.key(&session.key),
+            "text": text,
+            "submit": true,
+        }));
+        rt.ask::<Sent>("input", request).map(|sent| match sent {
+            Sent::Sent => EffectOutcome::Delivered {
+                already: false,
+                via: Some("input".into()),
+                may_hold: true,
+            },
+            Sent::None => EffectOutcome::Failed {
+                why: "no process holds the session's key".into(),
+            },
+        })
+    }
+
+    fn brief_delivered(&self, _session: &SessionRef, _intent_key: &str) -> Observation<bool> {
+        Observation::unknown(
+            "an exec runtime cannot read a brief back; the agent's prompt hook can",
+        )
+    }
+
+    /// Known only when no process runs under the key: an agent that exited,
+    /// or is gone, does no more work. A running one is Unknown, never idle.
+    fn at_rest(&self, session: &SessionRef) -> Observation<bool> {
+        bind(
+            self.inspect(&session.host, &session.key),
+            |found| match found {
+                Inspected::Running { .. } => Observation::unknown(
+                    "an exec runtime cannot prove a running agent is at rest; agent signals can",
+                ),
+                Inspected::Exited { .. } | Inspected::None => Observation::Known(true),
+            },
+        )
+    }
+
+    fn release(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        let request = Self::request(json!({ "key": rt.key(&session.key), "release": true }));
+        rt.ask::<Stopped>("stop", request)
+            .map(|Stopped::Stopped| EffectOutcome::Released)
+    }
+
+    fn lost(&self, session: &SessionRef) -> Observation<bool> {
+        // An exited process is not proof nobody stopped it on purpose.
+        bind(
+            self.inspect(&session.host, &session.key),
+            |found| match found {
+                Inspected::Running { .. } => Observation::Known(false),
+                _ => Observation::unknown(
+                    "the runtime cannot tell a lost process from a stopped one",
+                ),
+            },
+        )
+    }
+
+    fn revive(&self, _session: &SessionRef) -> Observation<EffectOutcome> {
+        Observation::Known(EffectOutcome::Failed {
+            why:
+                "an exec runtime revives with the harness's resume argv, which harness profiles own"
+                    .into(),
+        })
+    }
+}
+
+/// One case of the conformance suite, and what went wrong if it failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Case {
+    pub name: &'static str,
+    pub result: Result<(), String>,
+}
+
+/// `fleet runtime check`: the conformance suite, run against `program`.
+/// Each case stands alone; the keys it uses are its own and stopped after.
+pub fn check(program: &ExecProgram) -> Vec<Case> {
+    let run = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or_default();
+    let key = |n: &str| format!("fleet-check-{run}-{nanos:x}.{n}");
+    let mut cases = Vec::new();
+    let manifest = program.ask::<Manifest>("manifest", ExecRuntime::request(json!({})));
+    cases.push(Case {
+        name: "manifest names the protocol version and the required verbs",
+        result: match &manifest {
+            Observation::Known(m) if m.protocol != PROTOCOL => {
+                Err(format!("protocol {}; Fleet speaks {PROTOCOL}", m.protocol))
+            }
+            Observation::Known(m) => match REQUIRED_VERBS
+                .iter()
+                .find(|v| !m.verbs.iter().any(|have| have == *v))
+            {
+                Some(missing) => Err(format!("the verbs lack {missing}")),
+                None => Ok(()),
+            },
+            Observation::Unknown { why } => Err(why.clone()),
+        },
+    });
+    let verbs = match manifest {
+        Observation::Known(m) => m.verbs,
+        Observation::Unknown { .. } => Vec::new(),
+    };
+    let start = |k: &str, argv: &[&str]| {
+        program.ask::<Started>(
+            "start",
+            ExecRuntime::request(json!({ "key": k, "argv": argv, "env": {} })),
+        )
+    };
+    let inspect =
+        |k: &str| program.ask::<Inspected>("inspect", ExecRuntime::request(json!({ "key": k })));
+    let stop = |k: &str| program.ask::<Stopped>("stop", ExecRuntime::request(json!({ "key": k })));
+    let unknown = |verb: &str, request: Vec<u8>| match program.call_raw(verb, request) {
+        Answer::Unknown(_) => Ok(()),
+        Answer::Known(v) => Err(format!("answered Known {v}")),
+    };
+
+    cases.push(Case {
+        name: "a protocol mismatch answers Unknown",
+        result: unknown(
+            "inspect",
+            json!({ "protocol": PROTOCOL + 1000, "key": key("mismatch") })
+                .to_string()
+                .into_bytes(),
+        ),
+    });
+    cases.push(Case {
+        name: "an error answers Unknown, never None",
+        result: unknown("inspect", b"{ this is not json".to_vec())
+            .and_then(|()| {
+                unknown(
+                    "inspect",
+                    ExecRuntime::request(json!({ "key": "not a key / at all" }))
+                        .to_string()
+                        .into_bytes(),
+                )
+            })
+            .and_then(|()| {
+                unknown(
+                    "no-such-verb",
+                    ExecRuntime::request(json!({})).to_string().into_bytes(),
+                )
+            }),
+    });
+    cases.push(Case {
+        name: "inspect of an absent key answers None",
+        result: match inspect(&key("absent")) {
+            Observation::Known(Inspected::None) => Ok(()),
+            other => Err(format!("answered {other:?}")),
+        },
+    });
+    cases.push(Case {
+        name: "a stop of an absent process succeeds",
+        result: match stop(&key("absent")) {
+            Observation::Known(Stopped::Stopped) => Ok(()),
+            Observation::Unknown { why } => Err(why),
+        },
+    });
+
+    let one = key("one");
+    let twice = (|| {
+        let first = match start(&one, &["sleep", "300"]) {
+            Observation::Known(Started::Started { id, adopted: false }) => id,
+            other => return Err(format!("the first start answered {other:?}")),
+        };
+        match start(&one, &["sleep", "300"]) {
+            Observation::Known(Started::Started { id, adopted: true }) if id == first => {}
+            other => {
+                return Err(format!(
+                    "the second start answered {other:?}, not {first} adopted"
+                ));
+            }
+        }
+        match inspect(&one) {
+            Observation::Known(Inspected::Running { id }) if id == first => {}
+            other => return Err(format!("inspect answered {other:?}, not {first} running")),
+        }
+        if verbs.iter().any(|v| v == "list") {
+            match program.ask::<Keys>("list", ExecRuntime::request(json!({}))) {
+                Observation::Known(Keys { keys })
+                    if keys.iter().filter(|k| **k == one).count() == 1 => {}
+                other => return Err(format!("list answered {other:?}, not the key once")),
+            }
+        }
+        Ok(())
+    })();
+    cases.push(Case {
+        name: "two starts with one key leave one process",
+        result: twice,
+    });
+    cases.push(Case {
+        name: "a stop ends the process",
+        result: match (stop(&one), inspect(&one)) {
+            (Observation::Known(Stopped::Stopped), Observation::Known(Inspected::None)) => Ok(()),
+            (stopped, inspected) => Err(format!("stop {stopped:?}, then inspect {inspected:?}")),
+        },
+    });
+
+    let exits = key("exits");
+    let exited = (|| {
+        match start(&exits, &["sh", "-c", "exit 3"]) {
+            Observation::Known(Started::Started { .. }) => {}
+            other => return Err(format!("start answered {other:?}")),
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match inspect(&exits) {
+                Observation::Known(Inspected::Exited {
+                    code: Some(3) | None,
+                    ..
+                })
+                | Observation::Known(Inspected::None) => return Ok(()),
+                Observation::Known(Inspected::Exited { code, .. }) => {
+                    return Err(format!("exited with {code:?}, not 3"));
+                }
+                other if std::time::Instant::now() >= deadline => {
+                    return Err(format!("still {other:?} after ten seconds"));
+                }
+                _ => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+    })();
+    cases.push(Case {
+        name: "an exited process answers Exited with its code, or None",
+        result: exited,
+    });
+    let _ = stop(&exits);
+
+    if verbs.iter().any(|v| v == "workspace") {
+        cases.extend(check_workspace(program, &key("workspace")));
+    }
+    cases
+}
+
+#[derive(Debug, Deserialize)]
+struct Keys {
+    keys: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum WorkspaceAnswer {
+    Made { dirs: Vec<String>, adopted: bool },
+    Unsupported { url: String },
+    Failed { why: String },
+}
+
+/// The workspace rules a runtime that declares `workspace` holds to.
+fn check_workspace(program: &ExecProgram, key: &str) -> Vec<Case> {
+    let dir = std::env::temp_dir().join(format!("{}-file", key.replace('.', "-")));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return vec![Case {
+            name: "workspace: a file:// directory is used as it is",
+            result: Err(format!("cannot make {}: {e}", dir.display())),
+        }];
+    }
+    let url = format!("file://{}", dir.display());
+    let make = || {
+        program.ask::<WorkspaceAnswer>(
+            "workspace",
+            ExecRuntime::request(json!({ "key": key, "urls": [url] })),
+        )
+    };
+    let idempotent = match (make(), make()) {
+        (
+            Observation::Known(WorkspaceAnswer::Made { dirs: a, .. }),
+            Observation::Known(WorkspaceAnswer::Made {
+                dirs: b,
+                adopted: true,
+            }),
+        ) if a == b => Ok(()),
+        (Observation::Known(WorkspaceAnswer::Unsupported { url }), _) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return vec![Case {
+                name: "workspace: idempotent by key",
+                result: Err(format!(
+                    "{url}: file:// is unsupported, so no rule could be checked"
+                )),
+            }];
+        }
+        (Observation::Known(WorkspaceAnswer::Failed { why }), _) => {
+            Err(format!("the first call failed: {why}"))
+        }
+        (first, second) => Err(format!("answered {first:?}, then {second:?}")),
+    };
+    let released = program.ask::<Stopped>(
+        "stop",
+        ExecRuntime::request(json!({ "key": key, "release": true })),
+    );
+    let kept = match released {
+        Observation::Known(Stopped::Stopped) if dir.is_dir() => Ok(()),
+        Observation::Known(Stopped::Stopped) => Err(format!("release removed {}", dir.display())),
+        Observation::Unknown { why } => Err(why),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    vec![
+        Case {
+            name: "workspace: idempotent by key",
+            result: idempotent,
+        },
+        Case {
+            name: "workspace: release never removes what it did not make",
+            result: kept,
+        },
+    ]
+}

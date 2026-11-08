@@ -120,8 +120,6 @@ to a repository of its own with nothing to untangle.
 - Fork and `restart --fresh`: a conversation field on the Task, or dropped.
 - `hooks.toml` beyond `pre_launch`: harness settings or a Fleet plugin.
 - Shared hosts (ADR-24): one Fleet store per operator is assumed.
-- The tmux server `runtime-mux`'s windows live on: its own socket, since the
-  interface no longer connects to it.
 - Latency of the `view` bridge against today's in-process control mode, to
   measure against [performance](thurbox/performance.md)'s frame floors.
 - Windows (psmux) at the cutover, or after Linux and macOS.

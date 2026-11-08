@@ -81,7 +81,7 @@ fleet-api          pure           types and ports
 fleet-controllers  pure           controllers and gate   -> api
 fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
-fleet-runtime      adapter        thurbox-cli, fake      -> api, exec
+fleet-runtime      adapter        exec, thurbox-cli, fake -> api, exec
 fleet-forge        adapter        az, curl, gh, glab, fake -> api, exec
 fleet-gateway      adapter        curl (Slack, Discord), fake -> api, exec
 fleet-plugin       adapter        bounded plugin stdio   -> api, exec
@@ -1159,15 +1159,17 @@ kind = "fake"
 dir = "fake-host"
 ```
 
-A real host uses the thurbox runtime, and a `[forge]` section names the
-forges ChangeRequests are read from:
+A real host is served by a runtime program, and a `[forge]` section names
+the forges ChangeRequests are read from:
 
 ```text
-[runtime]
-kind = "thurbox"
-cli = "thurbox-cli"       # a path or a name on PATH
+[runtimes.mux]
+program = "runtime-mux"   # a path or a name on PATH
 callTimeoutMs = 15000     # the bound on every call; shorter than the lease
-keyPrefix = "fleet"       # give a second fleet on the same hosts its own
+keyPrefix = "fleet"       # give a second fleet on the same runtime its own
+
+[hosts.local]
+runtime = "mux"           # a Task's spec.host chooses the runtime
 
 [forge.hosts]
 "github.com" = { kind = "github", cli = "gh" }

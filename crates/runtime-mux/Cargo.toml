@@ -15,6 +15,12 @@ publish = false
 [lib]
 name = "runtime_mux"
 
+# The runtime protocol's program: `runtime-mux <verb>`, a JSON request on
+# stdin, the answer on stdout (docs/runtime/README.md).
+[[bin]]
+name = "runtime-mux"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 # Base64 payload framing for a Windows host's PowerShell launcher (`shell`).

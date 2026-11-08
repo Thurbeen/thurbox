@@ -27,6 +27,7 @@ pub mod output_wake;
 pub mod pane;
 pub mod path_lookup;
 pub mod preflight;
+pub mod protocol;
 pub mod psmux;
 pub mod registry;
 pub mod rmux;

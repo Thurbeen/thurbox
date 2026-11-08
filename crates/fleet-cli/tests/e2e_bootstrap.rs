@@ -39,9 +39,18 @@ fn installed(env: &Env, args: &[&str]) -> Command {
     cmd
 }
 
+/// `config` with `runtime` as its one `[runtime]`, in place of the
+/// `[runtimes]` and `[hosts]` that `init` writes.
+fn set_runtime(config: &mut toml::Value, runtime: toml::Value) {
+    let table = config.as_table_mut().unwrap();
+    table.remove("runtimes");
+    table.remove("hosts");
+    table.insert("runtime".into(), runtime);
+}
+
 fn customize_config(path: &std::path::Path) -> Vec<u8> {
     let mut config: toml::Value = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    config["runtime"]["callTimeoutMs"] = toml::Value::Integer(4321);
+    config["runtimes"]["mux"]["callTimeoutMs"] = toml::Value::Integer(4321);
     let bytes = format!(
         "{}\n# Private local customization\n",
         toml::to_string(&config).unwrap()
@@ -113,13 +122,16 @@ fn fake_bootstrap_with(name: &str, init_args: &[&str]) -> Env {
     );
     assert!(config["forge"].get("draftPolicy").is_none(), "{generated}");
     assert!(config["forge"].get("hosts").is_none(), "{generated}");
-    config["runtime"] = toml::Value::Table(toml::map::Map::from_iter([
-        ("kind".into(), toml::Value::String("fake".into())),
-        (
-            "dir".into(),
-            toml::Value::String(env.fake.to_string_lossy().into_owned()),
-        ),
-    ]));
+    set_runtime(
+        &mut config,
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("kind".into(), toml::Value::String("fake".into())),
+            (
+                "dir".into(),
+                toml::Value::String(env.fake.to_string_lossy().into_owned()),
+            ),
+        ])),
+    );
     config["data"]["dir"] = toml::Value::String(env.data.to_string_lossy().into_owned());
     fs::write(&env.config, toml::to_string(&config).unwrap()).unwrap();
     env
@@ -205,9 +217,10 @@ fn installed_first_run_creates_runnable_config_and_editable_workspace_without_gi
     )
     .ok()
     .stdout_has("Task/vega created");
+    // No runtime-mux on PATH: `up` names the program it could not start.
     wait(installed(&env, &["up"]).spawn().unwrap())
         .code(1)
-        .stderr_has("thurbox");
+        .stderr_has("runtime-mux");
 }
 
 #[cfg(unix)]
@@ -409,9 +422,19 @@ fn installed_up_runs_real_thurbox_adapter_and_preserves_unknown_session_identity
     wait(installed(&env, &["init"]).spawn().unwrap()).ok();
     let path = env.root.join("config").join(".").join("fleet/config.toml");
     let mut config: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    config["runtime"]["cli"] =
-        toml::Value::String(support::stub_exe().to_string_lossy().into_owned());
-    config["runtime"]["callTimeoutMs"] = toml::Value::Integer(3000);
+    let prefix = config["runtimes"]["mux"]["keyPrefix"].clone();
+    set_runtime(
+        &mut config,
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("kind".into(), toml::Value::String("thurbox".into())),
+            (
+                "cli".into(),
+                toml::Value::String(support::stub_exe().to_string_lossy().into_owned()),
+            ),
+            ("callTimeoutMs".into(), toml::Value::Integer(3000)),
+            ("keyPrefix".into(), prefix),
+        ])),
+    );
     fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
     fs::create_dir_all(env.stub_dir()).unwrap();
     let mut command = installed(&env, &["up", "--poll-ms", "100"]);
@@ -802,7 +825,7 @@ fn separate_configurations_get_separate_starter_instances_and_boot_instructions(
     let a: toml::Value = toml::from_str(&fs::read_to_string(&one).unwrap()).unwrap();
     let b: toml::Value = toml::from_str(&fs::read_to_string(&two).unwrap()).unwrap();
     assert_ne!(
-        a["runtime"]["keyPrefix"], b["runtime"]["keyPrefix"],
+        a["runtimes"]["mux"]["keyPrefix"], b["runtimes"]["mux"]["keyPrefix"],
         "separate configs must not share session namespace"
     );
     assert_ne!(a["starter"]["workspace"], b["starter"]["workspace"]);
@@ -938,7 +961,7 @@ fn thurbox_bootstrap(name: &str) -> Env {
     env.fleet(&["init"]).ok();
     let mut config: toml::Value =
         toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
-    config["runtime"] = stub["runtime"].clone();
+    set_runtime(&mut config, stub["runtime"].clone());
     config["data"]["dir"] = toml::Value::String(env.data.to_string_lossy().into_owned());
     fs::write(&env.config, toml::to_string(&config).unwrap()).unwrap();
     env

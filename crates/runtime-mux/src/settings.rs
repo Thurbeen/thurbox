@@ -22,6 +22,11 @@ pub struct MuxSettings {
     /// The data directory when the instance has been relocated from its
     /// default, which puts its sessions on a socket of their own.
     pub relocated_data_dir: Option<PathBuf>,
+    /// The local socket, named outright. Wins over every rule
+    /// [`crate::instance`] derives one by, the inherited
+    /// `THURBOX_SOCKET` included: the `runtime-mux` program runs on a server
+    /// of its own, never on the interface's.
+    pub socket: Option<String>,
 }
 
 impl Default for MuxSettings {
@@ -30,6 +35,7 @@ impl Default for MuxSettings {
             scrollback_lines: DEFAULT_SCROLLBACK_LINES,
             data_dir: None,
             relocated_data_dir: None,
+            socket: None,
         }
     }
 }
