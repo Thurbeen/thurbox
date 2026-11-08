@@ -34,7 +34,7 @@ use crate::session::extension_def::{compare_versions, is_dev_version, major_vers
 ///
 /// It is a constant rather than the running version's major so a development
 /// build (`0.0.0-dev`, no line of its own) still knows which line it belongs to
-/// for `thurbox-cli update --force`. `scripts/ci/check-release-line.sh` reads it
+/// for `thurbox-cli update --force`. `scripts/ci/release-line.sh` reads it
 /// and refuses to cut a release on any other major, which is what makes crossing
 /// a major a source change somebody reviews rather than a commit footer.
 pub const RELEASE_LINE: u64 = 2;
@@ -172,11 +172,15 @@ pub fn cache_is_stale() -> bool {
 /// caller can render a badge); `None` otherwise. Always safe to call from the
 /// TUI draw loop.
 pub fn read_cached_status() -> Option<UpdateStatus> {
-    let cached = read_cache()?;
-    if major_version(&cached.latest) != Some(RELEASE_LINE) {
+    cached_status(current_version(), &read_cache()?.latest)
+}
+
+/// [`read_cached_status`]'s decision over an explicit running version.
+fn cached_status(current: &str, cached_latest: &str) -> Option<UpdateStatus> {
+    if major_version(cached_latest) != Some(RELEASE_LINE) {
         return None;
     }
-    decide_update(current_version(), &cached.latest)
+    decide_update(current, cached_latest)
 }
 
 /// Pick the newest release on the line, and the newest beyond it, out of the
@@ -315,10 +319,11 @@ mod tests {
     fn a_cache_from_before_the_line_rule_never_offers_another_major() {
         // Builds before this one cached GitHub's "Latest" — a 3.x tag once v3
         // ships. Reading it must not put a v3 badge on a 2.x install.
-        let tmp = tempfile::TempDir::new().unwrap();
-        let _guard = crate::paths::TestPathGuard::new(tmp.path());
-        write_cache("v99.0.0");
-        assert!(read_cached_status().is_none());
+        assert_eq!(cached_status("2.84.1", "3.0.0"), None);
+        assert_eq!(
+            cached_status("2.84.1", "2.84.2").map(|s| s.latest),
+            Some("2.84.2".to_string())
+        );
     }
 
     #[test]
