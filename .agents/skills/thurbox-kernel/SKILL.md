@@ -157,7 +157,11 @@ the heartbeat (ADR-29, ADR-30, ADR-32) go through the contract, and
 `consumers_reach_no_concrete_backend` holds every module but `coordinator` to
 reaching no adapter, protocol helper or factory through the `backend` gateway
 — by reference, through aliases and re-exports — and `coordinator` to the
-factory alone. `agent` is submodule-governed, so a grant names the agent
+factory alone. The resolver follows no external crate, so
+`runtime_mux_is_named_only_by_its_gateways` closes the side door: only
+`backend` and the modules that re-export a runtime type as their own
+(`RUNTIME_GATEWAYS`: `shell`, `session`, `paths`, `config::hosts`,
+`config::file`) may name `runtime_mux`, by path or under any alias. `agent` is submodule-governed, so a grant names the agent
 config a node reads.
 
 The runtime behind the gateway is `crates/runtime-mux`, held by its own
