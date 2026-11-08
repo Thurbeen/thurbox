@@ -3400,7 +3400,7 @@ is untrusted text, which a pane renders as text.
 ## ADR-41: Fleet is thurbox's engine; sessions run on runtimes
 
 > **Accepted, not yet implemented.** The design is
-> [the documentation overview](../README.md), and its steps are tracked in #1688.
+> [the documentation overview](../README.md).
 > Once thurbox's own session engine is deleted, this supersedes ADR-8, ADR-7b, ADR-8b, ADR-24 and ADR-26.
 
 **Choice**: thurbox becomes an interface over Fleet. Every session is a Fleet
@@ -3415,7 +3415,7 @@ repository, Fleet imported with its history, and one `architecture.toml`
 forbids any Rust dependency between them.
 
 **Why**: thurbox and Fleet each held the same session facts, and every
-readiness fix had to agree across both (#1604, #1607, #1665). One owner removes
+readiness fix had to agree across both. One owner removes
 the second copy. A process protocol keeps Fleet usable without thurbox and
 makes a new runtime one script. One repository keeps the many cross-component
 changes of the migration in one change and one CI, and keeps the stars and
@@ -3423,15 +3423,15 @@ release channels where they are.
 
 **Rejected alternatives**:
 
-- *Fleet drives `thurbox-cli runtime`* (Thurbeen/fleet#401 as filed): the
+- *Fleet drives `thurbox-cli runtime`*: the
   runtime would stay inside the interface's binary, so Fleet would still need
   thurbox.
 - *One runtime per multiplexer*: tmux, psmux and rmux share one protocol
   server (ADR-31); splitting them duplicates it, and which one a host runs is
   a fact of the place, which belongs to the runtime.
-- *A multiplexer runtime written inside Fleet* (#1681 step 6): rewrites psmux, WSL and
+- *A multiplexer runtime written inside Fleet*: rewrites psmux, WSL and
   ssh handling that `src/backend` already has.
 - *Separate repositories*: equal isolation once contracts are process-only, but
   every change across components would span repositories. Still open later, since
   nothing links across.
-- *Keep thurbox's ad-hoc sessions* (#401 D5): keeps SQLite and a second engine.
+- *Keep thurbox's ad-hoc sessions*: keeps SQLite and a second engine.

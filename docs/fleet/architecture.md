@@ -335,7 +335,7 @@ and installed offline bootstrap acceptance.
 
 The sections above describe Fleet as it runs today. Fleet is becoming the
 engine behind thurbox ([the overview](../README.md)); these sections are the
-target, tracked in [#1688](https://github.com/Thurbeen/thurbox/issues/1688). The
+target. The
 runtime side, the protocol and the terminal stream, is
 [Runtimes](../runtime/README.md).
 
