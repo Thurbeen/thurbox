@@ -56,6 +56,22 @@ fn person(id: &str, at: u64, text: &str) -> Message {
 /// earlier message from Sam, with the route's TaskConfig applied so the
 /// Task an admitted mention starts can run, and the name its Conversation
 /// takes.
+/// `--create-only` holds for a Conversation too: the thread already
+/// mirrored is refused, not applied over.
+#[test]
+fn a_create_only_apply_never_reapplies_a_conversation() {
+    let env = Env::gateway("create-only-conversation");
+    let manifest = json!({"apiVersion": "fleet/v1alpha1", "kind": "Conversation",
+        "metadata": {},
+        "spec": {"account": GATEWAY_ACCOUNT, "address": THREAD, "route": GATEWAY_ROUTE}})
+    .to_string();
+    env.fleet_stdin(&["apply", "--create-only", "-f", "-"], &manifest)
+        .ok();
+    env.fleet_stdin(&["apply", "--create-only", "-f", "-"], &manifest)
+        .code(5)
+        .stderr_has("already exists");
+}
+
 fn mirror(name: &str) -> (Env, String) {
     let env = Env::gateway(name);
     env.fake_gateway()

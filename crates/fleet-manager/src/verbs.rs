@@ -65,10 +65,14 @@ pub fn ensure_task(store: &dyn Store, obj: Object) -> Result<Object, StoreError>
 /// Task whose `spec.forge.draft.policy` names a policy not in
 /// `ready_policies`, the names under `[forge.readyPolicies]`, is refused:
 /// a policy the config does not define would never mark anything ready.
+/// With `create_only`, an object whose name is taken is refused as
+/// `AlreadyExists` and left as it is: the store's create is exclusive, so two
+/// clients applying one name at once get one object and one refusal.
 pub fn apply(
     store: &dyn Store,
     obj: Object,
     ready_policies: &BTreeSet<String>,
+    create_only: bool,
 ) -> Result<(ApplyOutcome, Object), StoreError> {
     store.validate(&obj)?;
     if obj.kind == task::KIND {
@@ -108,22 +112,48 @@ pub fn apply(
             obj.key()
         )));
     }
+    let owners = obj.metadata.owner_references.clone();
+    let key = obj.key();
+    upsert(store, obj, create_only, |current| {
+        if current.metadata.owner_references != owners {
+            return Err(StoreError::Invalid(format!(
+                "{key}: ownerReferences cannot change"
+            )));
+        }
+        Ok(())
+    })
+}
+
+/// Create `obj`, or replace its spec and labels when it exists and
+/// `existing` accepts the object there; a Task manifest without
+/// `amendments` keeps the stored ones. With `create_only` an object whose
+/// name is taken is refused as `AlreadyExists` and left as it is: the
+/// store's create is exclusive, so two clients applying one name at once
+/// get one object and one refusal. Every kind `fleet apply` takes is
+/// written here.
+fn upsert(
+    store: &dyn Store,
+    obj: Object,
+    create_only: bool,
+    existing: impl Fn(&Object) -> Result<(), StoreError>,
+) -> Result<(ApplyOutcome, Object), StoreError> {
     let name = obj.metadata.name.clone();
     for _ in 0..CAS_TRIES {
         match store.get(&obj.kind, &name) {
             Observation::Known(None) => match store.create(obj.clone(), FieldManager::Apply) {
                 Ok(o) => return Ok((ApplyOutcome::Created, o)),
                 // Another writer created it between our read and our create.
+                Err(StoreError::AlreadyExists(why)) if create_only => {
+                    return Err(StoreError::AlreadyExists(why));
+                }
                 Err(StoreError::AlreadyExists(_)) => continue,
                 Err(e) => return Err(e),
             },
+            Observation::Known(Some(_)) if create_only => {
+                return Err(StoreError::AlreadyExists(format!("{}/{name}", obj.kind)));
+            }
             Observation::Known(Some(current)) => {
-                if current.metadata.owner_references != obj.metadata.owner_references {
-                    return Err(StoreError::Invalid(format!(
-                        "{}: ownerReferences cannot change",
-                        obj.key()
-                    )));
-                }
+                existing(&current)?;
                 let rv = current.metadata.resource_version;
                 let labels = Some(obj.metadata.labels.clone());
                 let mut spec = obj.spec.clone();
@@ -185,6 +215,7 @@ pub fn apply_change_request(
     store: &dyn Store,
     forge: &dyn Forge,
     mut obj: Object,
+    create_only: bool,
 ) -> Result<(ApplyOutcome, Object), StoreError> {
     if obj.kind != change_request::KIND {
         return Err(StoreError::Invalid(format!(
@@ -204,41 +235,9 @@ pub fn apply_change_request(
             obj.key()
         )));
     }
-    let name = obj.metadata.name.clone();
-    for _ in 0..CAS_TRIES {
-        match store.get(&obj.kind, &name) {
-            Observation::Known(None) => match store.create(obj.clone(), FieldManager::Apply) {
-                Ok(o) => return Ok((ApplyOutcome::Created, o)),
-                Err(StoreError::AlreadyExists(_)) => continue,
-                Err(e) => return Err(e),
-            },
-            Observation::Known(Some(current)) => {
-                verify_mirrors(forge, &current, &reference)?;
-                let rv = current.metadata.resource_version;
-                let labels = Some(obj.metadata.labels.clone());
-                match store.update_spec(
-                    &obj.kind,
-                    &name,
-                    obj.spec.clone(),
-                    labels,
-                    rv,
-                    FieldManager::Apply,
-                ) {
-                    Ok(o) if o.metadata.resource_version == rv => {
-                        return Ok((ApplyOutcome::Unchanged, o));
-                    }
-                    Ok(o) => return Ok((ApplyOutcome::Configured, o)),
-                    Err(StoreError::Conflict { .. }) => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
-        }
-    }
-    Err(StoreError::Busy(format!(
-        "{}/{name}: kept conflicting with other writers",
-        obj.kind
-    )))
+    upsert(store, obj, create_only, |current| {
+        verify_mirrors(forge, current, &reference)
+    })
 }
 
 /// An existing ChangeRequest is reused only when it mirrors `reference`:
@@ -845,6 +844,7 @@ pub fn apply_conversation(
     gateway: &dyn Gateway,
     config: &GatewayConfig,
     mut obj: Object,
+    create_only: bool,
 ) -> Result<(ApplyOutcome, Object), StoreError> {
     if obj.kind != conversation::KIND {
         return Err(StoreError::Invalid(format!(
@@ -906,42 +906,7 @@ pub fn apply_conversation(
             obj.key()
         )));
     }
-    let name = obj.metadata.name.clone();
-    for _ in 0..CAS_TRIES {
-        match store.get(&obj.kind, &name) {
-            Observation::Known(None) => match store.create(obj.clone(), FieldManager::Apply) {
-                Ok(o) => return Ok((ApplyOutcome::Created, o)),
-                Err(StoreError::AlreadyExists(_)) => continue,
-                Err(e) => return Err(e),
-            },
-            Observation::Known(Some(current)) => {
-                let rv = current.metadata.resource_version;
-                let labels = Some(obj.metadata.labels.clone());
-                let mut spec = obj.spec.clone();
-                // A manifest carries no amendments: re-applying it keeps the
-                // stored ones, which only the store's amend mutation writes.
-                if obj.kind == task::KIND
-                    && let (Some(fields), Some(kept)) =
-                        (spec.as_object_mut(), current.spec.get("amendments"))
-                {
-                    fields.entry("amendments").or_insert_with(|| kept.clone());
-                }
-                match store.update_spec(&obj.kind, &name, spec, labels, rv, FieldManager::Apply) {
-                    Ok(o) if o.metadata.resource_version == rv => {
-                        return Ok((ApplyOutcome::Unchanged, o));
-                    }
-                    Ok(o) => return Ok((ApplyOutcome::Configured, o)),
-                    Err(StoreError::Conflict { .. }) => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
-        }
-    }
-    Err(StoreError::Busy(format!(
-        "{}/{name}: kept conflicting with other writers",
-        obj.kind
-    )))
+    upsert(store, obj, create_only, |_| Ok(()))
 }
 
 /// What `fleet gateway receive` did.

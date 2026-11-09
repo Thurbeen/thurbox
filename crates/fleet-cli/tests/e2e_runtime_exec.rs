@@ -176,6 +176,32 @@ fn a_missing_multiplexer_is_reported_by_name_at_the_first_start() {
     assert!(status["session"].is_null(), "{status:#}");
 }
 
+/// A view asks which hosts a Task may name, and which harnesses Fleet has a
+/// profile for, before it applies one.
+#[test]
+fn the_hosts_and_the_harness_profiles_are_listed_for_a_view() {
+    let env = Env::new("runtime-hosts");
+    fs::write(
+        &env.config,
+        "version = 1\n\n[data]\ndir = \"data\"\n\n[runtimes.mux]\nprogram = \"runtime-mux\"\n\n[hosts.local]\nruntime = \"mux\"\n\n[hosts.devbox]\nruntime = \"mux\"\n",
+    )
+    .expect("config");
+    let hosts = env.fleet(&["runtime", "hosts", "--json"]).ok().json();
+    assert_eq!(hosts, json!({"hosts": ["devbox", "local"]}));
+
+    // The one `[runtime]` of the linked adapters serves whatever host a Task
+    // names: there is no list.
+    let single = Env::new("runtime-hosts-single");
+    let any = single.fleet(&["runtime", "hosts", "--json"]).ok().json();
+    assert_eq!(any, json!({"hosts": null}));
+
+    let version = env.fleet(&["version", "--json"]).ok().json();
+    assert_eq!(
+        version["harnesses"],
+        json!(["claude", "claude-code", "codex"])
+    );
+}
+
 #[test]
 fn a_host_naming_no_runtime_is_refused_at_load() {
     let env = Env::new("runtime-unnamed");

@@ -983,6 +983,7 @@ all commented so defaults still apply out of the box.
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
 | `deleted_retention_days` | `0` | days before the sweep removes a deleted session’s created worktrees and retains a purge tombstone; `0` keeps all |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
+| `[fleet] enabled` | `false` | run sessions as Fleet Tasks; see [`[fleet]`](#fleet--the-session-engine) |
 
 A complete `settings.toml` showing every knob at its default — copy
 this, uncomment what you want to change, and restart:
@@ -1024,6 +1025,10 @@ copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies 
 
 [remote]
 transitive_sessions = false    # true = also list sessions a host mirrors from hosts of its own
+
+[fleet]
+enabled = false                # true = every session is a Fleet Task (restart-only)
+program = "fleet"              # the fleet binary: a name on PATH or a path
 ```
 
 ### `hidden_terminal_secs` — how much memory a session off screen holds
@@ -1293,6 +1298,91 @@ owns it. A row seen through another host has no terminal attached here. Read
 by every mirror pass, so a change applies on the next one (within 10 s in the
 TUI). [features.md](features.md) → *Shared sessions*
 has the rule.
+
+### `[fleet]` — the session engine
+
+```toml
+[fleet]
+enabled = false      # true: every session is a Fleet Task
+program = "fleet"    # the fleet binary: a name on PATH or a path
+```
+
+Off, thurbox's own engine runs the sessions over its database. On, Fleet runs
+them ([ADR-41](architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes)),
+and the interface is a client of Fleet's command line:
+
+| The interface | Fleet's command |
+| --- | --- |
+| reads the sessions | `fleet watch --json`: each Task is a session row named as the Task |
+| creates a session | `fleet apply`: an interactive Task (no brief, dispatched) over the chosen directory, with the chosen agent as its harness and the chosen host |
+| sends to a session | `fleet send` |
+| deletes a session | `fleet delete task`; Fleet has no undo window |
+| shows a session's terminal | `fleet attach --json`: the stream it names, as a stream pane |
+| keeps a manager | `fleet up`, started whenever none holds the lease |
+
+- Fleet reads its own config (`FLEET_CONFIG`, then its per-user file). Run
+  `fleet init` before the first `fleet up`.
+- A `fleet up` the interface started runs in a process group of its own and
+  outlives the interface: Tasks keep reconciling with no interface open.
+- A session row's status is the Task's `sessionState`: `Running`, `Idle`,
+  `Paused` as `stopped`, `Lost` and `Gone` as `failed`, absent as
+  `unreported`.
+- A Task is named after the session, made a Fleet name: lowercase, with each
+  run of other characters one `-` (`Read the code` is `read-the-code`). The
+  name as given is kept in the Task's `thurbox.dev/name` label, and the row
+  is published under it. A name whose Task name is taken (`review` beside
+  `Review`) is refused, and the Task already there is left as it was: the
+  create is `fleet apply --create-only`, whose exclusive create gives two
+  interfaces racing for one name one Task and one refusal.
+- A creation that names a branch, a base, a worktree or further repositories
+  is refused: Fleet makes a Task's workspace. The multiplexer the create flow
+  settles on is dropped: Fleet's runtime keeps the terminal. A confirmed
+  delete is checked against the Task as it is then, as thurbox's own engine
+  checks it against the row.
+- The host picker's route names the Fleet host: `ssh:devbox` is `devbox`,
+  this machine is `local`. A host Fleet's config does not define
+  (`fleet runtime hosts`) is refused.
+- The chosen agent is the Task's harness, and only an agent Fleet has a
+  harness profile for (`fleet version --json`'s `harnesses`: `claude`,
+  `claude-code`, `codex`) is taken. Any other, `shell` included, is refused
+  by name: Fleet would run a program named as the agent.
+- Only sessions are Fleet's. Restore, restart, fork, rename, sync, reorder
+  and dispatching a task to a session are refused by name. Everything that is
+  no session's (settings, bookmarks, folders and clones, the task list,
+  automations) runs on thurbox's own engine as before, and is read back from
+  its database: the snapshot takes its sessions from `fleet watch` and the
+  task list and automations from the database.
+- A Task's terminal is the stream `fleet attach` names, opened as a stream
+  pane. A Task with no session yet has no pane; a stream that ends is opened
+  again. Closing the pane detaches; the agent keeps running. A stream with no
+  snapshot to send (a `tty` answer through `fleet term-bridge`) starts on a
+  blank screen of the pane's size.
+- A Task on another host (`spec.host` not `local`) names a workspace there,
+  which no route of thurbox's reaches: its files, diff, git state and editor
+  are not read on this machine, even where the same path exists here. The
+  diff says where the workspace is. A Task on `local` reads like any local
+  session.
+- `fleet up`'s standard error goes to a file of its own in thurbox's data
+  directory (`$XDG_DATA_HOME/thurbox`, or `THURBOX_DATA_DIR`), created
+  exclusively and named for the manager: `fleet-up-<pid>.log`. It is read
+  back and removed when the manager exits. A manager that outlives the
+  interface keeps writing to it there, and the next start removes the logs
+  whose process is gone.
+- A watch or a manager that fails is the snapshot's error, beside the last
+  rows read. Both are started again: the watch resumes with `--since`. A
+  store the running watch cannot read is the error too, until a read works
+  again.
+- Typing or pasting into a Fleet session's pane waits for a stream that has
+  stopped reading up to 1 MiB, and the interface does not wait. Each write
+  is queued whole or not at all, so a paste is never cut in its middle: one
+  that does not fit is dropped whole, and the interface reports
+  `input dropped: <session> isn't reading` where it reports a command's
+  error, not in the pane's grid, which a full-screen agent would paint
+  over. The same holds for a local tmux pane under `stream_panes`. The pane
+  stays open,
+  and what is typed once the stream reads again arrives.
+
+Read at startup only.
 
 ### `[telemetry]` — OpenTelemetry for sessions
 

@@ -51,3 +51,21 @@ fn a_blank_brief_is_refused() {
     t["spec"]["brief"] = json!("   ");
     env.apply(json!([t])).code(1).stderr_has("spec.brief");
 }
+
+/// `--create-only` makes a new Task or nothing: a name already taken is
+/// refused, and the Task there is left as it was, however close together
+/// two clients apply it.
+#[test]
+fn a_create_only_apply_never_changes_a_task_already_there() {
+    let env = Env::new("create-only");
+    let mut first = task("t1", false);
+    first["metadata"]["labels"] = json!({"owner": "first"});
+    env.fleet_stdin(&["apply", "--create-only", "-f", "-"], &first.to_string())
+        .ok();
+    let mut second = task("t1", false);
+    second["metadata"]["labels"] = json!({"owner": "second"});
+    env.fleet_stdin(&["apply", "--create-only", "-f", "-"], &second.to_string())
+        .code(5)
+        .stderr_has("t1");
+    assert_eq!(env.get("t1")["metadata"]["labels"]["owner"], "first");
+}

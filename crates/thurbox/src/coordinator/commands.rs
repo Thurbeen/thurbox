@@ -259,12 +259,13 @@ impl App {
         let Some(request) = self.snapshots.take_editor() else {
             return;
         };
-        let dirs = self
-            .snapshots
-            .current()
-            .session(&request.session)
-            .map(|row| row.member_dirs.clone())
-            .unwrap_or_default();
+        let row = self.snapshots.current().session(&request.session);
+        // A Fleet Task on another host names directories there.
+        if row.is_some_and(|row| !row.workspace_reachable()) {
+            self.toast("this Task's workspace is on another machine; no editor opens here");
+            return;
+        }
+        let dirs = row.map(|row| row.member_dirs.clone()).unwrap_or_default();
         self.toast(
             match open_editor(terminal, &dirs, request.command, request.mode) {
                 Ok(message) => message,
@@ -331,7 +332,25 @@ impl App {
             self.record_command_failures();
             // Re-read BEFORE reporting: a `session.post_create` names the row
             // the command made, which only exists here once the rows are.
-            self.report_after = Some(self.snapshots.request_refresh());
+            // A creation is awaited by name: a source can publish its row
+            // later than the command finished.
+            let live: std::collections::HashSet<u64> = self
+                .commands
+                .inflight()
+                .iter()
+                .map(|item| item.id)
+                .collect();
+            let created = self
+                .tracked_commands
+                .iter()
+                .filter(|(id, tracked)| {
+                    !live.contains(id)
+                        && !tracked.failed
+                        && matches!(tracked.kind, "create" | "fork")
+                })
+                .filter_map(|(_, tracked)| tracked.name.clone())
+                .collect();
+            self.report_after = Some(self.snapshots.request_refresh_awaiting(created));
         }
         self.snapshots.refresh_if_due();
         if let Some(ticket) = self.report_after {

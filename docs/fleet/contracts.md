@@ -1197,11 +1197,25 @@ store every `--poll-ms` (500 by default) and takes no lease:
 raises. `--since N` reports only Tasks written after `N`, so a view resumes
 from the last `revision` it read. A deletion leaves nothing behind to compare,
 so a resuming view drops each Task it holds that `synced` does not name. An
-unreadable store reports nothing, and the next read tries again: Unknown never
-looks like a deletion. A list reads each Task on its own, so one read can hold
+unreadable store reports nothing but a warning on standard error, and the next
+read tries again: Unknown never looks like a deletion. The first read that
+works after an unreadable one ends with `synced` again. A list reads each
+Task on its own, so one read can hold
 a later write and miss an earlier one; a read is reported only once the read
 after it is the same. Writes are serialized, so by then every write below the
 highest `revision` reported is in it, and a resume skips none.
+
+`fleet apply --create-only` creates each object, of every kind it takes, or
+refuses one whose name is taken with exit 5 and leaves it as it is; the
+store's create is
+exclusive, so two clients applying one name at once get one object and one
+refusal. A view creates its Tasks this way.
+
+`fleet runtime hosts --json` prints `{"hosts": [...]}`: the names under
+`[hosts]`, the hosts a Task may name, or `null` when one `[runtime]` serves
+any host. `fleet version --json` lists the `harnesses` with a profile of
+their own; any other harness name is run as a program. A view checks a
+Task against both before it applies it.
 
 `fleet attach TASK --json` prints `{"stream": {"argv": [...]}}`: the command
 that opens the Task's [terminal stream](../runtime/README.md#the-terminal-stream),
@@ -1320,11 +1334,14 @@ command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
 `e2e_runtime_exec` runs `fleet attach` against the reference script, whose
 `tty` answer comes back bridged, and against `runtime-mux`, whose stream a
 test view drives: snapshot, input, output, and a detach that leaves the
-agent running; it also drives `fleet term-bridge` on its own.
+agent running; it also drives `fleet term-bridge` on its own, and reads
+`fleet runtime hosts` and the harnesses `fleet version` lists.
 `e2e_interactive` covers a Task with no brief: its spawn, its inbox and the
-refused amendment.
-`e2e_watch` covers `fleet watch`: the first read, a resume with `--since`
-and a deletion while the watch runs.
+refused amendment; and `apply --create-only`, which never changes a Task
+already there.
+`e2e_watch` covers `fleet watch`: the first read, a resume with `--since`,
+a deletion while the watch runs, and `synced` again after an unreadable
+store.
 `e2e_workspace` covers the workspace port against the fake adapter: one
 materialize, the ready spawn, the clean after the release, a crash between
 the materialize and its receipt, a lost request and an unreadable key.

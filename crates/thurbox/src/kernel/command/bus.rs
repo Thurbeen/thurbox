@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use super::execute::{execute, Outcome};
-use super::Command;
+use super::execute::{Engine, Outcome};
+use super::fleet::Fleet;
+use super::{Command, Executor};
 
 /// How far along a command is.
 ///
@@ -120,19 +121,41 @@ pub struct CommandBus {
     /// ([`Self::take_did_nothing`]). A success leaves the in-flight list at
     /// once, so this is the only place that fact survives to be reported.
     did_nothing: std::collections::HashSet<u64>,
-    /// The process's one registry, which every command's worker drives the
-    /// session's backend through.
-    backends: Arc<crate::backend::BackendRegistry>,
-    /// `settings.toml`'s `deleted_retention_days`, which the reap sweep
-    /// purges by, as the settings the bus was built with say.
-    deleted_retention_days: u64,
+    /// What runs each command: thurbox's own engine or Fleet.
+    executor: Arc<dyn Executor>,
 }
 
 impl CommandBus {
+    /// A bus over thurbox's own engine: the process's one backend registry,
+    /// and the reap sweep's `deleted_retention_days` as `settings` say.
     pub fn new(
         backends: Arc<crate::backend::BackendRegistry>,
         settings: &crate::session::settings::Settings,
     ) -> Self {
+        Self::with_executor(Arc::new(Engine {
+            backends,
+            deleted_retention_days: settings.deleted_retention_days,
+        }))
+    }
+
+    /// A bus whose session commands act through Fleet's command line,
+    /// `program` (ADR-41): `fleet apply`, `send` and `delete`. Every other
+    /// command runs on thurbox's own engine, built as [`Self::new`] builds it.
+    pub fn fleet(
+        program: std::path::PathBuf,
+        backends: Arc<crate::backend::BackendRegistry>,
+        settings: &crate::session::settings::Settings,
+    ) -> Self {
+        Self::with_executor(Arc::new(Fleet {
+            program,
+            engine: Engine {
+                backends,
+                deleted_retention_days: settings.deleted_retention_days,
+            },
+        }))
+    }
+
+    fn with_executor(executor: Arc<dyn Executor>) -> Self {
         let (finished_tx, finished_rx) = channel();
         let (progress_tx, progress_rx) = channel();
         Self {
@@ -145,8 +168,7 @@ impl CommandBus {
             pending: Arc::new(Mutex::new(HashMap::new())),
             failed_at: Vec::new(),
             did_nothing: std::collections::HashSet::new(),
-            backends,
-            deleted_retention_days: settings.deleted_retention_days,
+            executor,
         }
     }
 
@@ -187,8 +209,7 @@ impl CommandBus {
         let inflight = self.inflight.clone();
         let finished = self.finished_tx.clone();
         let progress = self.progress_tx.clone();
-        let backends = Arc::clone(&self.backends);
-        let retention = self.deleted_retention_days;
+        let executor = Arc::clone(&self.executor);
         let pending = Arc::clone(&self.pending);
         std::thread::spawn(move || {
             let mut next = Some((id, command));
@@ -200,7 +221,7 @@ impl CommandBus {
                 }
                 // A panic must not strand the remaining commands for this session.
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    execute(&command, &backends, retention, id, &progress)
+                    executor.execute(&command, id, &progress)
                 }))
                 .unwrap_or_else(|_| Err("command worker panicked".into()));
                 let _ = finished.send(Done::from_result(id, result));
@@ -227,10 +248,9 @@ impl CommandBus {
     /// [`Command::is_housekeeping`]. Its failures go to the log.
     fn dispatch_housekeeping(&self, command: Command, id: u64) -> u64 {
         let progress = self.progress_tx.clone();
-        let backends = Arc::clone(&self.backends);
-        let retention = self.deleted_retention_days;
+        let executor = Arc::clone(&self.executor);
         std::thread::spawn(move || {
-            if let Err(e) = execute(&command, &backends, retention, id, &progress) {
+            if let Err(e) = executor.execute(&command, id, &progress) {
                 tracing::warn!(command = command.kind(), "housekeeping failed: {e}");
             }
         });

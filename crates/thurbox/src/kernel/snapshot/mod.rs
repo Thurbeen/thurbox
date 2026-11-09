@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod db;
+pub mod fleet;
 mod git;
 mod probe;
 
@@ -31,6 +32,17 @@ use probe::PaneProbe;
 /// How often the snapshot is rebuilt. A read never waits on this; it only
 /// determines how out of date the answer may be.
 pub const REFRESH_INTERVAL: Duration = Duration::from_millis(400);
+
+/// How long a refresh asked of a [`SnapshotSource`] waits for its answer.
+/// A source speaks only when something moved, so after a command that moved
+/// nothing no answer comes: past this, the rows stand as fresh. `fleet
+/// watch` reads the store every 500 ms, so a write is seen well within it.
+const SOURCE_SETTLE: Duration = Duration::from_secs(1);
+
+/// How long a refresh awaiting a created session waits for its row: a
+/// creation Fleet refused late, or a watch that is down, must not hold the
+/// creation's report for good.
+const SOURCE_AWAIT: Duration = Duration::from_secs(10);
 
 /// How long "is the multiplexer installed, does each agent's command resolve"
 /// is trusted before it is asked again.
@@ -168,6 +180,23 @@ pub struct SessionRow {
     /// [`crate::kernel::lua_api::META_KEYS`]; empty when it has none. Every
     /// other key is a driver's or thurbox's own and never reaches a plugin.
     pub meta: std::collections::BTreeMap<String, String>,
+}
+
+impl SessionRow {
+    /// Whether this machine reaches the session's directories at all: its
+    /// own, or a host thurbox's routes reach. A Fleet Task on another host
+    /// (`remote_host` set) names a path there, which no route of thurbox's
+    /// reaches, so its files, diff and git state are not read here, even
+    /// where the same path exists locally.
+    pub fn workspace_reachable(&self) -> bool {
+        self.backend != fleet::BACKEND || self.remote_host.is_none()
+    }
+
+    /// Whether the session's directories are on this machine, so its own
+    /// filesystem reads them: reachable, and on no remote route.
+    pub fn workspace_on_this_machine(&self) -> bool {
+        self.workspace_reachable() && !crate::session::Route::is_remote_key(&self.backend)
+    }
 }
 
 /// A session that was deleted but not purged.
@@ -377,6 +406,25 @@ impl Snapshot {
     }
 }
 
+/// Where a store's session rows come from when they are not thurbox's own
+/// database's: Fleet's Tasks, through [`fleet::FleetWatch`] (ADR-41).
+///
+/// Polled on the store's refresh schedule, on the UI thread, so it never
+/// blocks: the source reads on a worker of its own and hands over what it
+/// has.
+pub trait SnapshotSource: Send {
+    /// What moved since the last call, or `None` when nothing did.
+    fn poll(&mut self) -> Option<SourceRead>;
+}
+
+/// One answer of a [`SnapshotSource`]: every session row, and what is wrong
+/// with the source, if anything is. The rows stand while the error does.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SourceRead {
+    pub sessions: Vec<SessionRow>,
+    pub error: Option<String>,
+}
+
 /// An editor request, answered: the session to open it over and the editor
 /// setting as stored (`thurbox-cli editor set` / `editor mode`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,6 +442,15 @@ pub struct EditorRequest {
 /// a loop that stops painting (issue #1474).
 pub struct SnapshotStore {
     db: Option<DbWorker>,
+    /// The rows' source when the database is not it; see [`SnapshotSource`].
+    source: Option<Box<dyn SnapshotSource>>,
+    /// Answers applied from the source, and when a refresh was last asked of
+    /// it: what [`Self::request_refresh`]'s ticket counts with a source.
+    source_reads: u64,
+    source_asked: Instant,
+    /// The names of the sessions the last refresh awaits, with a source:
+    /// see [`Self::request_refresh_awaiting`].
+    awaited: Vec<String>,
     /// Whether a read has been sent and not answered. At most one is: an
     /// answer is applied whole, and two in flight would only race.
     reading: bool,
@@ -518,6 +575,49 @@ impl SnapshotStore {
         )
     }
 
+    /// Build a store whose session rows come from `source` rather than the
+    /// database. The writes the store makes to session rows (seen marks,
+    /// panes, hook reports) have nowhere to land and are dropped.
+    pub fn with_source(
+        source: Box<dyn SnapshotSource>,
+        backends: &crate::backend::BackendRegistry,
+        settings: &Settings,
+    ) -> Self {
+        let mut store = Self::build(None, None, None, backends, settings);
+        store.source = Some(source);
+        store.poll_source();
+        store
+    }
+
+    /// [`Self::with_source`] over the real thurbox database as well, which
+    /// keeps every row that is no session's: the task list and the
+    /// automations. The sessions, and their error, are the source's.
+    pub fn open_with_source(
+        source: Box<dyn SnapshotSource>,
+        backends: &crate::backend::BackendRegistry,
+        settings: &Settings,
+    ) -> Self {
+        let mut store = Self::open(backends, settings);
+        store.source = Some(source);
+        store.current.sessions.clear();
+        store.current.deleted.clear();
+        store.poll_source();
+        store
+    }
+
+    /// Apply what the source has, returning whether anything moved.
+    fn poll_source(&mut self) -> bool {
+        let Some(read) = self.source.as_mut().and_then(|source| source.poll()) else {
+            return false;
+        };
+        self.source_reads += 1;
+        self.current.sessions = read.sessions;
+        self.current.error = read.error;
+        self.current.taken_at_ms = taken_at_stamp();
+        self.mark_changed();
+        true
+    }
+
     fn build(
         db: Option<DbWorker>,
         db_path: Option<PathBuf>,
@@ -530,6 +630,10 @@ impl SnapshotStore {
         let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
         let mut store = Self {
             db,
+            source: None,
+            source_reads: 0,
+            source_asked: Instant::now(),
+            awaited: Vec::new(),
             db_path,
             reading: false,
             reread: false,
@@ -682,7 +786,7 @@ impl SnapshotStore {
     /// Poll using the caller's monotonic clock. The row read and other workers
     /// retain their own timestamps; this instant controls only the poll cadence.
     pub fn refresh_if_due_at(&mut self, now: Instant) -> bool {
-        let applied = self.drain_replies();
+        let applied = self.drain_replies() | self.poll_source();
         let due = self
             .last_refresh
             .is_none_or(|at| now.saturating_duration_since(at) >= REFRESH_INTERVAL);
@@ -713,10 +817,31 @@ impl SnapshotStore {
         applied
     }
 
+    /// [`Self::request_refresh`], for commands that created sessions named
+    /// `created`. With a source, the ticket is fresh once a row of each name
+    /// is published, or 10 seconds after the request: a source answers when
+    /// it sees a write, which can be later than the second a quiet source is
+    /// given. The database's rows are read after the command, so they hold
+    /// it already.
+    pub fn request_refresh_awaiting(&mut self, created: Vec<String>) -> u64 {
+        let ticket = self.request_refresh();
+        self.awaited = created;
+        ticket
+    }
+
     /// Ask for every row now, without waiting for the interval or a commit.
     /// Returns a ticket [`Self::fresh_since`] accepts once rows read after
     /// this call are the ones published.
     pub fn request_refresh(&mut self) -> u64 {
+        self.awaited.clear();
+        if self.source.is_some() {
+            // The database's rows (the task list, the automations) are read
+            // again too, unwaited: a source's answer is the ticket.
+            self.reread = true;
+            self.send_read();
+            self.source_asked = Instant::now();
+            return self.source_reads + 1;
+        }
         self.reread = true;
         self.send_read();
         // The read that settles this is the next full one sent — this call's
@@ -731,6 +856,17 @@ impl SnapshotStore {
     /// Whether the rows published now were read after `ticket` was handed out.
     /// Always true without a database: there is nothing further to wait for.
     pub fn fresh_since(&self, ticket: u64) -> bool {
+        if self.source.is_some() {
+            let asked = self.source_asked.elapsed();
+            if !self.awaited.is_empty() {
+                return asked >= SOURCE_AWAIT
+                    || self
+                        .awaited
+                        .iter()
+                        .all(|name| self.current.sessions.iter().any(|row| &row.name == name));
+            }
+            return self.source_reads >= ticket || asked >= SOURCE_SETTLE;
+        }
         self.db.is_none() || self.reads_applied >= ticket
     }
 
@@ -1002,6 +1138,11 @@ impl SnapshotStore {
             if row.git != stats {
                 row.git = stats;
                 moved = true;
+            }
+            // A Fleet Task on another host: no route of thurbox's reaches
+            // it with git (see `SessionRow::workspace_reachable`).
+            if !row.workspace_reachable() {
+                continue;
             }
             if let Some(cwd) = row.cwd.clone() {
                 // A remote session's `cwd` is a path on its host, so its stats
@@ -1461,6 +1602,15 @@ impl SnapshotStore {
     /// Turn a full read into the published rows.
     fn apply_rows(&mut self, read: RowsRead) {
         let taken_at_ms = taken_at_stamp();
+        // With a source, the sessions are its own: the database's rows are
+        // the rest.
+        if self.source.is_some() {
+            self.current.tasks = read.tasks;
+            self.current.automations = read.automations;
+            self.current.taken_at_ms = taken_at_ms;
+            self.mark_changed();
+            return;
+        }
         let RowsRead {
             sessions,
             hooks,

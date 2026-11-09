@@ -47,7 +47,7 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
 5. **Anything touching the world runs on a worker** — terminal attach, commands,
    the interface's database reads and writes (`kernel::snapshot::db`), diffs,
    metrics, git stats, repository reads, update checks, and programs a plugin
-   asked for. In `kernel::snapshot` (`db`, `git`, `probe`) and
+   asked for. In `kernel::snapshot` (`db`, `fleet`, `git`, `probe`) and
    `kernel::terminal` (`attach`, `discovery`, `shells`) each worker is a file of
    its own, and `each_kernel_worker_lives_in_a_file_of_its_own` in
    `tests/architecture_rules.rs` fails when the store, the read model or the
@@ -189,7 +189,9 @@ alias and re-export laundering, and test-only edges.
   into them), `modals/` (help, settings, theme picker, the command palette —
   chrome about thurbox itself,
   which plugins contribute *data* to rather than replace), `bands` (the top/bottom
-  bars), `snapshot` (the read side), `command` (the write side), `terminal/` (live
+  bars), `snapshot` (the read side: the database, or a `SnapshotSource` such
+  as `fleet::FleetWatch`), `command` (the write side: an `Executor`, thurbox's
+  own engine or `command::fleet`; ADR-41), `terminal/` (live
   PTY surfaces: the attach machinery, plugin program panes, link detection +
   OSC 8 painting — every surface owns its own rect and size memo, and a
   session's agent and its `#shell` companion are two of them, never one),

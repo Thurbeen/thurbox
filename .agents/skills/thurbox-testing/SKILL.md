@@ -42,6 +42,13 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   for a leading underscore — that is how a capability once hid under `__run_impl`),
   the instruction/memory bounds, snapshot reads, and painting a plugin to a
   `TestBackend`.
+- **`tests/fleet_engine_e2e.rs`** — the Fleet engine (`[fleet] enabled`) against
+  the real `fleet` binary, found beside `thurbox-cli` (or `FLEET_BIN`), with
+  Fleet's fake runtime: Tasks as rows through `fleet watch`, create, send,
+  delete and confirmed delete through its command line, and the `fleet up`
+  thurbox keeps running; and, on `runtime-mux` with tmux, a Task's pane through
+  `fleet attach`. Skips when a binary is not built (`cargo build -p fleet-cli
+  -p runtime-mux`).
 - **The per-surface files** — one file per surface or contract:
   `session_list`, `search`, `new_session`, `terminal_pane`, `session_lifetime`,
   `keymap`, `focus`, `modals`, `chrome`, `mouse`, `hover`, `decoration`,

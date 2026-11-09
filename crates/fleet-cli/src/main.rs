@@ -81,6 +81,10 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         json: bool,
+        /// Create each object, or refuse one whose name is taken (exit 5),
+        /// leaving it as it is; never update.
+        #[arg(long)]
+        create_only: bool,
     },
     /// Print one resource as JSON.
     Get { kind: String, name: String },
@@ -251,6 +255,12 @@ enum RuntimeCommand {
         /// The program and the arguments it takes before the verb.
         #[arg(last = true, required = true)]
         program: Vec<String>,
+    },
+    /// The hosts a Task may name: the `[hosts]` of the config, or none
+    /// (`null` with --json) when one `[runtime]` serves any host.
+    Hosts {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -466,6 +476,23 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         None => (Config::empty(), String::new()),
     };
+    if let Command::Runtime {
+        command: RuntimeCommand::Hosts { json },
+    } = &cli.command
+    {
+        // Runtime programs serve exactly the hosts named for them, as
+        // `open_reloadable_runtime` wires them.
+        let hosts = (!config.runtimes.is_empty()).then(|| config.hosts.keys().collect::<Vec<_>>());
+        if *json {
+            print_json(&json!({ "hosts": hosts }));
+        } else {
+            match hosts {
+                Some(hosts) => hosts.iter().for_each(|host| println!("{host}")),
+                None => println!("any host: one [runtime] serves them all"),
+            }
+        }
+        return Ok(());
+    }
     let data_dir = cli
         .data_dir
         .clone()
@@ -537,7 +564,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
             )
         }
         Command::Init { .. } => unreachable_version(),
-        Command::Apply { file, json } => cmd_apply(store, &config, &file, json),
+        Command::Apply {
+            file,
+            json,
+            create_only,
+        } => cmd_apply(store, &config, &file, json, create_only),
         Command::Get { kind, name } => {
             let obj = get(store, &served_kind(store, &kind)?, &name)?;
             print_json(&serde_json::to_value(&obj).map_err(|e| fail(e.to_string()))?);
@@ -1141,6 +1172,7 @@ fn version(json: bool) -> Result<(), Failure> {
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
             "runtimes": ["exec", "thurbox", "fake"],
+            "harnesses": fleet_api::harness::PROFILED,
             "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
             "gateways": Platform::ALL,
@@ -1626,6 +1658,7 @@ fn cmd_apply(
     config: &Config,
     file: &Path,
     json_out: bool,
+    create_only: bool,
 ) -> Result<(), Failure> {
     let bytes = read_input(file)?;
     let doc: Value = serde_json::from_slice(&bytes)
@@ -1650,6 +1683,15 @@ fn cmd_apply(
     let mut forge: Option<ForgeHosts> = None;
     let mut gateway: Option<GatewayAccounts> = None;
     let policies = policy_names(config);
+    // A taken name under --create-only is a conflict, whatever the kind.
+    let refused = |e: StoreError| match e {
+        StoreError::AlreadyExists(_) if create_only => Failure {
+            code: exit::CONFLICT,
+            message: e.to_string(),
+            hint: Some("the name is taken; choose another, or apply without --create-only".into()),
+        },
+        e => e.into(),
+    };
     for obj in objs {
         let (outcome, stored) = if obj.kind == fleet_api::conversation::KIND {
             // The account's adapter parses the address and the name derives from it.
@@ -1665,7 +1707,14 @@ fn cmd_apply(
             if gateway.is_none() {
                 gateway = Some(open_gateway(config)?.ok_or_else(|| fail("no [gateway] section"))?);
             }
-            apply_conversation(store, gateway.as_ref().expect("opened"), section, obj)?
+            apply_conversation(
+                store,
+                gateway.as_ref().expect("opened"),
+                section,
+                obj,
+                create_only,
+            )
+            .map_err(refused)?
         } else if obj.kind == fleet_api::change_request::KIND {
             // The forge adapter parses the URL and the name derives from it.
             if forge.is_none() {
@@ -1677,9 +1726,10 @@ fn cmd_apply(
                     ),
                 })?);
             }
-            apply_change_request(store, forge.as_ref().expect("opened"), obj)?
+            apply_change_request(store, forge.as_ref().expect("opened"), obj, create_only)
+                .map_err(refused)?
         } else {
-            apply(store, obj, &policies)?
+            apply(store, obj, &policies, create_only).map_err(refused)?
         };
         let key = stored.key();
         if json_out {
@@ -1779,6 +1829,9 @@ fn cmd_watch(
             Observation::Unknown { why } if once => return Err(StoreError::Unknown(why).into()),
             Observation::Unknown { why } => {
                 eprintln!("warning: could not read the Tasks; nothing assumed: {why}");
+                // The next read that works is `synced` again: a view that
+                // showed this warning learns its rows are current once more.
+                watch.synced = false;
                 std::thread::sleep(std::time::Duration::from_millis(poll_ms));
                 continue;
             }
@@ -1812,7 +1865,8 @@ fn cmd_watch(
 /// higher `resourceVersion`, so a Task above the cursor changed since. A
 /// deletion leaves nothing to compare, so the first report ends with
 /// `synced`, the names present then: a view resuming with `--since` drops
-/// any other it holds. An unreadable store reports nothing.
+/// any other it holds. An unreadable store reports nothing, and the first
+/// read that works after it ends with `synced` again.
 ///
 /// A list reads each Task's file on its own, so one read can hold a later
 /// write and miss an earlier one, and a revision reported from it would let

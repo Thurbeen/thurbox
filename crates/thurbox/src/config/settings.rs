@@ -154,6 +154,15 @@ config_version = 1
 # export_diagnostic_logs = false  # the interface's own WARN+ logs; restart-only
 # per_session = false           # thurbox.session.id on thurbox's own metrics
 
+# The session engine. Off, thurbox runs sessions itself. On, every session is
+# a Fleet Task: the interface follows them with `fleet watch`, creates, sends
+# to and deletes them with `fleet apply`, `send` and `delete`, and starts
+# `fleet up` whenever no manager holds the lease. Fleet reads its own config.
+# Restart-only.
+# [fleet]
+# enabled = false
+# program = "fleet"             # a name on PATH or a path
+
 # ──────────────────────────────────────────────────────────────────────────
 # Common recipes (uncomment the lines under the recipe you want)
 # ──────────────────────────────────────────────────────────────────────────
@@ -399,6 +408,8 @@ mod tests {
             "on_automation_failure",
             "[remote]",
             "transitive_sessions",
+            "[fleet]",
+            "program",
         ] {
             assert!(
                 SEED_SETTINGS_TOML.contains(field),

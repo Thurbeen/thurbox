@@ -103,6 +103,10 @@ impl Terminals {
             if self.live.contains_key(&row.id) || self.attach.attaching.contains_key(&row.id) {
                 continue;
             }
+            if row.backend == super::fleet::BACKEND {
+                self.attach_fleet(row, rows, cols);
+                continue;
+            }
             let (candidate, via_name) = self.candidate_pane(row);
             // The same attempt would fail the same way; a different one is worth
             // making.
@@ -235,6 +239,48 @@ impl Terminals {
             || self.attach.attaching.values().any(|name| name == backend)
     }
 
+    /// Attach a Fleet session's pane on a worker, through the stream `fleet
+    /// attach` names ([`super::fleet`]). A row whose Task has no session yet
+    /// (no key) has nothing to attach to; a failed attempt is made again
+    /// after [`ATTACH_RETRY_INTERVAL`], and a stream that ended is attached
+    /// afresh, since `drop_lost_panes` drops a pane whose output ended.
+    fn attach_fleet(&mut self, row: &crate::kernel::snapshot::SessionRow, rows: u16, cols: u16) {
+        let Some(program) = self.fleet.clone() else {
+            return;
+        };
+        let Some(key) = row.key.clone() else {
+            self.fail(&row.id, None, "session has no pane yet".to_string());
+            return;
+        };
+        if self.attach.failed.get(&row.id).is_some_and(|failure| {
+            failure.pane.as_deref() == Some(key.as_str())
+                && failure.at.elapsed() < ATTACH_RETRY_INTERVAL
+        }) {
+            return;
+        }
+        let tx = self.attach.attached.0.clone();
+        let session = row.id.clone();
+        let scrollback = self.scrollback;
+        let runtime = self.runtime.clone();
+        let notices = super::stream_pane::Notices::new(self.input_notices.0.clone(), &row.name);
+        self.attach
+            .attaching
+            .insert(session.clone(), super::fleet::BACKEND.to_string());
+        std::thread::spawn(move || {
+            // The pane's reader and writer run on the process's runtime.
+            let _guard = runtime.as_ref().map(|handle| handle.enter());
+            let result = super::fleet::open(&program, &session, rows, cols, scrollback, notices);
+            let _ = tx.send(Attached {
+                session,
+                pane: key,
+                backend: super::fleet::BACKEND.to_string(),
+                readied: false,
+                via_name: false,
+                session_handle: result,
+            });
+        });
+    }
+
     /// Hand one session's attach to a worker.
     ///
     /// Everything the worker needs is cloned across: the backend is behind an
@@ -291,6 +337,7 @@ impl Terminals {
             .stream_view
             .clone()
             .filter(|_| super::stream_pane::views(&row.backend));
+        let notices = self.input_notices.0.clone();
         let scrollback = self.scrollback;
         std::thread::spawn(move || {
             let _guard = runtime.as_ref().map(|handle| handle.enter());
@@ -310,8 +357,9 @@ impl Terminals {
                 .and_then(|()| {
                     if let Some(view) = &stream_view {
                         let argv = view.argv(&pane);
-                        let adopted = super::stream_pane::adopt(&argv, rows, cols)
-                            .map_err(|e| format!("the stream pane: {e}"))?;
+                        let adopted =
+                            super::stream_pane::adopt_reporting(&argv, rows, cols, notices, &name)
+                                .map_err(|e| format!("the stream pane: {e}"))?;
                         return Ok(crate::backend::Session::adopt_io(
                             name,
                             rows,

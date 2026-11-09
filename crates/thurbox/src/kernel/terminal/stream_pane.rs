@@ -8,6 +8,9 @@
 
 use std::io::{self, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{channel, Sender};
+use std::sync::Arc;
 
 use term_stream::{Down, Size, Up};
 
@@ -61,6 +64,30 @@ pub fn view_program() -> Option<std::path::PathBuf> {
 /// and input that goes up as `input` frames. The process ends when the
 /// input is dropped, as a detach.
 pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend::AdoptedSession> {
+    adopt_with_upstream(argv, rows, cols, None).map(|(adopted, _)| adopted)
+}
+
+/// [`adopt`], with input the stream refused said on `notices`, as
+/// `input dropped: <label> isn't reading`: the interface's own notices,
+/// never the pane's grid, which a full-screen agent paints over.
+pub fn adopt_reporting(
+    argv: &[String],
+    rows: u16,
+    cols: u16,
+    notices: Sender<String>,
+    label: &str,
+) -> io::Result<crate::backend::AdoptedSession> {
+    adopt_with_upstream(argv, rows, cols, Some(Notices::new(notices, label)))
+        .map(|(adopted, _)| adopted)
+}
+
+/// [`adopt`], and the stream's way up for frames other than input.
+pub(super) fn adopt_with_upstream(
+    argv: &[String],
+    rows: u16,
+    cols: u16,
+    notices: Option<Notices>,
+) -> io::Result<(crate::backend::AdoptedSession, Upstream)> {
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| io::Error::other("the stream's argv names no program"))?;
@@ -73,8 +100,10 @@ pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend
     let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(io::Error::other("the stream has no pipes"));
     };
-    match term_stream::read::<Down>(&mut stdout)? {
-        Some(Down::Hello(hello)) if hello.version == term_stream::VERSION => {}
+    let snapshots = match term_stream::read::<Down>(&mut stdout)? {
+        Some(Down::Hello(hello)) if hello.version == term_stream::VERSION => {
+            hello.has(term_stream::Capability::Snapshot)
+        }
         Some(Down::Hello(hello)) => {
             return Err(io::Error::other(format!(
                 "the stream speaks version {}, thurbox {}",
@@ -87,9 +116,25 @@ pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend
                 "the stream did not start with hello: {other:?}"
             )))
         }
-    }
+    };
     term_stream::write(&mut stdin, &Up::Resize(Size { rows, cols }))?;
+    let upstream = Upstream::over(stdin);
     let (tx, rx) = std::sync::mpsc::channel();
+    // A pane over a stream starts without a grid and builds it from the
+    // first snapshot. A stream that sends none (`fleet term-bridge` has no
+    // screen from before it started) starts on a blank one of its size.
+    if !snapshots {
+        let blank = term_stream::Snapshot {
+            cols,
+            rows,
+            cursor: (0, 0),
+            normal: Vec::new(),
+            alternate: None,
+        };
+        let _ = tx.send(crate::backend::PaneChunk::Snapshot(Box::new(snapshot(
+            blank,
+        ))));
+    }
     std::thread::spawn(move || {
         while let Ok(Some(frame)) = term_stream::read::<Down>(&mut stdout) {
             let chunk = match frame {
@@ -112,12 +157,13 @@ pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend
         }
         reap(child);
     });
-    Ok(crate::backend::AdoptedSession {
+    let adopted = crate::backend::AdoptedSession {
         output: Box::new(rx.into_iter()),
-        input: Box::new(Input(stdin)),
+        input: Box::new(Input::new(upstream.clone(), notices)),
         seed_len: 0,
         size: None,
-    })
+    };
+    Ok((adopted, upstream))
 }
 
 fn snapshot(s: term_stream::Snapshot) -> crate::backend::contract::PaneSnapshot {
@@ -137,28 +183,296 @@ fn reap(mut child: Child) {
     let _ = child.wait();
 }
 
+/// The stream's way up: shared by the pane's input and whatever else sends
+/// frames, such as a resize from the paint path.
+///
+/// Frames are queued to a writer of their own, so sending never waits on
+/// the process: one that stops reading stalls its writer, not the
+/// interface. The writer ends once every sender is gone, or the process
+/// stops taking frames.
+///
+/// What is typed or pasted and waits is bounded by [`QUEUE_BYTES`]: past it
+/// input is refused at once, as the pane's own input channel refuses it when
+/// full. Input bigger than the bound still goes when nothing waits before
+/// it, so a long paste reaches a stream that reads.
+#[derive(Clone)]
+pub(super) struct Upstream {
+    frames: Sender<Up>,
+    queued: Arc<AtomicUsize>,
+}
+
+/// The most bytes of frames waiting for a stream.
+const QUEUE_BYTES: usize = 1 << 20;
+
+/// The bytes a frame holds, as [`Upstream`] counts them.
+fn weight(frame: &Up) -> usize {
+    match frame {
+        Up::Input(bytes) => bytes.len(),
+        Up::Paste(text) => text.len(),
+        _ => 16,
+    }
+}
+
+impl Upstream {
+    fn over(mut stdin: ChildStdin) -> Self {
+        let (frames, rx) = channel::<Up>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let written = Arc::clone(&queued);
+        std::thread::spawn(move || {
+            for frame in rx {
+                let sent = term_stream::write(&mut stdin, &frame).and_then(|()| stdin.flush());
+                written.fetch_sub(weight(&frame), Ordering::AcqRel);
+                if sent.is_err() {
+                    break;
+                }
+            }
+        });
+        Self { frames, queued }
+    }
+
+    pub(super) fn send(&self, frame: Up) -> io::Result<()> {
+        let weight = weight(&frame);
+        let before = self.queued.fetch_add(weight, Ordering::AcqRel);
+        // Only what is typed or pasted is refused: a resize or a detach is a
+        // few bytes, and dropping one would leave the stream wrong.
+        let typed = matches!(frame, Up::Input(_) | Up::Paste(_));
+        if typed && before > 0 && before + weight > QUEUE_BYTES {
+            self.queued.fetch_sub(weight, Ordering::AcqRel);
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "the stream's input is full: it has stopped reading",
+            ));
+        }
+        self.frames.send(frame).map_err(|_| {
+            self.queued.fetch_sub(weight, Ordering::AcqRel);
+            io::Error::other("the stream takes no more frames")
+        })
+    }
+}
+
+/// Where a pane says it dropped input: the interface's notices, under the
+/// pane's label.
+pub(super) struct Notices {
+    tx: Sender<String>,
+    label: String,
+}
+
+impl Notices {
+    pub(super) fn new(tx: Sender<String>, label: &str) -> Self {
+        Self {
+            tx,
+            label: label.to_string(),
+        }
+    }
+
+    fn dropped(&self) {
+        let _ = self
+            .tx
+            .send(format!("input dropped: {} isn't reading", self.label));
+    }
+}
+
 /// Bytes typed into the pane, each write one `input` frame.
-struct Input(ChildStdin);
+struct Input {
+    up: Upstream,
+    notices: Option<Notices>,
+    /// Whether input is being dropped, so a run of refused writes is said
+    /// once.
+    dropping: bool,
+}
+
+impl Input {
+    fn new(up: Upstream, notices: Option<Notices>) -> Self {
+        Self {
+            up,
+            notices,
+            dropping: false,
+        }
+    }
+}
 
 impl Write for Input {
+    /// Each write is queued whole or not at all, so a paste is never cut in
+    /// its middle.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        term_stream::write(&mut self.0, &Up::Input(buf.to_vec()))?;
+        match self.up.send(Up::Input(buf.to_vec())) {
+            // Dropped, not failed: the pane's writer ends at its first
+            // error, and a backlog must not close the pane. Later input goes
+            // once the stream reads again; the interface says what was
+            // dropped, once per run of refused writes.
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                tracing::warn!("dropped {} bytes of input: {e}", buf.len());
+                if !self.dropping {
+                    self.dropping = true;
+                    if let Some(notices) = &self.notices {
+                        notices.dropped();
+                    }
+                }
+            }
+            sent => {
+                sent?;
+                self.dropping = false;
+            }
+        }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        Ok(())
     }
 }
 
 impl Drop for Input {
     fn drop(&mut self) {
-        let _ = term_stream::write(&mut self.0, &Up::Detach);
+        let _ = self.up.send(Up::Detach);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    // For the tests that run a process, all of them Unix's.
+    #[cfg(unix)]
+    use std::process::{Command, Stdio};
+    #[cfg(unix)]
+    use std::time::Duration;
+
+    #[cfg(unix)]
+    use term_stream::{Size, Up};
+
+    #[cfg(unix)]
+    fn notices(tx: std::sync::mpsc::Sender<String>) -> Option<super::Notices> {
+        Some(super::Notices::new(tx, "s1"))
+    }
+
+    /// A resize is sent from the paint path, so it never waits behind input
+    /// a stream has stopped reading: here a paste bigger than the pipe, to
+    /// a process that reads nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_resize_never_waits_behind_input_the_stream_has_not_read() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("sleep");
+        let upstream = super::Upstream::over(child.stdin.take().expect("stdin"));
+        let typing = upstream.clone();
+        std::thread::spawn(move || {
+            let _ = typing.send(Up::Input(vec![b'x'; 4 << 20]));
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(upstream.send(Up::Resize(Size { rows: 1, cols: 1 })).is_ok());
+        });
+        let answered = rx.recv_timeout(Duration::from_secs(2));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(answered, Ok(true), "the resize waited behind the paste");
+    }
+
+    /// What waits for a stream that stopped reading is bounded: past the
+    /// bound, input is refused at once rather than queued.
+    #[cfg(unix)]
+    #[test]
+    fn input_for_a_stream_that_stopped_reading_is_bounded() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("sleep");
+        let upstream = super::Upstream::over(child.stdin.take().expect("stdin"));
+        let mut refused = None;
+        for _ in 0..64 {
+            if let Err(e) = upstream.send(Up::Input(vec![b'x'; 256 << 10])) {
+                refused = Some(e.to_string());
+                break;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let refused = refused.expect("16 MiB were queued for a stream reading nothing");
+        assert!(refused.contains("full"), "{refused}");
+    }
+
+    /// A full queue drops what overflows and keeps the pane's input: the
+    /// pane's writer stops at its first error and detaches, so a backlog
+    /// must not be one. Once the stream reads again, the next key arrives.
+    #[cfg(unix)]
+    #[test]
+    fn a_key_after_a_full_queue_drains_arrives() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("dir");
+        let out = dir.path().join("read");
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 1; cat > '{}'", out.display()))
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("sh");
+        let mut input = super::Input::new(
+            super::Upstream::over(child.stdin.take().expect("stdin")),
+            notices(std::sync::mpsc::channel().0),
+        );
+        for _ in 0..8 {
+            input
+                .write_all(&vec![b'x'; 512 << 10])
+                .expect("a backlog is no error");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+            input.write_all(b"key-marker").expect("a key");
+            let read = std::fs::read(&out).unwrap_or_default();
+            if read.windows(10).any(|w| w == b"key-marker") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the key never arrived"
+            );
+        }
+        drop(input);
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// A write is queued whole or not at all, so a paste is never cut in
+    /// its middle; one refused is said in the interface's notices.
+    #[cfg(unix)]
+    #[test]
+    fn a_paste_that_does_not_fit_is_refused_whole_and_said_so() {
+        use std::io::Write;
+        use std::sync::atomic::Ordering;
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("sleep");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let upstream = super::Upstream::over(child.stdin.take().expect("stdin"));
+        let mut input = super::Input::new(upstream.clone(), notices(tx));
+        // The writer takes the first frame and stalls on it; the second
+        // waits in the queue, near the bound.
+        input.write_all(&vec![b'a'; 100 << 10]).expect("typed");
+        std::thread::sleep(Duration::from_millis(200));
+        input.write_all(&vec![b'b'; 800 << 10]).expect("queued");
+        let waiting = upstream.queued.load(Ordering::Acquire);
+        input
+            .write_all(&vec![b'c'; 300 << 10])
+            .expect("refused, not failed");
+        let after = upstream.queued.load(Ordering::Acquire);
+        let notice = rx.recv_timeout(Duration::from_secs(2));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(after, waiting, "none of the paste was queued");
+        assert_eq!(
+            notice.as_deref(),
+            Ok("input dropped: s1 isn't reading"),
+            "the interface is told"
+        );
+    }
+
     #[test]
     fn the_view_carries_the_scrollback_setting() {
         let view = super::View {

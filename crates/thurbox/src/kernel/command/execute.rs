@@ -20,12 +20,38 @@ pub(super) enum Outcome {
     Nothing,
 }
 
+/// thurbox's own engine: `session_ops` over the database, driving the
+/// session's backend through the process's one registry.
+pub(super) struct Engine {
+    pub(super) backends: std::sync::Arc<crate::backend::BackendRegistry>,
+    /// `settings.toml`'s `deleted_retention_days`, which the reap sweep
+    /// purges by.
+    pub(super) deleted_retention_days: u64,
+}
+
+impl super::Executor for Engine {
+    fn execute(
+        &self,
+        command: &Command,
+        id: u64,
+        progress: &Sender<Progress>,
+    ) -> Result<Outcome, String> {
+        execute(
+            command,
+            &self.backends,
+            self.deleted_retention_days,
+            id,
+            progress,
+        )
+    }
+}
+
 /// Run one command on a worker, never the UI thread.
 ///
 /// Only the outcome travels back. A creation and a fork each mint a session id,
 /// and neither reports it: a session that finished spawning is a row in the
 /// list, not a reason to move the user's selection onto it.
-pub(super) fn execute(
+fn execute(
     command: &Command,
     backends: &crate::backend::BackendRegistry,
     deleted_retention_days: u64,

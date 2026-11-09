@@ -20,8 +20,22 @@
 
 mod bus;
 mod execute;
+mod fleet;
 
 pub use bus::{CommandBus, InFlight, Phase};
+
+/// What runs an accepted command, on a command worker: thurbox's own engine
+/// ([`execute::Engine`], `session_ops` over the database) or Fleet
+/// ([`fleet::Fleet`], its command line). The bus, the queues and the
+/// in-flight record are the same either way (ADR-41).
+trait Executor: Send + Sync {
+    fn execute(
+        &self,
+        command: &Command,
+        id: u64,
+        progress: &std::sync::mpsc::Sender<bus::Progress>,
+    ) -> Result<execute::Outcome, String>;
+}
 
 use super::registry::Value as SettingValue;
 
