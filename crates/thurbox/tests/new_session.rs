@@ -1996,7 +1996,8 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
     std::fs::write(
         &fleet,
         format!(
-            "#!/bin/sh\necho \"$@\" >> '{0}'\ncat >> '{0}'\n",
+            // No Task yet: `get` answers not found (3).
+            "#!/bin/sh\n[ \"$1\" = get ] && exit 3\necho \"$@\" >> '{0}'\ncat >> '{0}'\n",
             asked.display()
         ),
     )

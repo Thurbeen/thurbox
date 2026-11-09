@@ -86,10 +86,19 @@ impl super::Executor for Fleet {
                 if let Some(agent) = agent {
                     spec["harness"] = json!(agent);
                 }
+                // `fleet apply` would update a Task already there: two names
+                // that make one Task name (`Review`, `review`) are refused
+                // rather than merged.
+                let task_name = task_name(name);
+                if self.get(&task_name)?.is_some() {
+                    return Err(format!(
+                        "a session named {task_name} already exists on Fleet; choose another name"
+                    ));
+                }
                 let mut task = json!({
                     "apiVersion": "fleet/v1alpha1",
                     "kind": "Task",
-                    "metadata": {"name": task_name(name)},
+                    "metadata": {"name": task_name},
                     "spec": spec,
                 });
                 // The name as given, which the row is published under and a

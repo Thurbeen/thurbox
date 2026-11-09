@@ -431,6 +431,91 @@ fn a_created_session_keeps_the_name_it_was_given() {
     );
 }
 
+/// Two sessions whose names make the same Task name are two sessions: the
+/// second is refused, and the first is left as it was.
+#[test]
+fn a_name_already_taken_is_refused_and_the_task_left_alone() {
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin);
+    let mut bus = CommandBus::fleet(fleet.program.clone());
+    let create = |name: &str| Command::Create {
+        name: name.into(),
+        repo: fleet.root.path().to_string_lossy().into_owned(),
+        branch: None,
+        base: None,
+        worktree_path: None,
+        agent: Some("claude-code".into()),
+        host: None,
+        multiplexer: None,
+        extras: Vec::new(),
+    };
+    run_command(&mut bus, create("Review")).expect("the first");
+    let refused = run_command(&mut bus, create("review")).expect_err("the same Task");
+    assert!(refused.contains("already"), "{refused}");
+    assert_eq!(
+        fleet.get("review").unwrap()["metadata"]["labels"]["thurbox.dev/name"],
+        "Review"
+    );
+}
+
+/// A runtime's `tty` answer reaches the pane through `fleet term-bridge`,
+/// which has no screen to send first: the pane starts on a full grid and
+/// shows what follows. The `fleet` here answers `attach` itself and runs
+/// the real bridge.
+#[test]
+fn a_bridged_stream_with_no_snapshot_shows_its_output() {
+    let Some(bin) = fleet_bin() else { return };
+    // For its isolated thurbox config and data; its store is not used.
+    let _isolated = Fleet::new(bin.clone());
+    let dir = tempfile::tempdir().expect("dir");
+    let program = dir.path().join("fleet");
+    let argv = json!([
+        bin,
+        "term-bridge",
+        "--",
+        "sh",
+        "-c",
+        "echo bridged-marker; exec cat"
+    ]);
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\necho '{}'\n", json!({"stream": {"argv": argv}})),
+    )
+    .expect("fleet");
+    make_executable(&program);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(
+        Box::new(Fed(rx)),
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
+    let mut bridged = row("bridged", "fleet", dir.path());
+    bridged.key = Some("bridged.u1".into());
+    tx.send(SourceRead {
+        sessions: vec![bridged],
+        error: None,
+    })
+    .unwrap();
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let _entered = runtime.enter();
+    let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
+    terminals.attach_fleet_through(program);
+    until("the pane shows the bridged output", || {
+        store.refresh_if_due();
+        terminals.sync(store.current(), 24, 80);
+        if let Some(failure) = terminals.failure("bridged") {
+            eprintln!("attach: {failure}");
+        }
+        terminals
+            .visible_text("bridged")
+            .is_some_and(|text| text.contains("bridged-marker"))
+    });
+}
+
 /// A confirmed delete (the local control API's) is checked against the Task
 /// as it is now: one that still matches what was confirmed is deleted, one
 /// that moved is not.

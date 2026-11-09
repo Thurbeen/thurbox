@@ -1330,7 +1330,8 @@ and the interface is a client of Fleet's command line:
 - A Task is named after the session, made a Fleet name: lowercase, with each
   run of other characters one `-` (`Read the code` is `read-the-code`). The
   name as given is kept in the Task's `thurbox.dev/name` label, and the row
-  is published under it.
+  is published under it. A name whose Task name is taken (`review` beside
+  `Review`) is refused, and the Task already there is left as it was.
 - A creation that names a branch, a base, a worktree or further repositories
   is refused: Fleet makes a Task's workspace. The multiplexer the create flow
   settles on is dropped: Fleet's runtime keeps the terminal. A confirmed
@@ -1338,7 +1339,9 @@ and the interface is a client of Fleet's command line:
   checks it against the row. Every other session command is refused by name.
 - A Task's terminal is the stream `fleet attach` names, opened as a stream
   pane. A Task with no session yet has no pane; a stream that ends is opened
-  again. Closing the pane detaches; the agent keeps running.
+  again. Closing the pane detaches; the agent keeps running. A stream with no
+  snapshot to send (a `tty` answer through `fleet term-bridge`) starts on a
+  blank screen of the pane's size.
 - No git runs against a Task's workspace: it is on whichever machine the
   Task's runtime serves.
 - `fleet up`'s standard error goes to a file of its own in thurbox's data

@@ -83,8 +83,10 @@ pub(super) fn adopt_with_upstream(
     let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(io::Error::other("the stream has no pipes"));
     };
-    match term_stream::read::<Down>(&mut stdout)? {
-        Some(Down::Hello(hello)) if hello.version == term_stream::VERSION => {}
+    let snapshots = match term_stream::read::<Down>(&mut stdout)? {
+        Some(Down::Hello(hello)) if hello.version == term_stream::VERSION => {
+            hello.has(term_stream::Capability::Snapshot)
+        }
         Some(Down::Hello(hello)) => {
             return Err(io::Error::other(format!(
                 "the stream speaks version {}, thurbox {}",
@@ -97,10 +99,25 @@ pub(super) fn adopt_with_upstream(
                 "the stream did not start with hello: {other:?}"
             )))
         }
-    }
+    };
     term_stream::write(&mut stdin, &Up::Resize(Size { rows, cols }))?;
     let upstream = Upstream::over(stdin);
     let (tx, rx) = std::sync::mpsc::channel();
+    // A pane over a stream starts without a grid and builds it from the
+    // first snapshot. A stream that sends none (`fleet term-bridge` has no
+    // screen from before it started) starts on a blank one of its size.
+    if !snapshots {
+        let blank = term_stream::Snapshot {
+            cols,
+            rows,
+            cursor: (0, 0),
+            normal: Vec::new(),
+            alternate: None,
+        };
+        let _ = tx.send(crate::backend::PaneChunk::Snapshot(Box::new(snapshot(
+            blank,
+        ))));
+    }
     std::thread::spawn(move || {
         while let Ok(Some(frame)) = term_stream::read::<Down>(&mut stdout) {
             let chunk = match frame {
