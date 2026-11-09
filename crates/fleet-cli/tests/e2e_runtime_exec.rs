@@ -500,3 +500,83 @@ fn a_revived_agent_is_ready_only_once_it_reports_again() {
     support::wait(cmd.spawn().expect("fleet signal")).ok();
     reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
 }
+
+#[test]
+fn a_reference_script_killed_holding_its_lock_does_not_block_the_next_start() {
+    if tmux().is_none() {
+        return;
+    }
+    if Command::new("jq").arg("--version").output().is_err() {
+        eprintln!("skipping: jq is not installed");
+        return;
+    }
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
+    let sockets = Sockets::new("killed");
+    // A tmux that never answers: the start that takes the lock hangs in it.
+    let hang = sockets.0.join("hang");
+    fs::create_dir_all(&hang).expect("hang dir");
+    fs::write(hang.join("tmux"), "#!/bin/sh\nexec sleep 30\n").expect("fake tmux");
+    fs::set_permissions(hang.join("tmux"), fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    let request = json!({"protocol": 1, "key": "k.one", "argv": ["sleep", "300"], "env": {}});
+    let start = |path: &str| {
+        use std::os::unix::process::CommandExt;
+        let mut child = Command::new(&script)
+            .process_group(0)
+            .arg("start")
+            .env("TMUX_TMPDIR", &sockets.0)
+            .env("PATH", path)
+            .env_remove("TMUX")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("tmux.sh");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(request.to_string().as_bytes())
+            .expect("request");
+        child
+    };
+    let mut holder = start(&format!("{}:{path}", hang.display()));
+    let locked = || {
+        fs::read_dir(&sockets.0)
+            .map(|d| {
+                d.flatten().any(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("runtime-tmux-sh-")
+                })
+            })
+            .unwrap_or(false)
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !locked() {
+        assert!(
+            Instant::now() < deadline,
+            "the first start never took its lock"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // SIGKILL, to it and the tmux it waits on: its EXIT trap never runs,
+    // and the lock stays behind.
+    Command::new("kill")
+        .args(["-KILL", &format!("-{}", holder.id())])
+        .status()
+        .expect("SIGKILL");
+    holder.wait().expect("reaped");
+
+    let begun = Instant::now();
+    let out = start(&path).wait_with_output().expect("second start");
+    let answer: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    assert!(answer["known"]["started"].is_object(), "{answer}");
+    assert!(
+        begun.elapsed() < Duration::from_secs(5),
+        "waited {:?} for a dead holder",
+        begun.elapsed()
+    );
+}

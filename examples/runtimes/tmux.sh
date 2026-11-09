@@ -76,16 +76,35 @@ find_pane() {
 
 # Starts and stops run one at a time per server: a start looks the key up,
 # then makes its window, and two at once would each make one. The lock is a
-# directory beside where tmux keeps the socket, removed on exit.
+# symbolic link beside where tmux keeps the socket, naming its holder's pid:
+# `ln -s` makes it with its holder in one step, or fails. A holder that died
+# without removing it (SIGKILL runs no trap) no longer answers `kill -0`, and
+# the one waiter that makes `<lock>.reap.<pid>` removes its lock; a reaper
+# that died is replaced the same way.
+alive() {
+	[ -n "$1" ] && kill -0 "$1" 2>/dev/null
+}
+
 take_lock() {
 	lock="${TMUX_TMPDIR:-/tmp}/runtime-tmux-sh-$(id -u)-$SOCKET.lock"
 	tries=0
-	until mkdir "$lock" 2>/dev/null; do
+	until ln -sn "$$" "$lock" 2>/dev/null; do
+		holder=$(readlink "$lock" 2>/dev/null)
+		if [ -n "$holder" ] && ! alive "$holder"; then
+			reap="$lock.reap.$holder"
+			reaper=$(readlink "$reap" 2>/dev/null)
+			[ -n "$reaper" ] && ! alive "$reaper" && rm -f "$reap"
+			if ln -sn "$$" "$reap" 2>/dev/null; then
+				[ "$(readlink "$lock" 2>/dev/null)" = "$holder" ] && rm -f "$lock"
+				rm -f "$reap"
+				continue
+			fi
+		fi
 		tries=$((tries + 1))
 		[ "$tries" -lt 200 ] || unknown "another start or stop holds $lock"
 		sleep 0.05
 	done
-	trap 'rmdir "$lock" 2>/dev/null' EXIT
+	trap 'rm -f "$lock"' EXIT
 	trap 'exit 1' INT TERM HUP
 }
 

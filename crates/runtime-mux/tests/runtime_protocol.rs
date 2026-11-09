@@ -431,3 +431,60 @@ fn concurrent_starts_under_different_tmpdirs_leave_one_process() {
         assert!(inspected["known"]["running"].is_object(), "{inspected}");
     }
 }
+
+#[test]
+fn a_start_killed_holding_the_lock_does_not_block_the_next_one() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    let Some(rt) = Runtime::new() else { return };
+    // A tmux that never answers: the start that took the lock hangs in it.
+    let hang = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("rmux-hang-{}", std::process::id()));
+    std::fs::create_dir_all(&hang).expect("hang dir");
+    std::fs::write(hang.join("tmux"), "#!/bin/sh\nexec sleep 30\n").expect("fake tmux");
+    std::fs::set_permissions(hang.join("tmux"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_runtime-mux"));
+    rt.server.scope(&mut command);
+    let mut holder = command
+        .process_group(0)
+        .arg("start")
+        .env_remove("TMUX")
+        .env_remove("RUNTIME_MUX_SOCKET")
+        .env("PATH", format!("{}:{path}", hang.display()))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("runtime-mux");
+    holder
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(
+            json!({"protocol": 1, "key": "k.held", "argv": ["sleep", "300"], "env": {}})
+                .to_string()
+                .as_bytes(),
+        )
+        .expect("request");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        holder.try_wait().expect("holder").is_none(),
+        "the first start hangs holding the lock"
+    );
+    // SIGKILL: the kernel drops its flock with its descriptors.
+    Command::new("kill")
+        .args(["-KILL", &format!("-{}", holder.id())])
+        .status()
+        .expect("SIGKILL");
+    holder.wait().expect("reaped");
+
+    let begun = Instant::now();
+    let (_, adopted) = started(&rt.start("k.next", &["sleep", "300"]));
+    assert!(!adopted);
+    assert!(
+        begun.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        begun.elapsed()
+    );
+}
