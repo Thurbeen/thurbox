@@ -386,11 +386,6 @@ impl Terminals {
         self.agents = agents;
     }
 
-    /// Terminals over the process's registry. How that set is assembled — and
-    /// why nothing is readied when it is — is the composition root's, not the
-    /// kernel's; the hosts are the same cached read of `hosts.toml` it was
-    /// built from. `settings` are the ones the process loaded: what a pane keeps
-    /// and how long a hidden one stays resident are fixed for its lifetime.
     /// Open each local tmux pane through `view`, a terminal stream, from now
     /// on. A stream pane keeps its grid while hidden: it comes back only
     /// through its stream.
@@ -399,6 +394,11 @@ impl Terminals {
         self.keep_hidden = None;
     }
 
+    /// Terminals over the process's registry. How that set is assembled — and
+    /// why nothing is readied when it is — is the composition root's, not the
+    /// kernel's; the hosts are the same cached read of `hosts.toml` it was
+    /// built from. `settings` are the ones the process loaded: what a pane keeps
+    /// and how long a hidden one stays resident are fixed for its lifetime.
     pub fn with_registry(
         backends: std::sync::Arc<crate::backend::BackendRegistry>,
         settings: &crate::session::settings::Settings,
@@ -1972,6 +1972,52 @@ mod tests {
         assert!(!crate::session_ops::host_cli::recorded_down(
             &route.format()
         ));
+    }
+
+    /// With `stream_panes` on, a session whose row names `local:tmux` (what a
+    /// new local session stores) attaches through the view program.
+    #[cfg(unix)]
+    #[test]
+    fn a_local_tmux_row_attaches_through_the_stream_view() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("viewed");
+        let program = dir.path().join("runtime-mux");
+        // A stand-in view: it notes how it ran and closes without a hello.
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\nprintf '%s ' \"$@\" > '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let backend: std::sync::Arc<dyn crate::backend::SessionBackend> =
+            std::sync::Arc::new(FakeLivenessBackend(std::sync::atomic::AtomicU8::new(0)));
+        let mut terminals = Terminals::with_registry(
+            std::sync::Arc::new(crate::backend::registry::inert()),
+            &crate::session::settings::Settings::default(),
+        );
+        let route = crate::session::Route::local(Some(crate::session::Multiplexer::Tmux));
+        std::sync::Arc::get_mut(&mut terminals.backends)
+            .expect("unshared registry")
+            .register(route.clone(), backend);
+        terminals.view_through(stream_pane::View {
+            program,
+            socket: "thurbox-test".into(),
+            scrollback: 1000,
+        });
+        let row = row("a", &route.format(), Some("%1"));
+        assert_eq!(row.backend, "local:tmux");
+        terminals.start_attach(&row, "%1".into(), false, 24, 80);
+        // The control-mode path would reach the fake's `adopt`, which panics.
+        let _ = terminals
+            .attach
+            .attached
+            .1
+            .recv_timeout(std::time::Duration::from_secs(10));
+        let argv = std::fs::read_to_string(&marker)
+            .expect("the attach did not go through the stream view");
+        assert!(argv.contains("view --socket thurbox-test"), "{argv}");
+        assert!(argv.contains("--pane %1"), "{argv}");
     }
 
     #[test]

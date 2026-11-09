@@ -74,6 +74,8 @@ fn a_stream_pane_shows_the_screen_and_takes_input() {
         "view",
         "--socket",
         server.socket(),
+        "--scrollback",
+        "2000",
         "--tmux-tmpdir",
         &server.tmpdir().to_string_lossy(),
         "--pane",

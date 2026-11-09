@@ -11,12 +11,14 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 
 use term_stream::{Down, Size, Up};
 
-/// What a pane is viewed through: the `runtime-mux` program, and the socket
-/// of this instance's own server.
+/// What a pane is viewed through: the `runtime-mux` program, the socket of
+/// this instance's own server, and the history a snapshot carries
+/// (`settings.toml`'s `scrollback_lines`).
 #[derive(Debug, Clone)]
 pub struct View {
     pub program: std::path::PathBuf,
     pub socket: String,
+    pub scrollback: usize,
 }
 
 impl View {
@@ -27,10 +29,24 @@ impl View {
             "view".into(),
             "--socket".into(),
             self.socket.clone(),
+            "--scrollback".into(),
+            self.scrollback.to_string(),
             "--pane".into(),
             pane.into(),
         ]
     }
+}
+
+/// Whether a session on `backend` (its row's route, `local:tmux` or a legacy
+/// unqualified `tmux`) is viewed through a stream: a local tmux one only.
+pub fn views(backend: &str) -> bool {
+    let local = crate::session::route::Route::parse(backend).is_ok_and(|r| r.is_local());
+    local
+        && match backend.rsplit_once(':') {
+            Some((_, mux)) => mux == "tmux",
+            // An unqualified local row is on the platform's default.
+            None => !cfg!(windows),
+        }
 }
 
 /// The `runtime-mux` program: beside thurbox's own binary, else on `PATH`.
@@ -144,5 +160,31 @@ impl Write for Input {
 impl Drop for Input {
     fn drop(&mut self) {
         let _ = term_stream::write(&mut self.0, &Up::Detach);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_view_carries_the_scrollback_setting() {
+        let view = super::View {
+            program: "runtime-mux".into(),
+            socket: "s".into(),
+            scrollback: 5000,
+        };
+        let argv = view.argv("%3");
+        assert!(
+            argv.windows(2).any(|w| w == ["--scrollback", "5000"]),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn a_local_tmux_session_is_viewed_through_a_stream_and_no_other() {
+        assert!(super::views("local:tmux"));
+        assert!(!super::views("local:psmux"));
+        assert!(!super::views("local:rmux"));
+        assert!(!super::views("ssh:box:tmux"));
+        assert!(!super::views("wsl:Ubuntu:tmux"));
     }
 }

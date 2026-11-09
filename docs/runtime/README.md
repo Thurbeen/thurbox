@@ -97,7 +97,11 @@ Size requests still go to the server through thurbox's own backend.
 naming its socket and `TMUX_TMPDIR`. `runtime-mux view` adopts the key's pane
 through its control-mode client, sized by the view's first `resize`, and
 encodes what the server sends as frames; a `detach` lets go of the pane and
-leaves the process running. The reference script answers `attach` with a raw
+leaves the process running. On a multiplexer that snapshots a pane in step
+with its output (tmux, rmux), the first screen is the first snapshot or
+resync, and a `state` frame follows it with the title and modes set before
+the view came. On one that cannot (psmux), `hello` names no `snapshot` and
+the history and that state arrive as output. The reference script answers `attach` with a raw
 tmux client on the key's pane, a `tty` answer. An `attach` argv runs where the view runs, so it names
 everything it needs, such as a socket by its path.
 
@@ -260,8 +264,10 @@ the command on a pty of its own and relays it as frames. A bridge keeps no
 screen: it has nothing from before it started, so its `hello` names no
 `snapshot`, and the view's first `resize` sizes the pty the command starts on,
 which is what makes a program draw. That is the price of a runtime without a
-screen keeper. A `detach` ends the bridged command, such as a `docker attach`
-client, and not the process it reached.
+screen keeper. A `paste` is bracketed when the command's output last asked
+for bracketed paste. A `detach` ends the bridged command, such as a
+`docker attach` client, and not the process it reached, even after the
+command closed its terminal.
 
 ### Who keeps the screen
 

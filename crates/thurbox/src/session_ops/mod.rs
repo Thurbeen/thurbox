@@ -798,7 +798,7 @@ pub fn agent_launch_plan(
                 .map_err(|e| format!("read the agent arguments: {e}"))?,
         );
     }
-    let (command, args) = with_setup(&def, host.as_ref(), command, args)?;
+    let (command, args) = with_setup(&def, host.as_ref(), config.cwd.as_deref(), command, args)?;
     Ok(LaunchPlan {
         agent: def.name,
         command,
@@ -1229,17 +1229,19 @@ pub(crate) fn build_agent_invocation(
 /// server's `PATH` — which misses a fish user's `fish_add_path` directories.
 ///
 /// A claude-family agent's several `--settings` become one here too
-/// ([`merge_settings_args`]), for every launch path at once.
+/// ([`merge_settings_args`]), for every launch path at once; `cwd` is the
+/// directory the agent launches in.
 ///
 /// [`HostShell::wrap_setup`]: crate::shell::HostShell::wrap_setup
 pub(crate) fn with_setup(
     def: &crate::session::AgentDef,
     host: Option<&crate::session::HostDef>,
+    cwd: Option<&std::path::Path>,
     command: String,
     args: Vec<String>,
 ) -> Result<(String, Vec<String>), crate::session_ops::OpError> {
     let args = if def.is_family("claude") {
-        merge_settings_args(args)
+        merge_settings_args(args, cwd, host.is_some())
     } else {
         args
     };
@@ -1264,10 +1266,15 @@ pub(crate) fn with_setup(
 /// hooks extension's file, and settings a caller passed with `--agent-arg`,
 /// as Fleet passes its own hooks — they reach it as one inline JSON object.
 /// Objects merge key by key, arrays (each hook event's list) are joined, and
-/// anything else takes the later value. A value that is neither JSON nor a
-/// JSON file this machine can read, such as a path on a remote host, leaves
-/// the arguments as they were.
-pub(crate) fn merge_settings_args(args: Vec<String>) -> Vec<String> {
+/// anything else takes the later value. A relative path is the agent's, read
+/// from `cwd`, the directory it launches in. A value that is neither JSON nor
+/// a JSON file this machine can read leaves the arguments as they were, and on
+/// a `remote` launch no path is read at all: it names a file over there.
+pub(crate) fn merge_settings_args(
+    args: Vec<String>,
+    cwd: Option<&std::path::Path>,
+    remote: bool,
+) -> Vec<String> {
     const FLAG: &str = "--settings";
     let mut at = Vec::new();
     let mut i = 0;
@@ -1287,8 +1294,15 @@ pub(crate) fn merge_settings_args(args: Vec<String>) -> Vec<String> {
         let value = &args[i + 1];
         let parsed = if value.trim_start().starts_with('{') {
             serde_json::from_str(value).ok()
+        } else if remote {
+            None
         } else {
-            std::fs::read_to_string(value)
+            let path = std::path::Path::new(value);
+            let path = match cwd {
+                Some(dir) if path.is_relative() => dir.join(path),
+                _ => path.to_path_buf(),
+            };
+            std::fs::read_to_string(path)
                 .ok()
                 .and_then(|text| serde_json::from_str(&text).ok())
         };
@@ -1543,6 +1557,22 @@ pub(crate) fn inject_thurbox_env(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_remote_launch_reads_no_settings_path_here() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("own.json"), r#"{"a":1}"#).unwrap();
+        let args: Vec<String> = ["--settings", "own.json", "--settings", r#"{"b":2}"#]
+            .map(String::from)
+            .to_vec();
+        let local = super::merge_settings_args(args.clone(), Some(dir.path()), false);
+        assert_eq!(local, ["--settings", r#"{"a":1,"b":2}"#]);
+        let remote = super::merge_settings_args(args.clone(), Some(dir.path()), true);
+        assert_eq!(
+            remote, args,
+            "a path on a remote launch names a file over there"
+        );
+    }
+
     use super::*;
     use crate::session::SessionId;
 
@@ -1557,7 +1587,7 @@ mod tests {
             setup: vec!["true".into()],
             ..Default::default()
         };
-        let (command, args) = with_setup(&def, None, "sh".into(), vec!["-x".into()]).unwrap();
+        let (command, args) = with_setup(&def, None, None, "sh".into(), vec!["-x".into()]).unwrap();
         assert_eq!(command, "sh");
         let agent = std::path::Path::new(&args[3]);
         assert!(agent.is_absolute(), "{args:?}");
@@ -1566,7 +1596,7 @@ mod tests {
 
         let unwrapped = crate::session::AgentDef::default();
         assert_eq!(
-            with_setup(&unwrapped, None, "sh".into(), Vec::new()).unwrap(),
+            with_setup(&unwrapped, None, None, "sh".into(), Vec::new()).unwrap(),
             ("sh".to_string(), Vec::new()),
             "without a setup the backend resolves it, as before"
         );

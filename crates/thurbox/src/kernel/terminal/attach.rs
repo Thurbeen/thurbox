@@ -290,7 +290,7 @@ impl Terminals {
         let stream_view = self
             .stream_view
             .clone()
-            .filter(|_| row.backend == "tmux" && remote_host.is_none());
+            .filter(|_| super::stream_pane::views(&row.backend));
         let scrollback = self.scrollback;
         std::thread::spawn(move || {
             let _guard = runtime.as_ref().map(|handle| handle.enter());

@@ -1911,6 +1911,19 @@ fn a_fresh_agent_starts_on_a_row_that_already_names_its_conversation() {
 #[cfg(unix)]
 #[test]
 fn several_settings_reach_a_claude_agent_as_one() {
+    merged_settings_reach_claude(false);
+}
+
+/// A relative `--settings` path is the agent's: read from the directory it
+/// launches in, never from wherever thurbox runs.
+#[cfg(unix)]
+#[test]
+fn a_relative_settings_path_is_read_where_the_agent_launches() {
+    merged_settings_reach_claude(true);
+}
+
+#[cfg(unix)]
+fn merged_settings_reach_claude(relative: bool) {
     use std::os::unix::fs::PermissionsExt;
     if thurbox::paths::resolve_on_path("tmux").is_none() {
         return;
@@ -1934,7 +1947,11 @@ fn several_settings_reach_a_claude_agent_as_one() {
         format!(
             "[[agents]]\nname='record'\ncommand='{}'\nhook_schema='claude'\nargs=['--settings','{}']\n",
             recorder.display(),
-            own.display()
+            if relative {
+                "own-settings.json".to_string()
+            } else {
+                own.display().to_string()
+            }
         ),
     )
     .unwrap();

@@ -11,6 +11,7 @@
 //! (a `docker attach` client, a console), never the process it reaches.
 
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use term_stream::{Capability, Down, Exit, Hello, Size, Up, VERSION};
@@ -40,26 +41,29 @@ pub fn serve(
             Some(_) => {}
         }
     };
-    let pty = fleet_exec::pty(argv, size.rows, size.cols)
-        .map_err(|e| format!("cannot start {argv:?}: {e}"))?;
+    let pty = Arc::new(
+        fleet_exec::pty(argv, size.rows, size.cols)
+            .map_err(|e| format!("cannot start {argv:?}: {e}"))?,
+    );
     let mut output = pty.reader().map_err(|e| e.to_string())?;
     let mut input = pty.writer().map_err(|e| e.to_string())?;
+    let mut killer = pty.killer().map_err(|e| e.to_string())?;
+    let bracketed = Arc::new(AtomicBool::new(false));
     send(&Down::Resized(size))?;
-    let pty = Arc::new(Mutex::new(pty));
     {
         let pty = Arc::clone(&pty);
         let to_view = Arc::clone(&to_view);
+        let bracketed = Arc::clone(&bracketed);
         std::thread::spawn(move || {
             loop {
                 let wrote = match term_stream::read::<Up>(&mut from_view) {
                     Ok(Some(Up::Input(bytes))) => input.write_all(&bytes),
+                    Ok(Some(Up::Paste(text))) if bracketed.load(Ordering::SeqCst) => {
+                        input.write_all(format!("\x1b[200~{text}\x1b[201~").as_bytes())
+                    }
                     Ok(Some(Up::Paste(text))) => input.write_all(text.as_bytes()),
                     Ok(Some(Up::Resize(Size { rows, cols }))) => {
-                        let resized = pty
-                            .lock()
-                            .map_err(|_| std::io::Error::other("poisoned"))
-                            .and_then(|p| p.resize(rows, cols));
-                        if resized.is_ok()
+                        if pty.resize(rows, cols).is_ok()
                             && let Ok(mut w) = to_view.lock()
                         {
                             let _ =
@@ -73,28 +77,55 @@ pub fn serve(
                     break;
                 }
             }
-            // Ending the command is how a bridge lets go.
-            if let Ok(mut p) = pty.lock() {
-                p.kill();
-            }
+            // Ending the command is how a bridge lets go; the killer needs no
+            // lock, so a wait for the command does not hold it up.
+            killer.kill();
         });
     }
+    let mut modes = Modes::default();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         match output.read(&mut buf) {
             Ok(0) | Err(_) => break,
-            Ok(n) => send(&Down::Output(buf[..n].to_vec()))?,
+            Ok(n) => {
+                modes.read(&buf[..n], &bracketed);
+                send(&Down::Output(buf[..n].to_vec()))?;
+            }
         }
     }
-    let exit = match pty.lock().map(|mut p| p.wait()) {
-        Ok(Ok(code)) => Exit::Known {
+    let exit = match pty.wait() {
+        Ok(code) => Exit::Known {
             code: Some(i64::from(code)),
         },
-        Ok(Err(e)) => Exit::Unknown { why: e.to_string() },
-        Err(_) => Exit::Unknown {
-            why: "the command's handle is poisoned".into(),
-        },
+        Err(e) => Exit::Unknown { why: e.to_string() },
     };
     let _ = send(&Down::Exit(exit));
     Ok(())
+}
+
+/// Whether the program asked for bracketed paste (`CSI ? 2004 h`, off with
+/// `l`), read off its output: the last switch wins, and a switch split
+/// across two reads is still seen.
+#[derive(Debug, Default)]
+struct Modes {
+    tail: Vec<u8>,
+}
+
+impl Modes {
+    const ON: &[u8] = b"\x1b[?2004h";
+    const OFF: &[u8] = b"\x1b[?2004l";
+
+    fn read(&mut self, bytes: &[u8], bracketed: &AtomicBool) {
+        let mut seen = std::mem::take(&mut self.tail);
+        seen.extend_from_slice(bytes);
+        let last = |needle: &[u8]| seen.windows(needle.len()).rposition(|w| w == needle);
+        match (last(Self::ON), last(Self::OFF)) {
+            (Some(on), Some(off)) => bracketed.store(on > off, Ordering::SeqCst),
+            (Some(_), None) => bracketed.store(true, Ordering::SeqCst),
+            (None, Some(_)) => bracketed.store(false, Ordering::SeqCst),
+            (None, None) => {}
+        }
+        let keep = seen.len().saturating_sub(Self::ON.len() - 1);
+        self.tail = seen.split_off(keep);
+    }
 }

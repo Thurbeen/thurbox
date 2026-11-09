@@ -1761,15 +1761,8 @@ fn cmd_attach(
     Ok(())
 }
 
-/// `fleet watch`: reads the Tasks every `poll_ms` and prints what moved.
-///
-/// The cursor is the store's write counter: every write gives the object a
-/// higher `resourceVersion`, so a Task above the cursor changed since. A
-/// deletion leaves nothing to compare, so the first read ends with `synced`,
-/// the names present then: a view resuming with `--since` drops any other it
-/// holds. Within one run each Task's own version is kept too, so a write that
-/// lands behind a newer one between two reads is still reported. An
-/// unreadable store reports nothing, and the next read tries again.
+/// `fleet watch`: reads the Tasks every `poll_ms` and prints what moved
+/// ([`Watch`] decides what).
 fn cmd_watch(
     store: &dyn Store,
     since: u64,
@@ -1778,9 +1771,7 @@ fn cmd_watch(
     json_out: bool,
 ) -> Result<(), Failure> {
     use std::io::Write;
-    let mut seen: BTreeMap<String, (String, u64)> = BTreeMap::new();
-    let mut cursor = since;
-    let mut synced = false;
+    let mut watch = Watch::new(since);
     let mut out = std::io::stdout().lock();
     loop {
         let tasks = match store.list(fleet_api::task::KIND) {
@@ -1792,52 +1783,11 @@ fn cmd_watch(
                 continue;
             }
         };
-        let mut events = Vec::new();
-        let mut changed: Vec<&Object> = tasks
-            .iter()
-            .filter(|t| {
-                let rv = t.metadata.resource_version;
-                match seen.get(&t.metadata.name) {
-                    Some((uid, seen_rv)) => *uid != t.metadata.uid || *seen_rv != rv,
-                    None => rv > since,
-                }
-            })
-            .collect();
-        changed.sort_by_key(|t| t.metadata.resource_version);
-        let present: BTreeMap<&str, &Object> = tasks
-            .iter()
-            .map(|t| (t.metadata.name.as_str(), t))
-            .collect();
-        for (name, (uid, _)) in &seen {
-            if present
-                .get(name.as_str())
-                .is_none_or(|t| t.metadata.uid != *uid)
-            {
-                events
-                    .push(json!({"type": "deleted", "revision": cursor, "name": name, "uid": uid}));
-            }
-        }
-        for t in &changed {
-            cursor = cursor.max(t.metadata.resource_version);
-            events.push(json!({
-                "type": "changed",
-                "revision": t.metadata.resource_version,
-                "object": serde_json::to_value(t).map_err(|e| fail(e.to_string()))?,
-            }));
-        }
-        seen = tasks
-            .iter()
-            .map(|t| {
-                (
-                    t.metadata.name.clone(),
-                    (t.metadata.uid.clone(), t.metadata.resource_version),
-                )
-            })
-            .collect();
-        if !synced {
-            synced = true;
-            events.push(json!({"type": "synced", "revision": cursor, "names": present.keys().collect::<Vec<_>>()}));
-        }
+        let Some(events) = watch.read(&tasks).map_err(fail)? else {
+            // A write landed between this read and the last: read again now.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            continue;
+        };
         for event in events {
             let line = if json_out {
                 event.to_string()
@@ -1849,10 +1799,92 @@ fn cmd_watch(
                 return Ok(());
             }
         }
-        if once {
+        if once && watch.synced {
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+    }
+}
+
+/// What `fleet watch` reports from each read of the Tasks.
+///
+/// The cursor is the store's write counter: every write gives the object a
+/// higher `resourceVersion`, so a Task above the cursor changed since. A
+/// deletion leaves nothing to compare, so the first report ends with
+/// `synced`, the names present then: a view resuming with `--since` drops
+/// any other it holds. An unreadable store reports nothing.
+///
+/// A list reads each Task's file on its own, so one read can hold a later
+/// write and miss an earlier one, and a revision reported from it would let
+/// a resume skip the missed write. A read is reported only when the read
+/// before it was the same: the store's writes are serialized, so every
+/// write below the highest revision either read holds was already in place
+/// when the second read began.
+#[derive(Debug)]
+struct Watch {
+    since: u64,
+    cursor: u64,
+    synced: bool,
+    seen: BTreeMap<String, (String, u64)>,
+    last: Option<BTreeMap<String, (String, u64)>>,
+}
+
+impl Watch {
+    fn new(since: u64) -> Watch {
+        Watch {
+            since,
+            cursor: since,
+            synced: false,
+            seen: BTreeMap::new(),
+            last: None,
+        }
+    }
+
+    /// The events one read gives, or `None` while it may be torn.
+    fn read(&mut self, tasks: &[Object]) -> Result<Option<Vec<Value>>, String> {
+        let state: BTreeMap<String, (String, u64)> = tasks
+            .iter()
+            .map(|t| {
+                (
+                    t.metadata.name.clone(),
+                    (t.metadata.uid.clone(), t.metadata.resource_version),
+                )
+            })
+            .collect();
+        if self.last.as_ref() != Some(&state) {
+            self.last = Some(state);
+            return Ok(None);
+        }
+        let mut events = Vec::new();
+        for (name, (uid, _)) in &self.seen {
+            if state.get(name).is_none_or(|(now, _)| now != uid) {
+                events.push(
+                    json!({"type": "deleted", "revision": self.cursor, "name": name, "uid": uid}),
+                );
+            }
+        }
+        let mut changed: Vec<&Object> = tasks
+            .iter()
+            .filter(|t| match self.seen.get(&t.metadata.name) {
+                Some(seen) => *seen != (t.metadata.uid.clone(), t.metadata.resource_version),
+                None => t.metadata.resource_version > self.since,
+            })
+            .collect();
+        changed.sort_by_key(|t| t.metadata.resource_version);
+        for t in changed {
+            self.cursor = self.cursor.max(t.metadata.resource_version);
+            events.push(json!({
+                "type": "changed",
+                "revision": t.metadata.resource_version,
+                "object": serde_json::to_value(t).map_err(|e| e.to_string())?,
+            }));
+        }
+        if !self.synced {
+            self.synced = true;
+            events.push(json!({"type": "synced", "revision": self.cursor, "names": state.keys().collect::<Vec<_>>()}));
+        }
+        self.seen = state;
+        Ok(Some(events))
     }
 }
 
@@ -2204,5 +2236,47 @@ fn print_json(v: &Value) {
     match serde_json::to_string_pretty(v) {
         Ok(s) => println!("{s}"),
         Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(name: &str, rv: u64) -> Object {
+        serde_json::from_value(json!({
+            "apiVersion": "fleet/v1alpha1",
+            "kind": "Task",
+            "metadata": {"name": name, "uid": format!("uid-{name}"), "resourceVersion": rv},
+            "spec": {},
+        }))
+        .expect("an object")
+    }
+
+    /// The events of `reads`, one after another, as the watch reports them.
+    fn report(watch: &mut Watch, reads: &[Vec<Object>]) -> Vec<Value> {
+        reads
+            .iter()
+            .filter_map(|r| watch.read(r).unwrap())
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn a_torn_read_never_moves_the_cursor_past_a_write_it_missed() {
+        // The first read took A before a writer moved it to 3 and B after it
+        // moved B to 4: reporting it would say "synced at 4" with A at 1.
+        let torn = vec![task("a", 1), task("b", 4)];
+        let whole = vec![task("a", 3), task("b", 4)];
+        let mut watch = Watch::new(0);
+        let events = report(&mut watch, &[torn, whole.clone(), whole]);
+        let a: Vec<u64> = events
+            .iter()
+            .filter(|e| e["object"]["metadata"]["name"] == "a")
+            .map(|e| e["revision"].as_u64().unwrap())
+            .collect();
+        assert_eq!(a, [3], "{events:#?}");
+        assert_eq!(events.last().unwrap()["type"], "synced");
+        assert_eq!(events.last().unwrap()["revision"], 4);
     }
 }

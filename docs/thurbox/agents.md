@@ -309,9 +309,10 @@ embedded hook assets live in
     argument, so when a launch carries several (the agent's own `args`, this
     patch, one passed with `--agent-arg` as Fleet passes its hooks), thurbox
     hands it one inline JSON object: objects merged by key, each hook event's
-    list joined, other values taken from the later one. A value that is
-    neither JSON nor a JSON file readable here, such as a path on a remote
-    host, leaves the arguments unmerged. Full lifecycle: idle/working/blocked/done,
+    list joined, other values taken from the later one. A relative path is
+    read from the directory the agent launches in. A value that is neither
+    JSON nor a JSON file readable here leaves the arguments unmerged, and a
+    launch on a remote host reads no path at all. Full lifecycle: idle/working/blocked/done,
     plus `background` from its `Stop` payload and its subagent edges (see
     [Background sub-work](#background-sub-work)).
     Its tool hooks skip a call whose payload has a top-level `agent_id` and no

@@ -317,17 +317,35 @@ pub fn run(spec: &Spec) -> Outcome {
 /// A program on a pseudo-terminal of its own, for a bridge that keeps its
 /// screen: the program sees a terminal, and its size is the bridge's to set.
 /// Its tree is killed when the handle is dropped.
+///
+/// Shared between threads: the terminal and the program are locked apart, so
+/// a resize never waits behind [`Self::wait`], and [`Self::killer`] ends the
+/// program while another thread waits for it.
 pub struct Pty {
-    master: Box<dyn portable_pty::MasterPty + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    exited: bool,
+    master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
+    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    exited: std::sync::atomic::AtomicBool,
 }
 
 impl fmt::Debug for Pty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Pty")
-            .field("pid", &self.child.process_id())
-            .finish()
+        f.debug_struct("Pty").finish_non_exhaustive()
+    }
+}
+
+/// What ends a [`Pty`]'s program without its lock.
+pub struct PtyKiller(Box<dyn portable_pty::ChildKiller + Send + Sync>);
+
+impl fmt::Debug for PtyKiller {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PtyKiller").finish_non_exhaustive()
+    }
+}
+
+impl PtyKiller {
+    /// End the program; one already gone is left alone.
+    pub fn kill(&mut self) {
+        let _ = self.0.kill();
     }
 }
 
@@ -355,27 +373,39 @@ pub fn pty(argv: &[String], rows: u16, cols: u16) -> std::io::Result<Pty> {
         .spawn_command(cmd)
         .map_err(std::io::Error::other)?;
     Ok(Pty {
-        master: pair.master,
-        child,
-        exited: false,
+        master: Mutex::new(pair.master),
+        child: Mutex::new(child),
+        exited: std::sync::atomic::AtomicBool::new(false),
     })
+}
+
+fn poisoned<T>(_: T) -> std::io::Error {
+    std::io::Error::other("the terminal's lock is poisoned")
 }
 
 impl Pty {
     /// What the program writes to its terminal.
     pub fn reader(&self) -> std::io::Result<Box<dyn Read + Send>> {
         self.master
+            .lock()
+            .map_err(poisoned)?
             .try_clone_reader()
             .map_err(std::io::Error::other)
     }
 
     /// What the program reads from its terminal, as typed.
     pub fn writer(&self) -> std::io::Result<Box<dyn Write + Send>> {
-        self.master.take_writer().map_err(std::io::Error::other)
+        self.master
+            .lock()
+            .map_err(poisoned)?
+            .take_writer()
+            .map_err(std::io::Error::other)
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> std::io::Result<()> {
         self.master
+            .lock()
+            .map_err(poisoned)?
             .resize(portable_pty::PtySize {
                 rows,
                 cols,
@@ -385,26 +415,28 @@ impl Pty {
             .map_err(std::io::Error::other)
     }
 
-    /// Wait for the program to exit: its exit code.
-    pub fn wait(&mut self) -> std::io::Result<u32> {
-        let status = self.child.wait()?;
-        self.exited = true;
-        Ok(status.exit_code())
+    /// What ends the program from another thread, even while one waits.
+    pub fn killer(&self) -> std::io::Result<PtyKiller> {
+        Ok(PtyKiller(
+            self.child.lock().map_err(poisoned)?.clone_killer(),
+        ))
     }
 
-    /// End the program; a program already gone is left alone.
-    pub fn kill(&mut self) {
-        if !self.exited {
-            let _ = self.child.kill();
-        }
+    /// Wait for the program to exit: its exit code.
+    pub fn wait(&self) -> std::io::Result<u32> {
+        let status = self.child.lock().map_err(poisoned)?.wait()?;
+        self.exited.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(status.exit_code())
     }
 }
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        if !self.exited {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
+        if !self.exited.load(std::sync::atomic::Ordering::SeqCst)
+            && let Ok(child) = self.child.get_mut()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

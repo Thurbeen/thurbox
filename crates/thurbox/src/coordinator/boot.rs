@@ -619,6 +619,7 @@ fn terminals(
             Some(program) => terminals.view_through(stream_pane::View {
                 program,
                 socket: thurbox::backend::instance::local_socket_name(),
+                scrollback: settings.scrollback_lines,
             }),
             None => tracing::warn!(
                 "stream_panes is on, but no runtime-mux program is beside thurbox or on PATH: panes use control mode"

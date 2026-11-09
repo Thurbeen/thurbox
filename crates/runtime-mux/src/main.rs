@@ -3,7 +3,8 @@
 //! composition root: it alone builds the backend, on the program's own tmux
 //! socket ([`runtime_mux::protocol::SOCKET`]).
 //!
-//! `runtime-mux view [--socket S] [--tmux-tmpdir D] <key | --pane P>` is the
+//! `runtime-mux view [--socket S] [--tmux-tmpdir D] [--scrollback N]
+//! <key | --pane P>` is the
 //! other shape: one key's pane, or a pane by its id, as a terminal stream on
 //! stdin and stdout, for as long as the view stays. `attach` answers with it;
 //! thurbox's stream panes name the pane.
@@ -87,11 +88,21 @@ fn view(args: Vec<String>) -> Result<(), String> {
     let mut socket = SOCKET.to_string();
     let mut key = None;
     let mut pane = None;
+    let mut scrollback = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--socket" => socket = args.next().ok_or("--socket takes a name")?,
             "--pane" => pane = Some(args.next().ok_or("--pane takes a pane id")?),
+            // The history a snapshot carries: the viewer's own setting.
+            "--scrollback" => {
+                let lines = args.next().ok_or("--scrollback takes a line count")?;
+                scrollback = Some(
+                    lines
+                        .parse()
+                        .map_err(|e| format!("--scrollback {lines}: {e}"))?,
+                );
+            }
             "--tmux-tmpdir" => {
                 let dir = args.next().ok_or("--tmux-tmpdir takes a directory")?;
                 // Before any thread starts: tmux finds the socket there.
@@ -101,9 +112,11 @@ fn view(args: Vec<String>) -> Result<(), String> {
             other => return Err(format!("unexpected argument {other:?}")),
         }
     }
+    let defaults = MuxSettings::default();
     let settings = MuxSettings {
         socket: Some(socket),
-        ..MuxSettings::default()
+        scrollback_lines: scrollback.unwrap_or(defaults.scrollback_lines),
+        ..defaults
     };
     let registry = runtime_mux::wiring::local_only(&settings);
     let backend = registry.default_backend().clone();
@@ -113,7 +126,7 @@ fn view(args: Vec<String>) -> Result<(), String> {
             .ok_or_else(|| format!("no process holds key {key}"))?,
         _ => {
             return Err(
-                "usage: runtime-mux view [--socket S] [--tmux-tmpdir D] <key | --pane P>".into(),
+                "usage: runtime-mux view [--socket S] [--tmux-tmpdir D] [--scrollback N] <key | --pane P>".into(),
             )
         }
     };

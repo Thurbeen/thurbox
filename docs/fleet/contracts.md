@@ -1198,7 +1198,10 @@ raises. `--since N` reports only Tasks written after `N`, so a view resumes
 from the last `revision` it read. A deletion leaves nothing behind to compare,
 so a resuming view drops each Task it holds that `synced` does not name. An
 unreadable store reports nothing, and the next read tries again: Unknown never
-looks like a deletion.
+looks like a deletion. A list reads each Task on its own, so one read can hold
+a later write and miss an earlier one; a read is reported only once the read
+after it is the same. Writes are serialized, so by then every write below the
+highest `revision` reported is in it, and a resume skips none.
 
 `fleet attach TASK --json` prints `{"stream": {"argv": [...]}}`: the command
 that opens the Task's [terminal stream](../runtime/README.md#the-terminal-stream),

@@ -978,3 +978,96 @@ fn term_bridge_relays_a_raw_command_as_a_stream() {
     let exit = view.until("the exit", |f| matches!(f, Down::Exit(_)));
     assert_eq!(exit, Down::Exit(Exit::Known { code: Some(3) }));
 }
+
+/// The bridge on `script`, past its hello and sized, its output read up to
+/// `ready`.
+fn bridge(env: &Env, script: &str, ready: &str) -> support::view::View {
+    use term_stream::{Down, Size, Up};
+    let mut cmd = env.command(&["term-bridge", "--", "sh", "-c", script]);
+    cmd.stderr(std::process::Stdio::inherit());
+    let mut view = support::view::View::open(cmd);
+    assert!(matches!(view.next(), Down::Hello(_)), "no hello first");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.until_text(ready);
+    view
+}
+
+#[test]
+fn term_bridge_brackets_a_paste_the_program_asked_for() {
+    use term_stream::Up;
+    let env = Env::new("term-bridge-paste");
+    let mut view = bridge(
+        &env,
+        r#"stty -icanon -echo; printf '\033[?2004h'; echo ready; head -c 20 | od -An -c"#,
+        "ready",
+    );
+    // Six bytes of bracket on each side: twenty in all.
+    view.send(&Up::Paste("abcdefgh".into()));
+    view.until_text("2   0   0   ~   a   b");
+}
+
+#[test]
+fn term_bridge_lets_go_of_a_command_that_closed_its_terminal() {
+    use term_stream::Up;
+    let env = Env::new("term-bridge-detach");
+    let mut view = bridge(
+        &env,
+        "echo started; exec </dev/null >/dev/null 2>&1; exec sleep 300",
+        "started",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    view.send(&Up::Detach);
+    view.close();
+}
+
+#[test]
+fn a_tty_attach_runs_through_the_bridge_end_to_end() {
+    use support::view::View;
+    use term_stream::{Down, Size, Up};
+    if tmux().is_none() {
+        return;
+    }
+    if Command::new("jq").arg("--version").output().is_err() {
+        eprintln!("skipping: jq is not installed");
+        return;
+    }
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
+    let sockets = Sockets::new("attach-bridge");
+    let mut env = mux_env("attach-bridge", &script, &sockets);
+    task_running(
+        &mut env,
+        "#!/bin/sh\necho ready-marker\nwhile IFS= read -r l; do echo \"pong-$l\"; done\n",
+    );
+    let answer = env.fleet(&["attach", "t1", "--json"]).ok().json();
+    let argv: Vec<String> = serde_json::from_value(answer["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer:#}"));
+    assert_eq!(argv[1], "term-bridge", "{argv:?}");
+
+    // The view runs the argv as given; the tmux client needs a terminal type.
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..])
+        .env("TERM", "xterm-256color")
+        .env_remove("TMUX");
+    let mut view = View::open(cmd);
+    assert!(matches!(view.next(), Down::Hello(_)), "no hello first");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.until_text("ready-marker");
+    view.send(&Up::Input(b"ping\r".to_vec()));
+    view.until_text("pong-ping");
+    view.send(&Up::Resize(Size {
+        rows: 30,
+        cols: 100,
+    }));
+    view.until("the new size", |f| {
+        *f == Down::Resized(Size {
+            rows: 30,
+            cols: 100,
+        })
+    });
+    view.send(&Up::Detach);
+    view.close();
+
+    // The detach ended the tmux client, not the agent.
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["sessionState"], "Running");
+}
