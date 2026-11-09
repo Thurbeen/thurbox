@@ -171,8 +171,9 @@ impl Profile {
         Some(())
     }
 
-    /// Apply `task` (JSON) to this profile's Fleet; it must succeed.
-    fn fleet(&self, args: &[&str], input: &str) {
+    /// Run this profile's Fleet with `input` on stdin; it must succeed. Its
+    /// stdout.
+    fn fleet(&self, args: &[&str], input: &str) -> String {
         let mut child = Command::new(self.bin.join("fleet"))
             .args(args)
             .stdin(Stdio::piped())
@@ -192,6 +193,12 @@ impl Profile {
             "fleet {args:?} failed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// The Task `name` as Fleet stores it.
+    fn fleet_task(&self, name: &str) -> serde_json::Value {
+        serde_json::from_str(&self.fleet(&["get", "task", name], "")).expect("a Task as JSON")
     }
 
     /// A dispatched, interactive Task named `name` working in `dir`, its
@@ -6986,4 +6993,161 @@ fn write_script(path: &Path, body: &str) {
     std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
     std::fs::write(path, body).expect("write script");
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+// --- the session features thurbox keeps on Fleet -----------------------------
+
+/// Leave a focused terminal for the session list: 0x08 is Ctrl+H, the
+/// reserved way out of a terminal and onto the list beside it.
+fn focus_the_list(tui: &mut Tui) {
+    tui.send(b"\x08");
+    tui.wait_until("the session list to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Sessions"))
+    });
+}
+
+#[test]
+fn ctrl_e_renames_the_selected_session_and_says_why_a_name_is_refused() {
+    // `Ctrl+E` opens a field holding the current name. A refused name is
+    // explained in the field; a good one lands in the list and in the Task's
+    // name label, where Fleet keeps a session's display name.
+    let Some((profile, mut tui)) = shell_session() else {
+        return;
+    };
+    focus_the_list(&mut tui);
+
+    // 0x05 is Ctrl+E; 0x15 is Ctrl+U, which clears the prefilled name.
+    tui.send(b"\x05");
+    tui.wait_for("Rename session");
+    tui.send(b"\x15");
+    tui.send(b"bad/name\r");
+    tui.wait_for("Name contains invalid characters");
+
+    tui.send(b"\x15");
+    tui.send(b"renamed\r");
+    tui.wait_gone("Rename session");
+    tui.wait_until("the new name in the list", |_| {
+        tui.session_row("renamed").is_some() && tui.session_row("probe").is_none()
+    });
+    let task = profile.fleet_task("probe");
+    assert_eq!(
+        task["metadata"]["labels"]["thurbox.dev/name"], "renamed",
+        "the name lives on the Task: {task}"
+    );
+    assert!(tui.quit().success());
+}
+
+/// The rows `first` and `second` are painted on, in that order.
+fn rows_of(tui: &Tui, first: &str, second: &str) -> Option<(u16, u16)> {
+    Some((tui.session_row(first)?.1, tui.session_row(second)?.1))
+}
+
+#[test]
+fn a_session_moved_up_stays_there_across_a_restart() {
+    // `K` moves the selected session above its neighbour. The order is the
+    // interface's own (Fleet has no order of Tasks), so it is kept in a file
+    // of thurbox's and a restarted interface paints it the same way.
+    let Some((profile, mut tui)) = shell_session_prepared(
+        |profile| profile.fleet_session("second", &profile.path("repo")),
+        |_| {},
+    ) else {
+        return;
+    };
+    tui.wait_until("both sessions, in name order", |_| {
+        rows_of(&tui, "probe", "second").is_some_and(|(a, b)| a < b)
+    });
+    focus_the_list(&mut tui);
+    tui.send(b"j");
+    tui.send(b"K");
+    tui.wait_until("the moved session above the other", |_| {
+        rows_of(&tui, "probe", "second").is_some_and(|(a, b)| a > b)
+    });
+    assert!(tui.quit().success());
+
+    let tui = Tui::spawn(&profile, 40, 120);
+    tui.wait_until("the order kept across the restart", |_| {
+        rows_of(&tui, "probe", "second").is_some_and(|(a, b)| a > b)
+    });
+}
+
+/// The companion shell is the user's `$SHELL`, and a zsh started in the
+/// profile's empty HOME opens its first-run wizard instead of a prompt.
+fn plain_shell(cmd: &mut Command) {
+    cmd.env("SHELL", "/bin/sh");
+}
+
+/// Raise the Shell tab (Ctrl+T) and prove a live shell is behind it:
+/// `command` runs there and `marker` is what it prints.
+fn in_the_shell(tui: &mut Tui, command: &str, marker: &str) {
+    tui.send(b"\x14");
+    wait_for_view(tui, "Shell");
+    tui.wait_for("$ ");
+    tui.wait_until_quiet();
+    tui.send(format!("{command}\r").as_bytes());
+    tui.wait_for(marker);
+}
+
+/// The id of each companion shell window on `profile`'s server.
+fn shell_windows(profile: &Profile) -> Vec<String> {
+    let windows = profile
+        .server
+        .tmux(&["list-windows", "-a", "-F", "#{window_id} #{window_name}"]);
+    String::from_utf8_lossy(&windows.stdout)
+        .lines()
+        .filter(|line| line.contains(" tbs-"))
+        .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+/// A restarted interface on `profile`, its agent pane attached.
+fn restart(profile: &Profile) -> Tui {
+    let tui = Tui::spawn_with(profile, 40, 120, plain_shell);
+    tui.wait_until("the agent pane to be the focused one", |frame| {
+        frame
+            .lines()
+            .last()
+            .is_some_and(|band| band.trim_start().starts_with("Agent"))
+    });
+    tui.wait_for("$ ");
+    tui
+}
+
+#[test]
+fn the_companion_shell_is_readopted_after_a_restart() {
+    // The shell outlives the interface in its own window. A restarted
+    // interface finds it again from the file it recorded it in: the variable
+    // the first interface's shell set is still set, and no second shell
+    // window is made.
+    let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
+        return;
+    };
+    in_the_shell(&mut tui, "TB_KEPT=kept; echo set-\"\"$TB_KEPT", "set-kept");
+    assert!(tui.quit().success());
+
+    let mut tui = restart(&profile);
+    in_the_shell(&mut tui, "echo again-\"\"$TB_KEPT", "again-kept");
+    assert_eq!(shell_windows(&profile).len(), 1, "one shell, re-adopted");
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
+    // A window that went while the interface was closed (a tmux server
+    // restart, a kill from outside) must not be adopted as a shell that never
+    // prints: raising the tab gives a working one.
+    let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
+        return;
+    };
+    in_the_shell(&mut tui, "echo tb-first-\"\"shell", "tb-first-shell");
+    assert!(tui.quit().success());
+    let shells = shell_windows(&profile);
+    assert_eq!(shells.len(), 1, "one shell window to close");
+    profile.server.tmux(&["kill-window", "-t", &shells[0]]);
+
+    let mut tui = restart(&profile);
+    in_the_shell(&mut tui, "echo tb-second-\"\"shell", "tb-second-shell");
+    assert!(tui.quit().success());
 }

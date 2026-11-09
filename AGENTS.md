@@ -420,7 +420,8 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
   rendered by `tui_term::PseudoTerminal`
 - Sessions persist across restarts (tmux keeps them alive)
 - Sessions are Fleet Tasks (ADR-41): thurbox keeps no database. Its own
-  state is plain files: `interface.json` (theme, editor) beside
+  state is plain files: `interface.json` (theme, editor, the session
+  order, each companion shell's pane) beside
   `settings.toml`, `bookmarks.json` and `perf.json` in the data directory;
   agent definitions in `~/.config/thurbox/agents.toml`;
   remote SSH hosts in `~/.config/thurbox/hosts.toml`

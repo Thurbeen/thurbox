@@ -993,6 +993,11 @@ pub struct Session {
     pub info: PaneInfo,
     wired: WiredPane,
     backend: Arc<dyn SessionBackend>,
+    /// Where the companion shell runs when that is not `backend`: a
+    /// session whose agent pane is a stream (a Fleet session's, ADR-41) cannot
+    /// open a window, so its shell is a window of a multiplexer on the same
+    /// machine. `None`: the agent's own backend.
+    shell_backend: Option<Arc<dyn SessionBackend>>,
     /// The reader thread's title / attention / notification cells, shared with
     /// the parser's [`TermSignals`] (which bumps `meta_gen` on every write).
     signals: SignalCells,
@@ -1047,9 +1052,11 @@ impl Session {
     /// user is looking at must ask the pane that surface names — the same pane
     /// the embedder's input would deliver to.
     pub fn shell_is_dead(&self) -> Option<Result<bool>> {
-        self.shell_pane
-            .as_ref()
-            .map(|shell| self.backend.is_dead(shell.backend_id()).map_err(Into::into))
+        self.shell_pane.as_ref().map(|shell| {
+            self.shell_backend()
+                .is_dead(shell.backend_id())
+                .map_err(Into::into)
+        })
     }
 
     /// Reconnect to an existing backend session. `seed` is the optional
@@ -1157,6 +1164,7 @@ impl Session {
             info,
             wired,
             backend: Arc::clone(backend),
+            shell_backend: None,
             signals,
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
@@ -1189,10 +1197,13 @@ impl Session {
         let Some(pane) = self.wired_pane(shell) else {
             return false;
         };
-        if !self.supports_snapshots() || !pane.evict() {
+        if !self.backend_of(shell).capabilities().supports_snapshots
+            || self.placeholder
+            || !pane.evict()
+        {
             return false;
         }
-        self.backend.hide_output(pane.backend_id());
+        self.backend_of(shell).hide_output(pane.backend_id());
         true
     }
 
@@ -1200,7 +1211,7 @@ impl Session {
     /// this call asked.
     pub fn restore_pane(&self, shell: bool) -> bool {
         self.wired_pane(shell)
-            .is_some_and(|pane| pane.restore(self.backend.as_ref()))
+            .is_some_and(|pane| pane.restore(self.backend_of(shell).as_ref()))
     }
 
     /// Create parser, spawn reader/writer loops for the given I/O handles.
@@ -1296,6 +1307,7 @@ impl Session {
             info,
             wired,
             backend: Arc::clone(backend),
+            shell_backend: None,
             signals,
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
@@ -1360,6 +1372,7 @@ impl Session {
                 app_copy: Arc::clone(&signals.app_copy),
             },
             backend: Arc::clone(backend),
+            shell_backend: None,
             signals,
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,
@@ -1638,7 +1651,10 @@ impl Session {
             }
             return true;
         }
-        if let Err(e) = shell.wired.resize(self.backend.as_ref(), rows, cols) {
+        if let Err(e) = shell
+            .wired
+            .resize(self.shell_backend().as_ref(), rows, cols)
+        {
             tracing::warn!("Failed to resize shell pane: {e}");
             return false;
         }
@@ -1720,6 +1736,24 @@ impl Session {
         Ok(self.backend.pane_pid(&self.wired.backend_id)?)
     }
 
+    /// Run the companion shell on `backend` rather than on the agent's own.
+    pub fn set_shell_backend(&mut self, backend: Arc<dyn SessionBackend>) {
+        self.shell_backend = Some(backend);
+    }
+
+    /// The backend the companion shell runs on.
+    fn shell_backend(&self) -> &Arc<dyn SessionBackend> {
+        self.shell_backend.as_ref().unwrap_or(&self.backend)
+    }
+
+    /// The backend of the agent's pane, or of its companion shell's.
+    fn backend_of(&self, shell: bool) -> &Arc<dyn SessionBackend> {
+        match shell {
+            true => self.shell_backend(),
+            false => &self.backend,
+        }
+    }
+
     /// Clone the backend handle + id so a background task can query the pane
     /// PID (a control-mode round-trip, slow for remote SSH backends) off the UI
     /// thread. The backend is `Send + Sync`, so the clone is cheap to move.
@@ -1747,7 +1781,7 @@ impl Session {
             return;
         }
         if let Some(shell) = &self.shell_pane {
-            if let Err(e) = self.backend.detach(&shell.wired.backend_id) {
+            if let Err(e) = self.shell_backend().detach(&shell.wired.backend_id) {
                 tracing::warn!("Failed to detach shell pane: {e}");
             }
         }
@@ -1799,7 +1833,8 @@ impl Session {
                 return None;
             }
         }
-        let backend = Arc::clone(&self.backend);
+        let backend = Arc::clone(self.shell_backend());
+        let separate = self.shell_backend.is_some();
         let window_name = crate::identity::shell_window_name(&self.info.name);
         let id = self.info.id;
         let env = self.env.clone();
@@ -1808,6 +1843,11 @@ impl Session {
             .map(std::path::Path::to_path_buf);
         let scrollback = self.wired.residency.scrollback;
         Some(move || {
+            // A shell on a backend of its own is the first use of that backend
+            // here: nothing attached through it has readied it.
+            if separate {
+                backend.ensure_ready()?;
+            }
             let shell_cmd = backend.default_shell();
             let spawned = backend.spawn(
                 &window_name,
@@ -1857,10 +1897,14 @@ impl Session {
         rows: u16,
         cols: u16,
     ) -> impl FnOnce() -> Result<ShellPane> + Send + 'static {
-        let backend = Arc::clone(&self.backend);
+        let backend = Arc::clone(self.shell_backend());
+        let separate = self.shell_backend.is_some();
         let backend_id = backend_id.to_string();
         let scrollback = self.wired.residency.scrollback;
         move || {
+            if separate {
+                backend.ensure_ready()?;
+            }
             if let Ok(listed) = backend.pane_ids() {
                 if !listed.contains(&backend_id) {
                     anyhow::bail!("shell pane {backend_id} is gone");
@@ -1882,7 +1926,7 @@ impl Session {
     /// Kill the shell pane if it exists.
     fn kill_shell_pane(&self) {
         if let Some(shell) = &self.shell_pane {
-            if let Err(e) = self.backend.kill(&shell.wired.backend_id) {
+            if let Err(e) = self.shell_backend().kill(&shell.wired.backend_id) {
                 tracing::warn!("Failed to kill shell pane: {e}");
             }
         }
@@ -1930,6 +1974,7 @@ impl Session {
                 app_copy: Arc::clone(&signals.app_copy),
             },
             backend: Arc::clone(backend),
+            shell_backend: None,
             signals,
             last_synced_meta_gen: u64::MAX,
             attention_ack_at: 0,

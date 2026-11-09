@@ -250,6 +250,7 @@ const MODULE_RULES: &[ModuleRules] = &[
             "agent::extension_config",
             "backend",
             "config::hosts",
+            "config::interface_state",
             "config::settings",
             "config::themes",
             "update::self_update",

@@ -13,6 +13,8 @@ pub enum ShellResult {
     Gone {
         session: String,
         open_requested: bool,
+        /// The pane found gone.
+        pane: Option<String>,
     },
     Failed {
         session: String,
@@ -174,6 +176,7 @@ impl Terminals {
                     ShellResult::Gone {
                         session: done.session,
                         open_requested,
+                        pane: done.seen,
                     }
                 }
                 Err(error) => ShellResult::Failed {

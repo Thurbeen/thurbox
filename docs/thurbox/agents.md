@@ -565,7 +565,8 @@ automatically. Work the checklist top to bottom:
    drop into the agent's own config dir. Add its row to `AGENT_HOOK_COVERAGE` in
    [`src/session/hook_status.rs`](../../crates/thurbox/src/session/hook_status.rs) (the drift test
    fails until it matches the payload), and — for a `config_merges` /
-   `external_files` wiring — the same payload for remote sessions. Bump the hooks extension `version`. Skipping this step means the new
+   `external_files` wiring — the same payload for remote sessions. Bump the
+   hooks extension `version`. Skipping this step means the new
    agent launches fine but **never shows working/blocked/done**.
 
    This step also stands **alone**: an agent thurbox ships no `[[agents]]` entry

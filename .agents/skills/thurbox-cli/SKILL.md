@@ -18,6 +18,8 @@ the session verbs are Fleet's command line, not thurbox-cli's:
 | `thurbox-cli session create` | `fleet apply -f <task>` (an interactive Task: no brief, dispatched) |
 | `thurbox-cli session send` | `fleet send <task> <text>` |
 | `thurbox-cli session delete` | `fleet delete task <name>` |
+| `thurbox-cli session rename` | the Task's `thurbox.dev/name` label: `fleet get task`, change it, `fleet apply -f -` (the interface's `Ctrl+E` does this) |
+| `thurbox-cli session reorder` | the interface's `Shift+J`/`Shift+K`, kept in `interface.json` |
 | `thurbox-cli watch` | `fleet watch --json` |
 | `thurbox-cli task` | a Task with `dispatch: false` |
 | `thurbox-cli message` | `fleet send`, and the Task's `status.inbox` |

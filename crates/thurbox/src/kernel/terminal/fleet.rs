@@ -21,7 +21,8 @@ pub(super) const BACKEND: &str = crate::kernel::snapshot::fleet::BACKEND;
 
 /// Open `task`'s pane at `rows` × `cols`: ask `program` (the `fleet`
 /// binary) for the Task's stream, and open it. Input it refuses is said on
-/// `notices`.
+/// `notices`. The companion shell is a window of `shell`, the multiplexer on
+/// the Task's machine: a stream opens no windows.
 pub(super) fn open(
     program: &Path,
     task: &str,
@@ -29,12 +30,13 @@ pub(super) fn open(
     cols: u16,
     scrollback: usize,
     notices: Notices,
+    shell: Option<Arc<dyn crate::backend::SessionBackend>>,
 ) -> Result<crate::backend::Session, String> {
     let argv = attach_argv(program, task)?;
     let (adopted, upstream) = adopt_with_upstream(&argv, rows, cols, Some(notices))
         .map_err(|e| format!("the stream pane: {e}"))?;
     let backend: Arc<dyn crate::backend::SessionBackend> = Arc::new(Stream(upstream));
-    Ok(crate::backend::Session::adopt_io(
+    let mut session = crate::backend::Session::adopt_io(
         task.to_string(),
         rows,
         cols,
@@ -43,7 +45,11 @@ pub(super) fn open(
         adopted,
         HashMap::new(),
         scrollback,
-    ))
+    );
+    if let Some(shell) = shell {
+        session.set_shell_backend(shell);
+    }
+    Ok(session)
 }
 
 /// The argv `fleet attach <task> --json` answers: `{"stream": {"argv": […]}}`.

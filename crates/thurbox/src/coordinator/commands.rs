@@ -217,6 +217,18 @@ impl App {
 
     /// `Command::Shell`: a companion shell beside a session's agent.
     pub(crate) fn apply_shell_command(&mut self, session: &str) {
+        let seen = self
+            .snapshots
+            .current()
+            .session(session)
+            .and_then(|row| row.shell_backend_id.clone())
+            .filter(|pane| !self.lost_shells.contains(pane));
+        self.open_shell(session, seen);
+    }
+
+    /// Open `session`'s companion shell. `seen` is the shell pane the row
+    /// records now, which the answer is matched against.
+    pub(crate) fn open_shell(&mut self, session: &str, seen: Option<String>) {
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         // Resolved from the snapshot rather than the live
         // `Session`: an adopted one carries no cwd of its own.
@@ -225,11 +237,6 @@ impl App {
             .current()
             .session(session)
             .and_then(|row| self.terminals.launch_cwd(row));
-        let seen = self
-            .snapshots
-            .current()
-            .session(session)
-            .and_then(|row| row.shell_backend_id.clone());
         if let Err(e) =
             self.terminals
                 .open_shell(session, rows, cols, cwd.as_deref(), seen.as_deref())

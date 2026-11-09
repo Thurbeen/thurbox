@@ -114,6 +114,7 @@ impl super::Executor for Fleet {
                 )?;
             }
             Command::Send { session, text } => self.run(&["send", session, text], None)?,
+            Command::Rename { session, name } => self.rename(session, name)?,
             // Fleet has no undo window: a soft delete is a delete.
             Command::Delete { session, .. } => self.run(&["delete", "task", session], None)?,
             // Fleet revives a lost session itself; the interface's relaunch of
@@ -157,6 +158,31 @@ fn task_name(name: &str) -> String {
 }
 
 impl Fleet {
+    /// Give the session `name`: the Task's [`NAME_LABEL`], applied back with
+    /// its spec as it is. Fleet's apply replaces a Task's labels and keeps its
+    /// amendments, so nothing else of the Task changes. An apply of the Task
+    /// by someone else between this read and this apply is undone, which a
+    /// rename from the keyboard accepts. The name is checked by the rules a
+    /// created session's name is.
+    ///
+    /// [`NAME_LABEL`]: crate::kernel::snapshot::fleet::NAME_LABEL
+    fn rename(&self, session: &str, name: &str) -> Result<(), String> {
+        crate::paths::validate_safe_name(name)?;
+        let mut task = self
+            .get(session)?
+            .ok_or_else(|| format!("no session {session}"))?;
+        let label = &mut task["metadata"]["labels"][crate::kernel::snapshot::fleet::NAME_LABEL];
+        if label.as_str() == Some(name) {
+            return Ok(());
+        }
+        *label = json!(name);
+        // Status is the controllers': an applied object must not carry it.
+        if let Some(fields) = task.as_object_mut() {
+            fields.remove("status");
+        }
+        self.run(&["apply", "-f", "-"], Some(&task.to_string()))
+    }
+
     /// The Fleet host a session on `route` runs on: the picker's route
     /// (`ssh:devbox`) names the machine Fleet calls `devbox`, and no route
     /// is `local`. A host Fleet's config does not define is refused.

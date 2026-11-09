@@ -677,7 +677,7 @@ impl App {
             self.dirty = true;
         }
         self.settle_echo();
-        self.collect_shell_results();
+        self.readopt_shells();
         // Programs plugins asked for. Served here because resolving a
         // session to a directory and a machine is the loop's knowledge, not
         // a store's — the store owns the bounds and the queue.
@@ -798,19 +798,35 @@ impl App {
         })
     }
 
-    /// Fold in the shells the terminals opened or lost.
-    pub(crate) fn collect_shell_results(&mut self) {
+    /// Fold in the shells the terminals opened or lost, and adopt again the
+    /// shell a session had open before this interface started.
+    ///
+    /// A shell outlives the interface in a window of its own, so its pane is
+    /// kept in `interface.json` (the snapshot lays it over the row as
+    /// `shell_backend_id`). Written at once rather than on a thread: a shell
+    /// opens or goes rarely, and the replacement opened after a lost one is
+    /// matched against the row as the file now says it.
+    pub(crate) fn readopt_shells(&mut self) {
         for result in self.terminals.drain_shell_results() {
             use thurbox::kernel::terminal::ShellResult;
             self.dirty = true;
             match result {
-                ShellResult::Ready { .. } => {}
+                ShellResult::Ready { session, pane } => {
+                    remember_shell(&session, Some(pane));
+                    self.snapshots.refresh_if_due();
+                }
                 ShellResult::Gone {
                     session,
                     open_requested,
+                    pane,
                 } => {
+                    self.lost_shells.extend(pane);
+                    remember_shell(&session, None);
+                    // The row reads the file again before the replacement's
+                    // answer is matched against it.
+                    self.snapshots.refresh_if_due();
                     if open_requested {
-                        self.apply_shell_command(&session);
+                        self.open_shell(&session, None);
                     }
                 }
                 ShellResult::Failed { session, error } => {
@@ -821,5 +837,36 @@ impl App {
                 }
             }
         }
+        // Cheap to ask every iteration: nearly every row has no shell
+        // recorded, and the size is the cached one.
+        let wanted: Vec<(String, String)> = self
+            .snapshots
+            .current()
+            .sessions
+            .iter()
+            .filter(|row| self.terminals.is_attached(&row.id))
+            .filter(|row| !self.terminals.has_shell(&row.id))
+            .filter_map(|row| Some((row.id.clone(), row.shell_backend_id.clone()?)))
+            .filter(|(_, pane)| !self.lost_shells.contains(pane))
+            .collect();
+        let (cols, rows) = self.screen_size;
+        for (session, pane) in wanted {
+            self.terminals.readopt_shell(&session, &pane, rows, cols);
+        }
+    }
+}
+
+/// Record `session`'s companion shell pane, or that it has none.
+fn remember_shell(session: &str, pane: Option<String>) {
+    let changed = thurbox::config::interface_state::update(|state| match pane {
+        Some(pane) => {
+            state.shells.insert(session.to_string(), pane);
+        }
+        None => {
+            state.shells.remove(session);
+        }
+    });
+    if let Err(e) = changed {
+        tracing::warn!("could not record the shell of {session}: {e}");
     }
 }

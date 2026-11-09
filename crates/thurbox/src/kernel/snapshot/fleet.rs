@@ -54,6 +54,13 @@ pub struct FleetWatch {
     read: SourceRead,
     watch_error: Option<String>,
     manager_error: Option<String>,
+    /// The Tasks as `fleet watch` last read them, before the interface's own
+    /// order and shells are laid over them.
+    tasks: Vec<SessionRow>,
+    /// Whether the watch has delivered rows yet.
+    rows_seen: bool,
+    /// `interface.json` as last read, and the generation it was read at.
+    interface: Option<(u64, crate::config::interface_state::InterfaceState)>,
     /// The running `fleet watch`, killed when the source goes.
     child: Arc<Mutex<Option<Child>>>,
 }
@@ -86,6 +93,9 @@ impl FleetWatch {
             read: SourceRead::default(),
             watch_error: None,
             manager_error: None,
+            tasks: Vec::new(),
+            rows_seen: false,
+            interface: None,
             child,
         }
     }
@@ -97,14 +107,46 @@ impl SnapshotSource for FleetWatch {
         while let Ok(update) = self.updates.try_recv() {
             moved = true;
             match update {
-                Update::Rows(rows) => self.read.sessions = rows,
+                Update::Rows(rows) => {
+                    self.tasks = rows;
+                    self.rows_seen = true;
+                }
                 Update::Watch(error) => self.watch_error = error,
                 Update::Manager(error) => self.manager_error = error,
             }
         }
+        // The interface's own file, read again only when this process wrote
+        // it: what it holds is changed from this interface alone.
+        let generation = crate::config::interface_state::generation();
+        if self
+            .interface
+            .as_ref()
+            .is_none_or(|(seen, _)| *seen != generation)
+        {
+            self.interface = Some((generation, crate::config::interface_state::load()));
+            // Before the first rows there is nothing to lay it over.
+            moved |= self.rows_seen;
+        }
         if !moved {
             return None;
         }
+        let state = self.interface.as_ref().map(|(_, state)| state);
+        self.read.sessions = self
+            .tasks
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                if let Some(state) = state {
+                    row.display_order = state
+                        .order
+                        .iter()
+                        .position(|id| *id == row.id)
+                        .map(|at| at as i64);
+                    row.shell_backend_id = state.shells.get(&row.id).cloned();
+                }
+                row
+            })
+            .collect();
         let errors: Vec<&str> = [&self.watch_error, &self.manager_error]
             .into_iter()
             .flatten()

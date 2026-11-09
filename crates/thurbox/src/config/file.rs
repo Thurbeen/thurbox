@@ -61,6 +61,12 @@ pub fn save(path: &Path, contents: impl AsRef<[u8]>) -> std::io::Result<()> {
     crate::paths::write_atomically(path, contents)
 }
 
+/// Run `change`, a read-change-write of `path`, holding the lock every
+/// process takes for that file, a lock on `<path>.lock`.
+pub fn locked<T>(path: &Path, change: impl FnOnce() -> T) -> std::io::Result<T> {
+    crate::paths::with_file_lock(path, change)
+}
+
 /// Point every config path into `dir` until the guard drops. The tests of
 /// each config file isolate through here because the architecture rules hold
 /// test code to production's grants, and most of those files reach `paths`

@@ -452,14 +452,15 @@ then undone by the next build re-clustering it under its own repo, with
 the headers that would have explained it turned off. Parent/child
 nesting is unaffected either way: it is not a repo property.
 
-Both paths densely renumber every session's `display_order` `0..n` and
-persist it, so the order survives restarts and syncs across instances
-via the existing `data_version` polling. The pure helpers
-(`order.move_block` / `order.sorted_within_groups` in `ui/lib/order.lua`,
-v1's `ui::project_list::move_in_order` / `sort_alphabetically_within_groups`)
-back the session pane's actions; storage
-is the nullable `sessions.display_order` column (schema v31, `None` =
-never moved).
+Both paths send the whole list, top to bottom, as one `order` command, and
+the interface keeps it in `interface.json` beside `settings.toml` (ADR-41:
+Fleet keeps Tasks, and the order a person sorted them in is not a fact about
+any Task). The snapshot lays the file over Fleet's rows as `display_order`,
+each session's place in the list; a session the file does not name sorts
+after every one it does. The order survives a restart. A second interface
+on the same config directory reads the file when it starts. The pure helpers
+(`order.move_block` / `order.sorted_within_groups` in `ui/lib/order.lua`)
+back the session pane's actions.
 
 **Why manual order wins over status.** Earlier the list re-sorted itself
 by status, which meant a row jumped around under your cursor every time
@@ -1319,36 +1320,24 @@ reusing the session's stored agent. Agents that define no
 
 ### Session Rename (`Ctrl+E`)
 
-`Ctrl+E` on the session list, `thurbox-cli session rename <session> <name>`,
-or `command("rename", { session = id, text = name })` from a plugin. All three
-run one pipeline (`session_ops::rename`), so a refusal reads the same wherever
-it came from.
+`Ctrl+E` on the session list, or `command("rename", { session = id, text =
+name })` from a plugin. A session's name is its Task's `thurbox.dev/name`
+label (ADR-41): the rename reads the Task with `fleet get task`, sets the
+label and applies the Task back with `fleet apply`, which replaces its labels
+and keeps its spec and amendments. The Task's own name, which every command
+addresses, never changes.
 
-- **Create's rules.** The name is held to `validate_safe_name` (1-64 bytes, no
-  `/`, `\` or `..`, no leading `.`). A name another active session on the same
-  backend already has is refused, as `create --on-existing fail` refuses it:
-  create allows namesakes by default, but a name matching several sessions is
-  then refused wherever one is typed, and a rename is a name chosen on purpose.
-  A name that folds onto another session's window name (`a:b` and `a.b` both
-  make `tb-a_b`) is refused too: an unstamped window is found by that name
-  alone. Two renames racing to one name are not locked against each other —
-  the worst case is a pair of namesakes, which create already allows.
-- **The windows follow.** The agent's `tb-` window and the shell's `tbs-`
-  window are renamed first, found stamp-first under the old name (ADR-25), then
-  the row. The order matters where a window carries no stamp (psmux): the name
-  is all that finds it, which is also why the windows are put back when the row
-  cannot be written. A shareable host renames its own row and windows
-  through its CLI, and this machine mirrors the result (ADR-24).
+- **The name's rules.** The name is held to `validate_safe_name` (1-64 bytes,
+  no `/`, `\` or `..`, no leading `.`), as a created session's name is.
 - **The field says why.** The interface's float stays up until the command
   answers, so a refused name is explained beside the text that caused it.
   The rules live only in Rust; the float keeps no copy of them.
 - **Why `Ctrl+E`.** It fits the list's scheme of global, passthrough
   `Ctrl+<letter>` session chords: in a focused terminal it stays readline's
-  end-of-line. v1 held it for a files pane that no longer exists anywhere.
-  `F2`, the other conventional rename key, is bound by the info panel that is
-  maintained out of tree.
-- **No lifecycle hooks.** A rename changes a label, not what runs, so
-  `hooks.toml` has no event for it.
+  end-of-line. `F2`, the other conventional rename key, is bound by the info
+  panel that is maintained out of tree.
+- **Headless.** `fleet get task <task>` and `fleet apply -f -` with the label
+  changed do the same from a script.
 
 ### Session lifecycle hooks (`hooks.toml`)
 
@@ -4089,6 +4078,22 @@ at the agent's width, and the two repainted each other continuously (#1220).
 The bundled centre pane still offers the two as tabs, which is a choice that
 pane makes about the slot it was given — not one the kernel imposes on anyone
 else's arrangement.
+
+### Where the shell runs, and how a restart finds it
+
+A Fleet session's agent pane is the stream `fleet attach` names (ADR-41), and
+a stream opens no windows. The shell is therefore a window of thurbox's own
+multiplexer on the Task's machine: this machine's for a local Task, the
+`hosts.toml` host of the same name for a Task on a Fleet host. Every shell
+operation (open, adopt, resize, hide, kill) goes to that multiplexer, and
+every agent operation goes to the stream.
+
+The shell outlives the interface in its window. Its pane id is kept in
+`interface.json` under the session's id, written when the shell opens and
+removed when it is found gone. A restarted interface adopts the recorded pane
+once the agent's pane is attached, so what ran in the shell is still there. A
+pane that went while the interface was closed (a multiplexer restart, a kill
+from outside) is not adopted: raising the Shell tab opens a new one.
 
 ---
 

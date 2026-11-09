@@ -1,4 +1,5 @@
-//! The commands no session owns, run on a command worker: the settings file
+//! The commands no session owns, run on a command worker: the settings file,
+//! the session list's manual order
 //! and the creation flow's repository memory. Sessions are Fleet's
 //! ([`super::fleet`]).
 
@@ -20,6 +21,12 @@ pub(super) fn local(command: &Command) -> Option<Result<Outcome, String>> {
         Command::Bookmark { host, path, edit } => bookmark(host, path, edit),
         Command::Configure { settings } => crate::config::settings::save_settings(settings)
             .map_err(|e| format!("write settings.toml: {e}")),
+        // The interface's own order (`interface.json`): Fleet keeps no order
+        // of Tasks.
+        Command::Order { list } => {
+            crate::config::interface_state::update(|state| state.order = list.clone())
+                .map_err(|e| format!("write interface.json: {e}"))
+        }
         _ => return None,
     };
     Some(done.map(|()| Outcome::Done))

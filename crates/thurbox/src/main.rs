@@ -435,6 +435,10 @@ struct App {
     /// already refused to pay it per iteration, and this extends the same
     /// reasoning to the attach seed size.
     screen_size: (u16, u16),
+    /// Shell panes found gone. The snapshot names a session's shell until it
+    /// reads `interface.json` again, and a pane in here is neither adopted
+    /// again nor handed to a new open as the one the row records.
+    lost_shells: std::collections::HashSet<String>,
     /// The text under the current selection, read while the frame that painted
     /// it is still in hand.
     ///

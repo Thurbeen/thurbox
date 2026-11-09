@@ -100,6 +100,28 @@ pub(crate) fn write_atomically(path: &Path, contents: impl AsRef<[u8]>) -> std::
         })
 }
 
+/// Run `change` holding an exclusive lock on `<path>.lock`, so a
+/// read-change-write of `path` by another process (a second interface, or
+/// `thurbox-cli`) waits for this one instead of losing its update. The lock is
+/// the operating system's (`flock` on Unix, `LockFileEx` on Windows): a
+/// process that dies releases it. Locking a sibling file rather than `path`
+/// itself is what keeps [`write_atomically`]'s rename possible, since the
+/// rename replaces the file a lock on `path` would be held on.
+pub(crate) fn with_file_lock<T>(path: &Path, change: impl FnOnce() -> T) -> std::io::Result<T> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(PathBuf::from(name))?;
+    lock.lock()?;
+    Ok(change())
+}
+
 /// Create the staged file, on Unix already no more open than the file it will
 /// replace: a crash before [`write_atomically`] applies the final permissions
 /// must not leave a readable copy of a private file. The umask can only narrow

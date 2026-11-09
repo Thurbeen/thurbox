@@ -2,12 +2,12 @@
 //! `bookmarks.json` in the data directory: what the user picked, the folders
 //! they imported, and each folder's members as last scanned.
 //!
-//! Read and rewritten whole, under one lock per process: a list a person
+//! Read and rewritten whole, under a lock every process takes ([`crate::paths`]'s
+//! file lock), so two interfaces or a CLI never lose each other's change: a list a person
 //! builds by hand stays small, and the writers are the command workers and
 //! the folder rescan. The newest use leads the list.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -29,9 +29,6 @@ pub struct Bookmark {
     pub parent_path: Option<PathBuf>,
 }
 
-/// Serialises each read-modify-write of the file within this process.
-static LOCK: Mutex<()> = Mutex::new(());
-
 fn file() -> Option<PathBuf> {
     crate::paths::bookmarks_file()
 }
@@ -51,21 +48,20 @@ fn load() -> Vec<Bookmark> {
 }
 
 fn edit<T>(change: impl FnOnce(&mut Vec<Bookmark>) -> T) -> Result<T, String> {
-    let _held = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = file().ok_or("could not resolve the data directory")?;
-    let mut all = load();
-    let answer = change(&mut all);
-    let text = serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("write bookmarks: {e}"))?;
-    }
-    crate::paths::write_atomically(&path, text).map_err(|e| format!("write bookmarks: {e}"))?;
-    Ok(answer)
+    crate::paths::with_file_lock(&path, || {
+        let mut all = load();
+        let answer = change(&mut all);
+        let text = serde_json::to_string_pretty(&all).map_err(|e| e.to_string())?;
+        crate::paths::write_atomically(&path, text).map_err(|e| format!("write bookmarks: {e}"))?;
+        Ok(answer)
+    })
+    .map_err(|e| format!("lock bookmarks: {e}"))?
 }
 
-/// `host`'s bookmarks, the most recently used first.
+/// `host`'s bookmarks, the most recently used first. Read without the lock:
+/// a write replaces the file whole, so a read sees one version or the other.
 pub fn list(host: &str) -> Vec<Bookmark> {
-    let _held = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut rows: Vec<Bookmark> = load().into_iter().filter(|b| b.host == host).collect();
     rows.sort_by_key(|b| std::cmp::Reverse(b.last_used_at));
     rows
@@ -164,6 +160,29 @@ mod tests {
         assert!(forget("ssh:box", &folder).unwrap());
         assert!(list("ssh:box").is_empty());
         assert!(!forget("ssh:box", &folder).unwrap());
+    }
+
+    /// Writers that each open the file on their own, as two processes do,
+    /// keep every path they remembered.
+    #[test]
+    fn interleaved_writers_lose_no_bookmark() {
+        let dir = tempfile::tempdir().unwrap();
+        let writers: Vec<_> = (0..8)
+            .map(|writer| {
+                let dir = dir.path().to_path_buf();
+                std::thread::spawn(move || {
+                    let _guard = crate::paths::TestPathGuard::new(&dir);
+                    for n in 0..10 {
+                        remember("", &PathBuf::from(format!("/{writer}/{n}")), None).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let _guard = crate::paths::TestPathGuard::new(dir.path());
+        assert_eq!(list("").len(), 80);
     }
 
     #[test]
