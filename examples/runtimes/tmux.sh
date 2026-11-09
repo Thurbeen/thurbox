@@ -74,9 +74,25 @@ find_pane() {
 		unknown "several windows hold the key"
 }
 
+# Starts and stops run one at a time per server: a start looks the key up,
+# then makes its window, and two at once would each make one. The lock is a
+# directory beside where tmux keeps the socket, removed on exit.
+take_lock() {
+	lock="${TMUX_TMPDIR:-/tmp}/runtime-tmux-sh-$(id -u)-$SOCKET.lock"
+	tries=0
+	until mkdir "$lock" 2>/dev/null; do
+		tries=$((tries + 1))
+		[ "$tries" -lt 200 ] || unknown "another start or stop holds $lock"
+		sleep 0.05
+	done
+	trap 'rmdir "$lock" 2>/dev/null' EXIT
+	trap 'exit 1' INT TERM HUP
+}
+
 case $verb in
 start)
 	check_key
+	take_lock
 	[ "$(field '.argv | length')" -gt 0 ] 2>/dev/null || unknown "argv names no program"
 	command -v tmux >/dev/null 2>&1 ||
 		answer '{"known":{"failed":{"why":"tmux is not installed"}}}'
@@ -115,6 +131,7 @@ inspect)
 	;;
 stop)
 	check_key
+	take_lock
 	find_pane
 	if [ -n "$pane" ]; then
 		# shellcheck disable=SC2086 # three words, split on purpose

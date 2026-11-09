@@ -116,6 +116,8 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
 - an error (a request that is not JSON, a bad key, an unknown verb) answers
   Unknown, never None;
 - `inspect` of an absent key answers None, and a stop of it succeeds;
+- concurrent starts with one key leave one process: four at once answer
+  one id, and only one of them made it;
 - two starts with one key leave one process: the same id, the second
   adopted, and the key once in `list` when the runtime has it;
 - a stop ends the process;

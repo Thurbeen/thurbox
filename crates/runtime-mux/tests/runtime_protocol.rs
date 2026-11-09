@@ -358,3 +358,76 @@ fn exec_answers_by_its_deadline_when_an_escaped_child_holds_its_output() {
         .or(answer["timedOut"]["stdout"].as_str());
     assert_eq!(stdout, Some("hi\n"), "{ran}");
 }
+
+/// A server on the socket tmux derives with no `TMUX_TMPDIR`, killed when
+/// the test ends.
+struct DefaultDirServer(String);
+
+impl Drop for DefaultDirServer {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .env_remove("TMUX_TMPDIR")
+            .env_remove("TMUX")
+            .args(["-L", &self.0, "kill-server"])
+            .output();
+    }
+}
+
+#[test]
+fn concurrent_starts_under_different_tmpdirs_leave_one_process() {
+    if runtime_mux::path_lookup::resolve_on_path("tmux").is_none() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = DefaultDirServer(format!("rmux-tmpdir-{}", std::process::id()));
+    let base = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(&server.0);
+    // Each caller has a TMPDIR of its own and no TMUX_TMPDIR, so tmux puts
+    // every one of them on the one socket under /tmp.
+    let call = |n: usize, verb: &str, request: Value| -> Value {
+        let tmpdir = base.join(format!("caller-{n}"));
+        std::fs::create_dir_all(&tmpdir).expect("TMPDIR");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_runtime-mux"))
+            .arg(verb)
+            .env_remove("TMUX_TMPDIR")
+            .env_remove("TMUX")
+            .env_remove("THURBOX_SOCKET")
+            .env_remove("THURBOX_SOCKET_FOR")
+            .env("TMPDIR", &tmpdir)
+            .env("RUNTIME_MUX_SOCKET", &server.0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("run runtime-mux");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(request.to_string().as_bytes())
+            .expect("write the request");
+        let out = child.wait_with_output().expect("runtime-mux output");
+        serde_json::from_slice(&out.stdout).expect("JSON")
+    };
+    for round in 0..5 {
+        let key = format!("race.t{round}");
+        let request = json!({"protocol": 1, "key": key, "argv": ["sleep", "300"], "env": {}});
+        let answers: Vec<Value> = std::thread::scope(|s| {
+            let calls: Vec<_> = (0..4)
+                .map(|n| {
+                    let request = request.clone();
+                    let call = &call;
+                    s.spawn(move || call(n, "start", request))
+                })
+                .collect();
+            calls.into_iter().map(|c| c.join().unwrap()).collect()
+        });
+        let ids: Vec<(String, bool)> = answers.iter().map(started).collect();
+        assert!(ids.iter().all(|(id, _)| *id == ids[0].0), "{answers:?}");
+        assert_eq!(
+            ids.iter().filter(|(_, adopted)| !adopted).count(),
+            1,
+            "{answers:?}"
+        );
+        let inspected = call(0, "inspect", json!({"protocol": 1, "key": key}));
+        assert!(inspected["known"]["running"].is_object(), "{inspected}");
+    }
+}

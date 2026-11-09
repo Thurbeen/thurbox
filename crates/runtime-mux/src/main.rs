@@ -49,12 +49,18 @@ fn main() {
 }
 
 /// The lock serializing starts and stops on `socket`'s server, held until
-/// the returned file is dropped. It sits where tmux keeps its sockets
-/// (`TMUX_TMPDIR`), so a server in another directory has its own.
+/// the returned file is dropped. It sits in the directory tmux derives its
+/// socket's from, `TMUX_TMPDIR` or else `/tmp` and never `TMPDIR`, so every
+/// caller reaching one server takes one lock, and a server in another
+/// directory has its own.
 fn lock(socket: &str) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    let fallback = || std::path::PathBuf::from("/tmp");
+    #[cfg(not(unix))]
+    let fallback = std::env::temp_dir;
     let dir = std::env::var_os("TMUX_TMPDIR")
         .filter(|d| !d.is_empty())
-        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        .map_or_else(fallback, std::path::PathBuf::from);
     #[cfg(unix)]
     // SAFETY: getuid has no preconditions and cannot fail.
     let user = unsafe { libc::getuid() }.to_string();

@@ -101,6 +101,7 @@ fn the_reference_script_passes_the_conformance_suite() {
     let run = env.fleet(&["runtime", "check", "--", script.to_str().unwrap()]);
     run.ok()
         .stdout_has("ok   two starts with one key leave one process")
+        .stdout_has("ok   concurrent starts with one key leave one process")
         .stdout_has("ok   an exited process answers Exited with its code, or None");
     assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
 }
@@ -130,6 +131,7 @@ fn runtime_mux_passes_the_conformance_suite() {
     let run = env.fleet(&["runtime", "check", "--", program.to_str().unwrap()]);
     run.ok()
         .stdout_has("ok   two starts with one key leave one process")
+        .stdout_has("ok   concurrent starts with one key leave one process")
         .stdout_has("ok   a protocol mismatch answers Unknown")
         .stdout_has("ok   an error answers Unknown, never None")
         .stdout_has("ok   a stop of an absent process succeeds");

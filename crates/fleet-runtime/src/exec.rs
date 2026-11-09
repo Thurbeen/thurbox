@@ -769,6 +769,46 @@ pub fn check(program: &ExecProgram) -> Vec<Case> {
         name: "two starts with one key leave one process",
         result: twice,
     });
+
+    // Every verb is idempotent by key even when calls overlap: a start looks
+    // the key up, then makes its process, and two at once must not both make
+    // one.
+    let racing = key("race");
+    let raced = (|| {
+        let answers: Vec<Observation<Started>> = std::thread::scope(|s| {
+            let calls: Vec<_> = (0..4)
+                .map(|_| s.spawn(|| start(&racing, &["sleep", "300"])))
+                .collect();
+            calls
+                .into_iter()
+                .map(|c| {
+                    c.join()
+                        .unwrap_or_else(|_| Observation::unknown("the call panicked"))
+                })
+                .collect()
+        });
+        let mut ids = std::collections::BTreeSet::new();
+        let mut made = 0;
+        for answer in &answers {
+            match answer {
+                Observation::Known(Started::Started { id, adopted }) => {
+                    ids.insert(id.clone());
+                    made += usize::from(!adopted);
+                }
+                other => return Err(format!("a start answered {other:?}")),
+            }
+        }
+        if ids.len() != 1 || made != 1 {
+            return Err(format!("four starts at once answered {answers:?}"));
+        }
+        Ok(())
+    })();
+    let _ = stop(&racing);
+    cases.push(Case {
+        name: "concurrent starts with one key leave one process",
+        result: raced,
+    });
+
     cases.push(Case {
         name: "a stop ends the process",
         result: match (stop(&one), inspect(&one)) {
