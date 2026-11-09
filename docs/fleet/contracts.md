@@ -1205,8 +1205,9 @@ a later write and miss an earlier one; a read is reported only once the read
 after it is the same. Writes are serialized, so by then every write below the
 highest `revision` reported is in it, and a resume skips none.
 
-`fleet apply --create-only` creates each object, or refuses one whose name
-is taken with exit 5 and leaves it as it is; the store's create is
+`fleet apply --create-only` creates each object, of every kind it takes, or
+refuses one whose name is taken with exit 5 and leaves it as it is; the
+store's create is
 exclusive, so two clients applying one name at once get one object and one
 refusal. A view creates its Tasks this way.
 

@@ -1683,6 +1683,15 @@ fn cmd_apply(
     let mut forge: Option<ForgeHosts> = None;
     let mut gateway: Option<GatewayAccounts> = None;
     let policies = policy_names(config);
+    // A taken name under --create-only is a conflict, whatever the kind.
+    let refused = |e: StoreError| match e {
+        StoreError::AlreadyExists(_) if create_only => Failure {
+            code: exit::CONFLICT,
+            message: e.to_string(),
+            hint: Some("the name is taken; choose another, or apply without --create-only".into()),
+        },
+        e => e.into(),
+    };
     for obj in objs {
         let (outcome, stored) = if obj.kind == fleet_api::conversation::KIND {
             // The account's adapter parses the address and the name derives from it.
@@ -1698,7 +1707,14 @@ fn cmd_apply(
             if gateway.is_none() {
                 gateway = Some(open_gateway(config)?.ok_or_else(|| fail("no [gateway] section"))?);
             }
-            apply_conversation(store, gateway.as_ref().expect("opened"), section, obj)?
+            apply_conversation(
+                store,
+                gateway.as_ref().expect("opened"),
+                section,
+                obj,
+                create_only,
+            )
+            .map_err(refused)?
         } else if obj.kind == fleet_api::change_request::KIND {
             // The forge adapter parses the URL and the name derives from it.
             if forge.is_none() {
@@ -1710,18 +1726,10 @@ fn cmd_apply(
                     ),
                 })?);
             }
-            apply_change_request(store, forge.as_ref().expect("opened"), obj)?
+            apply_change_request(store, forge.as_ref().expect("opened"), obj, create_only)
+                .map_err(refused)?
         } else {
-            apply(store, obj, &policies, create_only).map_err(|e| match e {
-                StoreError::AlreadyExists(_) => Failure {
-                    code: exit::CONFLICT,
-                    message: e.to_string(),
-                    hint: Some(
-                        "the name is taken; choose another, or apply without --create-only".into(),
-                    ),
-                },
-                e => e.into(),
-            })?
+            apply(store, obj, &policies, create_only).map_err(refused)?
         };
         let key = stored.key();
         if json_out {

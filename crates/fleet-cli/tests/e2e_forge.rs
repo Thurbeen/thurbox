@@ -152,6 +152,45 @@ fn a_change_is_mirrored_by_url_under_a_derived_name_and_numbered_on_first_sight(
     env.assert_no_temp();
 }
 
+/// Two clients creating one name at once: the one whose read found nothing
+/// meets the other's object at its create, and is refused, not retried
+/// into an update.
+#[test]
+fn a_create_only_apply_that_loses_the_race_is_refused() {
+    let env = Env::forge("create-only-race");
+    let mut first = support::task("t1", false);
+    first["metadata"]["labels"] = json!({"owner": "first"});
+    env.apply(first).ok();
+    let store = FileStore::open(&env.data).unwrap();
+    let racing = Racing {
+        inner: &store,
+        name: String::new(),
+        swapped: std::cell::Cell::new(true),
+        hidden: std::cell::Cell::new(Some("t1".into())),
+    };
+    let mut second: Object = serde_json::from_value(support::task("t1", false)).unwrap();
+    second.metadata.labels = [("owner".to_string(), "second".to_string())].into();
+    let refused = fleet_manager::apply(&racing, second, &Default::default(), true);
+    assert!(
+        matches!(refused, Err(StoreError::AlreadyExists(_))),
+        "{refused:?}"
+    );
+    assert_eq!(env.get("t1")["metadata"]["labels"]["owner"], "first");
+}
+
+/// `--create-only` holds for a ChangeRequest too: the change already
+/// mirrored is refused, not applied over.
+#[test]
+fn a_create_only_apply_never_reapplies_a_change_request() {
+    let (env, _forge, _cr) = setup("create-only-cr");
+    let manifest = change_request(URL, json!({})).to_string();
+    env.fleet_stdin(&["apply", "--create-only", "-f", "-"], &manifest)
+        .ok();
+    env.fleet_stdin(&["apply", "--create-only", "-f", "-"], &manifest)
+        .code(5)
+        .stderr_has("already exists");
+}
+
 #[test]
 fn a_name_cannot_alias_another_change() {
     let (env, forge, cr) = setup("alias");
@@ -581,10 +620,16 @@ struct Racing<'a> {
     inner: &'a FileStore,
     name: String,
     swapped: std::cell::Cell<bool>,
+    /// A name whose first read answers absent: another writer creates it
+    /// between that read and the create that follows.
+    hidden: std::cell::Cell<Option<String>>,
 }
 
 impl Store for Racing<'_> {
     fn get(&self, kind: &str, name: &str) -> Observation<Option<Object>> {
+        if self.hidden.take().is_some_and(|hidden| hidden == name) {
+            return Observation::Known(None);
+        }
         self.inner.get(kind, name)
     }
     fn list(&self, kind: &str) -> Observation<Vec<Object>> {
@@ -724,6 +769,7 @@ fn a_stale_delete_plan_cannot_remove_a_recreated_object() {
         inner: &store,
         name: cr.clone(),
         swapped: std::cell::Cell::new(false),
+        hidden: std::cell::Cell::new(None),
     };
     let runtime = FakeRuntime::new(FakeHost::open(&env.fake).unwrap());
     let forge_port = Arc::new(forge);
