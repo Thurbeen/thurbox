@@ -367,7 +367,8 @@ thurbox is a Fleet client and reads nothing of Fleet's store directly.
 - thurbox starts `fleet up` when no manager holds the lease.
 
 An interactive session is a Task with no brief: it spawns and waits for its
-user.
+user. Built: it stays Spawned with `Briefed=False/Interactive`, and its inbox
+is delivered as any other.
 
 ### Workspaces
 

@@ -41,7 +41,7 @@ except `dispatch` and `forge`. `amendments` grows only through
 | `configRef` | no | `{"name":"config"}` references passive execution defaults. |
 | `env` | no | Explicit string environment map; overrides inherited values. |
 | `pauseAfterMs` | no | Pause the session once its agent was idle this long, in milliseconds; at least 1. Overrides the TaskConfig's value. Absent inherits it; with neither, the session is never paused. See [pausing an idle session](../controllers/task.md#pausing-an-idle-session). |
-| `brief` | yes | The brief, sent once to the ready session. It never changes. |
+| `brief` | no | The brief, sent once to the ready session. It never changes. Empty or absent makes an interactive Task: its session spawns and waits for its user, messages still reach it, and `fleet amend` is refused. A blank brief is refused. |
 | `amendments` | no | Additions to the brief, oldest first, each `{text, reason?, outputs?, from, at, generation}`. Only `fleet amend` appends one. See [Amendments](#amendments). |
 | `workspace` | yes | What the session works in: `{"dir": PATH}` or `{"repositories": [{"name", "url", "ref"?}]}`. See [Workspaces](#workspaces). |
 | `dispatch` | no | Nothing spawns while `false` (the default). |

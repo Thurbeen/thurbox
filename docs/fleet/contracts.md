@@ -1308,6 +1308,8 @@ nothing is sent when export is off; an unreachable collector changes no
 command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
 `e2e_runtime_exec` runs `fleet attach` against the reference script, whose
 `tty` answer comes back bridged.
+`e2e_interactive` covers a Task with no brief: its spawn, its inbox and the
+refused amendment.
 `e2e_watch` covers `fleet watch`: the first read, a resume with `--since`
 and a deletion while the watch runs.
 `e2e_workspace` covers the workspace port against the fake adapter: one

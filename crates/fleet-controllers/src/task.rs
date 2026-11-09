@@ -90,6 +90,8 @@ const TRUST_UNMAPPED: &str = "TrustUnmapped";
 /// The NeedsAttention reason while a known trust gap holds the brief.
 const WORKSPACE_UNTRUSTED: &str = "WorkspaceUntrusted";
 const BRIEF: &str = "brief";
+/// The Briefed reason of a Task with no brief.
+const INTERACTIVE: &str = "Interactive";
 /// The runtime only queued the brief, where the agent does not read it.
 const BRIEF_UNDELIVERED: &str = "BriefUndelivered";
 /// The Briefed reason while the runtime sent the brief and the agent's prompt
@@ -629,6 +631,15 @@ impl Pass<'_, '_> {
         }
         if self.st.not_before.is_some_and(|t| t > self.now()) {
             return;
+        }
+        if self.spec.is_interactive() {
+            self.cond(
+                BRIEFED,
+                ConditionStatus::False,
+                INTERACTIVE,
+                "no brief: the session waits for its user",
+            );
+            return self.deliver(session);
         }
         self.brief_step(session.clone());
         // The brief comes first: an entry goes out only once it was sent, in

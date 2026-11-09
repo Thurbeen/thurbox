@@ -115,6 +115,7 @@ concludes nothing.
 | Spawning | Same failure with 3 spawn attempts spent | Stalled | Raise `Stalled/SpawnAttemptsExhausted` and NeedsAttention. |
 | Spawning | Missing/Unknown receipt; session list unreadable | Spawning | Report Unknown; never infer absence or respawn blindly. |
 | Spawned | Readable lookup lacks the recorded session identity | Spawned | Raise WorkerGone and NeedsAttention; do not send. |
+| Spawned | `spec.brief` is empty: an interactive Task | Spawned | Set `Briefed=False/Interactive`; send nothing, deliver the inbox, and wait for the user. The Task stays Spawned. |
 | Spawned | Known Queued receipt for the brief | Spawned | Set `Briefed=False/BriefUndelivered` and raise `NeedsAttention/BriefUndelivered` with the runtime's note. Never send the brief again, and deliver no inbox entry. |
 | Spawned | Known Delivered receipt, and the agent's prompt hook reported the brief (or its harness has none); or, with the answer lost, the hook reported it, or for a harness with no prompt hook the journal proves it | Briefed | Record the brief key and the generation of the brief intent; a recovered delivery becomes a receipt. |
 | Spawned | The brief was sent, or may have been, and the agent's prompt hook has not reported it, or its report cannot be read | Spawned | Set `Briefed=Unknown/AwaitingPrompt`. Never send it again; read the hook's report on the next pass. |

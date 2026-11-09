@@ -123,10 +123,14 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
         Some(&s.host),
         s.model.as_deref(),
     )?;
-    for (field, value) in [("spec.host", &s.host), ("spec.brief", &s.brief)] {
-        if value.trim().is_empty() {
-            return Err(StoreError::Invalid(format!("{field} must not be empty")));
-        }
+    if s.host.trim().is_empty() {
+        return Err(StoreError::Invalid("spec.host must not be empty".into()));
+    }
+    // No brief makes an interactive Task; a blank one is a mistake.
+    if !s.brief.is_empty() && s.brief.trim().is_empty() {
+        return Err(StoreError::Invalid(
+            "spec.brief is blank: leave it out for an interactive Task".into(),
+        ));
     }
     validate_workspace(&s.workspace)
         .map_err(|e| StoreError::Invalid(format!("spec.workspace{e}")))?;
@@ -147,6 +151,11 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
 /// before it.
 pub fn validate_amendments(s: &TaskSpec) -> Result<(), StoreError> {
     let mut declared: BTreeSet<&str> = s.outputs.keys().map(String::as_str).collect();
+    if s.is_interactive() && !s.amendments.is_empty() {
+        return Err(StoreError::Invalid(
+            "an interactive Task has no brief to amend: fleet send reaches its session".into(),
+        ));
+    }
     let mut generation = 1;
     for (i, a) in s.amendments.iter().enumerate() {
         let at = format!("spec.amendments[{i}]");
