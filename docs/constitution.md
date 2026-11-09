@@ -386,6 +386,8 @@ pane                 → contract, hyperlink, identity, osc8, output_wake,
 osc8                 → hyperlink
 output_wake          (no crate-internal references)
 registry             → host, contract
+protocol             → contract, identity              (the runtime protocol over
+                                                        one backend it is handed)
 wiring               → host, shell, settings, contract, registry,
                        tmux, psmux, rmux               (the factory)
 tmux_compat          (declares the modules below — no references)
@@ -403,22 +405,23 @@ rmux                 → host, shell, settings, contract,
 ```
 
 Only the factory, `wiring`, names an adapter, and no module of the runtime
-reaches the factory. A specific multiplexer is named only by `host` (the
-route grammar and its defaults), `preflight`, the factory and the one adapter
-that is it. `host/route.rs` and `contract.rs` reach no launcher, adapter or
+reaches the factory: the `runtime-mux` program's `main.rs` calls it, as an
+embedder's composition root does. A specific multiplexer is named only by
+`host` (the route grammar and its defaults), `preflight`, the factory and the
+one adapter that is it. `host/route.rs` and `contract.rs` reach no launcher, adapter or
 build OS (ADR-13).
 
 ## Enforcement map
 
 | Rule | Enforced by | Where |
 |---|---|---|
-| 1. Components meet only through processes | `crates/architecture.toml`, checked against `cargo metadata` by `crates/thurbox/tests/crate_graph.rs` and by `fleet-arch` once Fleet is imported | thurbox links `runtime-mux` until Fleet drives the runtimes |
-| 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox; runtimes once the runtime protocol ships |
+| 1. Components meet only through processes | `crates/architecture.toml` checked by `fleet-arch`: every other component is `role = "component"`, held to the crate graph from its manifest | The workspace; thurbox links `runtime-mux` until Fleet drives the runtimes |
+| 2. Unknown never concludes | Fleet's `Observation` type and contract tests; thurbox's `discover` contract; `fleet runtime check` | Fleet, thurbox, runtime-mux, `examples/runtimes/tmux.sh` |
 | 3. Crash-free operation | Code review | All |
-| 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | thurbox CI + pre-commit; Fleet `cargo xtask check` |
-| 5. Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` in each |
-| 6. Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` in each |
-| 7. Conventional commits | `scripts/ci/check-pr-title.sh` (required `PR Title` check) + `cog verify` in `commit-msg` | `cog.toml` in each |
+| 4. Zero warnings | `clippy -D warnings` + `RUSTDOCFLAGS="-D warnings"` + `rumdl` | CI + pre-commit, over every crate |
+| 5. Permissive licenses | `cargo-deny check bans licenses` | `deny.toml` |
+| 6. Zero vulnerabilities | `cargo-deny check advisories` | `deny.toml` |
+| 7. Conventional commits | `scripts/ci/check-pr-title.sh` (required `PR Title` check) + `cog verify` in `commit-msg` | `cog.toml` |
 | 8. Test first | `cargo-nextest` + code review | `.config/nextest.toml` |
 | 9. Deterministic CI | Scripts and tools only; no LLM-gated checks | CI config + pre-commit |
 | 10. Tag-based versioning | `build.rs` + `cd.yml` (thurbox); `cog bump` in `cd.yml` (Fleet) | `.github/workflows/cd.yml` |
@@ -431,6 +434,6 @@ build OS (ADR-13).
 | F2. One bounded spawner | `fleet-arch` (restricted process APIs) | Fleet |
 | F3. Intent and receipt | Contract tests in `fleet/contracts.md` | Fleet |
 | F4. One writer per field | `fleet-arch` (permitted status writers) | Fleet |
-| R1. A runtime knows no Task | The protocol's schema | Once the runtime protocol ships |
-| R2. Idempotent by key | `fleet runtime check` | Once the runtime protocol ships |
+| R1. A runtime knows no Task | The protocol's schema | Every runtime |
+| R2. Idempotent by key | `fleet runtime check`, in CI's runtime-protocol job | runtime-mux, `examples/runtimes/tmux.sh` |
 | R3. runtime-mux module isolation | `crates/runtime-mux/tests/architecture_rules.rs` + `crates/architecture.toml` | runtime-mux |

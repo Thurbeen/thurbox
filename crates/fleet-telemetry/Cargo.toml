@@ -1,0 +1,17 @@
+[package]
+name = "fleet-telemetry"
+description = "OpenTelemetry export for fleet: off unless the standard OTEL_* variables name a collector."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+
+[lints]
+workspace = true

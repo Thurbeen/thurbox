@@ -1,0 +1,56 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  rust:
+    name: Gate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15 is the standard Apple Silicon runner, not macos-15-intel.
+        os: [ubuntu-latest, ubuntu-26.04-arm, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Python for release tooling
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-nextest@0.9.149,cargo-deny@0.20.2,rumdl@0.3.0
+      # The release tooling tests run the real cog.
+      - uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          install-only: true
+      - run: cargo xtask check
+  all-checks:
+    name: All Checks
+    if: always()
+    needs: [rust]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install
+      - name: Verify every declared job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: cargo xtask verdict

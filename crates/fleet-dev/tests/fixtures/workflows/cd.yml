@@ -1,0 +1,385 @@
+# Releases are automated as in thurbox, driven by cocogitto: every push to main
+# whose conventional commits warrant a bump tags, builds, tests and publishes.
+name: Release
+
+on:
+  workflow_dispatch:
+    # Cut a specific version by dispatching from main with `version` (e.g.
+    # `3.0.0`). When empty (the default, and always on a `push` trigger) the
+    # version is `cog bump --auto` from the commit history.
+    inputs:
+      version:
+        description: "Exact version to release (e.g. 3.0.0). Empty = auto from commits."
+        required: false
+        default: ""
+        type: string
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# `bash -eo pipefail` for every script: GitHub's default for a bare `run:` has
+# no pipefail, so a failed command piped into tee would pass. `cargo xtask
+# check workflow` holds this.
+defaults:
+  run:
+    shell: bash
+
+# Prevent concurrent releases, and never a half-cancelled one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Analyze commits and determine if release is needed
+  check-release:
+    name: Analyze commits for release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      # Gated by the commit-type decision (`parse`), the artifact-relevance
+      # gate (`shipped`) and the publication gate (`allowed`).
+      should_release: ${{ steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false' && steps.allowed.outputs.allowed == 'true' }}
+      version: ${{ steps.parse.outputs.version }}
+      semver: ${{ steps.parse.outputs.semver }}
+      # The exact `cog bump` args create-tag runs, computed here in bash.
+      bump_args: ${{ steps.parse.outputs.bump_args }}
+      newest: ${{ steps.newest.outputs.newest }}
+      prerelease: ${{ steps.parse.outputs.prerelease }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0  # Full history for cocogitto
+
+      - name: Install Python for release tooling
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
+
+      - name: Install cocogitto
+        uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          install-only: true
+
+      - name: Parse release decision
+        id: parse
+        env:
+          # '' on a push trigger or an empty dispatch; a bare version otherwise.
+          FORCED_VERSION: ${{ inputs.version }}
+        run: |
+          # Two paths pick the target version:
+          #
+          # 1. Forced (workflow_dispatch with `version`): use it verbatim.
+          # 2. Auto (push, or dispatch with an empty `version`): the next tag
+          #    `cog bump --auto` computes from the commits since the last tag.
+          #
+          # cog prints the next tag when a bump is due and nothing on stdout
+          # when none is. Unlike `|| true`, a failing or missing cog fails this
+          # step: an unknown decision is never "no release".
+          if [ -n "$FORCED_VERSION" ]; then
+            VERSION="v${FORCED_VERSION#v}"
+            BUMP_ARGS="--version ${VERSION#v} --disable-bump-commit"
+            echo "Forced release: $VERSION"
+          elif TAGGED="$(git tag --points-at HEAD --list 'v*')" && [ -n "$TAGGED" ]; then
+            # cog proposes another bump for a commit that already carries the
+            # latest tag, so re-running a released push would tag it twice.
+            VERSION=""
+            BUMP_ARGS="--auto --disable-bump-commit"
+            echo "HEAD is already released as $TAGGED"
+          else
+            RAW="$(cog bump --auto --disable-bump-commit --dry-run)"
+            echo "cog output: $RAW"
+            VERSION="$(printf '%s\n' "$RAW" | grep -oE '^v[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*' | head -1 || true)"
+            BUMP_ARGS="--auto --disable-bump-commit"
+          fi
+          if [ -n "$VERSION" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Release needed: $VERSION"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "No releasable commits detected"
+          fi
+          case "$VERSION" in *-*) PRERELEASE=true ;; *) PRERELEASE=false ;; esac
+          {
+            echo "version=$VERSION"
+            echo "semver=${VERSION#v}"
+            echo "bump_args=$BUMP_ARGS"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check the release touches a shipped artifact
+        id: shipped
+        if: steps.parse.outputs.should_release == 'true' && inputs.version == ''
+        env:
+          VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          # Commit type alone over-releases: a `fix(deps)` Actions pin or a
+          # docs-only `feat` changes no installed byte. Release only when
+          # something a user installs changed since the last tag. A forced
+          # dispatch skips this gate.
+          SHIPPED_PATHS='^(crates/|scripts/install-release\.|Cargo\.toml$|Cargo\.lock$|rust-toolchain\.toml$|LICENSE$|\.github/workflows/cd\.yml$)'
+          LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -z "$LAST_TAG" ]; then
+            RELEVANT="(no previous tag - first release)"
+          else
+            RELEVANT="$(git diff --name-only "$LAST_TAG"..HEAD | grep -E "$SHIPPED_PATHS" || true)"
+          fi
+          if [ -n "$RELEVANT" ]; then
+            echo "shipped=true" >> "$GITHUB_OUTPUT"
+            printf 'Shipped artifact changed - releasing:\n%s\n' "$RELEVANT"
+          else
+            echo "shipped=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping release $VERSION - no shipped artifact changed since $LAST_TAG."
+          fi
+
+      - name: Check publication is allowed
+        id: allowed
+        run: |
+          # Only main publishes, and only while the readiness file explicitly
+          # says `ready = true`. A false, missing or invalid file fails closed.
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Only refs/heads/main publishes; $GITHUB_REF does not."
+          elif python3 -c 'import sys, tomllib; sys.exit(0 if tomllib.load(open(".github/release-readiness.toml", "rb")).get("ready") is True else 1)' 2>/dev/null; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release readiness held by .github/release-readiness.toml."
+          fi
+
+      - name: Is this the highest version ever tagged
+        id: newest
+        env:
+          TARGET: ${{ steps.parse.outputs.version }}
+          PRERELEASE: ${{ steps.parse.outputs.prerelease }}
+        run: |
+          # A cut behind the highest existing tag, or a prerelease, is not
+          # marked latest: the installers' pinned links follow "latest".
+          HIGHEST="$(git tag --list 'v*' | sort -V | tail -1)"
+          echo "cutting ${TARGET:-(nothing)}; highest existing tag ${HIGHEST:-(none)}"
+          if [ -z "$TARGET" ] || [ "$PRERELEASE" = true ]; then
+            echo "newest=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$HIGHEST" ] \
+            || [ "$(printf '%s\n%s\n' "$HIGHEST" "$TARGET" | sort -V | tail -1)" = "$TARGET" ]; then
+            echo "newest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "newest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Create git tag (only if release needed)
+  create-tag:
+    name: Create release tag
+    needs: check-release
+    if: needs.check-release.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # Required to push the version tag
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Create version tag
+        uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          command: bump
+          args: ${{ needs.check-release.outputs.bump_args }}
+          git-user: 'github-actions[bot]'
+          git-user-email: 'github-actions[bot]@users.noreply.github.com'
+
+      # Push the tag and nothing else.
+      - name: Push tag to repository
+        env:
+          VERSION: ${{ needs.check-release.outputs.version }}
+        run: git push origin "refs/tags/$VERSION"
+
+  # Build, test and install-check every platform (only if tag created)
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [check-release, create-tag]
+    strategy:
+      fail-fast: false
+      matrix:
+        # The targets crates/fleet-dev/src/release.rs packages; the tooling E2E suite fails a
+        # list that differs. Every runner here also runs the Rust checks in
+        # ci.yml, which `cargo xtask check workflow` holds.
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-26.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.check-release.outputs.version }}
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.check-release.outputs.version }}
+      - name: Install Python for release tooling
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13.17"
+      # Every hosted image here ships rustup. A downloaded installer is never
+      # piped into a shell; an image without rustup fails here instead.
+      - name: Require rustup
+        run: command -v rustup || { echo "::error::this runner image has no rustup"; exit 1; }
+      - name: Install the pinned toolchain and the target
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
+          rustup show active-toolchain
+      # musl-gcc, for any C a dependency compiles. Native on both
+      # architectures, so no cross and no container.
+      - name: Install musl-tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends musl-tools
+      - run: rustup toolchain install
+      # A push to main can arrive without a pull request, and CI runs only on
+      # pull requests. So the tagged commit is tested here, on the runner that
+      # builds it, before any binary of it is packaged.
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-nextest@0.9.149
+      # The release tooling tests run the real cog.
+      - uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          install-only: true
+      - name: Test the commit being released
+        run: cargo xtask check rust-test
+      - name: Build
+        env:
+          FLEET_RELEASE_VERSION: ${{ needs.check-release.outputs.semver }}
+        run: cargo build --release --locked --target "$TARGET" -p fleet-cli --bin fleet
+      - name: Check the binary reports its version, then package it
+        run: |
+          bin="target/$TARGET/release/fleet"
+          cargo xtask release smoke --binary "$bin" --version "$VERSION"
+          cargo xtask release package --target "$TARGET" --version "$VERSION" --binary "$bin" --out dist
+      - name: Install the archive and bootstrap offline as a clean user
+        run: |
+          mkdir -p "installer-fixture/$VERSION"
+          cp dist/* "installer-fixture/$VERSION/"
+          (cd "installer-fixture/$VERSION" && shasum -a 256 fleet-* > "fleet-$VERSION-checksums.txt")
+          export FLEET_VERSION="$VERSION"
+          export FLEET_RELEASE_BASE="$PWD/installer-fixture"
+          export FLEET_INSTALL_DIR="$PWD/installed/bin"
+          sh scripts/install-release.sh
+          cargo xtask release smoke --binary "$FLEET_INSTALL_DIR/fleet" --version "$VERSION" --first-run-dir installed/clean-user
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  # Generate checksums for all binaries
+  checksums:
+    name: Generate checksums
+    needs: [check-release, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.check-release.outputs.version }}
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.check-release.outputs.version }}
+      - run: rustup toolchain install
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums over every target and pinned installers
+        run: |
+          sed "s/^release_version=\$/release_version=$VERSION/" scripts/install-release.sh > dist/install-release.sh
+          grep -qx "release_version=$VERSION" dist/install-release.sh
+          cp crates/fleet-cli/bundle/vega/provenance.json dist/vega-provenance.json
+          cp crates/fleet-cli/bundle/vega/starter.toml dist/vega-starter.toml
+          cargo xtask release checksums --version "$VERSION" dist
+          {
+            echo "### fleet $VERSION"
+            echo
+            echo '```'
+            cat "dist/fleet-$VERSION-checksums.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  generate-changelog:
+    name: Generate changelog
+    needs: [check-release, create-tag]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      changelog: ${{ steps.changelog.outputs.stdout }}
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.check-release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Generate changelog for release
+        uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        id: changelog
+        with:
+          command: changelog
+          args: --at ${{ needs.check-release.outputs.version }}
+
+  # Publish GitHub Release
+  publish:
+    name: Publish GitHub Release
+    needs: [check-release, build, checksums, generate-changelog]
+    # A protected environment is where a repository admin can require a
+    # person's approval before publishing artifacts.
+    environment: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write      # create the release on the pushed tag
+      id-token: write      # sign the provenance attestation
+      attestations: write  # store it
+    env:
+      VERSION: ${{ needs.check-release.outputs.version }}
+      NEWEST: ${{ needs.check-release.outputs.newest }}
+      PRERELEASE: ${{ needs.check-release.outputs.prerelease }}
+      CHANGELOG: ${{ needs.generate-changelog.outputs.changelog }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      # SLSA build provenance for every archive and the checksum file, which
+      # `gh attestation verify <file> --repo <owner>/fleet` checks.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "fleet $VERSION" \
+            --notes "${CHANGELOG:-See the commit history for details.}" \
+            --latest="$NEWEST" \
+            --prerelease="$PRERELEASE"

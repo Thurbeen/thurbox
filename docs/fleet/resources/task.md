@@ -78,20 +78,22 @@ A workspace has exactly one of two forms. Unknown fields are refused.
 - Fleet has no branch, base, worktree or cleanup field. The maker makes the
   checkout for this Task alone and names its branch. The worker reports the
   change it opened through `fleet declare`.
-- `runtime.repositories` in [`fleet.toml`](../configuration.md#fields)
-  maps each `url` to its source checkout. A Task with an unmapped `url`
+- `workspaces.repositories` (or `runtime.repositories`) in
+  [`fleet.toml`](../configuration.md#fields) maps each `url` to its source
+  checkout. A Task with an unmapped `url`
   waits with `RepositoryUnmapped`.
 
-One of two makers makes a `repositories` workspace:
+Fleet makes every `repositories` workspace through its workspace port,
+with no setting to ask for it: before the spawn, recorded in
+`status.workspace`, and cleaned after the release. The runtime only runs the
+session in it. The [workspace contract](../contracts.md#workspace-contract)
+states how the `worktree` adapter, the default, does this:
 
-- Without a `[workspaces]` section, the runtime makes it at the spawn and
-  cleans it when the session is deleted, as `runtime.workspaceCleanup`
-  says. The [runtime contract](../contracts.md#runtime-contract)
-  states how thurbox does this.
-- With a `[workspaces]` section, Fleet makes it before the spawn, records it
-  in `status.workspace`, and cleans it after the release. The
-  [workspace contract](../contracts.md#workspace-contract) states
-  how the `worktree` adapter does this.
+- A `file://` URL names a directory used as it is: it is spanned, never
+  made, and survives every clean.
+- A clean never loses work: what a worktree holds that its branch does not,
+  untracked files included, is committed onto
+  `refs/fleet/preserved/<key>/<name>` in its source first.
 
 `{"dir": PATH}` names a directory that exists before the Task. The session
 works in it as it is.
@@ -119,7 +121,7 @@ mutations described under [Inbox](#inbox).
 | `conditions` | One entry per [condition type](../controllers/task.md#conditions), with `status`, `reason`, `message`, `lastTransitionTime` and `observedGeneration`, the spec generation the condition was last set for. |
 | `execution` | Frozen execution selection and source identities; environment values are private. |
 | `session` | The session's runtime id, host and key, once spawned or adopted. A Task owns at most one session, from its spawn to its release; see [Session](session.md). |
-| `workspace` | The workspace Fleet made for the session: its `key`, the `host` the adapter reported, the `dir` of the primary repository, the `extraDirs` of the other repositories it also spans, and an optional `trustRoot`. Absent while the runtime makes the workspace, and after Fleet cleaned it. |
+| `workspace` | The workspace Fleet made for the session: its `key`, the `host` the adapter reported, the `dir` of the primary repository, the `extraDirs` of the other repositories it also spans, and an optional `trustRoot`. Absent for a `dir` workspace, until Fleet made it, and after Fleet cleaned it. |
 | `materializeAttempts`, `cleanAttempts` | Materialize attempts, bounded at 3 like spawn attempts, and workspace cleans after the release. A materialize refused for an unmapped repository does not count. Three failed cleans raise `NeedsAttention/CleanFailed`; cleans continue after each wait. |
 | `sessionState` | What the runtime last proved about the session: `Running`, `Idle`, `Paused`, `Lost` or `Gone`. Absent until a pass proved something. A pass whose answers are Unknown keeps the last state. Nothing decides on it; `fleet status` prints it. [Session](session.md#states) defines each state and how it is proved. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
@@ -131,6 +133,8 @@ mutations described under [Inbox](#inbox).
 | `catchUps`, `catchUp` | Catch-up notes over the Task's life, which number their keys, and the key of the note owed to a revived or resumed session until its delivery is known. A record from before the rename holds the key as `resume`, under `resume/<n>`; it is read and sent the same way. |
 | `notBefore` | Earliest next reconcile after a failed attempt, in Unix milliseconds. The fixed retry delay is 30 seconds and survives manager restarts. |
 | `sessionCheckedAt` | When a Concluded Task's session was last looked up, in Unix milliseconds. At rest, the next lookup is due 5 minutes later. |
+| `conversation` | The harness's own id of the session's conversation, as the agent's hooks last reported it through `fleet signal`. A revive or a resume names it. |
+| `prompts` | Per send key, the digest of the text the send carries, recorded with its intent for a harness with a prompt hook. The send counts as delivered once the agent's prompt hook reports that digest; the entry goes then. See [proven delivery](../controllers/task.md#proven-delivery). |
 | `brief` | `{key, generation, recovered}`: the key and generation of the newest brief or amendment the worker received, once it has a receipt, and whether that receipt was read back from the session's journal. A result names this generation. |
 | `result` | The worker's claim: outcome, generation, summary, artifacts, outputs. |
 | `inbox` | Messages queued for the session, oldest first: `{key, from, text, about, answers, amends, queuedAt}`. Appended by `fleet send` and `fleet amend`, removed by TaskController once delivered, each through a typed store mutation; never replaced as a list. |
@@ -277,9 +281,11 @@ entry out of `inbox`. No manager may replace the list.
 
 TaskController delivers inbox entries as it delivers the brief, oldest first,
 one per pass: only to a session observed ready on that pass, under the entry's
-key as the runtime intent key, journaled by the runtime, at most 3 sends, then a
-receipt. A send whose answer was lost is read back from the journal, never
-repeated blindly. An entry that exhausts its sends raises
+key as the runtime intent key, at most 3 sends, then a receipt. The entry
+counts as delivered once the agent's prompt hook reports it through
+`fleet signal`; a send whose answer was lost is settled by that report, never
+repeated. A harness with no prompt hook falls back on the runtime's journal.
+An entry that exhausts its sends raises
 `NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing: later
 entries are still delivered. An entry whose journal stays unreadable for 3 reads
 raises `NeedsAttention/DeliveryUnconfirmed` naming it. That entry is never sent

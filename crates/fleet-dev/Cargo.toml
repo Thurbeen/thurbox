@@ -1,0 +1,30 @@
+[package]
+name = "fleet-dev"
+default-run = "fleet-dev"
+description = "Repository gate and release tooling; never part of the installed fleet runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+fleet-exec.workspace = true
+serde-saphyr = "=2.0.0"
+roxmltree = "=0.21.2"
+semver = "=1.0.28"
+sha2 = "=0.11.1"
+flate2 = "=1.1.10"
+tar = "=0.4.46"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "fleet-install-fixture"
+path = "tests/fixtures/version.rs"
+test = false

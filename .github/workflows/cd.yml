@@ -310,9 +310,9 @@ jobs:
           THURBOX_RELEASE_VERSION: ${{ needs.check-release.outputs.version }}
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release -p thurbox --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release -p thurbox --target ${{ matrix.target }}
           fi
 
       # Unix archive: .tar.gz with the bare binaries + LICENSE.

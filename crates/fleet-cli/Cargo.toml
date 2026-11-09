@@ -1,0 +1,51 @@
+[package]
+name = "fleet-cli"
+description = "The fleet command: parses, wires the adapters, prints. Policy lives in fleet-manager."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "fleet"
+path = "src/main.rs"
+
+# The end-to-end tests' stand-in for thurbox-cli, a relay and a secret
+# command. Built with the tests; the release builds and ships `--bin fleet`
+# only.
+[[bin]]
+name = "fleet-test-stub"
+path = "tests/stubs/stub.rs"
+test = false
+doc = false
+
+[dependencies]
+fleet-plugin.workspace = true
+fleet-api.workspace = true
+fleet-manager.workspace = true
+fleet-runtime.workspace = true
+fleet-store.workspace = true
+fleet-forge.workspace = true
+fleet-gateway.workspace = true
+fleet-telemetry.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+sha2.workspace = true
+ctrlc.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
+opentelemetry-proto.workspace = true
+prost.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+toml.workspace = true
+sha2.workspace = true

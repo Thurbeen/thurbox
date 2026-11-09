@@ -1,0 +1,25 @@
+{
+  "envelope_id": "e0123abcd-0001-4000-8000-000000000002",
+  "type": "events_api",
+  "accepts_response_payload": false,
+  "payload": {
+    "token": "verification-token-not-a-secret",
+    "team_id": "T0123ABCD",
+    "api_app_id": "A0123ABCD",
+    "event": {
+      "type": "message",
+      "channel": "C0123ABCD",
+      "user": "U0456EFGH",
+      "text": "here is the log",
+      "ts": "1730000360.000300",
+      "thread_ts": "1730000300.000200",
+      "parent_user_id": "U0123ABCD",
+      "event_ts": "1730000360.000300",
+      "channel_type": "channel",
+      "user_profile": {"display_name": "Sam", "real_name": "Sam Example"}
+    },
+    "type": "event_callback",
+    "event_id": "Ev0123ABCD02",
+    "event_time": 1730000360
+  }
+}

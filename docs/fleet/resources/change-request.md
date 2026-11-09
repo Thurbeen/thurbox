@@ -46,7 +46,7 @@ Written by ChangeRequestController under the manager lease. Nobody else
 writes it. Two kinds of field live here: the snapshot, which changes only
 when the forge said something new and then moves `revision`, and the
 bookkeeping, which every poll writes without moving `revision`. The typed
-status is [`ChangeRequestStatus`](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/change_request.rs),
+status is [`ChangeRequestStatus`](../../../crates/fleet-api/src/change_request.rs),
 with the two groups side by side.
 
 Bookkeeping:
@@ -184,6 +184,6 @@ fleet delete changerequest cr-5e1c0a9b7f23    # nothing on the forge changes
 
 `fleet declare` is the [Forge controller](../controllers/forge.md)'s
 verb: it ensures the mirror and records the declaration on the Task.
-[examples/change-request.json](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/examples/change-request.json)
-is a manifest the shipped [example config](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/examples/fleet.toml) applies
+[examples/change-request.json](../../../examples/fleet/change-request.json)
+is a manifest the shipped [example config](../../../examples/fleet/fleet.toml) applies
 against the fake forge, offline.

@@ -1,0 +1,23 @@
+{
+  "envelope_id": "e0123abcd-0001-4000-8000-000000000008",
+  "type": "events_api",
+  "accepts_response_payload": false,
+  "payload": {
+    "token": "verification-token-not-a-secret",
+    "team_id": "T0123ABCD",
+    "api_app_id": "A0123ABCD",
+    "event": {
+      "type": "message",
+      "subtype": "channel_join",
+      "channel": "C0123ABCD",
+      "user": "U0789IJKL",
+      "text": "<@U0789IJKL> has joined the channel",
+      "ts": "1730000200.000000",
+      "event_ts": "1730000200.000000",
+      "channel_type": "channel"
+    },
+    "type": "event_callback",
+    "event_id": "Ev0123ABCD08",
+    "event_time": 1730000200
+  }
+}

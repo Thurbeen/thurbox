@@ -19,17 +19,17 @@ same sweep as the Task controller, through the Forge port.
 
 | Crate | Owns | Boundary |
 | --- | --- | --- |
-| [fleet-cli](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-cli/src/main.rs) | Parse arguments, load config, construct adapters, print results | Calls manager verbs; does not write resources or run controller effects directly. |
-| [fleet-manager](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/send/result/declare verbs | Reads and writes through `Store`; observes and performs effects through `Runtime`; reads changes and logins and performs the one forge write, mark-ready, through `Forge`. |
-| [fleet-controllers](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-controllers/src/lib.rs) | Pure Task, ChangeRequest, Forge, Gateway, Conversation and Listener decisions, and the plugin admission gate | Receives time and observations as values; returns probes and a plan without I/O. |
-| [fleet-api](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/lib.rs) | Task, ChangeRequest, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
-| [fleet-store](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
-| [fleet-runtime](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
-| [fleet-forge](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab`, `az`, externally authenticated `curl`, or the file-backed fake forge, and taking a supported draft out of draft after a fresh read | One bounded observation is complete or Unknown; a write either preserves the head/state guard or fails closed; the only crate that knows a forge CLI's name. |
-| [fleet-gateway](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through Slack's Web API or Discord's REST API by `curl`, or through the file-backed fake platform | Every answer is Known or Unknown; a refused write fails closed; the only crate that knows a chat client's name. |
-| [fleet-plugin](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-plugin/src/lib.rs) | Bounded calls to a registered plugin process through the `Plugins` port | The only crate that runs a plugin; every call is one bounded process through fleet-exec. |
-| [fleet-exec](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
-| [fleet-telemetry](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-telemetry/src/lib.rs) | The OpenTelemetry SDK and its OTLP/HTTP exporter, installed when the `OTEL_*` variables ask | The only crate that names the SDK or the exporter; export never changes a command's outcome, and shutdown is bounded. |
+| [fleet-cli](../../crates/fleet-cli/src/main.rs) | Parse arguments, load config, construct adapters, print results | Calls manager verbs; does not write resources or run controller effects directly. |
+| [fleet-manager](../../crates/fleet-manager/src/lib.rs) | Reconcile loop, lease renewal, plan execution, apply/delete/send/result/declare verbs | Reads and writes through `Store`; observes and performs effects through `Runtime`; reads changes and logins and performs the one forge write, mark-ready, through `Forge`. |
+| [fleet-controllers](../../crates/fleet-controllers/src/lib.rs) | Pure Task, ChangeRequest, Forge, Gateway, Conversation and Listener decisions, and the plugin admission gate | Receives time and observations as values; returns probes and a plan without I/O. |
+| [fleet-api](../../crates/fleet-api/src/lib.rs) | Task, ChangeRequest, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
+| [fleet-store](../../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
+| [fleet-runtime](../../crates/fleet-runtime/src/lib.rs) | Session operations through any program speaking the [runtime protocol](../runtime/README.md#the-runtime-protocol) (`exec`), through thurbox, or the file-backed fake host; the protocol's conformance suite | Converts external answers to Known/Unknown; retains identity and delivery keys; shares no type with any runtime's code. |
+| [fleet-forge](../../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab`, `az`, externally authenticated `curl`, or the file-backed fake forge, and taking a supported draft out of draft after a fresh read | One bounded observation is complete or Unknown; a write either preserves the head/state guard or fails closed; the only crate that knows a forge CLI's name. |
+| [fleet-gateway](../../crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through Slack's Web API or Discord's REST API by `curl`, or through the file-backed fake platform | Every answer is Known or Unknown; a refused write fails closed; the only crate that knows a chat client's name. |
+| [fleet-plugin](../../crates/fleet-plugin/src/lib.rs) | Bounded calls to a registered plugin process through the `Plugins` port | The only crate that runs a plugin; every call is one bounded process through fleet-exec. |
+| [fleet-exec](../../crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
+| [fleet-telemetry](../../crates/fleet-telemetry/src/lib.rs) | The OpenTelemetry SDK and its OTLP/HTTP exporter, installed when the `OTEL_*` variables ask | The only crate that names the SDK or the exporter; export never changes a command's outcome, and shutdown is bounded. |
 
 The manager records spans and metrics through the `opentelemetry` API,
 which does nothing until `fleet-telemetry` installs a provider. The CLI
@@ -41,8 +41,8 @@ and metrics.
 validation and release packaging. They are not controllers or services in the
 installed `fleet` runtime.
 
-The executable dependency graph is [crates/architecture.toml](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/architecture.toml).
-The [architecture suite](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-arch/tests/architecture.rs) checks crate
+The executable dependency graph is [crates/architecture.toml](../../crates/architecture.toml).
+The [architecture suite](../../crates/fleet-arch/tests/architecture.rs) checks crate
 edges, purity, restricted process and telemetry APIs, permitted status
 writers and the holders of the Forge port, including negative fixtures. The
 CLI may wire adapters, but only manager verbs may perform resource
@@ -84,7 +84,7 @@ and runtime observation recover that gap.
 
 ## Resource representation
 
-[fleet-api](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/meta.rs) defines Fleet's resource envelope
+[fleet-api](../../crates/fleet-api/src/meta.rs) defines Fleet's resource envelope
 and metadata as native Rust types. Manifests use `apiVersion`, `kind`,
 `metadata`, `spec` and `status`; typed Task views validate spec and status.
 Unknown fields are refused. The store assigns identity, generation, resource
@@ -149,7 +149,7 @@ See [execution configuration](resources/task-config.md).
 
 A Session is one running agent: the unit the runtime port starts,
 observes, briefs, sends to and releases. Fleet defines it in
-[fleet-api's session module](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/session.rs) and
+[fleet-api's session module](../../crates/fleet-api/src/session.rs) and
 documents it on the [Session page](resources/session.md). A
 Session is not a stored kind. One Task owns at most one Session, from the
 Task's spawn to the Task's release, and names it in `status.session`.
@@ -168,20 +168,31 @@ A Session has two parts:
 The runtime port is the only way Fleet reaches a Session. Fleet owns the
 Session's identity, its lifecycle record and every decision about it. The
 runtime owns the agent process, its window and its conversation, and
-answers what it can prove. The runtime also owns the workspace, unless
-Fleet made it through the workspace port.
+answers what it can prove. Fleet makes the workspace through the workspace
+port; the runtime runs the session in it.
 
 This split is the first step toward the
 [target architecture](architecture-target.svg), where Thurbox
 is one view among others and Fleet runs Sessions behind the runtime port.
-The next steps move the remaining Session responsibilities out of the
-Thurbox runtime adapter, one port call at a time: workspace materialization,
-the agent's lifecycle hooks, and attaching a live terminal.
+Workspace materialization, the agent's lifecycle hooks (`fleet signal`),
+proven delivery and the harness profiles have moved out of the Thurbox
+runtime adapter into Fleet. The `exec` runtime kind is built:
+`[runtimes.<name>]` names a program that speaks the
+[runtime protocol](../runtime/README.md#the-runtime-protocol),
+`[hosts.<name>]` names the runtime serving each host, and `fleet init`
+configures `runtime-mux` alone. The port's calls map onto the protocol's
+verbs: `spawn` is `start` with the harness profile's launch argv and the
+session's `FLEET_SIGNAL_FILE`, `revive` is `start` with its resume argv,
+`find`, `lost` and `at_rest` read `inspect`, `release` is `stop`, a brief
+is `input`, and `create_dir` and `remove_dir` are `exec`. What only the
+agent can prove (readiness, workspace trust, delivery, an idle agent)
+comes from the agent's signals. Attaching a live terminal is the next
+step.
 
 ## Workspaces and the workspace port
 
 A Workspace is the set of files one Session works in. Fleet defines it in
-[fleet-api's workspace module](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/crates/fleet-api/src/workspace.rs). A
+[fleet-api's workspace module](../../crates/fleet-api/src/workspace.rs). A
 Workspace is not a stored kind.
 
 ```text
@@ -194,11 +205,9 @@ Task ──owns──▶ Workspace {key, host, dir} ◀──runs in── Sessi
 - The Workspace key is the Session key, `<name>.<uid>`.
 - TaskController is the only writer of `status.workspace`.
 
-The `[workspaces]` section of `fleet.toml` selects who makes a
-`repositories` workspace:
-
-- With the section, Fleet makes it through the workspace port.
-- Without the section, the runtime makes it, as before.
+Fleet makes every `repositories` workspace through the workspace port. The
+`[workspaces]` section of `fleet.toml` only picks the adapter; without it,
+the `worktree` adapter makes it under `<data dir>/workspaces`.
 
 A `dir` workspace exists before the Task. Nothing makes or cleans it.
 
@@ -327,7 +336,7 @@ credentials stay with the agent and host.
 V2 does not read or migrate v1 queue records or configuration. Root
 `FLEET_MAJOR=2` is the boundary checked by v1 installations containing the
 freeze guard; unpatched clients need the pinned release first. The
-[README](https://github.com/Thurbeen/fleet/blob/961da39903338f3fb0493ec5a34aa8417cb98d89/README.md) owns frozen v1 installation, explicit v2 installation
+[README](configuration.md) owns frozen v1 installation, explicit v2 installation
 and the deliberate cutover procedure. Release publication requires native tests
 and installed offline bootstrap acceptance.
 

@@ -124,6 +124,12 @@ const MODULE_RULES: &[ModuleRules] = &[
         name: "registry",
         allowed: &["host", "contract"],
     },
+    // The runtime protocol over one backend it is handed: the contract and
+    // nothing that builds one.
+    ModuleRules {
+        name: "protocol",
+        allowed: &["contract", "identity"],
+    },
     // What fills the registry: the only node that names an adapter.
     ModuleRules {
         name: "wiring",
@@ -203,8 +209,9 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
 ];
 
-/// The crate root, which only declares and re-exports.
-const EXEMPT: &[&str] = &["lib"];
+/// The crate root, which only declares and re-exports, and the `runtime-mux`
+/// program's composition root, which calls the factory as an embedder does.
+const EXEMPT: &[&str] = &["lib", "main"];
 
 /// Nodes whose every file module must be a node of its own.
 const SUBMODULE_GOVERNED: &[&str] = &["tmux_compat"];

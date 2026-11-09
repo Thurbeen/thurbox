@@ -1,0 +1,20 @@
+[package]
+name = "fleet-manager"
+description = "Fleet's manager: one lease, a workqueue, and plans performed through the ports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+fleet-api.workspace = true
+fleet-controllers.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+opentelemetry.workspace = true
+
+[lints]
+workspace = true

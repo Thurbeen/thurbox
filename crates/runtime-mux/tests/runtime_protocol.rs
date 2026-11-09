@@ -1,0 +1,512 @@
+//! The `runtime-mux` binary speaking the runtime protocol
+//! (docs/runtime/README.md), end to end: the real binary, a real tmux, a
+//! private socket directory per test.
+
+#![cfg(unix)]
+
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Value};
+
+#[path = "support/tmux_server.rs"]
+mod tmux_server;
+
+/// The socket the runtime names when nothing overrides it.
+const SOCKET: &str = "runtime-mux";
+
+/// The interface's socket, which the guard pins and the runtime ignores.
+const INTERFACE_SOCKET: &str = "thurbox-interface";
+
+struct Runtime {
+    server: tmux_server::TmuxServer,
+}
+
+impl Runtime {
+    /// `None`, and a note, where tmux is not installed.
+    fn new() -> Option<Runtime> {
+        if runtime_mux::path_lookup::resolve_on_path("tmux").is_none() {
+            eprintln!("skipping: tmux is not installed");
+            return None;
+        }
+        Some(Runtime {
+            server: tmux_server::TmuxServer::private(INTERFACE_SOCKET),
+        })
+    }
+
+    fn call(&self, verb: &str, request: Value) -> Value {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_runtime-mux"));
+        // The guard pins the interface's socket name, as a runtime started
+        // from a thurbox pane inherits it; the runtime must not use it.
+        self.server.scope(&mut command);
+        let mut child = command
+            .arg(verb)
+            .env_remove("TMUX")
+            .env_remove("RUNTIME_MUX_SOCKET")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run runtime-mux");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(request.to_string().as_bytes())
+            .expect("write the request");
+        let out = child.wait_with_output().expect("runtime-mux output");
+        assert!(
+            out.status.success(),
+            "runtime-mux {verb} exited {:?}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+            panic!(
+                "runtime-mux {verb} answered no JSON ({e}): {}",
+                String::from_utf8_lossy(&out.stdout)
+            )
+        })
+    }
+
+    fn start(&self, key: &str, argv: &[&str]) -> Value {
+        self.call(
+            "start",
+            json!({"protocol": 1, "key": key, "argv": argv, "env": {}}),
+        )
+    }
+
+    fn inspect(&self, key: &str) -> Value {
+        self.call("inspect", json!({"protocol": 1, "key": key}))
+    }
+
+    /// The first `inspect` answer `done` accepts, within ten seconds.
+    fn inspect_until(&self, key: &str, done: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let answer = self.inspect(key);
+            if done(&answer) || Instant::now() >= deadline {
+                return answer;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+fn started(answer: &Value) -> (String, bool) {
+    let started = &answer["known"]["started"];
+    assert!(started.is_object(), "{answer}");
+    (
+        started["id"].as_str().expect("id").to_string(),
+        started["adopted"].as_bool().expect("adopted"),
+    )
+}
+
+#[test]
+fn the_manifest_names_the_protocol_and_the_verbs() {
+    let Some(rt) = Runtime::new() else { return };
+    let answer = rt.call("manifest", json!({"protocol": 1}));
+    assert_eq!(answer["known"]["protocol"], 1, "{answer}");
+    let verbs = answer["known"]["verbs"].as_array().expect("verbs");
+    for verb in ["manifest", "start", "inspect", "stop"] {
+        assert!(verbs.iter().any(|v| v == verb), "{verb} in {answer}");
+    }
+    assert!(
+        !verbs.iter().any(|v| v == "workspace"),
+        "runtime-mux makes no workspace yet: {answer}"
+    );
+}
+
+#[test]
+fn two_starts_with_one_key_leave_one_process() {
+    let Some(rt) = Runtime::new() else { return };
+    let (first, adopted) = started(&rt.start("t1.uid", &["sleep", "300"]));
+    assert!(!adopted);
+    let (second, adopted) = started(&rt.start("t1.uid", &["sleep", "300"]));
+    assert!(adopted, "the second start adopts the first process");
+    assert_eq!(first, second);
+
+    let running = rt.inspect("t1.uid");
+    assert_eq!(
+        running["known"]["running"]["id"],
+        first.as_str(),
+        "{running}"
+    );
+    let list = rt.call("list", json!({"protocol": 1}));
+    assert_eq!(list["known"]["keys"], json!(["t1.uid"]), "{list}");
+
+    assert_eq!(
+        rt.call("stop", json!({"protocol": 1, "key": "t1.uid"}))["known"],
+        "stopped"
+    );
+    assert_eq!(rt.inspect("t1.uid")["known"], "none");
+    assert_eq!(
+        rt.call("stop", json!({"protocol": 1, "key": "t1.uid"}))["known"],
+        "stopped",
+        "a process already gone counts as stopped"
+    );
+}
+
+#[test]
+fn keys_a_window_name_would_fold_together_stay_apart() {
+    let Some(rt) = Runtime::new() else { return };
+    let (dot, _) = started(&rt.start("a.b", &["sleep", "300"]));
+    let (underscore, adopted) = started(&rt.start("a_b", &["sleep", "300"]));
+    assert!(!adopted, "a_b is not a.b");
+    assert_ne!(dot, underscore);
+    let list = rt.call("list", json!({"protocol": 1}));
+    assert_eq!(list["known"]["keys"], json!(["a.b", "a_b"]), "{list}");
+    rt.call("stop", json!({"protocol": 1, "key": "a_b"}));
+    assert_eq!(rt.inspect("a.b")["known"]["running"]["id"], dot.as_str());
+}
+
+#[test]
+fn the_runtime_runs_on_its_own_socket_not_the_interfaces() {
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start("own.socket", &["sleep", "300"]));
+    assert_eq!(rt.server.alive(), vec![SOCKET.to_string()]);
+}
+
+#[test]
+fn start_runs_argv_with_env_in_dir() {
+    let Some(rt) = Runtime::new() else { return };
+    let dir = tempfile::tempdir().expect("dir");
+    let answer = rt.call(
+        "start",
+        json!({
+            "protocol": 1,
+            "key": "env.dir",
+            "argv": ["sh", "-c", "printf %s \"$GREETING\" > out; exec sleep 300"],
+            "env": {"GREETING": "hello there"},
+            "dir": dir.path(),
+        }),
+    );
+    started(&answer);
+    let out = dir.path().join("out");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while std::fs::read_to_string(&out).unwrap_or_default().is_empty() && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello there");
+}
+
+#[test]
+fn an_exited_process_reports_its_code() {
+    let Some(rt) = Runtime::new() else { return };
+    let (id, _) = started(&rt.start("exits", &["sh", "-c", "sleep 0.3; exit 3"]));
+    let answer = rt.inspect_until("exits", |a| a["known"]["exited"].is_object());
+    assert_eq!(
+        answer["known"]["exited"],
+        json!({"id": id, "code": 3}),
+        "{answer}"
+    );
+    let (again, adopted) = started(&rt.start("exits", &["sleep", "300"]));
+    assert!(!adopted, "an exited process is replaced, not adopted");
+    assert_eq!(
+        rt.inspect("exits")["known"]["running"]["id"],
+        again.as_str()
+    );
+}
+
+#[test]
+fn input_reaches_the_process_and_capture_reads_it_back() {
+    let Some(rt) = Runtime::new() else { return };
+    started(&rt.start("typed", &["cat"]));
+    let sent = rt.call(
+        "input",
+        json!({"protocol": 1, "key": "typed", "text": "hello runtime", "submit": true}),
+    );
+    assert_eq!(sent["known"], "sent", "{sent}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let screen = rt.call("capture", json!({"protocol": 1, "key": "typed"}));
+        let text = screen["known"]["screen"]["text"].as_str().unwrap_or("");
+        if text.matches("hello runtime").count() >= 2 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "{screen}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        rt.call(
+            "input",
+            json!({"protocol": 1, "key": "nobody", "text": "x"})
+        )["known"],
+        "none"
+    );
+}
+
+#[test]
+fn exec_runs_a_bounded_command_on_the_host() {
+    let Some(rt) = Runtime::new() else { return };
+    let ran = rt.call(
+        "exec",
+        json!({"protocol": 1, "in": "host", "argv": ["sh", "-c", "echo out; echo err >&2; exit 4"], "timeoutMs": 5000}),
+    );
+    assert_eq!(
+        ran["known"]["exited"],
+        json!({"code": 4, "stdout": "out\n", "stderr": "err\n"}),
+        "{ran}"
+    );
+    let slow = rt.call(
+        "exec",
+        json!({"protocol": 1, "in": "host", "argv": ["sleep", "30"], "timeoutMs": 200}),
+    );
+    assert!(slow["known"]["timedOut"].is_object(), "{slow}");
+}
+
+#[test]
+fn a_missing_multiplexer_fails_the_start_by_name() {
+    let empty = tempfile::tempdir().expect("an empty PATH");
+    let out = Command::new(env!("CARGO_BIN_EXE_runtime-mux"))
+        .arg("start")
+        .env("PATH", empty.path())
+        .env_remove("TMUX")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.take().expect("stdin").write_all(
+                json!({"protocol": 1, "key": "k", "argv": ["sleep", "1"]})
+                    .to_string()
+                    .as_bytes(),
+            )?;
+            child.wait_with_output()
+        })
+        .expect("run runtime-mux");
+    let answer: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+    let why = answer["known"]["failed"]["why"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(why.contains("tmux"), "{answer}");
+}
+
+#[test]
+fn what_the_runtime_cannot_answer_is_unknown() {
+    let Some(rt) = Runtime::new() else { return };
+    for (verb, request) in [
+        ("inspect", json!({"protocol": 999, "key": "k"})),
+        ("inspect", json!({"key": "k"})),
+        ("inspect", json!({"protocol": 1, "key": "bad key"})),
+        ("start", json!({"protocol": 1, "key": "k", "argv": []})),
+        ("no-such-verb", json!({"protocol": 1})),
+    ] {
+        let answer = rt.call(verb, request.clone());
+        assert!(
+            answer["unknown"]["why"].is_string(),
+            "{verb} {request} answered {answer}"
+        );
+    }
+}
+
+#[test]
+fn concurrent_starts_with_one_key_leave_one_process() {
+    let Some(rt) = Runtime::new() else { return };
+    for round in 0..5 {
+        let key = format!("race.r{round}");
+        let answers: Vec<Value> = std::thread::scope(|s| {
+            let calls: Vec<_> = (0..4)
+                .map(|_| s.spawn(|| rt.start(&key, &["sleep", "300"])))
+                .collect();
+            calls.into_iter().map(|c| c.join().unwrap()).collect()
+        });
+        let ids: Vec<(String, bool)> = answers.iter().map(started).collect();
+        assert!(ids.iter().all(|(id, _)| *id == ids[0].0), "{answers:?}");
+        assert_eq!(
+            ids.iter().filter(|(_, adopted)| !adopted).count(),
+            1,
+            "{answers:?}"
+        );
+        assert!(rt.inspect(&key)["known"]["running"].is_object(), "{key}");
+    }
+}
+
+#[test]
+fn exec_output_past_the_cap_is_dropped_and_the_command_still_finishes() {
+    let Some(rt) = Runtime::new() else { return };
+    let ran = rt.call(
+        "exec",
+        json!({"protocol": 1, "in": "host", "argv": ["head", "-c", "4000000", "/dev/zero"], "timeoutMs": 10000, "outputCap": 16}),
+    );
+    let exited = &ran["known"]["exited"];
+    assert_eq!(exited["code"], 0, "{ran}");
+    assert_eq!(exited["stdout"].as_str().map(str::len), Some(16), "{ran}");
+}
+
+#[test]
+fn exec_answers_by_its_deadline_when_an_escaped_child_holds_its_output() {
+    let Some(rt) = Runtime::new() else { return };
+    if runtime_mux::path_lookup::resolve_on_path("setsid").is_none() {
+        eprintln!("skipping: setsid is not installed");
+        return;
+    }
+    let started = Instant::now();
+    let ran = rt.call(
+        "exec",
+        json!({"protocol": 1, "in": "host", "argv": ["sh", "-c", "setsid sleep 20 & echo hi"], "timeoutMs": 1000}),
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "answered after {:?}: {ran}",
+        started.elapsed()
+    );
+    let answer = &ran["known"];
+    let stdout = answer["exited"]["stdout"]
+        .as_str()
+        .or(answer["timedOut"]["stdout"].as_str());
+    assert_eq!(stdout, Some("hi\n"), "{ran}");
+}
+
+/// A server on the socket tmux derives with no `TMUX_TMPDIR`, killed when
+/// the test ends.
+struct DefaultDirServer(String);
+
+impl Drop for DefaultDirServer {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .env_remove("TMUX_TMPDIR")
+            .env_remove("TMUX")
+            .args(["-L", &self.0, "kill-server"])
+            .output();
+    }
+}
+
+#[test]
+fn concurrent_starts_under_different_tmpdirs_leave_one_process() {
+    if runtime_mux::path_lookup::resolve_on_path("tmux").is_none() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let server = DefaultDirServer(format!("rmux-tmpdir-{}", std::process::id()));
+    let base = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(&server.0);
+    // Each caller has a TMPDIR of its own and no TMUX_TMPDIR, so tmux puts
+    // every one of them on the one socket under /tmp.
+    let call = |n: usize, verb: &str, request: Value| -> Value {
+        let tmpdir = base.join(format!("caller-{n}"));
+        std::fs::create_dir_all(&tmpdir).expect("TMPDIR");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_runtime-mux"))
+            .arg(verb)
+            .env_remove("TMUX_TMPDIR")
+            .env_remove("TMUX")
+            .env_remove("THURBOX_SOCKET")
+            .env_remove("THURBOX_SOCKET_FOR")
+            .env("TMPDIR", &tmpdir)
+            .env("RUNTIME_MUX_SOCKET", &server.0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("run runtime-mux");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(request.to_string().as_bytes())
+            .expect("write the request");
+        let out = child.wait_with_output().expect("runtime-mux output");
+        serde_json::from_slice(&out.stdout).expect("JSON")
+    };
+    for round in 0..5 {
+        let key = format!("race.t{round}");
+        let request = json!({"protocol": 1, "key": key, "argv": ["sleep", "300"], "env": {}});
+        let answers: Vec<Value> = std::thread::scope(|s| {
+            let calls: Vec<_> = (0..4)
+                .map(|n| {
+                    let request = request.clone();
+                    let call = &call;
+                    s.spawn(move || call(n, "start", request))
+                })
+                .collect();
+            calls.into_iter().map(|c| c.join().unwrap()).collect()
+        });
+        let ids: Vec<(String, bool)> = answers.iter().map(started).collect();
+        assert!(ids.iter().all(|(id, _)| *id == ids[0].0), "{answers:?}");
+        assert_eq!(
+            ids.iter().filter(|(_, adopted)| !adopted).count(),
+            1,
+            "{answers:?}"
+        );
+        let inspected = call(0, "inspect", json!({"protocol": 1, "key": key}));
+        assert!(inspected["known"]["running"].is_object(), "{inspected}");
+    }
+}
+
+#[test]
+fn a_start_killed_holding_the_lock_does_not_block_the_next_one() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    let Some(rt) = Runtime::new() else { return };
+    // A tmux that never answers: the start that took the lock hangs in it.
+    let hang = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("rmux-hang-{}", std::process::id()));
+    std::fs::create_dir_all(&hang).expect("hang dir");
+    std::fs::write(hang.join("tmux"), "#!/bin/sh\nexec sleep 30\n").expect("fake tmux");
+    std::fs::set_permissions(hang.join("tmux"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_runtime-mux"));
+    rt.server.scope(&mut command);
+    let mut holder = command
+        .process_group(0)
+        .arg("start")
+        .env_remove("TMUX")
+        .env_remove("RUNTIME_MUX_SOCKET")
+        .env("PATH", format!("{}:{path}", hang.display()))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("runtime-mux");
+    holder
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(
+            json!({"protocol": 1, "key": "k.held", "argv": ["sleep", "300"], "env": {}})
+                .to_string()
+                .as_bytes(),
+        )
+        .expect("request");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        holder.try_wait().expect("holder").is_none(),
+        "the first start hangs holding the lock"
+    );
+    // SIGKILL: the kernel drops its flock with its descriptors.
+    Command::new("kill")
+        .args(["-KILL", &format!("-{}", holder.id())])
+        .status()
+        .expect("SIGKILL");
+    holder.wait().expect("reaped");
+
+    let begun = Instant::now();
+    let (_, adopted) = started(&rt.start("k.next", &["sleep", "300"]));
+    assert!(!adopted);
+    assert!(
+        begun.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        begun.elapsed()
+    );
+}
+
+fn uid() -> String {
+    let out = Command::new("id").arg("-u").output().expect("id -u");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn the_lock_follows_no_link_planted_where_it_used_to_live() {
+    let Some(rt) = Runtime::new() else { return };
+    // Before the lock moved into tmux's private directory it lived in the
+    // shared one, where anyone could plant a link at its name.
+    let planted = rt.server.tmpdir().join("planted");
+    std::os::unix::fs::symlink(
+        &planted,
+        rt.server
+            .tmpdir()
+            .join(format!("runtime-mux-{}-{SOCKET}.lock", uid())),
+    )
+    .expect("link");
+    started(&rt.start("k.link", &["sleep", "300"]));
+    assert!(!planted.exists(), "the lock opened through the link");
+}

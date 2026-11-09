@@ -122,9 +122,12 @@ its own allowlist (`crates/runtime-mux/tests/architecture_rules.rs`,
 `docs/constitution.md` R3): the adapters `tmux`, `psmux`, `rmux` are peers
 over the shared `tmux_compat` server, only the factory `wiring` names one, and
 it depends on no other crate of the repository — the settings and data
-directory it needs are injected (`MuxSettings`, `HostsConfig`).
+directory it needs are injected (`MuxSettings`, `HostsConfig`). Its
+`runtime-mux` program (`src/main.rs`, the composition root, over the
+`protocol` module) answers the runtime protocol on a tmux socket of its own,
+`runtime-mux` (`RUNTIME_MUX_SOCKET` names another), never thurbox's.
 `crates/architecture.toml` declares which crate may depend on which, and
-`crates/thurbox/tests/crate_graph.rs` holds `cargo metadata` to it.
+Fleet's `fleet-arch` (its `architecture` test) holds the workspace to it.
 
 Enforcement is an **allowlist**: every module under `src/` needs a `ModuleRules`
 entry naming what it may reference in *any* form (`use`, `pub use`, brace groups,

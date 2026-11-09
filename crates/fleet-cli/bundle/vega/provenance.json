@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/Thurbeen/vega",
+  "commit": "3c4798dbdb33672576958cf8f1849c16e519d95d",
+  "license": "MIT",
+  "files": {
+    "LICENSE": "6c24e78d9603d3f074127a789b3c913ea7b5f18900816af16194f7abbef9275e",
+    "config/fleet.toml": "e770431b2cfc046385d7e3ca66cb58a8cd58db961d739a13b2c64cd9db7117ea",
+    "tasks/vega.json": "aa273f62e32a23eb9f45109ba4d3be855e7ef6f30c04543fc6b484d6261bfc7b",
+    "workspace/AGENTS.md": "6d650ec0fe8f15afeae6483cecf221f6069cce3bed2316d38cb6a44d2ca786af",
+    "workspace/prompts/mission-control.md": "33740c3096721e98e2419608c8756418d2c847224032dbb3935d7ffd610afcf8",
+    "workspace/.agents/skills/task-intake/SKILL.md": "106b04f990556bb30edf12f8185f0514c4d0a4cdea5262f14aa1b0d1fb97fd54",
+    "workspace/.agents/skills/task-status/SKILL.md": "41b8396a6a4d26bc7c5ef22bb110872453244d5e6feb91b3303317304c66da0b",
+    "workspace/.agents/skills/status-digest/SKILL.md": "e5d077161c2952b758d2e1f482188b4ad3d3a2919eb8c5ae8b297d25415484d0"
+  }
+}

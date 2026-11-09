@@ -1,11 +1,59 @@
 [workspace]
 # One repository for thurbox, Fleet and the runtimes (ADR-41). Each component
-# is a crate under crates/; docs/README.md says which may depend on which.
-members = ["crates/runtime-mux", "crates/thurbox"]
+# is a crate under crates/; docs/README.md says which may depend on which, and
+# crates/architecture.toml is that rule as fleet-arch checks it.
+members = ["crates/*"]
 # The vendored crates are patches, not members: CI runs crossterm's own tests
 # from its own manifest and lockfile.
 exclude = ["vendor/crossterm", "vendor/tui-term"]
-resolver = "2"
+resolver = "3"
+
+# Fleet's crates inherit these; thurbox keeps its own edition, MSRV and
+# dependency versions in crates/thurbox/Cargo.toml.
+[workspace.package]
+version = "0.0.0-dev"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/Thurbeen/thurbox"
+publish = false
+
+[workspace.dependencies]
+fleet-plugin = { path = "crates/fleet-plugin" }
+jsonschema = { version = "0.60.1", default-features = false }
+fleet-api = { path = "crates/fleet-api" }
+fleet-controllers = { path = "crates/fleet-controllers" }
+fleet-store = { path = "crates/fleet-store" }
+fleet-runtime = { path = "crates/fleet-runtime" }
+fleet-manager = { path = "crates/fleet-manager" }
+fleet-exec = { path = "crates/fleet-exec" }
+fleet-forge = { path = "crates/fleet-forge" }
+fleet-gateway = { path = "crates/fleet-gateway" }
+clap = { version = "4.6.7", features = ["derive"] }
+process-wrap = { version = "10.0.1", default-features = false, features = ["std", "process-group", "job-object", "kill-on-drop"] }
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+syn = { version = "3.0.9", features = ["full", "visit"] }
+thiserror = "2.0.21"
+toml = "1.1.8"
+ctrlc = { version = "3.5.2", features = ["termination"] }
+fleet-telemetry = { path = "crates/fleet-telemetry" }
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace", "metrics"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace", "metrics"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-blocking-client"] }
+opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace", "metrics"] }
+prost = "0.14.4"
+
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
 
 [profile.dev]
 # Keep source locations in backtraces without copying full type/variable

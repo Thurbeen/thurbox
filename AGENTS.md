@@ -22,11 +22,57 @@ you want them).
 ## Repository layout
 
 The repository is one Cargo workspace (ADR-41). Each component is a crate under
-`crates/` — today only `crates/thurbox`, the interface — and everything that is
-not a crate stays at the root: `ui/`, `extensions/`, `examples/`, `vendor/`,
-`docs/`, `scripts/`. A bare `src/…` or `tests/…` path in this file, a skill or
-a document under `docs/thurbox/` is the thurbox crate's (`crates/thurbox/src/…`);
+`crates/` — `crates/thurbox`, the interface, `crates/fleet-*`, the engine, and
+`crates/runtime-mux`, the multiplexer runtime — and everything that is not a
+crate stays at the root: `ui/`, `extensions/`, `examples/`, `vendor/`, `docs/`,
+`scripts/`. Fleet's own trees sit in a `fleet/`
+directory there (`examples/fleet/`, `scripts/fleet/`, `docs/fleet/`).
+`crates/architecture.toml` is the crate graph `fleet-arch` checks: a component
+other than Fleet is `role = "component"`, and no component depends on another
+(thurbox still links `runtime-mux` until Fleet drives the runtimes).
+A bare `src/…` or `tests/…` path in this file, a skill or a document under
+`docs/thurbox/` is the thurbox crate's (`crates/thurbox/src/…`);
 `tests/doc_references.rs` resolves documents' `src/` paths there.
+
+## Fleet
+
+Fleet's crates keep Fleet's rules (the [Fleet docs](docs/fleet/README.md)
+and the `fleet-*` skills own the detail):
+
+- `fleet-api` and `fleet-controllers` are pure; adapters (the store, the
+  runtime) perform I/O through ports; `fleet-exec` is the only process
+  spawner; the manager writes under the lease; the CLI parses, wires and
+  prints. `crates/architecture.toml` declares each crate's dependencies,
+  status writers and effect boundaries: add a new crate there in the same
+  change.
+- TaskController owns Task status, except `status.result`, which the worker
+  writes through `fleet result`. Unknown observations never mean absence.
+  Persist an effect's intent before running it.
+- Fleet's crates are edition 2024 and build on the pinned toolchain
+  (`rust-toolchain.toml`); thurbox keeps edition 2021 and its own MSRV.
+- `cargo xtask release` (`crates/fleet-dev`) is Fleet's release tooling; its
+  workflows are a test fixture under `crates/fleet-dev/tests/fixtures/` until
+  Fleet's release joins this repository's pipeline. The repository's gate
+  (`.publish.yaml`, CI) covers Fleet's crates like every other.
+- Fleet reaches sessions through the runtime protocol
+  (`docs/runtime/README.md`): `[runtimes.<name>]` names a program,
+  `[hosts.<name>]` the runtime serving a host, and `fleet-runtime`'s `exec`
+  kind runs `<program> <verb>` through `fleet-exec`. Fleet and a runtime share
+  no Rust type: `fleet runtime check -- <program>` (the conformance suite,
+  `fleet_runtime::exec::check`) and `crates/fleet-cli/tests/e2e_runtime_exec.rs`,
+  which drives the real `runtime-mux` binary on a private tmux socket
+  directory, hold both sides to one protocol. Those tests skip without tmux or
+  without a built `runtime-mux` (`cargo build -p runtime-mux`, or
+  `RUNTIME_MUX_BIN`); CI's `runtime-protocol` job has both. The `exec` kind
+  starts the harness profile's argv (`fleet_api::harness`) and learns what
+  only the agent knows from its `fleet signal` reports, never from the
+  runtime.
+- A test that runs `git` in a scratch directory removes git's location
+  variables (`GIT_DIR`, `GIT_WORK_TREE`, … — `GIT_LOCATION` in
+  `crates/fleet-runtime/src/worktree.rs`) from the child: a commit hook
+  exports them, and an unscrubbed `git config` rewrites this repository's.
+- Design pages follow ASD-STE100 Simplified Technical English's writing rules:
+  one fact per sentence, active voice, one term per concept, lists for steps.
 
 ## Build & Development Commands
 
@@ -255,7 +301,7 @@ because the squash throws them away.
 
 - **Types**: feat, fix, perf, refactor, docs, style, test,
   chore, ci, build, revert
-- **Scopes**: api, cli, ui, git, core, docs, deps, config, mcp
+- **Scopes**: api, cli, ui, git, core, docs, deps, config, mcp, fleet, runtime
 - Use `cog commit feat "message"`
   or `cog commit fix "message" scope`
 
@@ -309,9 +355,12 @@ its own allowlist (`crates/runtime-mux/tests/architecture_rules.rs`,
 `docs/constitution.md` R3): the adapters `tmux`, `psmux`, `rmux` are peers
 over the shared `tmux_compat` server, only the factory `wiring` names one, and
 it depends on no other crate of the repository — the settings and data
-directory it needs are injected (`MuxSettings`, `HostsConfig`).
+directory it needs are injected (`MuxSettings`, `HostsConfig`). Its
+`runtime-mux` program (`src/main.rs`, the composition root, over the
+`protocol` module) answers the runtime protocol on a tmux socket of its own,
+`runtime-mux` (`RUNTIME_MUX_SOCKET` names another), never thurbox's.
 `crates/architecture.toml` declares which crate may depend on which, and
-`crates/thurbox/tests/crate_graph.rs` holds `cargo metadata` to it.
+Fleet's `fleet-arch` (its `architecture` test) holds the workspace to it.
 
 Enforcement is an **allowlist** over **resolved** edges: every module under
 `src/` needs a `ModuleRules` entry naming what it may reference in *any* form, so

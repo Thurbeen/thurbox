@@ -39,21 +39,106 @@ journal: pause is `stop`, resume and revive are `start` with the harness's
 resume argv, idle comes from agent hooks, delivery is proven by the agent's
 prompt hook.
 
-Fleet config moves from one `[runtime]` to named `[runtimes.<name>]`, each a
-`program`; a host names its runtime, so a Task's `spec.host` chooses it.
+Fleet's config names each runtime in `[runtimes.<name>]`, a `program`, and
+each host in `[hosts.<name>]`, the runtime serving it, so a Task's
+`spec.host` chooses the program ([configuration](../fleet/configuration.md#native-fleet-configuration-fleettoml)).
+
+### Protocol version 1
+
+Built: `runtime-mux` and the reference script answer it, Fleet's `exec`
+runtime kind speaks it, and `fleet runtime check` holds both to it in CI.
+`workspace` and `attach` are not built yet: no runtime declares them, and
+Fleet makes no call to either.
+
+Every request is a JSON object carrying `"protocol": 1`; `manifest` answers
+whatever the request says. A runtime that does not speak the version asked
+answers Unknown. An answer is `{"known": …}` or `{"unknown": {"why": …}}`
+on stdout, with exit status 0; anything else (a program that is not there, a
+non-zero exit, a timeout, output that does not parse) is Unknown to Fleet.
+A key is 1 to 128 ASCII letters, digits, `.`, `-` or `_`; any other answers
+Unknown.
+
+| Verb | Request (besides `protocol`) | Known answer |
+| --- | --- | --- |
+| `manifest` | — | `{"protocol": 1, "verbs": [...]}` |
+| `start` | `key`, `argv`, `env` (object), `dir` (absolute, optional) | `{"started": {"id", "adopted"}}`, or `{"failed": {"why"}}` when nothing can have started, such as a missing multiplexer |
+| `inspect` | `key` | `"none"`, `{"running": {"id"}}` or `{"exited": {"id", "code"}}`, `code` null for a signal |
+| `stop` | `key`, `release` (optional) | `"stopped"`, whether or not a process was there |
+| `list` | — | `{"keys": [...]}` |
+| `input` | `key`, `text`, `submit` | `"sent"`, or `"none"` when no process holds the key |
+| `capture` | `key`, `lines` (optional) | `{"screen": {"text", "cursorRow", "cursorCol", "foreground"}}`, or `"none"` |
+| `exec` | `argv`, `in` (`host`), `dir`, `timeoutMs`, `outputCap` | `{"exited": {"code", "stdout", "stderr"}}`, `{"timedOut": {"stdout", "stderr"}}` or `{"failed": {"why"}}` |
+
+`runtime-mux` answers every verb above. It runs its windows on a tmux
+server of its own, socket `runtime-mux` (`RUNTIME_MUX_SOCKET` names
+another), never on thurbox's interface socket: an inherited
+`THURBOX_SOCKET` is ignored. A process is a window named after its key, and
+a pane kept after its program exits is how `inspect` reports the code; a
+`start` replaces it. Starts and stops on one server run one at a time, so
+two starts of one key make one window: they hold a kernel lock on a file in
+the private directory tmux keeps the socket in (`<TMUX_TMPDIR or
+/tmp>/tmux-<uid>`, made `0700` when missing and refused when another user
+can write to it), opened without truncating or following a link. `exec` runs `in: host` only, on this
+machine, and kills the command's process group at the deadline. It reads
+each stream to its end and keeps `outputCap` bytes, so a long output does
+not change how the command ends; a child that left the group and holds a
+stream open does not hold the answer past the deadline. `runtime-mux` runs on this
+machine only for now: its ssh and WSL places come with the hosts it reads.
+
+What Fleet's `exec` kind does with the answers:
+
+- `start` runs the harness profile's launch argv
+  ([harness profiles](../fleet/controllers/task.md#harness-profiles)), with
+  `FLEET_SIGNAL_FILE` in `env`;
+- a session's id is its key, so it outlives each process started under it;
+- readiness, workspace trust and an idle agent come from the agent's signals:
+  an agent that reported anything but `blocked` is ready and past any trust
+  dialog. Codex reports nothing until its first turn ends: its empty composer
+  on `capture`, Codex in the foreground, makes it ready and, launched with its
+  trust override, trusted, and a running agent is at rest once it last reported `idle`. Before
+  its first report, a trust dialog on its `capture` is Untrusted, and anything
+  else Unknown, so a brief waits;
+- delivery is proven by the agent's prompt hook, not by `input`;
+- an `exited` process is lost, since a `stop` leaves `none`: revive is `start`
+  with the profile's resume argv on the conversation the hooks reported. Fleet
+  first marks the restart in the signal file, so readiness and trust wait for
+  the new process's own report;
+- `none` proves nothing about a pause, so Fleet never pauses a session on this
+  kind: version 1 has no stop that keeps the key.
 
 Agent hooks append to the file Fleet passes as `FLEET_SIGNAL_FILE` in `start`.
-Fleet reads it directly on a local host and through `exec` on a remote one, so
-a local runtime needs nothing for signals. A remote runtime without `exec`
-gives Fleet no signals: what Fleet would learn from them, such as an idle
-agent or a delivered prompt, stays Unknown, and Unknown never concludes.
+Fleet reads it directly on a local host, so a local runtime needs nothing for
+signals. A session on another host gets no file: reading one back through the
+runtime's `exec` is not built yet, so what Fleet would learn from it, such as
+an idle agent or a delivered prompt, stays Unknown, and Unknown never
+concludes.
 
-`fleet runtime check -- <program>` is the conformance suite: two starts with
-one key leave one process, a stop of an absent process succeeds, an error
-answers Unknown and never None, a protocol mismatch answers Unknown. Every
-runtime runs it in CI. `examples/runtimes/tmux.sh` is a reference runtime in
-one script. A template repository for runtimes written elsewhere ships a
-skeleton, the protocol version it targets and that CI.
+`fleet runtime check -- <program> [args]` is the conformance suite. It prints
+one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
+
+- `manifest` names protocol 1 and the four required verbs;
+- a protocol mismatch answers Unknown;
+- an error (a request that is not JSON, a bad key, an unknown verb) answers
+  Unknown, never None;
+- `inspect` of an absent key answers None, and a stop of it succeeds;
+- concurrent starts with one key leave one process: four at once answer
+  one id, and only one of them made it;
+- two starts with one key leave one process: the same id, the second
+  adopted, and the key once in `list` when the runtime has it;
+- a stop ends the process;
+- an exited process answers Exited with its code, or None;
+- with `workspace` declared: two calls with one key answer the same
+  directories, the second adopted, and a release leaves a `file://` directory
+  in place.
+
+The cases start `sleep` and `sh` in the runtime's place. CI's
+runtime-protocol job runs it against `runtime-mux` and against
+[`examples/runtimes/tmux.sh`](../../examples/runtimes/tmux.sh), a reference
+runtime in one POSIX `sh` script over tmux and `jq`. It serializes starts and
+stops with a kernel lock in tmux's private socket directory, taken with
+`flock(1)` or else `perl`, which a killed holder releases. A template repository
+for runtimes written elsewhere ships a skeleton, the protocol version it
+targets and that CI.
 
 ### What a runtime is
 
@@ -63,7 +148,7 @@ business.
 
 | Runtime | Place | What keeps the terminal | Today |
 | --- | --- | --- | --- |
-| `runtime-mux` | this machine, ssh hosts, WSL | tmux, psmux, rmux (ADR-31) | `crates/runtime-mux` |
+| `runtime-mux` | this machine; ssh hosts and WSL to come | tmux, psmux, rmux (ADR-31) | `crates/runtime-mux`, the `runtime-mux` program |
 | `runtime-container` | docker or podman, local or remote | the container's pty, or a holder inside it | to write |
 | `runtime-vm` | a VM or microVM | a holder inside the guest | to write |
 | `runtime-process` | this machine, no terminal | none | the reference script's sibling |
@@ -207,7 +292,8 @@ A runtime that implements `workspace` holds to these rules, and
 - **Never loses work on release.** Anything the workspace holds that exists
   nowhere else (uncommitted changes, unpushed commits) is preserved before the
   files go, in a durable place outside the workspace. How is the runtime's
-  choice.
+  choice. Files the repository ignores are not work: it declares them
+  disposable.
 - **Never waits for a person.** Release always finishes or answers Unknown.
 
 The `manifest` declares what Fleet may rely on:

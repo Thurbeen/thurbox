@@ -1,0 +1,28 @@
+{
+  "envelope_id": "e0123abcd-0001-4000-8000-000000000004",
+  "type": "events_api",
+  "accepts_response_payload": false,
+  "payload": {
+    "token": "verification-token-not-a-secret",
+    "team_id": "T0123ABCD",
+    "api_app_id": "A0123ABCD",
+    "event": {
+      "type": "message",
+      "subtype": "bot_message",
+      "channel": "C0789IJKL",
+      "bot_id": "B0ALERT001",
+      "username": "alerts",
+      "text": "[FIRING] api latency above 2s",
+      "ts": "1730000500.000400",
+      "event_ts": "1730000500.000400",
+      "channel_type": "channel",
+      "metadata": {
+        "event_type": "alert_fired",
+        "event_payload": {"key": "not-fleets"}
+      }
+    },
+    "type": "event_callback",
+    "event_id": "Ev0123ABCD04",
+    "event_time": 1730000500
+  }
+}

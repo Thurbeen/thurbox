@@ -1,0 +1,21 @@
+{
+  "envelope_id": "e0123abcd-0001-4000-8000-000000000007",
+  "type": "events_api",
+  "accepts_response_payload": false,
+  "payload": {
+    "token": "verification-token-not-a-secret",
+    "team_id": "T0123ABCD",
+    "api_app_id": "A0123ABCD",
+    "event": {
+      "type": "reaction_added",
+      "user": "U0123ABCD",
+      "reaction": "eyes",
+      "item": {"type": "message", "channel": "C0123ABCD", "ts": "1730000300.000200"},
+      "item_user": "U0123ABCD",
+      "event_ts": "1730000330.000000"
+    },
+    "type": "event_callback",
+    "event_id": "Ev0123ABCD07",
+    "event_time": 1730000330
+  }
+}

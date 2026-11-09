@@ -188,7 +188,7 @@ that is the only message that survives the squash.
 - **Types:** `feat`, `fix`, `perf`, `refactor`, `docs`, `style`, `test`,
   `chore`, `ci`, `build`, `revert`
 - **Scopes:** `api`, `cli`, `ui`, `git`, `core`, `docs`, `deps`, `config`,
-  `mcp`
+  `mcp`, `fleet`, `runtime`
 
 ```bash
 cog commit feat "add remote host picker"

@@ -1,0 +1,24 @@
+{
+  "dispatch": {
+    "op": 0,
+    "t": "READY",
+    "s": 1,
+    "d": {
+      "v": 10,
+      "user": {
+        "id": "1210000000000000000",
+        "username": "fleet",
+        "bot": true,
+        "discriminator": "0"
+      },
+      "guilds": [
+        {
+          "id": "1200000000000000000",
+          "unavailable": true
+        }
+      ],
+      "session_id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "resume_gateway_url": "wss://gateway.example.invalid"
+    }
+  }
+}
