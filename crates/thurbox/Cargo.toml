@@ -23,6 +23,8 @@ categories = ["command-line-utilities"]
 # The multiplexer runtime: session backends, hosts and launchers (ADR-41).
 # Linked directly until Fleet drives the runtimes; crates/architecture.toml.
 runtime-mux = { path = "../runtime-mux" }
+# The stream pane speaks the terminal stream (kernel::terminal::stream_pane).
+term-stream = { path = "../term-stream" }
 
 # TUI framework
 ratatui = "0.30"

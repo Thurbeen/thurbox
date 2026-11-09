@@ -38,6 +38,7 @@ pub mod links;
 mod paint;
 mod programs;
 mod shells;
+pub mod stream_pane;
 
 pub use shells::ShellResult;
 
@@ -364,6 +365,9 @@ pub struct Terminals {
     /// Lines of scrollback each pane's grid keeps: `settings.toml`'s
     /// `scrollback_lines`, as the settings this was built with say.
     scrollback: usize,
+    /// What a local tmux pane is viewed through when `settings.toml`'s
+    /// `stream_panes` is on ([`Self::view_through`]).
+    stream_view: Option<stream_pane::View>,
     /// The pane whose OSC 52 writes are accepted — the focused surface's, as of
     /// the last [`Self::take_app_copy`] — and the last focus token handed out.
     app_copy_focus: Option<std::sync::Arc<crate::backend::pane::AppCopy>>,
@@ -387,6 +391,14 @@ impl Terminals {
     /// kernel's; the hosts are the same cached read of `hosts.toml` it was
     /// built from. `settings` are the ones the process loaded: what a pane keeps
     /// and how long a hidden one stays resident are fixed for its lifetime.
+    /// Open each local tmux pane through `view`, a terminal stream, from now
+    /// on. A stream pane keeps its grid while hidden: it comes back only
+    /// through its stream.
+    pub fn view_through(&mut self, view: stream_pane::View) {
+        self.stream_view = Some(view);
+        self.keep_hidden = None;
+    }
+
     pub fn with_registry(
         backends: std::sync::Arc<crate::backend::BackendRegistry>,
         settings: &crate::session::settings::Settings,
@@ -417,6 +429,7 @@ impl Terminals {
                 secs => Some(std::time::Duration::from_secs(secs)),
             },
             scrollback: settings.scrollback_lines,
+            stream_view: None,
             app_copy_focus: None,
             app_copy_tokens: 0,
             size_focus: None,

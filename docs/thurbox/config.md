@@ -977,6 +977,7 @@ all commented so defaults still apply out of the box.
 | `multiplexer` | platform default | multiplexer preference for new local sessions; explicit per-create choice wins |
 | `scrollback_lines` | `1000` | terminal scrollback kept per session — and how far back global search reaches |
 | `hidden_terminal_secs` | `30` | how long a session can be off screen before its terminal grid is dropped (rebuilt from tmux when shown or searched); `0` keeps every grid |
+| `stream_panes` | `false` | open each local tmux session's pane through `runtime-mux view`, a [terminal stream](../runtime/README.md#the-terminal-stream), instead of thurbox's own control-mode connection; restart to apply. A stream pane keeps its grid while hidden, so `hidden_terminal_secs` does not apply. Off until it measures as fast as control mode ([performance](performance.md)) |
 | `two_panel_min_cols` | `80` | width below which only the terminal renders |
 | `three_panel_min_cols` | `120` | width unlocking the optional third column |
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
@@ -993,6 +994,7 @@ multiplexer = "tmux"     # use "psmux" on native Windows; "rmux" is opt-in
 # Scalar tuning knobs (top level)
 scrollback_lines      = 1000   # terminal scrollback kept per session
 hidden_terminal_secs  = 30     # seconds off screen before a grid is dropped; 0 = keep all
+stream_panes          = false  # local tmux panes through runtime-mux view, a terminal stream
 two_panel_min_cols    = 80     # width below which only the terminal renders
 three_panel_min_cols  = 120    # accepted and ignored (v1's third column)
 audit_retention_days  = 90     # audit + session-event history kept (pruned on startup)

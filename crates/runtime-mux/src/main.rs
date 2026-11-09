@@ -3,9 +3,10 @@
 //! composition root: it alone builds the backend, on the program's own tmux
 //! socket ([`runtime_mux::protocol::SOCKET`]).
 //!
-//! `runtime-mux view [--socket S] [--tmux-tmpdir D] <key>` is the other
-//! shape: one key's pane as a terminal stream on stdin and stdout, for as
-//! long as the view stays. `attach` answers with it.
+//! `runtime-mux view [--socket S] [--tmux-tmpdir D] <key | --pane P>` is the
+//! other shape: one key's pane, or a pane by its id, as a terminal stream on
+//! stdin and stdout, for as long as the view stays. `attach` answers with it;
+//! thurbox's stream panes name the pane.
 
 use std::io::Read;
 
@@ -85,10 +86,12 @@ fn view_argv(settings: &MuxSettings) -> Vec<String> {
 fn view(args: Vec<String>) -> Result<(), String> {
     let mut socket = SOCKET.to_string();
     let mut key = None;
+    let mut pane = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--socket" => socket = args.next().ok_or("--socket takes a name")?,
+            "--pane" => pane = Some(args.next().ok_or("--pane takes a pane id")?),
             "--tmux-tmpdir" => {
                 let dir = args.next().ok_or("--tmux-tmpdir takes a directory")?;
                 // Before any thread starts: tmux finds the socket there.
@@ -98,15 +101,22 @@ fn view(args: Vec<String>) -> Result<(), String> {
             other => return Err(format!("unexpected argument {other:?}")),
         }
     }
-    let key = key.ok_or("usage: runtime-mux view [--socket S] [--tmux-tmpdir D] <key>")?;
     let settings = MuxSettings {
         socket: Some(socket),
         ..MuxSettings::default()
     };
     let registry = runtime_mux::wiring::local_only(&settings);
     let backend = registry.default_backend().clone();
-    let pane = protocol::pane_of(backend.as_ref(), &key)?
-        .ok_or_else(|| format!("no process holds key {key}"))?;
+    let pane = match (pane, key) {
+        (Some(pane), None) => pane,
+        (None, Some(key)) => protocol::pane_of(backend.as_ref(), &key)?
+            .ok_or_else(|| format!("no process holds key {key}"))?,
+        _ => {
+            return Err(
+                "usage: runtime-mux view [--socket S] [--tmux-tmpdir D] <key | --pane P>".into(),
+            )
+        }
+    };
     backend.ensure_ready().map_err(|e| e.to_string())?;
     let served = runtime_mux::view::serve(backend, &pane, std::io::stdin(), &mut std::io::stdout());
     registry.shutdown_all();

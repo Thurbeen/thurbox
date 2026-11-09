@@ -88,6 +88,11 @@ not change how the command ends; a child that left the group and holds a
 stream open does not hold the answer past the deadline. `runtime-mux` runs on this
 machine only for now: its ssh and WSL places come with the hosts it reads.
 
+thurbox's stream pane (`stream_panes` in its `settings.toml`) is a view: it
+opens a local tmux pane through `runtime-mux view --pane <id>` on its own
+socket and decodes the frames into the chunks its control-mode pane gives.
+Size requests still go to the server through thurbox's own backend.
+
 `runtime-mux` answers `attach` with a `stream`: its own `view` on the key,
 naming its socket and `TMUX_TMPDIR`. `runtime-mux view` adopts the key's pane
 through its control-mode client, sized by the view's first `resize`, and

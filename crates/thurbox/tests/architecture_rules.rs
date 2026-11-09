@@ -1667,6 +1667,8 @@ const KERNEL_THREADS: &[(&str, &[&str])] = &[
             "kernel/terminal/attach.rs",
             "kernel/terminal/discovery.rs",
             "kernel/terminal/shells.rs",
+            // A stream pane's reader: one per pane, as the backend's own.
+            "kernel/terminal/stream_pane.rs",
         ],
     ),
 ];

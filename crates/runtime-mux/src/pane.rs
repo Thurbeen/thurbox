@@ -1090,6 +1090,33 @@ impl Session {
         ))
     }
 
+    /// [`Self::adopt`] over IO opened elsewhere: an embedder's own stream to
+    /// the pane, such as a terminal stream, in place of the backend's
+    /// connection. The backend still answers for the pane's size and state.
+    #[allow(clippy::too_many_arguments)]
+    pub fn adopt_io(
+        name: String,
+        rows: u16,
+        cols: u16,
+        backend_id: &str,
+        backend: &Arc<dyn SessionBackend>,
+        adopted: AdoptedSession,
+        env: HashMap<String, String>,
+        scrollback: usize,
+    ) -> Self {
+        let mut info = PaneInfo::new(name);
+        info.backend_id = Some(backend_id.to_string());
+        Self::wire_io(
+            info,
+            rows,
+            cols,
+            SessionIo::adopted(adopted, backend_id),
+            backend,
+            env,
+            scrollback,
+        )
+    }
+
     /// [`Self::adopt`] for a session nobody is looking at: no history is
     /// captured and no grid is built — only its title and mouse modes are replayed. The parser starts as the two cells
     /// [`WiredPane::evict`] leaves, and the grid is fetched on the first

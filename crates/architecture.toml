@@ -22,8 +22,8 @@
 #   term-stream          the terminal stream's frames: a wire format
 #   runtime-mux          component the multiplexer runtime: tmux, psmux, rmux -> term-stream
 #   thurbox              component the interface; reaches Fleet only by
-#                                  running its CLI   -> runtime-mux, until
-#                                  Fleet drives the runtimes
+#                                  running its CLI   -> term-stream, and
+#                                  runtime-mux until Fleet drives its sessions
 #
 # docs/README.md is the rule between components: no Rust dependency crosses
 # from one to another; term-stream, a wire format, is the one shared crate.
@@ -119,7 +119,7 @@ deps = []
 # runtimes (step 5 of the v3 migration), when this edge goes.
 [crates.thurbox]
 role = "component"
-deps = ["runtime-mux"]
+deps = ["runtime-mux", "term-stream"]
 
 [crates.fleet-arch]
 role = "tooling"

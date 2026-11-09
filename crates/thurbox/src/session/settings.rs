@@ -35,6 +35,13 @@ pub struct Settings {
     /// about 6 MiB of them.
     #[serde(default = "default_hidden_terminal_secs")]
     pub hidden_terminal_secs: u64,
+    /// Open each local tmux session's pane through a terminal stream,
+    /// `runtime-mux view`, instead of thurbox's own control-mode connection
+    /// (docs/runtime/README.md#the-terminal-stream). Off until it measures as
+    /// fast. A stream pane keeps its grid while hidden: `hidden_terminal_secs`
+    /// does not apply.
+    #[serde(default)]
+    pub stream_panes: bool,
     /// Terminal width (columns) below which only the terminal pane renders.
     #[serde(default = "default_two_panel_min_cols")]
     pub two_panel_min_cols: u16,
@@ -522,6 +529,8 @@ pub const FIELDS: &[Field] = &[
     field!(NextLaunch, scrollback_lines),
     // The terminals read these once, when they are built.
     field!(NextLaunch, hidden_terminal_secs),
+    // The attach worker reads it once, when the terminals are built.
+    field!(NextLaunch, stream_panes),
     field!(NextLaunch, two_panel_min_cols),
     field!(NextLaunch, three_panel_min_cols),
     // Pruned once, at startup.
@@ -594,6 +603,7 @@ impl Default for Settings {
             config_version: None,
             scrollback_lines: default_scrollback_lines(),
             hidden_terminal_secs: default_hidden_terminal_secs(),
+            stream_panes: false,
             two_panel_min_cols: default_two_panel_min_cols(),
             three_panel_min_cols: default_three_panel_min_cols(),
             audit_retention_days: default_audit_retention_days(),
@@ -950,7 +960,7 @@ mod tests {
         let base = Settings::default();
         let other: Settings = toml::from_str(
             "multiplexer = \"rmux\"\nconfig_version = 2\nscrollback_lines = 1\n\
-             hidden_terminal_secs = 1\ntwo_panel_min_cols = 1\nthree_panel_min_cols = 1\n\
+             hidden_terminal_secs = 1\nstream_panes = true\ntwo_panel_min_cols = 1\nthree_panel_min_cols = 1\n\
              audit_retention_days = 1\ndeleted_retention_days = 1\ngit_poll_secs = 1\n\
              [features]\ntasks = false\nautomations = false\nfile_viewer = false\n\
              global_search = false\ninfo_panel = false\nshell_pane = false\n\
