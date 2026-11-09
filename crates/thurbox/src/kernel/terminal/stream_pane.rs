@@ -40,13 +40,7 @@ impl View {
 /// Whether a session on `backend` (its row's route, `local:tmux` or a legacy
 /// unqualified `tmux`) is viewed through a stream: a local tmux one only.
 pub fn views(backend: &str) -> bool {
-    let local = crate::session::route::Route::parse(backend).is_ok_and(|r| r.is_local());
-    local
-        && match backend.rsplit_once(':') {
-            Some((_, mux)) => mux == "tmux",
-            // An unqualified local row is on the platform's default.
-            None => !cfg!(windows),
-        }
+    crate::session::route::Route::parse(backend).is_ok_and(|r| r.is_local_tmux())
 }
 
 /// The `runtime-mux` program: beside thurbox's own binary, else on `PATH`.
@@ -181,10 +175,24 @@ mod tests {
 
     #[test]
     fn a_local_tmux_session_is_viewed_through_a_stream_and_no_other() {
-        assert!(super::views("local:tmux"));
-        assert!(!super::views("local:psmux"));
-        assert!(!super::views("local:rmux"));
-        assert!(!super::views("ssh:box:tmux"));
-        assert!(!super::views("wsl:Ubuntu:tmux"));
+        for tmux in ["local:tmux", "local-tmux"] {
+            assert!(super::views(tmux), "{tmux}");
+        }
+        // An unqualified row is on the platform's default multiplexer.
+        assert_eq!(super::views("tmux"), !cfg!(windows));
+        assert_eq!(super::views(""), !cfg!(windows));
+        for other in [
+            "local:rmux",
+            "local-rmux",
+            "local:psmux",
+            "local-psmux",
+            "psmux",
+            "ssh:box:tmux",
+            "ssh:box",
+            "wsl:Ubuntu:tmux",
+            "not-a-route",
+        ] {
+            assert!(!super::views(other), "{other}");
+        }
     }
 }

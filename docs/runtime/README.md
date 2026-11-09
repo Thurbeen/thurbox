@@ -89,8 +89,9 @@ stream open does not hold the answer past the deadline. `runtime-mux` runs on th
 machine only for now: its ssh and WSL places come with the hosts it reads.
 
 thurbox's stream pane (`stream_panes` in its `settings.toml`) is a view: it
-opens a local tmux pane through `runtime-mux view --pane <id>` on its own
-socket and decodes the frames into the chunks its control-mode pane gives.
+opens a local tmux pane through `runtime-mux view --scrollback <lines> --pane
+<id>` on its own socket, with its own `scrollback_lines`, and decodes the
+frames into the chunks its control-mode pane gives.
 Size requests still go to the server through thurbox's own backend.
 
 `runtime-mux` answers `attach` with a `stream`: its own `view` on the key,
