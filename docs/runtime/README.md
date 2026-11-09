@@ -129,7 +129,9 @@ one line per case, `ok` or `FAIL` with why, and exits non-zero when any fails:
 The cases start `sleep` and `sh` in the runtime's place. CI's
 runtime-protocol job runs it against `runtime-mux` and against
 [`examples/runtimes/tmux.sh`](../../examples/runtimes/tmux.sh), a reference
-runtime in one POSIX `sh` script over tmux and `jq`. A template repository
+runtime in one POSIX `sh` script over tmux and `jq`. It serializes starts and
+stops with a kernel lock, `flock(1)` or else `perl`, which a killed holder
+releases. A template repository
 for runtimes written elsewhere ships a skeleton, the protocol version it
 targets and that CI.
 

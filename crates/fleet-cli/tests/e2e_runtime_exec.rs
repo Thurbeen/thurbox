@@ -501,29 +501,75 @@ fn a_revived_agent_is_ready_only_once_it_reports_again() {
     reconcile_until(&env, "the catch-up note typed", |_| typed() >= 2);
 }
 
-#[test]
-fn a_reference_script_killed_holding_its_lock_does_not_block_the_next_start() {
+/// A PATH holding only what the reference script and the conformance cases
+/// run, without `flock`: the script takes its lock through perl, as on
+/// macOS.
+fn path_without_flock(dir: &Path) -> String {
+    fs::create_dir_all(dir).expect("PATH dir");
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    for tool in [
+        "sh", "tmux", "jq", "id", "perl", "cat", "awk", "grep", "sleep", "tail", "kill", "rm",
+        "env",
+    ] {
+        let found = std::env::split_paths(&path)
+            .map(|d| d.join(tool))
+            .find(|p| p.is_file())
+            .unwrap_or_else(|| panic!("no {tool} on PATH"));
+        let _ = std::os::unix::fs::symlink(found, dir.join(tool));
+    }
+    dir.to_string_lossy().into_owned()
+}
+
+fn reference_script_runs() -> bool {
     if tmux().is_none() {
+        return false;
+    }
+    for tool in ["jq", "perl"] {
+        if Command::new(tool).arg("--version").output().is_err() {
+            eprintln!("skipping: {tool} is not installed");
+            return false;
+        }
+    }
+    true
+}
+
+#[test]
+fn the_reference_script_passes_the_conformance_suite_with_its_perl_lock() {
+    if !reference_script_runs() {
         return;
     }
-    if Command::new("jq").arg("--version").output().is_err() {
-        eprintln!("skipping: jq is not installed");
-        return;
-    }
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
+    let sockets = Sockets::new("perl");
+    let mut env = Env::new("runtime-check-script-perl");
+    env.set_var("TMUX_TMPDIR", &sockets.0.to_string_lossy());
+    let path = path_without_flock(&env.root.join("no-flock"));
+    env.only_on_path(Path::new(&path));
+    let run = env.fleet(&["runtime", "check", "--", script.to_str().unwrap()]);
+    run.ok()
+        .stdout_has("ok   concurrent starts with one key leave one process")
+        .stdout_has("ok   two starts with one key leave one process");
+    assert!(!run.stdout.contains("FAIL"), "{}", run.stdout);
+}
+
+/// A start that takes the lock and hangs in its tmux is SIGKILLed while four
+/// more wait: the kernel releases its lock, and the four make one process.
+fn a_killed_holder_releases_the_lock(name: &str, path: &str) {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
-    let sockets = Sockets::new("killed");
-    // A tmux that never answers: the start that takes the lock hangs in it.
+    let sockets = Sockets::new(name);
     let hang = sockets.0.join("hang");
     fs::create_dir_all(&hang).expect("hang dir");
-    fs::write(hang.join("tmux"), "#!/bin/sh\nexec sleep 30\n").expect("fake tmux");
+    fs::write(
+        hang.join("tmux"),
+        "#!/bin/sh\n: > \"$TMUX_TMPDIR/hung\"\nexec sleep 30\n",
+    )
+    .expect("fake tmux");
     fs::set_permissions(hang.join("tmux"), fs::Permissions::from_mode(0o755)).expect("chmod");
-    let path = std::env::var("PATH").unwrap_or_default();
     let request = json!({"protocol": 1, "key": "k.one", "argv": ["sleep", "300"], "env": {}});
     let start = |path: &str| {
-        use std::os::unix::process::CommandExt;
         let mut child = Command::new(&script)
             .process_group(0)
             .arg("start")
@@ -543,27 +589,14 @@ fn a_reference_script_killed_holding_its_lock_does_not_block_the_next_start() {
         child
     };
     let mut holder = start(&format!("{}:{path}", hang.display()));
-    let locked = || {
-        fs::read_dir(&sockets.0)
-            .map(|d| {
-                d.flatten().any(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("runtime-tmux-sh-")
-                })
-            })
-            .unwrap_or(false)
-    };
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !locked() {
-        assert!(
-            Instant::now() < deadline,
-            "the first start never took its lock"
-        );
+    while !sockets.0.join("hung").exists() {
+        assert!(Instant::now() < deadline, "the first start never hung");
         std::thread::sleep(Duration::from_millis(20));
     }
-    // SIGKILL, to it and the tmux it waits on: its EXIT trap never runs,
-    // and the lock stays behind.
+    let waiters: Vec<_> = (0..4).map(|_| start(path)).collect();
+    std::thread::sleep(Duration::from_millis(300));
+    // SIGKILL, to it and the tmux it waits on: no trap of its runs.
     Command::new("kill")
         .args(["-KILL", &format!("-{}", holder.id())])
         .status()
@@ -571,12 +604,47 @@ fn a_reference_script_killed_holding_its_lock_does_not_block_the_next_start() {
     holder.wait().expect("reaped");
 
     let begun = Instant::now();
-    let out = start(&path).wait_with_output().expect("second start");
-    let answer: Value = serde_json::from_slice(&out.stdout).expect("JSON");
-    assert!(answer["known"]["started"].is_object(), "{answer}");
+    let answers: Vec<Value> = waiters
+        .into_iter()
+        .map(|w| {
+            serde_json::from_slice(&w.wait_with_output().expect("start").stdout).expect("JSON")
+        })
+        .collect();
     assert!(
         begun.elapsed() < Duration::from_secs(5),
         "waited {:?} for a dead holder",
         begun.elapsed()
     );
+    let started: Vec<&Value> = answers.iter().map(|a| &a["known"]["started"]).collect();
+    assert!(
+        started.iter().all(|s| s["id"] == started[0]["id"]),
+        "{answers:?}"
+    );
+    assert_eq!(
+        started.iter().filter(|s| s["adopted"] == false).count(),
+        1,
+        "{answers:?}"
+    );
+}
+
+#[test]
+fn a_reference_script_killed_holding_its_flock_does_not_block_the_next_starts() {
+    if !reference_script_runs() {
+        return;
+    }
+    if Command::new("flock").arg("--version").output().is_err() {
+        eprintln!("skipping: flock is not installed");
+        return;
+    }
+    a_killed_holder_releases_the_lock("killed-flock", &std::env::var("PATH").unwrap_or_default());
+}
+
+#[test]
+fn a_reference_script_killed_holding_its_perl_lock_does_not_block_the_next_starts() {
+    if !reference_script_runs() {
+        return;
+    }
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("no-flock-{}", std::process::id()));
+    a_killed_holder_releases_the_lock("killed-perl", &path_without_flock(&dir));
 }

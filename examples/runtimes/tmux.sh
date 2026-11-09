@@ -1,6 +1,6 @@
 #!/bin/sh
 # A runtime in one script: the runtime protocol (docs/runtime/README.md)
-# over tmux, with jq for JSON. `tmux.sh <verb>` reads one JSON request on
+# over tmux, with jq for JSON and flock(1) or perl for a lock. `tmux.sh <verb>` reads one JSON request on
 # stdin and prints one answer: {"known": ...} or {"unknown": {"why": ...}}.
 #
 # Each process is a tmux window named after its key, in one session on a
@@ -27,7 +27,7 @@ unknown() {
 }
 
 t() {
-	tmux -L "$SOCKET" "$@"
+	tmux -L "$SOCKET" "$@" 9>&-
 }
 
 verb=${1:-}
@@ -75,37 +75,21 @@ find_pane() {
 }
 
 # Starts and stops run one at a time per server: a start looks the key up,
-# then makes its window, and two at once would each make one. The lock is a
-# symbolic link beside where tmux keeps the socket, naming its holder's pid:
-# `ln -s` makes it with its holder in one step, or fails. A holder that died
-# without removing it (SIGKILL runs no trap) no longer answers `kill -0`, and
-# the one waiter that makes `<lock>.reap.<pid>` removes its lock; a reaper
-# that died is replaced the same way.
-alive() {
-	[ -n "$1" ] && kill -0 "$1" 2>/dev/null
-}
-
+# then makes its window, and two at once would each make one. The lock is
+# flock(2) on a file beside where tmux keeps the socket, held on fd 9 until
+# the script ends, so the kernel releases it however the script dies:
+# flock(1) takes it where util-linux is installed, perl (as on macOS)
+# elsewhere. `t` closes fd 9, so the tmux server never holds it.
 take_lock() {
-	lock="${TMUX_TMPDIR:-/tmp}/runtime-tmux-sh-$(id -u)-$SOCKET.lock"
-	tries=0
-	until ln -sn "$$" "$lock" 2>/dev/null; do
-		holder=$(readlink "$lock" 2>/dev/null)
-		if [ -n "$holder" ] && ! alive "$holder"; then
-			reap="$lock.reap.$holder"
-			reaper=$(readlink "$reap" 2>/dev/null)
-			[ -n "$reaper" ] && ! alive "$reaper" && rm -f "$reap"
-			if ln -sn "$$" "$reap" 2>/dev/null; then
-				[ "$(readlink "$lock" 2>/dev/null)" = "$holder" ] && rm -f "$lock"
-				rm -f "$reap"
-				continue
-			fi
-		fi
-		tries=$((tries + 1))
-		[ "$tries" -lt 200 ] || unknown "another start or stop holds $lock"
-		sleep 0.05
-	done
-	trap 'rm -f "$lock"' EXIT
-	trap 'exit 1' INT TERM HUP
+	exec 9>"${TMUX_TMPDIR:-/tmp}/runtime-tmux-sh-$(id -u)-$SOCKET.lock" ||
+		unknown "cannot open the lock file"
+	if command -v flock >/dev/null 2>&1; then
+		flock -w 10 9
+	else
+		perl -MFcntl=:flock -e 'open(my $f, ">&=9") or exit 2;
+			for (1 .. 200) { exit 0 if flock($f, LOCK_EX | LOCK_NB); select(undef, undef, undef, 0.05) }
+			exit 1'
+	fi || unknown "another start or stop holds the lock"
 }
 
 case $verb in
