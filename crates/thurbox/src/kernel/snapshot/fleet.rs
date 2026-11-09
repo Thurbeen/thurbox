@@ -55,7 +55,7 @@ pub struct FleetWatch {
     watch_error: Option<String>,
     manager_error: Option<String>,
     /// The Tasks as `fleet watch` last read them, before the interface's own
-    /// order and shells are laid over them.
+    /// order is laid over them.
     tasks: Vec<SessionRow>,
     /// Whether the watch has delivered rows yet.
     rows_seen: bool,
@@ -142,7 +142,6 @@ impl SnapshotSource for FleetWatch {
                         .iter()
                         .position(|id| *id == row.id)
                         .map(|at| at as i64);
-                    row.shell_backend_id = state.shells.get(&row.id).cloned();
                 }
                 row
             })

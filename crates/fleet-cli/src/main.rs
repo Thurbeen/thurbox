@@ -23,7 +23,7 @@ use fleet_forge::{ForgeHosts, HostConfig, HostKind};
 use fleet_gateway::{GatewayAccounts, Platform, account_digest, listener_account};
 use fleet_manager::{
     AmendRequest, DeclareOutcome, GatewaySide, Manager, RunOptions, amend, apply,
-    apply_change_request, apply_conversation, beat, declare, declare_change_request, delete,
+    apply_change_request, apply_conversation, beat, declare, declare_change_request, delete, label,
     receive, record_result, send,
 };
 use fleet_runtime::{
@@ -172,6 +172,15 @@ enum Command {
         /// Print what was appended as JSON.
         #[arg(long)]
         json: bool,
+    },
+    /// Set labels on a Task, KEY=VALUE, and change nothing else of it.
+    Label {
+        /// `task`: the only kind this sets labels on.
+        kind: String,
+        name: String,
+        /// `KEY=VALUE`; a label Fleet alone writes is refused.
+        #[arg(required = true, value_parser = parse_label)]
+        labels: Vec<(String, String)>,
     },
     /// Delete a resource; a Task is released by its controller first.
     Delete { kind: String, name: String },
@@ -347,6 +356,14 @@ impl From<StoreError> for Failure {
             message: e.to_string(),
             hint: hint.map(str::to_string),
         }
+    }
+}
+
+/// `KEY=VALUE`, a label to set; the key is not empty.
+fn parse_label(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((key, value)) if !key.is_empty() => Ok((key.to_string(), value.to_string())),
+        _ => Err(format!("{text:?}: expected KEY=VALUE")),
     }
 }
 
@@ -668,6 +685,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
                     done.amendment, done.previous_generation, done.generation
                 );
             }
+            Ok(())
+        }
+        Command::Label { kind, name, labels } => {
+            let kind = served_kind(store, &kind)?;
+            if kind != fleet_api::task::KIND {
+                return Err(fail(format!(
+                    "fleet label sets a Task's labels, not a {kind}'s"
+                )));
+            }
+            label(store, &name, &labels.into_iter().collect())?;
+            println!("{kind}/{name} labelled");
             Ok(())
         }
         Command::Delete { kind, name } => {

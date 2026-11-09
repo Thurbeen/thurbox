@@ -1884,31 +1884,43 @@ impl Session {
     /// the pane, because `display-message -t` answers a missing pane with the
     /// current one. A backend with no listing adopts as before.
     pub fn adopt_shell_pane(&mut self, backend_id: &str, rows: u16, cols: u16) -> Result<()> {
-        let shell = self.shell_adopt_task(backend_id, rows, cols)()?;
+        let stamp = self.info.id.to_string();
+        let shell = self.shell_adopt_task(backend_id, &stamp, rows, cols)()?;
         self.install_shell(shell);
         Ok(())
     }
 
     /// Prepare re-adoption without contacting the backend. The task checks
-    /// liveness and wires the shell on a worker with the runtime entered.
+    /// that the window holding `backend_id` is still the shell stamped
+    /// `stamp`, then wires it on a worker with the runtime entered.
     pub fn shell_adopt_task(
         &self,
         backend_id: &str,
+        stamp: &str,
         rows: u16,
         cols: u16,
     ) -> impl FnOnce() -> Result<ShellPane> + Send + 'static {
         let backend = Arc::clone(self.shell_backend());
         let separate = self.shell_backend.is_some();
         let backend_id = backend_id.to_string();
+        let stamp = stamp.to_string();
+        let name = self.info.name.clone();
         let scrollback = self.wired.residency.scrollback;
         move || {
             if separate {
                 backend.ensure_ready()?;
             }
-            if let Ok(listed) = backend.pane_ids() {
-                if !listed.contains(&backend_id) {
-                    anyhow::bail!("shell pane {backend_id} is gone");
-                }
+            // The window must still be this session's shell: a restarted
+            // server reissues pane ids, and an id alone would adopt whatever
+            // window holds it now.
+            let placed = backend.locate(crate::contract::Owner {
+                session_id: &stamp,
+                name: &name,
+                agent_pane: "",
+                shell_pane: &backend_id,
+            })?;
+            if placed.shell != crate::contract::Located::At(backend_id.clone()) {
+                anyhow::bail!("shell pane {backend_id} is gone");
             }
             let adopted = backend.adopt(&backend_id, rows, cols, None)?;
             let (wired, _) = Self::wire_up(

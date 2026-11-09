@@ -32,7 +32,7 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli plugin`) | startup | **what a plugin may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. A release before it kept both tables in `ui.json`; the first start that finds them there writes this file, then removes them from `ui.json` — in that order, so an interruption leaves both copies and this file wins: a later start only removes the leftover tables from `ui.json` and never rewrites this file. If this file cannot be written, `ui.json` keeps both tables until a later start moves them; one that exists but cannot be read or parsed is never replaced by them, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
 | `~/.config/thurbox/extensions/<name>.toml` | TOML | `thurbox-cli extension install` | startup + tick | extension manifests (self-healed resources) |
 | `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
-| `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order, the companion shell) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens, the manual session order and each session's companion shell pane. Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
+| `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order, the companion shell) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens, the manual session order and one record per companion shell (its multiplexer's route, its pane, its window's stamp). Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
 | `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host. Rewritten whole under a lock every process takes (`bookmarks.json.lock`) |
 | `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
 | `~/.local/share/thurbox/perf.json` | JSON | thurbox, while perf timing is on | each perf window | the perf snapshot `thurbox-cli perf` prints |
@@ -1347,7 +1347,7 @@ database:
   harness profile for (`fleet version --json`'s `harnesses`: `claude`,
   `claude-code`, `codex`) is taken. Any other, `shell` included, is refused
   by name: Fleet would run a program named as the agent.
-- A rename sets the Task's `thurbox.dev/name` label (`fleet apply`). The
+- A rename sets the Task's `thurbox.dev/name` label (`fleet label`). The
   manual order and each session's companion shell pane are `interface.json`.
 - Restore, restart, fork, sync, the task list, dispatching a task and
   automations have no engine and are refused by name. A todo is a Fleet Task

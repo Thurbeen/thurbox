@@ -947,8 +947,10 @@ async fn a_replacement_shell_takes_its_own_first_frame_size() {
     })
     .await
     .expect("the old shell to exit");
-    let mut row = super::tests::row(&harness.id, "local-tmux", Some(AGENT_PANE));
-    row.shell_backend_id = Some(SHELL_PANE.to_string());
+    let row = super::tests::row(&harness.id, "local-tmux", Some(AGENT_PANE));
+    harness
+        .terminals
+        .record_shell(&harness.id, Some(SHELL_PANE.to_string()));
     let snapshot = crate::kernel::snapshot::Snapshot {
         sessions: vec![row],
         ..Default::default()

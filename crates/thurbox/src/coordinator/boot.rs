@@ -206,6 +206,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         &startup_settings,
     );
     startup.snapshot_open_ms = phase.elapsed().as_millis() as u64;
+    let shells = crate::coordinator::ShellBook::load();
 
     let phase = Instant::now();
     let themes = Themes::load(thurbox::config::interface_state::load().theme.as_deref());
@@ -239,6 +240,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         terminals: {
             let mut terminals = terminals(std::sync::Arc::clone(&backends), &startup_settings);
             terminals.attach_fleet_through(fleet.clone());
+            for (session, record) in &shells.records {
+                terminals.record_shell(session, Some(record.pane.clone()));
+            }
             terminals
         },
         commands: CommandBus::fleet(fleet),
@@ -283,7 +287,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         click_targets: Vec::new(),
         last_area: Rect::new(0, 0, 0, 0),
         screen_size: crossterm::terminal::size().unwrap_or((80, 24)),
-        lost_shells: std::collections::HashSet::new(),
+        shells,
         selected_text: None,
         copy_after_paint: false,
         hovered: None,

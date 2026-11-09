@@ -40,11 +40,23 @@ pub struct InterfaceState {
     /// not named sorts after every one that is.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<String>,
-    /// Each session's companion shell: session id → the shell's pane, which
-    /// outlives the interface in a window of its own and is adopted again by
-    /// the next one.
+    /// Each session's companion shell, by session id: it outlives the
+    /// interface in a window of its own and is adopted again by the next one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub shells: BTreeMap<String, String>,
+    pub shells: BTreeMap<String, ShellRecord>,
+}
+
+/// Where one companion shell is, and how to know it again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellRecord {
+    /// The qualified route of the multiplexer it runs on (`local:tmux`,
+    /// `wsl:ubuntu:tmux`).
+    pub route: String,
+    /// Its pane on that multiplexer. A restarted server can reissue the id.
+    pub pane: String,
+    /// The id its window is stamped with: a pane is adopted again only where
+    /// the window still carries it, never because the id came back.
+    pub stamp: String,
 }
 
 /// The state as stored, or the defaults when there is none to read.
@@ -96,7 +108,7 @@ mod tests {
     }
 
     /// Writers that interleave their read-change-write each keep their
-    /// change: every thread's shell is in the file at the end.
+    /// change: every thread's entry is in the file at the end.
     #[test]
     fn interleaved_writers_lose_no_update() {
         let dir = tempfile::tempdir().unwrap();
@@ -107,7 +119,7 @@ mod tests {
                     let _guard = super::super::file::isolate(&dir);
                     for n in 0..10 {
                         update(|s| {
-                            s.shells.insert(format!("{writer}-{n}"), format!("%{n}"));
+                            s.order.push(format!("{writer}-{n}"));
                         })
                         .unwrap();
                     }
@@ -118,6 +130,6 @@ mod tests {
             writer.join().unwrap();
         }
         let _guard = super::super::file::isolate(dir.path());
-        assert_eq!(load().shells.len(), 80);
+        assert_eq!(load().order.len(), 80);
     }
 }

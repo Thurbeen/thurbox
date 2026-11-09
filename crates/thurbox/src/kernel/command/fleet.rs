@@ -158,29 +158,16 @@ fn task_name(name: &str) -> String {
 }
 
 impl Fleet {
-    /// Give the session `name`: the Task's [`NAME_LABEL`], applied back with
-    /// its spec as it is. Fleet's apply replaces a Task's labels and keeps its
-    /// amendments, so nothing else of the Task changes. An apply of the Task
-    /// by someone else between this read and this apply is undone, which a
-    /// rename from the keyboard accepts. The name is checked by the rules a
-    /// created session's name is.
+    /// Give the session `name`: the Task's [`NAME_LABEL`], set with `fleet
+    /// label`, which changes that label and nothing else of the Task, so a
+    /// Task a Conversation made keeps the labels only Fleet writes. The name
+    /// is checked by the rules a created session's name is.
     ///
     /// [`NAME_LABEL`]: crate::kernel::snapshot::fleet::NAME_LABEL
     fn rename(&self, session: &str, name: &str) -> Result<(), String> {
         crate::paths::validate_safe_name(name)?;
-        let mut task = self
-            .get(session)?
-            .ok_or_else(|| format!("no session {session}"))?;
-        let label = &mut task["metadata"]["labels"][crate::kernel::snapshot::fleet::NAME_LABEL];
-        if label.as_str() == Some(name) {
-            return Ok(());
-        }
-        *label = json!(name);
-        // Status is the controllers': an applied object must not carry it.
-        if let Some(fields) = task.as_object_mut() {
-            fields.remove("status");
-        }
-        self.run(&["apply", "-f", "-"], Some(&task.to_string()))
+        let label = format!("{}={name}", crate::kernel::snapshot::fleet::NAME_LABEL);
+        self.run(&["label", "task", session, &label], None)
     }
 
     /// The Fleet host a session on `route` runs on: the picker's route

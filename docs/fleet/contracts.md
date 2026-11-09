@@ -252,6 +252,12 @@ Guarantees, each with its test:
   generation. The same result again is a no-op. Within one generation a
   different result is refused; a result for a newer generation replaces the
   older one. A result for `status.brief.generation` concludes the Task.
+- **Label.** `fleet label task TASK KEY=VALUE…` sets each label on the Task
+  in one compare-and-swap write and changes nothing else: the spec, the
+  generation and the other labels stay. A label only Fleet writes (the
+  Conversation and parent labels, a plugin's creator label) is refused with
+  exit 1. `apply` cannot relabel a Task a Conversation made, since it refuses
+  a manifest that carries those labels; `label` keeps them as they are.
 - **Amend.** `fleet amend TASK` appends `{text, reason?, outputs?, from, at,
   generation}` to `spec.amendments`, increments `metadata.generation` and
   queues an inbox entry with `amends` under
@@ -1169,7 +1175,7 @@ account's Gateway intents.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|amend|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|version`.
+init|up|apply|get|list|status|send|amend|label|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,

@@ -218,11 +218,10 @@ impl App {
     /// `Command::Shell`: a companion shell beside a session's agent.
     pub(crate) fn apply_shell_command(&mut self, session: &str) {
         let seen = self
-            .snapshots
-            .current()
-            .session(session)
-            .and_then(|row| row.shell_backend_id.clone())
-            .filter(|pane| !self.lost_shells.contains(pane));
+            .shells
+            .records
+            .get(session)
+            .map(|record| record.pane.clone());
         self.open_shell(session, seen);
     }
 

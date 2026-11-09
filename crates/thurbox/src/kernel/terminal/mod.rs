@@ -327,6 +327,9 @@ pub struct Terminals {
     /// exact cost the group gating exists to avoid.
     printing_version: u64,
     shelling: HashMap<String, shells::Shelling>,
+    /// The shell pane each session's record names, as the loop keeps it: what
+    /// a worker's answer is matched against.
+    recorded_shells: HashMap<String, String>,
     shelled: (Sender<shells::Shelled>, Receiver<shells::Shelled>),
     shell_results: Vec<ShellResult>,
     /// The runtime the interface runs on, so a worker can enter it.
@@ -439,6 +442,7 @@ impl Terminals {
             printing: std::collections::HashSet::new(),
             printing_version: 0,
             shelling: HashMap::new(),
+            recorded_shells: HashMap::new(),
             shelled: std::sync::mpsc::channel(),
             shell_results: Vec::new(),
             attach: attach::Attach::new(),

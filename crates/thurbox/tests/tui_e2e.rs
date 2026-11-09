@@ -7134,6 +7134,78 @@ fn the_companion_shell_is_readopted_after_a_restart() {
 }
 
 #[test]
+fn a_recorded_pane_id_now_held_by_another_window_is_not_adopted() {
+    // A restarted server reissues pane ids. The record names a pane that an
+    // unrelated window holds now, stamped by no shell of this session: it is
+    // left alone, and raising the tab opens a shell of the session's own.
+    let Some((_profile, mut tui)) = shell_session_prepared(
+        |profile| {
+            let made = profile.server.tmux(&[
+                "new-session",
+                "-d",
+                "-s",
+                "unrelated",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "sh -c 'echo UNRELATED-WINDOW; exec sleep 600'",
+            ]);
+            let pane = String::from_utf8_lossy(&made.stdout).trim().to_string();
+            assert!(pane.starts_with('%'), "an unrelated pane: {made:?}");
+            std::fs::write(
+                profile.path("config/interface.json"),
+                format!(
+                    r#"{{"shells":{{"probe":{{"route":"local:tmux","pane":"{pane}","stamp":"another-session"}}}}}}"#
+                ),
+            )
+            .expect("a record naming it");
+        },
+        plain_shell,
+    ) else {
+        return;
+    };
+    in_the_shell(&mut tui, "echo tb-own-\"\"shell", "tb-own-shell");
+    assert!(
+        !tui.frame().contains("UNRELATED-WINDOW"),
+        "the unrelated window was adopted:\n{}",
+        tui.frame()
+    );
+    assert!(tui.quit().success());
+}
+
+#[test]
+fn deleting_the_task_closes_its_companion_shell() {
+    // A shell outlives the interface, not its session: once Fleet deletes
+    // the Task, its shell window goes and its record with it.
+    let Some((profile, mut tui)) = shell_session_with(plain_shell) else {
+        return;
+    };
+    in_the_shell(&mut tui, "echo tb-doomed-\"\"shell", "tb-doomed-shell");
+    assert_eq!(shell_windows(&profile).len(), 1);
+    // Fleet releases a session only once its agent says it is at rest.
+    tui.send(b"\x14");
+    wait_for_view(&tui, "Agent");
+    let fleet = Path::new(env!("CARGO_BIN_EXE_thurbox-cli")).with_file_name("fleet");
+    tui.send(format!("'{}' signal idle </dev/null\r", fleet.display()).as_bytes());
+    profile.fleet(&["delete", "task", "probe"], "");
+    // The controller releases the session over a few passes, then the Task
+    // leaves the store.
+    tui.wait_until("the session gone and its shell closed", |_| {
+        let _ = Command::new(profile.bin.join("fleet"))
+            .arg("reconcile")
+            .stdin(Stdio::null())
+            .output();
+        tui.session_row("probe").is_none() && shell_windows(&profile).is_empty()
+    });
+    tui.wait_until("its record dropped", |_| {
+        !std::fs::read_to_string(profile.path("config/interface.json"))
+            .unwrap_or_default()
+            .contains("\"probe\"")
+    });
+    assert!(tui.quit().success());
+}
+
+#[test]
 fn a_shell_whose_window_went_while_thurbox_was_closed_is_replaced() {
     // A window that went while the interface was closed (a tmux server
     // restart, a kill from outside) must not be adopted as a shell that never

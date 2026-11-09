@@ -1322,10 +1322,11 @@ reusing the session's stored agent. Agents that define no
 
 `Ctrl+E` on the session list, or `command("rename", { session = id, text =
 name })` from a plugin. A session's name is its Task's `thurbox.dev/name`
-label (ADR-41): the rename reads the Task with `fleet get task`, sets the
-label and applies the Task back with `fleet apply`, which replaces its labels
-and keeps its spec and amendments. The Task's own name, which every command
-addresses, never changes.
+label (ADR-41): the rename runs `fleet label task <task>
+thurbox.dev/name=<name>`, which sets that label and changes nothing else of
+the Task. `fleet apply` would not do: it refuses a manifest carrying the labels
+only Fleet writes, which a Task a Conversation made has. The Task's own name,
+which every command addresses, never changes.
 
 - **The name's rules.** The name is held to `validate_safe_name` (1-64 bytes,
   no `/`, `\` or `..`, no leading `.`), as a created session's name is.
@@ -1336,8 +1337,8 @@ addresses, never changes.
   `Ctrl+<letter>` session chords: in a focused terminal it stays readline's
   end-of-line. `F2`, the other conventional rename key, is bound by the info
   panel that is maintained out of tree.
-- **Headless.** `fleet get task <task>` and `fleet apply -f -` with the label
-  changed do the same from a script.
+- **Headless.** `fleet label task <task> thurbox.dev/name=<name>` does the
+  same from a script.
 
 ### Session lifecycle hooks (`hooks.toml`)
 
@@ -4082,17 +4083,28 @@ else's arrangement.
 
 A Fleet session's agent pane is the stream `fleet attach` names (ADR-41), and
 a stream opens no windows. The shell is therefore a window of thurbox's own
-multiplexer on the Task's machine: this machine's for a local Task, the
-`hosts.toml` host of the same name for a Task on a Fleet host. Every shell
-operation (open, adopt, resize, hide, kill) goes to that multiplexer, and
-every agent operation goes to the stream.
+multiplexer on the Task's machine: this machine's for a local Task, else the
+route of the `hosts.toml` host the Fleet host is named as, so a WSL host keeps
+its `wsl:` place. Every shell operation (open, adopt, resize, hide, kill) goes
+to that multiplexer, and every agent operation goes to the stream.
 
-The shell outlives the interface in its window. Its pane id is kept in
-`interface.json` under the session's id, written when the shell opens and
-removed when it is found gone. A restarted interface adopts the recorded pane
-once the agent's pane is attached, so what ran in the shell is still there. A
-pane that went while the interface was closed (a multiplexer restart, a kill
-from outside) is not adopted: raising the Shell tab opens a new one.
+The shell outlives the interface in its window. The interface keeps one record
+per shell, in `interface.json` under the session's id: the route of its
+multiplexer, its pane and the id its window is stamped with. The loop holds the
+records in memory and one worker saves them, so the loop never waits on the
+file's lock, and a worker's answer is matched against the record in memory.
+
+- **A restart adopts it again**, once the agent's pane is attached, so what ran
+  in the shell is still there. Only a window that still carries the recorded
+  stamp on the recorded route is adopted: a restarted server reissues pane ids,
+  and an id alone would adopt whatever window holds it now.
+- **A pane that went** while the interface was closed (a multiplexer restart, a
+  kill from outside) is not adopted: raising the Shell tab opens a new one. A
+  pane found gone is remembered for its session until that session's record
+  changes.
+- **Deleting the Task closes its shell.** When a session leaves the snapshot,
+  its shell window is killed (again only where the stamp still matches) and
+  its record dropped. Closing the interface keeps every shell.
 
 ---
 

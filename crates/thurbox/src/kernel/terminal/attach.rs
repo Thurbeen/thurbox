@@ -263,7 +263,9 @@ impl Terminals {
         let scrollback = self.scrollback;
         let runtime = self.runtime.clone();
         let notices = super::stream_pane::Notices::new(self.input_notices.0.clone(), &row.name);
-        let shell = self.shell_backend_for(row.remote_host.as_deref());
+        let shell = self
+            .shell_route(row.remote_host.as_deref())
+            .and_then(|route| self.backend_on(&route));
         self.attach
             .attaching
             .insert(session.clone(), super::fleet::BACKEND.to_string());
@@ -281,22 +283,6 @@ impl Terminals {
                 session_handle: result,
             });
         });
-    }
-
-    /// The multiplexer a Fleet session's companion shell runs on: this
-    /// machine's own for a local Task, the hosts.toml host Fleet's host is
-    /// named as for a remote one. `None` when none is registered there.
-    fn shell_backend_for(
-        &self,
-        remote_host: Option<&str>,
-    ) -> Option<std::sync::Arc<dyn crate::backend::SessionBackend>> {
-        let route = match remote_host {
-            None => {
-                crate::session::Route::local(Some(crate::session::Multiplexer::platform_default()))
-            }
-            Some(host) => crate::session::Route::remote(crate::session::Via::Ssh, host, None),
-        };
-        self.backends.get(&self.hosts.qualify(&route)).cloned()
     }
 
     /// Hand one session's attach to a worker.

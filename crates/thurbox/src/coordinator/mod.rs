@@ -798,33 +798,51 @@ impl App {
         })
     }
 
-    /// Fold in the shells the terminals opened or lost, and adopt again the
-    /// shell a session had open before this interface started.
+    /// Fold in the shells the terminals opened or lost, adopt again the shell
+    /// a session had open before this interface started, and close the shell
+    /// of a session Fleet deleted.
     ///
-    /// A shell outlives the interface in a window of its own, so its pane is
-    /// kept in `interface.json` (the snapshot lays it over the row as
-    /// `shell_backend_id`). Written at once rather than on a thread: a shell
-    /// opens or goes rarely, and the replacement opened after a lost one is
-    /// matched against the row as the file now says it.
+    /// A shell outlives the interface in a window of its own, so it is kept in
+    /// [`ShellBook`]: in memory for the loop, saved to `interface.json` by a
+    /// worker. A worker's answer is matched against the book, never against a
+    /// save still in flight.
     pub(crate) fn readopt_shells(&mut self) {
+        use thurbox::config::interface_state::ShellRecord;
         for result in self.terminals.drain_shell_results() {
             use thurbox::kernel::terminal::ShellResult;
             self.dirty = true;
             match result {
-                ShellResult::Ready { session, pane } => {
-                    remember_shell(&session, Some(pane));
-                    self.snapshots.refresh_if_due();
+                ShellResult::Ready {
+                    session,
+                    pane,
+                    stamp,
+                } => {
+                    let route = self
+                        .snapshots
+                        .current()
+                        .session(&session)
+                        .and_then(|row| self.terminals.shell_route(row.remote_host.as_deref()));
+                    let Some(route) = route else { continue };
+                    self.terminals.record_shell(&session, Some(pane.clone()));
+                    self.shells.set(
+                        &session,
+                        Some(ShellRecord {
+                            route: route.format(),
+                            pane,
+                            stamp,
+                        }),
+                    );
                 }
                 ShellResult::Gone {
                     session,
                     open_requested,
                     pane,
                 } => {
-                    self.lost_shells.extend(pane);
-                    remember_shell(&session, None);
-                    // The row reads the file again before the replacement's
-                    // answer is matched against it.
-                    self.snapshots.refresh_if_due();
+                    self.terminals.record_shell(&session, None);
+                    self.shells.set(&session, None);
+                    if let Some(pane) = pane {
+                        self.shells.lost.insert((session.clone(), pane));
+                    }
                     if open_requested {
                         self.open_shell(&session, None);
                     }
@@ -837,36 +855,178 @@ impl App {
                 }
             }
         }
+        self.close_shells_of_deleted_sessions();
         // Cheap to ask every iteration: nearly every row has no shell
         // recorded, and the size is the cached one.
-        let wanted: Vec<(String, String)> = self
+        let wanted: Vec<(String, ShellRecord)> = self
             .snapshots
             .current()
             .sessions
             .iter()
             .filter(|row| self.terminals.is_attached(&row.id))
             .filter(|row| !self.terminals.has_shell(&row.id))
-            .filter_map(|row| Some((row.id.clone(), row.shell_backend_id.clone()?)))
-            .filter(|(_, pane)| !self.lost_shells.contains(pane))
+            .filter_map(|row| {
+                let record = self.shells.records.get(&row.id)?;
+                // A shell on another machine than the one the Task runs on
+                // now is not this session's companion any more.
+                let route = self.terminals.shell_route(row.remote_host.as_deref())?;
+                (route.format() == record.route).then(|| (row.id.clone(), record.clone()))
+            })
+            .filter(|(session, record)| {
+                !self
+                    .shells
+                    .lost
+                    .contains(&(session.clone(), record.pane.clone()))
+            })
             .collect();
         let (cols, rows) = self.screen_size;
-        for (session, pane) in wanted {
-            self.terminals.readopt_shell(&session, &pane, rows, cols);
+        for (session, record) in wanted {
+            self.terminals
+                .readopt_shell(&session, &record.pane, &record.stamp, rows, cols);
+        }
+    }
+
+    /// Close the shell of each session that was in the snapshot and is not any
+    /// more: its Task was deleted. An interface that merely closes keeps its
+    /// shells. The source keeps its last rows while Fleet cannot be read, so a
+    /// row leaves the snapshot only when its Task left the store.
+    fn close_shells_of_deleted_sessions(&mut self) {
+        let snapshot = self.snapshots.current();
+        let present: std::collections::HashSet<&str> = snapshot
+            .sessions
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        let deleted: Vec<String> = self
+            .shells
+            .records
+            .keys()
+            .filter(|session| {
+                self.shells.seen.contains(*session) && !present.contains(session.as_str())
+            })
+            .cloned()
+            .collect();
+        let seen: Vec<String> = present.iter().map(|id| id.to_string()).collect();
+        for session in deleted {
+            if let Some(record) = self.shells.records.get(&session) {
+                self.terminals.kill_shell_window(
+                    &record.route,
+                    &record.pane,
+                    &record.stamp,
+                    &session,
+                );
+            }
+            self.terminals.record_shell(&session, None);
+            self.shells.set(&session, None);
+            self.shells.seen.remove(&session);
+        }
+        self.shells.seen.extend(seen);
+    }
+}
+
+/// One record per companion shell, keyed by session.
+type ShellRecords =
+    std::collections::BTreeMap<String, thurbox::config::interface_state::ShellRecord>;
+
+/// The companion shells this interface knows: the records, the panes found
+/// gone, and the sessions seen in the snapshot. Changes are made here, on the
+/// loop, and each is saved to `interface.json` by one worker, in order, so
+/// the loop never waits on the file's lock.
+pub(crate) struct ShellBook {
+    pub(crate) records: ShellRecords,
+    /// `(session, pane)` found gone, until that session's record changes.
+    pub(crate) lost: std::collections::HashSet<(String, String)>,
+    /// Sessions the snapshot has shown: one that leaves it was deleted.
+    pub(crate) seen: std::collections::HashSet<String>,
+    saves: std::sync::mpsc::Sender<ShellRecords>,
+}
+
+impl ShellBook {
+    /// The book as `interface.json` holds it, with its saver started.
+    pub(crate) fn load() -> Self {
+        let (saves, queue) = std::sync::mpsc::channel::<ShellRecords>();
+        std::thread::spawn(move || {
+            while let Ok(mut shells) = queue.recv() {
+                // Only the newest of a burst needs writing.
+                while let Ok(newer) = queue.try_recv() {
+                    shells = newer;
+                }
+                if let Err(e) =
+                    thurbox::config::interface_state::update(|state| state.shells = shells)
+                {
+                    tracing::warn!("could not record the companion shells: {e}");
+                }
+            }
+        });
+        Self {
+            records: thurbox::config::interface_state::load().shells,
+            lost: std::collections::HashSet::new(),
+            seen: std::collections::HashSet::new(),
+            saves,
+        }
+    }
+
+    /// Record `session`'s shell, or that it has none, and save the book.
+    /// The panes found gone for the session are forgotten: they were judged
+    /// against the record this replaces.
+    pub(crate) fn set(
+        &mut self,
+        session: &str,
+        record: Option<thurbox::config::interface_state::ShellRecord>,
+    ) {
+        let changed = match record {
+            Some(record) => {
+                self.records.insert(session.to_string(), record.clone()) != Some(record)
+            }
+            None => self.records.remove(session).is_some(),
+        };
+        if changed {
+            self.lost.retain(|(lost, _)| lost != session);
+            let _ = self.saves.send(self.records.clone());
         }
     }
 }
 
-/// Record `session`'s companion shell pane, or that it has none.
-fn remember_shell(session: &str, pane: Option<String>) {
-    let changed = thurbox::config::interface_state::update(|state| match pane {
-        Some(pane) => {
-            state.shells.insert(session.to_string(), pane);
+#[cfg(test)]
+mod tests {
+    use super::ShellBook;
+    use thurbox::config::interface_state::ShellRecord;
+
+    fn record(pane: &str) -> ShellRecord {
+        ShellRecord {
+            route: "local:tmux".into(),
+            pane: pane.into(),
+            stamp: "s".into(),
         }
-        None => {
-            state.shells.remove(session);
-        }
-    });
-    if let Err(e) = changed {
-        tracing::warn!("could not record the shell of {session}: {e}");
+    }
+
+    /// A pane found gone is remembered per session, and forgotten once that
+    /// session's record changes: the same id on another session, or a new
+    /// shell of this one that the server gave the old id, is judged afresh.
+    #[test]
+    fn a_lost_pane_belongs_to_its_session_and_clears_with_its_record() {
+        let (saves, saved) = std::sync::mpsc::channel();
+        let mut book = ShellBook {
+            records: Default::default(),
+            lost: Default::default(),
+            seen: Default::default(),
+            saves,
+        };
+        book.set("a", Some(record("%1")));
+        book.lost.insert(("a".into(), "%1".into()));
+        book.lost.insert(("b".into(), "%1".into()));
+        book.set("a", Some(record("%1")));
+        assert_eq!(
+            book.lost.len(),
+            2,
+            "an unchanged record keeps what was lost"
+        );
+        book.set("a", Some(record("%2")));
+        assert!(!book.lost.contains(&("a".into(), "%1".into())));
+        assert!(
+            book.lost.contains(&("b".into(), "%1".into())),
+            "another session's pane stays lost"
+        );
+        assert_eq!(saved.try_iter().count(), 2, "each change is saved once");
     }
 }
