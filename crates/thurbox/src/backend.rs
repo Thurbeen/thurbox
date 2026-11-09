@@ -29,6 +29,7 @@ pub fn mux_settings(settings: &Settings) -> MuxSettings {
         scrollback_lines: settings.scrollback_lines,
         data_dir: crate::paths::data_directory(),
         relocated_data_dir: crate::paths::relocated_data_dir(),
+        socket: None,
     }
 }
 

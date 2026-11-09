@@ -90,8 +90,12 @@ pub const SOCKET_OVERRIDE_ENV: &str = "THURBOX_SOCKET";
 /// still honoured outright: that is somebody typing it.
 pub const SOCKET_OWNER_ENV: &str = "THURBOX_SOCKET_FOR";
 
-/// The local multiplexer socket name — see [`socket_for`] for the precedence.
+/// The local multiplexer socket name: [`MuxSettings::socket`] when set, else
+/// [`socket_for`]'s precedence.
 pub(crate) fn local_socket(settings: &MuxSettings) -> String {
+    if let Some(socket) = settings.socket.as_ref().filter(|s| !s.is_empty()) {
+        return socket.clone();
+    }
     socket_for(
         std::env::var(SOCKET_OVERRIDE_ENV).ok(),
         std::env::var_os(SOCKET_OWNER_ENV)

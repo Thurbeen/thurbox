@@ -1,13 +1,20 @@
 //! The git worktree workspace adapter: Fleet's own materialization of a
-//! `{repositories}` workspace, as bounded `git` commands on the host.
+//! `{repositories}` workspace, as bounded `git` commands on the host. It is
+//! the default adapter: Fleet makes every repositories workspace.
 //!
 //! A workspace `key` lives in `<root>/<key>`, one worktree per repository at
 //! `<root>/<key>/<name>`, each on the branch `<branchPrefix>/<key>` of its
-//! source checkout. The session runs in the primary repository's worktree,
-//! and its trust root is the primary's source checkout. The marker file
-//! `<root>/<key>/.fleet-workspace.json` is written last: a directory without
-//! it is a partial workspace, which `find` reports as none and the next
-//! `materialize` rolls back.
+//! source checkout. A `file://` repository is a directory used as it is: no
+//! worktree, and never removed. The session runs in the primary repository's
+//! directory, and the trust root of a worktree is its source checkout. The
+//! marker file `<root>/<key>/.fleet-workspace.json` is written last: a
+//! directory without it is a partial workspace, which `find` reports as none
+//! and the next `materialize` rolls back.
+//!
+//! A clean never loses work: a worktree with changes its branch does not
+//! hold, untracked files included, is committed
+//! onto `refs/fleet/preserved/<key>/<name>` in its source before the
+//! worktree goes. Branches are never deleted.
 //!
 //! This adapter serves the local host. Each step is a `git` command bounded
 //! through `fleet-exec`, so a later transport can run the same commands on a
@@ -17,6 +24,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use fleet_api::Observation;
@@ -26,7 +34,49 @@ use fleet_api::workspace::{WorkspaceRef, Workspaces};
 use fleet_exec::{Outcome, Spec, run};
 use serde::{Deserialize, Serialize};
 
-use crate::thurbox::Repositories;
+/// The repository map, shared: whoever holds a clone may replace it while
+/// the adapter runs, and the next materialize reads the new map. `fleet up`
+/// does so when its config file changes.
+#[derive(Debug, Clone, Default)]
+pub struct Repositories(Arc<RwLock<std::collections::BTreeMap<String, String>>>);
+
+impl Repositories {
+    pub fn new(map: std::collections::BTreeMap<String, String>) -> Repositories {
+        Repositories(Arc::new(RwLock::new(map)))
+    }
+
+    pub(crate) fn source(&self, url: &str) -> Option<String> {
+        self.0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(url)
+            .cloned()
+    }
+
+    /// Replace the whole map; true when it changed.
+    pub fn replace(&self, map: std::collections::BTreeMap<String, String>) -> bool {
+        let mut current = self.0.write().unwrap_or_else(|e| e.into_inner());
+        let changed = *current != map;
+        *current = map;
+        changed
+    }
+}
+
+/// The variables that point git at another repository than `-C` names; a
+/// parent process (a git hook, a test) may have set them.
+pub const GIT_LOCATION: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+];
+
+/// The ref namespace preserved work goes to, per workspace key and name.
+pub const PRESERVED: &str = "refs/fleet/preserved";
 
 /// The marker the adapter writes last into a whole workspace.
 pub const MARKER: &str = ".fleet-workspace.json";
@@ -35,8 +85,9 @@ pub const MARKER: &str = ".fleet-workspace.json";
 /// bound the manager's lease can outlast.
 pub const MAX_REPOSITORIES: usize = 4;
 
-/// The most `git` commands one call runs: two per repository to roll back
-/// a partial workspace, two to make it and two to roll that back.
+/// The most `git` commands one call runs, per repository: a materialize
+/// runs two to roll back a partial workspace, two to make it and two to roll
+/// that back; a clean three to preserve its work and two to remove it.
 const MAX_COMMANDS: u32 = 6 * MAX_REPOSITORIES as u32;
 
 #[derive(Debug, Clone)]
@@ -83,7 +134,34 @@ struct Marker {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Worktree {
     path: String,
+    /// The source checkout; empty for a directory used as it is.
     source: String,
+    /// The repository's name in the Task: the preserved ref's last part.
+    #[serde(default)]
+    name: String,
+}
+
+impl Worktree {
+    fn as_is(&self) -> bool {
+        self.source.is_empty()
+    }
+}
+
+/// The directory a `file://` URL names, when it is an absolute path.
+fn file_url(url: &str) -> Option<Result<String, String>> {
+    let rest = url.strip_prefix("file://")?;
+    // `file:///C:/x` names `C:/x` on Windows.
+    let b = rest.as_bytes();
+    let path = if b.len() > 3 && b[0] == b'/' && b[2] == b':' {
+        &rest[1..]
+    } else {
+        rest
+    };
+    Some(if Path::new(path).is_absolute() {
+        Ok(path.to_string())
+    } else {
+        Err(format!("{url} does not name an absolute path"))
+    })
 }
 
 /// One `git` command's answer.
@@ -115,19 +193,71 @@ impl WorktreeWorkspaces {
     }
 
     fn git(&self, source: &str, args: &[&str]) -> Git {
-        let spec = Spec::new(&self.cfg.git, self.cfg.call_timeout)
+        match self.git_out(source, args, &[]) {
+            Ok(_) => Git::Ok,
+            Err(answer) => answer,
+        }
+    }
+
+    /// A `git` command's first line of output, or its answer when it failed.
+    fn git_out(&self, dir: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String, Git> {
+        let mut spec = Spec::new(&self.cfg.git, self.cfg.call_timeout)
             .arg("-C")
-            .arg(source)
+            .arg(dir)
             .args(args);
-        match run(&spec) {
-            Outcome::Exited { code: Some(0), .. } => Git::Ok,
+        spec.env_remove = GIT_LOCATION.iter().map(|v| v.to_string()).collect();
+        spec.env = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Err(match run(&spec) {
+            Outcome::Exited {
+                code: Some(0),
+                stdout,
+                ..
+            } => return Ok(first_line(&stdout)),
             Outcome::Exited {
                 code: Some(_),
                 stderr,
                 ..
             } => Git::No(first_line(&stderr)),
             other => Git::Unknown(format!("git {}: {}", args.join(" "), other.failure())),
+        })
+    }
+
+    /// Commit what `w` holds that its branch does not, untracked files
+    /// included, onto its preserved ref in the source: the worktree's index
+    /// takes everything, and `stash create` commits it without touching a
+    /// ref or the files. The worktree goes next, so its index is no loss.
+    /// Nothing to keep is `Ok`.
+    fn preserve(&self, key: &str, w: &Worktree) -> Result<(), Git> {
+        if w.as_is() || !Path::new(&w.path).exists() {
+            return Ok(());
         }
+        let who = [
+            ("GIT_AUTHOR_NAME", "Fleet"),
+            ("GIT_AUTHOR_EMAIL", "fleet@localhost"),
+            ("GIT_COMMITTER_NAME", "Fleet"),
+            ("GIT_COMMITTER_EMAIL", "fleet@localhost"),
+        ];
+        self.git_out(&w.path, &["add", "-A"], &[])?;
+        let message = format!("fleet: work preserved from workspace {key}");
+        let commit = self.git_out(&w.path, &["stash", "create", &message], &who)?;
+        if commit.is_empty() {
+            return Ok(());
+        }
+        // A marker written before worktrees carried their name: the
+        // worktree's directory is `<root>/<key>/<name>`.
+        let repo = match w.name.as_str() {
+            "" => Path::new(&w.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            name => name.to_string(),
+        };
+        let name = format!("{PRESERVED}/{key}/{repo}");
+        self.git_out(&w.path, &["update-ref", &name, &commit], &[])
+            .map(|_| ())
     }
 
     /// The workspace's own directory. A key that could name another
@@ -154,7 +284,8 @@ impl WorktreeWorkspaces {
     /// materialize and a clean both end with. Git's own answers are not
     /// needed: `prune` forgets a worktree whose directory is gone.
     fn remove(&self, dir: &Path, worktrees: &[Worktree]) -> io::Result<()> {
-        for w in worktrees {
+        let worktrees: Vec<&Worktree> = worktrees.iter().filter(|w| !w.as_is()).collect();
+        for w in &worktrees {
             let _ = self.git(&w.source, &["worktree", "remove", "--force", &w.path]);
         }
         match fs::remove_dir_all(dir) {
@@ -162,7 +293,7 @@ impl WorktreeWorkspaces {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        for w in worktrees {
+        for w in &worktrees {
             let _ = self.git(&w.source, &["worktree", "prune"]);
         }
         Ok(())
@@ -181,6 +312,19 @@ impl WorktreeWorkspaces {
         w.repositories
             .iter()
             .map(|r| {
+                if let Some(path) = file_url(&r.url) {
+                    let path = path.map_err(|why| EffectOutcome::Failed { why })?;
+                    if !Path::new(&path).is_dir() {
+                        return Err(EffectOutcome::Failed {
+                            why: format!("{} is not a directory", r.url),
+                        });
+                    }
+                    return Ok(Worktree {
+                        path,
+                        source: String::new(),
+                        name: r.name.clone(),
+                    });
+                }
                 let source = self
                     .cfg
                     .repositories
@@ -197,6 +341,7 @@ impl WorktreeWorkspaces {
                 Ok(Worktree {
                     path: text(&dir.join(&r.name)),
                     source,
+                    name: r.name.clone(),
                 })
             })
             .collect()
@@ -212,6 +357,9 @@ impl WorktreeWorkspaces {
         let branch = format!("{}/{key}", self.cfg.branch_prefix);
         fs::create_dir_all(dir).map_err(|e| Git::No(format!("cannot create {dir:?}: {e}")))?;
         for (r, t) in w.repositories.iter().zip(trees) {
+            if t.as_is() {
+                continue;
+            }
             let exists = format!("refs/heads/{branch}");
             // An earlier, rolled-back attempt may have left the branch: the
             // worktree goes back onto it, so no commit is lost.
@@ -238,7 +386,7 @@ impl WorktreeWorkspaces {
             host: LOCAL_HOST.to_string(),
             dir: trees[0].path.clone(),
             extra_dirs: trees[1..].iter().map(|t| t.path.clone()).collect(),
-            trust_root: Some(trees[0].source.clone()),
+            trust_root: (!trees[0].as_is()).then(|| trees[0].source.clone()),
         };
         let marker = Marker {
             workspace: workspace.clone(),
@@ -347,6 +495,21 @@ impl Workspaces for WorktreeWorkspaces {
             Ok(m) => m.map(|m| m.worktrees).unwrap_or_default(),
             Err(e) => return Observation::unknown(format!("cannot read {dir:?}: {e}")),
         };
+        for t in &trees {
+            match self.preserve(&workspace.key, t) {
+                Ok(()) => {}
+                Err(Git::No(why)) => {
+                    return failed(format!("cannot preserve the work in {}: {why}", t.path));
+                }
+                Err(Git::Unknown(why)) => {
+                    return Observation::unknown(format!(
+                        "preserving the work in {}: {why}",
+                        t.path
+                    ));
+                }
+                Err(Git::Ok) => {}
+            }
+        }
         match self.remove(&dir, &trees) {
             Ok(()) => Observation::Known(EffectOutcome::Deleted),
             Err(e) => failed(format!("cannot remove {dir:?}: {e}")),

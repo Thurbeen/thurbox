@@ -22,6 +22,16 @@ fn setup(name: &str, dispatch: bool) -> Env {
     env
 }
 
+/// A Task whose harness has no prompt hook, so the runtime's journal, not
+/// the agent, settles a delivery whose answer was lost.
+fn setup_unhooked(name: &str) -> Env {
+    let env = Env::new(name);
+    let mut t = task("t1", true);
+    t["spec"]["harness"] = serde_json::json!("aider");
+    env.apply(t).ok().stdout_has("Task/t1 created");
+    env
+}
+
 fn result_args<'a>(generation: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
     let mut args = vec![
         "result",
@@ -235,14 +245,13 @@ fn a_crash_after_the_brief_before_its_receipt_is_recovered_without_a_resend() {
     assert_eq!(
         env.calls("brief"),
         1,
-        "asked the session instead of resending"
+        "the agent's prompt hook settled it, never a resend"
     );
-    assert!(env.calls("briefDelivered") >= 1);
 }
 
 #[test]
 fn a_brief_whose_delivery_cannot_be_told_asks_for_attention_and_is_never_resent() {
-    let env = setup("brief-unknown", true);
+    let env = setup_unhooked("brief-unknown");
     env.fault(Fault::new("brief", "unknown"));
     env.fault(Fault::new("briefDelivered", "unknown").times(100));
     env.reconcile().ok();
@@ -282,7 +291,7 @@ fn refused_brief_sends_wait_across_manager_runs_and_stop_after_three_attempts() 
 #[test]
 fn a_brief_retry_waits_until_the_session_is_ready_again() {
     for mode in ["fail", "unknown"] {
-        let env = setup(&format!("brief-retry-ready-{mode}"), true);
+        let env = setup_unhooked(&format!("brief-retry-ready-{mode}"));
         env.fault(Fault::new("brief", mode));
         if mode == "unknown" {
             env.fault(Fault::new("briefDelivered", "unknown"));
@@ -307,7 +316,7 @@ fn a_brief_retry_waits_until_the_session_is_ready_again() {
 
 #[test]
 fn a_brief_known_not_to_have_arrived_is_sent_again_once() {
-    let env = setup("brief-lost", true);
+    let env = setup_unhooked("brief-lost");
     env.fault(Fault::new("brief", "unknown"));
     env.reconcile().ok();
     let st = env.status("t1");
@@ -345,7 +354,7 @@ fn a_transient_unknown_delivery_probe_recovers_without_resending() {
 
 #[test]
 fn unknown_delivery_probes_wait_between_tries_and_never_resend() {
-    let env = setup("brief-probe-bounded", true);
+    let env = setup_unhooked("brief-probe-bounded");
     env.fault(Fault::new("brief", "unknown").performed());
     env.fault(Fault::new("briefDelivered", "unknown").times(3));
     env.reconcile().ok();

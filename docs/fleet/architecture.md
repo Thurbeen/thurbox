@@ -24,7 +24,7 @@ same sweep as the Task controller, through the Forge port.
 | [fleet-controllers](../../crates/fleet-controllers/src/lib.rs) | Pure Task, ChangeRequest, Forge, Gateway, Conversation and Listener decisions, and the plugin admission gate | Receives time and observations as values; returns probes and a plan without I/O. |
 | [fleet-api](../../crates/fleet-api/src/lib.rs) | Task, ChangeRequest, plan, observation, result and port types | Pure shared contract; no adapter dependencies. |
 | [fleet-store](../../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
-| [fleet-runtime](../../crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
+| [fleet-runtime](../../crates/fleet-runtime/src/lib.rs) | Session operations through any program speaking the [runtime protocol](../runtime/README.md#the-runtime-protocol) (`exec`), through thurbox, or the file-backed fake host; the protocol's conformance suite | Converts external answers to Known/Unknown; retains identity and delivery keys; shares no type with any runtime's code. |
 | [fleet-forge](../../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab`, `az`, externally authenticated `curl`, or the file-backed fake forge, and taking a supported draft out of draft after a fresh read | One bounded observation is complete or Unknown; a write either preserves the head/state guard or fails closed; the only crate that knows a forge CLI's name. |
 | [fleet-gateway](../../crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through Slack's Web API or Discord's REST API by `curl`, or through the file-backed fake platform | Every answer is Known or Unknown; a refused write fails closed; the only crate that knows a chat client's name. |
 | [fleet-plugin](../../crates/fleet-plugin/src/lib.rs) | Bounded calls to a registered plugin process through the `Plugins` port | The only crate that runs a plugin; every call is one bounded process through fleet-exec. |
@@ -168,15 +168,26 @@ A Session has two parts:
 The runtime port is the only way Fleet reaches a Session. Fleet owns the
 Session's identity, its lifecycle record and every decision about it. The
 runtime owns the agent process, its window and its conversation, and
-answers what it can prove. The runtime also owns the workspace, unless
-Fleet made it through the workspace port.
+answers what it can prove. Fleet makes the workspace through the workspace
+port; the runtime runs the session in it.
 
 This split is the first step toward the
 [target architecture](architecture-target.svg), where Thurbox
 is one view among others and Fleet runs Sessions behind the runtime port.
-The next steps move the remaining Session responsibilities out of the
-Thurbox runtime adapter, one port call at a time: workspace materialization,
-the agent's lifecycle hooks, and attaching a live terminal.
+Workspace materialization, the agent's lifecycle hooks (`fleet signal`),
+proven delivery and the harness profiles have moved out of the Thurbox
+runtime adapter into Fleet. The `exec` runtime kind is built:
+`[runtimes.<name>]` names a program that speaks the
+[runtime protocol](../runtime/README.md#the-runtime-protocol),
+`[hosts.<name>]` names the runtime serving each host, and `fleet init`
+configures `runtime-mux` alone. The port's calls map onto the protocol's
+verbs: `spawn` is `start` with the harness profile's launch argv and the
+session's `FLEET_SIGNAL_FILE`, `revive` is `start` with its resume argv,
+`find`, `lost` and `at_rest` read `inspect`, `release` is `stop`, a brief
+is `input`, and `create_dir` and `remove_dir` are `exec`. What only the
+agent can prove (readiness, workspace trust, delivery, an idle agent)
+comes from the agent's signals. Attaching a live terminal is the next
+step.
 
 ## Workspaces and the workspace port
 
@@ -194,11 +205,9 @@ Task ──owns──▶ Workspace {key, host, dir} ◀──runs in── Sessi
 - The Workspace key is the Session key, `<name>.<uid>`.
 - TaskController is the only writer of `status.workspace`.
 
-The `[workspaces]` section of `fleet.toml` selects who makes a
-`repositories` workspace:
-
-- With the section, Fleet makes it through the workspace port.
-- Without the section, the runtime makes it, as before.
+Fleet makes every `repositories` workspace through the workspace port. The
+`[workspaces]` section of `fleet.toml` only picks the adapter; without it,
+the `worktree` adapter makes it under `<data dir>/workspaces`.
 
 A `dir` workspace exists before the Task. Nothing makes or cleans it.
 

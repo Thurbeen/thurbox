@@ -39,9 +39,18 @@ fn installed(env: &Env, args: &[&str]) -> Command {
     cmd
 }
 
+/// `config` with `runtime` as its one `[runtime]`, in place of the
+/// `[runtimes]` and `[hosts]` that `init` writes.
+fn set_runtime(config: &mut toml::Value, runtime: toml::Value) {
+    let table = config.as_table_mut().unwrap();
+    table.remove("runtimes");
+    table.remove("hosts");
+    table.insert("runtime".into(), runtime);
+}
+
 fn customize_config(path: &std::path::Path) -> Vec<u8> {
     let mut config: toml::Value = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    config["runtime"]["callTimeoutMs"] = toml::Value::Integer(4321);
+    config["runtimes"]["mux"]["callTimeoutMs"] = toml::Value::Integer(4321);
     let bytes = format!(
         "{}\n# Private local customization\n",
         toml::to_string(&config).unwrap()
@@ -113,13 +122,16 @@ fn fake_bootstrap_with(name: &str, init_args: &[&str]) -> Env {
     );
     assert!(config["forge"].get("draftPolicy").is_none(), "{generated}");
     assert!(config["forge"].get("hosts").is_none(), "{generated}");
-    config["runtime"] = toml::Value::Table(toml::map::Map::from_iter([
-        ("kind".into(), toml::Value::String("fake".into())),
-        (
-            "dir".into(),
-            toml::Value::String(env.fake.to_string_lossy().into_owned()),
-        ),
-    ]));
+    set_runtime(
+        &mut config,
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("kind".into(), toml::Value::String("fake".into())),
+            (
+                "dir".into(),
+                toml::Value::String(env.fake.to_string_lossy().into_owned()),
+            ),
+        ])),
+    );
     config["data"]["dir"] = toml::Value::String(env.data.to_string_lossy().into_owned());
     fs::write(&env.config, toml::to_string(&config).unwrap()).unwrap();
     env
@@ -205,9 +217,10 @@ fn installed_first_run_creates_runnable_config_and_editable_workspace_without_gi
     )
     .ok()
     .stdout_has("Task/vega created");
+    // No runtime-mux on PATH: `up` names the program it could not start.
     wait(installed(&env, &["up"]).spawn().unwrap())
         .code(1)
-        .stderr_has("thurbox");
+        .stderr_has("runtime-mux");
 }
 
 #[cfg(unix)]
@@ -409,9 +422,19 @@ fn installed_up_runs_real_thurbox_adapter_and_preserves_unknown_session_identity
     wait(installed(&env, &["init"]).spawn().unwrap()).ok();
     let path = env.root.join("config").join(".").join("fleet/config.toml");
     let mut config: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    config["runtime"]["cli"] =
-        toml::Value::String(support::stub_exe().to_string_lossy().into_owned());
-    config["runtime"]["callTimeoutMs"] = toml::Value::Integer(3000);
+    let prefix = config["runtimes"]["mux"]["keyPrefix"].clone();
+    set_runtime(
+        &mut config,
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("kind".into(), toml::Value::String("thurbox".into())),
+            (
+                "cli".into(),
+                toml::Value::String(support::stub_exe().to_string_lossy().into_owned()),
+            ),
+            ("callTimeoutMs".into(), toml::Value::Integer(3000)),
+            ("keyPrefix".into(), prefix),
+        ])),
+    );
     fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
     fs::create_dir_all(env.stub_dir()).unwrap();
     let mut command = installed(&env, &["up", "--poll-ms", "100"]);
@@ -558,7 +581,12 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         fn lost(&self, _: &SessionRef) -> Observation<bool> {
             Observation::Known(false)
         }
-        fn revive(&self, _: &SessionRef) -> Observation<EffectOutcome> {
+        fn revive(
+            &self,
+            _: &SessionRef,
+            _: Option<&str>,
+            _: &fleet_api::plan::SpawnSpec,
+        ) -> Observation<EffectOutcome> {
             panic!("the session is running")
         }
     }
@@ -576,6 +604,7 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         holder: "lease-clock-test".into(),
         forge: None,
         workspaces: None,
+        signals: None,
         change_request_defaults: Default::default(),
         forge_defaults: Default::default(),
         gateway: None,
@@ -802,7 +831,7 @@ fn separate_configurations_get_separate_starter_instances_and_boot_instructions(
     let a: toml::Value = toml::from_str(&fs::read_to_string(&one).unwrap()).unwrap();
     let b: toml::Value = toml::from_str(&fs::read_to_string(&two).unwrap()).unwrap();
     assert_ne!(
-        a["runtime"]["keyPrefix"], b["runtime"]["keyPrefix"],
+        a["runtimes"]["mux"]["keyPrefix"], b["runtimes"]["mux"]["keyPrefix"],
         "separate configs must not share session namespace"
     );
     assert_ne!(a["starter"]["workspace"], b["starter"]["workspace"]);
@@ -938,7 +967,7 @@ fn thurbox_bootstrap(name: &str) -> Env {
     env.fleet(&["init"]).ok();
     let mut config: toml::Value =
         toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
-    config["runtime"] = stub["runtime"].clone();
+    set_runtime(&mut config, stub["runtime"].clone());
     config["data"]["dir"] = toml::Value::String(env.data.to_string_lossy().into_owned());
     fs::write(&env.config, toml::to_string(&config).unwrap()).unwrap();
     env
@@ -946,12 +975,42 @@ fn thurbox_bootstrap(name: &str) -> Env {
 
 const APP_URL: &str = "https://example.invalid/org/app";
 
-fn app_source() -> &'static str {
-    if cfg!(windows) {
-        "C:\\src\\app"
-    } else {
-        "/src/app"
+/// A git checkout with one commit, which Fleet's worktree adapter makes
+/// the Task's workspace from.
+fn app_source(env: &Env) -> String {
+    let src = env.root.join("src").join("app");
+    if !src.exists() {
+        fs::create_dir_all(&src).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.test",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "first",
+            ],
+        ] {
+            let mut git = std::process::Command::new("git");
+            for var in fleet_runtime::worktree::GIT_LOCATION {
+                git.env_remove(var);
+            }
+            let out = git.arg("-C").arg(&src).args(args).output().unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
     }
+    src.to_string_lossy().into_owned()
+}
+
+/// The directory Fleet made for the Task `name`.
+fn workspace_dir(env: &Env, name: &str) -> Option<String> {
+    env.get(name)["status"]["workspace"]["dir"]
+        .as_str()
+        .map(str::to_string)
 }
 
 fn repositories_task(name: &str) -> serde_json::Value {
@@ -998,7 +1057,7 @@ fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
 fn spawned_reason(env: &Env, name: &str) -> String {
     env.status(name)["conditions"]
         .as_array()
-        .and_then(|cs| cs.iter().find(|c| c["type"] == "Spawned"))
+        .and_then(|cs| cs.iter().find(|c| c["type"] == "WorkspaceReady"))
         .and_then(|c| c["reason"].as_str())
         .unwrap_or("")
         .to_string()
@@ -1032,14 +1091,18 @@ fn up_reloads_runtime_repositories_without_a_restart() {
     up.assert_running();
 
     // A valid edit maps the repository: the same process spawns the Task.
-    fs::write(&env.config, with_mapping(&valid, APP_URL, app_source())).unwrap();
+    fs::write(
+        &env.config,
+        with_mapping(&valid, APP_URL, &app_source(&env)),
+    )
+    .unwrap();
     until_within(Duration::from_secs(60), || {
         env.status("app")["phase"] == "Briefed"
     });
     let create = create_of(&env, "app").expect("app spawned");
     assert_eq!(
         after(&create, "--repo-path"),
-        Some(app_source()),
+        workspace_dir(&env, "app").as_deref(),
         "{create:?}"
     );
     support::assert_condition(
@@ -1060,7 +1123,7 @@ fn up_reloads_runtime_repositories_without_a_restart() {
     let create = create_of(&env, "app2").expect("app2 spawned");
     assert_eq!(
         after(&create, "--repo-path"),
-        Some(app_source()),
+        workspace_dir(&env, "app2").as_deref(),
         "{create:?}"
     );
 

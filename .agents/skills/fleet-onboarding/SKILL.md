@@ -20,8 +20,8 @@ For a fresh v2 deployment, run `fleet init` to create native per-user config
 and the bundled editable VEGA workspace without Git or network. Read
 [Initialization and the VEGA starter](../../../docs/fleet/configuration.md#initialization-and-the-vega-starter)
 for config selection, the harness choice and the managed-file and conflict
-rules. Install Thurbox and authenticate the configured harness before
-`fleet up`; that foreground manager starts or reconnects VEGA as an ordinary
+rules. Put `runtime-mux` on PATH, install tmux, and authenticate the
+configured harness before `fleet up`; that foreground manager starts or reconnects VEGA as an ordinary
 Task and keeps all due Tasks progressing. Ctrl-C retains sessions and releases
 its lease; after a crash, wait for lease expiry before reconnecting.
 `fleet init --update` preserves edited files and writes conflict copies for
@@ -30,8 +30,9 @@ review.
 Run `fleet version --json` before applying Tasks. Apply each Task with
 `fleet apply -f FILE`, keeping `dispatch` false until it has been inspected.
 Use the fake-runtime examples for an isolated trial. Real sessions use the
-thurbox runtime adapter, on the host each Task names. Workers must use the
-same config as Mission Control; persist its data.dir instead of a differing
+runtime that `[hosts.<name>]` names for the host each Task names:
+`runtime-mux` by default (`fleet runtime check -- <program>` checks another).
+Workers must use the same config as Mission Control; persist its data.dir instead of a differing
 `up --data-dir` override. `fleet reconcile` is a bounded diagnostic command
 for use while the resident manager is stopped.
 

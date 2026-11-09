@@ -28,16 +28,13 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use fleet_api::Observation;
+use fleet_api::harness::{Trust, codex_override, profile};
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
-use fleet_api::runtime::{Activity, Runtime, TrustGap, WorkspaceTrust};
-use fleet_api::task::{
-    LOCAL_HOST as LOCAL, RepositoriesWorkspace, Repository, SessionRef, Workspace,
-    uid_of_session_key,
-};
+use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
+use fleet_api::task::{LOCAL_HOST as LOCAL, SessionRef, Workspace, uid_of_session_key};
 use fleet_api::workspace::WorkspaceRef;
 use fleet_exec::{Outcome, Spec, run};
 use serde_json::Value;
@@ -62,6 +59,10 @@ pub const MAX_CALLS_PER_OPERATION: u32 = 4;
 
 const BRIEF_META: &str = "fleet.brief";
 
+/// Why a `{repositories}` workspace reaches this runtime unmade: Fleet makes
+/// every one through its workspace port before the spawn.
+const NOT_MADE: &str = "Fleet makes a repositories workspace before the spawn; thurbox only runs a session in a directory";
+
 #[derive(Debug, Clone)]
 pub struct ThurboxConfig {
     /// The `thurbox-cli` executable: a path, or a name found on PATH.
@@ -71,11 +72,6 @@ pub struct ThurboxConfig {
     pub key_prefix: String,
     /// The variable each harness reads its model from, for `Task.spec.model`.
     pub model_env: BTreeMap<String, String>,
-    /// Each repository URL a Task may name, and its source checkout: an
-    /// absolute path on every host thurbox creates worktrees on.
-    pub repositories: Repositories,
-    /// What deleting a session does to its workspace.
-    pub cleanup: Cleanup,
     /// How each harness, by thurbox agent name, is trusted in its workspace.
     /// A harness not listed is never assumed trusted.
     pub workspace_trust: BTreeMap<String, TrustInterface>,
@@ -103,43 +99,6 @@ impl TrustInterface {
     }
 }
 
-/// The repository map, shared: whoever holds a clone may replace it while
-/// the runtime runs, and the next spawn reads the new map. `fleet up` does
-/// so when its config file changes.
-#[derive(Debug, Clone, Default)]
-pub struct Repositories(Arc<RwLock<BTreeMap<String, String>>>);
-
-impl Repositories {
-    pub fn new(map: BTreeMap<String, String>) -> Repositories {
-        Repositories(Arc::new(RwLock::new(map)))
-    }
-
-    pub(crate) fn source(&self, url: &str) -> Option<String> {
-        self.0
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(url)
-            .cloned()
-    }
-
-    /// Replace the whole map; true when it changed.
-    pub fn replace(&self, map: BTreeMap<String, String>) -> bool {
-        let mut current = self.0.write().unwrap_or_else(|e| e.into_inner());
-        let changed = *current != map;
-        *current = map;
-        changed
-    }
-}
-
-/// What deleting a session does to the worktrees thurbox created for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Cleanup {
-    /// `session delete --force`: the window and the worktrees go now.
-    Delete,
-    /// `session delete --soft`: the worktrees stay, restorable in thurbox.
-    Keep,
-}
-
 impl ThurboxConfig {
     pub fn new(cli: impl Into<OsString>) -> ThurboxConfig {
         ThurboxConfig {
@@ -150,13 +109,18 @@ impl ThurboxConfig {
                 ("claude".into(), "ANTHROPIC_MODEL".into()),
                 ("claude-code".into(), "ANTHROPIC_MODEL".into()),
             ]),
-            repositories: Repositories::default(),
-            cleanup: Cleanup::Delete,
-            workspace_trust: BTreeMap::from([
-                ("codex".into(), TrustInterface::Codex),
-                ("claude".into(), TrustInterface::Claude),
-                ("claude-code".into(), TrustInterface::Claude),
-            ]),
+            // The harness profiles' own trust, for the harnesses they know.
+            workspace_trust: ["codex", "claude", "claude-code"]
+                .into_iter()
+                .filter_map(|h| {
+                    let interface = match profile(h).trust() {
+                        Trust::LaunchOverride => TrustInterface::Codex,
+                        Trust::Dialog => TrustInterface::Claude,
+                        Trust::Unknown => return None,
+                    };
+                    Some((h.to_string(), interface))
+                })
+                .collect(),
         }
     }
 }
@@ -236,83 +200,8 @@ impl ThurboxRuntime {
         }
     }
 
-    /// A repositories workspace as thurbox's own worktree create: the first
-    /// repository's source is `--repo-path`, each other one an `--add-repo`,
-    /// all on one branch the adapter names after the session key. `release`
-    /// removes them, or keeps them, as `cleanup` says.
-    fn worktree_args(
-        &self,
-        key: &str,
-        w: &RepositoriesWorkspace,
-    ) -> Result<Vec<String>, EffectOutcome> {
-        let failed = |why: String| EffectOutcome::Failed { why };
-        let source = |r: &Repository| -> Result<String, EffectOutcome> {
-            let path = self
-                .cfg
-                .repositories
-                .source(&r.url)
-                .ok_or_else(|| EffectOutcome::Unmapped { url: r.url.clone() })?;
-            if !is_absolute(&path) {
-                return Err(failed(format!(
-                    "runtime.repositories: the source {path:?} of {} must be an absolute path on the host",
-                    r.url
-                )));
-            }
-            Ok(path)
-        };
-        let Some((primary, rest)) = w.repositories.split_first() else {
-            return Err(failed("the workspace names no repository".into()));
-        };
-        let mut args = vec![
-            "--repo-path".to_string(),
-            source(primary)?,
-            "--worktree-branch".to_string(),
-            format!("{}/{key}", self.cfg.key_prefix),
-        ];
-        if let Some(base) = &primary.reference {
-            args.extend(["--base-branch".to_string(), base.clone()]);
-        }
-        for r in rest {
-            let path = source(r)?;
-            // thurbox reads `PATH@BASE`: keep both sides free of `@` so the
-            // split can never be ambiguous.
-            let arg = match &r.reference {
-                Some(base) if !base.contains('@') && !path.contains('@') => {
-                    format!("{path}@{base}")
-                }
-                None if !path.contains('@') => path,
-                _ => {
-                    return Err(failed(format!(
-                        "thurbox cannot take repository {}: its source or ref contains '@'",
-                        r.url
-                    )));
-                }
-            };
-            args.extend(["--add-repo".to_string(), arg]);
-        }
-        Ok(args)
-    }
-
-    /// The configured source checkout of a repository the Task names.
-    fn source(&self, r: &Repository) -> Result<String, String> {
-        let path = self
-            .cfg
-            .repositories
-            .source(&r.url)
-            .ok_or_else(|| format!("repository {} is not in runtime.repositories", r.url))?;
-        if !is_absolute(&path) {
-            return Err(format!(
-                "runtime.repositories: the source {path:?} of {} must be an absolute path on the host",
-                r.url
-            ));
-        }
-        Ok(path)
-    }
-
-    /// The directory the agent keys the session's trust on, as the Task names
-    /// it: a `{dir}` itself, or the primary repository's source checkout,
-    /// which Codex and Claude Code both use for a worktree of it.
-    /// A workspace Fleet made names its own trust root, or is one.
+    /// The directory the agent keys the session's trust on: a `{dir}` itself,
+    /// and a workspace Fleet made names its own trust root, or is one.
     fn named_root(
         &self,
         workspace: &Workspace,
@@ -323,10 +212,7 @@ impl ThurboxRuntime {
         }
         match workspace {
             Workspace::Dir(w) => Ok(w.dir.clone()),
-            Workspace::Repositories(w) => match w.repositories.first() {
-                Some(primary) => self.source(primary),
-                None => Err("the workspace names no repository".into()),
-            },
+            Workspace::Repositories(_) => Err(NOT_MADE.into()),
         }
     }
 
@@ -382,7 +268,13 @@ impl ThurboxRuntime {
         let Some(args) = row["agent_args"].as_array() else {
             return Observation::unknown("thurbox does not report the session's agent arguments");
         };
-        if args.len() != 2 || args[0] != "-c" || args[1] != expected.as_str() {
+        // Fleet's override comes last, after the profile's hooks: Codex
+        // keeps only the last `projects=`, so no other may precede it.
+        let n = args.len();
+        let other_trust = args[..n.saturating_sub(1)]
+            .iter()
+            .any(|a| a.as_str().is_some_and(|a| a.starts_with("projects=")));
+        if n < 2 || args[n - 2] != "-c" || args[n - 1] != expected.as_str() || other_trust {
             return mismatch(format!(
                 "the session was not started with Fleet's trust in {root}; delete the Task and apply it again, so the runtime starts one that is"
             ));
@@ -393,22 +285,7 @@ impl ThurboxRuntime {
         let member = match (ready, workspace) {
             (Some(r), _) => cwd == r.dir,
             (None, Workspace::Dir(w)) => cwd == w.dir,
-            (None, Workspace::Repositories(w)) => {
-                let Some(trees) = row["worktrees"].as_array() else {
-                    return Observation::unknown("thurbox does not report the session's worktrees");
-                };
-                let sources: Result<Vec<String>, String> =
-                    w.repositories.iter().map(|r| self.source(r)).collect();
-                let Ok(sources) = sources else {
-                    return mismatch("a repository of the Task has no source checkout".into());
-                };
-                trees.len() == sources.len()
-                    && trees
-                        .iter()
-                        .zip(&sources)
-                        .all(|(t, s)| t["repo_path"] == s.as_str())
-                    && trees[0]["worktree_path"] == cwd
-            }
+            (None, Workspace::Repositories(_)) => return mismatch(NOT_MADE.into()),
         };
         if !member {
             return mismatch(format!(
@@ -663,19 +540,6 @@ fn codex_process(value: &Value) -> bool {
         .is_some_and(|p| matches!(p.rsplit(['/', '\\']).next(), Some("codex" | "codex.exe")))
 }
 
-/// Codex's launch override trusting `root`. One `projects` key with a TOML
-/// inline table: Codex splits a dotted `-c` key on every `.`, and a path has
-/// them.
-fn codex_override(root: &str) -> Result<String, String> {
-    if root.chars().any(char::is_control) {
-        return Err(format!("cannot name {root:?} in a Codex trust override"));
-    }
-    let escaped = root.replace('\\', "\\\\").replace('"', "\\\"");
-    Ok(format!(
-        "projects={{\"{escaped}\"={{trust_level=\"trusted\"}}}}"
-    ))
-}
-
 /// The path as an agent spells its cwd: no trailing separator. A `.` or
 /// `..` component, or an empty one, is refused: only the host's filesystem
 /// can resolve it, and a remote host's is out of reach.
@@ -724,25 +588,7 @@ fn claude_trust_dialog(session: &SessionRef, capture: &Value) -> bool {
     else {
         return false;
     };
-    let lines: Vec<&str> = output.lines().map(str::trim).collect();
-    let Some(header) = lines.iter().rposition(|l| *l == "Accessing workspace:") else {
-        return false;
-    };
-    let Some(footer) = lines[header..]
-        .iter()
-        .position(|l| l.starts_with("Enter to confirm"))
-        .map(|n| header + n)
-    else {
-        return false;
-    };
-    let choice = |want: &str| {
-        lines[header..footer]
-            .iter()
-            .any(|l| l.trim_start_matches('❯').trim() == want)
-    };
-    usize::try_from(cursor).is_ok_and(|c| c > header && c < footer)
-        && choice("No, exit")
-        && choice("Yes, I trust this folder")
+    usize::try_from(cursor).is_ok_and(|c| fleet_api::harness::claude_trust_dialog(output, c))
 }
 
 /// Whether Codex 0.164's trust dialog is on the visible screen: its question
@@ -757,9 +603,7 @@ fn codex_trust_dialog(session: &SessionRef, capture: &Value) -> Result<bool, &'s
     ) else {
         return Err("the capture is not this session's visible screen");
     };
-    let lines: Vec<&str> = output.lines().map(str::trim).collect();
-    Ok(lines.iter().any(|l| l.starts_with("Trust this folder?"))
-        && lines.iter().any(|l| l.contains("Trust and continue")))
+    Ok(fleet_api::harness::codex_trust_dialog(output))
 }
 
 /// Absolute on the host the path is for: a POSIX path, or a Windows drive
@@ -783,19 +627,6 @@ fn row_stopped(row: &Value) -> Observation<bool> {
     match row["stopped"].as_bool() {
         Some(stopped) => Observation::Known(stopped),
         None => Observation::unknown("thurbox does not say whether the session is stopped"),
-    }
-}
-
-/// What a `session get` row says the agent is doing. A stopped session is
-/// never Idle; `unknown`, any other word or no field is Unknown.
-fn row_activity(row: &Value) -> Observation<Activity> {
-    if matches!(row_stopped(row), Observation::Known(true)) {
-        return Observation::unknown("a stopped session reports no activity");
-    }
-    match row["activity"].as_str() {
-        Some("active") => Observation::Known(Activity::Active),
-        Some("idle") => Observation::Known(Activity::Idle),
-        other => Observation::unknown(format!("thurbox reports activity {other:?}")),
     }
 }
 
@@ -951,10 +782,11 @@ impl Runtime for ThurboxRuntime {
                 });
             }
             (None, Workspace::Dir(w)) => vec!["--repo-path".to_string(), w.dir.clone()],
-            (None, Workspace::Repositories(w)) => match self.worktree_args(&spec.key, w) {
-                Ok(args) => args,
-                Err(outcome) => return Observation::Known(outcome),
-            },
+            (None, Workspace::Repositories(_)) => {
+                return Observation::Known(EffectOutcome::Failed {
+                    why: NOT_MADE.into(),
+                });
+            }
         };
         let key = self.thurbox_key(&spec.key);
         let name: String = spec
@@ -983,6 +815,18 @@ impl Runtime for ThurboxRuntime {
         args.extend(workspace);
         if spec.host != LOCAL {
             args.extend(["--host".to_string(), spec.host.clone()]);
+        }
+        // The hooks that report the agent's state through `fleet signal`, as
+        // its harness profile installs them; thurbox keeps them with the
+        // session and replays them on restart.
+        let hooks = match trust {
+            TrustInterface::Codex => profile("codex").hook_args(),
+            TrustInterface::Claude => profile("claude").hook_args(),
+            TrustInterface::Ungated => profile(&spec.harness).hook_args(),
+        };
+        for a in hooks {
+            // `=`: thurbox takes a value starting with `-` only joined.
+            args.push(format!("--agent-arg={a}"));
         }
         if *trust == TrustInterface::Codex {
             let trust = self
@@ -1268,11 +1112,9 @@ impl Runtime for ThurboxRuntime {
             }
             Observation::Unknown { why } => return Observation::Unknown { why },
         }
-        let cleanup = match self.cfg.cleanup {
-            Cleanup::Delete => "--force",
-            Cleanup::Keep => "--soft",
-        };
-        match self.call(&["session", "delete", &session.id, cleanup]) {
+        // Fleet makes and cleans every repositories workspace: thurbox only
+        // ever ran the session in a directory, and has no worktree to keep.
+        match self.call(&["session", "delete", &session.id, "--force"]) {
             Answer::Ok(_) => Observation::Known(EffectOutcome::Released),
             Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
             Answer::Unknown(why) => Observation::unknown(why),
@@ -1309,7 +1151,14 @@ impl Runtime for ThurboxRuntime {
     /// `restart --if-missing`: thurbox relaunches the agent only when its
     /// window is gone, resuming its conversation in the same row and
     /// worktree, and leaves a running or stopped session alone.
-    fn revive(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+    /// thurbox restarts the agent with its own resume arguments, which it
+    /// keeps with the session: the conversation is its to name.
+    fn revive(
+        &self,
+        session: &SessionRef,
+        _: Option<&str>,
+        _: &SpawnSpec,
+    ) -> Observation<EffectOutcome> {
         match self.call(&["session", "restart", &session.id, "--if-missing", "--json"]) {
             Answer::Ok(_) => Observation::Known(EffectOutcome::Revived),
             Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
@@ -1319,18 +1168,6 @@ impl Runtime for ThurboxRuntime {
 
     fn can_pause(&self) -> bool {
         true
-    }
-
-    /// thurbox reports `activity` on `get`: `active`, `idle`, `unknown` or
-    /// `stopped`. Only `idle` is Idle. Its `state` words are no proof of
-    /// idleness: they read `done` while background shells, Monitors or
-    /// crons are still pending. A thurbox without the field is Unknown, so
-    /// it never pauses.
-    fn activity(&self, session: &SessionRef) -> Observation<Activity> {
-        match self.own_row(session) {
-            Observation::Known(row) => row_activity(&row),
-            Observation::Unknown { why } => Observation::Unknown { why },
-        }
     }
 
     fn paused(&self, session: &SessionRef) -> Observation<bool> {
@@ -1355,7 +1192,12 @@ impl Runtime for ThurboxRuntime {
 
     /// `session start`: thurbox puts the pane back and resumes the
     /// conversation, and leaves a running session alone.
-    fn resume(&self, session: &SessionRef) -> Observation<EffectOutcome> {
+    fn resume(
+        &self,
+        session: &SessionRef,
+        _: Option<&str>,
+        _: &SpawnSpec,
+    ) -> Observation<EffectOutcome> {
         if let Some(refused) = self.not_this_session(session) {
             return refused;
         }
@@ -1370,6 +1212,7 @@ impl Runtime for ThurboxRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fleet_api::task::{RepositoriesWorkspace, Repository};
 
     fn workspace(list: &[(&str, Option<&str>)]) -> RepositoriesWorkspace {
         RepositoriesWorkspace {
@@ -1385,14 +1228,7 @@ mod tests {
     }
 
     fn runtime() -> ThurboxRuntime {
-        let mut cfg = ThurboxConfig::new("thurbox-cli");
-        cfg.repositories = Repositories::new(BTreeMap::from([
-            ("https://example.invalid/a".into(), "/src/a".into()),
-            ("https://example.invalid/b".into(), "/src/b".into()),
-            ("https://example.invalid/at".into(), "/src/at@x".into()),
-            ("https://example.invalid/rel".into(), "src/rel".into()),
-        ]));
-        ThurboxRuntime::new(cfg)
+        ThurboxRuntime::new(ThurboxConfig::new("thurbox-cli"))
     }
 
     #[test]
@@ -1416,92 +1252,6 @@ mod tests {
     }
 
     #[test]
-    fn repositories_become_one_worktree_create_on_a_branch_the_adapter_names() {
-        let args = runtime()
-            .worktree_args(
-                "t.u1",
-                &workspace(&[
-                    ("https://example.invalid/a", None),
-                    ("https://example.invalid/b", Some("dev")),
-                ]),
-            )
-            .unwrap();
-        assert_eq!(
-            args,
-            [
-                "--repo-path",
-                "/src/a",
-                "--worktree-branch",
-                "fleet/t.u1",
-                "--add-repo",
-                "/src/b@dev"
-            ]
-        );
-    }
-
-    #[test]
-    fn an_unmapped_repository_is_its_own_answer_and_a_replaced_map_is_read_next() {
-        let rt = runtime();
-        let ws = workspace(&[("https://example.invalid/x", None)]);
-        assert_eq!(
-            rt.worktree_args("t.u1", &ws).unwrap_err(),
-            EffectOutcome::Unmapped {
-                url: "https://example.invalid/x".into()
-            }
-        );
-        let handle = rt.cfg.repositories.clone();
-        let map = BTreeMap::from([("https://example.invalid/x".into(), "/src/x".into())]);
-        assert!(handle.replace(map.clone()));
-        assert!(!handle.replace(map), "the same map is no change");
-        let args = rt.worktree_args("t.u1", &ws).unwrap();
-        assert_eq!(args[..2], ["--repo-path", "/src/x"]);
-    }
-
-    #[test]
-    fn a_source_thurbox_cannot_encode_is_refused() {
-        let rt = runtime();
-        for (list, want) in [
-            (
-                vec![("https://example.invalid/rel", None)],
-                "must be an absolute path",
-            ),
-            (
-                vec![
-                    ("https://example.invalid/a", None),
-                    ("https://example.invalid/at", None),
-                ],
-                "contains '@'",
-            ),
-            (
-                vec![
-                    ("https://example.invalid/a", None),
-                    ("https://example.invalid/b", Some("v@1")),
-                ],
-                "contains '@'",
-            ),
-        ] {
-            let err = rt.worktree_args("t.u1", &workspace(&list)).unwrap_err();
-            let EffectOutcome::Failed { why } = &err else {
-                panic!("{list:?}: {err:?}");
-            };
-            assert!(why.contains(want), "{list:?}: {why}");
-        }
-    }
-
-    #[test]
-    fn a_codex_trust_override_names_one_directory_as_toml() {
-        assert_eq!(
-            codex_override("/home/u/.cache/a b").unwrap(),
-            r#"projects={"/home/u/.cache/a b"={trust_level="trusted"}}"#
-        );
-        assert_eq!(
-            codex_override(r#"C:\work\say "hi""#).unwrap(),
-            r#"projects={"C:\\work\\say \"hi\""={trust_level="trusted"}}"#
-        );
-        assert!(codex_override("/a\nb").is_err());
-    }
-
-    #[test]
     fn a_filesystem_root_is_never_a_trust_root() {
         let rt = runtime();
         for dir in ["/", "C:\\", "C:/"] {
@@ -1519,7 +1269,8 @@ mod tests {
             ("https://example.invalid/a", None),
             ("https://example.invalid/b", None),
         ]));
-        assert_eq!(rt.trust_root("remote", &repos, None).unwrap(), "/src/a");
+        // Fleet makes a repositories workspace: unmade, it has no root.
+        assert!(rt.trust_root("remote", &repos, None).is_err());
         // A workspace Fleet made names its trust root, or is its own.
         let mut ready = WorkspaceRef {
             key: "t.u1".into(),
@@ -1605,48 +1356,19 @@ mod tests {
     }
 
     #[test]
-    fn only_an_idle_activity_is_idle_and_a_stopped_one_is_paused() {
+    fn a_stopped_row_is_paused() {
         use serde_json::json;
-        let row = |v: Value| v;
-        for (fields, activity, stopped) in [
-            (
-                json!({"stopped": false, "activity": "idle"}),
-                Some(Activity::Idle),
-                Some(false),
-            ),
-            (
-                json!({"stopped": false, "activity": "active"}),
-                Some(Activity::Active),
-                Some(false),
-            ),
-            (
-                json!({"stopped": false, "activity": "unknown"}),
-                None,
-                Some(false),
-            ),
-            (json!({"stopped": false}), None, Some(false)),
-            (
-                json!({"stopped": false, "activity": "stopped"}),
-                None,
-                Some(true),
-            ),
-            (
-                json!({"stopped": true, "activity": "idle"}),
-                None,
-                Some(true),
-            ),
-            (json!({"activity": "idle"}), Some(Activity::Idle), None),
+        for (row, stopped) in [
+            (json!({"stopped": false, "activity": "idle"}), Some(false)),
+            (json!({"stopped": false}), Some(false)),
+            (json!({"stopped": false, "activity": "stopped"}), Some(true)),
+            (json!({"stopped": true, "activity": "idle"}), Some(true)),
+            (json!({"activity": "idle"}), None),
         ] {
-            let r = row(fields.clone());
-            match (row_activity(&r), activity) {
-                (Observation::Known(a), Some(want)) => assert_eq!(a, want, "{fields}"),
+            match (row_stopped(&row), stopped) {
+                (Observation::Known(s), Some(want)) => assert_eq!(s, want, "{row}"),
                 (Observation::Unknown { .. }, None) => {}
-                (got, want) => panic!("{fields}: activity {got:?}, want {want:?}"),
-            }
-            match (row_stopped(&r), stopped) {
-                (Observation::Known(s), Some(want)) => assert_eq!(s, want, "{fields}"),
-                (Observation::Unknown { .. }, None) => {}
-                (got, want) => panic!("{fields}: stopped {got:?}, want {want:?}"),
+                (got, want) => panic!("{row}: stopped {got:?}, want {want:?}"),
             }
         }
     }

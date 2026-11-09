@@ -1348,9 +1348,13 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
     let (plan, st) = run(&obj, lost_obs(true));
     assert_eq!(plan.effects.len(), 1, "{plan:#?}");
     assert_eq!(plan.effects[0].key, "task/t/u7/revive/1");
-    assert_eq!(
-        plan.effects[0].action,
-        Action::Revive { session: session() }
+    assert!(
+        matches!(
+            &plan.effects[0].action,
+            Action::Revive { session: s, conversation: None, launch }
+                if *s == session() && launch.host == s.host && launch.key == s.key
+        ),
+        "{plan:#?}"
     );
     assert_eq!(st.phase, Phase::Briefed, "never respawned");
     assert_eq!(cond(&st, "SessionLost").status, ConditionStatus::True);
@@ -1378,7 +1382,8 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
     assert!(text.ends_with("do it"), "the brief again: {text}");
     assert!(st.inbox.len() == 1, "the inbox waits for the note");
 
-    // Delivered: the note is done and the inbox goes next.
+    // Delivered, and the agent's prompt hook reported it: the note is done
+    // and the inbox goes next.
     let mut st = st;
     st.receipts.insert(
         "task/t/u7/catchup/1".into(),
@@ -1391,7 +1396,12 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
             }),
         ),
     );
-    let (plan, st) = run(&with_status(&obj, &st), lost_obs(false));
+    let mut obs = lost_obs(false);
+    obs.signals = Some(Observation::Known(fleet_api::signal::Reported {
+        prompts: [(fleet_api::signal::prompt_digest(text), NOW + RETRY_DELAY_MS)].into(),
+        ..Default::default()
+    }));
+    let (plan, st) = run(&with_status(&obj, &st), obs);
     assert_eq!(st.catch_up, None);
     assert!(!st.receipts.contains_key("task/t/u7/catchup/1"));
     assert_eq!(plan.effects.len(), 1, "{plan:#?}");
@@ -1647,9 +1657,13 @@ fn a_resume_without_its_receipt_is_read_back_and_retried_only_while_stopped() {
     );
     assert_eq!(plan.effects.len(), 1, "{plan:#?}");
     assert_eq!(plan.effects[0].key, "task/t/u7/resume/2");
-    assert_eq!(
-        plan.effects[0].action,
-        Action::Resume { session: session() }
+    assert!(
+        matches!(
+            &plan.effects[0].action,
+            Action::Resume { session: s, conversation: None, launch }
+                if *s == session() && launch.host == s.host && launch.key == s.key
+        ),
+        "{plan:#?}"
     );
 
     // Unknown: wait, and do nothing.

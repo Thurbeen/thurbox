@@ -25,6 +25,19 @@ fn codex_trust(root: &str) -> String {
     format!("projects={{\"{escaped}\"={{trust_level=\"trusted\"}}}}")
 }
 
+/// Codex's hook, as its harness profile installs it.
+const CODEX_NOTIFY: &str = r#"notify=["fleet","signal","idle"]"#;
+
+/// What Fleet gives Codex: its hook, then its trust of `root` alone.
+fn codex_args(root: &str) -> Vec<String> {
+    vec![
+        "-c".into(),
+        CODEX_NOTIFY.into(),
+        "-c".into(),
+        codex_trust(root),
+    ]
+}
+
 fn task(name: &str, harness: &str) -> Value {
     let mut t = support::task(name, true);
     t["spec"]["harness"] = json!(harness);
@@ -162,7 +175,7 @@ fn codex_starts_with_session_scoped_trust_for_exactly_its_directory() {
     let create = &argv_of(&env, "create")[0];
     assert_eq!(
         agent_args(create),
-        ["-c".to_string(), codex_trust(&path("/work/c1"))],
+        codex_args(&path("/work/c1")),
         "one launch override for the workspace, nothing broader: {create:?}"
     );
     let st = env.status("c1");
@@ -171,21 +184,25 @@ fn codex_starts_with_session_scoped_trust_for_exactly_its_directory() {
     assert_eq!(argv_of(&env, "message send").len(), 1);
 }
 
+/// Fleet makes a repositories workspace; the fake adapter keeps it as a
+/// record, so no source checkout is needed.
+const FAKE_WORKSPACES: &str = "[workspaces]\nkind = \"fake\"\ndir = \"fake\"\n";
+
 #[test]
-fn codex_on_repositories_is_trusted_on_its_primary_source_checkout_only() {
-    let env = env("trust-codex-repos", "");
+fn codex_on_repositories_is_trusted_on_the_workspace_fleet_made_only() {
+    let env = env("trust-codex-repos", FAKE_WORKSPACES);
     initial_codex(&env);
     env.apply(repositories_task("r1", "codex")).ok();
     env.reconcile().ok();
 
-    // Codex keys a worktree's trust on the main checkout of its repository;
-    // only the primary is the session's cwd, so only its source is named.
+    // Only the primary directory is the session's cwd, so only its root is
+    // named; the other repositories are spanned, not trusted.
+    let dir = env.get("r1")["status"]["workspace"]["dir"]
+        .as_str()
+        .expect("the workspace Fleet made")
+        .to_string();
     let create = &argv_of(&env, "create")[0];
-    assert_eq!(
-        agent_args(create),
-        ["-c".to_string(), codex_trust(&path("/src/fleet"))],
-        "{create:?}"
-    );
+    assert_eq!(agent_args(create), codex_args(&dir), "{create:?}");
     assert_eq!(env.status("r1")["phase"], "Briefed");
     assert_condition(&env.status("r1"), "WorkspaceTrusted", "True", "Trusted");
 }
@@ -324,7 +341,7 @@ fn a_remote_trust_root_is_normalised_or_refused() {
     let create = &argv_of(&env, "create")[0];
     assert_eq!(
         agent_args(create),
-        ["-c".to_string(), codex_trust(&path("/work/r1"))],
+        codex_args(&path("/work/r1")),
         "{create:?}"
     );
     // `..` needs the host's filesystem to resolve: the spawn is refused.
@@ -343,7 +360,7 @@ fn a_remote_trust_root_is_normalised_or_refused() {
 
 #[test]
 fn claude_at_its_trust_dialog_is_never_briefed_and_asks_for_one_time_trust() {
-    let env = env("trust-claude", "");
+    let env = env("trust-claude", FAKE_WORKSPACES);
     claude_at_trust_dialog(&env, &path("/stub/worktrees/1-0/fleet-r1"));
     env.apply(repositories_task("r1", "claude")).ok();
     env.reconcile().ok();
@@ -355,18 +372,19 @@ fn claude_at_its_trust_dialog_is_never_briefed_and_asks_for_one_time_trust() {
         argv_of(&env, "key").is_empty(),
         "never a keystroke into a dialog"
     );
-    assert!(
-        agent_args(&argv_of(&env, "create")[0]).is_empty(),
+    let args = agent_args(&argv_of(&env, "create")[0]);
+    assert_eq!(args[0], "--settings", "its hooks: {args:?}");
+    assert_eq!(
+        args.len(),
+        2,
         "Claude has no per-session trust interface; nothing is invented"
     );
     assert_condition(&st, "WorkspaceTrusted", "False", "Unsupported");
     assert_condition(&st, "NeedsAttention", "True", "WorkspaceUntrusted");
-    // Actionable: Claude keys a worktree's trust on its source checkout.
+    // Actionable: it names the directory to trust, the workspace's root.
     let message = condition(&st, "WorkspaceTrusted")["message"].to_string();
-    assert!(
-        message.contains(&path("/src/fleet").replace('\\', "\\\\")),
-        "{message}"
-    );
+    let dir = env.get("r1")["status"]["workspace"]["dir"].to_string();
+    assert!(message.contains(dir.trim_matches('"')), "{message}");
     // Thurbox's own way to trust ahead of launch, for every later session.
     assert!(message.contains("session.pre_launch"), "{message}");
 
@@ -502,7 +520,7 @@ fn an_aliased_codex_harness_waits_for_its_mapping_then_starts_trusted() {
     let create = &argv_of(&env, "create")[0];
     assert_eq!(
         agent_args(create),
-        ["-c".to_string(), codex_trust(&path("/work/c1"))],
+        codex_args(&path("/work/c1")),
         "{create:?}"
     );
     let st = env.status("c1");
@@ -540,7 +558,11 @@ fn codex_declared_ungated_adds_no_trust_and_is_still_briefed() {
     initial_codex(&env);
     env.apply(task("n1", "codex")).ok();
     env.reconcile().ok();
-    assert!(agent_args(&argv_of(&env, "create")[0]).is_empty());
+    assert_eq!(
+        agent_args(&argv_of(&env, "create")[0]),
+        ["-c", CODEX_NOTIFY],
+        "its hook, and no trust"
+    );
     let st = env.status("n1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
     assert_condition(&st, "WorkspaceTrusted", "True", "Trusted");

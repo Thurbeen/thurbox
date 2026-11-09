@@ -15,12 +15,11 @@ fn text(path: &Path) -> String {
 }
 
 fn sh(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .expect("git");
+    let mut git = std::process::Command::new("git");
+    for var in fleet_runtime::worktree::GIT_LOCATION {
+        git.env_remove(var);
+    }
+    let out = git.arg("-C").arg(dir).args(args).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {out:?}");
 }
 
@@ -218,5 +217,32 @@ fn every_repository_after_the_first_is_named_as_an_extra_dir() {
     assert_eq!(
         ws.find("local", "t.u1"),
         Observation::Known(Some(*workspace))
+    );
+}
+
+#[test]
+fn a_workspace_whose_marker_predates_repository_names_is_cleaned_with_its_work_kept() {
+    let (base, ws, named) = setup("old-marker");
+    let Observation::Known(EffectOutcome::Materialized { workspace, .. }) =
+        ws.materialize("local", "t.u1", &named)
+    else {
+        panic!("not materialized");
+    };
+    // A marker an earlier Fleet wrote: its worktrees carry no name.
+    let marker = base.join("workspaces/t.u1/.fleet-workspace.json");
+    let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+    for w in old["worktrees"].as_array_mut().unwrap() {
+        w.as_object_mut().unwrap().remove("name");
+    }
+    fs::write(&marker, old.to_string()).unwrap();
+    fs::write(Path::new(&workspace.dir).join("draft.txt"), "work\n").unwrap();
+
+    assert_eq!(
+        ws.clean(&workspace),
+        Observation::Known(EffectOutcome::Deleted)
+    );
+    sh(
+        &base.join("src"),
+        &["rev-parse", "--verify", "refs/fleet/preserved/t.u1/app"],
     );
 }

@@ -81,7 +81,7 @@ fleet-api          pure           types and ports
 fleet-controllers  pure           controllers and gate   -> api
 fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
-fleet-runtime      adapter        thurbox-cli, fake      -> api, exec
+fleet-runtime      adapter        exec, thurbox-cli, fake -> api, exec
 fleet-forge        adapter        az, curl, gh, glab, fake -> api, exec
 fleet-gateway      adapter        curl (Slack, Discord), fake -> api, exec
 fleet-plugin       adapter        bounded plugin stdio   -> api, exec
@@ -286,9 +286,10 @@ Guarantees, each with its test:
   `pause/<n>`. The session must be observed not stopped and not known
   lost, its inbox empty, and no brief, entry, catch-up note, revive or
   resume in flight. Active or Unknown clears `status.idleSince`; the idle
-  time starts again at the next Idle answer. Unknown never pauses, and on
-  a runtime that cannot pause the manager reads the agent's activity as
-  Unknown. `Paused=True/Idle` changes no
+  time starts again at the next Idle answer. Activity is what the agent's
+  own hooks report through `fleet signal`, never the runtime's; Unknown
+  never pauses, and a runtime that cannot pause never answers `paused`
+  Known false. `Paused=True/Idle` changes no
   phase and raises no `WorkerGone`, `SessionLost` or revive.
 - **Resume.** An inbox entry for a paused Task plans one `Resume` under
   `resume/<n>`; entries that arrive meanwhile wait in the inbox. Resumes
@@ -307,9 +308,12 @@ Guarantees, each with its test:
   `status.inbox` as `cli/<user>`, under `task/<name>/<uid>/send/<n>`, `n`
   the resourceVersion appended against. The oldest entry not given up on is
   delivered as the brief is: to a session observed ready on that pass, under
-  its key as the runtime intent key, journaled, one entry per pass, at most
-  three sends; a lost answer is read back from the journal, never resent
-  blindly. A Known receipt moves the entry's receipt into
+  its key as the runtime intent key, one entry per pass, at most three
+  sends. It counts as delivered once the agent's prompt hook reports its
+  digest after the send's intent: a report of the same text before it
+  proves an earlier send, not this one. A lost answer is settled by that
+  report alone, never resent (the runtime's journal decides only for a
+  harness with no prompt hook). A Known receipt moves the entry's receipt into
   `status.deliveries` and the entry out of `status.inbox` in one write, and
   drops its intent, receipt and attempt records. Three refused sends raise
   `NeedsAttention/DeliveryFailed` naming the entry, which stays while later
@@ -826,18 +830,24 @@ refused.
 A Session is one running agent (`fleet_api::session`): the unit every
 call below starts, observes, briefs, sends to or releases. A Task owns at
 most one, named by `status.session` (`SessionRef`: the runtime's `id`, the
-`host` and Fleet's deterministic `key`). `status.sessionState` is what the
-runtime last proved about it, folded by `SessionState::observe` from the
-Known answers of `find`, `lost`, `paused` and `activity`: `Gone` when a
+`host` and Fleet's deterministic `key`). `status.sessionState` is what Fleet
+last proved about it, folded by `SessionState::observe` from the Known
+answers of `find`, `lost` and `paused`, and the activity the agent's hooks
+reported through `fleet signal` (see [signal contract](#signal-contract)): `Gone` when a
 readable list lacks the Session, else `Lost`, else `Paused`, else `Idle`
 or `Running` by activity, else `Running` on any proof of presence. Unknown
 answers keep the last state. Nothing decides on the state; a view reads it.
 
 `fleet_api::runtime::Runtime`: `host`, `create_dir`, `remove_dir`,
 `prepare_execution`, `env_source`, `spawn`, `find`, `ready`, `workspace_trust`,
-`brief`, `brief_delivered`, `at_rest`, `release`, `lost`, `revive`, `activity`,
+`brief`, `brief_delivered`, `at_rest`, `release`, `lost`, `revive`,
 `paused`, `pause` and `resume`, each answering Known or Unknown, and
-`can_pause`. `create_dir` makes a directory with its missing parents on a host
+`can_pause`. A runtime reports no activity: the agent's hooks do. `revive`
+and `resume` take the conversation the hooks last reported, which the
+harness profile's resume argv names, and the spawn's launch (harness,
+workspace, environment), for a runtime that starts the argv itself; the
+manager completes it with the environment it froze and the signal file, as
+for a spawn. `create_dir` makes a directory with its missing parents on a host
 and says whether it made it; `remove_dir` removes one and what it holds, a
 directory already gone included. The thurbox adapter does both on the local host
 and refuses any other, since thurbox has no verb that makes or removes a
@@ -845,6 +855,15 @@ directory on a remote host. Each adapter reports its longest single operation
 (`operation_bound`), and `fleet reconcile` refuses a lease that could not
 outlast it.
 
+- **exec:** every call is one bounded `<program> <verb>` of the
+  [runtime protocol](../runtime/README.md#the-runtime-protocol), the program
+  chosen by the host. `spawn` is `start` of the harness profile's launch argv
+  with the spawn's environment, `FLEET_SIGNAL_FILE` included; `revive` and
+  `resume` are `start` of its resume argv. A session's id is its runtime key,
+  `<keyPrefix>.<uid>`, so a restart keeps it. `ready`, `workspace_trust` and
+  a running agent's `at_rest` read the agent's signals; `lost` is an
+  `exited` process. It cannot pause: `paused` stays Unknown.
+  `e2e_runtime_exec` drives the real `runtime-mux` through it.
 - **thurbox:** every call is one bounded `thurbox-cli … --json`. A session's
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key. The brief's delivery
@@ -868,19 +887,22 @@ outlast it.
   reporting `hook_corroboration: "missing"`, and `revive` is `session
   restart --if-missing`, which resumes the conversation in the same row and
   worktree. A session with no window is at rest. `paused` reads `stopped`
-  and `activity: "stopped"` from `session get`. Only `activity: "idle"` is
-  Idle; `unknown`, `stopped` or a missing field is Unknown, and `state`
-  words never prove Idle. `pause` is
+  and `activity: "stopped"` from `session get`. `pause` is
   `session stop` and `resume` is `session start`, each after checking that
   the key still belongs to the recorded id. `e2e_task_pause` covers both.
+  The adapter passes the harness profile's hooks and Codex trust as
+  `--agent-arg`s; thurbox's agent registry still builds the rest of the
+  argv and resumes the conversation itself.
 - **fake:** a file-backed host for tests and trials, with injectable faults
-  (lost answers, refusals, delays, hangs). It runs no process.
+  (lost answers, refusals, delays, hangs). It runs no process: it records
+  the harness profile's launch and resume argv, and plays each agent's
+  prompt hook by appending to its signal file, unless silenced.
 
-The runtime owns the workspace unless Fleet made it (see
-[Workspace contract](#workspace-contract)). When Fleet made it, the spawn's
-`ready` names the directory, and the runtime runs the session there and
-makes nothing. Otherwise Fleet passes `spec.workspace` in the spawn and
-deletes the session; every adapter keeps these rules:
+Fleet makes every `repositories` workspace (see
+[Workspace contract](#workspace-contract)): the spawn's `ready` names the
+directory, and the runtime runs the session there and makes nothing. A `dir`
+workspace is passed in `spec.workspace` as it is. Every adapter keeps these
+rules:
 
 - **Materialization.** The adapter decides how a workspace becomes files:
   a worktree, a clone, a copy or a restored snapshot. Branches, bases,
@@ -900,36 +922,16 @@ deletes the session; every adapter keeps these rules:
   workspace-trust interface for is `Known(TrustUnmapped { harness })`. The
   adapter answers both before any external call.
 
-Thurbox maps a `{dir}` to `--repo-path`. It maps a ready workspace Fleet
-made to `--repo-path dir` and one `--add-dir` per `extraDirs` entry, and
-makes no worktree. It maps `{repositories}` to one worktree create:
+Thurbox maps a `{dir}` to `--repo-path`. It maps the workspace Fleet made
+for a `{repositories}` Task to `--repo-path dir` and one `--add-dir` per
+`extraDirs` entry, and makes no worktree: Fleet makes and cleans every
+repositories workspace through the [workspace
+contract](#workspace-contract). A `{repositories}` spawn that reaches the
+adapter unmade fails.
 
-- The first repository's source is `--repo-path`, and its `ref` is
-  `--base-branch`.
-- Each other repository is `--add-repo PATH[@REF]`. Thurbox starts a
-  repository without a `ref` from the primary's `ref`.
-- Every worktree is on the branch `<keyPrefix>/<session key>`. A source
-  repository with a branch named exactly `<keyPrefix>` cannot hold these
-  branches, so its spawns fail.
-- `runtime.repositories` maps each URL to its source checkout on the host. A
-  relative source is refused when the config loads. An unmapped URL is
-  `Unmapped`. An `@` that `PATH@REF` cannot carry fails the spawn.
-- A running `fleet up` reads `runtime.repositories` again before each sweep.
-  The next spawn uses the new map. See
-  [reloading](configuration.md#reloading-runtimerepositories).
-- `release` runs `session delete --force` by default. Thurbox then removes
-  the window and the worktrees it created.
-- With `runtime.workspaceCleanup = "keep"`, `release` runs
-  `session delete --soft`. The worktrees stay, and thurbox can restore the
-  session.
+- `release` runs `session delete --force`: thurbox removes the window.
 - Cleanup is best effort. Fleet reads a delete that exits 0 as released,
-  even when thurbox reports a worktree or remote teardown error.
-
-The multi-repository layout is the same for both paths:
-
-- With one repository, the agent starts in that repository's worktree.
-- With several, thurbox starts the agent in a directory of its own. That
-  directory holds one link per repository.
+  even when thurbox reports a remote teardown error.
 
 ### Workspace trust
 
@@ -997,6 +999,21 @@ These rules hold for every interface:
 recovery. Its rows and screens come from thurbox-cli 2.76.1, Codex 0.164.0
 and Claude Code 2.1.312.
 
+## Signal contract
+
+`fleet_api::signal::Signals`: `file` names the file a session's hooks
+append to, passed as `FLEET_SIGNAL_FILE` in the spawn's environment, and
+`read` folds it (`Reported`: the last state, every prompt digest with
+when it was last reported, the last conversation id). A file never
+written is Known and empty; a file that cannot be read is Unknown. `fleet signal <working|blocked|idle|prompt>
+[payload]` appends one line of at most 4 KiB in one write, reads the hook's
+JSON from the argument or stdin, stores prompts only as digests, and does
+nothing when the variable is unset. The `FileSignals` adapter keeps the
+files under `<data dir>/signals` for sessions on this machine, and answers
+Unknown for any other host: reading a remote file takes the runtime's
+`exec`. `e2e_signal` covers state and pause, `e2e_delivery_proof` the
+prompt proof, and `e2e_harness` the profiles' argv and resume.
+
 ## Workspace contract
 
 A Workspace is the set of files one Session works in (`fleet_api::workspace`).
@@ -1007,8 +1024,10 @@ primary `dir`, the `extraDirs` the session also spans and an optional
 
 `fleet_api::workspace::Workspaces`: `materialize`, `find` and `clean`, each
 answering Known or Unknown, and `operation_bound`. The `[workspaces]`
-section of the config selects the adapter. Without it, Fleet makes no
-workspace. Every adapter keeps these rules:
+section of the config selects the adapter. Without it, Fleet still makes
+every workspace: with the `worktree` adapter under `<data dir>/workspaces`,
+or on the fake host when the runtime is the fake. Every adapter keeps these
+rules:
 
 - **Whole or nothing.** A materialize leaves a whole workspace or nothing.
   `find` reports a partial workspace as none, and the next `materialize`
@@ -1024,6 +1043,9 @@ workspace. Every adapter keeps these rules:
   `fleet-exec`.
 - **Cleanup.** `clean` removes the workspace. A workspace already gone is
   `Deleted`. Repeating it is harmless.
+- **Work is kept.** `clean` never removes what it did not make, and never
+  loses work: what exists nowhere else is preserved first, or the clean
+  fails and removes nothing.
 
 The `worktree` adapter serves the local host and refuses any other:
 
@@ -1031,15 +1053,25 @@ The `worktree` adapter serves the local host and refuses any other:
   worktree at `<root>/<key>/<name>` on the branch `<branchPrefix>/<key>`
   of its source checkout, from its `ref` or the source's `HEAD`.
 - `runtime.repositories` maps each URL to its source checkout.
-- `dir` is the first repository's worktree. Its trust root is that
-  repository's source checkout, as for a thurbox worktree.
-- Each other repository's worktree is in `extraDirs`, in the Task's order.
-  The runtime spans them; see the multi-repository layout under the
-  [runtime contract](#runtime-contract).
+- A `file://` URL names an absolute directory used as it is: no worktree,
+  no source mapping, never removed.
+- `dir` is the first repository's directory. A worktree's trust root is its
+  source checkout.
+- Each other repository's directory is in `extraDirs`, in the Task's order.
+  The runtime spans them as they are (`--add-dir` for thurbox).
 - The marker `<root>/<key>/.fleet-workspace.json` is written last. A
   directory without it is partial.
 - A branch left by an earlier attempt is checked out again, so no commit
-  is lost. `clean` removes the worktrees and keeps the branches.
+  is lost. `clean` keeps the branches, and first commits what a worktree
+  holds that its branch does not, untracked files included, onto
+  `refs/fleet/preserved/<key>/<name>` in the source (`git add -A`, then
+  `git stash create`). Files the repository ignores are not work: it
+  declares them disposable (build output, caches), and they go with the
+  worktree. A preservation that fails fails the clean. A marker written
+  before worktrees carried their name takes `<name>` from the worktree's
+  directory.
+- Every `git` command runs blind to `GIT_DIR` and the other variables that
+  would point it at another repository than its source.
 - A workspace names at most 4 repositories, so one call has a bound.
 
 `worktree_adapter` covers the adapter against real repositories.
@@ -1159,15 +1191,17 @@ kind = "fake"
 dir = "fake-host"
 ```
 
-A real host uses the thurbox runtime, and a `[forge]` section names the
-forges ChangeRequests are read from:
+A real host is served by a runtime program, and a `[forge]` section names
+the forges ChangeRequests are read from:
 
 ```text
-[runtime]
-kind = "thurbox"
-cli = "thurbox-cli"       # a path or a name on PATH
+[runtimes.mux]
+program = "runtime-mux"   # a path or a name on PATH
 callTimeoutMs = 15000     # the bound on every call; shorter than the lease
-keyPrefix = "fleet"       # give a second fleet on the same hosts its own
+keyPrefix = "fleet"       # give a second fleet on the same runtime its own
+
+[hosts.local]
+runtime = "mux"           # a Task's spec.host chooses the runtime
 
 [forge.hosts]
 "github.com" = { kind = "github", cli = "gh" }

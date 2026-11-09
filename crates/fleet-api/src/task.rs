@@ -321,6 +321,10 @@ pub struct TaskStatus {
     /// that proved nothing keeps the last state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_state: Option<SessionState>,
+    /// The harness's own id of the session's conversation, as its hooks
+    /// last reported it: what a revive or a resume names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
     /// The workspace Fleet made for the session (see [`crate::workspace`]).
     /// Absent while the runtime makes the workspace itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -331,6 +335,11 @@ pub struct TaskStatus {
     /// Effect receipts, written after; an intent without one is a question.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub receipts: BTreeMap<String, Receipt>,
+    /// Per send key, the digest of the text it carries, written with its
+    /// intent: the send counts as delivered only once the agent's prompt
+    /// hook reports it. Absent for a harness with no prompt hook.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prompts: BTreeMap<String, String>,
     #[serde(default)]
     pub spawn_attempts: u32,
     #[serde(default)]

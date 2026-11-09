@@ -9,12 +9,12 @@ reference owns the config fields.
 
 ### Prerequisites
 
-`init` works offline. To run real sessions, install Thurbox (`thurbox-cli`
-on PATH), configure its local multiplexer, and install and authenticate the
-chosen harness first. Fleet does not install prerequisites or change
-login state. `up` checks host availability and reports unavailable or unknown
-prerequisites. Harness login/readiness failures remain visible in Task status;
-inspect `fleet status task vega --json` and Thurbox's session before retrying.
+`init` works offline. To run real sessions, put `runtime-mux` on PATH,
+install tmux, and install and authenticate the chosen harness first. Fleet
+does not install prerequisites or change login state. `up` asks the runtime
+of `Task/vega`'s host for its manifest and reports an unavailable or unknown
+runtime. Harness login/readiness failures remain visible in Task status;
+inspect `fleet status task vega --json` before retrying.
 
 ### Choosing the harness
 
@@ -95,14 +95,15 @@ workspace.
 Default init writes a workspace at `$XDG_DATA_HOME/fleet/vega` (fallback
 `~/.local/share/fleet/vega`) and a fresh resource store under the same Fleet
 directory at `store-v1`. The config records absolute paths and a generated
-per-instance session key prefix. It keeps the starter's
-`runtime.callTimeoutMs = 10000`, below the built-in default of `15000`;
+per-instance session key prefix. It writes
+`runtimes.mux.callTimeoutMs = 10000`, below the built-in default of `15000`;
 edit it to change the bound. `[starter] workspace` selects the workspace.
 Its `task.json` is a runnable JSON array containing one Task. Before first
 `up`, edit its brief and customize `AGENTS.md`, prompts and skills.
-To set `spec.model`, first configure the matching `[runtime.modelEnv]`
+To set `spec.model` on the thurbox runtime, first configure the matching `[runtime.modelEnv]`
 harness-to-variable mapping; the starter does not assume a Codex model
-environment variable. After creation, reconnect keeps the stored immutable
+environment variable. A runtime under `[runtimes]` refuses a Task that sets
+`spec.model`: it has no such mapping yet. After creation, reconnect keeps the stored immutable
 Task inputs. Updated instructions can be read from the workspace; changing
 Task inputs requires deliberate deletion/recreation after session release.
 VEGA's rendered brief names the exact config file for all Task operations and
@@ -201,11 +202,54 @@ for data roots, managed files, conflict handling and per-instance paths.
 Relative `data.dir`, `runtime.dir`, `starter.workspace`, a fake forge host's
 `dir` and a fake gateway account's `dir` resolve beside the TOML file. A
 runtime executable should be a PATH name or absolute path;
-`runtime.cli` is passed to process execution without rebasing it beside TOML.
+`runtimes.<name>.program` and `runtime.cli` are passed to process execution
+without rebasing them beside TOML.
 Provider source paths are always absolute and manager-local, even for remote
 Tasks; they never inherit TOML's relative-path rule.
 
-### Real-runtime example
+### Runtimes and hosts
+
+A runtime is a program that speaks the
+[runtime protocol](../runtime/README.md#the-runtime-protocol). Each one is a
+`[runtimes.<name>]` table, and each host a Task may name in `spec.host` is a
+`[hosts.<name>]` table naming the runtime that serves it:
+
+```toml
+version = 1
+
+[data]
+dir = "store"
+
+[runtimes.mux]
+program = "runtime-mux"
+callTimeoutMs = 10000
+keyPrefix = "fleet"
+
+[hosts.local]
+runtime = "mux"
+
+[starter]
+workspace = "vega"
+```
+
+This is what `fleet init` writes, with an instance-specific `keyPrefix`:
+`runtime-mux` and nothing else. Fleet never falls back to another runtime.
+With no multiplexer on the machine, the first start fails, naming the
+missing binary, and the Task's `Spawned` condition says so. Another runtime
+is opt-in: add its table and point a host at it. `fleet runtime check -- <program>`
+tells whether a program speaks the protocol before a host names it.
+
+Set `starter.workspace` to an initialized VEGA workspace when using `fleet up`.
+For ordinary `apply`/`reconcile`, the starter section is optional. A second
+Fleet installation on the same runtime needs a distinct `keyPrefix`. Store,
+workspace and config must remain separate paths.
+
+### Thurbox and fake runtimes
+
+`[runtime]`, a single table, configures the thurbox adapter, which drives
+`thurbox-cli`, or the offline fake. It excludes `[runtimes]` and `[hosts]`:
+a file with both is refused. The thurbox adapter is kept while thurbox moves
+onto Fleet, and goes with thurbox's own session engine.
 
 ```toml
 version = 1
@@ -221,15 +265,10 @@ keyPrefix = "fleet"
 
 [runtime.modelEnv]
 claude-code = "ANTHROPIC_MODEL"
-
-[starter]
-workspace = "vega"
 ```
 
-Set `starter.workspace` to an initialized VEGA workspace when using `fleet up`.
-For ordinary `apply`/`reconcile`, the starter section is optional. A second
-Fleet installation talking to the same Thurbox hosts needs a distinct
-`keyPrefix`. Store, workspace and config must remain separate paths.
+A second Fleet installation talking to the same Thurbox hosts needs a
+distinct `keyPrefix`.
 
 ### Fields
 
@@ -237,17 +276,21 @@ Fleet installation talking to the same Thurbox hosts needs a distinct
 | --- | --- | --- |
 | `version` | Required, `1` | Native config schema; unsupported versions and unknown fields are refused. |
 | `data.dir` | Optional | Resource store. `--data-dir` overrides it; otherwise Fleet uses its native data directory. |
-| `runtime.kind` | Required when configuring runtime | `thurbox` or `fake`; needed for reconciliation/session operations. |
+| `runtimes.<name>.program` | Required for each runtime | The runtime's executable, a path or a name on PATH. Fleet runs `<program> [args] <verb>` through its bounded spawner. |
+| `runtimes.<name>.args` | `[]` | Arguments before the verb. |
+| `runtimes.<name>.callTimeoutMs` | `15000` | Bound for each call, 1 to 300000; the manager lease must outlast the runtime's reported worst case. |
+| `runtimes.<name>.keyPrefix` | `fleet` | The first part of every key Fleet gives the runtime, `<keyPrefix>.<uid>`; at most 32 lowercase letters, digits and `-`. |
+| `hosts.<name>.runtime` | Required for each host | The `[runtimes.<name>]` serving the host. A host naming no runtime, and a runtime no host names, are refused at load. A Task whose `spec.host` is not listed fails its spawn. |
+| `runtime.kind` | Required when configuring `[runtime]` | `thurbox` or `fake`; excludes `[runtimes]` and `[hosts]`. |
 | `runtime.cli` | Thurbox: PATH `thurbox-cli` (`thurbox-cli.exe` on Windows) | Bounded Thurbox CLI executable. |
 | `runtime.callTimeoutMs` | Thurbox: `15000` | Bound for each Thurbox call; manager lease must outlast the runtime's reported worst case. |
 | `runtime.keyPrefix` | Thurbox: `fleet` | Session identity prefix; at most 32 lowercase letters/digits/`-`, starting/ending with letter/digit. |
 | `runtime.modelEnv` | Thurbox: Claude mappings below | Harness name to supported model environment-variable name. |
-| `runtime.repositories` | Thurbox: empty | Repository URL to its source checkout, an absolute path on the hosts where thurbox or the `worktree` adapter creates worktrees. A relative path is refused at load. A Task's `url` must equal a key byte for byte: Fleet does not normalise a trailing `/`, `.git`, case or an SSH form. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn or materialize attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-runtimerepositories). |
-| `runtime.workspaceCleanup` | Thurbox: `delete` | What deleting a session does to the worktrees thurbox made. A workspace Fleet made through `[workspaces]` is cleaned after the release whatever this says. `delete` removes them with the session (`session delete --force`). `keep` leaves them, restorable in thurbox (`session delete --soft`). Any other value is refused at load. The setting also applies to `dir` Tasks: `delete` overrides thurbox's own `soft_delete`, so a released session cannot be restored. |
+| `runtime.repositories` | Empty | Repository URL to its source checkout, an absolute path on this machine, where the `worktree` adapter creates worktrees. A `file://` URL needs no entry: it names a directory used as it is. A relative path is refused at load. A Task's `url` must equal a key byte for byte: Fleet does not normalise a trailing `/`, `.git`, case or an SSH form. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn or materialize attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-runtimerepositories). |
 | `runtime.workspaceTrust` | Thurbox: `codex` is `codex`; `claude` and `claude-code` are `claude` | Harness name to its workspace-trust interface: `codex`, `claude` or `none`. Any other value is refused at load. A Task whose harness is not listed starts no session and waits in Pending with `TrustUnmapped`; the refusal spends no spawn attempt. A running `fleet up` applies a new entry after a restart. See [workspace trust](contracts.md#workspace-trust). |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
-| `workspaces.kind` | Optional | `worktree` or `fake`. With this section, Fleet makes each `repositories` workspace before the spawn and cleans it after the release. Without it, the runtime makes the workspace. See [the workspace port](contracts.md#workspace-contract). |
-| `workspaces.root` | Required for `worktree` | The directory that holds every workspace on the local host, relative to this config file. Sources come from `runtime.repositories`. |
+| `workspaces.kind` | `worktree`; `fake` with the fake runtime | `worktree` or `fake`. Fleet makes each `repositories` workspace before the spawn and cleans it after the release, with or without this section; the section only picks the adapter and its settings. See [the workspace port](contracts.md#workspace-contract). |
+| `workspaces.root` | Worktree: `<data dir>/workspaces` | The directory that holds every workspace on the local host, relative to this config file. Sources come from `runtime.repositories`. |
 | `workspaces.git` | Worktree: PATH `git` | The `git` executable. |
 | `workspaces.callTimeoutMs` | Worktree: `30000` | Bound for each `git` command. The manager lease must outlast the adapter's reported worst case. |
 | `workspaces.branchPrefix` | Worktree: `fleet` | The first part of each workspace branch, `<branchPrefix>/<session key>`. Lowercase letters, digits and `-`. |
@@ -280,7 +323,8 @@ over the same environment key from providers or Task overrides. For configured
 Tasks, both variable selection and value freeze with the private launch
 snapshot; later TOML mapping changes do not alter that execution.
 
-`runtime.workspaceTrust` extends/overrides the built-in entries. The keys are
+`runtime.workspaceTrust` extends/overrides the built-in entries, which come
+from the [harness profiles](controllers/task.md#harness-profiles). The keys are
 thurbox agent names, so map each alias of an agent, such as
 `codex-coder = "codex"`. Map `codex`
 only to a harness that runs Codex: the interface puts Codex's `-c` option on
@@ -291,6 +335,12 @@ for a harness that has one: that harness can then receive its brief inside a
 trust prompt. Codex keeps only the last `-c projects=` it is given. Keep any
 other roots you trust in the `[projects]` table of Codex's `config.toml`,
 which merges with Fleet's override.
+
+Every session Fleet starts gets `FLEET_SIGNAL_FILE` in its environment: the
+file under `<data dir>/signals` its hooks append to through `fleet signal`
+([signals](controllers/task.md#signals)). `fleet signal` reads nothing else,
+needs no config, and does nothing without the variable, so a hook installed
+for every session of a harness is harmless outside Fleet.
 
 Runtime-specific fields apply only to that runtime. Keep the store and native
 configuration user-private; they contain literal manifests and private launch

@@ -92,6 +92,9 @@ const WORKSPACE_UNTRUSTED: &str = "WorkspaceUntrusted";
 const BRIEF: &str = "brief";
 /// The runtime only queued the brief, where the agent does not read it.
 const BRIEF_UNDELIVERED: &str = "BriefUndelivered";
+/// The Briefed reason while the runtime sent the brief and the agent's prompt
+/// hook has not reported it yet.
+const AWAITING_PROMPT: &str = "AwaitingPrompt";
 const RELEASE: &str = "release";
 const REVIVE: &str = "revive";
 const PAUSE: &str = "pause";
@@ -102,6 +105,19 @@ const CATCH_UP: &str = "catchup";
 const REVIVE_FAILED: &str = "ReviveFailed";
 /// The NeedsAttention reason once resumes keep leaving the session stopped.
 const RESUME_FAILED: &str = "ResumeFailed";
+
+/// Whether a send under a key is proven by the agent's prompt hook.
+enum Proof {
+    /// The harness has no prompt hook: the runtime's answer is the proof.
+    NotNeeded,
+    /// The hook reported the text.
+    Proven,
+    /// The hook has not reported it, or its report cannot be read: never a
+    /// second send.
+    Awaiting(String),
+    /// The reports were not read on this pass.
+    NotAsked,
+}
 
 /// What one keyed send came to on this pass.
 enum Sent {
@@ -165,7 +181,9 @@ impl TaskController {
                     });
                     probes.push(Probe::Ready { session: s.clone() });
                     let bk = brief_key(input.task);
-                    if st.intents.contains_key(&bk) && !known_receipt(&st, &bk) {
+                    if awaits_proof(&st, &bk) {
+                        proof_probe(s, &mut probes);
+                    } else if st.intents.contains_key(&bk) && !known_receipt(&st, &bk) {
                         probes.push(Probe::BriefDelivered {
                             session: s.clone(),
                             key: bk,
@@ -298,6 +316,11 @@ impl Pass<'_, '_> {
         if let Some(state) = SessionState::observe(session, &self.input.observations) {
             self.st.session_state = Some(state);
         }
+        if let Some(Observation::Known(r)) = &self.input.observations.signals
+            && r.conversation.is_some()
+        {
+            self.st.conversation = r.conversation.clone();
+        }
     }
 
     /// Wait [`RETRY_DELAY_MS`] from `from` before the next attempt.
@@ -313,6 +336,18 @@ impl Pass<'_, '_> {
     }
 
     fn intend(&mut self, key: String, action: Action) {
+        match &action {
+            Action::Brief { text, .. }
+                if fleet_api::harness::profile(&self.spec.harness).prompt_hook() =>
+            {
+                self.st
+                    .prompts
+                    .insert(key.clone(), fleet_api::signal::prompt_digest(text));
+            }
+            _ => {
+                self.st.prompts.remove(&key);
+            }
+        }
         let intent = Intent {
             action: action.name().to_string(),
             at: self.now(),
@@ -320,6 +355,41 @@ impl Pass<'_, '_> {
         };
         self.st.intents.insert(key.clone(), intent);
         self.effects.push(Effect { key, action });
+    }
+
+    /// Whether the send under `key` is proven by the agent's prompt hook. A
+    /// proven key's digest is dropped: its receipt now stands alone.
+    fn proof(&mut self, key: &str) -> Proof {
+        let Some(digest) = self.st.prompts.get(key) else {
+            return Proof::NotNeeded;
+        };
+        // A report older than this send's intent proves an earlier send of
+        // the same text, not this one.
+        let since = self.st.intents.get(key).map_or(0, |i| i.at);
+        match &self.input.observations.signals {
+            Some(Observation::Known(r)) if r.prompted_since(digest, since) => {
+                self.st.prompts.remove(key);
+                Proof::Proven
+            }
+            Some(Observation::Known(_)) => {
+                Proof::Awaiting("the agent's prompt hook has not reported it yet".into())
+            }
+            Some(Observation::Unknown { why }) => Proof::Awaiting(why.clone()),
+            None => Proof::NotAsked,
+        }
+    }
+
+    /// Whether a send whose answer was lost arrived. For a harness with a
+    /// prompt hook only the hook answers, and never "not delivered": a text
+    /// the hook did not report may still be typed, so it is never sent
+    /// again. Otherwise the runtime's journal answers.
+    fn delivered(&mut self, key: &str) -> Option<Observation<bool>> {
+        match self.proof(key) {
+            Proof::NotNeeded => self.input.observations.brief_delivered.clone(),
+            Proof::Proven => Some(Observation::Known(true)),
+            Proof::Awaiting(why) => Some(Observation::Unknown { why }),
+            Proof::NotAsked => None,
+        }
     }
 
     fn needs_attention(&mut self, reason: &str, message: impl Into<String>) {
@@ -415,20 +485,28 @@ impl Pass<'_, '_> {
             "Spawning",
             format!("attempt {attempt}"),
         );
-        let ready = self.st.workspace.clone();
-        let spec = SpawnSpec {
-            host: ready
-                .as_ref()
-                .map_or_else(|| self.spec.host.clone(), |w| w.host.clone()),
+        let host = self
+            .st
+            .workspace
+            .as_ref()
+            .map_or_else(|| self.spec.host.clone(), |w| w.host.clone());
+        let spec = self.launch(host);
+        self.intend(key, Action::Spawn(spec));
+    }
+
+    /// What a start of the agent on `host` needs: a spawn makes the first,
+    /// a revive or a resume the next ones.
+    fn launch(&self, host: String) -> SpawnSpec {
+        SpawnSpec {
+            host,
             key: session_key(self.input.task),
             harness: self.spec.harness.clone(),
             workspace: self.spec.workspace.clone(),
-            ready,
+            ready: self.st.workspace.clone(),
             model: self.spec.model.clone(),
             env: self.spec.env.clone(),
             environment_frozen: false,
-        };
-        self.intend(key, Action::Spawn(spec));
+        }
     }
 
     fn spawning(&mut self) {
@@ -589,8 +667,15 @@ impl Pass<'_, '_> {
     fn brief_step(&mut self, session: SessionRef) {
         let key = brief_key(self.input.task);
         match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
+            // The runtime typed it; the agent's prompt hook proves it.
             Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
-                return self.briefed_now(key, false);
+                return match self.proof(&key) {
+                    Proof::NotNeeded | Proof::Proven => self.briefed_now(key, false),
+                    Proof::Awaiting(why) => {
+                        self.cond(BRIEFED, ConditionStatus::Unknown, AWAITING_PROMPT, why)
+                    }
+                    Proof::NotAsked => {}
+                };
             }
             // The text waits where the agent does not read it. It is not
             // sent again: a person moves it on, and the inbox waits too.
@@ -620,18 +705,11 @@ impl Pass<'_, '_> {
             // Sent, but no Known receipt: ask the session. Known yes is a
             // recovered receipt, Known no a send, Unknown a read tried again
             // after a wait: a read can do no harm, so it never stalls the Task.
-            match self.input.observations.brief_delivered.clone() {
+            match self.delivered(&key) {
                 Some(Observation::Known(true)) => {
-                    let receipt = Receipt {
-                        action: BRIEF.into(),
-                        at: self.now(),
-                        outcome: Observation::Known(EffectOutcome::Delivered {
-                            already: true,
-                            via: None,
-                            may_hold: false,
-                        }),
-                    };
-                    self.st.receipts.insert(key.clone(), receipt);
+                    self.st
+                        .receipts
+                        .insert(key.clone(), recovered_receipt(self.now()));
                     self.briefed_now(key, true);
                 }
                 Some(Observation::Known(false)) => self.send_brief(session, key),
@@ -917,11 +995,15 @@ impl Pass<'_, '_> {
     /// [`MAX_ATTEMPTS`] times. `what` names it in attention messages.
     fn keyed_send(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
         match self.st.receipts.get(key).map(|r| r.outcome.clone()) {
+            // The runtime typed it; the agent's prompt hook proves it.
             Some(Observation::Known(EffectOutcome::Delivered { via, may_hold, .. })) => {
-                return Sent::Delivered {
-                    recovered: false,
-                    via,
-                    may_hold,
+                return match self.proof(key) {
+                    Proof::NotNeeded | Proof::Proven => Sent::Delivered {
+                        recovered: false,
+                        via,
+                        may_hold,
+                    },
+                    Proof::Awaiting(_) | Proof::NotAsked => Sent::Pending,
                 };
             }
             // Queued where the agent does not read it: given up, never sent
@@ -962,9 +1044,10 @@ impl Pass<'_, '_> {
             _ => {}
         }
         if self.st.intents.contains_key(key) {
-            // Sent, but no Known receipt: the session's journal decides,
-            // exactly as for the brief. Unknown is read again after a wait.
-            match self.input.observations.brief_delivered.clone() {
+            // Sent, but no Known receipt: the agent's prompt hook, or the
+            // session's journal, decides, exactly as for the brief. Unknown
+            // is read again after a wait.
+            match self.delivered(key) {
                 Some(Observation::Known(true)) => {
                     return Sent::Delivered {
                         recovered: true,
@@ -1165,10 +1248,13 @@ impl Pass<'_, '_> {
         self.st.revivals += 1;
         self.st.revive_attempts += 1;
         let key = self.key(REVIVE, Some(self.st.revivals));
+        let launch = self.launch(session.host.clone());
         self.intend(
             key,
             Action::Revive {
                 session: session.clone(),
+                conversation: self.st.conversation.clone(),
+                launch,
             },
         );
         true
@@ -1391,10 +1477,13 @@ impl Pass<'_, '_> {
         self.st.resumes += 1;
         self.st.resume_attempts += 1;
         let key = self.key(RESUME, Some(self.st.resumes));
+        let launch = self.launch(session.host.clone());
         self.intend(
             key,
             Action::Resume {
                 session: session.clone(),
+                conversation: self.st.conversation.clone(),
+                launch,
             },
         );
     }
@@ -1896,7 +1985,8 @@ pub fn watches_activity(obj: &Object) -> bool {
     decode(obj).is_ok_and(|(spec, st)| watched(obj, &spec, &st))
 }
 
-/// The activity probe, asked only of a session that may be paused.
+/// The activity probe, asked only of a session that may be paused: what
+/// the agent's own hooks reported through `fleet signal`.
 fn activity_probe(
     input: &TaskInput<'_>,
     spec: &TaskSpec,
@@ -1951,6 +2041,41 @@ fn result_current(st: &TaskStatus) -> bool {
     }
 }
 
+/// Whether the send under `key` went out, or may have, and waits for the
+/// agent's prompt hook to prove it.
+fn awaits_proof(st: &TaskStatus, key: &str) -> bool {
+    st.prompts.contains_key(key)
+        && st.intents.contains_key(key)
+        && st.receipts.get(key).is_none_or(|r| {
+            matches!(
+                r.outcome,
+                Observation::Unknown { .. } | Observation::Known(EffectOutcome::Delivered { .. })
+            )
+        })
+}
+
+/// The agent's reports, read once per pass: the same probe a pause reads.
+fn proof_probe(session: &SessionRef, probes: &mut Vec<Probe>) {
+    if !probes.iter().any(|p| matches!(p, Probe::Activity { .. })) {
+        probes.push(Probe::Activity {
+            session: session.clone(),
+        });
+    }
+}
+
+/// A delivery the agent proved after its runtime's answer was lost.
+fn recovered_receipt(at: Millis) -> Receipt {
+    Receipt {
+        action: BRIEF.into(),
+        at,
+        outcome: Observation::Known(EffectOutcome::Delivered {
+            already: true,
+            via: None,
+            may_hold: false,
+        }),
+    }
+}
+
 fn known_receipt(st: &TaskStatus, key: &str) -> bool {
     st.receipts
         .get(key)
@@ -1987,7 +2112,9 @@ fn delivery_probes(st: &TaskStatus, session: &SessionRef, probes: &mut Vec<Probe
             session: session.clone(),
         });
     }
-    if st.intents.contains_key(key) && !known_receipt(st, key) {
+    if awaits_proof(st, key) {
+        proof_probe(session, probes);
+    } else if st.intents.contains_key(key) && !known_receipt(st, key) {
         probes.push(Probe::BriefDelivered {
             session: session.clone(),
             key: key.clone(),
@@ -2004,7 +2131,9 @@ fn inbox_probes(st: &TaskStatus, session: &SessionRef, probes: &mut Vec<Probe>) 
             session: session.clone(),
         });
     }
-    if st.intents.contains_key(&entry.key) && !known_receipt(st, &entry.key) {
+    if awaits_proof(st, &entry.key) {
+        proof_probe(session, probes);
+    } else if st.intents.contains_key(&entry.key) && !known_receipt(st, &entry.key) {
         probes.push(Probe::BriefDelivered {
             session: session.clone(),
             key: entry.key.clone(),

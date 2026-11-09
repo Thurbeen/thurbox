@@ -1,5 +1,7 @@
 //! Implementations of the runtime contract ([`fleet_api::runtime::Runtime`]).
 //!
+//! - [`ExecRuntime`]: any program speaking the runtime protocol
+//!   (docs/runtime/README.md), `runtime-mux` by default, chosen per host.
 //! - [`ThurboxRuntime`]: sessions through `thurbox-cli`, on this machine or a
 //!   host thurbox reaches over SSH or WSL.
 //! - [`FakeRuntime`]: a file-backed fake host for tests and local trials. It
@@ -7,14 +9,20 @@
 //!   fake workspace adapter too.
 //! - [`WorktreeWorkspaces`]: the workspace port's git worktree adapter, on
 //!   this machine.
+//! - [`FileSignals`]: the signal port's adapter, one file per session on
+//!   this machine.
 
+pub mod exec;
 pub mod fake;
+pub mod signals;
 pub mod thurbox;
 pub mod worktree;
 
-pub use fake::{FakeHost, FakeRuntime, FakeWorkspace, Fault};
-pub use thurbox::{Cleanup, Repositories, ThurboxConfig, ThurboxRuntime, TrustInterface};
-pub use worktree::{WorktreeConfig, WorktreeWorkspaces};
+pub use exec::{ExecProgram, ExecRuntime};
+pub use fake::{FakeHost, FakeRuntime, FakeSession, FakeWorkspace, Fault};
+pub use signals::FileSignals;
+pub use thurbox::{ThurboxConfig, ThurboxRuntime, TrustInterface};
+pub use worktree::{Repositories, WorktreeConfig, WorktreeWorkspaces};
 
 /// Resolve manager-local explicit sources, never an implicit shell. Errors
 /// deliberately omit child output, paths and parser text (all may contain values).

@@ -27,8 +27,8 @@ use fleet_manager::{
     receive, record_result, send,
 };
 use fleet_runtime::{
-    Cleanup, FakeHost, FakeRuntime, Repositories, ThurboxConfig, ThurboxRuntime, TrustInterface,
-    WorktreeConfig, WorktreeWorkspaces,
+    ExecProgram, ExecRuntime, FakeHost, FakeRuntime, FileSignals, Repositories, ThurboxConfig,
+    ThurboxRuntime, TrustInterface, WorktreeConfig, WorktreeWorkspaces,
 };
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
@@ -195,6 +195,42 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Report the agent's state from its own hook: appends to the file
+    /// Fleet passed the session as FLEET_SIGNAL_FILE, and does nothing
+    /// outside a session Fleet started.
+    Signal {
+        state: SignalState,
+        /// The hook's JSON, when it passes it as an argument; otherwise it
+        /// is read from stdin when stdin is not a terminal.
+        payload: Option<String>,
+    },
+    /// Runtimes: programs that speak the runtime protocol.
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RuntimeCommand {
+    /// Run the conformance suite against a runtime program: `fleet runtime check -- <program> [args]`.
+    Check {
+        /// The bound on each call, in milliseconds.
+        #[arg(long, default_value_t = DEFAULT_CALL_TIMEOUT_MS)]
+        call_timeout_ms: u64,
+        /// The program and the arguments it takes before the verb.
+        #[arg(last = true, required = true)]
+        program: Vec<String>,
+    },
+}
+
+/// What a hook reports (`fleet_api::signal::State`).
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum SignalState {
+    Working,
+    Blocked,
+    Idle,
+    Prompt,
 }
 
 #[derive(Debug, Subcommand)]
@@ -338,6 +374,18 @@ fn run(cli: Cli) -> Result<(), Failure> {
     if let Command::Version { json } = &cli.command {
         return version(*json);
     }
+    if let Command::Signal { state, payload } = &cli.command {
+        return cmd_signal(*state, payload.as_deref());
+    }
+    if let Command::Runtime {
+        command: RuntimeCommand::Check {
+            call_timeout_ms,
+            program,
+        },
+    } = &cli.command
+    {
+        return runtime_check(program, *call_timeout_ms);
+    }
     let explicit_config = cli.config.is_some() || std::env::var_os(config::CONFIG_ENV).is_some();
     let config_path = config::discover(cli.config.clone())
         .map(|p| bootstrap::absolute(&p))
@@ -362,11 +410,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         match done.harness {
             Some(h) => println!(
-                "initialized {}; task.json chooses harness {h} for VEGA and its workers; run fleet up (Thurbox and an authenticated {h} are required)",
+                "initialized {}; task.json chooses harness {h} for VEGA and its workers; run fleet up (runtime-mux, tmux and an authenticated {h} are required)",
                 path.display()
             ),
             None => println!(
-                "initialized {}; run fleet up (Thurbox and an authenticated harness are required)",
+                "initialized {}; run fleet up (runtime-mux, tmux and an authenticated harness are required)",
                 path.display()
             ),
         }
@@ -447,7 +495,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let path = config_path.ok_or_else(|| fail("no configuration; run fleet init first"))?;
             cmd_up(
                 store,
-                (&config, &config_text),
+                (&config, &config_text, &data_dir),
                 &path,
                 poll_ms,
                 lease_ttl_ms,
@@ -575,8 +623,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
             lease_ttl_ms,
             json,
         } => {
-            let (runtime, map) = open_reloadable_runtime(&config)?;
-            let workspaces = open_workspaces(&config, map.as_ref())?;
+            let signals = open_signals(&data_dir)?;
+            let (runtime, map) = open_reloadable_runtime(&config, &signals)?;
+            let workspaces = open_workspaces(&config, &data_dir, map.as_ref())?;
             let forge = open_forge(&config)?;
             let gateway = open_gateway(&config)?;
             let bound = runtime
@@ -594,6 +643,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 holder,
                 forge: forge.as_ref().map(|f| f as &dyn Forge),
                 workspaces: workspaces.as_deref(),
+                signals: Some(&signals),
                 change_request_defaults: forge_defaults(&config),
                 forge_defaults: relay_defaults(&config),
                 plugins: Some((&plugins, &registrations)),
@@ -630,8 +680,43 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
         }
         Command::Gateway { command } => cmd_gateway(store, &config, command),
-        Command::Version { .. } => unreachable_version(),
+        Command::Version { .. } | Command::Signal { .. } | Command::Runtime { .. } => {
+            unreachable_version()
+        }
     }
+}
+
+/// `fleet signal`: one line appended to the session's signal file. It needs
+/// no config and no store, so a hook costs one short process.
+fn cmd_signal(state: SignalState, payload: Option<&str>) -> Result<(), Failure> {
+    use fleet_api::signal::{SIGNAL_FILE_ENV, Signal, State};
+    use std::io::{IsTerminal, Read};
+    let Some(file) = std::env::var_os(SIGNAL_FILE_ENV).filter(|f| !f.is_empty()) else {
+        return Ok(());
+    };
+    let state = match state {
+        SignalState::Working => State::Working,
+        SignalState::Blocked => State::Blocked,
+        SignalState::Idle => State::Idle,
+        SignalState::Prompt => State::Prompt,
+    };
+    let text = match payload {
+        Some(p) => p.to_string(),
+        None if !std::io::stdin().is_terminal() => {
+            let mut text = String::new();
+            std::io::stdin()
+                .take(4 * 1024 * 1024)
+                .read_to_string(&mut text)
+                .map_err(|e| fail(format!("stdin: {e}")))?;
+            text
+        }
+        None => String::new(),
+    };
+    let payload = serde_json::from_str::<serde_json::Value>(&text).ok();
+    let now = fleet_api::store::Clock::now(&SystemClock);
+    let signal = Signal::from_hook(now, state, payload.as_ref());
+    fleet_runtime::signals::append(std::path::Path::new(&file), &signal)
+        .map_err(|e| fail(format!("{}: {e}", Path::new(&file).display())))
 }
 
 /// The `fleet gateway` verbs: each reads the `[gateway]` section and calls
@@ -816,7 +901,7 @@ fn ask_harness(default: &str) -> Result<Option<String>, String> {
 
 fn cmd_up(
     store: &dyn Store,
-    (config, config_text): (&Config, &str),
+    (config, config_text, data_dir): (&Config, &str, &Path),
     config_path: &Path,
     poll_ms: u64,
     lease_ttl_ms: Option<u64>,
@@ -829,8 +914,9 @@ fn cmd_up(
         .starter
         .as_ref()
         .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
-    let (runtime, repositories) = open_reloadable_runtime(config)?;
-    let workspaces = open_workspaces(config, repositories.as_ref())?;
+    let signals = open_signals(data_dir)?;
+    let (runtime, repositories) = open_reloadable_runtime(config, &signals)?;
+    let workspaces = open_workspaces(config, data_dir, repositories.as_ref())?;
     let mut reload = repositories.map(|map| Reload::new(config_path, config_text, map));
     let forge = open_forge(config)?;
     let gateway = open_gateway(config)?;
@@ -853,13 +939,13 @@ fn cmd_up(
     match runtime.host(host) {
         Observation::Known(true) => {}
         Observation::Known(false) => {
-            return Err(fail(
-                "Thurbox host/multiplexer unavailable; install/configure Thurbox and an authenticated agent harness, then retry fleet up",
-            ));
+            return Err(fail(format!(
+                "host {host} is unavailable: no runtime configured for it answers; install and configure its runtime (runtime-mux by default) and an authenticated agent harness, then retry fleet up"
+            )));
         }
         Observation::Unknown { why } => {
             return Err(fail(format!(
-                "thurbox prerequisite could not be checked: {why}; install/configure Thurbox and authenticate the agent harness before fleet up"
+                "the runtime of host {host} could not be checked: {why}; install and configure it (runtime-mux by default) and authenticate the agent harness before fleet up"
             )));
         }
     }
@@ -889,6 +975,7 @@ fn cmd_up(
         holder: format!("fleet-up-{}", std::process::id()),
         forge: forge.as_ref().map(|f| f as &dyn Forge),
         workspaces: workspaces.as_deref(),
+        signals: Some(&signals),
         change_request_defaults: forge_defaults(config),
         forge_defaults: relay_defaults(config),
         plugins: Some(plugins),
@@ -962,7 +1049,41 @@ fn current_user() -> String {
 }
 
 fn unreachable_version() -> Result<(), Failure> {
-    Err(fail("version is handled before the store opens"))
+    Err(fail(
+        "version, signal and runtime are handled before the store opens",
+    ))
+}
+
+/// `fleet runtime check`: one line per case, and a failure when any fails.
+fn runtime_check(program: &[String], call_timeout_ms: u64) -> Result<(), Failure> {
+    let (exe, args) = program
+        .split_first()
+        .ok_or_else(|| fail("name the runtime program after --"))?;
+    let mut rt = ExecProgram::new(exe.clone(), exe.clone());
+    rt.args = args.to_vec();
+    rt.call_timeout = std::time::Duration::from_millis(call_timeout_ms);
+    let cases = fleet_runtime::exec::check(&rt);
+    let mut failed = 0;
+    for case in &cases {
+        match &case.result {
+            Ok(()) => println!("ok   {}", case.name),
+            Err(why) => {
+                failed += 1;
+                println!("FAIL {}: {why}", case.name);
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(fail(format!(
+            "{failed} of {} conformance cases failed for {exe}",
+            cases.len()
+        )));
+    }
+    println!(
+        "{exe} speaks runtime protocol {}",
+        fleet_runtime::exec::PROTOCOL
+    );
+    Ok(())
 }
 
 fn version(json: bool) -> Result<(), Failure> {
@@ -973,7 +1094,8 @@ fn version(json: bool) -> Result<(), Failure> {
             "kinds": fleet_api::kinds::BUILT_IN,
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
-            "runtimes": ["thurbox", "fake"],
+            "runtimes": ["exec", "thurbox", "fake"],
+            "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
             "gateways": Platform::ALL,
         }));
@@ -1067,16 +1189,31 @@ fn repositories(rt: &config::RuntimeConfig) -> Result<BTreeMap<String, String>, 
     Ok(rt.repositories.clone())
 }
 
-/// The workspace port the `[workspaces]` section names, or `None` when the
-/// config has none and the runtime makes every workspace. The worktree
-/// adapter reads `runtime.repositories`, through `map` when the runtime
-/// already holds the reloadable handle to it.
+/// The workspace port the `[workspaces]` section names. Without one, Fleet
+/// still makes every workspace: on the fake runtime's host when the runtime
+/// is the fake, else with git worktrees under `<data dir>/workspaces`. The
+/// worktree adapter reads `runtime.repositories`, through `map` when the
+/// runtime already holds the reloadable handle to it.
 fn open_workspaces(
     config: &Config,
+    data_dir: &Path,
     map: Option<&Repositories>,
 ) -> Result<Option<Box<dyn fleet_api::workspace::Workspaces>>, Failure> {
-    let Some(ws) = &config.workspaces else {
-        return Ok(None);
+    let default;
+    let ws = match &config.workspaces {
+        Some(ws) => ws,
+        None => {
+            let fake = config.runtime.as_ref().filter(|rt| rt.kind == "fake");
+            default = config::WorkspacesConfig {
+                kind: if fake.is_some() { "fake" } else { "worktree" }.into(),
+                dir: fake.and_then(|rt| rt.dir.clone()),
+                root: Some(data_dir.join("workspaces")),
+                git: None,
+                call_timeout_ms: None,
+                branch_prefix: None,
+            };
+            &default
+        }
     };
     match ws.kind.as_str() {
         "fake" => {
@@ -1092,7 +1229,7 @@ fn open_workspaces(
             let root = ws
                 .root
                 .clone()
-                .ok_or_else(|| fail("workspaces.root is required for the worktree adapter"))?;
+                .unwrap_or_else(|| data_dir.join("workspaces"));
             let map = match map {
                 Some(m) => m.clone(),
                 None => Repositories::new(match &config.runtime {
@@ -1123,16 +1260,40 @@ fn open_workspaces(
     }
 }
 
+/// The signal files, one per session on this machine, under the store.
+fn open_signals(data_dir: &Path) -> Result<FileSignals, Failure> {
+    let dir = data_dir.join("signals");
+    FileSignals::open(&dir).map_err(|e| fail(format!("{}: {e}", dir.display())))
+}
+
 /// The runtime, and for thurbox the handle to its repository map.
 fn open_reloadable_runtime(
     config: &Config,
+    signals: &FileSignals,
 ) -> Result<(Box<dyn Runtime>, Option<Repositories>), Failure> {
+    if !config.runtimes.is_empty() {
+        let mut hosts = BTreeMap::new();
+        for (host, h) in &config.hosts {
+            let p = &config.runtimes[&h.runtime];
+            let mut rt = ExecProgram::new(h.runtime.clone(), p.program.clone());
+            rt.args = p.args.clone();
+            rt.call_timeout = std::time::Duration::from_millis(
+                p.call_timeout_ms.unwrap_or(DEFAULT_CALL_TIMEOUT_MS),
+            );
+            if let Some(prefix) = &p.key_prefix {
+                rt.key_prefix = prefix.clone();
+            }
+            hosts.insert(host.clone(), rt);
+        }
+        let runtime = ExecRuntime::new(hosts).with_signals(signals.clone());
+        return Ok((Box::new(runtime), None));
+    }
     let Some(rt) = &config.runtime else {
         return Err(Failure {
             code: exit::ERROR,
             message: "no runtime configured".into(),
             hint: Some(
-                "set [runtime] kind = \"thurbox\" (or \"fake\" with a dir) in the config file"
+                "add [runtimes.mux] program = \"runtime-mux\" and [hosts.local] runtime = \"mux\" to the config file, or run fleet init"
                     .into(),
             ),
         });
@@ -1167,16 +1328,8 @@ fn open_reloadable_runtime(
                 cfg.key_prefix = p.clone();
             }
             cfg.model_env.extend(rt.model_env.clone());
-            cfg.repositories = Repositories::new(repositories(rt).map_err(fail)?);
-            cfg.cleanup = match rt.workspace_cleanup.as_deref() {
-                None | Some("delete") => Cleanup::Delete,
-                Some("keep") => Cleanup::Keep,
-                Some(other) => {
-                    return Err(fail(format!(
-                        "runtime.workspaceCleanup {other:?}: use delete or keep"
-                    )));
-                }
-            };
+            // The worktree adapter reads the map; `fleet up` reloads it.
+            let handle = Repositories::new(repositories(rt).map_err(fail)?);
             for (harness, name) in &rt.workspace_trust {
                 let Some(interface) = TrustInterface::parse(name) else {
                     return Err(fail(format!(
@@ -1185,7 +1338,6 @@ fn open_reloadable_runtime(
                 };
                 cfg.workspace_trust.insert(harness.clone(), interface);
             }
-            let handle = cfg.repositories.clone();
             Ok((Box::new(ThurboxRuntime::new(cfg)), Some(handle)))
         }
         other => Err(fail(format!(

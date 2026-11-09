@@ -218,12 +218,18 @@ fn a_spawn_that_times_out_is_adopted_by_its_key_and_its_process_tree_is_killed()
 fn an_orphan_session_holding_the_key_is_adopted_not_twinned() {
     let env = setup("thurbox-orphan", vec![task("t1", false)]);
     let key = thurbox_key(&env, "t1");
-    // A manager that died after its create left this session behind.
+    // A manager that died after its create left this session behind, with
+    // the signal file that create gave it.
+    let signals = env
+        .data
+        .join("signals")
+        .join(format!("{}.jsonl", env.session_key("t1")));
     env.edit_stub(|s| {
         s["sessions"] = json!([{
             "id": "00000000-0000-4000-8000-000000000099", "key": key, "host": "local",
             "name": key, "agent": "claude-code", "state": "idle", "hook_reported": true,
-            "stopped": false, "meta": {}, "sent": [], "env": []
+            "stopped": false, "meta": {}, "sent": [], "env": ["FLEET_SIGNAL_FILE"],
+            "signal_file": signals.to_string_lossy()
         }]);
     });
     env.apply(task("t1", true)).ok();
@@ -249,9 +255,11 @@ fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
     assert_condition(&st, "Briefed", "True", "ReceiptRecovered");
     assert_eq!(argv_of(&env, "message send").len(), 1);
 
-    // Unconfirmed: the send itself never answered. Fleet cannot tell, so it
-    // asks for a person rather than typing the brief again.
+    // Unconfirmed: the send itself never answered, and the agent's prompt
+    // hook reports nothing. Fleet cannot tell, so it asks for a person
+    // rather than typing the brief again.
     let env = setup("thurbox-brief-unconfirmed", vec![]);
+    env.edit_stub(|s| s["promptHookSilent"] = json!(true));
     env.stub_fault("message-send", "hang-after", 1);
     env.apply(task("t1", true)).ok();
     env.reconcile().ok();
@@ -500,9 +508,11 @@ fn slow_probes_never_outlive_the_lease() {
     let env = setup("thurbox-slow", vec![task("t1", true)]);
     // Each call fits the lease; the probes of one Task together do not.
     let cfg = std::fs::read_to_string(&env.config).unwrap();
+    // The worktree adapter's own bound would dwarf the runtime's here.
     std::fs::write(
         &env.config,
-        cfg.replace("callTimeoutMs = 3000", "callTimeoutMs = 2000"),
+        cfg.replace("callTimeoutMs = 3000", "callTimeoutMs = 2000")
+            + "\n[workspaces]\nkind = \"fake\"\ndir = \"fake\"\n",
     )
     .unwrap();
     env.stub_fault("list", "slow", 2);
@@ -738,25 +748,64 @@ fn a_workspace_fleet_made_reaches_thurbox_as_a_ready_directory() {
     }
 }
 
+/// `git` in `dir`, blind to any repository a parent process points at.
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let mut cmd = std::process::Command::new("git");
+    for var in fleet_runtime::worktree::GIT_LOCATION {
+        cmd.env_remove(var);
+    }
+    let out = cmd
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.test"])
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 #[test]
-fn a_repositories_workspace_becomes_thurbox_worktrees_the_adapter_names() {
-    let env = Env::thurbox("thurbox-repositories");
-    map_repositories(&env);
+fn without_a_workspaces_section_fleet_makes_the_worktree_and_its_release_keeps_the_work() {
+    let env = Env::thurbox("thurbox-default-workspace");
+    let src = env.root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let notes = env.root.join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::write(notes.join("keep.md"), "mine").unwrap();
+    let mut cfg = std::fs::read_to_string(&env.config).expect("config");
+    cfg.push_str(&format!(
+        "\n[runtime.repositories]\n\"https://example.invalid/org/app\" = '{}'\n",
+        src.display()
+    ));
+    std::fs::write(&env.config, cfg).expect("config");
+    let mut t = support::task("r1", true);
+    t["spec"]["workspace"] = json!({"repositories": [
+        {"name": "app", "url": "https://example.invalid/org/app", "ref": "main"},
+        {"name": "notes", "url": format!("file://{}", notes.display())}
+    ]});
     let mut items = runtime_config();
-    items.as_array_mut().unwrap().push(repositories_task("r1"));
+    items.as_array_mut().unwrap().push(t);
     env.apply(items).ok();
     env.reconcile().ok();
 
+    // Fleet made the worktree under its data directory, with no section
+    // asking it to, and the file:// directory is spanned as it is.
+    let st = full_status(&env, "r1");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_condition(&st, "WorkspaceReady", "True", "Materialized");
+    let key = st["workspace"]["key"].as_str().unwrap().to_string();
+    let dir = std::path::PathBuf::from(st["workspace"]["dir"].as_str().unwrap());
+    assert_eq!(dir, env.data.join("workspaces").join(&key).join("app"));
+    assert!(dir.join(".git").exists(), "{st:#}");
     assert_eq!(
-        env.status("r1")["phase"],
-        "Briefed",
-        "{:#}",
-        full_status(&env, "r1")
+        st["workspace"]["extraDirs"],
+        json!([notes.display().to_string()])
     );
-    let uid = env.get("r1")["metadata"]["uid"]
-        .as_str()
-        .unwrap()
-        .to_string();
+
+    // thurbox runs the session in it, and makes no worktree of its own.
     let create = &argv_of(&env, "create")[0];
     let after = |flag: &str| {
         create
@@ -764,67 +813,40 @@ fn a_repositories_workspace_becomes_thurbox_worktrees_the_adapter_names() {
             .position(|a| a == flag)
             .map(|i| create[i + 1].clone())
     };
-    let (fleet, docs) = if cfg!(windows) {
-        ("C:\\src\\fleet", "C:\\src\\docs")
-    } else {
-        ("/src/fleet", "/src/docs")
-    };
-    assert_eq!(after("--repo-path").as_deref(), Some(fleet), "{create:?}");
-    assert_eq!(
-        after("--worktree-branch"),
-        Some(format!("fleet/r1.{uid}")),
-        "{create:?}"
-    );
-    assert_eq!(
-        after("--base-branch").as_deref(),
-        Some("main"),
-        "{create:?}"
-    );
-    assert_eq!(after("--add-repo").as_deref(), Some(docs), "{create:?}");
+    assert_eq!(after("--repo-path"), Some(dir.display().to_string()));
+    for flag in ["--worktree-branch", "--base-branch", "--add-repo"] {
+        assert_eq!(after(flag), None, "{create:?}");
+    }
 
-    // Deleting the Task deletes the session; by default the runtime tears its
-    // worktrees down with it (`--force`). Fleet never names a worktree.
+    // Work the session leaves uncommitted outlives the release.
+    std::fs::write(dir.join("draft.txt"), "unfinished").unwrap();
     env.fleet(&result_args("r1", "1")).ok();
     env.reconcile().ok();
     env.fleet(&["delete", "task", "r1"]).ok();
     set_session_state(&env, &thurbox_key(&env, "r1"), "idle");
     env.reconcile().ok();
-    assert!(env.stub_sessions().is_empty(), "{:#?}", env.stub_sessions());
-    let delete = &argv_of(&env, "delete")[0];
-    assert!(delete.iter().any(|a| a == "--force"), "{delete:?}");
-    assert!(
-        !delete
-            .iter()
-            .any(|a| a.contains("src") || a.contains("worktree")),
-        "{delete:?}"
-    );
     env.fleet(&["get", "task", "r1"]).code(3);
-}
-
-#[test]
-fn a_runtime_configured_to_keep_workspaces_deletes_the_session_softly() {
-    let env = Env::thurbox("thurbox-keep");
-    let cfg = std::fs::read_to_string(&env.config).expect("config");
-    let cfg = cfg.replace("[runtime]\n", "[runtime]\nworkspaceCleanup = \"keep\"\n");
-    std::fs::write(&env.config, cfg).expect("config");
-    let mut items = runtime_config();
-    items.as_array_mut().unwrap().push(task("k1", true));
-    env.apply(items).ok();
-    env.reconcile().ok();
-    env.fleet(&result_args("k1", "1")).ok();
-    env.reconcile().ok();
-    env.fleet(&["delete", "task", "k1"]).ok();
-    set_session_state(&env, &thurbox_key(&env, "k1"), "idle");
-    env.reconcile().ok();
-    let delete = &argv_of(&env, "delete")[0];
-    assert!(delete.iter().any(|a| a == "--soft"), "{delete:?}");
-    assert!(!delete.iter().any(|a| a == "--force"), "{delete:?}");
+    assert!(!dir.exists(), "the worktree is cleaned");
+    let preserved = format!("refs/fleet/preserved/{key}/app");
+    assert_eq!(
+        git(&src, &["show", &format!("{preserved}:draft.txt")]),
+        "unfinished"
+    );
+    assert_eq!(
+        git(&src, &["branch", "--list", &format!("fleet/{key}")]).trim_start_matches(['*', ' ']),
+        format!("fleet/{key}"),
+        "a branch is never deleted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(notes.join("keep.md")).unwrap(),
+        "mine"
+    );
 }
 
 #[test]
 fn a_runtime_workspace_setting_that_cannot_work_is_refused_at_load() {
     for (extra, want) in [
-        ("workspaceCleanup = \"later\"\n", "runtime.workspaceCleanup"),
+        ("workspaceCleanup = \"delete\"\n", "workspaceCleanup"),
         (
             "[runtime.repositories]\n\"https://example.invalid/a\" = \"src/a\"\n",
             "runtime.repositories",
@@ -858,7 +880,7 @@ fn a_repository_the_runtime_does_not_map_is_refused_at_spawn() {
     // so the Task waits for the mapping instead of stalling.
     assert_eq!(full["phase"], "Pending", "{full:#}");
     assert_eq!(full["spawnAttempts"].as_u64().unwrap_or(0), 0, "{full:#}");
-    assert_condition(&full, "Spawned", "False", "RepositoryUnmapped");
+    assert_condition(&full, "WorkspaceReady", "False", "RepositoryUnmapped");
     assert_condition(&full, "NeedsAttention", "True", "RepositoryUnmapped");
 }
 
