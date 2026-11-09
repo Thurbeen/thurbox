@@ -305,7 +305,13 @@ embedded hook assets live in
 - **`agent_patches` (arg injection)** — appends args to the agent's launch
   command, reversibly.
   - `claude`: `--settings {home}/claude.json` (claude *merges* it with the user's
-    own settings, never clobbering). Full lifecycle: idle/working/blocked/done,
+    own settings, never clobbering). Claude keeps only one `--settings`
+    argument, so when a launch carries several (the agent's own `args`, this
+    patch, one passed with `--agent-arg` as Fleet passes its hooks), thurbox
+    hands it one inline JSON object: objects merged by key, each hook event's
+    list joined, other values taken from the later one. A value that is
+    neither JSON nor a JSON file readable here, such as a path on a remote
+    host, leaves the arguments unmerged. Full lifecycle: idle/working/blocked/done,
     plus `background` from its `Stop` payload and its subagent edges (see
     [Background sub-work](#background-sub-work)).
     Its tool hooks skip a call whose payload has a top-level `agent_id` and no

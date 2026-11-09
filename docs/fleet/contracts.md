@@ -895,7 +895,9 @@ outlast it.
   the key still belongs to the recorded id. `e2e_task_pause` covers both.
   The adapter passes the harness profile's hooks and Codex trust as
   `--agent-arg`s; thurbox's agent registry still builds the rest of the
-  argv and resumes the conversation itself.
+  argv and resumes the conversation itself. thurbox merges a claude agent's
+  several `--settings` into one, so the profile's hooks and thurbox's own
+  both run.
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process: it records
   the harness profile's launch and resume argv, and plays each agent's

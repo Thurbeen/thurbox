@@ -1228,6 +1228,9 @@ pub(crate) fn build_agent_invocation(
 /// sees `sh`, and the agent would otherwise be found by `exec` on the tmux
 /// server's `PATH` — which misses a fish user's `fish_add_path` directories.
 ///
+/// A claude-family agent's several `--settings` become one here too
+/// ([`merge_settings_args`]), for every launch path at once.
+///
 /// [`HostShell::wrap_setup`]: crate::shell::HostShell::wrap_setup
 pub(crate) fn with_setup(
     def: &crate::session::AgentDef,
@@ -1235,6 +1238,11 @@ pub(crate) fn with_setup(
     command: String,
     args: Vec<String>,
 ) -> Result<(String, Vec<String>), crate::session_ops::OpError> {
+    let args = if def.is_family("claude") {
+        merge_settings_args(args)
+    } else {
+        args
+    };
     if def.setup.is_empty() {
         return Ok((command, args));
     }
@@ -1250,6 +1258,79 @@ pub(crate) fn with_setup(
             def.name
         ))
     })
+}
+
+/// Claude Code keeps one `--settings`: when a launch carries several — the
+/// hooks extension's file, and settings a caller passed with `--agent-arg`,
+/// as Fleet passes its own hooks — they reach it as one inline JSON object.
+/// Objects merge key by key, arrays (each hook event's list) are joined, and
+/// anything else takes the later value. A value that is neither JSON nor a
+/// JSON file this machine can read, such as a path on a remote host, leaves
+/// the arguments as they were.
+pub(crate) fn merge_settings_args(args: Vec<String>) -> Vec<String> {
+    const FLAG: &str = "--settings";
+    let mut at = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == FLAG && i + 1 < args.len() {
+            at.push(i);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    if at.len() < 2 {
+        return args;
+    }
+    let mut merged = serde_json::Value::Object(serde_json::Map::new());
+    for &i in &at {
+        let value = &args[i + 1];
+        let parsed = if value.trim_start().starts_with('{') {
+            serde_json::from_str(value).ok()
+        } else {
+            std::fs::read_to_string(value)
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok())
+        };
+        let Some(parsed) = parsed else {
+            tracing::warn!("--settings {value:?} cannot be read here; passed on unmerged");
+            return args;
+        };
+        merge_json(&mut merged, parsed);
+    }
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if at.contains(&i) {
+            if i == at[0] {
+                out.push(FLAG.to_string());
+                out.push(merged.to_string());
+            }
+            i += 2;
+        } else {
+            out.push(args[i].clone());
+            i += 1;
+        }
+    }
+    out
+}
+
+fn merge_json(into: &mut serde_json::Value, from: serde_json::Value) {
+    use serde_json::Value;
+    match (into, from) {
+        (Value::Object(into), Value::Object(from)) => {
+            for (key, value) in from {
+                match into.get_mut(&key) {
+                    Some(existing) => merge_json(existing, value),
+                    None => {
+                        into.insert(key, value);
+                    }
+                }
+            }
+        }
+        (Value::Array(into), Value::Array(from)) => into.extend(from),
+        (into, from) => *into = from,
+    }
 }
 
 /// Who carries out a verb on a session (#1471), decided once per verb from
