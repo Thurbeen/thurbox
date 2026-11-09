@@ -1284,9 +1284,10 @@ struct InPlaceWrite {
 const IN_PLACE_ALLOWED: &[InPlaceWrite] = &[
     InPlaceWrite {
         file: "kernel/snapshot/fleet.rs",
-        call: "File::create",
+        call: "OpenOptions::new",
         sites: 1,
-        why: "fleet up's standard error, unlinked once spawned and read once it exits",
+        why: "fleet up's standard error, created exclusively, unlinked once spawned and read once \
+              it exits",
     },
     InPlaceWrite {
         file: "update/self_update.rs",

@@ -32,6 +32,29 @@ impl super::Executor for Fleet {
         _progress: &Sender<Progress>,
     ) -> Result<Outcome, String> {
         match command {
+            // A confirmation is checked against the Task as it is now, the
+            // way thurbox's engine checks it against the row.
+            Command::Guarded {
+                inner,
+                session,
+                backend_id,
+                cwd,
+                member_dirs,
+            } => {
+                let row = self
+                    .get(session)?
+                    .map(|task| crate::kernel::snapshot::fleet::row_of(&task));
+                if row.is_none_or(|row| {
+                    row.backend_id != *backend_id
+                        || row.cwd != *cwd
+                        || row.member_dirs != *member_dirs
+                }) {
+                    return Err("confirmation target changed".into());
+                }
+                return self.execute(inner, _id, _progress);
+            }
+            // The multiplexer the create flow settles on is the thurbox
+            // engine's: Fleet's runtime keeps the terminal, so it is dropped.
             Command::Create {
                 name,
                 repo,
@@ -40,14 +63,13 @@ impl super::Executor for Fleet {
                 worktree_path,
                 agent,
                 host,
-                multiplexer,
+                multiplexer: _,
                 extras,
             } => {
                 let asked = [
                     (branch.is_some(), "a branch"),
                     (base.is_some(), "a base branch"),
                     (worktree_path.is_some(), "an existing worktree"),
-                    (multiplexer.is_some(), "a multiplexer"),
                     (!extras.is_empty(), "further repositories"),
                 ];
                 if let Some((_, what)) = asked.iter().find(|(asked, _)| *asked) {
@@ -67,7 +89,7 @@ impl super::Executor for Fleet {
                 let task = json!({
                     "apiVersion": "fleet/v1alpha1",
                     "kind": "Task",
-                    "metadata": {"name": name},
+                    "metadata": {"name": task_name(name)},
                     "spec": spec,
                 });
                 self.run(&["apply", "-f", "-"], Some(&task.to_string()))?;
@@ -100,7 +122,43 @@ impl super::Executor for Fleet {
     }
 }
 
+/// A session's name as a Task's: lowercase letters, digits, `-` and `.`,
+/// starting and ending with a letter or digit, which is what Fleet takes.
+/// Anything else becomes a `-`, and runs of them one.
+fn task_name(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() || c == '.' {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_string()
+}
+
 impl Fleet {
+    /// `fleet get task <name>`: the Task, or `None` when there is none.
+    fn get(&self, name: &str) -> Result<Option<serde_json::Value>, String> {
+        let out = Process::new(&self.program)
+            .args(["get", "task", name])
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("could not start fleet get: {e}"))?;
+        match out.status.code() {
+            Some(0) => serde_json::from_slice(&out.stdout)
+                .map(Some)
+                .map_err(|e| format!("fleet get answered no JSON: {e}")),
+            // Not found: the Task is gone.
+            Some(3) => Ok(None),
+            _ => Err(format!(
+                "fleet get: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+        }
+    }
+
     /// Run `fleet <args>`, with `input` on its stdin, and answer its error
     /// when it exits non-zero.
     fn run(&self, args: &[&str], input: Option<&str>) -> Result<(), String> {

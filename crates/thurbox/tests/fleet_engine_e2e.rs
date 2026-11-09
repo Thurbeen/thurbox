@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use thurbox::kernel::command::{Command, CommandBus, Phase};
 use thurbox::kernel::snapshot::fleet::FleetWatch;
-use thurbox::kernel::snapshot::SnapshotStore;
+use thurbox::kernel::snapshot::{SessionRow, SnapshotSource, SnapshotStore, SourceRead};
 
 const BOUND: Duration = Duration::from_secs(60);
 
@@ -42,22 +42,37 @@ struct Fleet {
 
 impl Fleet {
     fn new(bin: PathBuf) -> Fleet {
+        Fleet::with(bin, "[runtime]\nkind = \"fake\"\ndir = \"fake\"\n", "")
+    }
+
+    /// A Fleet whose runtime is `runtime` (TOML), its program run with
+    /// `env` (`NAME='value' …`) and `<root>/bin` first on its `PATH`.
+    fn with(bin: PathBuf, runtime: &str, env: &str) -> Fleet {
         let root = tempfile::Builder::new()
             .prefix("fleet-engine-")
             .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
             .expect("root");
         let r = root.path();
         std::fs::create_dir_all(r.join("tmp")).expect("tmp");
+        // thurbox's own config and data too, so the registry it reads (and
+        // seeds when absent) is the test's. Each test is a process of its own.
+        for (var, dir) in [
+            ("THURBOX_CONFIG_DIR", "thurbox-config"),
+            ("THURBOX_DATA_DIR", "thurbox-data"),
+        ] {
+            std::fs::create_dir_all(r.join(dir)).expect("thurbox dir");
+            std::env::set_var(var, r.join(dir));
+        }
         std::fs::write(
             r.join("fleet.toml"),
-            "version = 1\n\n[data]\ndir = \"data\"\n\n[runtime]\nkind = \"fake\"\ndir = \"fake\"\n",
+            format!("version = 1\n\n[data]\ndir = \"data\"\n\n{runtime}"),
         )
         .expect("config");
         let program = r.join("fleet.sh");
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\nexec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH=/usr/bin:/bin '{bin}' --config '{r}/fleet.toml' \"$@\"\n",
+                "#!/bin/sh\nexec env -i HOME='{r}' TMPDIR='{r}/tmp' PATH='{r}/bin:/usr/bin:/bin' {env} '{bin}' --config '{r}/fleet.toml' \"$@\"\n",
                 r = r.display(),
                 bin = bin.display()
             ),
@@ -382,6 +397,134 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     assert!(missing.contains("nobody"), "{missing}");
 }
 
+/// A confirmed delete (the local control API's) is checked against the Task
+/// as it is now: one that still matches what was confirmed is deleted, one
+/// that moved is not.
+#[test]
+fn a_confirmed_delete_is_checked_then_deletes_the_task() {
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin);
+    fleet.apply(json!([task("alpha"), task("beta")]));
+    let mut bus = CommandBus::fleet(fleet.program.clone());
+    let guarded = |session: &str, cwd: &str| Command::Guarded {
+        inner: Box::new(Command::Delete {
+            session: session.into(),
+            force: true,
+        }),
+        session: session.into(),
+        backend_id: None,
+        cwd: Some(PathBuf::from(cwd)),
+        member_dirs: vec![PathBuf::from(cwd)],
+    };
+
+    let moved = run_command(&mut bus, guarded("beta", "work/elsewhere"))
+        .expect_err("the target moved since it was confirmed");
+    assert!(moved.contains("confirmation target changed"), "{moved}");
+    assert!(fleet.get("beta").unwrap()["metadata"]["deletionTimestamp"].is_null());
+
+    run_command(&mut bus, guarded("alpha", "work/alpha")).expect("the confirmed delete");
+    assert!(fleet.get("alpha").unwrap()["metadata"]["deletionTimestamp"].is_u64());
+}
+
+/// A source the test feeds by hand.
+struct Fed(std::sync::mpsc::Receiver<SourceRead>);
+
+impl SnapshotSource for Fed {
+    fn poll(&mut self) -> Option<SourceRead> {
+        self.0.try_recv().ok()
+    }
+}
+
+fn row(name: &str, backend: &str, cwd: &Path) -> SessionRow {
+    let mut row = thurbox::kernel::snapshot::fleet::row_of(&json!({
+        "metadata": {"name": name},
+        "spec": {"harness": "claude-code", "workspace": {"dir": cwd}},
+    }));
+    row.backend = backend.into();
+    row
+}
+
+/// A refresh asked of a source is fresh once the source answers after it
+/// (or, since a source speaks only when something moved, once it had time
+/// to): a creation is reported with the row it made, not before it.
+#[test]
+fn a_refresh_ticket_waits_for_the_source_to_answer() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(
+        Box::new(Fed(rx)),
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
+    let ticket = store.request_refresh();
+    assert!(!store.fresh_since(ticket), "nothing was read since");
+    tx.send(SourceRead {
+        sessions: vec![row("made", "fleet", Path::new("/w"))],
+        error: None,
+    })
+    .unwrap();
+    store.refresh_if_due();
+    assert!(store.fresh_since(ticket));
+    assert!(store.current().session("made").is_some());
+
+    let quiet = store.request_refresh();
+    assert!(!store.fresh_since(quiet));
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(store.fresh_since(quiet), "a source that has nothing to say");
+}
+
+/// A Fleet row's workspace may be on another machine, so no git runs
+/// against it here; a local row beside it is examined as ever.
+#[test]
+fn a_fleet_row_is_not_examined_by_git() {
+    let repo = tempfile::tempdir().expect("repo");
+    let git = |args: &[&str]| {
+        let mut command = Process::new("git");
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+        ] {
+            command.env_remove(var);
+        }
+        let status = command
+            .args(args)
+            .current_dir(repo.path())
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.path().join("file"), "x").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(
+        Box::new(Fed(rx)),
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
+    tx.send(SourceRead {
+        sessions: vec![
+            row("on-fleet", "fleet", repo.path()),
+            row("local", "tmux", repo.path()),
+        ],
+        error: None,
+    })
+    .unwrap();
+    until("the local row has its git state", || {
+        store.refresh_if_due();
+        store
+            .current()
+            .session("local")
+            .is_some_and(|r| r.git.is_some())
+    });
+    assert_eq!(store.current().session("on-fleet").unwrap().git, None);
+}
+
 #[test]
 fn thurbox_starts_fleet_up_when_no_manager_holds_the_lease() {
     let Some(bin) = fleet_bin() else { return };
@@ -409,4 +552,108 @@ fn thurbox_starts_fleet_up_when_no_manager_holds_the_lease() {
     second.refresh_if_due();
     assert_eq!(second.current().error, None);
     assert_eq!(fleet.manager(), first);
+}
+
+/// A private `TMUX_TMPDIR`, short enough for a socket path, whose server dies
+/// with it.
+struct Sockets(PathBuf);
+
+impl Sockets {
+    fn new() -> Sockets {
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|d| d.is_dir())
+            .unwrap_or_else(std::env::temp_dir);
+        let dir = base.join(format!("tfp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("socket dir");
+        Sockets(dir)
+    }
+}
+
+impl Drop for Sockets {
+    fn drop(&mut self) {
+        let _ = Process::new("tmux")
+            .env("TMUX_TMPDIR", &self.0)
+            .env_remove("TMUX")
+            .args(["-L", "runtime-mux", "kill-server"])
+            .output();
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn a_fleet_session_has_a_terminal_pane_through_fleet_attach() {
+    let Some(bin) = fleet_bin() else { return };
+    let runtime_mux = bin.with_file_name("runtime-mux");
+    if !runtime_mux.is_file() {
+        eprintln!("skipping: no runtime-mux binary; build it with `cargo build -p runtime-mux`");
+        return;
+    }
+    if thurbox::paths::resolve_on_path("tmux").is_none() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let sockets = Sockets::new();
+    let fleet = Fleet::with(
+        bin,
+        &format!(
+            "[runtimes.mux]\nprogram = '{}'\ncallTimeoutMs = 10000\n\n[hosts.local]\nruntime = \"mux\"\n",
+            runtime_mux.display()
+        ),
+        &format!("TMUX_TMPDIR='{}'", sockets.0.display()),
+    );
+    // The harness's program: it prints a marker, then answers each line.
+    let harness_dir = fleet.root.path().join("bin");
+    std::fs::create_dir_all(&harness_dir).expect("bin");
+    let harness = harness_dir.join("claude");
+    std::fs::write(
+        &harness,
+        "#!/bin/sh\necho ready-marker\nwhile IFS= read -r l; do echo \"pong-$l\"; done\n",
+    )
+    .expect("harness");
+    make_executable(&harness);
+    let work = fleet.root.path().join("work");
+    std::fs::create_dir_all(&work).expect("work");
+    let mut t1 = task("t1");
+    t1["spec"]["workspace"] = json!({"dir": work});
+    t1["spec"]["dispatch"] = json!(true);
+    fleet.apply(t1);
+    fleet.run(&["reconcile"]).ok();
+
+    let mut store = store_over(&fleet);
+    until("the Task has its session", || {
+        store.refresh_if_due();
+        store
+            .current()
+            .session("t1")
+            .is_some_and(|row| row.key.is_some())
+    });
+    // A pane's reader and writer run on the process's runtime, as in the
+    // interface.
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let _entered = runtime.enter();
+    let mut terminals = thurbox::kernel::terminal::Terminals::with_registry(
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    );
+    terminals.attach_fleet_through(fleet.program.clone());
+    let mut screen = |terminals: &mut thurbox::kernel::terminal::Terminals| {
+        store.refresh_if_due();
+        terminals.sync(store.current(), 24, 80);
+        if let Some(failure) = terminals.failure("t1") {
+            eprintln!("attach: {failure}");
+        }
+        terminals.visible_text("t1").unwrap_or_default()
+    };
+    until("the pane shows the agent's screen", || {
+        screen(&mut terminals).contains("ready-marker")
+    });
+    assert!(
+        terminals.send("t1", b"ping\r".to_vec()),
+        "the pane takes input"
+    );
+    until("the agent answers what was typed", || {
+        screen(&mut terminals).contains("pong-ping")
+    });
 }

@@ -317,7 +317,13 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         watcher: Watcher::new(&ui_dir)?,
         ui_dir,
         snapshots,
-        terminals: terminals(std::sync::Arc::clone(&backends), &startup_settings),
+        terminals: {
+            let mut terminals = terminals(std::sync::Arc::clone(&backends), &startup_settings);
+            if let Some(program) = &fleet {
+                terminals.attach_fleet_through(program.clone());
+            }
+            terminals
+        },
         commands: match fleet {
             Some(program) => CommandBus::fleet(program),
             None => CommandBus::new(std::sync::Arc::clone(&backends), &startup_settings),

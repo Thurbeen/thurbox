@@ -364,7 +364,8 @@ thurbox is a Fleet client and reads nothing of Fleet's store directly.
 - `fleet attach <task> --json`: the command that opens the Task's terminal
   stream ([the terminal stream](../runtime/README.md#the-terminal-stream)).
   Built: it asks the runtime's `attach` and wraps a `tty` answer in
-  `fleet term-bridge`.
+  `fleet term-bridge`. thurbox opens the stream it names as a stream pane
+  (`src/kernel/terminal/fleet.rs`), whose backend is the stream itself.
 - thurbox starts `fleet up` when no manager holds the lease. Built: it
   starts one, and starts it again when it exits. A `fleet up` that exits with
   6 found the lease held, which is no error.

@@ -33,6 +33,12 @@ use probe::PaneProbe;
 /// determines how out of date the answer may be.
 pub const REFRESH_INTERVAL: Duration = Duration::from_millis(400);
 
+/// How long a refresh asked of a [`SnapshotSource`] waits for its answer.
+/// A source speaks only when something moved, so after a command that moved
+/// nothing no answer comes: past this, the rows stand as fresh. `fleet
+/// watch` reads the store every 500 ms, so a write is seen well within it.
+const SOURCE_SETTLE: Duration = Duration::from_secs(1);
+
 /// How long "is the multiplexer installed, does each agent's command resolve"
 /// is trusted before it is asked again.
 ///
@@ -416,6 +422,10 @@ pub struct SnapshotStore {
     db: Option<DbWorker>,
     /// The rows' source when the database is not it; see [`SnapshotSource`].
     source: Option<Box<dyn SnapshotSource>>,
+    /// Answers applied from the source, and when a refresh was last asked of
+    /// it: what [`Self::request_refresh`]'s ticket counts with a source.
+    source_reads: u64,
+    source_asked: Instant,
     /// Whether a read has been sent and not answered. At most one is: an
     /// answer is applied whole, and two in flight would only race.
     reading: bool,
@@ -559,6 +569,7 @@ impl SnapshotStore {
         let Some(read) = self.source.as_mut().and_then(|source| source.poll()) else {
             return false;
         };
+        self.source_reads += 1;
         self.current.sessions = read.sessions;
         self.current.error = read.error;
         self.current.taken_at_ms = taken_at_stamp();
@@ -579,6 +590,8 @@ impl SnapshotStore {
         let mut store = Self {
             db,
             source: None,
+            source_reads: 0,
+            source_asked: Instant::now(),
             db_path,
             reading: false,
             reread: false,
@@ -766,6 +779,10 @@ impl SnapshotStore {
     /// Returns a ticket [`Self::fresh_since`] accepts once rows read after
     /// this call are the ones published.
     pub fn request_refresh(&mut self) -> u64 {
+        if self.source.is_some() {
+            self.source_asked = Instant::now();
+            return self.source_reads + 1;
+        }
         self.reread = true;
         self.send_read();
         // The read that settles this is the next full one sent — this call's
@@ -780,6 +797,9 @@ impl SnapshotStore {
     /// Whether the rows published now were read after `ticket` was handed out.
     /// Always true without a database: there is nothing further to wait for.
     pub fn fresh_since(&self, ticket: u64) -> bool {
+        if self.source.is_some() {
+            return self.source_reads >= ticket || self.source_asked.elapsed() >= SOURCE_SETTLE;
+        }
         self.db.is_none() || self.reads_applied >= ticket
     }
 
@@ -1051,6 +1071,11 @@ impl SnapshotStore {
             if row.git != stats {
                 row.git = stats;
                 moved = true;
+            }
+            // A Fleet Task's workspace is on whichever machine its runtime
+            // serves, which this one cannot reach with git.
+            if row.backend == fleet::BACKEND {
+                continue;
             }
             if let Some(cwd) = row.cwd.clone() {
                 // A remote session's `cwd` is a path on its host, so its stats

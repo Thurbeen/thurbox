@@ -1963,6 +1963,74 @@ fn a_plain_selection_names_the_session_then_the_agent() {
     assert_eq!(drawn(&host, &world), "", "the flow closes when it commits");
 }
 
+/// The same plain selection on the Fleet engine (ADR-41) becomes a Task:
+/// the multiplexer the flow settles on is the thurbox engine's, and Fleet's
+/// runtime keeps the terminal, so it is dropped rather than refused. `fleet`
+/// here is a stand-in that records what it was asked.
+#[cfg(unix)]
+#[test]
+fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
+    let host = host();
+    let world = World::default();
+    open(&host, &world);
+    press(&host, &world, "space");
+    press(&host, &world, "enter");
+    type_text(&host, &world, "read the code");
+    press(&host, &world, "enter");
+    press(&host, &world, "enter");
+    let commands = host.drain_commands();
+    assert!(
+        matches!(
+            &commands[..],
+            [Command::Create {
+                multiplexer: Some(_),
+                ..
+            }]
+        ),
+        "the flow settles a multiplexer: {commands:?}"
+    );
+
+    let dir = tempfile::tempdir().expect("dir");
+    let asked = dir.path().join("asked");
+    let fleet = dir.path().join("fleet");
+    std::fs::write(
+        &fleet,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{0}'\ncat >> '{0}'\n",
+            asked.display()
+        ),
+    )
+    .expect("fleet");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let mut bus = thurbox::kernel::command::CommandBus::fleet(fleet);
+    let id = bus.dispatch(commands.into_iter().next().unwrap());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        bus.poll();
+        match bus.inflight().into_iter().find(|entry| entry.id == id) {
+            None => break,
+            Some(entry) if entry.phase == Phase::Failed => {
+                panic!("the create failed: {:?}", entry.error)
+            }
+            Some(_) => {}
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the create never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let asked = std::fs::read_to_string(&asked).expect("fleet was asked");
+    let (args, manifest) = asked.split_once('\n').expect("args, then the manifest");
+    assert_eq!(args, "apply -f -");
+    let task: serde_json::Value = serde_json::from_str(manifest).expect("a Task");
+    // A Task's name is a DNS-like name: the typed one, made one.
+    assert_eq!(task["metadata"]["name"], "read-the-code");
+    assert_eq!(task["spec"]["workspace"]["dir"], "/src/thurbox");
+    assert_eq!(task["spec"]["harness"], "claude");
+}
+
 #[test]
 fn an_untouched_name_takes_the_repository_it_just_picked() {
     // The step used to open on an empty field with no default and no placeholder,

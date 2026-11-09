@@ -8,6 +8,7 @@
 
 use std::io::{self, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 use term_stream::{Down, Size, Up};
 
@@ -61,6 +62,15 @@ pub fn view_program() -> Option<std::path::PathBuf> {
 /// and input that goes up as `input` frames. The process ends when the
 /// input is dropped, as a detach.
 pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend::AdoptedSession> {
+    adopt_with_upstream(argv, rows, cols).map(|(adopted, _)| adopted)
+}
+
+/// [`adopt`], and the stream's way up for frames other than input.
+pub(super) fn adopt_with_upstream(
+    argv: &[String],
+    rows: u16,
+    cols: u16,
+) -> io::Result<(crate::backend::AdoptedSession, Upstream)> {
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| io::Error::other("the stream's argv names no program"))?;
@@ -89,6 +99,7 @@ pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend
         }
     }
     term_stream::write(&mut stdin, &Up::Resize(Size { rows, cols }))?;
+    let upstream = Upstream(Arc::new(Mutex::new(stdin)));
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         while let Ok(Some(frame)) = term_stream::read::<Down>(&mut stdout) {
@@ -112,12 +123,13 @@ pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend
         }
         reap(child);
     });
-    Ok(crate::backend::AdoptedSession {
+    let adopted = crate::backend::AdoptedSession {
         output: Box::new(rx.into_iter()),
-        input: Box::new(Input(stdin)),
+        input: Box::new(Input(upstream.clone())),
         seed_len: 0,
         size: None,
-    })
+    };
+    Ok((adopted, upstream))
 }
 
 fn snapshot(s: term_stream::Snapshot) -> crate::backend::contract::PaneSnapshot {
@@ -137,23 +149,39 @@ fn reap(mut child: Child) {
     let _ = child.wait();
 }
 
+/// The stream's way up: shared by the pane's input and whatever else sends
+/// frames, such as a resize.
+#[derive(Clone)]
+pub(super) struct Upstream(Arc<Mutex<ChildStdin>>);
+
+impl Upstream {
+    pub(super) fn send(&self, frame: &Up) -> io::Result<()> {
+        let mut stdin = self
+            .0
+            .lock()
+            .map_err(|_| io::Error::other("the stream's input is poisoned"))?;
+        term_stream::write(&mut *stdin, frame)?;
+        stdin.flush()
+    }
+}
+
 /// Bytes typed into the pane, each write one `input` frame.
-struct Input(ChildStdin);
+struct Input(Upstream);
 
 impl Write for Input {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        term_stream::write(&mut self.0, &Up::Input(buf.to_vec()))?;
+        self.0.send(&Up::Input(buf.to_vec()))?;
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        Ok(())
     }
 }
 
 impl Drop for Input {
     fn drop(&mut self) {
-        let _ = term_stream::write(&mut self.0, &Up::Detach);
+        let _ = self.0.send(&Up::Detach);
     }
 }
 

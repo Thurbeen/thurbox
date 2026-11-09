@@ -32,6 +32,10 @@ const MANAGER_CHECK: Duration = Duration::from_secs(10);
 /// `fleet up`'s exit code when another manager holds the lease.
 const LEASE_HELD: i32 = 6;
 
+/// The backend every Task's row names: no multiplexer of thurbox's, but
+/// Fleet, whose runtime keeps the terminal.
+pub const BACKEND: &str = "fleet";
+
 enum Update {
     Rows(Vec<SessionRow>),
     /// Why the watch is not running, or `None` once it reads again.
@@ -259,13 +263,15 @@ fn keep_manager(program: &Path, tx: &Sender<Update>) {
     }
 }
 
-/// One `fleet up`, waited for. Its standard error goes to an unlinked file
-/// rather than a pipe: a pipe would end the manager with the interface,
-/// the first time it wrote after thurbox exited.
+/// One `fleet up`, waited for. Its standard error goes to a file in
+/// thurbox's own data directory, unlinked once the manager has it, rather
+/// than a pipe: a pipe would end the manager with the interface, the first
+/// time it wrote after thurbox exited.
 fn manage(program: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
-    let path = std::env::temp_dir().join(format!("thurbox-fleet-up-{}.log", std::process::id()));
-    let log = std::fs::File::create(&path).map_err(|e| format!("fleet up: log: {e}"))?;
-    let mut reader = std::fs::File::open(&path).map_err(|e| format!("fleet up: log: {e}"))?;
+    let dir = crate::paths::data_directory().ok_or("fleet up: no data directory for its log")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
+    let (log, mut reader) = open_log(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
+    let path = dir.join(LOG);
     let mut command = Command::new(program);
     command
         .arg("up")
@@ -296,12 +302,34 @@ fn manage(program: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
     }
 }
 
+/// The name of `fleet up`'s standard error file.
+const LOG: &str = "fleet-up.log";
+
+/// `fleet up`'s standard error: a file in `dir`, and a handle to read it back.
+///
+/// Created afresh and exclusively: whatever stands at the path, a link
+/// included, is removed rather than opened, so nothing it points at is
+/// written.
+fn open_log(dir: &Path) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    let path = dir.join(LOG);
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let log = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    let reader = std::fs::File::open(&path)?;
+    Ok((log, reader))
+}
+
 /// One Task as a session row.
 ///
 /// The Task's name is the row's id and name: every command addresses a Task
 /// by name. What a row says of git, panes and hook columns is thurbox's own
 /// engine's and stays empty here; Fleet's `sessionState` is the status.
-pub(crate) fn row_of(task: &Value) -> SessionRow {
+pub fn row_of(task: &Value) -> SessionRow {
     let text = |value: &Value| value.as_str().map(str::to_string);
     let (spec, status) = (&task["spec"], &task["status"]);
     let name = text(&task["metadata"]["name"]).unwrap_or_default();
@@ -327,7 +355,7 @@ pub(crate) fn row_of(task: &Value) -> SessionRow {
         cwd,
         branch: None,
         base_branch: None,
-        backend: "fleet".to_string(),
+        backend: BACKEND.to_string(),
         // The terminal is the stream `fleet attach` names, not a pane of
         // thurbox's backends.
         backend_id: None,
@@ -344,5 +372,29 @@ pub(crate) fn row_of(task: &Value) -> SessionRow {
         reports_as: None,
         detected_agent: None,
         meta: BTreeMap::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A link planted where the log goes is replaced, never followed: what
+    /// it pointed at keeps its contents.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_at_the_log_path_is_not_followed() {
+        let dir = tempfile::tempdir().expect("dir");
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "keep").expect("victim");
+        std::os::unix::fs::symlink(&victim, dir.path().join(LOG)).expect("link");
+
+        let (mut log, mut reader) = open_log(dir.path()).expect("the log opens");
+        std::io::Write::write_all(&mut log, b"error: written\n").expect("write");
+        let mut read = String::new();
+        reader.read_to_string(&mut read).expect("read");
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert_eq!(read, "error: written\n");
     }
 }

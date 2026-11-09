@@ -1093,6 +1093,9 @@ impl Session {
     /// [`Self::adopt`] over IO opened elsewhere: an embedder's own stream to
     /// the pane, such as a terminal stream, in place of the backend's
     /// connection. The backend still answers for the pane's size and state.
+    ///
+    /// The pane starts without a grid: a terminal stream's first frame is the
+    /// screen as a snapshot, and only a pane without a grid installs one.
     #[allow(clippy::too_many_arguments)]
     pub fn adopt_io(
         name: String,
@@ -1106,15 +1109,11 @@ impl Session {
     ) -> Self {
         let mut info = PaneInfo::new(name);
         info.backend_id = Some(backend_id.to_string());
-        Self::wire_io(
-            info,
-            rows,
-            cols,
-            SessionIo::adopted(adopted, backend_id),
-            backend,
-            env,
-            scrollback,
-        )
+        let io = SessionIo {
+            resident: false,
+            ..SessionIo::adopted(adopted, backend_id)
+        };
+        Self::wire_io(info, rows, cols, io, backend, env, scrollback)
     }
 
     /// [`Self::adopt`] for a session nobody is looking at: no history is

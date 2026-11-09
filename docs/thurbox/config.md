@@ -1317,6 +1317,7 @@ and the interface is a client of Fleet's command line:
 | creates a session | `fleet apply`: an interactive Task (no brief, dispatched) over the chosen directory, with the chosen agent as its harness and the chosen host |
 | sends to a session | `fleet send` |
 | deletes a session | `fleet delete task`; Fleet has no undo window |
+| shows a session's terminal | `fleet attach --json`: the stream it names, as a stream pane |
 | keeps a manager | `fleet up`, started whenever none holds the lease |
 
 - Fleet reads its own config (`FLEET_CONFIG`, then its per-user file). Run
@@ -1326,11 +1327,20 @@ and the interface is a client of Fleet's command line:
 - A session row's status is the Task's `sessionState`: `Running`, `Idle`,
   `Paused` as `stopped`, `Lost` and `Gone` as `failed`, absent as
   `unreported`.
-- A creation that names a branch, a base, a worktree, a multiplexer or further
-  repositories is refused: Fleet makes a Task's workspace, and its runtime
-  runs the terminal. Every other session command is refused by name.
-- A Task's terminal is the stream `fleet attach` names; until the interface
-  shows that stream, a Fleet session has no terminal pane.
+- A Task is named after the session, made a Fleet name: lowercase, with each
+  run of other characters one `-` (`Read the code` is `read-the-code`).
+- A creation that names a branch, a base, a worktree or further repositories
+  is refused: Fleet makes a Task's workspace. The multiplexer the create flow
+  settles on is dropped: Fleet's runtime keeps the terminal. A confirmed
+  delete is checked against the Task as it is then, as thurbox's own engine
+  checks it against the row. Every other session command is refused by name.
+- A Task's terminal is the stream `fleet attach` names, opened as a stream
+  pane. A Task with no session yet has no pane; a stream that ends is opened
+  again. Closing the pane detaches; the agent keeps running.
+- No git runs against a Task's workspace: it is on whichever machine the
+  Task's runtime serves.
+- `fleet up`'s standard error goes to a file in thurbox's data directory,
+  created exclusively and unlinked once the manager holds it.
 - A watch or a manager that fails is the snapshot's error, beside the last
   rows read. Both are started again: the watch resumes with `--since`.
 

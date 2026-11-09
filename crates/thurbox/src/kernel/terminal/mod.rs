@@ -34,6 +34,7 @@ use crate::session::WORKING_QUIET_MS;
 
 mod attach;
 mod discovery;
+mod fleet;
 pub mod links;
 mod paint;
 mod programs;
@@ -368,6 +369,9 @@ pub struct Terminals {
     /// What a local tmux pane is viewed through when `settings.toml`'s
     /// `stream_panes` is on ([`Self::view_through`]).
     stream_view: Option<stream_pane::View>,
+    /// The `fleet` binary a Fleet session's pane is attached through
+    /// ([`Self::attach_fleet_through`]).
+    fleet: Option<PathBuf>,
     /// The pane whose OSC 52 writes are accepted — the focused surface's, as of
     /// the last [`Self::take_app_copy`] — and the last focus token handed out.
     app_copy_focus: Option<std::sync::Arc<crate::backend::pane::AppCopy>>,
@@ -391,6 +395,14 @@ impl Terminals {
     /// through its stream.
     pub fn view_through(&mut self, view: stream_pane::View) {
         self.stream_view = Some(view);
+        self.keep_hidden = None;
+    }
+
+    /// Open each Fleet session's pane through the terminal stream `fleet
+    /// attach` names, `program` being the `fleet` binary (ADR-41). A stream
+    /// pane keeps its grid while hidden, as [`Self::view_through`]'s do.
+    pub fn attach_fleet_through(&mut self, program: PathBuf) {
+        self.fleet = Some(program);
         self.keep_hidden = None;
     }
 
@@ -430,6 +442,7 @@ impl Terminals {
             },
             scrollback: settings.scrollback_lines,
             stream_view: None,
+            fleet: None,
             app_copy_focus: None,
             app_copy_tokens: 0,
             size_focus: None,
@@ -473,6 +486,9 @@ impl Terminals {
             .filter(|row| {
                 !self.live.contains_key(&row.id) && !self.attach.attaching.contains_key(&row.id)
             })
+            // A Fleet session has no window to list: its pane is the stream
+            // `fleet attach` names.
+            .filter(|row| row.backend != fleet::BACKEND)
             .map(|row| (row.id.as_str(), self.key(&row.backend)))
             .collect();
 

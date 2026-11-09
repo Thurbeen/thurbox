@@ -44,9 +44,11 @@ kernel over the real `ui/`** rather than a harness that imitates either:
   `TestBackend`.
 - **`tests/fleet_engine_e2e.rs`** — the Fleet engine (`[fleet] enabled`) against
   the real `fleet` binary, found beside `thurbox-cli` (or `FLEET_BIN`), with
-  Fleet's fake runtime: Tasks as rows through `fleet watch`, create, send and
-  delete through its command line, and the `fleet up` thurbox keeps running.
-  Skips when the binary is not built (`cargo build -p fleet-cli`).
+  Fleet's fake runtime: Tasks as rows through `fleet watch`, create, send,
+  delete and confirmed delete through its command line, and the `fleet up`
+  thurbox keeps running; and, on `runtime-mux` with tmux, a Task's pane through
+  `fleet attach`. Skips when a binary is not built (`cargo build -p fleet-cli
+  -p runtime-mux`).
 - **The per-surface files** — one file per surface or contract:
   `session_list`, `search`, `new_session`, `terminal_pane`, `session_lifetime`,
   `keymap`, `focus`, `modals`, `chrome`, `mouse`, `hover`, `decoration`,
