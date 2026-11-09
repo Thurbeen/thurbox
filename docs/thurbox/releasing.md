@@ -211,6 +211,23 @@ maintenance release is cut by dispatching `cd.yml` from `v2.x` with an explicit
 version: it is tagged and built, published without "Latest" while a 3.x tag is
 higher, and still pushed to the 2.x package names as the newest 2.x.
 
+### The v3 hold
+
+`main` carries 3.x work before 3.0.0 is cut. A `feat` or `fix` on it would
+otherwise cut a 2.x release that ships that work to every 2.x user and channel,
+and the line rule does not stop that: the version is still on line 2.
+
+So the tree holds its releases. While `.github/release-hold` exists,
+`scripts/ci/release-line.sh` answers `held=true` and `cd.yml` tags and
+publishes nothing, on a push or a dispatch, whatever the version. The run
+passes: it is a skip, not a refusal. The hold is a file in the tree, so a
+`v2.x` branch cut before it was added does not carry it, and 2.x maintenance
+releases go on as described above.
+
+The pull request that cuts 3.0.0 lifts the hold: it deletes
+`.github/release-hold` in the same change that sets `RELEASE_LINE = 3`. The
+tests in `scripts/ci/release-line.bats` that read the real tree change with it.
+
 ## The Nix flake is not a release channel
 
 `flake.nix` builds whatever ref it is pointed at, and nothing in `cd.yml`

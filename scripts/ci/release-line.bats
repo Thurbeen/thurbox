@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 #
-# Drives release-line.sh: a release must be on the major the source declares,
-# and only the newest release of the channels' major reaches the package names.
+# Drives release-line.sh: a held tree releases nothing, a release must be on the
+# major the source declares, and only the newest release of the channels' major
+# reaches the package names.
 
 setup() {
   SCRIPT="${BATS_TEST_DIRNAME}/release-line.sh"
@@ -27,6 +28,11 @@ setup() {
   git tag v2.84.1
 }
 
+hold() {
+  mkdir -p .github
+  echo "v3 is unreleased" >.github/release-hold
+}
+
 line() {
   printf 'pub const RELEASE_LINE: u64 = %s;\n' "$1" >crates/thurbox/src/update/version_check.rs
 }
@@ -34,7 +40,32 @@ line() {
 @test "a release on the source's line passes" {
   run "$SCRIPT" v2.84.2 2
   [ "$status" -eq 0 ]
+  [[ "$output" == *"held=false"* ]]
   [[ "$output" == *"line=2"* ]]
+}
+
+@test "a held tree releases nothing on the source's line" {
+  hold
+  run "$SCRIPT" v2.89.0 2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"held=true"* ]]
+  [[ "$output" == *"channels=false"* ]]
+}
+
+@test "a held tree releases nothing on the next major, even from a breaking commit" {
+  hold
+  line 3
+  run "$SCRIPT" v3.0.0 2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"held=true"* ]]
+  [[ "$output" == *"channels=false"* ]]
+}
+
+@test "the real tree is held while v3 is unreleased" {
+  run env THURBOX_RELEASE_HOLD_FILE="${BATS_TEST_DIRNAME}/../../.github/release-hold" \
+    "$SCRIPT" v2.89.0 2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"held=true"* ]]
 }
 
 @test "a breaking-change bump to the next major is refused" {

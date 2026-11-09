@@ -41,7 +41,9 @@ jobs:
       # artifact-relevance gate (`shipped`): a `feat`/`fix` that touches only
       # the website, docs, or CI config bumps nothing shippable, so it must not
       # cut a release. See the `shipped` step for the rationale + path list.
-      should_release: ${{ steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false' }}
+      # And by the hold (`line`): a tree carrying .github/release-hold
+      # releases nothing, on a push or a dispatch.
+      should_release: ${{ steps.parse.outputs.should_release == 'true' && steps.shipped.outputs.shipped != 'false' && steps.line.outputs.held != 'true' }}
       version: ${{ steps.parse.outputs.version }}
       # The exact `cog bump` args create-tag runs. Computed here in bash (not
       # via a YAML `${{ && || }}` ternary in create-tag) so the forced-version
@@ -221,7 +223,9 @@ jobs:
         # `tee` swallow the script's refusal.
         shell: bash
         run: |
-          # Refuses — failing the run before anything is tagged — a version
+          # Holds every release while the tree carries .github/release-hold
+          # (`held=true`, a clean skip, not a failure). Otherwise refuses —
+          # failing the run before anything is tagged — a version
           # whose major is not the source's RELEASE_LINE, which is what stops a
           # `BREAKING CHANGE:` footer from cutting the next major on its own.
           # Also decides `channels`. The rules and their tests are in

@@ -45,6 +45,10 @@ Every push to `main` automatically triggers the release workflow:
    `src/update/version_check.rs`, or the run fails before tagging — so a stray
    `BREAKING CHANGE:` footer cannot cut the next major. The step also decides
    `channels` (below). Rules: `docs/thurbox/releasing.md`, "v2 and v3".
+   Before that, the same script holds every release while the tree carries
+   `.github/release-hold` (`held=true`: a clean skip on a push or a dispatch).
+   `main` holds while it carries unreleased 3.x work; the 3.0.0 pull request
+   deletes the file ("The v3 hold").
 4. **Automated Release** (if needed):
    - Determines semantic version (feat→minor, fix/perf→patch, breaking→major,
      which the release-line step then refuses)

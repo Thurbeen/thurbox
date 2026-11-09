@@ -211,6 +211,7 @@ jobs:
             release_line:
               - 'scripts/ci/release-line.sh'
               - 'scripts/ci/release-line.bats'
+              - '.github/release-hold'
               - 'crates/thurbox/src/update/version_check.rs'
               - '.github/workflows/cd.yml'
               - '.github/workflows/ci.yml'
