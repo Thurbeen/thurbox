@@ -171,6 +171,22 @@ enum Command {
     },
     /// Delete a resource; a Task is released by its controller first.
     Delete { kind: String, name: String },
+    /// Follow the Tasks: one event per changed or deleted Task, as NDJSON
+    /// with --json, until Ctrl-C or --once.
+    Watch {
+        /// Report only writes after this store revision (a `revision` an
+        /// earlier watch printed).
+        #[arg(long, default_value_t = 0)]
+        since: u64,
+        /// Stop after the first `synced` event.
+        #[arg(long)]
+        once: bool,
+        /// Interval between reads of the store (50..=10000 ms).
+        #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=10000))]
+        poll_ms: u64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the Task controller under the manager lease until idle, or for at most --max-passes passes.
     Reconcile {
         #[arg(long, default_value_t = 50)]
@@ -680,6 +696,12 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
         }
         Command::Gateway { command } => cmd_gateway(store, &config, command),
+        Command::Watch {
+            since,
+            once,
+            poll_ms,
+            json,
+        } => cmd_watch(store, since, once, poll_ms, json),
         Command::Version { .. } | Command::Signal { .. } | Command::Runtime { .. } => {
             unreachable_version()
         }
@@ -1652,6 +1674,120 @@ fn cmd_apply(
         print_json(&Value::Array(out));
     }
     Ok(())
+}
+
+/// `fleet watch`: reads the Tasks every `poll_ms` and prints what moved.
+///
+/// The cursor is the store's write counter: every write gives the object a
+/// higher `resourceVersion`, so a Task above the cursor changed since. A
+/// deletion leaves nothing to compare, so the first read ends with `synced`,
+/// the names present then: a view resuming with `--since` drops any other it
+/// holds. Within one run each Task's own version is kept too, so a write that
+/// lands behind a newer one between two reads is still reported. An
+/// unreadable store reports nothing, and the next read tries again.
+fn cmd_watch(
+    store: &dyn Store,
+    since: u64,
+    once: bool,
+    poll_ms: u64,
+    json_out: bool,
+) -> Result<(), Failure> {
+    use std::io::Write;
+    let mut seen: BTreeMap<String, (String, u64)> = BTreeMap::new();
+    let mut cursor = since;
+    let mut synced = false;
+    let mut out = std::io::stdout().lock();
+    loop {
+        let tasks = match store.list(fleet_api::task::KIND) {
+            Observation::Known(tasks) => tasks,
+            Observation::Unknown { why } if once => return Err(StoreError::Unknown(why).into()),
+            Observation::Unknown { why } => {
+                eprintln!("warning: could not read the Tasks; nothing assumed: {why}");
+                std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+                continue;
+            }
+        };
+        let mut events = Vec::new();
+        let mut changed: Vec<&Object> = tasks
+            .iter()
+            .filter(|t| {
+                let rv = t.metadata.resource_version;
+                match seen.get(&t.metadata.name) {
+                    Some((uid, seen_rv)) => *uid != t.metadata.uid || *seen_rv != rv,
+                    None => rv > since,
+                }
+            })
+            .collect();
+        changed.sort_by_key(|t| t.metadata.resource_version);
+        let present: BTreeMap<&str, &Object> = tasks
+            .iter()
+            .map(|t| (t.metadata.name.as_str(), t))
+            .collect();
+        for (name, (uid, _)) in &seen {
+            if present
+                .get(name.as_str())
+                .is_none_or(|t| t.metadata.uid != *uid)
+            {
+                events
+                    .push(json!({"type": "deleted", "revision": cursor, "name": name, "uid": uid}));
+            }
+        }
+        for t in &changed {
+            cursor = cursor.max(t.metadata.resource_version);
+            events.push(json!({
+                "type": "changed",
+                "revision": t.metadata.resource_version,
+                "object": serde_json::to_value(t).map_err(|e| fail(e.to_string()))?,
+            }));
+        }
+        seen = tasks
+            .iter()
+            .map(|t| {
+                (
+                    t.metadata.name.clone(),
+                    (t.metadata.uid.clone(), t.metadata.resource_version),
+                )
+            })
+            .collect();
+        if !synced {
+            synced = true;
+            events.push(json!({"type": "synced", "revision": cursor, "names": present.keys().collect::<Vec<_>>()}));
+        }
+        for event in events {
+            let line = if json_out {
+                event.to_string()
+            } else {
+                watch_line(&event)
+            };
+            // A reader that went away ends the watch.
+            if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                return Ok(());
+            }
+        }
+        if once {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+    }
+}
+
+fn watch_line(event: &Value) -> String {
+    let revision = &event["revision"];
+    match event["type"].as_str() {
+        Some("changed") => {
+            let o = &event["object"];
+            format!(
+                "{revision} changed Task/{} {}",
+                o["metadata"]["name"].as_str().unwrap_or("?"),
+                o["status"]["phase"].as_str().unwrap_or("-")
+            )
+        }
+        Some("deleted") => format!(
+            "{revision} deleted Task/{}",
+            event["name"].as_str().unwrap_or("?")
+        ),
+        _ => format!("{revision} synced"),
+    }
 }
 
 fn cmd_list(store: &dyn Store, kind: &str, json_out: bool) -> Result<(), Failure> {

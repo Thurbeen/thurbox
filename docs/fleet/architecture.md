@@ -353,7 +353,8 @@ runtime side, the protocol and the terminal stream, is
 thurbox is a Fleet client and reads nothing of Fleet's store directly.
 
 - `fleet watch --json`: a long-running NDJSON stream, one event per changed
-  Task, resumable by the store's write counter (`--since`). It feeds the
+  Task, resumable by the store's write counter (`--since`). Built; its events
+  are in [the command line](contracts.md#the-command-line). It will feed the
   snapshot worker behind a `SnapshotSource` trait (today
   `src/kernel/snapshot/db.rs`).
 - `fleet apply`, `delete`, `send`, `amend`: the interface's commands, behind

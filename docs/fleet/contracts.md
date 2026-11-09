@@ -1164,7 +1164,7 @@ account's Gateway intents.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|amend|declare|result|delete|reconcile|gateway|version`.
+init|up|apply|get|list|status|send|amend|declare|result|delete|reconcile|watch|gateway|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
@@ -1177,6 +1177,23 @@ is refused, since the config is its only source. `fleet gateway receive
 --account NAME [--beat]` is what a listener runs per envelope and per
 heartbeat; `fleet gateway account NAME --json` is what it starts from, and
 `fleet gateway status` shows each account's listener.
+
+`fleet watch --json` is how a view follows the Tasks: one NDJSON line per
+event, until Ctrl-C, or until the first `synced` with `--once`. It reads the
+store every `--poll-ms` (500 by default) and takes no lease:
+
+| Event | Fields | Meaning |
+| --- | --- | --- |
+| `changed` | `revision`, `object` | the whole Task, written at `revision` |
+| `deleted` | `revision`, `name`, `uid` | the Task is gone from the store |
+| `synced` | `revision`, `names` | the first read is reported; `names` are the Tasks present then |
+
+`revision` is the store's write counter, the `resourceVersion` every write
+raises. `--since N` reports only Tasks written after `N`, so a view resumes
+from the last `revision` it read. A deletion leaves nothing behind to compare,
+so a resuming view drops each Task it holds that `synced` does not name. An
+unreadable store reports nothing, and the next read tries again: Unknown never
+looks like a deletion.
 
 The config file is versioned TOML; relative paths are relative to it. This
 one runs the fake runtime:
@@ -1280,6 +1297,8 @@ metrics of a Task's lifecycle and of forge polls arrive with their
 identities and outcomes and without a brief, message or environment value;
 nothing is sent when export is off; an unreachable collector changes no
 command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
+`e2e_watch` covers `fleet watch`: the first read, a resume with `--since`
+and a deletion while the watch runs.
 `e2e_workspace` covers the workspace port against the fake adapter: one
 materialize, the ready spawn, the clean after the release, a crash between
 the materialize and its receipt, a lost request and an unreadable key.
