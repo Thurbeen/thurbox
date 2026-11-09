@@ -8,7 +8,9 @@
 
 use std::io::{self, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
+use std::sync::Arc;
 
 use term_stream::{Down, Size, Up};
 
@@ -173,29 +175,62 @@ fn reap(mut child: Child) {
 /// the process: one that stops reading stalls its writer, not the
 /// interface. The writer ends once every sender is gone, or the process
 /// stops taking frames.
+///
+/// What is typed or pasted and waits is bounded by [`QUEUE_BYTES`]: past it
+/// input is refused at once, as the pane's own input channel refuses it when
+/// full. Input bigger than the bound still goes when nothing waits before
+/// it, so a long paste reaches a stream that reads.
 #[derive(Clone)]
-pub(super) struct Upstream(Sender<Up>);
+pub(super) struct Upstream {
+    frames: Sender<Up>,
+    queued: Arc<AtomicUsize>,
+}
+
+/// The most bytes of frames waiting for a stream.
+const QUEUE_BYTES: usize = 1 << 20;
+
+/// The bytes a frame holds, as [`Upstream`] counts them.
+fn weight(frame: &Up) -> usize {
+    match frame {
+        Up::Input(bytes) => bytes.len(),
+        Up::Paste(text) => text.len(),
+        _ => 16,
+    }
+}
 
 impl Upstream {
     fn over(mut stdin: ChildStdin) -> Self {
-        let (tx, rx) = channel::<Up>();
+        let (frames, rx) = channel::<Up>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let written = Arc::clone(&queued);
         std::thread::spawn(move || {
             for frame in rx {
-                if term_stream::write(&mut stdin, &frame)
-                    .and_then(|()| stdin.flush())
-                    .is_err()
-                {
+                let sent = term_stream::write(&mut stdin, &frame).and_then(|()| stdin.flush());
+                written.fetch_sub(weight(&frame), Ordering::AcqRel);
+                if sent.is_err() {
                     break;
                 }
             }
         });
-        Self(tx)
+        Self { frames, queued }
     }
 
     pub(super) fn send(&self, frame: Up) -> io::Result<()> {
-        self.0
-            .send(frame)
-            .map_err(|_| io::Error::other("the stream takes no more frames"))
+        let weight = weight(&frame);
+        let before = self.queued.fetch_add(weight, Ordering::AcqRel);
+        // Only what is typed or pasted is refused: a resize or a detach is a
+        // few bytes, and dropping one would leave the stream wrong.
+        let typed = matches!(frame, Up::Input(_) | Up::Paste(_));
+        if typed && before > 0 && before + weight > QUEUE_BYTES {
+            self.queued.fetch_sub(weight, Ordering::AcqRel);
+            return Err(io::Error::other(
+                "the stream's input is full: it has stopped reading",
+            ));
+        }
+        self.frames.send(frame).map_err(|_| {
+            self.queued.fetch_sub(weight, Ordering::AcqRel);
+            io::Error::other("the stream takes no more frames")
+        })
     }
 }
 
@@ -251,6 +286,30 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(answered, Ok(true), "the resize waited behind the paste");
+    }
+
+    /// What waits for a stream that stopped reading is bounded: past the
+    /// bound, input is refused at once rather than queued.
+    #[cfg(unix)]
+    #[test]
+    fn input_for_a_stream_that_stopped_reading_is_bounded() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("sleep");
+        let upstream = super::Upstream::over(child.stdin.take().expect("stdin"));
+        let mut refused = None;
+        for _ in 0..64 {
+            if let Err(e) = upstream.send(Up::Input(vec![b'x'; 256 << 10])) {
+                refused = Some(e.to_string());
+                break;
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        let refused = refused.expect("16 MiB were queued for a stream reading nothing");
+        assert!(refused.contains("full"), "{refused}");
     }
 
     #[test]

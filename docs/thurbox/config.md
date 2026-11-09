@@ -1361,7 +1361,12 @@ and the interface is a client of Fleet's command line:
   directory, created exclusively under a name unique to the interface and
   unlinked once the manager holds it.
 - A watch or a manager that fails is the snapshot's error, beside the last
-  rows read. Both are started again: the watch resumes with `--since`.
+  rows read. Both are started again: the watch resumes with `--since`. A
+  store the running watch cannot read is the error too, until a read works
+  again.
+- Typing or pasting into a Fleet session's pane waits for a stream that has
+  stopped reading up to 1 MiB; past that the input is refused, and the
+  interface does not wait.
 
 Read at startup only.
 

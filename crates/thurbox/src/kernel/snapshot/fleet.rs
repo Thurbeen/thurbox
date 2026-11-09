@@ -160,8 +160,11 @@ fn follow(
         .map_err(|e| format!("could not start fleet watch: {e}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    // Drained beside stdout so a chatty stderr cannot stall the watch; its
+    // Drained beside stdout so a chatty stderr cannot stall the watch. A
+    // warning (a store it cannot read) is the source's error while the watch
+    // runs, until the `synced` that follows the next read that works; the
     // last line is the reason the watch ended.
+    let warnings = tx.clone();
     let last_error = std::thread::spawn(move || {
         let mut last = String::new();
         for line in stderr
@@ -170,7 +173,13 @@ fn follow(
             .flat_map(|r| r.lines())
         {
             match line {
-                Ok(line) if !line.trim().is_empty() => last = line,
+                Ok(line) if !line.trim().is_empty() => {
+                    if let Some(warning) = line.strip_prefix("warning: ") {
+                        let _ =
+                            warnings.send(Update::Watch(Some(format!("fleet watch: {warning}"))));
+                    }
+                    last = line;
+                }
                 Ok(_) => {}
                 Err(_) => break,
             }

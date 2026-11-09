@@ -1803,6 +1803,9 @@ fn cmd_watch(
             Observation::Unknown { why } if once => return Err(StoreError::Unknown(why).into()),
             Observation::Unknown { why } => {
                 eprintln!("warning: could not read the Tasks; nothing assumed: {why}");
+                // The next read that works is `synced` again: a view that
+                // showed this warning learns its rows are current once more.
+                watch.synced = false;
                 std::thread::sleep(std::time::Duration::from_millis(poll_ms));
                 continue;
             }
@@ -1836,7 +1839,8 @@ fn cmd_watch(
 /// higher `resourceVersion`, so a Task above the cursor changed since. A
 /// deletion leaves nothing to compare, so the first report ends with
 /// `synced`, the names present then: a view resuming with `--since` drops
-/// any other it holds. An unreadable store reports nothing.
+/// any other it holds. An unreadable store reports nothing, and the first
+/// read that works after it ends with `synced` again.
 ///
 /// A list reads each Task's file on its own, so one read can hold a later
 /// write and miss an earlier one, and a revision reported from it would let

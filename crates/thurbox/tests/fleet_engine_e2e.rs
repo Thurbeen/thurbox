@@ -272,6 +272,35 @@ fn the_snapshot_shows_each_fleet_task_as_a_session_and_follows_a_deletion() {
     assert_eq!(store.current().error, None);
 }
 
+/// A store `fleet watch` cannot read is the snapshot's error while the
+/// watch runs, beside the last rows, and it clears once a read works again.
+#[test]
+fn an_unreadable_store_is_an_error_until_it_reads_again() {
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin);
+    fleet.apply(json!([task("alpha")]));
+    let mut store = store_over(&fleet);
+    until("the Task is a row", || names(&mut store) == ["alpha"]);
+
+    let junk = fleet.data().join("objects").join("Task").join("junk.txt");
+    std::fs::write(&junk, "?").expect("junk");
+    until("the error is published", || {
+        store.refresh_if_due();
+        store
+            .current()
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("unexpected file"))
+    });
+    assert_eq!(names(&mut store), ["alpha"], "the last rows stand");
+
+    std::fs::remove_file(&junk).expect("junk");
+    until("the error clears", || {
+        store.refresh_if_due();
+        store.current().error.is_none()
+    });
+}
+
 #[test]
 fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
     let Some(bin) = fleet_bin() else { return };

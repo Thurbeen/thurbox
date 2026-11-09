@@ -87,3 +87,40 @@ fn watch_reports_each_changed_task_and_resumes_from_a_revision() {
     assert_eq!(deleted["name"], "t2", "{deleted:#}");
     assert!(deleted["uid"].is_string(), "{deleted:#}");
 }
+
+/// A store that cannot be read is a warning while the watch runs, and the
+/// read that works again is reported as `synced`, so a view knows its rows
+/// are current once more.
+#[test]
+fn a_read_that_works_again_is_synced_again() {
+    let env = Env::new("watch-unreadable");
+    env.apply(json!([task("t1", false)])).ok();
+    let mut child = env.spawn(&["watch", "--json", "--poll-ms", "100"]);
+    let stdout = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let next_event = || -> Value {
+        let line = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("an event within the bound");
+        serde_json::from_str(&line).expect("NDJSON")
+    };
+    while next_event()["type"] != "synced" {}
+
+    // A file the store does not know makes the Tasks unreadable.
+    let junk = env.data.join("objects").join("Task").join("junk.txt");
+    std::fs::write(&junk, "?").expect("junk");
+    thread::sleep(Duration::from_millis(500));
+    std::fs::remove_file(&junk).expect("junk");
+    let again = next_event();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(again["type"], "synced", "{again:#}");
+    assert_eq!(again["names"], json!(["t1"]), "{again:#}");
+}
