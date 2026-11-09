@@ -289,6 +289,14 @@ fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
     assert!(error.contains("fleet watch"), "{error}");
 }
 
+fn fleet_bus(program: &Path) -> CommandBus {
+    CommandBus::fleet(
+        program.to_path_buf(),
+        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+        &Default::default(),
+    )
+}
+
 fn run_command(bus: &mut CommandBus, command: Command) -> Result<(), String> {
     let id = bus.dispatch(command);
     let deadline = Instant::now() + BOUND;
@@ -312,7 +320,7 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     let fleet = Fleet::new(bin);
     let repo = fleet.root.path().join("repo");
     std::fs::create_dir_all(&repo).expect("repo");
-    let mut bus = CommandBus::fleet(fleet.program.clone());
+    let mut bus = fleet_bus(&fleet.program);
 
     // A session thurbox creates is an interactive Task: no brief, dispatched.
     run_command(
@@ -403,7 +411,7 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
 fn a_created_session_keeps_the_name_it_was_given() {
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::new(bin);
-    let mut bus = CommandBus::fleet(fleet.program.clone());
+    let mut bus = fleet_bus(&fleet.program);
     run_command(
         &mut bus,
         Command::Create {
@@ -437,7 +445,7 @@ fn a_created_session_keeps_the_name_it_was_given() {
 fn a_name_already_taken_is_refused_and_the_task_left_alone() {
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::new(bin);
-    let mut bus = CommandBus::fleet(fleet.program.clone());
+    let mut bus = fleet_bus(&fleet.program);
     let create = |name: &str| Command::Create {
         name: name.into(),
         repo: fleet.root.path().to_string_lossy().into_owned(),
@@ -524,7 +532,7 @@ fn a_confirmed_delete_is_checked_then_deletes_the_task() {
     let Some(bin) = fleet_bin() else { return };
     let fleet = Fleet::new(bin);
     fleet.apply(json!([task("alpha"), task("beta")]));
-    let mut bus = CommandBus::fleet(fleet.program.clone());
+    let mut bus = fleet_bus(&fleet.program);
     let guarded = |session: &str, cwd: &str| Command::Guarded {
         inner: Box::new(Command::Delete {
             session: session.into(),

@@ -138,10 +138,21 @@ impl CommandBus {
         }))
     }
 
-    /// A bus whose commands act through Fleet's command line, `program`
-    /// (ADR-41): `fleet apply`, `send` and `delete`.
-    pub fn fleet(program: std::path::PathBuf) -> Self {
-        Self::with_executor(Arc::new(Fleet { program }))
+    /// A bus whose session commands act through Fleet's command line,
+    /// `program` (ADR-41): `fleet apply`, `send` and `delete`. Every other
+    /// command runs on thurbox's own engine, built as [`Self::new`] builds it.
+    pub fn fleet(
+        program: std::path::PathBuf,
+        backends: Arc<crate::backend::BackendRegistry>,
+        settings: &crate::session::settings::Settings,
+    ) -> Self {
+        Self::with_executor(Arc::new(Fleet {
+            program,
+            engine: Engine {
+                backends,
+                deleted_retention_days: settings.deleted_retention_days,
+            },
+        }))
     }
 
     fn with_executor(executor: Arc<dyn Executor>) -> Self {

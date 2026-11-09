@@ -1336,7 +1336,18 @@ and the interface is a client of Fleet's command line:
   is refused: Fleet makes a Task's workspace. The multiplexer the create flow
   settles on is dropped: Fleet's runtime keeps the terminal. A confirmed
   delete is checked against the Task as it is then, as thurbox's own engine
-  checks it against the row. Every other session command is refused by name.
+  checks it against the row.
+- The host picker's route names the Fleet host: `ssh:devbox` is `devbox`,
+  this machine is `local`. A host Fleet's config does not define
+  (`fleet runtime hosts`) is refused.
+- The chosen agent is the Task's harness, and only an agent Fleet has a
+  harness profile for (`fleet version --json`'s `harnesses`: `claude`,
+  `claude-code`, `codex`) is taken. Any other, `shell` included, is refused
+  by name: Fleet would run a program named as the agent.
+- Only sessions are Fleet's. Restore, restart, fork, rename, sync, reorder
+  and dispatching a task to a session are refused by name. Everything that is
+  no session's (settings, bookmarks, folders and clones, the task list,
+  automations) runs on thurbox's own engine as before.
 - A Task's terminal is the stream `fleet attach` names, opened as a stream
   pane. A Task with no session yet has no pane; a stream that ends is opened
   again. Closing the pane detaches; the agent keeps running. A stream with no

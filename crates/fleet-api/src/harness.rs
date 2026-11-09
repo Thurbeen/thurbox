@@ -48,6 +48,11 @@ pub struct Profile {
     pub program: String,
 }
 
+/// The harnesses with a profile of their own, as `fleet version --json`
+/// lists them. Any other harness name is run as a program, with no hooks,
+/// trust or resume Fleet knows.
+pub const PROFILED: &[&str] = &["claude", "claude-code", "codex"];
+
 /// The profile of `harness`.
 pub fn profile(harness: &str) -> Profile {
     let (kind, program) = match harness {

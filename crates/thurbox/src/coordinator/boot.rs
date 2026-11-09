@@ -325,7 +325,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
             terminals
         },
         commands: match fleet {
-            Some(program) => CommandBus::fleet(program),
+            Some(program) => {
+                CommandBus::fleet(program, std::sync::Arc::clone(&backends), &startup_settings)
+            }
             None => CommandBus::new(std::sync::Arc::clone(&backends), &startup_settings),
         },
         diffs: DiffStore::new(),

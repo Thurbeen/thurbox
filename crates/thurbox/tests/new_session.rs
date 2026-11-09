@@ -1990,46 +1990,207 @@ fn a_plain_selection_on_the_fleet_engine_applies_a_task() {
         "the flow settles a multiplexer: {commands:?}"
     );
 
-    let dir = tempfile::tempdir().expect("dir");
-    let asked = dir.path().join("asked");
-    let fleet = dir.path().join("fleet");
-    std::fs::write(
-        &fleet,
-        format!(
-            // No Task yet: `get` answers not found (3).
-            "#!/bin/sh\n[ \"$1\" = get ] && exit 3\necho \"$@\" >> '{0}'\ncat >> '{0}'\n",
-            asked.display()
-        ),
-    )
-    .expect("fleet");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&fleet, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    let mut bus = thurbox::kernel::command::CommandBus::fleet(fleet);
-    let id = bus.dispatch(commands.into_iter().next().unwrap());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        bus.poll();
-        match bus.inflight().into_iter().find(|entry| entry.id == id) {
-            None => break,
-            Some(entry) if entry.phase == Phase::Failed => {
-                panic!("the create failed: {:?}", entry.error)
-            }
-            Some(_) => {}
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the create never finished"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let asked = std::fs::read_to_string(&asked).expect("fleet was asked");
-    let (args, manifest) = asked.split_once('\n').expect("args, then the manifest");
-    assert_eq!(args, "apply -f -");
-    let task: serde_json::Value = serde_json::from_str(manifest).expect("a Task");
+    let fleet = StubFleet::new("[\"local\"]");
+    fleet.run(commands).expect("the create");
+    let task = fleet.applied();
     // A Task's name is a DNS-like name: the typed one, made one.
     assert_eq!(task["metadata"]["name"], "read-the-code");
     assert_eq!(task["spec"]["workspace"]["dir"], "/src/thurbox");
     assert_eq!(task["spec"]["harness"], "claude");
+    assert_eq!(task["spec"]["host"], "local");
+}
+
+/// A `fleet` that answers what the executor asks before it applies (no Task
+/// yet, the harnesses with a profile, the hosts `hosts` names, as JSON) and
+/// records the rest, with what it read on its standard input.
+#[cfg(unix)]
+struct StubFleet {
+    dir: tempfile::TempDir,
+    program: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+impl StubFleet {
+    fn new(hosts: &str) -> StubFleet {
+        let dir = tempfile::tempdir().expect("dir");
+        // The engine's own commands (a bookmark) land in this database.
+        for (var, sub) in [
+            ("THURBOX_CONFIG_DIR", "config"),
+            ("THURBOX_DATA_DIR", "data"),
+        ] {
+            std::fs::create_dir_all(dir.path().join(sub)).expect("dir");
+            std::env::set_var(var, dir.path().join(sub));
+        }
+        let database = thurbox::paths::database_file().expect("database path");
+        thurbox::storage::Database::open(&database).expect("database");
+        let program = dir.path().join("fleet");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n  get) exit 3 ;;\n  version) echo '{{\"harnesses\":[\"claude\",\"claude-code\",\"codex\"]}}' ;;\n  runtime) echo '{{\"hosts\":{hosts}}}' ;;\n  *) echo \"$@\" >> '{0}'; cat >> '{0}' ;;\nesac\n",
+                dir.path().join("asked").display()
+            ),
+        )
+        .expect("fleet");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        StubFleet { dir, program }
+    }
+
+    /// Dispatch `commands` on the Fleet engine's bus, one by one, and
+    /// answer the first failure.
+    fn run(&self, commands: Vec<Command>) -> Result<(), String> {
+        let mut bus = thurbox::kernel::command::CommandBus::fleet(
+            self.program.clone(),
+            std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
+            &Default::default(),
+        );
+        for command in commands {
+            let id = bus.dispatch(command);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                bus.poll();
+                match bus.inflight().into_iter().find(|entry| entry.id == id) {
+                    None => break,
+                    Some(entry) if entry.phase == Phase::Failed => {
+                        return Err(entry.error.unwrap_or_default())
+                    }
+                    Some(_) => {}
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the command never finished"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        Ok(())
+    }
+
+    /// The Task the one `apply` carried.
+    fn applied(&self) -> serde_json::Value {
+        let asked =
+            std::fs::read_to_string(self.dir.path().join("asked")).expect("fleet was asked");
+        let (args, manifest) = asked.split_once('\n').expect("args, then the manifest");
+        assert_eq!(args, "apply -f -");
+        serde_json::from_str(manifest).expect("a Task")
+    }
+
+    fn asked(&self) -> bool {
+        self.dir.path().join("asked").exists()
+    }
+}
+
+/// A repository path typed into the flow is remembered before the session
+/// is made: on the Fleet engine too, since the bookmark is the interface's,
+/// not a session's.
+#[cfg(unix)]
+#[test]
+fn a_typed_repository_is_remembered_on_the_fleet_engine() {
+    let fleet = StubFleet::new("[\"local\"]");
+    let srv = fleet.dir.path().join("srv");
+    std::fs::create_dir_all(srv.join("beta")).expect("repo");
+    let host = host();
+    let mut world = World::default();
+    let srv_text = format!("{}/", srv.display());
+    world.repos.set_listing_for_test(
+        "",
+        &srv.to_string_lossy(),
+        Listing::Ready(vec![BrowseEntry {
+            name: "beta".into(),
+            is_git: false,
+        }]),
+    );
+    world.wants.browse = Some((String::new(), srv.to_string_lossy().into_owned()));
+    open(&host, &world);
+    press(&host, &world, "tab");
+    type_text(&host, &world, &srv_text);
+    press(&host, &world, "tab");
+    press(&host, &world, "down");
+    press(&host, &world, "enter");
+    let commands = host.drain_commands();
+    assert!(
+        matches!(&commands[..], [Command::Bookmark { .. }]),
+        "{commands:?}"
+    );
+    fleet.run(commands).expect("the bookmark");
+    assert!(!fleet.asked(), "a bookmark asks nothing of Fleet");
+}
+
+/// The host picker names a route (`ssh:devbox`); Fleet names the same
+/// machine `devbox`, and refuses a host its config does not define.
+#[cfg(unix)]
+#[test]
+fn a_session_on_a_host_names_the_fleet_host() {
+    let flow = || {
+        let host = host();
+        let mut world = World::default();
+        world.snapshot.hosts = vec![devbox("posix", &["tmux"])];
+        press(&host, &world, "ctrl+n");
+        press(&host, &world, "down");
+        press(&host, &world, "enter");
+        press(&host, &world, "space");
+        press(&host, &world, "enter");
+        press(&host, &world, "enter");
+        press(&host, &world, "enter");
+        host.drain_commands()
+    };
+    let commands = flow();
+    assert!(
+        matches!(&commands[..], [Command::Create { host: Some(h), .. }] if h == "ssh:devbox"),
+        "{commands:?}"
+    );
+
+    let fleet = StubFleet::new("[\"devbox\",\"local\"]");
+    fleet.run(commands).expect("the create");
+    assert_eq!(fleet.applied()["spec"]["host"], "devbox");
+
+    let unknown = StubFleet::new("[\"local\"]");
+    let refused = unknown.run(flow()).expect_err("Fleet defines no devbox");
+    assert!(refused.contains("devbox"), "{refused}");
+    assert!(!unknown.asked(), "nothing was applied");
+}
+
+/// Only an agent Fleet has a harness profile for becomes a Task: `shell`
+/// is a command of thurbox's registry, not a harness.
+#[cfg(unix)]
+#[test]
+fn an_agent_with_no_fleet_harness_is_refused_by_name() {
+    let flow = |down: usize| {
+        let host = host();
+        let mut world = World::default();
+        world.snapshot.agents.push(AgentRow {
+            name: "shell".into(),
+            command: "bash -i".into(),
+            presence: Presence::Present,
+        });
+        open(&host, &world);
+        press(&host, &world, "space");
+        press(&host, &world, "enter");
+        press(&host, &world, "enter");
+        for _ in 0..down {
+            press(&host, &world, "down");
+        }
+        press(&host, &world, "enter");
+        host.drain_commands()
+    };
+
+    let codex = StubFleet::new("[\"local\"]");
+    codex.run(flow(1)).expect("codex has a profile");
+    assert_eq!(codex.applied()["spec"]["harness"], "codex");
+
+    let shell = StubFleet::new("[\"local\"]");
+    let commands = flow(2);
+    assert!(
+        matches!(&commands[..], [Command::Create { agent: Some(a), .. }] if a == "shell"),
+        "{commands:?}"
+    );
+    let refused = shell.run(commands).expect_err("no harness for shell");
+    assert!(
+        refused.contains("shell") && refused.contains("harness"),
+        "{refused}"
+    );
+    assert!(!shell.asked(), "nothing was applied");
 }
 
 #[test]

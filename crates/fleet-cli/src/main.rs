@@ -252,6 +252,12 @@ enum RuntimeCommand {
         #[arg(last = true, required = true)]
         program: Vec<String>,
     },
+    /// The hosts a Task may name: the `[hosts]` of the config, or none
+    /// (`null` with --json) when one `[runtime]` serves any host.
+    Hosts {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// What a hook reports (`fleet_api::signal::State`).
@@ -466,6 +472,23 @@ fn run(cli: Cli) -> Result<(), Failure> {
         }
         None => (Config::empty(), String::new()),
     };
+    if let Command::Runtime {
+        command: RuntimeCommand::Hosts { json },
+    } = &cli.command
+    {
+        // Runtime programs serve exactly the hosts named for them, as
+        // `open_reloadable_runtime` wires them.
+        let hosts = (!config.runtimes.is_empty()).then(|| config.hosts.keys().collect::<Vec<_>>());
+        if *json {
+            print_json(&json!({ "hosts": hosts }));
+        } else {
+            match hosts {
+                Some(hosts) => hosts.iter().for_each(|host| println!("{host}")),
+                None => println!("any host: one [runtime] serves them all"),
+            }
+        }
+        return Ok(());
+    }
     let data_dir = cli
         .data_dir
         .clone()
@@ -1141,6 +1164,7 @@ fn version(json: bool) -> Result<(), Failure> {
             "configVersion": CONFIG_VERSION,
             "storeFormat": {"format": "fleet-store", "version": 1},
             "runtimes": ["exec", "thurbox", "fake"],
+            "harnesses": fleet_api::harness::PROFILED,
             "runtimeProtocol": fleet_runtime::exec::PROTOCOL,
             "forges": ["azure-devops", "bitbucket-cloud", "github", "gitlab", "fake"],
             "gateways": Platform::ALL,

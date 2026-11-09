@@ -1203,6 +1203,12 @@ a later write and miss an earlier one; a read is reported only once the read
 after it is the same. Writes are serialized, so by then every write below the
 highest `revision` reported is in it, and a resume skips none.
 
+`fleet runtime hosts --json` prints `{"hosts": [...]}`: the names under
+`[hosts]`, the hosts a Task may name, or `null` when one `[runtime]` serves
+any host. `fleet version --json` lists the `harnesses` with a profile of
+their own; any other harness name is run as a program. A view checks a
+Task against both before it applies it.
+
 `fleet attach TASK --json` prints `{"stream": {"argv": [...]}}`: the command
 that opens the Task's [terminal stream](../runtime/README.md#the-terminal-stream),
 run where the view runs. Fleet asks the runtime serving the session's host
@@ -1320,7 +1326,8 @@ command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
 `e2e_runtime_exec` runs `fleet attach` against the reference script, whose
 `tty` answer comes back bridged, and against `runtime-mux`, whose stream a
 test view drives: snapshot, input, output, and a detach that leaves the
-agent running; it also drives `fleet term-bridge` on its own.
+agent running; it also drives `fleet term-bridge` on its own, and reads
+`fleet runtime hosts` and the harnesses `fleet version` lists.
 `e2e_interactive` covers a Task with no brief: its spawn, its inbox and the
 refused amendment.
 `e2e_watch` covers `fleet watch`: the first read, a resume with `--since`
