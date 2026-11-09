@@ -13,6 +13,7 @@ fleet-api.workspace = true
 fleet-exec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+term-stream.workspace = true
 
 [lints]
 workspace = true

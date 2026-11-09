@@ -287,6 +287,10 @@ impl Terminals {
             .insert(session.clone(), backend_name.clone());
         let runtime = self.runtime.clone();
         let lazy = self.keep_hidden.is_some();
+        let stream_view = self
+            .stream_view
+            .clone()
+            .filter(|_| super::stream_pane::views(&row.backend));
         let scrollback = self.scrollback;
         std::thread::spawn(move || {
             let _guard = runtime.as_ref().map(|handle| handle.enter());
@@ -304,6 +308,21 @@ impl Terminals {
             // next prints. A failure to read it is not a failure to attach.
             let result = session_handle
                 .and_then(|()| {
+                    if let Some(view) = &stream_view {
+                        let argv = view.argv(&pane);
+                        let adopted = super::stream_pane::adopt(&argv, rows, cols)
+                            .map_err(|e| format!("the stream pane: {e}"))?;
+                        return Ok(crate::backend::Session::adopt_io(
+                            name,
+                            rows,
+                            cols,
+                            &pane,
+                            &backend,
+                            adopted,
+                            HashMap::new(),
+                            scrollback,
+                        ));
+                    }
                     // Nothing is looking at it yet, so where the grid can be had
                     // back later it is not built now — nor its history captured,
                     // which was a round trip per pane on every start.

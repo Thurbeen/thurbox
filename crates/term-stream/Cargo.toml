@@ -1,0 +1,15 @@
+[package]
+name = "term-stream"
+description = "The terminal stream's frames and their codec: the wire format between a view and the process that keeps a session's screen"
+version = "0.0.0-dev"
+# thurbox and runtime-mux depend on it, so it builds on their edition and
+# MSRV as well as Fleet's.
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/Thurbeen/thurbox"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

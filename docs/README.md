@@ -122,6 +122,8 @@ to a repository of its own with nothing to untangle.
 - Shared hosts (ADR-24): one Fleet store per operator is assumed.
 - Latency of the `view` bridge against today's in-process control mode, to
   measure against [performance](thurbox/performance.md)'s frame floors.
+  `stream_panes` in thurbox's `settings.toml` opens local tmux panes through
+  `runtime-mux view` for that measurement.
 - Windows (psmux) at the cutover, or after Linux and macOS.
 - VEGA stays a separate starter repository; Fleetlens moves under
   `extensions/`.

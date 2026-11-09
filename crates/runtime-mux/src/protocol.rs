@@ -27,7 +27,7 @@ pub const PROTOCOL: u64 = 1;
 
 /// The verbs it answers, `manifest` first.
 pub const VERBS: &[&str] = &[
-    "manifest", "start", "inspect", "stop", "list", "input", "capture", "exec",
+    "manifest", "start", "inspect", "stop", "list", "input", "capture", "exec", "attach",
 ];
 
 /// The tmux socket the program's server runs on when [`SOCKET_ENV`] names
@@ -60,8 +60,10 @@ fn unknown(why: impl std::fmt::Display) -> Value {
     json!({ "unknown": { "why": why.to_string() } })
 }
 
-/// The answer to `verb` with `request`, the JSON read from stdin.
-pub fn serve(backend: &dyn SessionBackend, verb: &str, request: &[u8]) -> Value {
+/// The answer to `verb` with `request`, the JSON read from stdin. `view` is
+/// the argv that runs this program's `view` against the same server, which
+/// `attach` answers with the key after it.
+pub fn serve(backend: &dyn SessionBackend, verb: &str, request: &[u8], view: &[String]) -> Value {
     if verb == "manifest" {
         return known(json!({ "protocol": PROTOCOL, "verbs": VERBS }));
     }
@@ -86,6 +88,7 @@ pub fn serve(backend: &dyn SessionBackend, verb: &str, request: &[u8]) -> Value 
         "input" => parse(request).map(|r| input(backend, r)),
         "capture" => parse(request).map(|r| capture(backend, r)),
         "exec" => parse(request).map(exec),
+        "attach" => parse(request).map(|r: Keyed| attach(backend, &r.key, view)),
         other => Err(format!("unknown verb {other:?}")),
     };
     result.unwrap_or_else(unknown)
@@ -354,6 +357,29 @@ fn stop(backend: &dyn SessionBackend, key: &str) -> Value {
             Ok(()) => known(json!("stopped")),
             Err(e) => unknown(e),
         },
+    }
+}
+
+/// The pane holding `key`: `None` when none does.
+pub fn pane_of(backend: &dyn SessionBackend, key: &str) -> Result<Option<String>, String> {
+    check_key(key)?;
+    match locate(backend, key)? {
+        Located::At(pane) => Ok(Some(pane)),
+        Located::Absent => Ok(None),
+        Located::Unknown => Err("several windows answer to the key".into()),
+    }
+}
+
+/// The stream that views the key's pane: this program's `view`, the server
+/// keeping the screen.
+fn attach(backend: &dyn SessionBackend, key: &str, view: &[String]) -> Value {
+    match pane_of(backend, key) {
+        Err(why) => unknown(why),
+        Ok(None) => known(json!("none")),
+        Ok(Some(_)) => {
+            let argv: Vec<&str> = view.iter().map(String::as_str).chain([key]).collect();
+            known(json!({ "stream": { "argv": argv } }))
+        }
     }
 }
 

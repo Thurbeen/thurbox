@@ -45,7 +45,9 @@ pub struct TaskSpec {
     /// never.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_after_ms: Option<Millis>,
-    /// The brief, sent once and never changed.
+    /// The brief, sent once and never changed. Empty for an interactive
+    /// Task: its session spawns and waits for its user.
+    #[serde(default)]
     pub brief: String,
     /// Additions to the brief, oldest first; appended only by `fleet amend`,
     /// never changed or reordered. The worker's assignment is the brief plus
@@ -91,6 +93,12 @@ pub struct Amendment {
 }
 
 impl TaskSpec {
+    /// A Task with no brief: nothing is sent, the session waits for its
+    /// user, and an amendment has nothing to add to.
+    pub fn is_interactive(&self) -> bool {
+        self.brief.is_empty()
+    }
+
     /// The outputs a result for `generation` must match: `spec.outputs`
     /// and those of every amendment at or below it.
     pub fn outputs_at(&self, generation: u64) -> BTreeMap<String, OutputDecl> {

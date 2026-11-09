@@ -171,6 +171,29 @@ enum Command {
     },
     /// Delete a resource; a Task is released by its controller first.
     Delete { kind: String, name: String },
+    /// The command that opens a Task's terminal stream: as JSON with
+    /// --json, else one argument per line.
+    Attach {
+        task: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Follow the Tasks: one event per changed or deleted Task, as NDJSON
+    /// with --json, until Ctrl-C or --once.
+    Watch {
+        /// Report only writes after this store revision (a `revision` an
+        /// earlier watch printed).
+        #[arg(long, default_value_t = 0)]
+        since: u64,
+        /// Stop after the first `synced` event.
+        #[arg(long)]
+        once: bool,
+        /// Interval between reads of the store (50..=10000 ms).
+        #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=10000))]
+        poll_ms: u64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the Task controller under the manager lease until idle, or for at most --max-passes passes.
     Reconcile {
         #[arg(long, default_value_t = 50)]
@@ -203,6 +226,13 @@ enum Command {
         /// The hook's JSON, when it passes it as an argument; otherwise it
         /// is read from stdin when stdin is not a terminal.
         payload: Option<String>,
+    },
+    /// A raw interactive command as a terminal stream on stdin and stdout:
+    /// what `fleet attach` wraps a runtime's `tty` answer in.
+    TermBridge {
+        /// The command and its arguments.
+        #[arg(last = true, required = true)]
+        argv: Vec<String>,
     },
     /// Runtimes: programs that speak the runtime protocol.
     Runtime {
@@ -376,6 +406,10 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
     if let Command::Signal { state, payload } = &cli.command {
         return cmd_signal(*state, payload.as_deref());
+    }
+    if let Command::TermBridge { argv } = &cli.command {
+        return fleet_runtime::bridge::serve(argv, std::io::stdin(), std::io::stdout())
+            .map_err(fail);
     }
     if let Command::Runtime {
         command: RuntimeCommand::Check {
@@ -680,9 +714,21 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
         }
         Command::Gateway { command } => cmd_gateway(store, &config, command),
-        Command::Version { .. } | Command::Signal { .. } | Command::Runtime { .. } => {
-            unreachable_version()
+        Command::Attach { task, json } => {
+            let signals = open_signals(&data_dir)?;
+            let (runtime, _) = open_reloadable_runtime(&config, &signals)?;
+            cmd_attach(store, runtime.as_ref(), &task, json)
         }
+        Command::Watch {
+            since,
+            once,
+            poll_ms,
+            json,
+        } => cmd_watch(store, since, once, poll_ms, json),
+        Command::Version { .. }
+        | Command::Signal { .. }
+        | Command::Runtime { .. }
+        | Command::TermBridge { .. } => unreachable_version(),
     }
 }
 
@@ -1654,6 +1700,213 @@ fn cmd_apply(
     Ok(())
 }
 
+/// `fleet attach`: the argv that opens the Task's terminal stream. A
+/// runtime's `tty` answer is a raw interactive command, which a view never
+/// sees: it runs under `fleet term-bridge`, so every view gets a stream.
+fn cmd_attach(
+    store: &dyn Store,
+    runtime: &dyn Runtime,
+    task: &str,
+    json_out: bool,
+) -> Result<(), Failure> {
+    use fleet_api::runtime::Attach;
+    let obj = get(store, fleet_api::task::KIND, task)?;
+    let session: Option<fleet_api::task::SessionRef> = obj
+        .status
+        .get("session")
+        .filter(|s| !s.is_null())
+        .map(|s| serde_json::from_value(s.clone()))
+        .transpose()
+        .map_err(|e| fail(format!("Task/{task} status.session: {e}")))?;
+    let Some(session) = session else {
+        return Err(Failure {
+            code: exit::NOT_FOUND,
+            message: format!("Task/{task} has no session yet"),
+            hint: Some("an attach waits for the Task's spawn".into()),
+        });
+    };
+    let argv = match runtime.attach(&session) {
+        Observation::Known(Some(Attach::Stream { argv })) => argv,
+        Observation::Known(Some(Attach::Tty { argv })) => {
+            let fleet = std::env::current_exe()
+                .map_err(|e| fail(format!("cannot name this program for the bridge: {e}")))?;
+            [
+                fleet.to_string_lossy().into_owned(),
+                "term-bridge".into(),
+                "--".into(),
+            ]
+            .into_iter()
+            .chain(argv)
+            .collect()
+        }
+        Observation::Known(None) => {
+            return Err(Failure {
+                code: exit::NOT_FOUND,
+                message: format!(
+                    "the runtime serving host {} offers no live view of Task/{task}",
+                    session.host
+                ),
+                hint: None,
+            });
+        }
+        Observation::Unknown { why } => return Err(StoreError::Unknown(why).into()),
+    };
+    if json_out {
+        println!("{}", json!({ "stream": { "argv": argv } }));
+        return Ok(());
+    }
+    for arg in argv {
+        println!("{arg}");
+    }
+    Ok(())
+}
+
+/// `fleet watch`: reads the Tasks every `poll_ms` and prints what moved
+/// ([`Watch`] decides what).
+fn cmd_watch(
+    store: &dyn Store,
+    since: u64,
+    once: bool,
+    poll_ms: u64,
+    json_out: bool,
+) -> Result<(), Failure> {
+    use std::io::Write;
+    let mut watch = Watch::new(since);
+    let mut out = std::io::stdout().lock();
+    loop {
+        let tasks = match store.list(fleet_api::task::KIND) {
+            Observation::Known(tasks) => tasks,
+            Observation::Unknown { why } if once => return Err(StoreError::Unknown(why).into()),
+            Observation::Unknown { why } => {
+                eprintln!("warning: could not read the Tasks; nothing assumed: {why}");
+                std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+                continue;
+            }
+        };
+        let Some(events) = watch.read(&tasks).map_err(fail)? else {
+            // A write landed between this read and the last: read again now.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            continue;
+        };
+        for event in events {
+            let line = if json_out {
+                event.to_string()
+            } else {
+                watch_line(&event)
+            };
+            // A reader that went away ends the watch.
+            if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+                return Ok(());
+            }
+        }
+        if once && watch.synced {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(poll_ms));
+    }
+}
+
+/// What `fleet watch` reports from each read of the Tasks.
+///
+/// The cursor is the store's write counter: every write gives the object a
+/// higher `resourceVersion`, so a Task above the cursor changed since. A
+/// deletion leaves nothing to compare, so the first report ends with
+/// `synced`, the names present then: a view resuming with `--since` drops
+/// any other it holds. An unreadable store reports nothing.
+///
+/// A list reads each Task's file on its own, so one read can hold a later
+/// write and miss an earlier one, and a revision reported from it would let
+/// a resume skip the missed write. A read is reported only when the read
+/// before it was the same: the store's writes are serialized, so every
+/// write below the highest revision either read holds was already in place
+/// when the second read began.
+#[derive(Debug)]
+struct Watch {
+    since: u64,
+    cursor: u64,
+    synced: bool,
+    seen: BTreeMap<String, (String, u64)>,
+    last: Option<BTreeMap<String, (String, u64)>>,
+}
+
+impl Watch {
+    fn new(since: u64) -> Watch {
+        Watch {
+            since,
+            cursor: since,
+            synced: false,
+            seen: BTreeMap::new(),
+            last: None,
+        }
+    }
+
+    /// The events one read gives, or `None` while it may be torn.
+    fn read(&mut self, tasks: &[Object]) -> Result<Option<Vec<Value>>, String> {
+        let state: BTreeMap<String, (String, u64)> = tasks
+            .iter()
+            .map(|t| {
+                (
+                    t.metadata.name.clone(),
+                    (t.metadata.uid.clone(), t.metadata.resource_version),
+                )
+            })
+            .collect();
+        if self.last.as_ref() != Some(&state) {
+            self.last = Some(state);
+            return Ok(None);
+        }
+        let mut events = Vec::new();
+        for (name, (uid, _)) in &self.seen {
+            if state.get(name).is_none_or(|(now, _)| now != uid) {
+                events.push(
+                    json!({"type": "deleted", "revision": self.cursor, "name": name, "uid": uid}),
+                );
+            }
+        }
+        let mut changed: Vec<&Object> = tasks
+            .iter()
+            .filter(|t| match self.seen.get(&t.metadata.name) {
+                Some(seen) => *seen != (t.metadata.uid.clone(), t.metadata.resource_version),
+                None => t.metadata.resource_version > self.since,
+            })
+            .collect();
+        changed.sort_by_key(|t| t.metadata.resource_version);
+        for t in changed {
+            self.cursor = self.cursor.max(t.metadata.resource_version);
+            events.push(json!({
+                "type": "changed",
+                "revision": t.metadata.resource_version,
+                "object": serde_json::to_value(t).map_err(|e| e.to_string())?,
+            }));
+        }
+        if !self.synced {
+            self.synced = true;
+            events.push(json!({"type": "synced", "revision": self.cursor, "names": state.keys().collect::<Vec<_>>()}));
+        }
+        self.seen = state;
+        Ok(Some(events))
+    }
+}
+
+fn watch_line(event: &Value) -> String {
+    let revision = &event["revision"];
+    match event["type"].as_str() {
+        Some("changed") => {
+            let o = &event["object"];
+            format!(
+                "{revision} changed Task/{} {}",
+                o["metadata"]["name"].as_str().unwrap_or("?"),
+                o["status"]["phase"].as_str().unwrap_or("-")
+            )
+        }
+        Some("deleted") => format!(
+            "{revision} deleted Task/{}",
+            event["name"].as_str().unwrap_or("?")
+        ),
+        _ => format!("{revision} synced"),
+    }
+}
+
 fn cmd_list(store: &dyn Store, kind: &str, json_out: bool) -> Result<(), Failure> {
     let objs = match store.list(kind) {
         Observation::Known(o) => o,
@@ -1983,5 +2236,47 @@ fn print_json(v: &Value) {
     match serde_json::to_string_pretty(v) {
         Ok(s) => println!("{s}"),
         Err(e) => eprintln!("error: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(name: &str, rv: u64) -> Object {
+        serde_json::from_value(json!({
+            "apiVersion": "fleet/v1alpha1",
+            "kind": "Task",
+            "metadata": {"name": name, "uid": format!("uid-{name}"), "resourceVersion": rv},
+            "spec": {},
+        }))
+        .expect("an object")
+    }
+
+    /// The events of `reads`, one after another, as the watch reports them.
+    fn report(watch: &mut Watch, reads: &[Vec<Object>]) -> Vec<Value> {
+        reads
+            .iter()
+            .filter_map(|r| watch.read(r).unwrap())
+            .flatten()
+            .collect()
+    }
+
+    #[test]
+    fn a_torn_read_never_moves_the_cursor_past_a_write_it_missed() {
+        // The first read took A before a writer moved it to 3 and B after it
+        // moved B to 4: reporting it would say "synced at 4" with A at 1.
+        let torn = vec![task("a", 1), task("b", 4)];
+        let whole = vec![task("a", 3), task("b", 4)];
+        let mut watch = Watch::new(0);
+        let events = report(&mut watch, &[torn, whole.clone(), whole]);
+        let a: Vec<u64> = events
+            .iter()
+            .filter(|e| e["object"]["metadata"]["name"] == "a")
+            .map(|e| e["revision"].as_u64().unwrap())
+            .collect();
+        assert_eq!(a, [3], "{events:#?}");
+        assert_eq!(events.last().unwrap()["type"], "synced");
+        assert_eq!(events.last().unwrap()["revision"], 4);
     }
 }

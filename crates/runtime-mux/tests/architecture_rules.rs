@@ -130,6 +130,11 @@ const MODULE_RULES: &[ModuleRules] = &[
         name: "protocol",
         allowed: &["contract", "identity"],
     },
+    // One pane as a terminal stream, over one backend it is handed.
+    ModuleRules {
+        name: "view",
+        allowed: &["contract"],
+    },
     // What fills the registry: the only node that names an adapter.
     ModuleRules {
         name: "wiring",

@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 process-wrap = { workspace = true }
+# The pseudo-terminal a bridge runs a raw interactive command on (`pty`).
+portable-pty.workspace = true
 
 [lints]
 workspace = true

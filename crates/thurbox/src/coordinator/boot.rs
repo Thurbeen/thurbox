@@ -302,7 +302,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         watcher: Watcher::new(&ui_dir)?,
         ui_dir,
         snapshots,
-        terminals: Terminals::with_registry(std::sync::Arc::clone(&backends), &startup_settings),
+        terminals: terminals(std::sync::Arc::clone(&backends), &startup_settings),
         commands: CommandBus::new(std::sync::Arc::clone(&backends), &startup_settings),
         diffs: DiffStore::new(),
         repos: thurbox::kernel::repos::RepoStore::new(),
@@ -604,6 +604,29 @@ fn delivery_notice(report: &thurbox::kernel::bundled::Report) -> Option<String> 
         ));
     }
     (!parts.is_empty()).then(|| parts.join("; "))
+}
+
+/// The terminals, each local tmux pane opened through `runtime-mux view` when
+/// `stream_panes` is on and the program is there.
+fn terminals(
+    backends: std::sync::Arc<thurbox::backend::BackendRegistry>,
+    settings: &thurbox::session::settings::Settings,
+) -> Terminals {
+    use thurbox::kernel::terminal::stream_pane;
+    let mut terminals = Terminals::with_registry(backends, settings);
+    if settings.stream_panes {
+        match stream_pane::view_program() {
+            Some(program) => terminals.view_through(stream_pane::View {
+                program,
+                socket: thurbox::backend::instance::local_socket_name(),
+                scrollback: settings.scrollback_lines,
+            }),
+            None => tracing::warn!(
+                "stream_panes is on, but no runtime-mux program is beside thurbox or on PATH: panes use control mode"
+            ),
+        }
+    }
+    terminals
 }
 
 #[cfg(test)]

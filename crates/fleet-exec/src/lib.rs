@@ -17,6 +17,10 @@
 //!
 //! A child that exits normally keeps anything it detached (a multiplexer
 //! server it started in a new session): only a timeout or an unwind kills.
+//!
+//! [`pty`] is the one unbounded start: a command a bridge keeps on a
+//! pseudo-terminal for as long as its view stays, killed when its handle
+//! is dropped.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -307,6 +311,133 @@ pub fn run(spec: &Spec) -> Outcome {
         code,
         stdout: take(&out),
         stderr: take(&err),
+    }
+}
+
+/// A program on a pseudo-terminal of its own, for a bridge that keeps its
+/// screen: the program sees a terminal, and its size is the bridge's to set.
+/// Its tree is killed when the handle is dropped.
+///
+/// Shared between threads: the terminal and the program are locked apart, so
+/// a resize never waits behind [`Self::wait`], and [`Self::killer`] ends the
+/// program while another thread waits for it.
+pub struct Pty {
+    master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
+    child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    exited: std::sync::atomic::AtomicBool,
+}
+
+impl fmt::Debug for Pty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pty").finish_non_exhaustive()
+    }
+}
+
+/// What ends a [`Pty`]'s program without its lock.
+pub struct PtyKiller(Box<dyn portable_pty::ChildKiller + Send + Sync>);
+
+impl fmt::Debug for PtyKiller {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PtyKiller").finish_non_exhaustive()
+    }
+}
+
+impl PtyKiller {
+    /// End the program; one already gone is left alone.
+    pub fn kill(&mut self) {
+        let _ = self.0.kill();
+    }
+}
+
+/// Start `argv` on a new pseudo-terminal of `rows` × `cols`, with this
+/// process's environment.
+pub fn pty(argv: &[String], rows: u16, cols: u16) -> std::io::Result<Pty> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| std::io::Error::other("argv names no program"))?;
+    let pair = portable_pty::native_pty_system()
+        .openpty(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(std::io::Error::other)?;
+    let mut cmd = portable_pty::CommandBuilder::new(program);
+    cmd.args(args);
+    if let Ok(dir) = std::env::current_dir() {
+        cmd.cwd(dir);
+    }
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(std::io::Error::other)?;
+    Ok(Pty {
+        master: Mutex::new(pair.master),
+        child: Mutex::new(child),
+        exited: std::sync::atomic::AtomicBool::new(false),
+    })
+}
+
+fn poisoned<T>(_: T) -> std::io::Error {
+    std::io::Error::other("the terminal's lock is poisoned")
+}
+
+impl Pty {
+    /// What the program writes to its terminal.
+    pub fn reader(&self) -> std::io::Result<Box<dyn Read + Send>> {
+        self.master
+            .lock()
+            .map_err(poisoned)?
+            .try_clone_reader()
+            .map_err(std::io::Error::other)
+    }
+
+    /// What the program reads from its terminal, as typed.
+    pub fn writer(&self) -> std::io::Result<Box<dyn Write + Send>> {
+        self.master
+            .lock()
+            .map_err(poisoned)?
+            .take_writer()
+            .map_err(std::io::Error::other)
+    }
+
+    pub fn resize(&self, rows: u16, cols: u16) -> std::io::Result<()> {
+        self.master
+            .lock()
+            .map_err(poisoned)?
+            .resize(portable_pty::PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(std::io::Error::other)
+    }
+
+    /// What ends the program from another thread, even while one waits.
+    pub fn killer(&self) -> std::io::Result<PtyKiller> {
+        Ok(PtyKiller(
+            self.child.lock().map_err(poisoned)?.clone_killer(),
+        ))
+    }
+
+    /// Wait for the program to exit: its exit code.
+    pub fn wait(&self) -> std::io::Result<u32> {
+        let status = self.child.lock().map_err(poisoned)?.wait()?;
+        self.exited.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(status.exit_code())
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        if !self.exited.load(std::sync::atomic::Ordering::SeqCst)
+            && let Ok(child) = self.child.get_mut()
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 

@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 pub mod otlp;
+pub mod view;
 
 use std::fs;
 use std::io::Read;

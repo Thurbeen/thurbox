@@ -1904,3 +1904,115 @@ fn a_fresh_agent_starts_on_a_row_that_already_names_its_conversation() {
         "the row named another conversation at start"
     );
 }
+
+/// Claude keeps one `--settings`: the agent's own and one a caller passes with
+/// `--agent-arg` (Fleet's hooks, through its thurbox runtime) reach it merged,
+/// each hook kept.
+#[cfg(unix)]
+#[test]
+fn several_settings_reach_a_claude_agent_as_one() {
+    merged_settings_reach_claude(false);
+}
+
+/// A relative `--settings` path is the agent's: read from the directory it
+/// launches in, never from wherever thurbox runs.
+#[cfg(unix)]
+#[test]
+fn a_relative_settings_path_is_read_where_the_agent_launches() {
+    merged_settings_reach_claude(true);
+}
+
+#[cfg(unix)]
+fn merged_settings_reach_claude(relative: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    if thurbox::paths::resolve_on_path("tmux").is_none() {
+        return;
+    }
+    let env = Env::new();
+    let recorder = env.path("work/recorder");
+    std::fs::write(
+        &recorder,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\nexec sleep 600\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&recorder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let own = env.path("work/own-settings.json");
+    std::fs::write(
+        &own,
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"own-start"}]}]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        env.path("config/agents.toml"),
+        format!(
+            "[[agents]]\nname='record'\ncommand='{}'\nhook_schema='claude'\nargs=['--settings','{}']\n",
+            recorder.display(),
+            if relative {
+                "own-settings.json".to_string()
+            } else {
+                own.display().to_string()
+            }
+        ),
+    )
+    .unwrap();
+    let capture = env.path("work/capture");
+    let out = env.run(&[
+        "session",
+        "create",
+        "--name",
+        "merged",
+        "--repo-path",
+        env.path("work").to_str().unwrap(),
+        "--agent",
+        "record",
+        "--agent-arg=--settings",
+        r#"--agent-arg={"hooks":{"Stop":[{"hooks":[{"type":"command","command":"fleet signal idle"}]}]}}"#,
+        "--env",
+        &format!("CAPTURE={}", capture.display()),
+        "--json",
+    ]);
+    assert!(
+        out.status.success(),
+        "{} {}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let text = loop {
+        let text = std::fs::read_to_string(&capture).unwrap_or_default();
+        if !text.is_empty() {
+            break text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let args: Vec<&str> = text.lines().collect();
+    let at: Vec<usize> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| **a == "--settings")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(at.len(), 1, "one --settings: {args:?}");
+    let merged: Value = serde_json::from_str(args[at[0] + 1]).expect("inline JSON");
+    let commands = |event: &str| -> Vec<String> {
+        merged["hooks"][event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|m| m["hooks"].as_array().cloned().unwrap_or_default())
+            .filter_map(|h| h["command"].as_str().map(str::to_string))
+            .collect()
+    };
+    assert!(
+        commands("SessionStart").contains(&"own-start".to_string()),
+        "{merged:#}"
+    );
+    assert!(
+        commands("Stop").contains(&"fleet signal idle".to_string()),
+        "{merged:#}"
+    );
+}

@@ -189,7 +189,7 @@ fn build_plan(
             .map_err(|e| format!("read the agent arguments: {e}"))?,
     );
 
-    let (command, args) = super::with_setup(&def, host, command, args)?;
+    let (command, args) = super::with_setup(&def, host, config.cwd.as_deref(), command, args)?;
     Ok(RestartPlan {
         window_name: session.name.clone(),
         command,

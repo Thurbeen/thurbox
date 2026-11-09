@@ -159,6 +159,13 @@ impl Route {
         self.place == Place::Local
     }
 
+    /// Whether this route is tmux on this machine: the multiplexer it names,
+    /// else the platform's default ([`Self::multiplexer`]).
+    pub fn is_local_tmux(&self) -> bool {
+        self.is_local()
+            && self.multiplexer(Multiplexer::platform_default(), None) == Multiplexer::Tmux
+    }
+
     pub fn via(&self) -> Option<Via> {
         match &self.place {
             Place::Local => None,
