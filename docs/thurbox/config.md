@@ -1328,7 +1328,9 @@ and the interface is a client of Fleet's command line:
   `Paused` as `stopped`, `Lost` and `Gone` as `failed`, absent as
   `unreported`.
 - A Task is named after the session, made a Fleet name: lowercase, with each
-  run of other characters one `-` (`Read the code` is `read-the-code`).
+  run of other characters one `-` (`Read the code` is `read-the-code`). The
+  name as given is kept in the Task's `thurbox.dev/name` label, and the row
+  is published under it.
 - A creation that names a branch, a base, a worktree or further repositories
   is refused: Fleet makes a Task's workspace. The multiplexer the create flow
   settles on is dropped: Fleet's runtime keeps the terminal. A confirmed
@@ -1339,8 +1341,9 @@ and the interface is a client of Fleet's command line:
   again. Closing the pane detaches; the agent keeps running.
 - No git runs against a Task's workspace: it is on whichever machine the
   Task's runtime serves.
-- `fleet up`'s standard error goes to a file in thurbox's data directory,
-  created exclusively and unlinked once the manager holds it.
+- `fleet up`'s standard error goes to a file of its own in thurbox's data
+  directory, created exclusively under a name unique to the interface and
+  unlinked once the manager holds it.
 - A watch or a manager that fails is the snapshot's error, beside the last
   rows read. Both are started again: the watch resumes with `--since`.
 

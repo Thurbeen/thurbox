@@ -397,6 +397,40 @@ fn the_commands_create_send_to_and_delete_fleet_tasks() {
     assert!(missing.contains("nobody"), "{missing}");
 }
 
+/// A session keeps the name it was given, which is what a finished creation
+/// finds its row by, while its Task is named as Fleet takes names.
+#[test]
+fn a_created_session_keeps_the_name_it_was_given() {
+    let Some(bin) = fleet_bin() else { return };
+    let fleet = Fleet::new(bin);
+    let mut bus = CommandBus::fleet(fleet.program.clone());
+    run_command(
+        &mut bus,
+        Command::Create {
+            name: "Read the code".into(),
+            repo: fleet.root.path().to_string_lossy().into_owned(),
+            branch: None,
+            base: None,
+            worktree_path: None,
+            agent: Some("claude-code".into()),
+            host: None,
+            multiplexer: None,
+            extras: Vec::new(),
+        },
+    )
+    .expect("create");
+
+    let mut store = store_over(&fleet);
+    until("the row arrives", || {
+        store.refresh_if_due();
+        store.current().session("read-the-code").is_some()
+    });
+    assert_eq!(
+        store.current().session("read-the-code").unwrap().name,
+        "Read the code"
+    );
+}
+
 /// A confirmed delete (the local control API's) is checked against the Task
 /// as it is now: one that still matches what was confirmed is deleted, one
 /// that moved is not.

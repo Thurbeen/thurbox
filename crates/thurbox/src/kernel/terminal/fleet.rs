@@ -106,12 +106,12 @@ impl crate::backend::PaneStream for Stream {
 
     fn resize(&self, _: &str, rows: u16, cols: u16) -> crate::backend::BackendResult<()> {
         self.0
-            .send(&Up::Resize(Size { rows, cols }))
+            .send(Up::Resize(Size { rows, cols }))
             .map_err(|e| anyhow::anyhow!("resize the stream: {e}").into())
     }
 
     fn detach(&self, _: &str) -> crate::backend::BackendResult<()> {
-        let _ = self.0.send(&Up::Detach);
+        let _ = self.0.send(Up::Detach);
         Ok(())
     }
 }
@@ -203,7 +203,7 @@ impl crate::backend::PaneIo for Stream {
             bytes.push(b'\r');
         }
         self.0
-            .send(&Up::Input(bytes))
+            .send(Up::Input(bytes))
             .map_err(|e| anyhow::anyhow!("type into the stream: {e}").into())
     }
 

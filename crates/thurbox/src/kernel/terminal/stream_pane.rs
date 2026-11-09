@@ -8,7 +8,7 @@
 
 use std::io::{self, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{channel, Sender};
 
 use term_stream::{Down, Size, Up};
 
@@ -99,7 +99,7 @@ pub(super) fn adopt_with_upstream(
         }
     }
     term_stream::write(&mut stdin, &Up::Resize(Size { rows, cols }))?;
-    let upstream = Upstream(Arc::new(Mutex::new(stdin)));
+    let upstream = Upstream::over(stdin);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         while let Ok(Some(frame)) = term_stream::read::<Down>(&mut stdout) {
@@ -150,18 +150,35 @@ fn reap(mut child: Child) {
 }
 
 /// The stream's way up: shared by the pane's input and whatever else sends
-/// frames, such as a resize.
+/// frames, such as a resize from the paint path.
+///
+/// Frames are queued to a writer of their own, so sending never waits on
+/// the process: one that stops reading stalls its writer, not the
+/// interface. The writer ends once every sender is gone, or the process
+/// stops taking frames.
 #[derive(Clone)]
-pub(super) struct Upstream(Arc<Mutex<ChildStdin>>);
+pub(super) struct Upstream(Sender<Up>);
 
 impl Upstream {
-    pub(super) fn send(&self, frame: &Up) -> io::Result<()> {
-        let mut stdin = self
-            .0
-            .lock()
-            .map_err(|_| io::Error::other("the stream's input is poisoned"))?;
-        term_stream::write(&mut *stdin, frame)?;
-        stdin.flush()
+    fn over(mut stdin: ChildStdin) -> Self {
+        let (tx, rx) = channel::<Up>();
+        std::thread::spawn(move || {
+            for frame in rx {
+                if term_stream::write(&mut stdin, &frame)
+                    .and_then(|()| stdin.flush())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        Self(tx)
+    }
+
+    pub(super) fn send(&self, frame: Up) -> io::Result<()> {
+        self.0
+            .send(frame)
+            .map_err(|_| io::Error::other("the stream takes no more frames"))
     }
 }
 
@@ -170,7 +187,7 @@ struct Input(Upstream);
 
 impl Write for Input {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.send(&Up::Input(buf.to_vec()))?;
+        self.0.send(Up::Input(buf.to_vec()))?;
         Ok(buf.len())
     }
 
@@ -181,12 +198,44 @@ impl Write for Input {
 
 impl Drop for Input {
     fn drop(&mut self) {
-        let _ = self.0.send(&Up::Detach);
+        let _ = self.0.send(Up::Detach);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    use term_stream::{Size, Up};
+
+    /// A resize is sent from the paint path, so it never waits behind input
+    /// a stream has stopped reading: here a paste bigger than the pipe, to
+    /// a process that reads nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_resize_never_waits_behind_input_the_stream_has_not_read() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("sleep");
+        let upstream = super::Upstream::over(child.stdin.take().expect("stdin"));
+        let typing = upstream.clone();
+        std::thread::spawn(move || {
+            let _ = typing.send(Up::Input(vec![b'x'; 4 << 20]));
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(upstream.send(Up::Resize(Size { rows: 1, cols: 1 })).is_ok());
+        });
+        let answered = rx.recv_timeout(Duration::from_secs(2));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(answered, Ok(true), "the resize waited behind the paste");
+    }
+
     #[test]
     fn the_view_carries_the_scrollback_setting() {
         let view = super::View {

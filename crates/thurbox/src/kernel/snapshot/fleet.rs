@@ -36,6 +36,10 @@ const LEASE_HELD: i32 = 6;
 /// Fleet, whose runtime keeps the terminal.
 pub const BACKEND: &str = "fleet";
 
+/// The Task label holding the name a session was given in thurbox, which a
+/// Task's own name (a DNS-like name) may not spell.
+pub const NAME_LABEL: &str = "thurbox.dev/name";
+
 enum Update {
     Rows(Vec<SessionRow>),
     /// Why the watch is not running, or `None` once it reads again.
@@ -270,8 +274,7 @@ fn keep_manager(program: &Path, tx: &Sender<Update>) {
 fn manage(program: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
     let dir = crate::paths::data_directory().ok_or("fleet up: no data directory for its log")?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
-    let (log, mut reader) = open_log(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
-    let path = dir.join(LOG);
+    let (log, mut reader, path) = open_log(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
     let mut command = Command::new(program);
     command
         .arg("up")
@@ -302,44 +305,59 @@ fn manage(program: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
     }
 }
 
-/// The name of `fleet up`'s standard error file.
-const LOG: &str = "fleet-up.log";
+/// The `n`th name this process gives a `fleet up` log: unique to it, so two
+/// interfaces sharing a data directory never touch each other's.
+fn log_name(n: u64) -> String {
+    format!("fleet-up-{}-{n}.log", std::process::id())
+}
 
-/// `fleet up`'s standard error: a file in `dir`, and a handle to read it back.
+/// `fleet up`'s standard error: a file in `dir`, a handle to read it back
+/// (the same file description: rewind before reading), and its path.
 ///
-/// Created afresh and exclusively: whatever stands at the path, a link
-/// included, is removed rather than opened, so nothing it points at is
-/// written.
-fn open_log(dir: &Path) -> std::io::Result<(std::fs::File, std::fs::File)> {
-    let path = dir.join(LOG);
-    match std::fs::remove_file(&path) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
-        _ => {}
+/// Created exclusively under a name of this process's own: a name already
+/// taken, by a link or anything else, is never opened, and the next one is
+/// tried instead.
+fn open_log(dir: &Path) -> std::io::Result<(std::fs::File, std::fs::File, PathBuf)> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    loop {
+        let path = dir.join(log_name(
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(log) => {
+                let reader = log.try_clone()?;
+                return Ok((log, reader, path));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
     }
-    let log = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)?;
-    let reader = std::fs::File::open(&path)?;
-    Ok((log, reader))
 }
 
 /// One Task as a session row.
 ///
-/// The Task's name is the row's id and name: every command addresses a Task
-/// by name. What a row says of git, panes and hook columns is thurbox's own
-/// engine's and stays empty here; Fleet's `sessionState` is the status.
+/// The Task's name is the row's id: every command addresses a Task by name.
+/// The row's name is the one the session was given ([`NAME_LABEL`]), or the
+/// Task's for a Task made elsewhere. What a row says of git, panes and hook
+/// columns is thurbox's own engine's and stays empty here; Fleet's
+/// `sessionState` is the status.
 pub fn row_of(task: &Value) -> SessionRow {
     let text = |value: &Value| value.as_str().map(str::to_string);
     let (spec, status) = (&task["spec"], &task["status"]);
-    let name = text(&task["metadata"]["name"]).unwrap_or_default();
+    let id = text(&task["metadata"]["name"]).unwrap_or_default();
+    let name = text(&task["metadata"]["labels"][NAME_LABEL]).unwrap_or_else(|| id.clone());
     let cwd = text(&status["workspace"]["dir"])
         .or_else(|| text(&spec["workspace"]["dir"]))
         .map(PathBuf::from);
     let session_state = status["sessionState"].as_str();
     let repo = repo_name(&cwd, None);
     SessionRow {
-        id: name.clone(),
+        id,
         name,
         agent: text(&spec["harness"]).unwrap_or_default(),
         status: match session_state {
@@ -379,22 +397,42 @@ pub fn row_of(task: &Value) -> SessionRow {
 mod tests {
     use super::*;
 
-    /// A link planted where the log goes is replaced, never followed: what
-    /// it pointed at keeps its contents.
+    /// Whatever stands where a log would go, a link included, is never
+    /// opened: what it pointed at keeps its contents.
     #[cfg(unix)]
     #[test]
     fn a_planted_link_at_the_log_path_is_not_followed() {
         let dir = tempfile::tempdir().expect("dir");
         let victim = dir.path().join("victim");
         std::fs::write(&victim, "keep").expect("victim");
-        std::os::unix::fs::symlink(&victim, dir.path().join(LOG)).expect("link");
+        for name in (0..64).map(log_name) {
+            std::os::unix::fs::symlink(&victim, dir.path().join(name)).expect("link");
+        }
 
-        let (mut log, mut reader) = open_log(dir.path()).expect("the log opens");
+        let (mut log, mut reader, _) = open_log(dir.path()).expect("a free name");
         std::io::Write::write_all(&mut log, b"error: written\n").expect("write");
         let mut read = String::new();
+        reader.rewind().expect("rewind");
         reader.read_to_string(&mut read).expect("read");
-
-        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
         assert_eq!(read, "error: written\n");
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+    }
+
+    /// Two interfaces sharing a data directory each get a log of their own.
+    #[test]
+    fn each_manager_start_has_a_log_of_its_own() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (mut first, mut first_read, first_path) = open_log(dir.path()).expect("first");
+        let (mut second, mut second_read, second_path) = open_log(dir.path()).expect("second");
+        assert_ne!(first_path, second_path);
+        std::io::Write::write_all(&mut first, b"first").expect("write");
+        std::io::Write::write_all(&mut second, b"second").expect("write");
+        for (reader, want) in [(&mut first_read, "first"), (&mut second_read, "second")] {
+            let mut read = String::new();
+            reader.rewind().expect("rewind");
+            reader.read_to_string(&mut read).expect("read");
+            assert_eq!(read, want);
+        }
+        assert!(first_path.is_file() && second_path.is_file());
     }
 }

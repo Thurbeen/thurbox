@@ -86,12 +86,16 @@ impl super::Executor for Fleet {
                 if let Some(agent) = agent {
                     spec["harness"] = json!(agent);
                 }
-                let task = json!({
+                let mut task = json!({
                     "apiVersion": "fleet/v1alpha1",
                     "kind": "Task",
                     "metadata": {"name": task_name(name)},
                     "spec": spec,
                 });
+                // The name as given, which the row is published under and a
+                // finished creation finds it by.
+                task["metadata"]["labels"][crate::kernel::snapshot::fleet::NAME_LABEL] =
+                    json!(name);
                 self.run(&["apply", "-f", "-"], Some(&task.to_string()))?;
             }
             Command::Send { session, text } => self.run(&["send", session, text], None)?,
