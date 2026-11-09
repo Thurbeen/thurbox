@@ -309,7 +309,7 @@ fn dispatch(command: Command, settings: &Settings) -> Result<CommandOutput, Comm
         Command::Config { action } => config::run(action, settings)?,
         Command::Version(args) => version::run(args, settings.features.version_check),
         Command::Update(args) => update::run(args, settings.features.auto_update),
-        Command::Notify(args) => notify::run(args, settings),
+        Command::Notify(args) => notify::run(args, settings)?,
         Command::Perf(args) => perf::run(args.plugins)?,
         Command::Plugin { action } => plugins::run(action)?,
         Command::Ui { instance, action } => ui::run(instance, action)?,

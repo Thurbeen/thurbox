@@ -34,6 +34,7 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
 | `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`, the session list's order, the companion shell) | startup, and again after each change | the theme last chosen, the editor `Ctrl+O` opens, the manual session order and each session's companion shell pane. Rewritten whole under a lock every process takes (`interface.json.lock`). Missing or unreadable is the defaults |
 | `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host. Rewritten whole under a lock every process takes (`bookmarks.json.lock`) |
+| `~/.local/share/thurbox/notify-dedupe.json` | JSON | `thurbox-cli notify send --key` | each keyed send | each dedupe key and when its hold ends; expired holds are dropped on the next keyed send. Rewritten whole under a lock (`notify-dedupe.json.lock`) |
 | `~/.local/share/thurbox/perf.json` | JSON | thurbox, while perf timing is on | each perf window | the perf snapshot `thurbox-cli perf` prints |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
 | `~/.local/share/thurbox/automation-tick.json` | JSON | `automation tick` | each tick | the last tick's time, outcome, error, fire counts and the automations it could not fire, which `thurbox-cli runtime status` reports — the heartbeat keeper throws the tick's own output away |
@@ -1624,40 +1625,33 @@ you), and with `also_on_waiting = true` also on `Working → Done`.
 ### Scripted notifications
 
 `notify send` delivers one notification through the same backend, for an Exec
-automation, a lifecycle hook, a CI job or an orchestration script:
+automation, a CI job or an orchestration script:
 
 ```bash
 thurbox-cli notify send --title "nightly sync failed" --body "see the run log" \
-  [--session <id|key|name>] [--key nightly-sync --min-interval 3600] [--json]
+  [--key nightly-sync --min-interval 3600] [--json]
 ```
 
 - It honours `[features] notifications = false` and `backend = "off"`: it does
-  nothing and exits 0, reporting `"suppressed": "disabled"` — before it looks
-  at `--session`, so a hook naming a session that is already gone still exits 0.
-- `--key` with `--min-interval` (seconds, at most a year; one needs the other) drops a repeat of
-  the same key inside the interval, between separate processes, and reports
-  `"suppressed": "deduped"`. The key is held in the database's lease table from
-  the moment of a delivery; a delivery that fails does not hold it, so the retry
-  goes out.
+  nothing and exits 0, reporting `"suppressed": "disabled"`.
+- `--key` with `--min-interval` (seconds, at most a year; one needs the other)
+  drops a repeat of the same key inside the interval, between separate
+  processes, and reports `"suppressed": "deduped"`. The key is held in
+  `notify-dedupe.json` in the data directory, under a lock every process takes,
+  from before the delivery; a delivery that fails gives back its own hold, and
+  only that one, so the retry goes out and a newer hold survives a late failure.
 - A delivery that fails exits non-zero with `"error"` set. One the backend has
   not finished after 10 seconds counts as failed (`delivery timed out after
-  10s`), so a hung notifier never holds up the tick that sends an alert. `--json` always
-  reports `delivered`, `suppressed`, `error` and `session_id`.
-- It never changes a session's state. `--session` only names the session the
-  notification is about; an unknown reference is an error.
-- **Click-to-focus.** On macOS with `terminal-notifier`, clicking runs
-  `thurbox-cli session focus <id>` for the `--session` given, as the TUI's
-  banners do. On Linux the click is answered by the process that sent the
-  notification, and `notify send` exits as soon as it is shown, so the banner
-  is informational there; elsewhere it always is.
+  10s`), so a hung notifier never holds up the script that sent it. `--json`
+  always reports `delivered`, `suppressed` and `error`.
+- It names no session: a session is a Fleet Task, and a click on the banner
+  focuses nothing. v2's `--session` is gone.
 - **The session bus.** On Linux the dbus backend reads
   `DBUS_SESSION_BUS_ADDRESS`, and without it the per-user bus at
-  `$XDG_RUNTIME_DIR/bus`. An Exec automation fired by the heartbeat inherits the
-  environment of the tmux server that runs it, which normally carries both; one
-  run from a bare cron or a systemd system unit has neither, and must export
-  `XDG_RUNTIME_DIR` (or the bus address) for a notification to reach the
-  desktop. `thurbox-cli notify` shows the backend the current environment
-  resolves to.
+  `$XDG_RUNTIME_DIR/bus`. One run from a bare cron or a systemd system unit has
+  neither, and must export `XDG_RUNTIME_DIR` (or the bus address) for a
+  notification to reach the desktop. `thurbox-cli notify` shows the backend the
+  current environment resolves to.
 
 **The failing-run alert.** With `on_automation_failure = true`, an automation
 run that ends `error` or `timed_out` raises a notification titled

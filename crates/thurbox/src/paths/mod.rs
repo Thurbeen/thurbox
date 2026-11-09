@@ -429,6 +429,9 @@ pub enum PathKind {
     /// The repositories the creation flow remembers:
     /// `~/.local/share/thurbox/bookmarks.json`
     Bookmarks,
+    /// The dedupe keys `notify send` holds:
+    /// `~/.local/share/thurbox/notify-dedupe.json`
+    NotifyDedupe,
     /// Agent metrics files: `~/.local/share/thurbox/metrics/`
     MetricsDir,
     /// Git worktrees: `~/.local/share/thurbox/worktrees/`
@@ -473,6 +476,7 @@ fn resolve_xdg(kind: PathKind) -> Option<PathBuf> {
         PathKind::Config => xdg_config_subpath("config.toml"),
         PathKind::PerfSnapshot => xdg_data_subpath(&["perf.json"]),
         PathKind::Bookmarks => xdg_data_subpath(&["bookmarks.json"]),
+        PathKind::NotifyDedupe => xdg_data_subpath(&["notify-dedupe.json"]),
         PathKind::LogDir => xdg_data_subpath(&[]),
         PathKind::MetricsDir => xdg_data_subpath(&["metrics"]),
         PathKind::WorktreesDir => xdg_data_subpath(&["worktrees"]),
@@ -487,6 +491,7 @@ fn resolve_override(base: &Path, kind: PathKind) -> PathBuf {
         PathKind::LogDir => base.to_path_buf(),
         PathKind::PerfSnapshot => base.join("perf.json"),
         PathKind::Bookmarks => base.join("bookmarks.json"),
+        PathKind::NotifyDedupe => base.join("notify-dedupe.json"),
         PathKind::MetricsDir => base.join("metrics"),
         PathKind::WorktreesDir => base.join("worktrees"),
         PathKind::WorkspacesDir => base.join("workspaces"),
@@ -513,6 +518,11 @@ pub fn log_directory() -> Option<PathBuf> {
 /// Returns: `$XDG_DATA_HOME/thurbox/perf.json` or `$HOME/.local/share/thurbox/perf.json`
 pub fn perf_snapshot_file() -> Option<PathBuf> {
     resolve(PathKind::PerfSnapshot)
+}
+
+/// The dedupe keys `notify send` holds, and when each hold ends.
+pub fn notify_dedupe_file() -> Option<PathBuf> {
+    resolve(PathKind::NotifyDedupe)
 }
 
 /// The repositories the creation flow remembers.

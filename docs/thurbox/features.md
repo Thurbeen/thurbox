@@ -3482,11 +3482,10 @@ and the user alt-tabs back themselves.
 The PTY parser that observes the bell only runs while the TUI is
 alive, so session-state notifications never fire from a headless
 `automation tick`. What does notify headlessly is explicit:
-`thurbox-cli notify send` (a script, a hook or an Exec automation asks for
-it) and the opt-in `on_automation_failure` alert, which the tick sends
-through the same function. Both deliver synchronously, honour the same
-switches, and deduplicate a key through a lease in `event_cursors`, so a
-repeat is dropped across processes; see
+`thurbox-cli notify send` (a script or an Exec automation asks for it). It
+delivers synchronously, honours the same switches, and deduplicates a key
+through `notify-dedupe.json` under a file lock, so a repeat is dropped across
+processes; see
 [config.md → Scripted notifications](config.md#scripted-notifications).
 The dispatcher thread (`crate::notifications::start`) starts only when
 `[features] notifications = true`, so the feature is zero-overhead when

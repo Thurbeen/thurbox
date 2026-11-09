@@ -1,6 +1,6 @@
 ---
 name: thurbox-cli
-description: The thurbox-cli binary after ADR-41: its subcommands (editor, config, version, update, notify, perf, plugin, ui, schema, doctor), its output formats and exit codes, and where the session verbs went (Fleet's `fleet` command line). Use when changing or driving thurbox-cli, or when looking for a session, automation, task or message verb.
+description: The thurbox-cli binary after ADR-41: its subcommands (editor, config, version, update, notify and notify send, perf, plugin, ui, schema, doctor), its output formats and exit codes, and where the session verbs went (Fleet's `fleet` command line). Use when changing or driving thurbox-cli, or when looking for a session, automation, task or message verb.
 ---
 
 # thurbox-cli
@@ -33,7 +33,7 @@ thurbox-cli covers the interface's own files and a running interface:
 | `editor get/set/mode` | the editor `Ctrl+O` opens, in `interface.json` |
 | `config validate/show` | strict parse of every config file; the effective configuration and where each value comes from |
 | `version [--check]`, `update [--force]` | the running version; the newest release of this major line |
-| `notify [--test]` | which desktop-notification backend would deliver, and a sample |
+| `notify [--test]`, `notify send` | which desktop-notification backend would deliver, and a sample; deliver one notification, with an optional `--key`/`--min-interval` dedupe |
 | `perf [--plugins]` | the perf snapshot a running interface publishes to `perf.json` |
 | `plugin …` | interface plugins: where they live, install, sync, check |
 | `ui …`, `schema` | bounded requests to a running interface (`src/ui_control.rs`) |
