@@ -33,14 +33,17 @@
 //! assertion it makes.
 
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 
 /// The guard every harness in this directory reaps through.
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
+#[cfg(unix)]
 use tmux_server::TmuxServer;
 
+#[cfg(unix)]
 fn have_tmux() -> bool {
     Command::new("tmux")
         .arg("-V")
