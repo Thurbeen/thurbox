@@ -3,6 +3,8 @@
 # over tmux, with jq for JSON and flock(1) or perl for a lock. `tmux.sh <verb>` reads one JSON request on
 # stdin and prints one answer: {"known": ...} or {"unknown": {"why": ...}}.
 #
+# `attach` answers a raw tmux client (`tty`), which `fleet attach` bridges.
+#
 # Each process is a tmux window named after its key, in one session on a
 # socket of its own (RUNTIME_TMUX_SH_SOCKET, default runtime-tmux-sh). A
 # keeper window holds the server, and remain-on-exit keeps an exited
@@ -32,7 +34,7 @@ t() {
 
 verb=${1:-}
 if [ "$verb" = manifest ]; then
-	answer '{"known":{"protocol":1,"verbs":["manifest","start","inspect","stop","list"]}}'
+	answer '{"known":{"protocol":1,"verbs":["manifest","start","inspect","stop","list","attach"]}}'
 fi
 command -v jq >/dev/null 2>&1 || answer '{"unknown":{"why":"jq is not installed"}}'
 
@@ -153,6 +155,18 @@ stop)
 		err=$(t kill-window -t "$1" 2>&1) || unknown "tmux kill-window: $err"
 	fi
 	answer '{"known":"stopped"}'
+	;;
+attach)
+	# A raw tmux client on the key's pane: Fleet bridges it into a stream.
+	# By socket path, as the view may run without this TMUX_TMPDIR.
+	check_key
+	find_pane
+	[ -n "$pane" ] || answer '{"known":"none"}'
+	# shellcheck disable=SC2086 # three words, split on purpose
+	set -- $pane
+	sock="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKET"
+	answer "$(jq -cn --arg s "$sock" --arg p "$1" \
+		'{known: {tty: {argv: ["tmux", "-S", $s, "attach-session", "-t", $p]}}}')"
 	;;
 list)
 	if ! out=$(t list-windows -t "$SESSION" -F '#{window_name}' 2>&1); then

@@ -53,6 +53,19 @@ pub enum Activity {
     Idle,
 }
 
+/// How a view opens a session's terminal stream: the runtime's `attach`
+/// answer (docs/runtime/README.md#the-runtime-protocol). The argv runs where
+/// the view runs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Attach {
+    /// The command speaks the terminal stream.
+    Stream { argv: Vec<String> },
+    /// A raw interactive command, for a runtime with no screen keeper:
+    /// `fleet attach` bridges it into a stream.
+    Tty { argv: Vec<String> },
+}
+
 pub trait Runtime {
     /// Resolve runtime model-variable selection into the frozen private environment.
     fn prepare_execution(
@@ -136,6 +149,11 @@ pub trait Runtime {
         conversation: Option<&str>,
         launch: &SpawnSpec,
     ) -> Observation<EffectOutcome>;
+    /// How to open `session`'s terminal stream. Known(None): the runtime
+    /// offers no live view, or holds no process under the key.
+    fn attach(&self, _session: &SessionRef) -> Observation<Option<Attach>> {
+        Observation::Known(None)
+    }
     /// Whether this runtime can pause a session and resume it. Fleet never
     /// pauses a session on a runtime that cannot.
     fn can_pause(&self) -> bool {

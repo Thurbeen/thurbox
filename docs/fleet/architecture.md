@@ -186,8 +186,8 @@ session's `FLEET_SIGNAL_FILE`, `revive` is `start` with its resume argv,
 `find`, `lost` and `at_rest` read `inspect`, `release` is `stop`, a brief
 is `input`, and `create_dir` and `remove_dir` are `exec`. What only the
 agent can prove (readiness, workspace trust, delivery, an idle agent)
-comes from the agent's signals. Attaching a live terminal is the next
-step.
+comes from the agent's signals. `fleet attach` asks the runtime's
+`attach` for the command that opens the session's terminal stream.
 
 ## Workspaces and the workspace port
 
@@ -362,6 +362,8 @@ thurbox is a Fleet client and reads nothing of Fleet's store directly.
   `session_ops` directly).
 - `fleet attach <task> --json`: the command that opens the Task's terminal
   stream ([the terminal stream](../runtime/README.md#the-terminal-stream)).
+  Built: it asks the runtime's `attach` and wraps a `tty` answer in
+  `fleet term-bridge`.
 - thurbox starts `fleet up` when no manager holds the lease.
 
 An interactive session is a Task with no brief: it spawns and waits for its

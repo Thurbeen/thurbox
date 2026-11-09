@@ -21,7 +21,7 @@ use fleet_api::harness::{
     claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog, profile,
 };
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
-use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
+use fleet_api::runtime::{Attach, Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::session::uid_of_session_key;
 use fleet_api::signal::{Reported, Signal, Signals, State};
 use fleet_api::task::{SessionRef, Workspace};
@@ -211,6 +211,15 @@ pub enum Executed {
     Failed {
         why: String,
     },
+}
+
+/// `attach`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Attached {
+    Stream { argv: Vec<String> },
+    Tty { argv: Vec<String> },
+    None,
 }
 
 /// `capture`'s answer.
@@ -654,6 +663,29 @@ impl Runtime for ExecRuntime {
         let request = Self::request(json!({ "key": rt.key(&session.key), "release": true }));
         rt.ask::<Stopped>("stop", request)
             .map(|Stopped::Stopped| EffectOutcome::Released)
+    }
+
+    /// The runtime's `attach`, asked only when its manifest declares it: a
+    /// runtime without the verb offers no live view.
+    fn attach(&self, session: &SessionRef) -> Observation<Option<Attach>> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        bind(
+            rt.ask::<Manifest>("manifest", Self::request(json!({}))),
+            |manifest| {
+                if !manifest.verbs.iter().any(|v| v == "attach") {
+                    return Observation::Known(None);
+                }
+                let request = Self::request(json!({ "key": rt.key(&session.key) }));
+                rt.ask::<Attached>("attach", request).map(|a| match a {
+                    Attached::Stream { argv } => Some(Attach::Stream { argv }),
+                    Attached::Tty { argv } => Some(Attach::Tty { argv }),
+                    Attached::None => None,
+                })
+            },
+        )
     }
 
     /// Lost when the runtime holds the key but its process exited: a `stop`

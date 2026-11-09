@@ -47,8 +47,9 @@ each host in `[hosts.<name>]`, the runtime serving it, so a Task's
 
 Built: `runtime-mux` and the reference script answer it, Fleet's `exec`
 runtime kind speaks it, and `fleet runtime check` holds both to it in CI.
-`workspace` and `attach` are not built yet: no runtime declares them, and
-Fleet makes no call to either.
+`workspace` is not built yet: no runtime declares it, and Fleet makes no
+call to it. `attach` is built: Fleet asks it in `fleet attach`, once the
+runtime's `manifest` declares it.
 
 Every request is a JSON object carrying `"protocol": 1`; `manifest` answers
 whatever the request says. A runtime that does not speak the version asked
@@ -68,6 +69,7 @@ Unknown.
 | `input` | `key`, `text`, `submit` | `"sent"`, or `"none"` when no process holds the key |
 | `capture` | `key`, `lines` (optional) | `{"screen": {"text", "cursorRow", "cursorCol", "foreground"}}`, or `"none"` |
 | `exec` | `argv`, `in` (`host`), `dir`, `timeoutMs`, `outputCap` | `{"exited": {"code", "stdout", "stderr"}}`, `{"timedOut": {"stdout", "stderr"}}` or `{"failed": {"why"}}` |
+| `attach` | `key` | `{"stream": {"argv"}}`, `{"tty": {"argv"}}`, or `"none"` when no process holds the key |
 
 `runtime-mux` answers every verb above. It runs its windows on a tmux
 server of its own, socket `runtime-mux` (`RUNTIME_MUX_SOCKET` names
@@ -84,6 +86,10 @@ each stream to its end and keeps `outputCap` bytes, so a long output does
 not change how the command ends; a child that left the group and holds a
 stream open does not hold the answer past the deadline. `runtime-mux` runs on this
 machine only for now: its ssh and WSL places come with the hosts it reads.
+
+The reference script answers `attach` with a raw tmux client on the key's
+pane, a `tty` answer. An `attach` argv runs where the view runs, so it names
+everything it needs, such as a socket by its path.
 
 What Fleet's `exec` kind does with the answers:
 

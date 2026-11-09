@@ -171,6 +171,13 @@ enum Command {
     },
     /// Delete a resource; a Task is released by its controller first.
     Delete { kind: String, name: String },
+    /// The command that opens a Task's terminal stream: as JSON with
+    /// --json, else one argument per line.
+    Attach {
+        task: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Follow the Tasks: one event per changed or deleted Task, as NDJSON
     /// with --json, until Ctrl-C or --once.
     Watch {
@@ -696,6 +703,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
         }
         Command::Gateway { command } => cmd_gateway(store, &config, command),
+        Command::Attach { task, json } => {
+            let signals = open_signals(&data_dir)?;
+            let (runtime, _) = open_reloadable_runtime(&config, &signals)?;
+            cmd_attach(store, runtime.as_ref(), &task, json)
+        }
         Command::Watch {
             since,
             once,
@@ -1672,6 +1684,67 @@ fn cmd_apply(
     }
     if json_out {
         print_json(&Value::Array(out));
+    }
+    Ok(())
+}
+
+/// `fleet attach`: the argv that opens the Task's terminal stream. A
+/// runtime's `tty` answer is a raw interactive command, which a view never
+/// sees: it runs under `fleet term-bridge`, so every view gets a stream.
+fn cmd_attach(
+    store: &dyn Store,
+    runtime: &dyn Runtime,
+    task: &str,
+    json_out: bool,
+) -> Result<(), Failure> {
+    use fleet_api::runtime::Attach;
+    let obj = get(store, fleet_api::task::KIND, task)?;
+    let session: Option<fleet_api::task::SessionRef> = obj
+        .status
+        .get("session")
+        .filter(|s| !s.is_null())
+        .map(|s| serde_json::from_value(s.clone()))
+        .transpose()
+        .map_err(|e| fail(format!("Task/{task} status.session: {e}")))?;
+    let Some(session) = session else {
+        return Err(Failure {
+            code: exit::NOT_FOUND,
+            message: format!("Task/{task} has no session yet"),
+            hint: Some("an attach waits for the Task's spawn".into()),
+        });
+    };
+    let argv = match runtime.attach(&session) {
+        Observation::Known(Some(Attach::Stream { argv })) => argv,
+        Observation::Known(Some(Attach::Tty { argv })) => {
+            let fleet = std::env::current_exe()
+                .map_err(|e| fail(format!("cannot name this program for the bridge: {e}")))?;
+            [
+                fleet.to_string_lossy().into_owned(),
+                "term-bridge".into(),
+                "--".into(),
+            ]
+            .into_iter()
+            .chain(argv)
+            .collect()
+        }
+        Observation::Known(None) => {
+            return Err(Failure {
+                code: exit::NOT_FOUND,
+                message: format!(
+                    "the runtime serving host {} offers no live view of Task/{task}",
+                    session.host
+                ),
+                hint: None,
+            });
+        }
+        Observation::Unknown { why } => return Err(StoreError::Unknown(why).into()),
+    };
+    if json_out {
+        println!("{}", json!({ "stream": { "argv": argv } }));
+        return Ok(());
+    }
+    for arg in argv {
+        println!("{arg}");
     }
     Ok(())
 }

@@ -846,3 +846,54 @@ fn the_reference_script_refuses_a_socket_directory_others_can_write() {
     let why = answer["unknown"]["why"].as_str().unwrap_or_default();
     assert!(why.contains("writable by others"), "{answer}");
 }
+
+/// A stand-in `claude` on the environment's PATH that waits and reports
+/// nothing, and the Task `t1` started on it in a directory of its own.
+fn waiting_task(env: &mut Env) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let harness = bin.join("claude");
+    fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
+    fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    env.apply(json!([task, support::task("t2", false)])).ok();
+    env.reconcile().ok();
+    work
+}
+
+#[test]
+fn fleet_attach_wraps_a_tty_answer_in_its_bridge() {
+    if tmux().is_none() {
+        return;
+    }
+    if Command::new("jq").arg("--version").output().is_err() {
+        eprintln!("skipping: jq is not installed");
+        return;
+    }
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
+    let sockets = Sockets::new("attach-tty");
+    let mut env = mux_env("attach-tty", &script, &sockets);
+    waiting_task(&mut env);
+
+    // A Task that never started has nothing to attach to.
+    env.fleet(&["attach", "t2", "--json"])
+        .code(3)
+        .stderr_has("no session");
+
+    let answer = env.fleet(&["attach", "t1", "--json"]).ok().json();
+    let argv: Vec<&str> = answer["stream"]["argv"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a stream: {answer:#}"))
+        .iter()
+        .map(|a| a.as_str().expect("a string"))
+        .collect();
+    assert_eq!(argv[0], env!("CARGO_BIN_EXE_fleet"), "{argv:?}");
+    assert_eq!(&argv[1..4], ["term-bridge", "--", "tmux"], "{argv:?}");
+    assert!(argv.contains(&"attach-session"), "{argv:?}");
+}

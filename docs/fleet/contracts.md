@@ -1164,7 +1164,7 @@ account's Gateway intents.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|amend|declare|result|delete|reconcile|watch|gateway|version`.
+init|up|apply|get|list|status|send|amend|declare|result|delete|reconcile|watch|attach|gateway|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
@@ -1194,6 +1194,15 @@ from the last `revision` it read. A deletion leaves nothing behind to compare,
 so a resuming view drops each Task it holds that `synced` does not name. An
 unreadable store reports nothing, and the next read tries again: Unknown never
 looks like a deletion.
+
+`fleet attach TASK --json` prints `{"stream": {"argv": [...]}}`: the command
+that opens the Task's [terminal stream](../runtime/README.md#the-terminal-stream),
+run where the view runs. Fleet asks the runtime serving the session's host
+for its `attach` answer. A `stream` answer is passed through; a `tty` answer
+is wrapped as `fleet term-bridge -- <argv>`, so a view only ever gets a
+stream. A Task with no session yet, a runtime that does not declare `attach`
+and a key the runtime holds no process under exit 3; an Unknown answer exits 4.
+Without `--json` the argv is printed one argument per line.
 
 The config file is versioned TOML; relative paths are relative to it. This
 one runs the fake runtime:
@@ -1297,6 +1306,8 @@ metrics of a Task's lifecycle and of forge polls arrive with their
 identities and outcomes and without a brief, message or environment value;
 nothing is sent when export is off; an unreachable collector changes no
 command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
+`e2e_runtime_exec` runs `fleet attach` against the reference script, whose
+`tty` answer comes back bridged.
 `e2e_watch` covers `fleet watch`: the first read, a resume with `--since`
 and a deletion while the watch runs.
 `e2e_workspace` covers the workspace port against the fake adapter: one
