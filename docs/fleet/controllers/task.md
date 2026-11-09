@@ -387,6 +387,11 @@ prompt, each tool use and each turn's end, all in one `--settings`: Claude
 Code keeps the last of several `--settings` rather than merging them, so a
 second one would drop Fleet's hooks or the other's.
 
+Codex has no start hook: its `notify` runs only once a turn ends. Before
+that report, the `exec` kind reads its screen: the empty composer under its
+welcome screen, with Codex in the foreground, is ready and trusted (its
+launch override trusts the workspace).
+
 The `exec` runtime kind and the fake runtime run the profile's argv. The
 thurbox runtime keeps launching through thurbox's own agent registry, and
 receives the profile's hooks and trust as `--agent-arg`s.

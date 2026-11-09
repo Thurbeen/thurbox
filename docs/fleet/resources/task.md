@@ -78,8 +78,9 @@ A workspace has exactly one of two forms. Unknown fields are refused.
 - Fleet has no branch, base, worktree or cleanup field. The maker makes the
   checkout for this Task alone and names its branch. The worker reports the
   change it opened through `fleet declare`.
-- `runtime.repositories` in [`fleet.toml`](../configuration.md#fields)
-  maps each `url` to its source checkout. A Task with an unmapped `url`
+- `workspaces.repositories` (or `runtime.repositories`) in
+  [`fleet.toml`](../configuration.md#fields) maps each `url` to its source
+  checkout. A Task with an unmapped `url`
   waits with `RepositoryUnmapped`.
 
 Fleet makes every `repositories` workspace through its workspace port,

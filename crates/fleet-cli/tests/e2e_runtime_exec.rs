@@ -509,7 +509,7 @@ fn path_without_flock(dir: &Path) -> String {
     let path = std::env::var_os("PATH").unwrap_or_default();
     for tool in [
         "sh", "tmux", "jq", "id", "perl", "cat", "awk", "grep", "sleep", "tail", "kill", "rm",
-        "env",
+        "env", "ls", "mkdir",
     ] {
         let found = std::env::split_paths(&path)
             .map(|d| d.join(tool))
@@ -647,4 +647,202 @@ fn a_reference_script_killed_holding_its_perl_lock_does_not_block_the_next_start
     let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("no-flock-{}", std::process::id()));
     a_killed_holder_releases_the_lock("killed-perl", &path_without_flock(&dir));
+}
+
+/// Codex as Fleet starts it: its welcome screen and empty composer, the
+/// cursor in it, and no hook until a turn ends, when its `notify` runs
+/// `fleet signal idle` with the turn's input as its last argument.
+const CODEX: &str = r#"#!/bin/sh
+{ printf '%s\n' "$@"; echo --; } >> "$PWD/argv.log"
+printf '>_ OpenAI Codex (v0.164.0)\n\nTo get started, describe a task or try one of these commands:\n\n'
+printf '\342\200\272 Ask Codex to do anything\r\033[2C'
+while IFS= read -r line; do
+  line=$(printf '%s' "$line" | tr -d '\033' | sed 's/\[20[01]~//g')
+  printf '%s\n' "$line" >> "$PWD/typed.log"
+  fleet signal idle "{\"type\":\"agent-turn-complete\",\"thread-id\":\"t9\",\"input-messages\":[\"$line\"]}"
+done
+"#;
+
+#[test]
+fn a_codex_task_on_runtime_mux_is_briefed_before_its_first_turn_ends() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("codex");
+    let mut env = mux_env("runtime-mux-codex", &program, &sockets);
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    // Run by a shell named `codex`, so the screen's foreground process is
+    // Codex, as it is for the real one.
+    let shell = env.root.join("shell");
+    fs::create_dir_all(&shell).expect("shell dir");
+    std::os::unix::fs::symlink("/bin/sh", shell.join("codex")).expect("shell");
+    fs::write(env.root.join("codex.sh"), CODEX).expect("harness");
+    let codex = bin.join("codex");
+    fs::write(
+        &codex,
+        format!(
+            "#!/bin/sh\nexec '{}' '{}' \"$@\"\n",
+            shell.join("codex").display(),
+            env.root.join("codex.sh").display()
+        ),
+    )
+    .expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let work = env.root.join("work").join("t1");
+    fs::create_dir_all(&work).expect("workspace");
+    let mut task = support::task("t1", true);
+    task["spec"]["harness"] = json!("codex");
+    task["spec"]["workspace"] = json!({"dir": work.to_string_lossy()});
+    env.apply(json!([task])).ok();
+
+    // Nothing reported before the brief: its empty composer on the screen
+    // makes it ready, and its trust override trusts it.
+    reconcile_until(&env, "briefed on its notify's proof", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let typed = fs::read_to_string(work.join("typed.log")).unwrap_or_default();
+    assert_eq!(typed, "Do the work for t1.\n");
+    assert_eq!(env.get("t1")["status"]["conversation"], "t9");
+}
+
+/// `git` in `dir`, blind to any repository a parent process points at.
+fn git(dir: &Path, args: &[&str]) {
+    let mut cmd = Command::new("git");
+    for var in fleet_runtime::worktree::GIT_LOCATION {
+        cmd.env_remove(var);
+    }
+    let out = cmd
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.test"])
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+}
+
+#[test]
+fn a_repository_task_on_runtime_mux_runs_in_the_worktree_fleet_makes() {
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("repo");
+    let mut env = mux_env("runtime-mux-repo", &program, &sockets);
+    let src = env.root.join("src");
+    fs::create_dir_all(&src).expect("source");
+    git(&src, &["init", "-q", "-b", "main"]);
+    git(&src, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let mut config = fs::read_to_string(&env.config).expect("config");
+    config.push_str(&format!(
+        "\n[workspaces.repositories]\n\"https://example.test/app\" = '{}'\n",
+        src.display()
+    ));
+    fs::write(&env.config, config).expect("config");
+    let bin = env.root.join("bin");
+    fs::create_dir_all(&bin).expect("bin");
+    let claude = bin.join("claude");
+    fs::write(&claude, CLAUDE).expect("harness");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).expect("chmod");
+    let fleet_dir = Path::new(env!("CARGO_BIN_EXE_fleet")).parent().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    env.only_on_path(Path::new(&format!(
+        "{}:{}:{path}",
+        bin.display(),
+        fleet_dir.display()
+    )));
+    let mut task = support::task("t1", true);
+    task["spec"]["workspace"] = json!({"repositories": [
+        {"name": "app", "url": "https://example.test/app", "ref": "main"}
+    ]});
+    env.apply(json!([task])).ok();
+
+    reconcile_until(&env, "briefed in its worktree", |env| {
+        env.get("t1")["status"]["phase"] == "Briefed"
+    });
+    let key = env.session_key("t1");
+    let dir = env.data.join("workspaces").join(&key).join("app");
+    let status = env.get("t1")["status"].clone();
+    assert_eq!(
+        status["workspace"]["dir"],
+        dir.to_string_lossy().as_ref(),
+        "{status:#}"
+    );
+    assert!(dir.join(".git").exists(), "{status:#}");
+    assert_eq!(starts(&dir).len(), 1, "the agent started in the worktree");
+}
+
+fn uid() -> String {
+    let out = Command::new("id").arg("-u").output().expect("id -u");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// One verb of the reference script under `tmpdir`, and its answer.
+fn script_call(tmpdir: &Path, verb: &str, request: &Value) -> Value {
+    use std::io::Write;
+    use std::process::Stdio;
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runtimes/tmux.sh");
+    let mut child = Command::new(script)
+        .arg(verb)
+        .env("TMUX_TMPDIR", tmpdir)
+        .env_remove("TMUX")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("tmux.sh");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(request.to_string().as_bytes())
+        .expect("request");
+    serde_json::from_slice(&child.wait_with_output().expect("answer").stdout).expect("JSON")
+}
+
+#[test]
+fn the_reference_script_truncates_nothing_through_a_planted_link() {
+    if !reference_script_runs() {
+        return;
+    }
+    let sockets = Sockets::new("planted");
+    // Before the lock moved into tmux's private directory it lived in the
+    // shared one, where anyone could plant a link at its name.
+    let sentinel = sockets.0.join("sentinel");
+    fs::write(&sentinel, "keep\n").expect("sentinel");
+    std::os::unix::fs::symlink(
+        &sentinel,
+        sockets
+            .0
+            .join(format!("runtime-tmux-sh-{}-runtime-tmux-sh.lock", uid())),
+    )
+    .expect("link");
+    let request = json!({"protocol": 1, "key": "k.one", "argv": ["sleep", "300"], "env": {}});
+    let answer = script_call(&sockets.0, "start", &request);
+    assert!(answer["known"]["started"].is_object(), "{answer}");
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "keep\n");
+}
+
+#[test]
+fn the_reference_script_refuses_a_socket_directory_others_can_write() {
+    if !reference_script_runs() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let sockets = Sockets::new("foreign");
+    let dir = sockets.0.join(format!("tmux-{}", uid()));
+    fs::create_dir_all(&dir).expect("socket dir");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).expect("chmod");
+    let request = json!({"protocol": 1, "key": "k.one", "argv": ["sleep", "300"], "env": {}});
+    let answer = script_call(&sockets.0, "start", &request);
+    let why = answer["unknown"]["why"].as_str().unwrap_or_default();
+    assert!(why.contains("writable by others"), "{answer}");
 }

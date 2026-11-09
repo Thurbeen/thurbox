@@ -49,28 +49,53 @@ fn main() {
 }
 
 /// The lock serializing starts and stops on `socket`'s server, held until
-/// the returned file is dropped. It sits in the directory tmux derives its
-/// socket's from, `TMUX_TMPDIR` or else `/tmp` and never `TMPDIR`, so every
-/// caller reaching one server takes one lock, and a server in another
-/// directory has its own.
+/// the returned file is dropped. It sits in the private directory tmux keeps
+/// its sockets in, `<TMUX_TMPDIR or /tmp>/tmux-<uid>` and never under
+/// `TMPDIR`, so every caller reaching one server takes one lock, a server in
+/// another directory has its own, and no other user can plant a link at its
+/// name. The directory is made `0700` when missing and refused, as tmux
+/// refuses it, when another user owns it or can write to it.
+#[cfg(unix)]
 fn lock(socket: &str) -> std::io::Result<std::fs::File> {
-    #[cfg(unix)]
-    let fallback = || std::path::PathBuf::from("/tmp");
-    #[cfg(not(unix))]
-    let fallback = std::env::temp_dir;
-    let dir = std::env::var_os("TMUX_TMPDIR")
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+    let base = std::env::var_os("TMUX_TMPDIR")
         .filter(|d| !d.is_empty())
-        .map_or_else(fallback, std::path::PathBuf::from);
-    #[cfg(unix)]
+        .map_or_else(
+            || std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from,
+        );
     // SAFETY: getuid has no preconditions and cannot fail.
-    let user = unsafe { libc::getuid() }.to_string();
-    #[cfg(not(unix))]
+    let uid = unsafe { libc::getuid() };
+    let dir = base.join(format!("tmux-{uid}"));
+    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    let meta = std::fs::symlink_metadata(&dir)?;
+    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o022 != 0 {
+        return Err(std::io::Error::other(format!(
+            "{} is not a directory only this user can write to",
+            dir.display()
+        )));
+    }
+    // Appending never truncates, and a link at the name is refused.
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dir.join(format!("runtime-mux-{socket}.lock")))?;
+    file.lock()?;
+    Ok(file)
+}
+
+/// The lock on a host without tmux's private socket directory.
+#[cfg(not(unix))]
+fn lock(socket: &str) -> std::io::Result<std::fs::File> {
     let user = std::env::var("USERNAME").unwrap_or_default();
     let file = std::fs::OpenOptions::new()
         .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join(format!("runtime-mux-{user}-{socket}.lock")))?;
+        .append(true)
+        .open(std::env::temp_dir().join(format!("runtime-mux-{user}-{socket}.lock")))?;
     file.lock()?;
     Ok(file)
 }

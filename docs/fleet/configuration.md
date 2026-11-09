@@ -286,11 +286,12 @@ distinct `keyPrefix`.
 | `runtime.callTimeoutMs` | Thurbox: `15000` | Bound for each Thurbox call; manager lease must outlast the runtime's reported worst case. |
 | `runtime.keyPrefix` | Thurbox: `fleet` | Session identity prefix; at most 32 lowercase letters/digits/`-`, starting/ending with letter/digit. |
 | `runtime.modelEnv` | Thurbox: Claude mappings below | Harness name to supported model environment-variable name. |
-| `runtime.repositories` | Empty | Repository URL to its source checkout, an absolute path on this machine, where the `worktree` adapter creates worktrees. A `file://` URL needs no entry: it names a directory used as it is. A relative path is refused at load. A Task's `url` must equal a key byte for byte: Fleet does not normalise a trailing `/`, `.git`, case or an SSH form. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn or materialize attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-runtimerepositories). |
+| `runtime.repositories` | Empty | The thurbox or fake runtime's older place for `workspaces.repositories`; the two are one map, and a URL in both is refused at load. Repository URL to its source checkout, an absolute path on this machine, where the `worktree` adapter creates worktrees. A `file://` URL needs no entry: it names a directory used as it is. A relative path is refused at load. A Task's `url` must equal a key byte for byte: Fleet does not normalise a trailing `/`, `.git`, case or an SSH form. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn or materialize attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-the-repository-map). |
 | `runtime.workspaceTrust` | Thurbox: `codex` is `codex`; `claude` and `claude-code` are `claude` | Harness name to its workspace-trust interface: `codex`, `claude` or `none`. Any other value is refused at load. A Task whose harness is not listed starts no session and waits in Pending with `TrustUnmapped`; the refusal spends no spawn attempt. A running `fleet up` applies a new entry after a restart. See [workspace trust](contracts.md#workspace-trust). |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
-| `workspaces.kind` | `worktree`; `fake` with the fake runtime | `worktree` or `fake`. Fleet makes each `repositories` workspace before the spawn and cleans it after the release, with or without this section; the section only picks the adapter and its settings. See [the workspace port](contracts.md#workspace-contract). |
-| `workspaces.root` | Worktree: `<data dir>/workspaces` | The directory that holds every workspace on the local host, relative to this config file. Sources come from `runtime.repositories`. |
+| `workspaces.kind` | `worktree`; `fake` with the fake runtime and no section | `worktree` or `fake`. Fleet makes each `repositories` workspace before the spawn and cleans it after the release, with or without this section; the section only picks the adapter and its settings. See [the workspace port](contracts.md#workspace-contract). |
+| `workspaces.root` | Worktree: `<data dir>/workspaces` | The directory that holds every workspace on the local host, relative to this config file. |
+| `workspaces.repositories` | Empty | Repository URL to its source checkout, an absolute path on this machine, where the `worktree` adapter creates worktrees, whatever the runtime: `[runtimes.<name>]` included. The same rules as `runtime.repositories`, which adds to it. A running `fleet up` reloads it; see [Reloading](#reloading-the-repository-map). |
 | `workspaces.git` | Worktree: PATH `git` | The `git` executable. |
 | `workspaces.callTimeoutMs` | Worktree: `30000` | Bound for each `git` command. The manager lease must outlast the adapter's reported worst case. |
 | `workspaces.branchPrefix` | Worktree: `fleet` | The first part of each workspace branch, `<branchPrefix>/<session key>`. Lowercase letters, digits and `-`. |
@@ -302,10 +303,11 @@ override because its workers must share the store selected by the persisted
 config. Persist `data.dir` before using `up` with a different store. All
 resource commands in one workflow should use the same `--config` path.
 
-#### Reloading `runtime.repositories`
+#### Reloading the repository map
 
-`fleet up` reads this file again before each sweep. It applies
-`runtime.repositories` only, so a new mapping needs no restart:
+`fleet up` reads this file again before each sweep. It applies the
+repository map (`workspaces.repositories` and `runtime.repositories`) only,
+so a new mapping needs no restart:
 
 - A valid file replaces the map. The next spawn uses it, and a Task waiting
   with `RepositoryUnmapped` spawns at its next retry.

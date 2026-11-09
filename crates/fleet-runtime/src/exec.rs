@@ -17,7 +17,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use fleet_api::Observation;
-use fleet_api::harness::{claude_trust_dialog, codex_trust_dialog, profile};
+use fleet_api::harness::{
+    claude_trust_dialog, codex_initial_composer, codex_process, codex_trust_dialog, profile,
+};
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
 use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::session::uid_of_session_key;
@@ -219,8 +221,20 @@ pub enum Captured {
     Screen {
         text: String,
         cursor_row: Option<u64>,
+        cursor_col: Option<u64>,
+        foreground: Option<String>,
     },
     None,
+}
+
+/// What an agent's screen shows before its first report.
+enum Screen {
+    /// A workspace-trust dialog, which only a person answers.
+    TrustDialog,
+    /// Codex's empty composer: it takes input, and reports nothing until
+    /// its first turn ends.
+    CodexComposer,
+    Other,
 }
 
 /// The `exec` kind: one program per host.
@@ -363,6 +377,43 @@ impl ExecRuntime {
         })
     }
 
+    /// What the agent's screen shows before its first report, read through
+    /// `capture`.
+    fn screen(&self, session: &SessionRef) -> Observation<Screen> {
+        let rt = match self.program(&session.host) {
+            Ok(rt) => rt,
+            Err(why) => return Observation::unknown(why),
+        };
+        let captured = rt.ask::<Captured>(
+            "capture",
+            Self::request(json!({ "key": rt.key(&session.key), "lines": 0 })),
+        );
+        captured.map(|captured| {
+            let Captured::Screen {
+                text,
+                cursor_row,
+                cursor_col,
+                foreground,
+            } = captured
+            else {
+                return Screen::Other;
+            };
+            let at = |n: Option<u64>| n.and_then(|n| usize::try_from(n).ok());
+            let (row, col) = (at(cursor_row), at(cursor_col));
+            if codex_trust_dialog(&text) || row.is_some_and(|r| claude_trust_dialog(&text, r)) {
+                Screen::TrustDialog
+            } else if foreground.as_deref().is_some_and(codex_process)
+                && row
+                    .zip(col)
+                    .is_some_and(|(r, c)| codex_initial_composer(&text, r, c))
+            {
+                Screen::CodexComposer
+            } else {
+                Screen::Other
+            }
+        })
+    }
+
     /// What the agent's hooks reported through `fleet signal`.
     fn reported(&self, session: &SessionRef) -> Observation<Reported> {
         match &self.signals {
@@ -489,9 +540,13 @@ impl Runtime for ExecRuntime {
     fn ready(&self, session: &SessionRef) -> Observation<bool> {
         bind(self.reported(session), |r| match r.state {
             Some(State::Blocked) => Observation::Known(false),
-            Some(State::Started) | None => {
-                Observation::unknown("the agent reported no state since it started")
-            }
+            Some(State::Started) | None => match self.screen(session) {
+                Observation::Known(Screen::CodexComposer) => Observation::Known(true),
+                Observation::Known(_) => {
+                    Observation::unknown("the agent reported no state since it started")
+                }
+                Observation::Unknown { why } => Observation::Unknown { why },
+            },
             Some(_) => Observation::Known(true),
         })
     }
@@ -514,22 +569,8 @@ impl Runtime for ExecRuntime {
             Observation::Known(_) => {}
             Observation::Unknown { why } => return Observation::Unknown { why },
         }
-        let rt = match self.program(&session.host) {
-            Ok(rt) => rt,
-            Err(why) => return Observation::unknown(why),
-        };
-        let screen = rt.ask::<Captured>(
-            "capture",
-            Self::request(json!({ "key": rt.key(&session.key), "lines": 0 })),
-        );
-        bind(screen, |captured| match captured {
-            Captured::Screen {
-                text, cursor_row, ..
-            } if codex_trust_dialog(&text)
-                || cursor_row
-                    .and_then(|row| usize::try_from(row).ok())
-                    .is_some_and(|row| claude_trust_dialog(&text, row)) =>
-            {
+        match self.screen(session) {
+            Observation::Known(Screen::TrustDialog) => {
                 Observation::Known(WorkspaceTrust::Untrusted {
                     gap: TrustGap::Unsupported,
                     why: format!(
@@ -538,10 +579,18 @@ impl Runtime for ExecRuntime {
                     ),
                 })
             }
-            _ => Observation::unknown(
-                "the agent has not reported yet and shows no workspace-trust dialog",
+            // The exec kind starts Codex with its launch override trusting
+            // the workspace, so its composer is a trusted session's.
+            Observation::Known(Screen::CodexComposer) => {
+                Observation::Known(WorkspaceTrust::Trusted {
+                    how: "Codex runs with its launch override trusting the workspace".into(),
+                })
+            }
+            Observation::Known(Screen::Other) => Observation::unknown(
+                "the agent has not reported yet and shows neither a trust dialog nor its composer",
             ),
-        })
+            Observation::Unknown { why } => Observation::Unknown { why },
+        }
     }
 
     fn brief(

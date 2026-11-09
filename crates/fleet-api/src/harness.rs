@@ -195,6 +195,30 @@ pub fn claude_trust_dialog(output: &str, cursor_row: usize) -> bool {
         && choice("Yes, I trust this folder")
 }
 
+/// Whether a plain visible screen `output` is Codex's initial empty
+/// composer under its welcome screen, the cursor at its start: Codex takes
+/// input, and reports nothing until its first turn ends. A trust dialog can
+/// follow the composer, so the caller also rules out
+/// [`codex_trust_dialog`].
+pub fn codex_initial_composer(output: &str, cursor_row: usize, cursor_col: usize) -> bool {
+    cursor_col == 2
+        && output.lines().nth(cursor_row).map(str::trim_end) == Some("› Ask Codex to do anything")
+        && output
+            .lines()
+            .any(|l| l.trim_start().starts_with(">_ OpenAI Codex ("))
+        && output
+            .lines()
+            .any(|l| l.trim() == "To get started, describe a task or try one of these commands:")
+}
+
+/// Whether the screen's foreground process is Codex.
+pub fn codex_process(foreground: &str) -> bool {
+    matches!(
+        foreground.rsplit(['/', '\\']).next(),
+        Some("codex" | "codex.exe")
+    )
+}
+
 /// Whether Codex's trust dialog is on a plain visible screen `output`: its
 /// question and its trusting default. It can follow the composer, so it is
 /// looked for on the whole screen, not only at the cursor.

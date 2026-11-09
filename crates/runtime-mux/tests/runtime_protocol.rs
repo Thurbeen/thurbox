@@ -488,3 +488,25 @@ fn a_start_killed_holding_the_lock_does_not_block_the_next_one() {
         begun.elapsed()
     );
 }
+
+fn uid() -> String {
+    let out = Command::new("id").arg("-u").output().expect("id -u");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn the_lock_follows_no_link_planted_where_it_used_to_live() {
+    let Some(rt) = Runtime::new() else { return };
+    // Before the lock moved into tmux's private directory it lived in the
+    // shared one, where anyone could plant a link at its name.
+    let planted = rt.server.tmpdir().join("planted");
+    std::os::unix::fs::symlink(
+        &planted,
+        rt.server
+            .tmpdir()
+            .join(format!("runtime-mux-{}-{SOCKET}.lock", uid())),
+    )
+    .expect("link");
+    started(&rt.start("k.link", &["sleep", "300"]));
+    assert!(!planted.exists(), "the lock opened through the link");
+}

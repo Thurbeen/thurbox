@@ -170,19 +170,29 @@ pub struct HostConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspacesConfig {
-    /// `worktree`, or `fake` for tests and trials.
+    /// `worktree` (the default), or `fake` for tests and trials.
+    #[serde(default = "worktree_kind")]
     pub kind: String,
     /// fake: the fake host's directory, relative to this file.
     pub dir: Option<PathBuf>,
     /// worktree: the directory that holds every workspace on the local
-    /// host, relative to this file. Sources come from `runtime.repositories`.
+    /// host, relative to this file.
     pub root: Option<PathBuf>,
+    /// worktree: each repository URL a Task may name, and its source
+    /// checkout on this machine, whatever the runtime. A `[runtime]`
+    /// section's `repositories` adds to it.
+    #[serde(default)]
+    pub repositories: BTreeMap<String, String>,
     /// worktree: the `git` executable, a path or a name on PATH.
     pub git: Option<String>,
     /// worktree: the bound on every `git` command.
     pub call_timeout_ms: Option<u64>,
     /// worktree: the first part of every workspace branch.
     pub branch_prefix: Option<String>,
+}
+
+fn worktree_kind() -> String {
+    "worktree".into()
 }
 
 impl Config {

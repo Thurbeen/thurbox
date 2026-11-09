@@ -1052,7 +1052,8 @@ The `worktree` adapter serves the local host and refuses any other:
 - Workspace `key` is the directory `<root>/<key>`. Each repository is a
   worktree at `<root>/<key>/<name>` on the branch `<branchPrefix>/<key>`
   of its source checkout, from its `ref` or the source's `HEAD`.
-- `runtime.repositories` maps each URL to its source checkout.
+- `workspaces.repositories`, with `runtime.repositories` when a `[runtime]`
+  section has it, maps each URL to its source checkout.
 - A `file://` URL names an absolute directory used as it is: no worktree,
   no source mapping, never removed.
 - `dir` is the first repository's directory. A worktree's trust root is its
@@ -1250,12 +1251,12 @@ after bounded work and releases the lease; Tasks and sessions survive. Crash
 recovery waits for lease expiry. Uncertain runtime observations remain Unknown.
 
 `fleet up` reads its config file again before each sweep and applies
-`runtime.repositories` only.
-[Reloading](configuration.md#reloading-runtimerepositories)
+the repository map only.
+[Reloading](configuration.md#reloading-the-repository-map)
 states the rules.
 `e2e_bootstrap` covers installed first-run, repeat/concurrent initialization,
 customized updates, resident progress, exclusive startup, crash/reconnect and
-the `runtime.repositories` reload.
+the repository map's reload.
 
 ## Tests
 

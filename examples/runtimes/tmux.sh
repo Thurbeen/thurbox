@@ -76,13 +76,24 @@ find_pane() {
 
 # Starts and stops run one at a time per server: a start looks the key up,
 # then makes its window, and two at once would each make one. The lock is
-# flock(2) on a file beside where tmux keeps the socket, held on fd 9 until
-# the script ends, so the kernel releases it however the script dies:
-# flock(1) takes it where util-linux is installed, perl (as on macOS)
-# elsewhere. `t` closes fd 9, so the tmux server never holds it.
+# flock(2) on a file in the private directory tmux keeps its socket in,
+# held on fd 9 until the script ends, so the kernel releases it however the
+# script dies: flock(1) takes it where util-linux is installed, perl (as on
+# macOS) elsewhere. `t` closes fd 9, so the tmux server never holds it.
 take_lock() {
-	exec 9>"${TMUX_TMPDIR:-/tmp}/runtime-tmux-sh-$(id -u)-$SOCKET.lock" ||
-		unknown "cannot open the lock file"
+	dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+	[ -d "$dir" ] || (umask 077 && mkdir -p "$dir") || unknown "cannot make $dir"
+	# Another user able to write there could plant a link at the lock's
+	# name: tmux refuses such a directory for its socket, and so does this.
+	# shellcheck disable=SC2012,SC2046 # ls -ldn is the portable owner and mode, split on purpose
+	set -- $(ls -ldn "$dir")
+	[ "$3" = "$(id -u)" ] || unknown "$dir is not owned by this user"
+	case $1 in
+	d????-??-*) ;;
+	*) unknown "$dir is writable by others" ;;
+	esac
+	# Appending never truncates what the name points at.
+	exec 9>>"$dir/runtime-tmux-sh-$SOCKET.lock" || unknown "cannot open the lock file"
 	if command -v flock >/dev/null 2>&1; then
 		flock -w 10 9
 	else

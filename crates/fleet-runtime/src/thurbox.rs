@@ -442,22 +442,20 @@ impl ThurboxRuntime {
         if codex_trust_dialog(session, &capture) != Ok(false) {
             return Observation::unknown("Codex shows its trust dialog over the composer");
         }
-        let cursor_line = capture["cursor_row"]
-            .as_u64()
-            .and_then(|n| usize::try_from(n).ok())
-            .and_then(|n| output.lines().nth(n));
+        let at = |field: &str| {
+            capture[field]
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+        };
         if capture["session_id"] == session.id
             && capture["ansi"] == false
             && capture["lines"] == 0
             && codex_process(&capture["foreground_process"])
-            && capture["cursor_col"] == 2
-            && cursor_line.map(str::trim_end) == Some("› Ask Codex to do anything")
-            && output
-                .lines()
-                .any(|l| l.trim_start().starts_with(">_ OpenAI Codex ("))
-            && output.lines().any(|l| {
-                l.trim() == "To get started, describe a task or try one of these commands:"
-            })
+            && at("cursor_row")
+                .zip(at("cursor_col"))
+                .is_some_and(|(row, col)| {
+                    fleet_api::harness::codex_initial_composer(output, row, col)
+                })
         {
             Observation::Known(true)
         } else {
@@ -537,7 +535,7 @@ impl ThurboxRuntime {
 fn codex_process(value: &Value) -> bool {
     value
         .as_str()
-        .is_some_and(|p| matches!(p.rsplit(['/', '\\']).next(), Some("codex" | "codex.exe")))
+        .is_some_and(fleet_api::harness::codex_process)
 }
 
 /// The path as an agent spells its cwd: no trailing separator. A `.` or

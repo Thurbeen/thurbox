@@ -1105,13 +1105,14 @@ fn version(json: bool) -> Result<(), Failure> {
     Ok(())
 }
 
-/// What `fleet up` re-reads from its config file between sweeps:
-/// `runtime.repositories`, and nothing else. Every other setting, the store
+/// What `fleet up` re-reads from its config file between sweeps: the
+/// repository map (`workspaces.repositories` and `runtime.repositories`),
+/// and nothing else. Every other setting, the store
 /// and the runtime's identity among them, stays as the process started.
 struct Reload<'a> {
     path: &'a Path,
     repositories: Repositories,
-    /// The file as it started, without `runtime.repositories`.
+    /// The file as it started, without the repository map.
     started: Option<toml::Value>,
     /// The last notice printed, so a lasting state is reported once.
     notice: String,
@@ -1128,23 +1129,22 @@ impl<'a> Reload<'a> {
         }
     }
 
-    /// Apply a valid file's `runtime.repositories`; keep the last valid map
-    /// when the file cannot be read, parsed or validated.
+    /// Apply a valid file's repository map; keep the last valid map when
+    /// the file cannot be read, parsed or validated.
     fn poll(&mut self) {
         let notice = match self.read() {
             Err(why) => {
-                format!("config reload refused: {why}; keeping the last valid runtime.repositories")
+                format!("config reload refused: {why}; keeping the last valid repository map")
             }
             Ok((map, others)) => {
                 let count = map.len();
                 if self.repositories.replace(map) {
-                    println!("config reloaded: runtime.repositories maps {count} repositories");
+                    println!("config reloaded: the repository map has {count} repositories");
                 }
                 if others == self.started {
                     String::new()
                 } else {
-                    "config changed outside runtime.repositories; restart fleet up to apply it"
-                        .into()
+                    "config changed outside the repository map; restart fleet up to apply it".into()
                 }
             }
         };
@@ -1161,18 +1161,16 @@ impl<'a> Reload<'a> {
         let text = std::fs::read_to_string(self.path)
             .map_err(|e| format!("cannot read config {}: {e}", self.path.display()))?;
         let config = Config::parse(&text, self.path)?;
-        let map = match &config.runtime {
-            Some(rt) if rt.kind == "thurbox" => repositories(rt)?,
-            _ => return Err("the runtime is no longer thurbox".into()),
-        };
-        Ok((map, without_repositories(&text)))
+        Ok((source_map(&config)?, without_repositories(&text)))
     }
 }
 
 fn without_repositories(text: &str) -> Option<toml::Value> {
     let mut value: toml::Value = toml::from_str(text).ok()?;
-    if let Some(rt) = value.get_mut("runtime").and_then(toml::Value::as_table_mut) {
-        rt.remove("repositories");
+    for section in ["runtime", "workspaces"] {
+        if let Some(t) = value.get_mut(section).and_then(toml::Value::as_table_mut) {
+            t.remove("repositories");
+        }
     }
     Some(value)
 }
@@ -1189,11 +1187,34 @@ fn repositories(rt: &config::RuntimeConfig) -> Result<BTreeMap<String, String>, 
     Ok(rt.repositories.clone())
 }
 
+/// Each repository URL's source checkout: `workspaces.repositories`, and a
+/// `[runtime]` section's `repositories`, each source an absolute path. The
+/// two name one map, so a URL in both is refused.
+fn source_map(config: &Config) -> Result<BTreeMap<String, String>, String> {
+    let mut map = match &config.runtime {
+        Some(rt) => repositories(rt)?,
+        None => BTreeMap::new(),
+    };
+    for (url, source) in config.workspaces.iter().flat_map(|ws| &ws.repositories) {
+        if !fleet_api::validate::is_absolute_path(source) {
+            return Err(format!(
+                "workspaces.repositories: the source {source:?} of {url} must be an absolute path"
+            ));
+        }
+        if map.insert(url.clone(), source.clone()).is_some() {
+            return Err(format!(
+                "{url} is mapped in both runtime.repositories and workspaces.repositories; keep one"
+            ));
+        }
+    }
+    Ok(map)
+}
+
 /// The workspace port the `[workspaces]` section names. Without one, Fleet
 /// still makes every workspace: on the fake runtime's host when the runtime
 /// is the fake, else with git worktrees under `<data dir>/workspaces`. The
-/// worktree adapter reads `runtime.repositories`, through `map` when the
-/// runtime already holds the reloadable handle to it.
+/// worktree adapter reads [`source_map`], through `map` when the runtime
+/// already holds the reloadable handle to it.
 fn open_workspaces(
     config: &Config,
     data_dir: &Path,
@@ -1208,6 +1229,7 @@ fn open_workspaces(
                 kind: if fake.is_some() { "fake" } else { "worktree" }.into(),
                 dir: fake.and_then(|rt| rt.dir.clone()),
                 root: Some(data_dir.join("workspaces")),
+                repositories: BTreeMap::new(),
                 git: None,
                 call_timeout_ms: None,
                 branch_prefix: None,
@@ -1232,10 +1254,7 @@ fn open_workspaces(
                 .unwrap_or_else(|| data_dir.join("workspaces"));
             let map = match map {
                 Some(m) => m.clone(),
-                None => Repositories::new(match &config.runtime {
-                    Some(rt) => repositories(rt).map_err(fail)?,
-                    None => BTreeMap::new(),
-                }),
+                None => Repositories::new(source_map(config).map_err(fail)?),
             };
             let mut cfg = WorktreeConfig::new(root, map);
             if let Some(git) = &ws.git {
@@ -1286,7 +1305,9 @@ fn open_reloadable_runtime(
             hosts.insert(host.clone(), rt);
         }
         let runtime = ExecRuntime::new(hosts).with_signals(signals.clone());
-        return Ok((Box::new(runtime), None));
+        // The worktree adapter reads the map; `fleet up` reloads it.
+        let handle = Repositories::new(source_map(config).map_err(fail)?);
+        return Ok((Box::new(runtime), Some(handle)));
     }
     let Some(rt) = &config.runtime else {
         return Err(Failure {
@@ -1329,7 +1350,7 @@ fn open_reloadable_runtime(
             }
             cfg.model_env.extend(rt.model_env.clone());
             // The worktree adapter reads the map; `fleet up` reloads it.
-            let handle = Repositories::new(repositories(rt).map_err(fail)?);
+            let handle = Repositories::new(source_map(config).map_err(fail)?);
             for (harness, name) in &rt.workspace_trust {
                 let Some(interface) = TrustInterface::parse(name) else {
                     return Err(fail(format!(

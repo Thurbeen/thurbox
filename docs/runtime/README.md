@@ -75,7 +75,10 @@ another), never on thurbox's interface socket: an inherited
 `THURBOX_SOCKET` is ignored. A process is a window named after its key, and
 a pane kept after its program exits is how `inspect` reports the code; a
 `start` replaces it. Starts and stops on one server run one at a time, so
-two starts of one key make one window. `exec` runs `in: host` only, on this
+two starts of one key make one window: they hold a kernel lock on a file in
+the private directory tmux keeps the socket in (`<TMUX_TMPDIR or
+/tmp>/tmux-<uid>`, made `0700` when missing and refused when another user
+can write to it), opened without truncating or following a link. `exec` runs `in: host` only, on this
 machine, and kills the command's process group at the deadline. It reads
 each stream to its end and keeps `outputCap` bytes, so a long output does
 not change how the command ends; a child that left the group and holds a
@@ -90,7 +93,9 @@ What Fleet's `exec` kind does with the answers:
 - a session's id is its key, so it outlives each process started under it;
 - readiness, workspace trust and an idle agent come from the agent's signals:
   an agent that reported anything but `blocked` is ready and past any trust
-  dialog, and a running agent is at rest once it last reported `idle`. Before
+  dialog. Codex reports nothing until its first turn ends: its empty composer
+  on `capture`, Codex in the foreground, makes it ready and, launched with its
+  trust override, trusted, and a running agent is at rest once it last reported `idle`. Before
   its first report, a trust dialog on its `capture` is Untrusted, and anything
   else Unknown, so a brief waits;
 - delivery is proven by the agent's prompt hook, not by `input`;
@@ -130,8 +135,8 @@ The cases start `sleep` and `sh` in the runtime's place. CI's
 runtime-protocol job runs it against `runtime-mux` and against
 [`examples/runtimes/tmux.sh`](../../examples/runtimes/tmux.sh), a reference
 runtime in one POSIX `sh` script over tmux and `jq`. It serializes starts and
-stops with a kernel lock, `flock(1)` or else `perl`, which a killed holder
-releases. A template repository
+stops with a kernel lock in tmux's private socket directory, taken with
+`flock(1)` or else `perl`, which a killed holder releases. A template repository
 for runtimes written elsewhere ships a skeleton, the protocol version it
 targets and that CI.
 
