@@ -372,6 +372,9 @@ pub struct Terminals {
     /// The `fleet` binary a Fleet session's pane is attached through
     /// ([`Self::attach_fleet_through`]).
     fleet: Option<PathBuf>,
+    /// What stream panes say about input they dropped, for the interface
+    /// to report ([`Self::take_input_notices`]).
+    input_notices: (Sender<String>, Receiver<String>),
     /// The pane whose OSC 52 writes are accepted — the focused surface's, as of
     /// the last [`Self::take_app_copy`] — and the last focus token handed out.
     app_copy_focus: Option<std::sync::Arc<crate::backend::pane::AppCopy>>,
@@ -396,6 +399,14 @@ impl Terminals {
     pub fn view_through(&mut self, view: stream_pane::View) {
         self.stream_view = Some(view);
         self.keep_hidden = None;
+    }
+
+    /// What stream panes said since the last call about input they dropped
+    /// (`input dropped: <session> isn't reading`), for the interface to
+    /// report where it reports a command's error: a notice in the pane's
+    /// own grid would be painted over by a full-screen agent.
+    pub fn take_input_notices(&self) -> Vec<String> {
+        self.input_notices.1.try_iter().collect()
     }
 
     /// Open each Fleet session's pane through the terminal stream `fleet
@@ -443,6 +454,7 @@ impl Terminals {
             scrollback: settings.scrollback_lines,
             stream_view: None,
             fleet: None,
+            input_notices: std::sync::mpsc::channel(),
             app_copy_focus: None,
             app_copy_tokens: 0,
             size_focus: None,

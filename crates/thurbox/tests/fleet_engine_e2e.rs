@@ -628,6 +628,58 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
     assert!(store.fresh_since(quiet), "a source that has nothing to say");
 }
 
+/// Input a stream refused is said in the interface's own notices, not in
+/// the pane's grid, which an agent's full-screen interface would paint
+/// over. The stream: the real `fleet term-bridge` over a command that never
+/// reads, whose terminal fills and then stops taking input.
+#[test]
+fn refused_input_is_a_notice_and_leaves_the_grid_alone() {
+    use std::io::Write;
+    let Some(bin) = fleet_bin() else { return };
+    let argv: Vec<String> = [
+        bin.to_string_lossy().as_ref(),
+        "term-bridge",
+        "--",
+        "sh",
+        "-c",
+        "exec sleep 60",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let (tx, notices) = std::sync::mpsc::channel();
+    let mut adopted =
+        thurbox::kernel::terminal::stream_pane::adopt_reporting(&argv, 24, 80, tx, "busy")
+            .expect("the stream opens");
+    let output = std::mem::replace(&mut adopted.output, Box::new(std::iter::empty()));
+    let (chunks_tx, chunks) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for chunk in output {
+            if chunks_tx.send(format!("{chunk:?}")).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + BOUND;
+    let notice = loop {
+        adopted
+            .input
+            .write_all(&vec![b'x'; 256 << 10])
+            .expect("a refusal is no error");
+        if let Ok(notice) = notices.try_recv() {
+            break notice;
+        }
+        assert!(Instant::now() < deadline, "no notice");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(notice, "input dropped: busy isn't reading");
+    let drawn: Vec<String> = chunks.try_iter().collect();
+    assert!(
+        drawn.iter().all(|chunk| !chunk.contains("input dropped")),
+        "the notice reached the grid: {drawn:?}"
+    );
+}
+
 /// A creation is reported with its row: a refresh that awaits a created
 /// session stays owed until the source publishes it, however late, and
 /// not past a bound.

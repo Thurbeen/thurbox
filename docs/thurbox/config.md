@@ -1375,8 +1375,11 @@ and the interface is a client of Fleet's command line:
 - Typing or pasting into a Fleet session's pane waits for a stream that has
   stopped reading up to 1 MiB, and the interface does not wait. Each write
   is queued whole or not at all, so a paste is never cut in its middle: one
-  that does not fit is dropped whole, and the pane says
-  `[thurbox] input dropped: the session isn't reading`. The pane stays open,
+  that does not fit is dropped whole, and the interface reports
+  `input dropped: <session> isn't reading` where it reports a command's
+  error, not in the pane's grid, which a full-screen agent would paint
+  over. The same holds for a local tmux pane under `stream_panes`. The pane
+  stays open,
   and what is typed once the stream reads again arrives.
 
 Read at startup only.

@@ -262,13 +262,14 @@ impl Terminals {
         let session = row.id.clone();
         let scrollback = self.scrollback;
         let runtime = self.runtime.clone();
+        let notices = super::stream_pane::Notices::new(self.input_notices.0.clone(), &row.name);
         self.attach
             .attaching
             .insert(session.clone(), super::fleet::BACKEND.to_string());
         std::thread::spawn(move || {
             // The pane's reader and writer run on the process's runtime.
             let _guard = runtime.as_ref().map(|handle| handle.enter());
-            let result = super::fleet::open(&program, &session, rows, cols, scrollback);
+            let result = super::fleet::open(&program, &session, rows, cols, scrollback, notices);
             let _ = tx.send(Attached {
                 session,
                 pane: key,
@@ -336,6 +337,7 @@ impl Terminals {
             .stream_view
             .clone()
             .filter(|_| super::stream_pane::views(&row.backend));
+        let notices = self.input_notices.0.clone();
         let scrollback = self.scrollback;
         std::thread::spawn(move || {
             let _guard = runtime.as_ref().map(|handle| handle.enter());
@@ -355,8 +357,9 @@ impl Terminals {
                 .and_then(|()| {
                     if let Some(view) = &stream_view {
                         let argv = view.argv(&pane);
-                        let adopted = super::stream_pane::adopt(&argv, rows, cols)
-                            .map_err(|e| format!("the stream pane: {e}"))?;
+                        let adopted =
+                            super::stream_pane::adopt_reporting(&argv, rows, cols, notices, &name)
+                                .map_err(|e| format!("the stream pane: {e}"))?;
                         return Ok(crate::backend::Session::adopt_io(
                             name,
                             rows,

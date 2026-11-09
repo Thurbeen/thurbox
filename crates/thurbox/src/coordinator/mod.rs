@@ -580,6 +580,11 @@ impl App {
         if self.diffs.poll() {
             self.note_data_change();
         }
+        // Input a stream pane dropped is reported where a command's error
+        // is, not drawn into the pane's grid.
+        for notice in self.terminals.take_input_notices() {
+            self.report(notice, Level::Error);
+        }
         // The content search: dispatch what the strip asks for, fold in what
         // the worker finished.
         self.serve_search();

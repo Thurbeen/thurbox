@@ -13,24 +13,26 @@ use std::sync::Arc;
 
 use term_stream::{Size, Up};
 
-use super::stream_pane::{adopt_with_upstream, Upstream};
+use super::stream_pane::{adopt_with_upstream, Notices, Upstream};
 
 /// What a Fleet row's backend is named: [`crate::kernel::snapshot::fleet`]
 /// publishes every Task under it.
 pub(super) const BACKEND: &str = crate::kernel::snapshot::fleet::BACKEND;
 
 /// Open `task`'s pane at `rows` × `cols`: ask `program` (the `fleet`
-/// binary) for the Task's stream, and open it.
+/// binary) for the Task's stream, and open it. Input it refuses is said on
+/// `notices`.
 pub(super) fn open(
     program: &Path,
     task: &str,
     rows: u16,
     cols: u16,
     scrollback: usize,
+    notices: Notices,
 ) -> Result<crate::backend::Session, String> {
     let argv = attach_argv(program, task)?;
-    let (adopted, upstream) =
-        adopt_with_upstream(&argv, rows, cols).map_err(|e| format!("the stream pane: {e}"))?;
+    let (adopted, upstream) = adopt_with_upstream(&argv, rows, cols, Some(notices))
+        .map_err(|e| format!("the stream pane: {e}"))?;
     let backend: Arc<dyn crate::backend::SessionBackend> = Arc::new(Stream(upstream));
     Ok(crate::backend::Session::adopt_io(
         task.to_string(),

@@ -64,7 +64,21 @@ pub fn view_program() -> Option<std::path::PathBuf> {
 /// and input that goes up as `input` frames. The process ends when the
 /// input is dropped, as a detach.
 pub fn adopt(argv: &[String], rows: u16, cols: u16) -> io::Result<crate::backend::AdoptedSession> {
-    adopt_with_upstream(argv, rows, cols).map(|(adopted, _)| adopted)
+    adopt_with_upstream(argv, rows, cols, None).map(|(adopted, _)| adopted)
+}
+
+/// [`adopt`], with input the stream refused said on `notices`, as
+/// `input dropped: <label> isn't reading`: the interface's own notices,
+/// never the pane's grid, which a full-screen agent paints over.
+pub fn adopt_reporting(
+    argv: &[String],
+    rows: u16,
+    cols: u16,
+    notices: Sender<String>,
+    label: &str,
+) -> io::Result<crate::backend::AdoptedSession> {
+    adopt_with_upstream(argv, rows, cols, Some(Notices::new(notices, label)))
+        .map(|(adopted, _)| adopted)
 }
 
 /// [`adopt`], and the stream's way up for frames other than input.
@@ -72,6 +86,7 @@ pub(super) fn adopt_with_upstream(
     argv: &[String],
     rows: u16,
     cols: u16,
+    notices: Option<Notices>,
 ) -> io::Result<(crate::backend::AdoptedSession, Upstream)> {
     let (program, args) = argv
         .split_first()
@@ -105,10 +120,6 @@ pub(super) fn adopt_with_upstream(
     term_stream::write(&mut stdin, &Up::Resize(Size { rows, cols }))?;
     let upstream = Upstream::over(stdin);
     let (tx, rx) = std::sync::mpsc::channel();
-    // The pane's own output carries a notice of dropped input. Shared, and
-    // let go when the stream ends, so the output still ends with it.
-    let notices = Notices(Arc::new(std::sync::Mutex::new(Some(tx.clone()))));
-    let ended = notices.clone();
     // A pane over a stream starts without a grid and builds it from the
     // first snapshot. A stream that sends none (`fleet term-bridge` has no
     // screen from before it started) starts on a blank one of its size.
@@ -144,7 +155,6 @@ pub(super) fn adopt_with_upstream(
                 break;
             }
         }
-        ended.close();
         reap(child);
     });
     let adopted = crate::backend::AdoptedSession {
@@ -240,38 +250,39 @@ impl Upstream {
     }
 }
 
-/// The way into a pane's own output, for a notice; empty once the stream
-/// ended.
-#[derive(Clone)]
-struct Notices(Arc<std::sync::Mutex<Option<Sender<crate::backend::PaneChunk>>>>);
+/// Where a pane says it dropped input: the interface's notices, under the
+/// pane's label.
+pub(super) struct Notices {
+    tx: Sender<String>,
+    label: String,
+}
 
 impl Notices {
-    fn say(&self, text: &str) {
-        if let Some(tx) = self.0.lock().ok().and_then(|tx| tx.clone()) {
-            let _ = tx.send(crate::backend::PaneChunk::Output(
-                format!("\r\n[thurbox] {text}\r\n").into_bytes(),
-            ));
+    pub(super) fn new(tx: Sender<String>, label: &str) -> Self {
+        Self {
+            tx,
+            label: label.to_string(),
         }
     }
 
-    fn close(&self) {
-        if let Ok(mut tx) = self.0.lock() {
-            tx.take();
-        }
+    fn dropped(&self) {
+        let _ = self
+            .tx
+            .send(format!("input dropped: {} isn't reading", self.label));
     }
 }
 
 /// Bytes typed into the pane, each write one `input` frame.
 struct Input {
     up: Upstream,
-    notices: Notices,
+    notices: Option<Notices>,
     /// Whether input is being dropped, so a run of refused writes is said
     /// once.
     dropping: bool,
 }
 
 impl Input {
-    fn new(up: Upstream, notices: Notices) -> Self {
+    fn new(up: Upstream, notices: Option<Notices>) -> Self {
         Self {
             up,
             notices,
@@ -287,12 +298,15 @@ impl Write for Input {
         match self.up.send(Up::Input(buf.to_vec())) {
             // Dropped, not failed: the pane's writer ends at its first
             // error, and a backlog must not close the pane. Later input goes
-            // once the stream reads again; the pane says what was dropped.
+            // once the stream reads again; the interface says what was
+            // dropped, once per run of refused writes.
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 tracing::warn!("dropped {} bytes of input: {e}", buf.len());
                 if !self.dropping {
                     self.dropping = true;
-                    self.notices.say("input dropped: the session isn't reading");
+                    if let Some(notices) = &self.notices {
+                        notices.dropped();
+                    }
                 }
             }
             sent => {
@@ -326,8 +340,8 @@ mod tests {
     use term_stream::{Size, Up};
 
     #[cfg(unix)]
-    fn notices(tx: std::sync::mpsc::Sender<crate::backend::PaneChunk>) -> super::Notices {
-        super::Notices(std::sync::Arc::new(std::sync::Mutex::new(Some(tx))))
+    fn notices(tx: std::sync::mpsc::Sender<String>) -> Option<super::Notices> {
+        Some(super::Notices::new(tx, "s1"))
     }
 
     /// A resize is sent from the paint path, so it never waits behind input
@@ -424,7 +438,7 @@ mod tests {
     }
 
     /// A write is queued whole or not at all, so a paste is never cut in
-    /// its middle; one refused says so in the pane.
+    /// its middle; one refused is said in the interface's notices.
     #[cfg(unix)]
     #[test]
     fn a_paste_that_does_not_fit_is_refused_whole_and_said_so() {
@@ -452,13 +466,11 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(after, waiting, "none of the paste was queued");
-        match notice {
-            Ok(crate::backend::PaneChunk::Output(bytes)) => {
-                let text = String::from_utf8_lossy(&bytes);
-                assert!(text.contains("input dropped"), "{text}");
-            }
-            other => panic!("no notice in the pane: {other:?}"),
-        }
+        assert_eq!(
+            notice.as_deref(),
+            Ok("input dropped: s1 isn't reading"),
+            "the interface is told"
+        );
     }
 
     #[test]
