@@ -261,7 +261,11 @@ fn stop(held: &Mutex<Option<Child>>) -> Result<(), String> {
 /// exits for a held lease is no error: another manager runs.
 fn keep_manager(program: &Path, tx: &Sender<Update>) {
     loop {
-        let error = match manage(program, tx) {
+        let dir = crate::paths::data_directory();
+        let error = match dir
+            .ok_or_else(|| "fleet up: no data directory for its log".to_string())
+            .and_then(|dir| manage(program, &dir, tx))
+        {
             Ok(Some(LEASE_HELD)) => None,
             Ok(code) => Some(format!(
                 "fleet up exited{}",
@@ -276,13 +280,16 @@ fn keep_manager(program: &Path, tx: &Sender<Update>) {
     }
 }
 
-/// One `fleet up`, waited for. Its standard error goes to a file in
-/// thurbox's own data directory, unlinked once the manager has it, rather
-/// than a pipe: a pipe would end the manager with the interface, the first
-/// time it wrote after thurbox exited.
-fn manage(program: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
-    let dir = crate::paths::data_directory().ok_or("fleet up: no data directory for its log")?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
+/// One `fleet up`, waited for. Its standard error goes to a file in `dir`,
+/// thurbox's own data directory, rather than a pipe: a pipe would end the
+/// manager with the interface, the first time it wrote after thurbox exited.
+/// The file is read back and removed when the manager exits; one whose
+/// manager outlived the interface stays readable, and a later start removes
+/// it once that manager is gone ([`clear_old_logs`]).
+fn manage(program: &Path, dir: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("fleet up: log: {e}"))?;
+    clear_old_logs(dir);
+    let dir = dir.to_path_buf();
     let (log, mut reader, path) = open_log(&dir).map_err(|e| format!("fleet up: log: {e}"))?;
     let mut command = Command::new(program);
     command
@@ -295,22 +302,62 @@ fn manage(program: &Path, tx: &Sender<Update>) -> Result<Option<i32>, String> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let spawned = command.spawn();
-    let _ = std::fs::remove_file(&path);
-    let mut child = spawned.map_err(|e| format!("could not start fleet up: {e}"))?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("could not start fleet up: {e}"));
+        }
+    };
+    // Named for the manager from here on, so a later start can tell a log
+    // whose manager still runs from one nobody writes.
+    let named = dir.join(format!("fleet-up-{}.log", child.id()));
+    let path = match std::fs::rename(&path, &named) {
+        Ok(()) => named,
+        Err(_) => path,
+    };
     if tx.send(Update::Manager(None)).is_err() {
         return Ok(Some(LEASE_HELD));
     }
     let status = child.wait().map_err(|e| format!("fleet up: {e}"))?;
-    if status.code() == Some(LEASE_HELD) {
-        return Ok(status.code());
-    }
     let mut stderr = String::new();
     let _ = reader.rewind();
     let _ = reader.read_to_string(&mut stderr);
+    let _ = std::fs::remove_file(&path);
+    if status.code() == Some(LEASE_HELD) {
+        return Ok(status.code());
+    }
     match stderr.lines().find_map(|line| line.strip_prefix("error: ")) {
         Some(why) => Err(format!("fleet up: {why}")),
         None => Ok(status.code()),
+    }
+}
+
+/// Remove the `fleet up` logs in `dir` whose process is gone: a manager
+/// that outlived its interface, and has exited since. A log is named for the
+/// manager it holds (`fleet-up-<pid>.log`), or, before the manager started,
+/// for the interface (`fleet-up-<pid>-<n>.log`).
+fn clear_old_logs(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut system = sysinfo::System::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("fleet-up-"))
+            .and_then(|rest| rest.strip_suffix(".log"))
+            .and_then(|rest| rest.split('-').next())
+            .and_then(|pid| pid.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let pid = sysinfo::Pid::from_u32(pid);
+        system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+        if system.process(pid).is_none() {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -425,6 +472,95 @@ mod tests {
         reader.read_to_string(&mut read).expect("read");
         assert_eq!(read, "error: written\n");
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+    }
+
+    /// A stand-in `fleet` running `script` as `fleet up`.
+    #[cfg(unix)]
+    fn fake_fleet(dir: &Path, script: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let program = dir.join("fleet");
+        std::fs::write(&program, format!("#!/bin/sh\n{script}\n")).expect("fleet");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        program
+    }
+
+    #[cfg(unix)]
+    fn logs(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("dir")
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|name| name.starts_with("fleet-up-"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A manager that outlives the interface keeps writing to a log that is
+    /// still there to read, named for its pid.
+    #[cfg(unix)]
+    #[test]
+    fn a_running_managers_log_stays_readable() {
+        let bin = tempfile::tempdir().expect("bin");
+        let data = tempfile::tempdir().expect("data");
+        let program = fake_fleet(bin.path(), "echo 'warning: still here' >&2; exec sleep 30");
+        let (tx, _rx) = channel();
+        let dir = data.path().to_path_buf();
+        std::thread::spawn(move || {
+            let _ = manage(&program, &dir, &tx);
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let (name, text) = loop {
+            let found = logs(data.path()).into_iter().find_map(|name| {
+                let text = std::fs::read_to_string(data.path().join(&name)).ok()?;
+                text.contains("still here").then_some((name, text))
+            });
+            if let Some(found) = found {
+                break found;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no readable log: {:?}",
+                logs(data.path())
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let pid: u32 = name
+            .trim_start_matches("fleet-up-")
+            .trim_end_matches(".log")
+            .parse()
+            .unwrap_or_else(|_| panic!("named for the manager's pid: {name}"));
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+        assert!(text.contains("warning: still here"));
+    }
+
+    /// A manager that exits is read back, and its log goes.
+    #[cfg(unix)]
+    #[test]
+    fn an_exited_managers_log_is_read_then_removed() {
+        let bin = tempfile::tempdir().expect("bin");
+        let data = tempfile::tempdir().expect("data");
+        let program = fake_fleet(bin.path(), "echo 'error: no starter' >&2; exit 1");
+        let (tx, _rx) = channel();
+        let why = manage(&program, data.path(), &tx).expect_err("it failed");
+        assert_eq!(why, "fleet up: no starter");
+        assert_eq!(logs(data.path()), Vec::<String>::new());
+    }
+
+    /// A log whose process is gone is cleared at the next start; one whose
+    /// process runs is kept.
+    #[cfg(unix)]
+    #[test]
+    fn logs_of_gone_processes_are_cleared() {
+        let data = tempfile::tempdir().expect("data");
+        let mut gone = Command::new("true").spawn().expect("true");
+        let gone_pid = gone.id();
+        gone.wait().expect("wait");
+        let alive = std::process::id();
+        for pid in [gone_pid, alive] {
+            std::fs::write(data.path().join(format!("fleet-up-{pid}.log")), "x").expect("log");
+        }
+        clear_old_logs(data.path());
+        assert_eq!(logs(data.path()), vec![format!("fleet-up-{alive}.log")]);
     }
 
     /// Two interfaces sharing a data directory each get a log of their own.

@@ -2041,6 +2041,42 @@ fn file_snapshot(root: &std::path::Path) -> thurbox::kernel::snapshot::Snapshot 
     snapshot
 }
 
+/// A Fleet Task on another machine names a path on that machine: this one
+/// does not read it, even where the same path exists here.
+#[test]
+fn a_fleet_session_on_another_machine_has_no_files_here() {
+    use std::time::{Duration, Instant};
+
+    let source = r#"return { name = "reader", slot = "sessions", capabilities = { "files" },
+      render = function()
+        local ok, text = pcall(files.read, "s1", "notes")
+        command("focus", { text = not ok and "error:" .. tostring(text) or text or "pending" })
+        return { type = "text", text = "" }
+      end }"#;
+    let (home, ui) = interface(&[("91_reader.lua", source)]);
+    std::fs::write(home.path().join("notes"), "this machine's").unwrap();
+    let host = LuaHost::new(&ui);
+    host.set_trusted(vec!["plugins/91_reader.lua".into()]);
+    let mut snapshot = file_snapshot(home.path());
+    snapshot.sessions[0].backend = "fleet".into();
+    snapshot.sessions[0].remote_host = Some("devbox".into());
+    publish_snapshot(&host, &snapshot);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let seen = loop {
+        host.poll_files();
+        render(&host, "reader");
+        let seen = files_seen(&host);
+        if seen != "pending" || Instant::now() > deadline {
+            break seen;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(
+        seen.starts_with("error:") && seen.contains("s1"),
+        "read here: {seen}"
+    );
+}
+
 #[test]
 fn file_read_answers_refresh_report_errors_and_follow_the_session_root() {
     use std::time::{Duration, Instant};

@@ -572,12 +572,8 @@ impl App {
                 // read — so it is fetched only while a pane on screen reads
                 // it. The held answer stays, aging, for when one does again.
                 let shown = self.diffs_shown || !thurbox::kernel::diff::over_ssh(&row.backend);
-                if let (true, Some(cwd)) = (shown, row.cwd.clone()) {
-                    // `base_branch`, never `branch`. Against its own branch a
-                    // session diffs to nothing, and publishing that as `ready`
-                    // is a confident wrong answer.
-                    self.diffs
-                        .request(&id, cwd, row.base_branch.clone(), &row.backend);
+                if shown {
+                    self.diffs.request_row(row);
                 }
             }
         }

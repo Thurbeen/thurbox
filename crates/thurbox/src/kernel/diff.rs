@@ -180,6 +180,26 @@ impl DiffStore {
         self.diffs.get(session).map(|held| &held.diff)
     }
 
+    /// [`Self::request`] for `row`: its directory, against its base branch
+    /// (never its own branch, against which a session diffs to nothing).
+    /// A Fleet Task on another host is not diffed here: its path is there
+    /// ([`SessionRow::workspace_reachable`]), and the diff says so.
+    ///
+    /// [`SessionRow::workspace_reachable`]: crate::kernel::snapshot::SessionRow::workspace_reachable
+    pub fn request_row(&mut self, row: &crate::kernel::snapshot::SessionRow) {
+        if !row.workspace_reachable() {
+            let why = format!(
+                "this Task's workspace is on {}, which this machine does not reach",
+                row.remote_host.as_deref().unwrap_or("another host")
+            );
+            self.hold(&row.id, Diff::Failed(why));
+            return;
+        }
+        if let Some(cwd) = row.cwd.clone() {
+            self.request(&row.id, cwd, row.base_branch.clone(), &row.backend);
+        }
+    }
+
     /// Ask for a session's diff, unless a fresh answer is held or one is in
     /// flight.
     ///
@@ -292,6 +312,11 @@ impl DiffStore {
     /// Seed a diff directly, so a test can render a known one without git.
     #[doc(hidden)]
     pub fn set_for_test(&mut self, session: &str, diff: Diff) {
+        self.hold(session, diff);
+    }
+
+    /// Hold `diff` as the session's settled answer.
+    fn hold(&mut self, session: &str, diff: Diff) {
         if self.get(session) == Some(&diff) {
             return;
         }

@@ -266,9 +266,13 @@ impl Drop for Input {
 
 #[cfg(test)]
 mod tests {
+    // For the tests that run a process, all of them Unix's.
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
+    #[cfg(unix)]
     use std::time::Duration;
 
+    #[cfg(unix)]
     use term_stream::{Size, Up};
 
     /// A resize is sent from the paint path, so it never waits behind input

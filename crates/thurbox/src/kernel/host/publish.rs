@@ -78,9 +78,16 @@ impl LuaHost {
             self.roots_snapshot.set(Some(epoch.snapshot));
             let mut roots = self.roots.borrow_mut();
             roots.clear();
+            // Files are read with this machine's filesystem, so only a
+            // directory on this machine is a root: a remote session's path
+            // names a directory elsewhere, which a local one of the same
+            // name is not.
             for row in &snapshot.sessions {
-                if let Some(cwd) = &row.cwd {
-                    roots.insert(row.id.clone(), cwd.clone());
+                match &row.cwd {
+                    Some(cwd) if row.workspace_on_this_machine() => {
+                        roots.insert(row.id.clone(), cwd.clone());
+                    }
+                    _ => {}
                 }
             }
         }

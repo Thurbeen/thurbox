@@ -1355,11 +1355,17 @@ and the interface is a client of Fleet's command line:
   again. Closing the pane detaches; the agent keeps running. A stream with no
   snapshot to send (a `tty` answer through `fleet term-bridge`) starts on a
   blank screen of the pane's size.
-- No git runs against a Task's workspace: it is on whichever machine the
-  Task's runtime serves.
+- A Task on another host (`spec.host` not `local`) names a workspace there,
+  which no route of thurbox's reaches: its files, diff, git state and editor
+  are not read on this machine, even where the same path exists here. The
+  diff says where the workspace is. A Task on `local` reads like any local
+  session.
 - `fleet up`'s standard error goes to a file of its own in thurbox's data
-  directory, created exclusively under a name unique to the interface and
-  unlinked once the manager holds it.
+  directory (`$XDG_DATA_HOME/thurbox`, or `THURBOX_DATA_DIR`), created
+  exclusively and named for the manager: `fleet-up-<pid>.log`. It is read
+  back and removed when the manager exits. A manager that outlives the
+  interface keeps writing to it there, and the next start removes the logs
+  whose process is gone.
 - A watch or a manager that fails is the snapshot's error, beside the last
   rows read. Both are started again: the watch resumes with `--since`. A
   store the running watch cannot read is the error too, until a read works

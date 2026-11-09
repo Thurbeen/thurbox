@@ -628,10 +628,36 @@ fn a_refresh_ticket_waits_for_the_source_to_answer() {
     assert!(store.fresh_since(quiet), "a source that has nothing to say");
 }
 
-/// A Fleet row's workspace may be on another machine, so no git runs
-/// against it here; a local row beside it is examined as ever.
+/// A creation is reported with its row: a refresh that awaits a created
+/// session stays owed until the source publishes it, however late, and
+/// not past a bound.
 #[test]
-fn a_fleet_row_is_not_examined_by_git() {
+fn a_refresh_awaiting_a_created_session_waits_for_its_row() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut store = SnapshotStore::with_source(
+        Box::new(Fed(rx)),
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
+    let ticket = store.request_refresh_awaiting(vec!["Made".into()]);
+    // A watch that answers late: past the second a quiet source is given.
+    std::thread::sleep(Duration::from_millis(2_000));
+    store.refresh_if_due();
+    assert!(!store.fresh_since(ticket), "fresh before the row arrived");
+    let mut made = row("made", "fleet", Path::new("/w"));
+    made.name = "Made".into();
+    tx.send(SourceRead {
+        sessions: vec![made],
+        error: None,
+    })
+    .unwrap();
+    store.refresh_if_due();
+    assert!(store.fresh_since(ticket));
+    assert!(store.current().sessions.iter().any(|r| r.name == "Made"));
+}
+
+/// A repository with an untracked file: a diff or a git stat of it says so.
+fn dirty_repo() -> tempfile::TempDir {
     let repo = tempfile::tempdir().expect("repo");
     let git = |args: &[&str]| {
         let mut command = Process::new("git");
@@ -656,7 +682,16 @@ fn a_fleet_row_is_not_examined_by_git() {
     };
     git(&["init", "-q"]);
     std::fs::write(repo.path().join("file"), "x").unwrap();
+    repo
+}
 
+/// A Fleet Task on another machine names a path there, so no git runs
+/// against it here; a local row beside it is examined as ever.
+#[test]
+fn a_fleet_row_elsewhere_is_not_examined_by_git() {
+    let repo = dirty_repo();
+    let mut elsewhere = row("on-fleet", "fleet", repo.path());
+    elsewhere.remote_host = Some("devbox".into());
     let (tx, rx) = std::sync::mpsc::channel();
     let mut store = SnapshotStore::with_source(
         Box::new(Fed(rx)),
@@ -664,10 +699,7 @@ fn a_fleet_row_is_not_examined_by_git() {
         &Default::default(),
     );
     tx.send(SourceRead {
-        sessions: vec![
-            row("on-fleet", "fleet", repo.path()),
-            row("local", "tmux", repo.path()),
-        ],
+        sessions: vec![elsewhere, row("local", "tmux", repo.path())],
         error: None,
     })
     .unwrap();
@@ -679,6 +711,25 @@ fn a_fleet_row_is_not_examined_by_git() {
             .is_some_and(|r| r.git.is_some())
     });
     assert_eq!(store.current().session("on-fleet").unwrap().git, None);
+}
+
+/// Nor is it diffed here: the diff is refused, and says where the Task is.
+#[test]
+fn a_fleet_row_elsewhere_is_not_diffed_here() {
+    use thurbox::kernel::diff::{Diff, DiffStore};
+    let repo = dirty_repo();
+    let mut elsewhere = row("on-fleet", "fleet", repo.path());
+    elsewhere.remote_host = Some("devbox".into());
+    let mut diffs = DiffStore::new();
+    diffs.request_row(&elsewhere);
+    until("the diff is answered", || {
+        diffs.poll();
+        !matches!(diffs.get("on-fleet"), Some(Diff::Pending) | None)
+    });
+    match diffs.get("on-fleet") {
+        Some(Diff::Failed(why)) => assert!(why.contains("devbox"), "{why}"),
+        other => panic!("diffed here: {other:?}"),
+    }
 }
 
 #[test]
