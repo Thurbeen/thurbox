@@ -1365,8 +1365,9 @@ and the interface is a client of Fleet's command line:
   store the running watch cannot read is the error too, until a read works
   again.
 - Typing or pasting into a Fleet session's pane waits for a stream that has
-  stopped reading up to 1 MiB; past that the input is refused, and the
-  interface does not wait.
+  stopped reading up to 1 MiB; past that the input is dropped, with a warning
+  in the log, and the interface does not wait. The pane stays open, and what
+  is typed once the stream reads again arrives.
 
 Read at startup only.
 

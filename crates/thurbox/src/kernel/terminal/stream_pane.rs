@@ -223,7 +223,8 @@ impl Upstream {
         let typed = matches!(frame, Up::Input(_) | Up::Paste(_));
         if typed && before > 0 && before + weight > QUEUE_BYTES {
             self.queued.fetch_sub(weight, Ordering::AcqRel);
-            return Err(io::Error::other(
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
                 "the stream's input is full: it has stopped reading",
             ));
         }
@@ -239,7 +240,16 @@ struct Input(Upstream);
 
 impl Write for Input {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.send(Up::Input(buf.to_vec()))?;
+        match self.0.send(Up::Input(buf.to_vec())) {
+            // Dropped, not failed: the pane's writer ends at its first
+            // error, and a backlog must not close the pane. Later input goes
+            // once the stream reads again, as when the pane's own bounded
+            // input channel is full.
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                tracing::warn!("dropped {} bytes of input: {e}", buf.len());
+            }
+            sent => sent?,
+        }
         Ok(buf.len())
     }
 
@@ -310,6 +320,45 @@ mod tests {
         let _ = child.wait();
         let refused = refused.expect("16 MiB were queued for a stream reading nothing");
         assert!(refused.contains("full"), "{refused}");
+    }
+
+    /// A full queue drops what overflows and keeps the pane's input: the
+    /// pane's writer stops at its first error and detaches, so a backlog
+    /// must not be one. Once the stream reads again, the next key arrives.
+    #[cfg(unix)]
+    #[test]
+    fn a_key_after_a_full_queue_drains_arrives() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("dir");
+        let out = dir.path().join("read");
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 1; cat > '{}'", out.display()))
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("sh");
+        let mut input = super::Input(super::Upstream::over(child.stdin.take().expect("stdin")));
+        for _ in 0..8 {
+            input
+                .write_all(&vec![b'x'; 512 << 10])
+                .expect("a backlog is no error");
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            std::thread::sleep(Duration::from_millis(100));
+            input.write_all(b"key-marker").expect("a key");
+            let read = std::fs::read(&out).unwrap_or_default();
+            if read.windows(10).any(|w| w == b"key-marker") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the key never arrived"
+            );
+        }
+        drop(input);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]
