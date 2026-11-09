@@ -96,15 +96,7 @@ impl super::Executor for Fleet {
                 if let Some(agent) = agent {
                     spec["harness"] = json!(agent);
                 }
-                // `fleet apply` would update a Task already there: two names
-                // that make one Task name (`Review`, `review`) are refused
-                // rather than merged.
                 let task_name = task_name(name);
-                if self.get(&task_name)?.is_some() {
-                    return Err(format!(
-                        "a session named {task_name} already exists on Fleet; choose another name"
-                    ));
-                }
                 let mut task = json!({
                     "apiVersion": "fleet/v1alpha1",
                     "kind": "Task",
@@ -115,7 +107,14 @@ impl super::Executor for Fleet {
                 // finished creation finds it by.
                 task["metadata"]["labels"][crate::kernel::snapshot::fleet::NAME_LABEL] =
                     json!(name);
-                self.run(&["apply", "-f", "-"], Some(&task.to_string()))?;
+                // Create-only: a plain apply would update a Task already
+                // there, so two names that make one Task name (`Review`,
+                // `review`) are refused rather than merged, by Fleet's
+                // exclusive create even when two interfaces race.
+                self.run(
+                    &["apply", "--create-only", "-f", "-"],
+                    Some(&task.to_string()),
+                )?;
             }
             Command::Send { session, text } => self.run(&["send", session, text], None)?,
             // Fleet has no undo window: a soft delete is a delete.

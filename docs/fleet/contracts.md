@@ -1205,6 +1205,11 @@ a later write and miss an earlier one; a read is reported only once the read
 after it is the same. Writes are serialized, so by then every write below the
 highest `revision` reported is in it, and a resume skips none.
 
+`fleet apply --create-only` creates each object, or refuses one whose name
+is taken with exit 5 and leaves it as it is; the store's create is
+exclusive, so two clients applying one name at once get one object and one
+refusal. A view creates its Tasks this way.
+
 `fleet runtime hosts --json` prints `{"hosts": [...]}`: the names under
 `[hosts]`, the hosts a Task may name, or `null` when one `[runtime]` serves
 any host. `fleet version --json` lists the `harnesses` with a profile of
@@ -1331,7 +1336,8 @@ test view drives: snapshot, input, output, and a detach that leaves the
 agent running; it also drives `fleet term-bridge` on its own, and reads
 `fleet runtime hosts` and the harnesses `fleet version` lists.
 `e2e_interactive` covers a Task with no brief: its spawn, its inbox and the
-refused amendment.
+refused amendment; and `apply --create-only`, which never changes a Task
+already there.
 `e2e_watch` covers `fleet watch`: the first read, a resume with `--since`,
 a deletion while the watch runs, and `synced` again after an unreadable
 store.

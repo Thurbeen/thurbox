@@ -65,10 +65,14 @@ pub fn ensure_task(store: &dyn Store, obj: Object) -> Result<Object, StoreError>
 /// Task whose `spec.forge.draft.policy` names a policy not in
 /// `ready_policies`, the names under `[forge.readyPolicies]`, is refused:
 /// a policy the config does not define would never mark anything ready.
+/// With `create_only`, an object whose name is taken is refused as
+/// `AlreadyExists` and left as it is: the store's create is exclusive, so two
+/// clients applying one name at once get one object and one refusal.
 pub fn apply(
     store: &dyn Store,
     obj: Object,
     ready_policies: &BTreeSet<String>,
+    create_only: bool,
 ) -> Result<(ApplyOutcome, Object), StoreError> {
     store.validate(&obj)?;
     if obj.kind == task::KIND {
@@ -114,9 +118,15 @@ pub fn apply(
             Observation::Known(None) => match store.create(obj.clone(), FieldManager::Apply) {
                 Ok(o) => return Ok((ApplyOutcome::Created, o)),
                 // Another writer created it between our read and our create.
+                Err(StoreError::AlreadyExists(why)) if create_only => {
+                    return Err(StoreError::AlreadyExists(why));
+                }
                 Err(StoreError::AlreadyExists(_)) => continue,
                 Err(e) => return Err(e),
             },
+            Observation::Known(Some(_)) if create_only => {
+                return Err(StoreError::AlreadyExists(format!("{}/{name}", obj.kind)));
+            }
             Observation::Known(Some(current)) => {
                 if current.metadata.owner_references != obj.metadata.owner_references {
                     return Err(StoreError::Invalid(format!(

@@ -105,6 +105,10 @@ pub(super) fn adopt_with_upstream(
     term_stream::write(&mut stdin, &Up::Resize(Size { rows, cols }))?;
     let upstream = Upstream::over(stdin);
     let (tx, rx) = std::sync::mpsc::channel();
+    // The pane's own output carries a notice of dropped input. Shared, and
+    // let go when the stream ends, so the output still ends with it.
+    let notices = Notices(Arc::new(std::sync::Mutex::new(Some(tx.clone()))));
+    let ended = notices.clone();
     // A pane over a stream starts without a grid and builds it from the
     // first snapshot. A stream that sends none (`fleet term-bridge` has no
     // screen from before it started) starts on a blank one of its size.
@@ -140,11 +144,12 @@ pub(super) fn adopt_with_upstream(
                 break;
             }
         }
+        ended.close();
         reap(child);
     });
     let adopted = crate::backend::AdoptedSession {
         output: Box::new(rx.into_iter()),
-        input: Box::new(Input(upstream.clone())),
+        input: Box::new(Input::new(upstream.clone(), notices)),
         seed_len: 0,
         size: None,
     };
@@ -235,20 +240,65 @@ impl Upstream {
     }
 }
 
+/// The way into a pane's own output, for a notice; empty once the stream
+/// ended.
+#[derive(Clone)]
+struct Notices(Arc<std::sync::Mutex<Option<Sender<crate::backend::PaneChunk>>>>);
+
+impl Notices {
+    fn say(&self, text: &str) {
+        if let Some(tx) = self.0.lock().ok().and_then(|tx| tx.clone()) {
+            let _ = tx.send(crate::backend::PaneChunk::Output(
+                format!("\r\n[thurbox] {text}\r\n").into_bytes(),
+            ));
+        }
+    }
+
+    fn close(&self) {
+        if let Ok(mut tx) = self.0.lock() {
+            tx.take();
+        }
+    }
+}
+
 /// Bytes typed into the pane, each write one `input` frame.
-struct Input(Upstream);
+struct Input {
+    up: Upstream,
+    notices: Notices,
+    /// Whether input is being dropped, so a run of refused writes is said
+    /// once.
+    dropping: bool,
+}
+
+impl Input {
+    fn new(up: Upstream, notices: Notices) -> Self {
+        Self {
+            up,
+            notices,
+            dropping: false,
+        }
+    }
+}
 
 impl Write for Input {
+    /// Each write is queued whole or not at all, so a paste is never cut in
+    /// its middle.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self.0.send(Up::Input(buf.to_vec())) {
+        match self.up.send(Up::Input(buf.to_vec())) {
             // Dropped, not failed: the pane's writer ends at its first
             // error, and a backlog must not close the pane. Later input goes
-            // once the stream reads again, as when the pane's own bounded
-            // input channel is full.
+            // once the stream reads again; the pane says what was dropped.
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 tracing::warn!("dropped {} bytes of input: {e}", buf.len());
+                if !self.dropping {
+                    self.dropping = true;
+                    self.notices.say("input dropped: the session isn't reading");
+                }
             }
-            sent => sent?,
+            sent => {
+                sent?;
+                self.dropping = false;
+            }
         }
         Ok(buf.len())
     }
@@ -260,7 +310,7 @@ impl Write for Input {
 
 impl Drop for Input {
     fn drop(&mut self) {
-        let _ = self.0.send(Up::Detach);
+        let _ = self.up.send(Up::Detach);
     }
 }
 
@@ -274,6 +324,11 @@ mod tests {
 
     #[cfg(unix)]
     use term_stream::{Size, Up};
+
+    #[cfg(unix)]
+    fn notices(tx: std::sync::mpsc::Sender<crate::backend::PaneChunk>) -> super::Notices {
+        super::Notices(std::sync::Arc::new(std::sync::Mutex::new(Some(tx))))
+    }
 
     /// A resize is sent from the paint path, so it never waits behind input
     /// a stream has stopped reading: here a paste bigger than the pipe, to
@@ -341,7 +396,10 @@ mod tests {
             .stdin(Stdio::piped())
             .spawn()
             .expect("sh");
-        let mut input = super::Input(super::Upstream::over(child.stdin.take().expect("stdin")));
+        let mut input = super::Input::new(
+            super::Upstream::over(child.stdin.take().expect("stdin")),
+            notices(std::sync::mpsc::channel().0),
+        );
         for _ in 0..8 {
             input
                 .write_all(&vec![b'x'; 512 << 10])
@@ -363,6 +421,44 @@ mod tests {
         drop(input);
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// A write is queued whole or not at all, so a paste is never cut in
+    /// its middle; one refused says so in the pane.
+    #[cfg(unix)]
+    #[test]
+    fn a_paste_that_does_not_fit_is_refused_whole_and_said_so() {
+        use std::io::Write;
+        use std::sync::atomic::Ordering;
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("sleep");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let upstream = super::Upstream::over(child.stdin.take().expect("stdin"));
+        let mut input = super::Input::new(upstream.clone(), notices(tx));
+        // The writer takes the first frame and stalls on it; the second
+        // waits in the queue, near the bound.
+        input.write_all(&vec![b'a'; 100 << 10]).expect("typed");
+        std::thread::sleep(Duration::from_millis(200));
+        input.write_all(&vec![b'b'; 800 << 10]).expect("queued");
+        let waiting = upstream.queued.load(Ordering::Acquire);
+        input
+            .write_all(&vec![b'c'; 300 << 10])
+            .expect("refused, not failed");
+        let after = upstream.queued.load(Ordering::Acquire);
+        let notice = rx.recv_timeout(Duration::from_secs(2));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(after, waiting, "none of the paste was queued");
+        match notice {
+            Ok(crate::backend::PaneChunk::Output(bytes)) => {
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(text.contains("input dropped"), "{text}");
+            }
+            other => panic!("no notice in the pane: {other:?}"),
+        }
     }
 
     #[test]

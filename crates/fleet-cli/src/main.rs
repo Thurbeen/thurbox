@@ -81,6 +81,10 @@ enum Command {
         file: PathBuf,
         #[arg(long)]
         json: bool,
+        /// Create each object, or refuse one whose name is taken (exit 5),
+        /// leaving it as it is; never update.
+        #[arg(long)]
+        create_only: bool,
     },
     /// Print one resource as JSON.
     Get { kind: String, name: String },
@@ -560,7 +564,11 @@ fn run(cli: Cli) -> Result<(), Failure> {
             )
         }
         Command::Init { .. } => unreachable_version(),
-        Command::Apply { file, json } => cmd_apply(store, &config, &file, json),
+        Command::Apply {
+            file,
+            json,
+            create_only,
+        } => cmd_apply(store, &config, &file, json, create_only),
         Command::Get { kind, name } => {
             let obj = get(store, &served_kind(store, &kind)?, &name)?;
             print_json(&serde_json::to_value(&obj).map_err(|e| fail(e.to_string()))?);
@@ -1650,6 +1658,7 @@ fn cmd_apply(
     config: &Config,
     file: &Path,
     json_out: bool,
+    create_only: bool,
 ) -> Result<(), Failure> {
     let bytes = read_input(file)?;
     let doc: Value = serde_json::from_slice(&bytes)
@@ -1703,7 +1712,16 @@ fn cmd_apply(
             }
             apply_change_request(store, forge.as_ref().expect("opened"), obj)?
         } else {
-            apply(store, obj, &policies)?
+            apply(store, obj, &policies, create_only).map_err(|e| match e {
+                StoreError::AlreadyExists(_) => Failure {
+                    code: exit::CONFLICT,
+                    message: e.to_string(),
+                    hint: Some(
+                        "the name is taken; choose another, or apply without --create-only".into(),
+                    ),
+                },
+                e => e.into(),
+            })?
         };
         let key = stored.key();
         if json_out {

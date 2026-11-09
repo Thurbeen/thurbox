@@ -2072,7 +2072,7 @@ impl StubFleet {
         let asked =
             std::fs::read_to_string(self.dir.path().join("asked")).expect("fleet was asked");
         let (args, manifest) = asked.split_once('\n').expect("args, then the manifest");
-        assert_eq!(args, "apply -f -");
+        assert_eq!(args, "apply --create-only -f -");
         serde_json::from_str(manifest).expect("a Task")
     }
 

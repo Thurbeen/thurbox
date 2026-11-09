@@ -1331,7 +1331,9 @@ and the interface is a client of Fleet's command line:
   run of other characters one `-` (`Read the code` is `read-the-code`). The
   name as given is kept in the Task's `thurbox.dev/name` label, and the row
   is published under it. A name whose Task name is taken (`review` beside
-  `Review`) is refused, and the Task already there is left as it was.
+  `Review`) is refused, and the Task already there is left as it was: the
+  create is `fleet apply --create-only`, whose exclusive create gives two
+  interfaces racing for one name one Task and one refusal.
 - A creation that names a branch, a base, a worktree or further repositories
   is refused: Fleet makes a Task's workspace. The multiplexer the create flow
   settles on is dropped: Fleet's runtime keeps the terminal. A confirmed
@@ -1371,9 +1373,11 @@ and the interface is a client of Fleet's command line:
   store the running watch cannot read is the error too, until a read works
   again.
 - Typing or pasting into a Fleet session's pane waits for a stream that has
-  stopped reading up to 1 MiB; past that the input is dropped, with a warning
-  in the log, and the interface does not wait. The pane stays open, and what
-  is typed once the stream reads again arrives.
+  stopped reading up to 1 MiB, and the interface does not wait. Each write
+  is queued whole or not at all, so a paste is never cut in its middle: one
+  that does not fit is dropped whole, and the pane says
+  `[thurbox] input dropped: the session isn't reading`. The pane stays open,
+  and what is typed once the stream reads again arrives.
 
 Read at startup only.
 
