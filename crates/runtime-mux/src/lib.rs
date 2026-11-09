@@ -37,6 +37,7 @@ pub mod shell;
 pub mod tmux;
 pub mod tmux_compat;
 pub mod toml_file;
+pub mod view;
 pub mod wiring;
 
 pub use contract::{

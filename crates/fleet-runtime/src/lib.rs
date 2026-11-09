@@ -12,6 +12,7 @@
 //! - [`FileSignals`]: the signal port's adapter, one file per session on
 //!   this machine.
 
+pub mod bridge;
 pub mod exec;
 pub mod fake;
 pub mod signals;

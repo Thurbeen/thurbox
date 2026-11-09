@@ -17,6 +17,10 @@
 //!
 //! A child that exits normally keeps anything it detached (a multiplexer
 //! server it started in a new session): only a timeout or an unwind kills.
+//!
+//! [`pty`] is the one unbounded start: a command a bridge keeps on a
+//! pseudo-terminal for as long as its view stays, killed when its handle
+//! is dropped.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -307,6 +311,101 @@ pub fn run(spec: &Spec) -> Outcome {
         code,
         stdout: take(&out),
         stderr: take(&err),
+    }
+}
+
+/// A program on a pseudo-terminal of its own, for a bridge that keeps its
+/// screen: the program sees a terminal, and its size is the bridge's to set.
+/// Its tree is killed when the handle is dropped.
+pub struct Pty {
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    exited: bool,
+}
+
+impl fmt::Debug for Pty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pty")
+            .field("pid", &self.child.process_id())
+            .finish()
+    }
+}
+
+/// Start `argv` on a new pseudo-terminal of `rows` × `cols`, with this
+/// process's environment.
+pub fn pty(argv: &[String], rows: u16, cols: u16) -> std::io::Result<Pty> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| std::io::Error::other("argv names no program"))?;
+    let pair = portable_pty::native_pty_system()
+        .openpty(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(std::io::Error::other)?;
+    let mut cmd = portable_pty::CommandBuilder::new(program);
+    cmd.args(args);
+    if let Ok(dir) = std::env::current_dir() {
+        cmd.cwd(dir);
+    }
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(std::io::Error::other)?;
+    Ok(Pty {
+        master: pair.master,
+        child,
+        exited: false,
+    })
+}
+
+impl Pty {
+    /// What the program writes to its terminal.
+    pub fn reader(&self) -> std::io::Result<Box<dyn Read + Send>> {
+        self.master
+            .try_clone_reader()
+            .map_err(std::io::Error::other)
+    }
+
+    /// What the program reads from its terminal, as typed.
+    pub fn writer(&self) -> std::io::Result<Box<dyn Write + Send>> {
+        self.master.take_writer().map_err(std::io::Error::other)
+    }
+
+    pub fn resize(&self, rows: u16, cols: u16) -> std::io::Result<()> {
+        self.master
+            .resize(portable_pty::PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(std::io::Error::other)
+    }
+
+    /// Wait for the program to exit: its exit code.
+    pub fn wait(&mut self) -> std::io::Result<u32> {
+        let status = self.child.wait()?;
+        self.exited = true;
+        Ok(status.exit_code())
+    }
+
+    /// End the program; a program already gone is left alone.
+    pub fn kill(&mut self) {
+        if !self.exited {
+            let _ = self.child.kill();
+        }
+    }
+}
+
+impl Drop for Pty {
+    fn drop(&mut self) {
+        if !self.exited {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
     }
 }
 

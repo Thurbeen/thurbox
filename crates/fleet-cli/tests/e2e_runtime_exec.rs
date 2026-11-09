@@ -850,11 +850,17 @@ fn the_reference_script_refuses_a_socket_directory_others_can_write() {
 /// A stand-in `claude` on the environment's PATH that waits and reports
 /// nothing, and the Task `t1` started on it in a directory of its own.
 fn waiting_task(env: &mut Env) -> PathBuf {
+    task_running(env, "#!/bin/sh\nexec sleep 300\n")
+}
+
+/// The Task `t1` started on a stand-in `claude` that runs `script`, and an
+/// undispatched `t2`.
+fn task_running(env: &mut Env, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = env.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let harness = bin.join("claude");
-    fs::write(&harness, "#!/bin/sh\nexec sleep 300\n").expect("harness");
+    fs::write(&harness, script).expect("harness");
     fs::set_permissions(&harness, fs::Permissions::from_mode(0o755)).expect("chmod");
     let path = std::env::var("PATH").unwrap_or_default();
     env.only_on_path(Path::new(&format!("{}:{path}", bin.display())));
@@ -896,4 +902,79 @@ fn fleet_attach_wraps_a_tty_answer_in_its_bridge() {
     assert_eq!(argv[0], env!("CARGO_BIN_EXE_fleet"), "{argv:?}");
     assert_eq!(&argv[1..4], ["term-bridge", "--", "tmux"], "{argv:?}");
     assert!(argv.contains(&"attach-session"), "{argv:?}");
+}
+
+#[test]
+fn fleet_attach_streams_a_runtime_mux_session_and_a_detach_leaves_it_running() {
+    use support::view::View;
+    use term_stream::{Capability, Down, Size, Up};
+    let (Some(program), Some(_)) = (runtime_mux(), tmux()) else {
+        return;
+    };
+    let sockets = Sockets::new("attach-mux");
+    let mut env = mux_env("attach-mux", &program, &sockets);
+    task_running(
+        &mut env,
+        "#!/bin/sh\necho ready-marker\nwhile IFS= read -r l; do echo \"pong-$l\"; done\n",
+    );
+
+    let answer = env.fleet(&["attach", "t1", "--json"]).ok().json();
+    let argv: Vec<String> = serde_json::from_value(answer["stream"]["argv"].clone())
+        .unwrap_or_else(|e| panic!("a stream ({e}): {answer:#}"));
+    assert_eq!(Path::new(&argv[0]), program, "{argv:?}");
+    assert_eq!(argv[1], "view", "{argv:?}");
+
+    let mut view = View::argv(&argv);
+    let Down::Hello(hello) = view.next() else {
+        panic!("no hello first")
+    };
+    assert!(hello.has(Capability::Snapshot), "{hello:?}");
+    view.send(&Up::Resize(Size { rows: 24, cols: 80 }));
+    view.until("a snapshot", |f| matches!(f, Down::Snapshot(_)));
+    view.until_text("ready-marker");
+    view.send(&Up::Input(b"ping\r".to_vec()));
+    view.until_text("pong-ping");
+    view.send(&Up::Detach);
+    assert!(view.close().success());
+
+    // The agent keeps running: a second pass adopts it.
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["sessionState"], "Running");
+}
+
+#[test]
+fn term_bridge_relays_a_raw_command_as_a_stream() {
+    use std::process::Stdio;
+    use support::view::View;
+    use term_stream::{Capability, Down, Exit, Size, Up};
+    let env = Env::new("term-bridge");
+    let mut cmd = env.command(&[
+        "term-bridge",
+        "--",
+        "sh",
+        "-c",
+        "echo bridged; read l; echo got-$l; exit 3",
+    ]);
+    cmd.stderr(Stdio::inherit());
+    let mut view = View::open(cmd);
+    let Down::Hello(hello) = view.next() else {
+        panic!("no hello first")
+    };
+    // A bridge keeps no screen: there is no snapshot to wait for.
+    assert!(!hello.has(Capability::Snapshot), "{hello:?}");
+    view.send(&Up::Resize(Size {
+        rows: 30,
+        cols: 100,
+    }));
+    view.until("the size", |f| {
+        *f == Down::Resized(Size {
+            rows: 30,
+            cols: 100,
+        })
+    });
+    view.until_text("bridged");
+    view.send(&Up::Input(b"x\r".to_vec()));
+    view.until_text("got-x");
+    let exit = view.until("the exit", |f| matches!(f, Down::Exit(_)));
+    assert_eq!(exit, Down::Exit(Exit::Known { code: Some(3) }));
 }

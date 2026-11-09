@@ -42,6 +42,7 @@ workspace = true
 
 [dev-dependencies]
 sha2.workspace = true
+term-stream.workspace = true
 opentelemetry-proto.workspace = true
 prost.workspace = true
 

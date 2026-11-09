@@ -227,6 +227,13 @@ enum Command {
         /// is read from stdin when stdin is not a terminal.
         payload: Option<String>,
     },
+    /// A raw interactive command as a terminal stream on stdin and stdout:
+    /// what `fleet attach` wraps a runtime's `tty` answer in.
+    TermBridge {
+        /// The command and its arguments.
+        #[arg(last = true, required = true)]
+        argv: Vec<String>,
+    },
     /// Runtimes: programs that speak the runtime protocol.
     Runtime {
         #[command(subcommand)]
@@ -399,6 +406,10 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
     if let Command::Signal { state, payload } = &cli.command {
         return cmd_signal(*state, payload.as_deref());
+    }
+    if let Command::TermBridge { argv } = &cli.command {
+        return fleet_runtime::bridge::serve(argv, std::io::stdin(), std::io::stdout())
+            .map_err(fail);
     }
     if let Command::Runtime {
         command: RuntimeCommand::Check {
@@ -714,9 +725,10 @@ fn run(cli: Cli) -> Result<(), Failure> {
             poll_ms,
             json,
         } => cmd_watch(store, since, once, poll_ms, json),
-        Command::Version { .. } | Command::Signal { .. } | Command::Runtime { .. } => {
-            unreachable_version()
-        }
+        Command::Version { .. }
+        | Command::Signal { .. }
+        | Command::Runtime { .. }
+        | Command::TermBridge { .. } => unreachable_version(),
     }
 }
 

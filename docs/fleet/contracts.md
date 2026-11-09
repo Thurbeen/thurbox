@@ -81,7 +81,8 @@ fleet-api          pure           types and ports
 fleet-controllers  pure           controllers and gate   -> api
 fleet-exec         adapter        the one process spawner
 fleet-store        adapter        file store             -> api
-fleet-runtime      adapter        exec, thurbox-cli, fake -> api, exec
+fleet-runtime      adapter        exec, thurbox-cli, fake, term-bridge -> api, exec,
+term-stream
 fleet-forge        adapter        az, curl, gh, glab, fake -> api, exec
 fleet-gateway      adapter        curl (Slack, Discord), fake -> api, exec
 fleet-plugin       adapter        bounded plugin stdio   -> api, exec
@@ -121,7 +122,9 @@ fleet-dev          tooling        `cargo xtask`: gate and release
 - Only fleet-exec reaches `std::process::Command`, `std::os::unix::process`,
   `std::os::windows::process` or `process_wrap`. Every program fleet runs is
   bounded and has its whole process tree killed past its bound or on an early
-  return: a process group on Unix, a job object on Windows.
+  return: a process group on Unix, a job object on Windows. The one program
+  with no bound is the command a bridge runs on a pty (`fleet_exec::pty`),
+  since its view ends it: it is killed when its handle is dropped.
 - fleet-forge depends on nothing above the API and the spawner and is
   depended on by the CLI alone: no forge-specific name appears above the
   Forge port.
@@ -1164,7 +1167,7 @@ account's Gateway intents.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|amend|declare|result|delete|reconcile|watch|attach|gateway|version`.
+init|up|apply|get|list|status|send|amend|declare|result|delete|reconcile|watch|attach|term-bridge|gateway|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
 `apply`, `get`, `list`, `status` and `delete` take `changerequest`,
@@ -1203,6 +1206,9 @@ is wrapped as `fleet term-bridge -- <argv>`, so a view only ever gets a
 stream. A Task with no session yet, a runtime that does not declare `attach`
 and a key the runtime holds no process under exit 3; an Unknown answer exits 4.
 Without `--json` the argv is printed one argument per line.
+`fleet term-bridge -- <argv>` is that bridge: it runs the command on a pty of
+its own through `fleet-exec` and relays it as the terminal stream on its stdin
+and stdout, until the view detaches or the command exits.
 
 The config file is versioned TOML; relative paths are relative to it. This
 one runs the fake runtime:
@@ -1307,7 +1313,9 @@ identities and outcomes and without a brief, message or environment value;
 nothing is sent when export is off; an unreachable collector changes no
 command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
 `e2e_runtime_exec` runs `fleet attach` against the reference script, whose
-`tty` answer comes back bridged.
+`tty` answer comes back bridged, and against `runtime-mux`, whose stream a
+test view drives: snapshot, input, output, and a detach that leaves the
+agent running; it also drives `fleet term-bridge` on its own.
 `e2e_interactive` covers a Task with no brief: its spawn, its inbox and the
 refused amendment.
 `e2e_watch` covers `fleet watch`: the first read, a resume with `--since`

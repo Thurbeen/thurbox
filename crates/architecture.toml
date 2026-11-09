@@ -8,7 +8,7 @@
 #   fleet-controllers    pure   decisions          -> api
 #   fleet-exec           adapter the one process spawner
 #   fleet-store          adapter                   -> api
-#   fleet-runtime        adapter runtime, workspaces -> api, exec
+#   fleet-runtime        adapter runtime, workspaces, term-bridge -> api, exec, term-stream
 #   fleet-forge          adapter                   -> api, exec
 #   fleet-gateway        adapter                   -> api, exec
 #   fleet-plugin         adapter                   -> api, exec
@@ -19,7 +19,8 @@
 #
 # The other components share the workspace and none of the graph above:
 #
-#   runtime-mux          component the multiplexer runtime: tmux, psmux, rmux
+#   term-stream          the terminal stream's frames: a wire format
+#   runtime-mux          component the multiplexer runtime: tmux, psmux, rmux -> term-stream
 #   thurbox              component the interface; reaches Fleet only by
 #                                  running its CLI   -> runtime-mux, until
 #                                  Fleet drives the runtimes
@@ -51,7 +52,7 @@ deps = ["fleet-api"]
 
 [crates.fleet-runtime]
 role = "adapter"
-deps = ["fleet-api", "fleet-exec"]
+deps = ["fleet-api", "fleet-exec", "term-stream"]
 
 # The only crate that knows a forge CLI (`gh`, `glab`, `az`, `curl`) exists:
 # every forge call is one
@@ -87,6 +88,8 @@ deps = ["fleet-api", "fleet-controllers"]
 [crates.fleet-cli]
 role = "edge"
 deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin", "fleet-gateway", "fleet-telemetry"]
+# The end-to-end tests speak the terminal stream to what `fleet attach` names.
+dev_deps = ["term-stream"]
 # Every write is the manager's: the CLI parses, calls a verb, and prints.
 forbidden_methods = [
   "create", "create_fenced", "update_spec", "update_status", "append_inbox", "record_delivery",
@@ -102,6 +105,12 @@ forbidden_methods = [
 # thurbox keeps its files is passed in (`MuxSettings`, `HostsConfig`). Its own
 # module rules are crates/runtime-mux/tests/architecture_rules.rs.
 [crates.runtime-mux]
+role = "component"
+deps = ["term-stream"]
+
+# The terminal stream's frames and codec: a wire format, not a component.
+# No process, no runtime, no transport; every component may depend on it.
+[crates.term-stream]
 role = "component"
 deps = []
 

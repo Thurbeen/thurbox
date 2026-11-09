@@ -49,7 +49,8 @@ Built: `runtime-mux` and the reference script answer it, Fleet's `exec`
 runtime kind speaks it, and `fleet runtime check` holds both to it in CI.
 `workspace` is not built yet: no runtime declares it, and Fleet makes no
 call to it. `attach` is built: Fleet asks it in `fleet attach`, once the
-runtime's `manifest` declares it.
+runtime's `manifest` declares it, and `runtime-mux` and the reference script
+answer it.
 
 Every request is a JSON object carrying `"protocol": 1`; `manifest` answers
 whatever the request says. A runtime that does not speak the version asked
@@ -87,8 +88,12 @@ not change how the command ends; a child that left the group and holds a
 stream open does not hold the answer past the deadline. `runtime-mux` runs on this
 machine only for now: its ssh and WSL places come with the hosts it reads.
 
-The reference script answers `attach` with a raw tmux client on the key's
-pane, a `tty` answer. An `attach` argv runs where the view runs, so it names
+`runtime-mux` answers `attach` with a `stream`: its own `view` on the key,
+naming its socket and `TMUX_TMPDIR`. `runtime-mux view` adopts the key's pane
+through its control-mode client, sized by the view's first `resize`, and
+encodes what the server sends as frames; a `detach` lets go of the pane and
+leaves the process running. The reference script answers `attach` with a raw
+tmux client on the key's pane, a `tty` answer. An `attach` argv runs where the view runs, so it names
 everything it needs, such as a socket by its path.
 
 What Fleet's `exec` kind does with the answers:
@@ -202,33 +207,38 @@ What a view needs from a live session, whatever runs it:
 ### The protocol
 
 A stream is a process. The view starts it and speaks over its stdin and
-stdout; it ends when either side closes. Frames are length-prefixed, a type
-byte then a payload: output and input are raw bytes, every other frame a JSON
-object. The vocabulary is thurbox's own `PaneChunk` (`crates/runtime-mux/src/contract.rs`),
+stdout; it ends when either side closes. A frame is a type byte, the
+payload's length as a big-endian 32-bit number, then the payload: `output`,
+`state` and `input` are raw bytes, `paste` is UTF-8 text, and every other
+payload is a JSON object. The vocabulary is thurbox's own `PaneChunk` (`crates/runtime-mux/src/contract.rs`),
 which already carries every item in the output's order on one channel:
 
-| Direction | Frame | Payload |
-| --- | --- | --- |
-| down | `hello` | protocol version, capabilities (`snapshot`, `scrollback`, `viewers`, `resize`) |
-| down | `snapshot` | cols, rows, cursor, normal-screen history and rows, alternate rows, styled |
-| down | `output` | bytes |
-| down | `resized` | rows, cols |
-| down | `sized_elsewhere` | whether another viewer sizes the screen |
-| down | `resync` | a snapshot replacing the view's grid after dropped output |
-| down | `state` | title and input modes, to parse but not count as output |
-| down | `exit` | the process's code, or Unknown |
-| up | `input` | bytes, sent as typed |
-| up | `paste` | text, bracketed when the program asked for it |
-| up | `resize` | rows, cols: a request the holder of the screen arbitrates |
-| up | `detach` | leave; the process keeps running |
+| Direction | Type | Frame | Payload |
+| --- | --- | --- | --- |
+| down | `0x01` | `hello` | `{version, capabilities}`, capabilities from `snapshot`, `scrollback`, `viewers`, `resize` |
+| down | `0x02` | `snapshot` | `{cols, rows, cursor: [col, row], normal, alternate}`: normal-screen history and rows, alternate rows or null, styled |
+| down | `0x03` | `output` | bytes |
+| down | `0x04` | `resized` | `{rows, cols}` |
+| down | `0x05` | `sized_elsewhere` | `{elsewhere}`: whether another viewer sizes the screen |
+| down | `0x06` | `resync` | a snapshot replacing the view's grid after dropped output |
+| down | `0x07` | `state` | title and input modes as terminal bytes, to parse but not count as output |
+| down | `0x08` | `exit` | `{"known": {code}}`, `code` null for a signal, or `{"unknown": {why}}` |
+| up | `0x81` | `input` | bytes, sent as typed |
+| up | `0x82` | `paste` | text, bracketed when the program asked for it |
+| up | `0x83` | `resize` | `{rows, cols}`: a request the holder of the screen arbitrates |
+| up | `0x84` | `detach` | empty: leave; the process keeps running |
 
-`snapshot` comes right after `hello` when the capability is there, so a view
-never starts on an empty grid. Sizing follows ADR-27 everywhere: the viewer
+A frame of a type the reader does not know, or a payload over 64 MiB, ends the
+stream.
+
+A view's first frame is a `resize`: the end that keeps the screen starts the
+stream once it knows the size. `snapshot` comes next when the capability is
+there, so a view never starts on an empty grid. Sizing follows ADR-27 everywhere: the viewer
 being typed into sizes the screen, the others get `sized_elsewhere`.
 
-`term-stream` is a crate with only the frame types and their codec: no
-process, no runtime, no transport. thurbox, Fleet and every `runtime-*` may
-depend on it, as they may on `serde`.
+`term-stream` (`crates/term-stream`) is a crate with only the frame types and
+their codec: no process, no runtime, no transport. thurbox, Fleet and every
+`runtime-*` may depend on it, as they may on `serde`.
 
 ### The runtime's `attach`
 
@@ -241,18 +251,20 @@ depend on it, as they may on `serde`.
 
 `fleet attach` always hands a view a stream. It passes a `stream` answer
 through, and wraps a `tty` answer in `fleet term-bridge -- <argv>`, which runs
-the command in a local pty, keeps a `vt100` screen of it and speaks the
-protocol. A bridge only knows what it has seen since it started, so its first
-snapshot is blank until the program redraws; it asks for one by resizing.
-That is the price of a runtime without a screen keeper, and `hello` says so.
+the command on a pty of its own and relays it as frames. A bridge keeps no
+screen: it has nothing from before it started, so its `hello` names no
+`snapshot`, and the view's first `resize` sizes the pty the command starts on,
+which is what makes a program draw. That is the price of a runtime without a
+screen keeper. A `detach` ends the bridged command, such as a `docker attach`
+client, and not the process it reached.
 
 ### Who keeps the screen
 
 | Runtime | Screen keeper | `attach` answers |
 | --- | --- | --- |
-| `runtime-mux` | tmux, psmux, rmux | `stream`: `runtime-mux view <key>`, control mode encoded as frames |
+| `runtime-mux` | tmux, psmux, rmux | `stream`: `runtime-mux view <key>`, control mode encoded as frames (built) |
 | `runtime-container`, `runtime-vm` | `term-holder` inside the place | `stream`: `docker exec -i <ctr> term-holder connect <key>`, or the same over ssh or vsock |
-| any runtime, minimal | none | `tty`: bridged by Fleet, no history |
+| any runtime, minimal | none | `tty`: bridged by Fleet, no history (built; the reference script answers it) |
 
 `term-holder` is a small static binary a runtime puts in its place and runs
 the agent under: `term-holder serve <key> -- <argv>`. It owns the pty, keeps

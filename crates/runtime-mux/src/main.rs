@@ -2,6 +2,10 @@
 //! Reads one JSON request on stdin and prints one answer on stdout. The
 //! composition root: it alone builds the backend, on the program's own tmux
 //! socket ([`runtime_mux::protocol::SOCKET`]).
+//!
+//! `runtime-mux view [--socket S] [--tmux-tmpdir D] <key>` is the other
+//! shape: one key's pane as a terminal stream on stdin and stdout, for as
+//! long as the view stays. `attach` answers with it.
 
 use std::io::Read;
 
@@ -10,6 +14,13 @@ use runtime_mux::MuxSettings;
 
 fn main() {
     let verb = std::env::args().nth(1).unwrap_or_default();
+    if verb == "view" {
+        if let Err(why) = view(std::env::args().skip(2).collect()) {
+            eprintln!("runtime-mux view: {why}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut request = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut request) {
         println!(
@@ -43,9 +54,63 @@ fn main() {
         ..MuxSettings::default()
     };
     let registry = runtime_mux::wiring::local_only(&settings);
-    let answer = protocol::serve(registry.default_backend().as_ref(), &verb, &request);
+    let answer = protocol::serve(
+        registry.default_backend().as_ref(),
+        &verb,
+        &request,
+        &view_argv(&settings),
+    );
     registry.shutdown_all();
     println!("{answer}");
+}
+
+/// How a view reaches this server: this program's `view`, naming the socket
+/// and the directory tmux keeps it in, as the view runs with the viewer's
+/// environment.
+fn view_argv(settings: &MuxSettings) -> Vec<String> {
+    let program = std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "runtime-mux".into());
+    let mut argv = vec![program, "view".into()];
+    if let Some(socket) = &settings.socket {
+        argv.extend(["--socket".into(), socket.clone()]);
+    }
+    if let Some(dir) = std::env::var_os("TMUX_TMPDIR").filter(|d| !d.is_empty()) {
+        argv.extend(["--tmux-tmpdir".into(), dir.to_string_lossy().into_owned()]);
+    }
+    argv
+}
+
+/// `view`: the key's pane as a terminal stream until the view lets go.
+fn view(args: Vec<String>) -> Result<(), String> {
+    let mut socket = SOCKET.to_string();
+    let mut key = None;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--socket" => socket = args.next().ok_or("--socket takes a name")?,
+            "--tmux-tmpdir" => {
+                let dir = args.next().ok_or("--tmux-tmpdir takes a directory")?;
+                // Before any thread starts: tmux finds the socket there.
+                std::env::set_var("TMUX_TMPDIR", dir);
+            }
+            _ if key.is_none() => key = Some(arg),
+            other => return Err(format!("unexpected argument {other:?}")),
+        }
+    }
+    let key = key.ok_or("usage: runtime-mux view [--socket S] [--tmux-tmpdir D] <key>")?;
+    let settings = MuxSettings {
+        socket: Some(socket),
+        ..MuxSettings::default()
+    };
+    let registry = runtime_mux::wiring::local_only(&settings);
+    let backend = registry.default_backend().clone();
+    let pane = protocol::pane_of(backend.as_ref(), &key)?
+        .ok_or_else(|| format!("no process holds key {key}"))?;
+    backend.ensure_ready().map_err(|e| e.to_string())?;
+    let served = runtime_mux::view::serve(backend, &pane, std::io::stdin(), &mut std::io::stdout());
+    registry.shutdown_all();
+    served
 }
 
 /// The lock serializing starts and stops on `socket`'s server, held until
