@@ -171,6 +171,10 @@ jobs:
               - '.claude/skills/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              # fleet-dev's release tests read both: cog's config decides the
+              # bump, and FLEET_MAJOR is the major-version marker.
+              - 'cog.toml'
+              - 'FLEET_MAJOR'
               - 'rust-toolchain.toml'
               - '.cargo/config.toml'
               - '.config/nextest.toml'
