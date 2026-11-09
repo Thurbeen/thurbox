@@ -1347,7 +1347,9 @@ and the interface is a client of Fleet's command line:
 - Only sessions are Fleet's. Restore, restart, fork, rename, sync, reorder
   and dispatching a task to a session are refused by name. Everything that is
   no session's (settings, bookmarks, folders and clones, the task list,
-  automations) runs on thurbox's own engine as before.
+  automations) runs on thurbox's own engine as before, and is read back from
+  its database: the snapshot takes its sessions from `fleet watch` and the
+  task list and automations from the database.
 - A Task's terminal is the stream `fleet attach` names, opened as a stream
   pane. A Task with no session yet has no pane; a stream that ends is opened
   again. Closing the pane detaches; the agent keeps running. A stream with no

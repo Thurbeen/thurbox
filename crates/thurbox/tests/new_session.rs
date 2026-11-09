@@ -2115,6 +2115,67 @@ fn a_typed_repository_is_remembered_on_the_fleet_engine() {
     );
     fleet.run(commands).expect("the bookmark");
     assert!(!fleet.asked(), "a bookmark asks nothing of Fleet");
+
+    // And the flow sees it saved, as it waits to.
+    let mut repos = RepoStore::new();
+    let beta = srv.join("beta").to_string_lossy().into_owned();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        repos.request_bookmarks("");
+        repos.poll();
+        if repos
+            .bookmarks("")
+            .is_some_and(|rows| rows.iter().any(|row| row.path == beta))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the bookmark never read back: {:?}",
+            repos.bookmarks("")
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A todo a pane adds (the `task` command, as the tasks pane issues it) is
+/// written by thurbox's own engine on the Fleet engine too, and the
+/// snapshot reads it back beside Fleet's sessions.
+#[cfg(unix)]
+#[test]
+fn a_todo_added_on_the_fleet_engine_is_listed() {
+    let fleet = StubFleet::new("[\"local\"]");
+    let command = Command::parse(
+        "task",
+        thurbox::kernel::command::Args {
+            text: Some("write the docs".into()),
+            ..Default::default()
+        },
+    )
+    .expect("a task command");
+    fleet.run(vec![command]).expect("the todo");
+
+    struct NoSessions;
+    impl thurbox::kernel::snapshot::SnapshotSource for NoSessions {
+        fn poll(&mut self) -> Option<thurbox::kernel::snapshot::SourceRead> {
+            None
+        }
+    }
+    let mut store = thurbox::kernel::snapshot::SnapshotStore::open_with_source(
+        Box::new(NoSessions),
+        &thurbox::backend::wiring::configured(&Default::default()).0,
+        &Default::default(),
+    );
+    store.settle();
+    assert!(
+        store
+            .current()
+            .tasks
+            .iter()
+            .any(|task| task.title == "write the docs"),
+        "{:?}",
+        store.current().tasks
+    );
 }
 
 /// The host picker names a route (`ssh:devbox`); Fleet names the same

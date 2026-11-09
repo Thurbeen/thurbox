@@ -277,7 +277,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         .enabled
         .then(|| std::path::PathBuf::from(&startup_settings.fleet.program));
     let snapshots = match &fleet {
-        Some(program) => SnapshotStore::with_source(
+        Some(program) => SnapshotStore::open_with_source(
             Box::new(thurbox::kernel::snapshot::fleet::FleetWatch::with_manager(
                 program.clone(),
             )),

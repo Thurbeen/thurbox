@@ -564,6 +564,22 @@ impl SnapshotStore {
         store
     }
 
+    /// [`Self::with_source`] over the real thurbox database as well, which
+    /// keeps every row that is no session's: the task list and the
+    /// automations. The sessions, and their error, are the source's.
+    pub fn open_with_source(
+        source: Box<dyn SnapshotSource>,
+        backends: &crate::backend::BackendRegistry,
+        settings: &Settings,
+    ) -> Self {
+        let mut store = Self::open(backends, settings);
+        store.source = Some(source);
+        store.current.sessions.clear();
+        store.current.deleted.clear();
+        store.poll_source();
+        store
+    }
+
     /// Apply what the source has, returning whether anything moved.
     fn poll_source(&mut self) -> bool {
         let Some(read) = self.source.as_mut().and_then(|source| source.poll()) else {
@@ -780,6 +796,10 @@ impl SnapshotStore {
     /// this call are the ones published.
     pub fn request_refresh(&mut self) -> u64 {
         if self.source.is_some() {
+            // The database's rows (the task list, the automations) are read
+            // again too, unwaited: a source's answer is the ticket.
+            self.reread = true;
+            self.send_read();
             self.source_asked = Instant::now();
             return self.source_reads + 1;
         }
@@ -1535,6 +1555,15 @@ impl SnapshotStore {
     /// Turn a full read into the published rows.
     fn apply_rows(&mut self, read: RowsRead) {
         let taken_at_ms = taken_at_stamp();
+        // With a source, the sessions are its own: the database's rows are
+        // the rest.
+        if self.source.is_some() {
+            self.current.tasks = read.tasks;
+            self.current.automations = read.automations;
+            self.current.taken_at_ms = taken_at_ms;
+            self.mark_changed();
+            return;
+        }
         let RowsRead {
             sessions,
             hooks,
