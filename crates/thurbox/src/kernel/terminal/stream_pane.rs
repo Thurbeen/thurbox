@@ -175,12 +175,12 @@ mod tests {
 
     #[test]
     fn a_local_tmux_session_is_viewed_through_a_stream_and_no_other() {
-        for tmux in ["local:tmux", "local-tmux"] {
-            assert!(super::views(tmux), "{tmux}");
+        assert!(super::views("local:tmux"));
+        // An unqualified row is on the platform's default multiplexer:
+        // `Route::parse` reads `local-tmux`, `tmux` and the empty route so.
+        for unqualified in ["local-tmux", "tmux", ""] {
+            assert_eq!(super::views(unqualified), !cfg!(windows), "{unqualified:?}");
         }
-        // An unqualified row is on the platform's default multiplexer.
-        assert_eq!(super::views("tmux"), !cfg!(windows));
-        assert_eq!(super::views(""), !cfg!(windows));
         for other in [
             "local:rmux",
             "local-rmux",
