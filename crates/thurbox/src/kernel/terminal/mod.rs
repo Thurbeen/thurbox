@@ -8,7 +8,7 @@
 //!
 //! It reaches `crate::agent` through fully-qualified paths only, never `use`,
 //! so every crossing into the side-effect layer is visible at its call site —
-//! the rule `session_ops` and `cli` already follow.
+//! the rule `cli` already follows.
 //!
 //! The shared [`Terminals`] state and its per-frame [`Terminals::sync`] live
 //! here. Each job it runs has a file of its own: attaching a pane on a worker
@@ -473,8 +473,6 @@ impl Terminals {
     /// adoption is queued for the loop to persist, so it happens once per row.
     pub fn sync(&mut self, snapshot: &Snapshot, rows: u16, cols: u16) {
         self.collect_discovered();
-        self.collect_mirrored();
-        self.refresh_mirrors();
         self.collect_attached(rows, cols);
         self.drop_lost_panes(snapshot);
         // A surface that lost its parser takes its cached rows with it.
@@ -866,26 +864,10 @@ impl Terminals {
             .collect()
     }
 
-    /// Where a session's processes are launched — v1's
-    /// `App::session_process_cwd_existing`, which is what its shell opens in.
-    ///
-    /// For one repository that is the repository. For several it is the symlink
-    /// workspace the agent itself is running in, so switching to the shell lands
-    /// you where the agent is rather than in whichever member happens to be
-    /// primary. This is the *non-building* variant: the workspace already exists
-    /// (the agent is in it), and the ensure-style rebuild would `rm -rf` its cwd
-    /// out from under it.
-    ///
-    /// Falls back to the recorded cwd whenever the workspace cannot be named,
-    /// because a shell in the primary repository beats a shell wherever the
-    /// multiplexer happened to be.
+    /// Where a session's companion shell opens: its workspace, as Fleet
+    /// reports it.
     pub fn launch_cwd(&self, row: &super::snapshot::SessionRow) -> Option<PathBuf> {
-        crate::session_ops::spawn::existing_launch_cwd(
-            row.agent_session_id.as_deref(),
-            row.cwd.as_deref(),
-            row.member_dirs.len(),
-            row.remote_host.as_deref().and_then(|n| self.hosts.get(n)),
-        )
+        row.cwd.clone()
     }
 
     /// The session behind `surface` and the host it runs on, for a session on
@@ -1165,10 +1147,8 @@ impl Terminals {
     ///
     /// The events are `(backend, pane id, state)` — pane ids collide across
     /// hosts, so the backend is part of the identity, not decoration. The
-    /// backend is named by the qualified route it serves, which is what a
-    /// row's `backend_type` settles to whichever spelling it was stored under
-    /// (`session_ops::server_key`). A backend with no status channel returns
-    /// nothing.
+    /// backend is named by the qualified route it serves. A backend with no
+    /// status channel returns nothing.
     pub fn drain_hook_events(&self) -> Vec<(String, String, String)> {
         self.backends
             .all_backends()
@@ -1417,8 +1397,8 @@ mod decoupling;
 mod tests {
     use super::attach::{Attached, ATTACH_RETRY_INTERVAL};
     use super::discovery::{
-        discover_windows, discovery_interval, due_now, survey, Discovered, Mirrored,
-        DISCOVERY_INTERVAL, MIRROR_INTERVAL, REMOTE_DISCOVERY_INTERVAL,
+        discover_windows, discovery_interval, due_now, Discovered, DISCOVERY_INTERVAL,
+        REMOTE_DISCOVERY_INTERVAL,
     };
     use super::paint::{grid_top, paint_sized_elsewhere, screen_widget, FromRow};
     use super::*;
@@ -1959,47 +1939,6 @@ mod tests {
         fn capabilities(&self) -> crate::backend::Capabilities {
             crate::backend::Capabilities::NONE
         }
-    }
-
-    /// A survey that reached a remote host is the evidence `session list` needs
-    /// to stop calling it unreachable: the worker clears the host's stored
-    /// "not answering" verdict, so a recovered host does not read down until
-    /// its backoff runs out.
-    #[test]
-    fn a_survey_that_reaches_a_host_clears_its_not_answering_verdict() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let _paths = crate::paths::TestPathGuard::new(temp.path());
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let verdicts = crate::paths::log_directory()
-            .unwrap()
-            .join("host-verdicts.json");
-        std::fs::create_dir_all(verdicts.parent().unwrap()).unwrap();
-        std::fs::write(
-            &verdicts,
-            format!(
-                r#"{{"ssh:fake":{{"reason":"host not answering: timed out","at":{now},"failures":3}}}}"#
-            ),
-        )
-        .unwrap();
-        let route = crate::session::Route::remote(
-            crate::session::Via::Ssh,
-            "fake",
-            Some(crate::session::Multiplexer::Tmux),
-        );
-        assert!(crate::session_ops::host_cli::recorded_down(&route.format()));
-
-        // Mode 0: the host answers, and its listing holds no window.
-        let backend: std::sync::Arc<dyn crate::backend::SessionBackend> =
-            std::sync::Arc::new(FakeLivenessBackend(std::sync::atomic::AtomicU8::new(0)));
-        let done = survey(&backend, route.format(), true);
-
-        assert!(done.readied && done.panes.is_ok(), "the stub must answer");
-        assert!(!crate::session_ops::host_cli::recorded_down(
-            &route.format()
-        ));
     }
 
     /// With `stream_panes` on, a session whose row names `local:tmux` (what a
@@ -2608,27 +2547,6 @@ mod tests {
     }
 
     #[test]
-    fn a_multi_repository_session_opens_its_shell_in_the_workspace() {
-        // Where the agent itself is running — not whichever member is primary,
-        // which is what the recorded cwd names.
-        let terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        let mut row = row("s1", "local-tmux", Some("%1"));
-        row.cwd = Some(PathBuf::from("/src/alpha"));
-        row.member_dirs = vec![PathBuf::from("/src/alpha"), PathBuf::from("/src/beta")];
-        row.agent_session_id = Some("abc-123".to_string());
-
-        let resolved = terminals.launch_cwd(&row).expect("a directory");
-        assert!(
-            resolved.ends_with("workspaces/abc-123"),
-            "the symlink workspace, not a member: {}",
-            resolved.display()
-        );
-    }
-
-    #[test]
     fn a_workspace_that_cannot_be_named_falls_back_to_the_recorded_directory() {
         // No agent session id means no workspace path, and a shell in the
         // primary repository still beats one wherever tmux happened to be.
@@ -2741,50 +2659,5 @@ mod tests {
             ),
             "a restart must not wait out a backoff for the listing that finds its new pane"
         );
-    }
-
-    #[test]
-    fn a_mirror_pass_that_could_not_run_backs_its_host_off() {
-        let mut terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        terminals
-            .discovery
-            .mirror_rx
-            .0
-            .send(Mirrored {
-                backend: "ssh:devbox".to_string(),
-                report: Err("host unreachable".to_string()),
-            })
-            .unwrap();
-        terminals.collect_mirrored();
-
-        let due = terminals.discovery.mirror_due["ssh:devbox"];
-        assert!(
-            due > std::time::Instant::now() + MIRROR_INTERVAL,
-            "a host that could not be reached is not asked again in ten seconds"
-        );
-    }
-
-    #[test]
-    fn a_mirror_pass_that_ran_keeps_the_ordinary_cadence() {
-        let mut terminals = Terminals::with_registry(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
-        terminals
-            .discovery
-            .mirror_rx
-            .0
-            .send(Mirrored {
-                backend: "ssh:devbox".to_string(),
-                report: Ok(crate::session_ops::mirror::MirrorReport::default()),
-            })
-            .unwrap();
-        terminals.collect_mirrored();
-
-        let due = terminals.discovery.mirror_due["ssh:devbox"];
-        assert!(due <= std::time::Instant::now() + MIRROR_INTERVAL);
     }
 }

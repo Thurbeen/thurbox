@@ -89,7 +89,7 @@ pub enum UpdateOutcome {
 pub fn target_triple(os: &str, arch: &str) -> Result<&'static str, String> {
     // Accepts both Rust's spellings (`macos`/`aarch64`) and `uname`'s
     // (`Darwin`/`arm64`), plus PowerShell's `AMD64`, because a *host's* platform
-    // arrives as whatever that host's shell printed (`session_ops::host_cli`).
+    // arrives as whatever that host's shell printed.
     let os = os.to_ascii_lowercase();
     let arch = arch.to_ascii_lowercase();
     match (os.as_str(), arch.as_str()) {

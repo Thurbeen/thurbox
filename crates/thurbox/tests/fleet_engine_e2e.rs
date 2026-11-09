@@ -319,11 +319,7 @@ fn a_fleet_that_will_not_answer_is_an_error_beside_the_last_rows() {
 }
 
 fn fleet_bus(program: &Path) -> CommandBus {
-    CommandBus::fleet(
-        program.to_path_buf(),
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
-        &Default::default(),
-    )
+    CommandBus::fleet(program.to_path_buf())
 }
 
 fn run_command(bus: &mut CommandBus, command: Command) -> Result<(), String> {

@@ -6,11 +6,10 @@
 //! render path.
 //!
 //! The kernel's events are **derived by diffing published state**, never raised
-//! by the code that mutates it. A session created by `thurbox-cli`, a cron tick
+//! by the code that mutates it. A session created by `fleet`, a schedule
 //! or a second interface looks exactly like one the creation flow made, and no
 //! mutation site anywhere can forget to fire — the failure mode of the other
-//! design, which is also the one that would have put a kernel concern inside
-//! `session_ops`, a layer the kernel may not `use`.
+//! design, which would have put a kernel concern inside Fleet.
 //!
 //! The set is a closed enumeration ([`KERNEL_EVENTS`]) with one reader for each
 //! of its three uses: the loader validates a subscription against it, the help

@@ -3401,12 +3401,11 @@ is untrusted text, which a pane renders as text.
 
 > **Accepted, partly implemented.** The design is
 > [the documentation overview](../README.md).
-> Once thurbox's own session engine is deleted, this supersedes ADR-8, ADR-7b, ADR-8b, ADR-24 and ADR-26.
-> Until then, [`[fleet] enabled`](config.md#fleet--the-session-engine) selects
-> the engine at startup: the snapshot reads the rows from a `SnapshotSource`
-> (Fleet's Tasks through `fleet watch`) instead of the database, and the
-> command bus runs commands through an `Executor` (Fleet's command line)
-> instead of `session_ops`.
+> thurbox's own session engine is deleted, so this supersedes ADR-8, ADR-7b,
+> ADR-8b, ADR-24 and ADR-26. The snapshot reads the rows from a
+> `SnapshotSource` (Fleet's Tasks through `fleet watch`), and the command bus
+> runs commands through an `Executor` (Fleet's command line,
+> [`[fleet]`](config.md#fleet--the-session-engine)).
 
 **Choice**: thurbox becomes an interface over Fleet. Every session is a Fleet
 Task; thurbox keeps no session state and no SQLite database, and reaches Fleet

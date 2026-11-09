@@ -16,15 +16,13 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Placeholder substituted with a session id in resume/fork/new-session groups.
-/// Exposed so `session_ops` can reconstruct a path-pinned agent's session path
-/// (omp) using the *same* token [`AgentDef::build_args`] substitutes.
+/// The token [`AgentDef::build_args`] substitutes.
 pub const ID_PLACEHOLDER: &str = "{id}";
 /// Placeholder substituted with the display name captured for this launch.
 pub const NAME_PLACEHOLDER: &str = "{name}";
 
 /// Placeholder expanded to the resolved home dir at spawn, on the launch host.
-/// Substituted in `session_ops` (it needs the filesystem); named here so
-/// [`AgentDef::placeholder_errors`] knows where it is allowed.
+/// Named here so [`AgentDef::placeholder_errors`] knows where it is allowed.
 pub const HOME_PLACEHOLDER: &str = "{home}";
 
 /// Placeholder substituted with each multi-repo member in

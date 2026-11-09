@@ -127,6 +127,13 @@ const MODULE_RULES: &[ModuleRules] = &[
     // hosts.toml in thurbox's config directory: the runtime's loader bound to
     // `config::file`. Its own node so that reading global host config is a
     // visible decision.
+    // What the interface remembers between runs (`interface.json`): data in,
+    // the editor mode's type from `session`.
+    ModuleRules {
+        name: "config::interface_state",
+        allowed: &["session", "config::file"],
+        allowed_path_only: &[],
+    },
     ModuleRules {
         name: "config::hosts",
         allowed: &["session", "config::file"],
@@ -179,16 +186,9 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &["session", "paths", "shell"],
         allowed_path_only: &[],
     },
-    ModuleRules {
-        name: "storage",
-        allowed: &["session", "paths"],
-        allowed_path_only: &[],
-    },
-    // thurbox's own OTLP export (ADR-37): reads the event log and the cursor
-    // from `storage`, the settings and route parsing from `session`. The
-    // session counts it is handed are assessed by its caller, `cli`. The
-    // interface's diagnostic-log bridge (ADR-38) is built by `coordinator`,
-    // which hands it the identity it exports under.
+    // The interface's diagnostic-log bridge (ADR-38), built by
+    // `coordinator`, which hands it the identity it exports under. The
+    // settings come from `session`.
     // The theme presets and the user's overrides, in `ratatui` colours: data,
     // but rendering data, which `session_is_pure_data` keeps out of the sink.
     ModuleRules {
@@ -198,74 +198,36 @@ const MODULE_RULES: &[ModuleRules] = &[
     },
     ModuleRules {
         name: "telemetry",
-        allowed: &["session", "storage"],
+        allowed: &["session"],
         allowed_path_only: &[],
-    },
-    // Headless session ops: no TUI state or PTY-attached backend. Reaches the
-    // agent config and the backend contract via fully-qualified paths only
-    // (never `use`), same pattern as the cli module. `shell` for the same
-    // reason `agent` has it: `host_cli` spells a `thurbox-cli` invocation for a
-    // host's `sh` or PowerShell, and the two quoting rules have exactly one
-    // home (`shell::posix_quote` / `powershell_quote`).
-    ModuleRules {
-        name: "session_ops",
-        allowed: &["session", "storage", "git", "paths", "workspace", "shell"],
-        allowed_path_only: &[
-            "agent::agent_config",
-            "agent::extension_config",
-            "agent::generic",
-            "agent::json_merge",
-            "agent::provider",
-            "agent::toml_merge",
-            "backend",
-            "config::hooks",
-            "config::hosts",
-            "config::settings",
-            "update::self_update",
-            "update::version_check",
-        ],
     },
     // Thin headless dispatch — must not depend on TUI or the live backend.
     ModuleRules {
         name: "cli",
-        allowed: &[
-            "session",
-            "storage",
-            "session_ops",
-            "paths",
-            "notifications",
-            "ui_control",
-            "telemetry",
-            "theme",
-        ],
+        allowed: &["session", "paths", "notifications", "ui_control", "theme"],
         // `kernel` for the two subcommands that drive the *interface's* own
         // files — `plugin` (`check` loads the real host: the failures worth
         // reporting are declaration-shaped — no `render`, an unplaced slot, a
         // clashing key — and a syntax check passes all of them) and `config`
         // (the interface directory and its `ui.json` overrides). Both are
-        // kernel-owned surfaces asked about from outside, not session logic
-        // duplicated here; the session engine the CLI shares with the loop is
-        // `session_ops`, and that is where the reap sweep it drives lives.
-        // Path-only, like the agent config, so the crossing stays visible at each call
+        // kernel-owned surfaces asked about from outside. Path-only, like the agent config, so the crossing stays visible at each call
         // site.
         allowed_path_only: &[
             "kernel",
             "agent::agent_config",
-            "agent::extension_config",
             "backend",
             "config::file",
-            "config::hooks",
             "config::hosts",
+            "config::interface_state",
             "config::settings",
             "config::themes",
             "update::self_update",
             "update::version_check",
         ],
     },
-    // The plugin kernel: hosts the Lua VM the whole UI is written in. Reads the
-    // session engine to build the snapshot plugins render from (`storage` for
-    // the rows, `session` for the types, `paths` for the DB and plugin
-    // directories).
+    // The plugin kernel: hosts the Lua VM the whole UI is written in. Builds
+    // the snapshot plugins render from Fleet's rows (`session` for the types,
+    // `paths` for the interface's files and plugin directories).
     //
     // `git` IS allowed, and the rule is about *where*: the worker-backed stores
     // (`diff`, `repos`, `packages`, `command`) shell out to it off-thread, which
@@ -273,25 +235,15 @@ const MODULE_RULES: &[ModuleRules] = &[
     // call from a render path — that is enforced by the loop's shape (a plugin
     // returns a tree; it cannot call Rust), not by this allowlist.
     //
-    // `shell` for the reason `session_ops` has it: `runs` spells a `cd <dir> &&
-    // <program>` script for a host, and POSIX quoting has exactly one home
-    // (`shell::posix_quote`).
+    // `shell`: `runs` spells a `cd <dir> && <program>` script for a host, and
+    // POSIX quoting has exactly one home (`shell::posix_quote`).
     ModuleRules {
         name: "kernel",
-        allowed: &[
-            "session",
-            "storage",
-            "paths",
-            "session_ops",
-            "git",
-            "notifications",
-            "shell",
-            "theme",
-        ],
+        allowed: &["session", "paths", "git", "notifications", "shell", "theme"],
         // Live agent terminals: `kernel::terminal` adopts a session's real pane
         // through the backend contract and paints its vt100 screen. All are
         // reachable by fully-qualified path only (never `use`), the same rule
-        // `session_ops` and `cli` follow, so every crossing into the
+        // `cli` follows, so every crossing into the
         // side-effect layer is visible at its call site.
         allowed_path_only: &[
             "agent::agent_config",
@@ -338,35 +290,32 @@ const MODULE_RULES: &[ModuleRules] = &[
         allowed: &[
             "clipboard",
             "kernel",
+            "notifications",
             "paths",
             "session",
-            "session_ops",
             "shell",
-            "storage",
             "telemetry",
             "ui_control",
             "agent::input",
             "backend",
+            "config::hosts",
+            "config::interface_state",
             "config::settings",
         ],
         allowed_path_only: &[],
     },
     // Leaf side-effect module: OS desktop notifications. Knows about
-    // `session` (for `SessionId`), `paths` (for the DB path the click callback
-    // writes to), `shell` (the shared quoting rules — it grew a third copy of
-    // the PowerShell one before this was allowed) and `storage`, through which
-    // the click handler records its focus request. That last one used to be a
-    // raw `rusqlite` statement here instead, which was a carve-out this
-    // allowlist could describe but not enforce: the module that owns a table's
-    // SQL is `storage`, and now this goes through it like every other write.
+    // `session` (for `SessionId`), `paths` (for `PATH` lookups) and `shell`
+    // (the shared quoting rules — it grew a third copy of the PowerShell one
+    // before this was allowed).
     ModuleRules {
         name: "notifications",
         allowed: &["session", "paths", "shell"],
-        allowed_path_only: &["storage"],
+        allowed_path_only: &[],
     },
     // Leaf side-effect module: clipboard writes (native + OSC 52). Knows
     // `session` only for the `ClipboardProvider` setting; writes to the tty
-    // and never reaches into agent / ui / app / storage.
+    // and never reaches into agent / ui / app.
     ModuleRules {
         name: "clipboard",
         allowed: &["paths", "session"],
@@ -849,85 +798,6 @@ fn stripping_keeps_every_line() {
     }
 }
 
-/// `message send`/`reply` deliver a body through the recipient agent's own
-/// inbox and never by typing into its pane. The keystroke nudge this replaced
-/// had to guess from screen contents whether typing was safe, and could not;
-/// so the rule is that the multiplexer is unreachable from the message path at
-/// all, rather than that some gate around it holds.
-///
-/// Starts at the two files of the path — `cli/messages.rs` and
-/// `session_ops/delivery.rs`, which `session send` shares for the text it
-/// leaves in the mailbox (#1468) — and follows every resolved reference into a
-/// sibling `cli` file, so a helper that later grows a pane write is caught too.
-/// `session_ops::delivery` is the one part of `session_ops` the path may name,
-/// save the delegation a session on a sharing host takes (ADR-24, #1643): its
-/// `Executor` and `host_cli`, which run `thurbox-cli message send` on the host
-/// — this same path, under this same rule in the host's binary. They are not
-/// followed: what they reach is the transport to the host, not its panes.
-/// A reference is judged by the node it resolves to, so a multiplexer item
-/// re-exported under another name still counts. `cli/mod.rs` is not followed:
-/// the path reaches it only for `CommandError`, and it is the dispatcher that
-/// names every subcommand.
-#[test]
-fn message_delivery_never_reaches_the_multiplexer() {
-    const FORBIDDEN: &[&str] = &["agent", "backend", "session_ops", "kernel", "coordinator"];
-    const DELEGATION: &[&str] = &["Executor", "host_cli"];
-    let tree = src_tree();
-    let references = tree.references(&node_names(MODULE_RULES));
-    let root = src_root();
-    let cli = root.join("cli");
-    let delivery = root.join("session_ops").join("delivery.rs");
-    let mut queue = vec![cli.join("messages.rs"), delivery.clone()];
-    let mut seen: Vec<PathBuf> = Vec::new();
-    let mut report = String::new();
-    while let Some(file) = queue.pop() {
-        if seen.contains(&file) {
-            continue;
-        }
-        seen.push(file.clone());
-        let shown = file
-            .strip_prefix(root.parent().unwrap_or(&root))
-            .unwrap_or(&file)
-            .display()
-            .to_string();
-        for r in references.iter().filter(|r| r.file == file) {
-            if let [first, next, ..] = r.path.as_slice() {
-                if first == "session_ops" && next == "delivery" {
-                    queue.push(delivery.clone());
-                    continue;
-                }
-                if first == "session_ops" && file == delivery && DELEGATION.contains(&next.as_str())
-                {
-                    continue;
-                }
-                if first == "cli" && cli.join(format!("{next}.rs")).is_file() {
-                    queue.push(cli.join(format!("{next}.rs")));
-                }
-            }
-            let first = r.path.first().map(String::as_str).unwrap_or_default();
-            if FORBIDDEN.contains(&first) {
-                writeln!(report, "  {shown}:{}: {}", r.line, r.path.join("::")).unwrap();
-            }
-        }
-        let content = fs::read_to_string(&file)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
-        let stripped = strip_comments_and_strings(&content);
-        // Strings and comments are gone, so any hit is an identifier.
-        for (at, _) in stripped.match_indices("tmux") {
-            let line = stripped[..at].matches('\n').count() + 1;
-            writeln!(report, "  {shown}:{line}: names tmux").unwrap();
-        }
-    }
-    assert!(
-        seen.len() > 2,
-        "the walk should reach the helpers the message path uses"
-    );
-    assert!(
-        report.is_empty(),
-        "the message path reaches the multiplexer (visited {seen:?}):\n{report}"
-    );
-}
-
 /// Every module under `src/` must be governed: either a MODULE_RULES entry
 /// or an explicit EXEMPT listing, and every module under a
 /// [`SUBMODULE_GOVERNED`] node a rule of its own. Adding a module without
@@ -1308,12 +1178,6 @@ const IN_PLACE_ALLOWED: &[InPlaceWrite] = &[
         why: "opens /dev/tty to send an OSC 52 sequence, not a file",
     },
     InPlaceWrite {
-        file: "session_ops/automations/tick_log.rs",
-        call: "OpenOptions::new",
-        sites: 1,
-        why: "appends a line to the heartbeat log",
-    },
-    InPlaceWrite {
         file: "ui_control.rs",
         call: "OpenOptions::new",
         sites: 2,
@@ -1662,12 +1526,7 @@ fn collect_files_with_extension(dir: &Path, ext: &str) -> Vec<PathBuf> {
 const KERNEL_THREADS: &[(&str, &[&str])] = &[
     (
         "kernel/snapshot",
-        &[
-            "kernel/snapshot/db.rs",
-            "kernel/snapshot/fleet.rs",
-            "kernel/snapshot/git.rs",
-            "kernel/snapshot/probe.rs",
-        ],
+        &["kernel/snapshot/fleet.rs", "kernel/snapshot/git.rs"],
     ),
     (
         "kernel/terminal",
@@ -1683,17 +1542,9 @@ const KERNEL_THREADS: &[(&str, &[&str])] = &[
 
 /// What one worker alone may reach, resolved through imports and aliases: the
 /// directory, the resolved path the reach starts with, and the one file allowed
-/// to make it. The database is opened and read only by its worker, so a lock
-/// held elsewhere delays a write and never a frame; naming the type to hand a
-/// connection over is not a reach.
-const KERNEL_REACHES: &[(&str, &str, &str)] = &[
-    (
-        "kernel/snapshot",
-        "storage::Database::",
-        "kernel/snapshot/db.rs",
-    ),
-    ("kernel/snapshot", "git::", "kernel/snapshot/git.rs"),
-];
+/// to make it, so a slow `git` delays a stat and never a frame.
+const KERNEL_REACHES: &[(&str, &str, &str)] =
+    &[("kernel/snapshot", "git::", "kernel/snapshot/git.rs")];
 
 /// `file` relative to `root`, with `/` on every platform.
 fn relative(root: &Path, file: &Path) -> String {
@@ -1773,15 +1624,14 @@ fn each_kernel_worker_lives_in_a_file_of_its_own() {
 /// The scans behind [`each_kernel_worker_lives_in_a_file_of_its_own`] find a
 /// worker's reach outside its file — through a `Builder`, an alias or a renamed
 /// import too, and the glob import a reach could hide behind — and none of its lookalikes: a comment, a string, test code,
-/// the type named to pass a connection on, or the worker's own file.
+/// or the worker's own file.
 #[test]
 fn the_kernel_worker_scan_sees_only_misplaced_production_reaches() {
     assert_eq!(
         misplaced_kernel_work(&fixture("kernel_workers")),
         [
-            "kernel/snapshot/mod.rs:14 thread::",
-            "kernel/snapshot/mod.rs:15 git::stats",
-            "kernel/snapshot/mod.rs:16 storage::Database::open",
+            "kernel/snapshot/mod.rs:10 thread::",
+            "kernel/snapshot/mod.rs:11 git::stats",
             "kernel/snapshot/probe.rs:1 glob import",
             "kernel/terminal/mod.rs:4 thread::",
             "kernel/terminal/paint.rs:2 thread::",

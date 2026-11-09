@@ -24,10 +24,8 @@ mod fleet;
 
 pub use bus::{CommandBus, InFlight, Phase};
 
-/// What runs an accepted command, on a command worker: thurbox's own engine
-/// ([`execute::Engine`], `session_ops` over the database) or Fleet
-/// ([`fleet::Fleet`], its command line). The bus, the queues and the
-/// in-flight record are the same either way (ADR-41).
+/// What runs an accepted command, on a command worker: Fleet
+/// ([`fleet::Fleet`], its command line, ADR-41), the one implementation.
 trait Executor: Send + Sync {
     fn execute(
         &self,
@@ -360,11 +358,28 @@ pub enum Command {
 }
 
 /// The fields an `automation` create or edit carries, each as the plugin
-/// passed it. The type is the session engine's own draft, so the pane and
-/// `thurbox-cli automation` validate and write through one implementation
-/// (issue #1468); a mistake reaches the pane as `command.failed` with a
-/// sentence rather than as a Lua error.
-pub use crate::session_ops::automations::Draft as AutomationDraft;
+/// passed it. No engine runs automations (a Fleet schedule kind is still to
+/// design), so the command is parsed and then refused by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutomationDraft {
+    pub owner_session: Option<String>,
+    pub name: Option<String>,
+    pub trigger: Option<String>,
+    pub time: Option<String>,
+    pub weekday: Option<i64>,
+    pub timezone: Option<String>,
+    pub prompt: Option<String>,
+    pub enabled: Option<bool>,
+    pub session: Option<String>,
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub base: Option<String>,
+    pub agent: Option<String>,
+    pub command: Option<String>,
+    pub timeout_secs: Option<u64>,
+    pub cwd: Option<String>,
+    pub env: Option<Vec<(String, String)>>,
+}
 
 /// A further repository a new session spans.
 ///
@@ -1261,10 +1276,7 @@ mod tests {
         assert_eq!(worktree_path, None);
     }
 
-    use super::execute::sync;
     use super::*;
-    use crate::session::SessionId;
-    use crate::storage::Database;
 
     #[test]
     fn kinds_parse_from_what_a_plugin_writes() {
@@ -2349,12 +2361,9 @@ mod tests {
     #[test]
     fn dispatch_returns_immediately_and_reports_the_command_in_flight() {
         // The property that matters: accepting a command does not wait for it.
-        let bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         let started = std::time::Instant::now();
-        // A bogus id fails fast in the worker, which is fine — what is asserted
+        // No fleet to run fails fast in the worker, which is fine — what is asserted
         // here is that *dispatch* did not block on any of it.
         bus.dispatch(Command::Delete {
             session: "not-a-uuid".into(),
@@ -2370,10 +2379,7 @@ mod tests {
 
     #[test]
     fn a_failure_surfaces_through_the_inflight_list_not_the_call() {
-        let mut bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let mut bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         bus.dispatch(Command::Delete {
             session: "not-a-uuid".into(),
             force: false,
@@ -2390,7 +2396,7 @@ mod tests {
                     .find(|entry| entry.phase == Phase::Failed)
                     .expect("failed entry");
                 assert!(
-                    failed.error.as_deref().unwrap_or("").contains("session id"),
+                    failed.error.as_deref().unwrap_or("").contains("fleet"),
                     "{:?}",
                     failed.error
                 );
@@ -2406,10 +2412,7 @@ mod tests {
         // The progress line is derived from this, and it outranks the message
         // band. A failure lingers longer than a message is retained, so counting
         // it as progress hid the error for exactly as long as the error existed.
-        let mut bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let mut bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         let id = bus.dispatch(Command::Delete {
             session: "not-a-uuid".into(),
             force: false,
@@ -2429,10 +2432,7 @@ mod tests {
         // The failure is FIRST in the list, so a `first()` would stop there and
         // report nothing in flight while a creation was genuinely running — the
         // band would go quiet mid-spawn.
-        let mut bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let mut bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         let failed = bus.dispatch(Command::Delete {
             session: "not-a-uuid".into(),
             force: false,
@@ -2482,10 +2482,7 @@ mod tests {
     fn work_in_flight_is_reported_as_running() {
         // The other half of the contract: an ordinary in-flight command must
         // still drive the progress line.
-        let bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         assert!(bus.first_running().is_none(), "nothing dispatched yet");
         let id = bus.dispatch(Command::Restore {
             session: "s1".into(),
@@ -2502,10 +2499,7 @@ mod tests {
         // runs. Recorded like a command someone pressed, it reserves the message
         // band and gives it back on that cadence — the whole frame reflowing
         // twice every five seconds, captioned "reap".
-        let bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         bus.dispatch(Command::Reap);
         assert!(
             bus.inflight().is_empty(),
@@ -2518,10 +2512,7 @@ mod tests {
 
     #[test]
     fn a_session_with_work_in_flight_reads_as_busy() {
-        let bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         assert!(!bus.is_busy("s1"));
         bus.dispatch(Command::Restore {
             session: "s1".into(),
@@ -2540,40 +2531,6 @@ mod tests {
     }
 
     #[test]
-    fn syncing_a_session_on_an_unknown_host_refuses_rather_than_syncing_locally() {
-        // The paths in a remote session's worktrees do not exist here. Running
-        // the local `git` against them either fails or — on a path collision —
-        // rebases something else entirely, so an unreachable host is a refusal.
-        let db = Database::open_in_memory().expect("db");
-        let session = crate::session::SharedSession {
-            id: SessionId::default(),
-            name: "demo".into(),
-            agent: "claude".into(),
-            backend_id: "%1".into(),
-            backend_type: "ssh:host-that-is-not-configured".into(),
-            agent_session_id: Some("sid".into()),
-            cwd: Some(std::path::PathBuf::from("/srv/worktree")),
-            additional_dirs: Vec::new(),
-            worktrees: vec![crate::session::SharedWorktree {
-                repo_path: std::path::PathBuf::from("/srv/repo"),
-                worktree_path: std::path::PathBuf::from("/srv/worktree"),
-                branch: "feat/x".into(),
-                created_by_thurbox: true,
-            }],
-            shell_backend_id: None,
-            parent_session_id: None,
-            display_order: None,
-            tombstone: false,
-            tombstone_at: None,
-            key: None,
-        };
-        db.upsert_session(&session).expect("upsert");
-
-        let error = sync(&db, session.id).unwrap_err();
-        assert!(error.contains("hosts.toml"), "{error}");
-    }
-
-    #[test]
     fn a_command_that_succeeds_is_gone_from_the_list_by_the_time_poll_returns() {
         // The property that made "watch the in-flight list for completions"
         // wrong, and that cost two attempts at fixing a frozen restart: a
@@ -2582,10 +2539,7 @@ mod tests {
         //
         // Anything that needs to know a command finished must therefore have
         // recorded it when it was DISPATCHED.
-        let mut bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let mut bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         let id = bus.dispatch(Command::Focus {
             plugin: "agent".into(),
             toggle: false,
@@ -2607,10 +2561,7 @@ mod tests {
 
     #[test]
     fn a_command_that_fails_lingers_so_a_pane_can_draw_it() {
-        let mut bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let mut bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         let id = bus.dispatch(Command::Focus {
             plugin: "agent".into(),
             toggle: false,
@@ -2630,10 +2581,7 @@ mod tests {
     /// interface announced "restarted" for a session a driver had just deleted.
     #[test]
     fn a_command_that_did_nothing_says_so_once() {
-        let mut bus = CommandBus::new(
-            std::sync::Arc::new(crate::backend::registry::inert()),
-            &crate::session::settings::Settings::default(),
-        );
+        let mut bus = CommandBus::fleet("thurbox-test-no-fleet".into());
         let (quiet, done) = (
             bus.dispatch(Command::Focus {
                 plugin: "agent".into(),

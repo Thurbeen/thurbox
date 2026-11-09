@@ -29,7 +29,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crate::session::{HostDef, HostRegistry};
-use crate::storage::Database;
 
 /// A repository the flow can offer, flattened for rendering.
 ///
@@ -290,7 +289,7 @@ enum Done {
         worktrees: Worktrees,
     },
     /// A remote folder was scanned on its host. `rewrote` says whether what it
-    /// found differed from what was remembered, and so whether the database
+    /// found differed from what was remembered, and so whether the file
     /// underneath the rows has just changed.
     Rescan {
         key: PathKey,
@@ -432,7 +431,7 @@ impl RepoStore {
     /// Nothing to do for the local machine: [`scan_parents`] scans a local
     /// folder on every bookmark read, because a `readdir` costs nothing. A
     /// remote folder costs a connection, so it is asked on
-    /// [`REMOTE_RESCAN_TTL`] and its answer is written back to the database —
+    /// [`REMOTE_RESCAN_TTL`] and its answer is written back to the file —
     /// which is both what survives a restart and what a folder keeps showing
     /// while its host is unreachable.
     fn rescan_folders(&mut self, host: &str) {
@@ -666,7 +665,7 @@ impl RepoStore {
         }
     }
 
-    /// Seed rows directly, so a test can render a flow without a database.
+    /// Seed rows directly, so a test can render a flow without the file.
     #[doc(hidden)]
     pub fn set_bookmarks_for_test(&mut self, host: &str, rows: Vec<BookmarkRow>) {
         self.bookmarks.insert(
@@ -706,8 +705,7 @@ impl Default for RepoStore {
     }
 }
 
-/// One persisted bookmark row, as the database hands it over.
-type Bookmark = crate::storage::repo_bookmarks::RepoBookmark;
+use super::bookmarks::Bookmark;
 
 /// Read a host's bookmarks and flatten them into rows. Called on a worker.
 ///
@@ -719,25 +717,9 @@ type Bookmark = crate::storage::repo_bookmarks::RepoBookmark;
 /// rows are what the folder holds now rather than what it held at import, and
 /// either way they arrive as the same row shape.
 fn read_bookmarks(host: &str, remote: Option<&HostDef>) -> Vec<BookmarkRow> {
-    let Some(path) = crate::paths::database_file() else {
-        return Vec::new();
-    };
-    // `open_existing`: the TUI ran the schema pass at startup, and this worker
-    // reopens every BOOKMARKS_TTL while the flow is open — replaying ~35
-    // CREATE statements plus two writes per reopen was a standing cost of
-    // having the creation flow on screen.
-    let Ok(db) = Database::open_existing(&path) else {
-        return Vec::new();
-    };
-    let bookmarks = match db.list_repo_bookmarks(host) {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!("could not read repo bookmarks: {e}");
-            return Vec::new();
-        }
-    };
+    let bookmarks = super::bookmarks::list(host);
     // Local only. A remote folder is scanned on its own interval by
-    // `rescan_folders`, which writes what it finds back to the database — so by
+    // `rescan_folders`, which writes what it finds back to the file — so by
     // the time it reaches here it is already a persisted member.
     let scanned = match remote {
         None => scan_parents(&bookmarks),
@@ -792,7 +774,7 @@ fn offer_interface_dir(rows: &mut Vec<BookmarkRow>) {
 /// Turn persisted bookmarks into the flat row list a flow renders.
 ///
 /// Separated from the read so the shape — headers, their members, and what is
-/// suppressed as already covered — is testable without a database.
+/// suppressed as already covered — is testable without the file.
 fn flatten(bookmarks: &[Bookmark], scanned: &HashMap<PathBuf, Vec<PathBuf>>) -> Vec<BookmarkRow> {
     let persisted = group_persisted(bookmarks);
 
@@ -826,9 +808,7 @@ fn push_standalone(
     if !emitted.insert(bookmark.repo_path.clone()) {
         return;
     }
-    let mut it = row(&bookmark.repo_path, None, false, bookmark.is_git);
-    it.label = bookmark.label.clone();
-    rows.push(it);
+    rows.push(row(&bookmark.repo_path, None, false, bookmark.is_git));
 }
 
 /// A folder header followed by its members.
@@ -842,9 +822,7 @@ fn push_folder(
     if !emitted.insert(bookmark.repo_path.clone()) {
         return;
     }
-    let mut header = row(&bookmark.repo_path, None, true, None);
-    header.label = bookmark.label.clone();
-    rows.push(header);
+    rows.push(row(&bookmark.repo_path, None, true, None));
     let parent = display(&bookmark.repo_path);
     // A scan is the truth about a folder, and what was written at import time is
     // only the last scan that succeeded: chaining the two would keep offering a
@@ -913,7 +891,7 @@ fn members_of(rows: &[BookmarkRow], folder: &str) -> Vec<PathBuf> {
 }
 
 /// Scan one remote folder on its host and, when what it holds has changed, write
-/// the members back. Called on a worker; true when the database was rewritten.
+/// the members back. Called on a worker; true when the file was rewritten.
 ///
 /// A failed scan changes **nothing**. An unreachable host, a folder the user has
 /// not mounted yet, a connection that timed out — each must leave the folder
@@ -933,13 +911,7 @@ fn rescan_folder(host: &HostDef, host_key: &str, folder: &str, known: Vec<PathBu
     if children == known {
         return false;
     }
-    let Some(path) = crate::paths::database_file() else {
-        return false;
-    };
-    let Ok(db) = Database::open_existing(&path) else {
-        return false;
-    };
-    if let Err(e) = db.replace_parent_children(host_key, Path::new(folder), &children) {
+    if let Err(e) = super::bookmarks::replace_members(host_key, Path::new(folder), &children) {
         tracing::warn!("could not record the rescan of {folder}: {e}");
         return false;
     }
@@ -1267,10 +1239,9 @@ mod tests {
     /// A persisted bookmark, with the fields these tests care about.
     fn saved(path: &str, is_parent: bool, parent: Option<&str>) -> Bookmark {
         Bookmark {
+            host: String::new(),
             repo_path: PathBuf::from(path),
-            label: None,
             last_used_at: 0,
-            use_count: 1,
             is_parent,
             is_git: Some(true),
             parent_path: parent.map(PathBuf::from),
@@ -1391,7 +1362,7 @@ mod tests {
     #[test]
     fn a_rescan_compares_against_the_members_already_on_offer() {
         // Sorted, because the scan is: the comparison is what stops an unchanged
-        // folder rewriting the database and repainting the flow every interval.
+        // folder rewriting the file and repainting the flow every interval.
         let rows = flatten(
             &[
                 saved("/src", true, None),
@@ -1606,29 +1577,6 @@ mod tests {
         // first here is placement, not a bookmark that was just used.
         assert!(rows[0].offered, "an offered row says so");
         std::env::remove_var("THURBOX_UI_DIR");
-    }
-
-    #[test]
-    fn a_bookmark_keeps_the_label_it_was_saved_with() {
-        // The column has been in `repo_bookmarks` and read into `Bookmark` all
-        // along, and nothing ever surfaced it — so a label was write-only in a
-        // table nothing wrote to. It travels with the row now, by the same field
-        // the offered interface row uses.
-        let mut saved = saved("/src/thurbox", false, None);
-        saved.label = Some("the orchestrator".into());
-        let rows = flatten(&[saved], &no_scan());
-        assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].label.as_deref(), Some("the orchestrator"));
-
-        // Unlabelled stays unlabelled: a path the user chose is how they think of
-        // it, and inventing a name for it would be worse than none.
-        let plain = flatten(&[saved_plain("/src/other")], &no_scan());
-        assert_eq!(plain[0].label, None);
-    }
-
-    /// A bookmark with no label, for the contrast above.
-    fn saved_plain(path: &str) -> Bookmark {
-        saved(path, false, None)
     }
 
     #[test]

@@ -48,15 +48,6 @@ pub(super) fn remote_home_cache() -> &'static Mutex<HashMap<String, String>> {
 /// a literal `$HOME/…`. Such a host is routed to
 /// [`remote_home_windows`] (`%USERPROFILE%`) instead — the same cache, since a
 /// host is one platform or the other and never both.
-/// Answer [`remote_home`] for `host` from the cache, without asking it.
-#[cfg(test)]
-pub(crate) fn seed_remote_home(host: &HostDef, home: &str) {
-    remote_home_cache()
-        .lock()
-        .unwrap()
-        .insert(host.backend_name(), home.to_string());
-}
-
 pub(crate) fn remote_home(host: &HostDef) -> Result<String> {
     if host.is_windows() {
         return remote_home_windows(host);
@@ -486,55 +477,10 @@ pub fn copy_bytes_to_remote(host: &HostDef, bytes: &[u8], remote_path: &str) -> 
     stream_into_child(child, bytes, "file-copy").map(|_| ())
 }
 
-/// [`copy_bytes_to_remote`] for a **native-Windows** SSH host: `cat > file`
-/// doesn't exist there, so the payload travels base64-encoded inside a
-/// PowerShell one-liner (`[IO.File]::WriteAllBytes` + `New-Item -Force` for
-/// the parent dir). Bounded by the Windows command-line limit — thurbox's hook
-/// payloads are 1–4 KB, well within it; anything larger errors instead of
-/// truncating. `remote_path` must be `/`-separated (PowerShell accepts it).
-pub(crate) fn copy_bytes_to_remote_windows(
-    host: &HostDef,
-    bytes: &[u8],
-    remote_path: &str,
-) -> Result<()> {
-    use base64::Engine as _;
-
-    let parent = Path::new(remote_path)
-        .parent()
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
-    anyhow::ensure!(
-        !remote_path.contains('\'') && !parent.contains('\''),
-        "remote path {remote_path} contains a quote"
-    );
-    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-    let script = format!(
-        "New-Item -ItemType Directory -Force -Path '{parent}' | Out-Null; \
-         [IO.File]::WriteAllBytes('{remote_path}', [Convert]::FromBase64String('{b64}'))"
-    );
-    anyhow::ensure!(
-        script.len() <= WINDOWS_COMMAND_BUDGET,
-        "payload too large for a Windows command line ({} bytes)",
-        bytes.len()
-    );
-    let mut cmd = host_launcher(host);
-    // Double-quoted so the host's default shell (cmd or PowerShell) hands the
-    // script to `powershell -Command` as one argument; the payload/path are
-    // single-quoted inside, and base64 text never contains quotes.
-    cmd.args(["powershell", "-NoProfile", "-Command"])
-        .arg(format!("\"{script}\""));
-    let output = cmd
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to spawn windows remote file-copy")?;
-    remote_output_or_stderr(output, "windows file-copy").map(|_| ())
-}
-
 /// [`copy_bytes_to_remote`] for a **native-Windows** host and a payload too
 /// large for a command line — a binary. The bytes travel on **stdin** as
 /// base64 lines, which the encoded script reads through PowerShell's own
-/// `$input`, decodes and writes. Unlike `copy_bytes_to_remote_windows` there is
-/// no size budget, and unlike `cat >` there is no shell to quote for — the
+/// `$input`, decodes and writes. Unlike `cat >` there is no shell to quote for — the
 /// path is single-quoted inside the script.
 ///
 /// Not raw bytes through `[Console]::OpenStandardInput()`: Windows PowerShell
@@ -774,81 +720,3 @@ pub fn expand_remote_tilde(host: &HostDef, path: &str) -> Result<String> {
         None => Ok(path.to_string()),
     }
 }
-
-/// What one combined probe learned about a guard directory and a file on a
-/// POSIX host — the parsed answer of [`probe_remote_dir_and_file`].
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum DirFileProbe {
-    /// The guard directory is absent.
-    NoDir,
-    /// Directory present; the file does not exist.
-    NoFile,
-    /// Directory present; the path exists but is not a regular file.
-    NotFile,
-    /// Directory present; the file exists, with its exact content.
-    File(String),
-}
-
-/// Probe a guard `dir` and read `file` on `host` in **one** round trip (a
-/// leading `~` on either expands against the remote home). Replaces the
-/// dir-probe → file-read pair remote hook provisioning used to make, which
-/// cost two serial ssh connections per `(host, agent)` at spawn time.
-///
-/// A non-zero exit is an `Err` carrying the remote stderr — which covers both
-/// the transport failing and `cat` failing on an existing file (permission
-/// denied); every *answer* travels on stdout as a sentinel line.
-pub(crate) fn probe_remote_dir_and_file(
-    host: &HostDef,
-    dir: &str,
-    file: &str,
-) -> Result<DirFileProbe> {
-    let dir = expand_remote_tilde(host, dir)?;
-    let file = expand_remote_tilde(host, file)?;
-    let output = host_shell_c(host, &dir_file_probe_script(&dir, &file))
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to run remote dir/file probe")?;
-    let stdout = remote_output_or_stderr(output, "dir/file probe")?;
-    parse_dir_file_probe(&String::from_utf8_lossy(&stdout))
-}
-
-/// The [`probe_remote_dir_and_file`] shell script (`dir`/`file` already
-/// tilde-expanded, quoted here). Line protocol in the style of
-/// `list_dir_entries_script`'s `!missing`: the first line is one of `@nodir` /
-/// `@notfile` / `@nofile` / `@file`, and everything **after** an `@file` line
-/// is the file's content — which is what makes the sentinels collision-proof:
-/// content that happens to start with `@nodir` sits after the first line and
-/// is never looked at as a sentinel. Pure so the quoting is testable without a
-/// host.
-pub(super) fn dir_file_probe_script(dir: &str, file: &str) -> String {
-    format!(
-        "if ! test -d {dir}; then echo '@nodir'; exit 0; fi; \
-         if test -f {file}; then echo '@file'; cat {file}; \
-         elif test -e {file}; then echo '@notfile'; \
-         else echo '@nofile'; fi",
-        dir = posix_quote(dir),
-        file = posix_quote(file),
-    )
-}
-
-/// Parse [`dir_file_probe_script`]'s stdout: the sentinel first line, then —
-/// for `@file` — the content verbatim (bytes after the sentinel's newline, so
-/// a missing trailing newline survives). Pure, for testing without a host.
-pub(super) fn parse_dir_file_probe(stdout: &str) -> Result<DirFileProbe> {
-    let (sentinel, content) = match stdout.split_once('\n') {
-        Some((first, rest)) => (first, rest),
-        None => (stdout, ""),
-    };
-    match sentinel {
-        "@nodir" => Ok(DirFileProbe::NoDir),
-        "@nofile" => Ok(DirFileProbe::NoFile),
-        "@notfile" => Ok(DirFileProbe::NotFile),
-        "@file" => Ok(DirFileProbe::File(content.to_string())),
-        other => anyhow::bail!("unexpected dir/file probe answer: {other:?}"),
-    }
-}
-
-/// The longest command line safely below Windows `cmd.exe`'s ~8191-char limit
-/// (the sshd default shell may be `cmd`), leaving headroom for the PowerShell
-/// wrapper around the base64 payload.
-pub(super) const WINDOWS_COMMAND_BUDGET: usize = 7_500;

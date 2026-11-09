@@ -252,7 +252,14 @@ impl DiffStore {
         // diffs something else entirely — the same reasoning that made `sync`
         // host-aware. Resolved here rather than on the worker so an unreachable
         // backend is reported as a failed diff instead of a silent local read.
-        let host = crate::session_ops::resolve_host(backend).flatten();
+        let host = crate::session::Route::is_remote_key(backend)
+            .then(|| {
+                crate::config::hosts::cached_registry()
+                    .0
+                    .resolve(backend)
+                    .cloned()
+            })
+            .flatten();
         let unreachable = host.is_none() && crate::session::Route::is_remote_key(backend);
         let fingerprinted = over_ssh(backend);
 

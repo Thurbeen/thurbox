@@ -2,9 +2,8 @@
 //!
 //! `main` itself stays a one-liner in `main.rs` beside the state it constructs;
 //! the order here is load-bearing and each step's comment says why it sits
-//! where it does — the panic hook before anything can panic, extensions before
-//! the interface takes the terminal, the consent gate before the interface is
-//! even built.
+//! where it does — the panic hook before anything can panic, the settings
+//! before anything is built with one.
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -28,7 +27,7 @@ use thurbox::kernel::terminal::Terminals;
 use thurbox::kernel::theme::Themes;
 use thurbox::kernel::watch::Watcher;
 
-use super::{enable_mouse_clicks, push_keyboard_enhancement, restore_terminal, snapshots_db};
+use super::{enable_mouse_clicks, push_keyboard_enhancement, restore_terminal};
 use crate::App;
 
 /// Days of `thurbox.log.<date>` kept by the rolling appender.
@@ -177,82 +176,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         thurbox::backend::wiring::configured(&startup_settings);
     let backends = std::sync::Arc::new(backends);
 
-    // Extensions, before the interface takes the terminal.
-    //
-    // Two things, both idempotent and both best-effort: re-create any
-    // session/automation an active extension declares but that has since been
-    // deleted, and auto-activate the built-in `hooks` extension. The second is
-    // load-bearing rather than a nicety — it is what patches `agents.toml` so an
-    // agent reports working/blocked/done at all, so without it a fresh profile
-    // shows every session as permanently idle. Run here for the same reason v1
-    // runs it here: tmux spawn output would otherwise land on the alternate
-    // screen. Opt out with `thurbox-cli extension deactivate hooks`.
     let mut startup_notices: Vec<String> = layout_note.into_iter().collect();
     startup_notices.extend(config_warnings);
-    let phase = Instant::now();
-    if let Some(db) = snapshots_db() {
-        db.prune_history(startup_settings.audit_retention_days);
-        startup_notices.extend(thurbox::session_ops::heal_active_extensions(
-            &db,
-            &backends,
-            startup_settings.features.auto_update,
-        ));
-        startup_notices.extend(thurbox::session_ops::ensure_builtin_extensions(
-            &db, &backends,
-        ));
-        // The one-time repair schema v47 marked as owed: rows a loopback WSL
-        // host recorded as remote. Here because it needs both the host
-        // registry and the database, and the migration that marked it has only
-        // the second; `thurbox-cli` runs it too, since the mark is written by
-        // whichever binary opens the database first.
-        startup_notices.extend(thurbox::session_ops::repair_wsl_loopback_rows(&db));
-        // After the repair, which relabels a loopback's rows local rather than
-        // leaving them on a host the registry drops. The worker mirror visits
-        // configured hosts only, so this is the interface's one chance at them.
-        for removed in thurbox::session_ops::mirror::forget_removed_hosts(&db) {
-            startup_notices.push(format!(
-                "forgot {} session(s) on {}, which hosts.toml no longer names \
-                 (nothing was stopped there)",
-                removed.unconfigured.len(),
-                removed.host
-            ));
-        }
-        for notice in &startup_notices {
-            tracing::info!("{notice}");
-        }
-    }
-    startup.extension_heal_ms = phase.elapsed().as_millis() as u64;
-
-    // The heartbeat, kept by this machine's backend, so a schedule keeps
-    // firing after this exits —
-    // and, while it runs, at the keeper's 60s cadence rather than not at all.
-    // Best-effort: a missing or old tmux just means no headless firing. Skipped
-    // when the feature is off, exactly as v1 skips it.
-    let phase = Instant::now();
-    // Where a peer sharing sessions with this machine looks for its CLI: a
-    // pointer to this build's own, so a dev checkout is found before a release
-    // install on PATH (ADR-24).
-    thurbox::session_ops::host_cli::advertise_running_cli();
-    if startup_settings.features.automations {
-        if let Err(e) = thurbox::session_ops::arm_heartbeat(&backends) {
-            tracing::warn!("could not arm the automation heartbeat: {e}");
-        }
-    }
-    startup.heartbeat_ms = phase.elapsed().as_millis() as u64;
-
-    // The gate. v2 replaces v1 under the same binary name, so auto-update moves
-    // people to a different interface without their asking -- and several surfaces
-    // they may use daily are gone. A profile with v1 history is asked once, before
-    // the interface takes the terminal so it shows even if the interface would fail
-    // to build. Declining cannot load v1 (it is not in this binary), so it turns
-    // auto-update off and says how to reinstall the 1.x line.
-    if let Some(db) = snapshots_db() {
-        if thurbox::kernel::consent::consent_gate(&db)?
-            == thurbox::kernel::consent::Decision::Declined
-        {
-            return Ok(());
-        }
-    }
 
     let (ui_dir, ui_notices) = resolve_ui_dir()?;
     startup_notices.extend(ui_notices);
@@ -270,26 +195,20 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Hoisted out of the struct literal below so each phase can be timed
     // separately; the construction order is unchanged.
     let phase = Instant::now();
-    // The engine (ADR-41): thurbox's own over its database, or Fleet's Tasks
-    // through its command line, with a `fleet up` kept running.
-    let fleet = startup_settings
-        .fleet
-        .enabled
-        .then(|| std::path::PathBuf::from(&startup_settings.fleet.program));
-    let snapshots = match &fleet {
-        Some(program) => SnapshotStore::open_with_source(
-            Box::new(thurbox::kernel::snapshot::fleet::FleetWatch::with_manager(
-                program.clone(),
-            )),
-            &backends,
-            &startup_settings,
-        ),
-        None => SnapshotStore::open(&backends, &startup_settings),
-    };
-    startup.db_open_ms = phase.elapsed().as_millis() as u64;
+    // The engine (ADR-41): Fleet's Tasks through its command line, with a
+    // `fleet up` kept running.
+    let fleet = std::path::PathBuf::from(&startup_settings.fleet.program);
+    let snapshots = SnapshotStore::with_source(
+        Box::new(thurbox::kernel::snapshot::fleet::FleetWatch::with_manager(
+            fleet.clone(),
+        )),
+        &backends,
+        &startup_settings,
+    );
+    startup.snapshot_open_ms = phase.elapsed().as_millis() as u64;
 
     let phase = Instant::now();
-    let themes = Themes::load(snapshots_db().as_ref());
+    let themes = Themes::load(thurbox::config::interface_state::load().theme.as_deref());
     startup.theme_activate_ms = phase.elapsed().as_millis() as u64;
 
     let control = match thurbox::ui_control::Server::start() {
@@ -319,17 +238,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         snapshots,
         terminals: {
             let mut terminals = terminals(std::sync::Arc::clone(&backends), &startup_settings);
-            if let Some(program) = &fleet {
-                terminals.attach_fleet_through(program.clone());
-            }
+            terminals.attach_fleet_through(fleet.clone());
             terminals
         },
-        commands: match fleet {
-            Some(program) => {
-                CommandBus::fleet(program, std::sync::Arc::clone(&backends), &startup_settings)
-            }
-            None => CommandBus::new(std::sync::Arc::clone(&backends), &startup_settings),
-        },
+        commands: CommandBus::fleet(fleet),
         diffs: DiffStore::new(),
         repos: thurbox::kernel::repos::RepoStore::new(),
         metrics: Metrics::new(),
@@ -337,7 +249,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         image_probe: thurbox::clipboard::ImageProbe::default(),
         paste_targets: Vec::new(),
         probed_presses: 0,
-        image_drops: Vec::new(),
         perf: Counters::default(),
         timings: thurbox::kernel::perf::Timings::default(),
         startup,
@@ -368,6 +279,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         slot_selection: std::collections::HashMap::new(),
         visible_slots: std::collections::HashSet::new(),
         pending_focus: None,
+        editor_request: None,
         click_targets: Vec::new(),
         last_area: Rect::new(0, 0, 0, 0),
         screen_size: crossterm::terminal::size().unwrap_or((80, 24)),
@@ -410,7 +322,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         diffs_shown: false,
         focused_surface: None,
         focused_typing: false,
-        last_selected_session: None,
         started: Instant::now(),
         frames: 0,
         last_trees: Vec::new(),
@@ -428,7 +339,6 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         pty_pointer: None,
         runs: thurbox::kernel::runs::RunStore::new(),
         inventory: Vec::new(),
-        respawned: std::collections::HashSet::new(),
         // Dated so the first iteration sweeps: a session soft-deleted while
         // no interface was running is already overdue, and used to wait for
         // one to watch it leave a snapshot it was never in.

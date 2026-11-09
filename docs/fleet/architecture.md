@@ -370,9 +370,9 @@ thurbox is a Fleet client and reads nothing of Fleet's store directly.
   starts one, and starts it again when it exits. A `fleet up` that exits with
   6 found the lease held, which is no error.
 
-`[fleet] enabled` in thurbox's `settings.toml` selects the Fleet engine at
-startup ([thurbox's configuration](../thurbox/config.md#fleet--the-session-engine)).
-Off, thurbox's own engine still runs the sessions over its database.
+Fleet is thurbox's only engine: `[fleet] program` in thurbox's
+`settings.toml` names the binary
+([thurbox's configuration](../thurbox/config.md#fleet--the-session-engine)).
 
 An interactive session is a Task with no brief: it spawns and waits for its
 user. Built: it stays Spawned with `Briefed=False/Interactive`, and its inbox

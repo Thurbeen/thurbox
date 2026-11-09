@@ -6,11 +6,11 @@
 //! ([`host`]). Everything a user sees — the session list included — is Lua.
 
 pub mod bands;
+pub mod bookmarks;
 pub mod bundled;
 pub mod clipboard;
 pub mod command;
 pub mod config;
-pub mod consent;
 pub mod convert;
 pub mod diff;
 pub mod events;

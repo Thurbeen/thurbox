@@ -316,12 +316,6 @@ struct App {
     /// spent only on the presses already made by then; the rest wait for a
     /// question of their own.
     probed_presses: usize,
-    /// Image drops being copied to a remote session's host, delivered by
-    /// [`Interface::poll_image_drops`] when the copy ends.
-    ///
-    /// A thread each, because the copy is an ssh round trip plus the file's
-    /// bytes and the interface must keep painting meanwhile.
-    image_drops: Vec<coordinator::input::PendingDrop>,
     notifier: Notifier,
     perf: Counters,
     /// Wall-clock stats, populated only while timing is active (ADR-P11).
@@ -419,6 +413,9 @@ struct App {
     /// for focus a frame before the slot exists, and judging that request against
     /// the frame that already painted refuses the focus its chord existed to give.
     pending_focus: Option<usize>,
+    /// The session a `Command::Editor` asked to open the editor over, until
+    /// the loop hands the editor its tty.
+    editor_request: Option<String>,
     /// Every identified node of the frame just painted, in paint order.
     ///
     /// Rebuilt each frame and scanned in reverse, so the innermost node under a
@@ -489,9 +486,6 @@ struct App {
     /// Whether the focused pane holds the caret in a field of its own, so a
     /// paste is typing for it rather than text for a terminal.
     focused_typing: bool,
-    /// The session the list had selected last frame, so moving off one can
-    /// acknowledge the finished turn it was showing.
-    last_selected_session: Option<String>,
     /// Index into the host's focusable plugins.
     focus: usize,
     /// Where focus was before the last deliberate move, so `Esc` can go back.
@@ -631,11 +625,6 @@ struct App {
     /// settings modal's Interface tab lists it too — one join per frame, read
     /// by both.
     inventory: Vec<thurbox::kernel::inventory::Row>,
-    /// Sessions with a relaunch in flight, so a respawn is dispatched once per
-    /// session rather than every frame its window is still missing. A failed
-    /// restart clears its entry, so a session still missing its agent is tried
-    /// again rather than stuck until thurbox restarts.
-    respawned: std::collections::HashSet<String>,
     /// When the loop last asked the database for soft-deleted sessions whose
     /// undo window has closed, so their agents are let go rather than left
     /// running forever. See [`REAP_INTERVAL`].

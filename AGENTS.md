@@ -140,7 +140,7 @@ that names it. Read the one your change touches:
 | `thurbox-release` | Release Process · Distribution Packages · Installation Script |
 | `thurbox-agents` | Agent Definitions · Multi-repo sessions |
 | `thurbox-remote-hosts` | Remote SSH & WSL Sessions |
-| `thurbox-cli` | thurbox-cli · lifecycle hooks · parent sessions · ordering · messages · Tasks |
+| `thurbox-cli` | thurbox-cli · its subcommands · where the session verbs went |
 | `thurbox-extensions` | Extensions · Extension manifests + self-heal |
 | `thurbox-session-status` | Session status (hooks-driven) · OS notifications |
 | `thurbox-kernel` | Architecture (plugin kernel) · Writing an interface plugin |
@@ -326,28 +326,23 @@ backend              session, paths, config::hosts     (the gateway to
                                                         runtime-mux, and what
                                                         thurbox injects)
 git                  session, paths, shell
-storage              session, paths
-telemetry            session, storage                  (ADR-37/38 OTLP export)
-session_ops          session, storage, git, paths,     [agent|config|update::<file>,
-                     workspace, shell                   backend]
-kernel               session, storage, paths,          [agent|config|update::<file>,
-                     session_ops, git, notifications,   backend]
-                     shell, theme
-cli                  session, storage, session_ops,    [agent|config|update::<file>,
-                     paths, notifications, ui_control,  backend, kernel]
-                     telemetry, theme
-notifications        session, paths, shell             [storage]
+telemetry            session                           (ADR-38 diagnostic logs)
+kernel               session, paths, git,              [agent|config|update::<file>,
+                     notifications, shell, theme        backend]
+cli                  session, paths, notifications,    [agent|config|update::<file>,
+                     ui_control, theme                  backend, kernel]
+notifications        session, paths, shell
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
 ui_control           paths
 shell                nothing — runtime-mux's launchers and quoting, re-exported
 theme                nothing — the presets, in ratatui colours
-coordinator          agent::input, config::settings,   (main's body: the loop,
-                     backend, clipboard, kernel,        the workers, the chrome)
-                     paths, session, session_ops,
-                     shell, storage, telemetry,
-                     ui_control
+coordinator          agent::input, config::{hosts,     (main's body: the loop,
+                     interface_state,settings},         the workers, the chrome)
+                     backend, clipboard, kernel,
+                     notifications, paths, session,
+                     shell, telemetry, ui_control
 ```
 
 The multiplexer runtime is its own crate, `crates/runtime-mux` (ADR-41), with
@@ -424,11 +419,11 @@ cargo crate — `scripts/install-dev-tools.sh` prints a reminder).
 - Terminal state parsed by `vt100::Parser`,
   rendered by `tui_term::PseudoTerminal`
 - Sessions persist across restarts (tmux keeps them alive)
-- Session state in SQLite:
-  `~/.local/share/thurbox/thurbox.db` (XDG_DATA_HOME respected);
+- Sessions are Fleet Tasks (ADR-41): thurbox keeps no database. Its own
+  state is plain files: `interface.json` (theme, editor) beside
+  `settings.toml`, `bookmarks.json` and `perf.json` in the data directory;
   agent definitions in `~/.config/thurbox/agents.toml`;
-  remote SSH hosts in `~/.config/thurbox/hosts.toml`;
-  session lifecycle hooks in `~/.config/thurbox/hooks.toml`
+  remote SSH hosts in `~/.config/thurbox/hosts.toml`
 - Requires tmux >= 3.2, psmux >= 3.3.8, or opt-in RMUX >= 0.10.0;
   version evidence and RMUX host limits are in `docs/thurbox/config.md`
 

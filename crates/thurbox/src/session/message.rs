@@ -10,8 +10,7 @@
 //! answers is the shape it was built for.
 //!
 //! This module is pure data (no local crate imports beyond `super`), matching
-//! the architecture rule for `session`. Persistence + delivery semantics live in
-//! [`storage::messages`](crate::storage::messages).
+//! the architecture rule for `session`.
 
 use super::SessionId;
 

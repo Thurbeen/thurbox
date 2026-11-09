@@ -83,20 +83,9 @@ use serde::{Deserialize, Serialize};
 /// [`AgentRegistry`].
 pub const DEFAULT_AGENT_NAME: &str = "claude";
 
-/// SQLite `metadata` key used to signal "focus this session" between
-/// processes. The `notifications` module writes it from the OS notification
-/// click handler; the running TUI reads + clears it on each tick via
-/// [`crate::storage::Database::take_pending_focus_session_id`]. Defined here
-/// in the pure-data layer so both sides reference one source of truth
-/// without crossing module boundaries.
-pub const PENDING_FOCUS_SESSION_ID_KEY: &str = "pending_focus_session_id";
-
-/// The states `session signal` accepts — the single source for the CLI's
-/// value parser, the interface's live drain of each backend's status channel
-/// (`Terminals::drain_hook_events`), and the headless status poll
-/// (`session_ops::remote_hooks::poll_hook_states`). One list, so a future state (e.g. `error`
-/// once exit-code derivation lands) can't be accepted by the CLI yet silently
-/// dropped by the remote channels.
+/// The states an agent's hooks report — the single source for the
+/// interface's live drain of each backend's status channel
+/// (`Terminals::drain_hook_events`).
 ///
 /// `background` is the one word here that is not a turn edge: the turn is at
 /// rest and sub-work it started is still running (issue #1510). Any agent may

@@ -5,9 +5,7 @@
 //! new session — optionally on a fresh git worktree — and prompts it (`Spawn`).
 //!
 //! This module is pure data + schedule math (no local crate imports), matching
-//! the architecture rule for `session`. Persistence lives in
-//! `storage::automations`; every verb — save, fire, the tick — lives in
-//! `session_ops::automations`.
+//! the architecture rule for `session`.
 
 use std::path::PathBuf;
 use std::str::FromStr;

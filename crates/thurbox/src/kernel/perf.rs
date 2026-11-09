@@ -282,6 +282,16 @@ impl Timings {
     }
 }
 
+/// Write `json` where `thurbox-cli perf` reads it, whole or not at all.
+pub fn publish_snapshot(json: &str) -> std::io::Result<()> {
+    let path = crate::paths::perf_snapshot_file()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no data directory"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    crate::paths::write_atomically(&path, json)
+}
+
 /// How long each startup phase took, and when the first frame landed.
 ///
 /// The phases are v2's own, not v1's: there is no `restore_ms` because v2 has
@@ -290,10 +300,8 @@ impl Timings {
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Startup {
     pub config_init_ms: u64,
-    pub db_open_ms: u64,
+    pub snapshot_open_ms: u64,
     pub theme_activate_ms: u64,
-    pub extension_heal_ms: u64,
-    pub heartbeat_ms: u64,
     pub ui_build_ms: u64,
     /// Process start to first painted frame; filled in by the loop.
     pub first_frame_ms: u64,
@@ -303,10 +311,8 @@ impl Startup {
     pub fn to_json(self) -> Value {
         json!({
             "config_init_ms": self.config_init_ms,
-            "db_open_ms": self.db_open_ms,
+            "snapshot_open_ms": self.snapshot_open_ms,
             "theme_activate_ms": self.theme_activate_ms,
-            "extension_heal_ms": self.extension_heal_ms,
-            "heartbeat_ms": self.heartbeat_ms,
             "ui_build_ms": self.ui_build_ms,
             "first_frame_ms": self.first_frame_ms,
         })

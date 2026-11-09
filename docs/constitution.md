@@ -165,6 +165,7 @@ config::file         → paths                (the one loader: seed, parse, save
 config::hooks        → session, config::file
 config::hosts        → session, config::file  (runtime-mux's loader, bound
                                                 to thurbox's config directory)
+config::interface_state → session, config::file
 config::settings     → session, config::file
 config::themes       → theme, config::file
 update               (declares the modules below — no references)
@@ -174,24 +175,16 @@ update::version_check → session, paths, agent::extension_config
 backend              → session, paths, config::hosts  (the gateway to
                        runtime-mux, and what thurbox injects into it)
 git                  → session, paths, shell
-storage              → session, paths
-telemetry            → session, storage           (ADR-37/38 OTLP export)
-session_ops          → session, storage, git, paths, workspace, shell
-                       [path-only: agent::{agent_config, extension_config,
-                        generic, json_merge, provider, toml_merge}, backend,
-                        config::{hooks, hosts, settings},
-                        update::{self_update, version_check}]
-kernel               → session, storage, paths, session_ops, git,
-                       notifications, shell, theme
+telemetry            → session                    (ADR-38 diagnostic logs)
+kernel               → session, paths, git, notifications, shell, theme
                        [path-only: agent::{agent_config, extension_config},
                         backend, config::{hosts, settings, themes},
                         update::{self_update, version_check}]
-cli                  → session, storage, session_ops, paths,
-                       notifications, ui_control, telemetry, theme
-                       [path-only: agent::{agent_config, extension_config},
-                        backend, config::{file, hooks, hosts, settings,
+cli                  → session, paths, notifications, ui_control, theme
+                       [path-only: agent::agent_config, backend,
+                        config::{file, hosts, interface_state, settings,
                         themes}, update::{self_update, version_check}, kernel]
-notifications        → session, paths, shell    [path-only: storage]
+notifications        → session, paths, shell
 clipboard            → session, paths
 workspace            → paths
 paths                (leaf utility — no crate-internal references)
@@ -199,13 +192,14 @@ ui_control           → paths
 shell                (no crate-internal references — runtime-mux's
                       launchers and quoting, re-exported)
 theme                (no crate-internal references — the presets)
-coordinator          → agent::input, backend, clipboard, config::settings,
-                       kernel, paths, session, session_ops, shell, storage,
-                       telemetry, ui_control
+coordinator          → agent::input, backend, clipboard,
+                       config::{hosts, interface_state, settings}, kernel,
+                       notifications, paths, session, shell, telemetry,
+                       ui_control
 ```
 
-`agent` holds coding-agent definitions and never touches `git`, `storage`,
-`kernel` or `backend`; `config` holds thurbox's own config files, each read
+`agent` holds coding-agent definitions and never touches `git`, `kernel`
+or `backend`; `config` holds thurbox's own config files, each read
 and written through the one loader `config::file`, and `update` the
 self-update; `session` holds plain data and
 references nothing, which is what lets every other module depend on it.
@@ -216,7 +210,7 @@ directory thurbox injects into it. Consumers name its contract
 `backend::registry`), and none names an adapter (`backend::tmux`, `psmux`,
 `rmux`), the protocol they speak (`backend::tmux_compat`) or the factory
 (`backend::wiring`); only the composition root, `coordinator`, reaches the
-factory. `session_ops`, `cli` and `kernel` reach none of those at all — not
+factory. `cli` and `kernel` reach none of those at all — not
 by reference, alias or re-export — status and the heartbeat included
 (ADR-32). Every file of `agent`, `config` and `update` is a node of its own,
 so a grant names the file it reads.
@@ -265,7 +259,7 @@ with a mechanism rather than a review habit:
    which is what breaks the circularity.
 3. **Snapshot-read, command-write** — reads come from an in-memory
    snapshot and return instantly; writes are commands accepted now and
-   surfaced later. Lua never blocks the loop on SQLite, git or an
+   surfaced later. Lua never blocks the loop on Fleet, git or an
    unreachable host.
    *Enforced by* mlua's `send` feature being deliberately left off, which
    makes "plugins never touch the render thread" a compile error.
@@ -277,7 +271,7 @@ with a mechanism rather than a review habit:
    `tests/kernel_mvp.rs`, which enumerates the plugin environment
    global-by-global so a new one has to be added deliberately.
 5. **Anything touching the world runs on a worker** — terminal attach,
-   commands, the interface's database reads and writes, diffs, metrics, git
+   commands, the `fleet watch` that feeds the snapshot, diffs, metrics, git
    stats, repository reads, update checks, and programs a plugin asked for.
 
 No ad-hoc event handlers, no component-local state, no callback chains.
@@ -296,16 +290,9 @@ truly persistent sessions that survive crashes/restarts.
 We never mock, emulate, or screen-scrape a fake terminal.
 
 The multiplexer is the source of truth for what is running: a pane, its
-process and its output. The database is the source of truth for which sessions
-should exist. A lifecycle change records its intent in a row before it touches
-a pane or a worktree, and self-heal, the sweeps and the repairs read the rows
-to decide what to recreate, reap or repair (ADR-26). A host's own database owns
-its sessions; another instance is a client of it (ADR-24).
-
-This rule holds until [ADR-41](thurbox/architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes)
-lands: sessions then belong to Fleet and run on a runtime, and thurbox keeps
-no session rows. With `[fleet] enabled`, it already holds none of its own:
-Fleet's store is the source of truth for which sessions exist.
+process and its output. Fleet's store is the source of truth for which
+sessions exist ([ADR-41](thurbox/architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes)):
+every session is a Fleet Task, and thurbox keeps no session rows.
 
 #### T4. Logging never touches stdout
 

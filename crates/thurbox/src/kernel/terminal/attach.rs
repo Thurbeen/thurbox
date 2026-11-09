@@ -303,7 +303,7 @@ impl Terminals {
             return;
         };
         // A row whose agent has no definition is not attached. Nothing here
-        // launches the agent (that is `session_ops`), so the definition itself
+        // launches the agent (that is Fleet's), so the definition itself
         // is not needed — only that there is one, as there always had to be.
         if self
             .agents

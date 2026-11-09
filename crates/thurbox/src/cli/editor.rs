@@ -1,11 +1,11 @@
-//! Editor command get/set subcommands.
+//! Editor command get/set subcommands, over `interface.json`
+//! ([`crate::config::interface_state`]).
 
 use clap::Subcommand;
 use serde_json::json;
 
 use crate::cli::output::CommandOutput;
 use crate::session::settings::EditorMode;
-use crate::storage::Database;
 
 #[derive(Subcommand, Debug)]
 pub enum Action {
@@ -27,53 +27,44 @@ pub enum Action {
     },
 }
 
-pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
+pub fn run(action: Action) -> Result<CommandOutput, String> {
+    let write = |change: &dyn Fn(&mut crate::config::interface_state::InterfaceState)| {
+        crate::config::interface_state::update(|state| change(state))
+            .map_err(|e| format!("write interface.json: {e}"))
+    };
     match action {
         Action::Get => {
-            let cmd = db
-                .get_editor_command()
-                .map_err(|e| format!("get_editor_command: {e}"))?;
+            let cmd = crate::config::interface_state::load().editor_command;
             let human = match &cmd {
-                Some(c) if !c.is_empty() => format!("Editor: {c}"),
-                _ => "Editor: (not set)".to_string(),
+                Some(c) => format!("Editor: {c}"),
+                None => "Editor: (not set)".to_string(),
             };
             Ok(CommandOutput::new(json!({ "command": cmd }), human))
         }
         Action::Set { command } => {
-            db.set_editor_command(&command)
-                .map_err(|e| format!("set_editor_command: {e}"))?;
-            let human = if command.is_empty() {
-                "Editor cleared.".to_string()
-            } else {
-                format!("Editor set to: {command}")
+            let stored = (!command.is_empty()).then_some(command);
+            write(&|state| state.editor_command = stored.clone())?;
+            let human = match &stored {
+                None => "Editor cleared.".to_string(),
+                Some(command) => format!("Editor set to: {command}"),
             };
+            Ok(CommandOutput::new(json!({ "command": stored }), human))
+        }
+        Action::Mode { mode: None } => {
+            let current = crate::config::interface_state::load().editor_mode;
             Ok(CommandOutput::new(
-                json!({
-                    "command": if command.is_empty() { None } else { Some(command) }
-                }),
-                human,
+                json!({ "mode": current.as_db_value() }),
+                format!("Editor mode: {}", current.as_db_value()),
             ))
         }
-        Action::Mode { mode } => match mode {
-            None => {
-                let current = db
-                    .get_editor_mode()
-                    .map_err(|e| format!("get_editor_mode: {e}"))?;
-                Ok(CommandOutput::new(
-                    json!({ "mode": current.as_db_value() }),
-                    format!("Editor mode: {}", current.as_db_value()),
-                ))
-            }
-            Some(value) => {
-                let parsed = EditorMode::parse_stored(Some(&value));
-                db.set_editor_mode(parsed)
-                    .map_err(|e| format!("set_editor_mode: {e}"))?;
-                Ok(CommandOutput::new(
-                    json!({ "mode": parsed.as_db_value() }),
-                    format!("Editor mode set to: {}", parsed.as_db_value()),
-                ))
-            }
-        },
+        Action::Mode { mode: Some(value) } => {
+            let parsed = EditorMode::parse_stored(Some(&value));
+            write(&|state| state.editor_mode = parsed)?;
+            Ok(CommandOutput::new(
+                json!({ "mode": parsed.as_db_value() }),
+                format!("Editor mode set to: {}", parsed.as_db_value()),
+            ))
+        }
     }
 }
 
@@ -81,133 +72,47 @@ pub fn run(action: Action, db: &Database) -> Result<CommandOutput, String> {
 mod tests {
     use super::*;
 
-    fn db() -> Database {
-        Database::open_in_memory().unwrap()
+    fn isolated() -> (tempfile::TempDir, crate::paths::TestPathGuard) {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = crate::paths::TestPathGuard::new(dir.path());
+        (dir, guard)
     }
 
     #[test]
-    fn get_returns_null_when_unset() {
-        let db = db();
-        let v = run(Action::Get, &db).unwrap();
-        assert!(v.get("command").unwrap().is_null());
-    }
-
-    #[test]
-    fn set_then_get_roundtrips() {
-        let db = db();
-        let v = run(
-            Action::Set {
-                command: "code --wait".into(),
-            },
-            &db,
-        )
+    fn set_then_get_roundtrips_and_empty_clears() {
+        let _env = isolated();
+        assert!(run(Action::Get).unwrap()["command"].is_null());
+        let v = run(Action::Set {
+            command: "code --wait".into(),
+        })
         .unwrap();
         assert_eq!(v["command"].as_str(), Some("code --wait"));
-        let v = run(Action::Get, &db).unwrap();
-        assert_eq!(v["command"].as_str(), Some("code --wait"));
-    }
-
-    #[test]
-    fn set_empty_clears() {
-        let db = db();
-        run(
-            Action::Set {
-                command: "vim".into(),
-            },
-            &db,
-        )
-        .unwrap();
-        let v = run(
-            Action::Set {
-                command: String::new(),
-            },
-            &db,
-        )
-        .unwrap();
-        assert!(v["command"].is_null());
-    }
-
-    #[test]
-    fn mode_prints_auto_when_unset() {
-        let db = db();
-        let v = run(Action::Mode { mode: None }, &db).unwrap();
-        assert_eq!(v["mode"].as_str(), Some("auto"));
-    }
-
-    #[test]
-    fn mode_set_then_get_roundtrips() {
-        let db = db();
-        let v = run(
-            Action::Mode {
-                mode: Some("terminal".into()),
-            },
-            &db,
-        )
-        .unwrap();
-        assert_eq!(v["mode"].as_str(), Some("terminal"));
-        let v = run(Action::Mode { mode: None }, &db).unwrap();
-        assert_eq!(v["mode"].as_str(), Some("terminal"));
-    }
-
-    #[test]
-    fn mode_normalizes_aliases_and_case() {
-        let db = db();
-        // "tty" → terminal, case-insensitive.
-        run(
-            Action::Mode {
-                mode: Some("TTY".into()),
-            },
-            &db,
-        )
-        .unwrap();
-        let v = run(Action::Mode { mode: None }, &db).unwrap();
-        assert_eq!(v["mode"].as_str(), Some("terminal"));
-        // "detached" → gui.
-        run(
-            Action::Mode {
-                mode: Some("detached".into()),
-            },
-            &db,
-        )
-        .unwrap();
-        let v = run(Action::Mode { mode: None }, &db).unwrap();
-        assert_eq!(v["mode"].as_str(), Some("gui"));
-    }
-
-    #[test]
-    fn mode_setting_auto_clears_the_row() {
-        let db = db();
-        run(
-            Action::Mode {
-                mode: Some("terminal".into()),
-            },
-            &db,
-        )
-        .unwrap();
-        run(
-            Action::Mode {
-                mode: Some("auto".into()),
-            },
-            &db,
-        )
-        .unwrap();
-        // `auto` is the default, so the row is cleared.
         assert_eq!(
-            db.get_editor_mode().unwrap(),
-            crate::session::settings::EditorMode::Auto
+            run(Action::Get).unwrap()["command"].as_str(),
+            Some("code --wait")
         );
+        run(Action::Set {
+            command: String::new(),
+        })
+        .unwrap();
+        assert!(run(Action::Get).unwrap()["command"].is_null());
     }
 
     #[test]
-    fn mode_unknown_value_falls_back_to_auto() {
-        let db = db();
-        let v = run(
-            Action::Mode {
-                mode: Some("nonsense".into()),
-            },
-            &db,
-        )
-        .unwrap();
-        assert_eq!(v["mode"].as_str(), Some("auto"));
+    fn mode_normalizes_aliases_and_unknown_values_fall_back_to_auto() {
+        let _env = isolated();
+        let mode = || run(Action::Mode { mode: None }).unwrap()["mode"].clone();
+        assert_eq!(mode(), "auto");
+        for (given, stored) in [
+            ("TTY", "terminal"),
+            ("detached", "gui"),
+            ("nonsense", "auto"),
+        ] {
+            run(Action::Mode {
+                mode: Some(given.into()),
+            })
+            .unwrap();
+            assert_eq!(mode(), stored, "{given}");
+        }
     }
 }

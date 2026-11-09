@@ -89,20 +89,17 @@ pub struct Settings {
     /// OpenTelemetry settings (`[telemetry]` table). Off by default.
     #[serde(default)]
     pub telemetry: TelemetrySettings,
-    /// The session engine (`[fleet]` table): thurbox's own, or Fleet.
+    /// Fleet, the session engine (`[fleet]` table).
     #[serde(default)]
     pub fleet: FleetSettings,
 }
 
-/// Which engine runs the sessions (`[fleet]` table), ADR-41. Off, thurbox's
-/// own engine runs them over its database, as it always has. On, every
-/// session is a Fleet Task: the interface reads them through `fleet watch`,
-/// acts through `fleet apply`, `send` and `delete`, and keeps a `fleet up`
-/// running. Read at startup only.
+/// How thurbox reaches Fleet, which runs every session (`[fleet]` table),
+/// ADR-41: each session is a Fleet Task, which the interface reads through
+/// `fleet watch` and acts on through `fleet apply`, `send` and `delete`, with
+/// a `fleet up` kept running. Read at startup only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FleetSettings {
-    #[serde(default)]
-    pub enabled: bool,
     /// The `fleet` binary: a name on `PATH` or a path. It reads its own
     /// config, as `fleet` does anywhere (`FLEET_CONFIG`, then its per-user
     /// file).
@@ -117,7 +114,6 @@ fn default_fleet_program() -> String {
 impl Default for FleetSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
             program: default_fleet_program(),
         }
     }
@@ -1004,7 +1000,7 @@ mod tests {
              [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\
              [remote]\ntransitive_sessions = true\n\
              [telemetry]\nenabled = true\nexport_diagnostic_logs = true\n\
-             [fleet]\nenabled = true\n",
+             [fleet]\nprogram = \"/opt/fleet\"\n",
         )
         .unwrap();
         let adopted = base.with_live_from(&other);

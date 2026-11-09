@@ -5,5 +5,6 @@
 pub mod file;
 pub mod hooks;
 pub mod hosts;
+pub mod interface_state;
 pub mod settings;
 pub mod themes;

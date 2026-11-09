@@ -51,9 +51,3 @@ test-group = 'e2e-pty'
 # as a single-threaded tail. Starting it first lets the
 # remaining threads finish everything else alongside it.
 priority = 100
-
-# The longest single test on Windows (about 135 s, against 45 s on Linux), and
-# it started a minute in, so the Windows run waited on it alone at the end.
-[[profile.ci.overrides]]
-filter = 'binary_id(thurbox::host_probe_deadline)'
-priority = 100

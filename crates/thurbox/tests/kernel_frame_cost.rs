@@ -9,16 +9,13 @@
 
 use thurbox::kernel::snapshot::SnapshotStore;
 use thurbox::kernel::theme::Themes;
-use thurbox::storage::Database;
 
 #[test]
 fn a_snapshot_refresh_moves_the_version() {
     // The version is what a reader compares to decide it can reuse what it
     // built last time. If a refresh left it still, every such reader would keep
     // showing what the database said before.
-    let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(
-        db,
+    let mut store = SnapshotStore::without_sessions(
         &thurbox::backend::wiring::configured(&Default::default()).0,
         &Default::default(),
     );
@@ -36,9 +33,7 @@ fn a_snapshot_refresh_moves_the_version() {
 fn every_refresh_moves_it_again() {
     // An explicit refresh replaces the rows. The clock-only idle path has
     // its own signal, tested separately below and in the snapshot tests.
-    let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(
-        db,
+    let mut store = SnapshotStore::without_sessions(
         &thurbox::backend::wiring::configured(&Default::default()).0,
         &Default::default(),
     );
@@ -56,9 +51,7 @@ fn every_refresh_moves_it_again() {
 fn reading_the_snapshot_leaves_the_version_alone() {
     // The other half, and the one that makes gating worth anything: if merely
     // looking moved the signal, nothing could ever be reused.
-    let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(
-        db,
+    let mut store = SnapshotStore::without_sessions(
         &thurbox::backend::wiring::configured(&Default::default()).0,
         &Default::default(),
     );
@@ -73,30 +66,6 @@ fn reading_the_snapshot_leaves_the_version_alone() {
         store.version(),
         settled,
         "reading the snapshot moved its version"
-    );
-}
-
-#[test]
-fn quiescence_moves_the_version_only_when_it_re_derives_something() {
-    // `apply_output_quiescence` runs every tick by design. It must move the
-    // signal when it changes a status and leave it alone otherwise, or the
-    // stuck-`working` fallback would invalidate every cached tree ~40 times a
-    // second for nothing.
-    let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(
-        db,
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
-    store.refresh();
-
-    let settled = store.version();
-    let changed = store.apply_output_quiescence(|_| None);
-    assert_eq!(changed, 0, "an empty snapshot has nothing to re-derive");
-    assert_eq!(
-        store.version(),
-        settled,
-        "a pass that changed nothing still moved the version"
     );
 }
 
@@ -127,23 +96,6 @@ fn selecting_a_theme_moves_the_version_and_reading_it_does_not() {
         settled,
         "the active palette changed without saying so"
     );
-}
-
-#[test]
-fn a_theme_refresh_never_restarts_the_version() {
-    // `refresh` replaces the whole value. A version that restarted at zero could
-    // collide with one a reader had already seen and be read as "nothing
-    // changed" — the one way a monotonic signal can lie.
-    let mut themes = Themes::load(None);
-    for _ in 0..3 {
-        let before = themes.version();
-        themes.refresh(None);
-        assert!(
-            themes.version() > before,
-            "refresh restarted the version: {before} -> {}",
-            themes.version()
-        );
-    }
 }
 
 // --- the gated publish ------------------------------------------------------
@@ -853,9 +805,7 @@ fn a_re_stamped_snapshot_does_not_move_the_version_within_a_second() {
     // not change must therefore leave the version alone — it used to move
     // 2.5 times a second, which capped how long any pure pane could be cached
     // and was the dominant reason an idle interface kept re-rendering.
-    let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(
-        db,
+    let mut store = SnapshotStore::without_sessions(
         &thurbox::backend::wiring::configured(&Default::default()).0,
         &Default::default(),
     );
@@ -883,9 +833,7 @@ fn the_published_instant_is_whole_seconds() {
     // The contract that makes the above honest rather than merely stale: the
     // field means "when these rows were read, to the second", and every reader
     // of it floors to seconds anyway.
-    let db = Database::open_in_memory().expect("db");
-    let mut store = SnapshotStore::with_database(
-        db,
+    let mut store = SnapshotStore::without_sessions(
         &thurbox::backend::wiring::configured(&Default::default()).0,
         &Default::default(),
     );

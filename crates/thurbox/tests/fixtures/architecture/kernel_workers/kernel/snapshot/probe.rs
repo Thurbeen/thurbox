@@ -1,5 +1,5 @@
-use crate::storage::*;
+use crate::git::*;
 
 pub fn ask() {
-    Database::open();
+    stats();
 }

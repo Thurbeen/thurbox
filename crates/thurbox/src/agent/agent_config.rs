@@ -143,9 +143,7 @@ new_session_args = ["--session-dir", "{home}/.omp/agent/sessions/thurbox-{id}"]
 "#;
 
 /// The `shell` built-in as seeded, around this machine's
-/// [`interactive_shell_agent`] — which a session on a host of the other
-/// platform is given instead when its entry is still this stock one
-/// (`session_ops::resolve_agent_def`).
+/// [`interactive_shell_agent`].
 ///
 /// Split out of the seed document because it is the one entry whose `command`
 /// is not the same string everywhere, and the seeded file has to say what will

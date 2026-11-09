@@ -8,9 +8,8 @@
 //! line answered. A session command Fleet has no verb for is refused by
 //! name, never dropped.
 //!
-//! Only sessions are Fleet's. Every other command (the interface's settings,
-//! bookmarks, folders and clones, its task list and automations) runs on
-//! thurbox's own engine, which this executor wraps.
+//! Only sessions are Fleet's. The interface's settings and its repository
+//! memory are files of thurbox's ([`super::execute::local`]).
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -26,8 +25,6 @@ use super::Command;
 pub(super) struct Fleet {
     /// The `fleet` binary: a name on `PATH` or a path.
     pub(super) program: PathBuf,
-    /// What runs every command that is no session's.
-    pub(super) engine: super::execute::Engine,
 }
 
 impl super::Executor for Fleet {
@@ -59,8 +56,8 @@ impl super::Executor for Fleet {
                 }
                 return self.execute(inner, _id, _progress);
             }
-            // The multiplexer the create flow settles on is the thurbox
-            // engine's: Fleet's runtime keeps the terminal, so it is dropped.
+            // Fleet's runtime keeps the terminal, so the multiplexer the
+            // create flow settles on is dropped.
             Command::Create {
                 name,
                 repo,
@@ -128,24 +125,16 @@ impl super::Executor for Fleet {
             } => return Ok(Outcome::Nothing),
             // No undo window to sweep.
             Command::Reap => return Ok(Outcome::Nothing),
-            // The session commands Fleet has no verb for.
-            Command::Restore { .. }
-            | Command::Restart { .. }
-            | Command::Fork { .. }
-            | Command::Rename { .. }
-            | Command::Sync { .. }
-            | Command::Reorder { .. }
-            | Command::Order { .. }
-            | Command::DispatchTask { .. } => {
-                return Err(format!(
-                    "{} is not available on the Fleet engine",
-                    command.kind()
-                ))
+            // Everything else is a file of thurbox's, or something no
+            // engine runs any more: refused by name, never dropped.
+            _ => {
+                return super::execute::local(command).unwrap_or_else(|| {
+                    Err(format!(
+                        "{} is not available on the Fleet engine",
+                        command.kind()
+                    ))
+                })
             }
-            // Everything else is no session's: the interface's settings,
-            // bookmarks, folders and clones, its task list and automations.
-            // thurbox's own engine runs it, unchanged.
-            _ => return super::Executor::execute(&self.engine, command, _id, _progress),
         }
         Ok(Outcome::Done)
     }

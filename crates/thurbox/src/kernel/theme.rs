@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 
 use ratatui::style::{Modifier, Style};
 
-use crate::storage::Database;
 use crate::theme::{ThemeEntry, ThemePalette, ThemePreset};
 
 /// One selectable theme, flattened for publishing.
@@ -52,13 +51,13 @@ pub struct Themes {
 }
 
 impl Themes {
-    /// Resolve from the presets, the user's `themes.toml` and the persisted
-    /// choice.
+    /// Resolve from the presets, the user's `themes.toml` and `stored`, the
+    /// persisted choice (`interface.json`).
     ///
     /// Every failure degrades rather than aborts: an unparseable user theme is
     /// skipped, and a recorded choice that no longer resolves falls back to the
     /// default. Losing the interface over a colour would be absurd.
-    pub fn load(db: Option<&Database>) -> Self {
+    pub fn load(stored: Option<&str>) -> Self {
         let (custom, warnings) = crate::config::themes::load_or_seed_with_warnings();
 
         let mut choices: Vec<ThemeChoice> = ThemePreset::all()
@@ -83,8 +82,7 @@ impl Themes {
             });
         }
 
-        let wanted = db.and_then(|db| db.get_active_theme().ok().flatten());
-        let active = resolve(wanted.as_deref(), &custom);
+        let active = resolve(stored, &custom);
 
         Self {
             active,
@@ -158,14 +156,6 @@ impl Themes {
         self.active = resolve(Some(name), &self.custom);
         self.mark_changed();
         Ok(())
-    }
-
-    /// Reload from disk and the database, keeping the active choice if it still
-    /// resolves.
-    pub fn refresh(&mut self, db: Option<&Database>) {
-        let seen = self.version;
-        *self = Self::load(db);
-        self.version = seen.wrapping_add(1);
     }
 
     /// How many times the palette or the choices have changed.
@@ -478,9 +468,8 @@ mod tests {
     }
 
     #[test]
-    fn the_choice_round_trips_through_the_database() {
-        let db = Database::open_in_memory().expect("in-memory database");
-        let mut themes = Themes::load(Some(&db));
+    fn the_choice_is_handed_out_once_and_a_stored_one_is_loaded() {
+        let mut themes = Themes::load(None);
         let other = themes
             .choices()
             .iter()
@@ -493,10 +482,9 @@ mod tests {
             .take_chosen()
             .expect("the choice is left to be stored");
         assert_eq!(themes.take_chosen(), None, "handed out once");
-        db.set_active_theme(&chosen).expect("store");
 
         // A fresh load — as a restart or another instance would do — sees it.
-        let reloaded = Themes::load(Some(&db));
+        let reloaded = Themes::load(Some(&chosen));
         assert_eq!(reloaded.active_name(), other);
     }
 }

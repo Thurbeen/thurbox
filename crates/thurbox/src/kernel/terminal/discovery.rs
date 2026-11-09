@@ -1,7 +1,6 @@
 //! Discovery: each backend's window list, surveyed on a worker and paced per
 //! backend, which resolves a row with no pane of its own and tells a window
-//! that is gone from one not looked for yet; and the mirror pass that reconciles
-//! a shareable host's own rows.
+//! that is gone from one not looked for yet.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
@@ -11,7 +10,7 @@ use super::Terminals;
 use crate::kernel::snapshot::Snapshot;
 
 /// The discovery side of [`Terminals`]: what each backend's last survey found,
-/// when each may next be surveyed or mirrored, and what is in flight.
+/// when each may next be surveyed, and what is in flight.
 pub(super) struct Discovery {
     /// Panes found by window name, per backend: `tb-<name>` → pane id.
     ///
@@ -31,8 +30,7 @@ pub(super) struct Discovery {
     /// Stamped when a survey *returns*, not when it is issued — so the interval
     /// separates one round trip from the next however long it took, and a slow
     /// one is not re-issued the instant it gives up. `discovering` is what holds
-    /// a second off while the first is still out. [`Self::refresh_mirrors`]
-    /// paces itself the same way.
+    /// a second off while the first is still out.
     pub(super) discovery_due: HashMap<String, std::time::Instant>,
     /// How many times each backend's window list has been read successfully.
     ///
@@ -54,11 +52,6 @@ pub(super) struct Discovery {
     /// Backends whose window list is being read on a worker.
     pub(super) discovering: std::collections::HashSet<String>,
     pub(super) discovered_rx: (Sender<Discovered>, Receiver<Discovered>),
-    /// Hosts with a mirror pass in flight, and when each host may next be
-    /// mirrored — absent until its first pass returns.
-    pub(super) mirroring: std::collections::HashSet<String>,
-    pub(super) mirror_due: HashMap<String, std::time::Instant>,
-    pub(super) mirror_rx: (Sender<Mirrored>, Receiver<Mirrored>),
 }
 
 impl Discovery {
@@ -71,9 +64,6 @@ impl Discovery {
             waiting_since: HashMap::new(),
             discovering: std::collections::HashSet::new(),
             discovered_rx: std::sync::mpsc::channel(),
-            mirroring: std::collections::HashSet::new(),
-            mirror_due: HashMap::new(),
-            mirror_rx: std::sync::mpsc::channel(),
         }
     }
 }
@@ -104,28 +94,10 @@ pub(super) const DISCOVERY_INTERVAL: std::time::Duration = std::time::Duration::
 ///
 /// A remote listing is an ssh round trip rather than a local process, and
 /// nothing remote is waiting on it the way a local spawn is: a remote spawn
-/// records its real pane id, and the rows that do need a listing — mirrored
-/// from a host's own database — describe sessions that already exist. Sharing
-/// made remote rows discoverable at all (before it, they were skipped
-/// outright); pacing them apart from the local cadence is what keeps that from
-/// being two ssh commands a second for as long as one row is unattached.
+/// records its real pane id. Pacing remote rows apart from the local cadence
+/// is what keeps a listing from being two ssh commands a second for as long as
+/// one row is unattached.
 pub(super) const REMOTE_DISCOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// How often a shareable host's database is mirrored into local rows. One
-/// multiplexed ssh round trip per host per interval, on a worker; the
-/// pipelines mirror again right after anything they delegate, so this is the
-/// cadence for changes *other* observers made.
-pub(super) const MIRROR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// How long a host is left alone after a mirror pass that could not run.
-///
-/// [`crate::session_ops::host_cli::usable`] caches a `Yes` for the process
-/// lifetime — a host's CLI does not change under us — so a host that was
-/// reachable at its first probe and has since gone down keeps a usable
-/// verdict, and every pass runs its ssh out to the connect timeout. Backing
-/// the *pass* off is what bounds that; the verdict is a separate question
-/// with its own retry.
-pub(super) const MIRROR_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Whether a per-backend timer has come due. An entry is *when it may next
 /// run*, so an absent one has never run and is due now.
@@ -147,20 +119,13 @@ pub(super) fn discovery_interval(backend: &str) -> std::time::Duration {
     }
 }
 
-/// One survey, as its worker runs it: [`discover_windows`], then — when it
-/// reached the host — clearing that host's "not answering" verdict. A host
-/// that answered is not down, and `session list` reads that verdict; done
-/// here, on the worker, because it reads and may rewrite a file.
+/// One survey, as its worker runs it.
 pub(super) fn survey(
     backend: &std::sync::Arc<dyn crate::backend::SessionBackend>,
     name: String,
     already_ready: bool,
 ) -> Discovered {
-    let done = discover_windows(backend, name, already_ready);
-    if done.readied && done.panes.is_ok() {
-        crate::session_ops::host_cli::host_answered(&done.backend);
-    }
-    done
+    discover_windows(backend, name, already_ready)
 }
 
 /// One backend's window inventory, on the discovery worker.
@@ -197,32 +162,6 @@ pub(super) fn discover_windows(
         readied: true,
         panes,
     }
-}
-
-/// A mirror pass that came back from its worker.
-pub(super) struct Mirrored {
-    pub(super) backend: String,
-    pub(super) report: Result<crate::session_ops::mirror::MirrorReport, String>,
-}
-
-/// One mirror pass for `host`, on the worker: its own database handle, the
-/// CLI probe (cached across passes), and the reconcile.
-pub(super) fn mirror_host(
-    host: &crate::session::HostDef,
-) -> Result<crate::session_ops::mirror::MirrorReport, String> {
-    let cli = match crate::session_ops::host_cli::usable(host) {
-        crate::session_ops::host_cli::Usable::Yes(cli) => cli,
-        crate::session_ops::host_cli::Usable::No(reason) => return Err(reason),
-    };
-    let path = crate::paths::database_file().ok_or("could not resolve the database path")?;
-    // `open_existing`: the TUI ran the schema pass at startup, and this worker
-    // reopens every `MIRROR_INTERVAL` per host. `open` would replay the
-    // migrations, re-issue the WAL pragma — which takes the write lock — and
-    // run both retention prunes, every ten seconds, against the database the
-    // loop is reading. Same rule `kernel::repos` follows.
-    let db = crate::storage::Database::open_existing(&path)
-        .map_err(|e| format!("open database: {e}"))?;
-    crate::session_ops::mirror::mirror_host(&db, host, &cli).map_err(|e| e.to_string())
 }
 
 impl Terminals {
@@ -297,71 +236,6 @@ impl Terminals {
                 let _guard = runtime.as_ref().map(|handle| handle.enter());
                 let _ = tx.send(survey(&backend, backend_name, already_ready));
             });
-        }
-    }
-
-    /// Mirror every shareable host whose last pass is older than
-    /// `MIRROR_INTERVAL` (or has never run), one worker each, whether or not a
-    /// row lives on it: a host the observer has never used can hold sessions a
-    /// peer created. Readying the host — the ssh connect, the CLI probe, a
-    /// provisioning on first use — all happens on that worker, never here.
-    pub(super) fn refresh_mirrors(&mut self) {
-        let now = std::time::Instant::now();
-        let due: Vec<(String, crate::session::HostDef)> = self
-            .hosts
-            .hosts
-            .iter()
-            .filter(|host| host.shareable())
-            .map(|host| (host.backend_name(), host))
-            .filter(|(name, _)| {
-                !self.discovery.mirroring.contains(name)
-                    && due_now(&self.discovery.mirror_due, name, now)
-            })
-            .map(|(name, host)| (name, host.clone()))
-            .collect();
-        for (name, host) in due {
-            self.discovery.mirroring.insert(name.clone());
-            let tx = self.discovery.mirror_rx.0.clone();
-            let runtime = self.runtime.clone();
-            std::thread::spawn(move || {
-                let _guard = runtime.as_ref().map(|handle| handle.enter());
-                let report = mirror_host(&host);
-                let _ = tx.send(Mirrored {
-                    backend: name,
-                    report,
-                });
-            });
-        }
-    }
-
-    /// Fold in finished mirror passes. The rows themselves arrive through the
-    /// database — the snapshot's `data_version` poll — so all that is kept here
-    /// is when each host was last mirrored, and a log line for a pass that
-    /// changed something or could not run.
-    pub(super) fn collect_mirrored(&mut self) {
-        while let Ok(done) = self.discovery.mirror_rx.1.try_recv() {
-            self.discovery.mirroring.remove(&done.backend);
-            let interval = if done.report.is_ok() {
-                MIRROR_INTERVAL
-            } else {
-                MIRROR_RETRY_INTERVAL
-            };
-            self.discovery
-                .mirror_due
-                .insert(done.backend.clone(), std::time::Instant::now() + interval);
-            match done.report {
-                Ok(report) if report.changed() => tracing::info!(
-                    "mirrored {}: {} adopted, {} updated, {} deleted, {} restored, {} tombstoned",
-                    done.backend,
-                    report.adopted.len(),
-                    report.updated.len(),
-                    report.deleted.len(),
-                    report.restored.len(),
-                    report.tombstoned.len()
-                ),
-                Ok(_) => {}
-                Err(e) => tracing::debug!("mirror of {} skipped: {e}", done.backend),
-            }
         }
     }
 

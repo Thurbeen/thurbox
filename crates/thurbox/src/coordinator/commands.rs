@@ -97,9 +97,8 @@ impl App {
                 keys,
             } => self.apply_program(owner, name, program, argv, *close, keys.as_deref()),
             // The editor wants a controlling tty, which only this thread can hand
-            // it — see `Command::Editor`. Its setting is read first, off the
-            // loop (`open_requested_editor`).
-            Command::Editor { session } => self.snapshots.request_editor(session),
+            // it — see `Command::Editor` and `open_requested_editor`.
+            Command::Editor { session } => self.editor_request = Some(session.clone()),
             Command::Diff { session } => {
                 // Drop the answer; the request at the top of the next iteration
                 // recomputes it on the worker.
@@ -239,27 +238,28 @@ impl App {
         }
     }
 
-    /// Store a theme the picker or a plugin chose. Queued on the snapshot's
-    /// database worker, so a lock another process holds delays the write and
-    /// not the frame (issue #1474).
+    /// Store a theme the picker or a plugin chose in `interface.json`, on a
+    /// thread of its own so a slow disk delays the write and not the frame.
     pub(crate) fn store_chosen_theme(&mut self) {
         if let Some(name) = self.themes.take_chosen() {
-            self.snapshots.persist_theme(&name);
+            std::thread::spawn(move || {
+                if let Err(e) =
+                    thurbox::config::interface_state::update(|state| state.theme = Some(name))
+                {
+                    tracing::warn!("could not store the chosen theme: {e}");
+                }
+            });
         }
     }
 
-    /// `Command::Editor`, once its setting has been read: hand the configured
-    /// editor this thread's tty.
-    ///
-    /// The setting is read off the loop (`SnapshotStore::request_editor`)
-    /// rather than through a connection opened here, whose prune of aged
-    /// history waited out the busy timeout whenever another process held the
-    /// write lock (issue #1474).
+    /// `Command::Editor`: hand the configured editor (`interface.json`) this
+    /// thread's tty.
     fn open_requested_editor(&mut self, terminal: &mut DefaultTerminal) {
-        let Some(request) = self.snapshots.take_editor() else {
+        let Some(session) = self.editor_request.take() else {
             return;
         };
-        let row = self.snapshots.current().session(&request.session);
+        let state = thurbox::config::interface_state::load();
+        let row = self.snapshots.current().session(&session);
         // A Fleet Task on another host names directories there.
         if row.is_some_and(|row| !row.workspace_reachable()) {
             self.toast("this Task's workspace is on another machine; no editor opens here");
@@ -267,7 +267,7 @@ impl App {
         }
         let dirs = row.map(|row| row.member_dirs.clone()).unwrap_or_default();
         self.toast(
-            match open_editor(terminal, &dirs, request.command, request.mode) {
+            match open_editor(terminal, &dirs, state.editor_command, state.editor_mode) {
                 Ok(message) => message,
                 Err(e) => e,
             },

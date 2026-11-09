@@ -144,7 +144,7 @@ fn test_build_ignores_config_and_data_dir_override_env() {
     std::env::set_var(DATA_DIR_OVERRIDE_ENV, "/real/data/thurbox");
 
     let cfg = config_file().unwrap();
-    let db = database_file().unwrap();
+    let db = perf_snapshot_file().unwrap();
 
     match saved_cfg {
         Some(v) => std::env::set_var(CONFIG_DIR_OVERRIDE_ENV, v),
@@ -210,7 +210,7 @@ fn override_isolates_paths() {
 
     assert_eq!(config_file(), Some(base.join("config.toml")));
     assert_eq!(log_directory(), Some(base.clone()));
-    assert_eq!(database_file(), Some(base.join("thurbox.db")));
+    assert_eq!(perf_snapshot_file(), Some(base.join("perf.json")));
 
     reset_to_xdg();
 }
@@ -252,15 +252,14 @@ fn all_path_kinds_resolve_in_override() {
 
     assert_eq!(resolve(PathKind::Config), Some(base.join("config.toml")));
     assert_eq!(resolve(PathKind::LogDir), Some(base.clone()));
-    assert_eq!(resolve(PathKind::Database), Some(base.join("thurbox.db")));
+    assert_eq!(
+        resolve(PathKind::PerfSnapshot),
+        Some(base.join("perf.json"))
+    );
     assert_eq!(resolve(PathKind::MetricsDir), Some(base.join("metrics")));
     assert_eq!(
         resolve(PathKind::WorktreesDir),
         Some(base.join("worktrees"))
-    );
-    assert_eq!(
-        resolve(PathKind::KeybindingsFile),
-        Some(base.join("keybindings.json"))
     );
 
     reset_to_xdg();
@@ -289,12 +288,12 @@ fn log_directory_convenience() {
 }
 
 #[test]
-fn database_file_convenience() {
+fn perf_snapshot_file_convenience() {
     let base = PathBuf::from("/custom");
     set_test_dir(&base);
 
-    let path = database_file().unwrap();
-    assert!(path.ends_with("thurbox.db"));
+    let path = perf_snapshot_file().unwrap();
+    assert!(path.ends_with("perf.json"));
 
     reset_to_xdg();
 }
@@ -362,8 +361,8 @@ fn resolve_override_all_kinds() {
         PathBuf::from("/data")
     );
     assert_eq!(
-        resolve_override(base, PathKind::Database),
-        PathBuf::from("/data/thurbox.db")
+        resolve_override(base, PathKind::PerfSnapshot),
+        PathBuf::from("/data/perf.json")
     );
     assert_eq!(
         resolve_override(base, PathKind::MetricsDir),

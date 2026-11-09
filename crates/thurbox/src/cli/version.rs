@@ -29,33 +29,14 @@ pub fn run(args: VersionArgs, enabled: bool) -> CommandOutput {
     let current = crate::update::version_check::current_version();
 
     if !args.check {
-        // The extra facts are what a *peer* thurbox reads when it probes this
-        // machine's CLI before delegating to it (`session_ops::host_cli`): the
-        // tmux server this build's sessions live on, where its data lives, and
-        // whether the two databases speak the same schema.
+        // Where this build's interface state lives and which tmux socket it
+        // names: what tells a sandbox apart from the real instance.
         return CommandOutput::new(
             json!({
                 "version": current,
                 "tmux_socket": crate::backend::instance::local_socket_name(),
                 "tmux_tmpdir": crate::backend::instance::local_socket_dir_report(),
-                "data_dir": crate::paths::database_file()
-                    .and_then(|p| p.parent().map(|d| d.display().to_string())),
-                "schema_version": crate::storage::SCHEMA_VERSION,
-                "multiplexer_choice": true,
-                "soft_delete_choice": true,
-                "session_revision": true,
-                "session_wait": true,
-                "session_state_hooks": true,
-                "session_pre_launch": true,
-                "deleted_since": true,
-                "deleted_changes_since": true,
-                "create_parity": true,
-                "agent_args": true,
-                "telemetry_attrs": true,
-                "purged_tombstones": true,
-                "lifecycle_preconditions": true,
-                "session_restart_fresh": true,
-                "message_native_send": true,
+                "data_dir": crate::paths::data_directory().map(|d| d.display().to_string()),
             }),
             format!("thurbox {current}"),
         );
@@ -130,15 +111,7 @@ mod tests {
     fn version_without_check_prints_current_version() {
         let out = run(VersionArgs { check: false }, true);
         assert!(out["version"].is_string(), "version field present");
-        assert_eq!(out["multiplexer_choice"], true);
-        assert_eq!(out["soft_delete_choice"], true);
-        assert_eq!(out["session_revision"], true);
-        assert_eq!(out["deleted_since"], true);
-        assert_eq!(out["deleted_changes_since"], true);
-        assert_eq!(out["create_parity"], true);
-        assert_eq!(out["telemetry_attrs"], true);
-        assert_eq!(out["session_restart_fresh"], true);
-        assert_eq!(out["message_native_send"], true);
+        assert!(out["tmux_socket"].is_string(), "the socket in force");
         assert!(out.human.starts_with("thurbox "), "got: {}", out.human);
         assert!(out.failure.is_none(), "plain version never fails");
     }

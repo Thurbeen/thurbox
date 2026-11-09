@@ -3,7 +3,7 @@
 //! Pure data (no local crate imports beyond `super`), matching the architecture
 //! rule for `session`. The `ui` layer renders these types directly (it may
 //! import `session` but never `git`); the `git diff` invocation lives in
-//! [`crate::git`], and persistence in [`crate::storage::review`].
+//! [`crate::git`].
 
 use super::SessionId;
 

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use super::execute::{Engine, Outcome};
+use super::execute::Outcome;
 use super::fleet::Fleet;
 use super::{Command, Executor};
 
@@ -121,38 +121,16 @@ pub struct CommandBus {
     /// ([`Self::take_did_nothing`]). A success leaves the in-flight list at
     /// once, so this is the only place that fact survives to be reported.
     did_nothing: std::collections::HashSet<u64>,
-    /// What runs each command: thurbox's own engine or Fleet.
+    /// What runs each command: Fleet, through its command line.
     executor: Arc<dyn Executor>,
 }
 
 impl CommandBus {
-    /// A bus over thurbox's own engine: the process's one backend registry,
-    /// and the reap sweep's `deleted_retention_days` as `settings` say.
-    pub fn new(
-        backends: Arc<crate::backend::BackendRegistry>,
-        settings: &crate::session::settings::Settings,
-    ) -> Self {
-        Self::with_executor(Arc::new(Engine {
-            backends,
-            deleted_retention_days: settings.deleted_retention_days,
-        }))
-    }
-
     /// A bus whose session commands act through Fleet's command line,
-    /// `program` (ADR-41): `fleet apply`, `send` and `delete`. Every other
-    /// command runs on thurbox's own engine, built as [`Self::new`] builds it.
-    pub fn fleet(
-        program: std::path::PathBuf,
-        backends: Arc<crate::backend::BackendRegistry>,
-        settings: &crate::session::settings::Settings,
-    ) -> Self {
-        Self::with_executor(Arc::new(Fleet {
-            program,
-            engine: Engine {
-                backends,
-                deleted_retention_days: settings.deleted_retention_days,
-            },
-        }))
+    /// `program` (ADR-41): `fleet apply`, `send` and `delete`. The interface's
+    /// own files (settings, repository memory) are written here.
+    pub fn fleet(program: std::path::PathBuf) -> Self {
+        Self::with_executor(Arc::new(Fleet { program }))
     }
 
     fn with_executor(executor: Arc<dyn Executor>) -> Self {

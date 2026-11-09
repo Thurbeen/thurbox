@@ -71,3 +71,31 @@ fn the_shared_trees_stay_at_the_repository_root() {
     }
     assert!(!root.join("src").exists(), "no crate sources at the root");
 }
+
+/// thurbox keeps no database of its own (ADR-41): SQLite is out of the tree
+/// of every target it builds.
+#[test]
+fn rusqlite_is_not_in_thurboxs_dependency_tree() {
+    let out = Command::new(env!("CARGO"))
+        .args([
+            "tree",
+            "--offline",
+            "--edges",
+            "normal,build,dev",
+            "--target",
+            "all",
+            "-p",
+            "thurbox",
+            "-i",
+            "rusqlite",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run cargo tree");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("did not match any packages"),
+        "rusqlite is still in the tree:\n{}{stderr}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}

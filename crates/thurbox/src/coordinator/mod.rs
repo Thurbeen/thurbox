@@ -445,7 +445,13 @@ impl App {
             self.snapshots.current().sessions.len(),
             &self.host.plugin_report(),
         );
-        self.snapshots.set_perf_snapshot(&json.to_string());
+        // Off the loop: `thurbox-cli perf` reads the file whenever it is asked.
+        let text = json.to_string();
+        std::thread::spawn(move || {
+            if let Err(e) = thurbox::kernel::perf::publish_snapshot(&text) {
+                tracing::warn!("could not publish the perf snapshot: {e}");
+            }
+        });
     }
 
     /// Time a named synchronous operation, ringing it if it was slow enough to
@@ -618,7 +624,6 @@ impl App {
         // What Windows said about its clipboard, for a paste press that could
         // not be answered when it happened (WSL only — `clipboard::ImageProbe`).
         self.poll_image_probe();
-        self.poll_image_drops();
 
         // An update that replaced binaries is worth saying once; a check that
         // merely found a release shows up in the header instead.
@@ -641,25 +646,9 @@ impl App {
     /// State another process left for this one, and the notifications that
     /// follow from it.
     pub(crate) fn apply_external_requests(&mut self) {
-        // A focus request from another process: a clicked notification's
-        // action callback, or `thurbox-cli session focus`, both of which
-        // leave a row in the database for whoever is running the interface.
-        // Taken atomically, so two instances cannot both claim it.
-        if let Some(id) = self.snapshots.take_focus_request() {
+        // A clicked notification's action callback asks for its session.
+        if let Some(id) = thurbox::notifications::take_focus_request() {
             self.focus_on_session(&id);
-        }
-
-        // Acknowledge a finished turn on the way out of it: moving the
-        // selection off a `done` session is what retires its filled dot.
-        // Read from the store because the selection belongs to the session
-        // list, which is a plugin.
-        let selected = self.host.shared_string("selected");
-        if selected != self.last_selected_session {
-            if let Some(left) = self.last_selected_session.take() {
-                self.snapshots.acknowledge(&left);
-            }
-            self.last_selected_session = selected;
-            self.dirty = true;
         }
 
         // Notify on the blocked edge, observed where status is read so the
@@ -688,44 +677,11 @@ impl App {
             self.dirty = true;
         }
         self.settle_echo();
-        // The stuck-`working` fallback, run here because it asks the
-        // terminals a question and they have just been synced — and run
-        // every tick rather than at refresh, because output moves between
-        // two reads of the database.
-        let terminals = &self.terminals;
-        if self
-            .snapshots
-            .apply_output_quiescence(|id| terminals.millis_since_output(id))
-            > 0
-        {
-            self.dirty = true;
-        }
-        // A pane the terminals had to resolve by window name gets its id
-        // persisted onto the row: names are not unique (two sessions can share
-        // one), so a legacy row stops depending on its name after one adoption.
-        for (session, pane) in self.terminals.drain_adopted_panes() {
-            if let Err(e) = self.snapshots.remember_pane(&session, &pane) {
-                tracing::warn!("could not record adopted pane for {session}: {e}");
-            }
-        }
-        // A session whose agent is gone gets it back, which is what v1 does
-        // at restore and what makes a session survive a reboot.
-        self.respawn_missing_agents();
-        // And the shell it had open, whose window outlived the interface.
-        self.readopt_shells();
+        self.collect_shell_results();
         // Programs plugins asked for. Served here because resolving a
         // session to a directory and a machine is the loop's knowledge, not
         // a store's — the store owns the bounds and the queue.
         self.serve_runs();
-        // A remote agent's hooks cannot call `thurbox-cli` — they set a tmux pane
-        // option, which arrives here over the control-mode subscription. Draining
-        // it into the same columns a local signal writes is the whole of remote
-        // status: the dot, the acknowledgment and the notification are all
-        // downstream of that one write.
-        let events = self.terminals.drain_hook_events();
-        if !events.is_empty() && self.snapshots.apply_hook_states(events, Instant::now()) > 0 {
-            self.dirty = true;
-        }
     }
 
     /// Take what plugins asked for, start what may start, and publish answers.
@@ -785,21 +741,25 @@ impl App {
 
     /// How one ask becomes a program on the right machine.
     pub(crate) fn runner(&self) -> std::sync::Arc<thurbox::kernel::runs::Runner> {
-        let sessions: std::collections::HashMap<String, (std::path::PathBuf, String)> = self
-            .snapshots
-            .current()
-            .sessions
-            .iter()
-            .filter_map(|row| {
-                let cwd = row.cwd.clone()?;
-                Some((row.id.clone(), (cwd, row.backend.clone())))
-            })
-            .collect();
+        let sessions: std::collections::HashMap<String, (std::path::PathBuf, Option<String>)> =
+            self.snapshots
+                .current()
+                .sessions
+                .iter()
+                .filter_map(|row| {
+                    let cwd = row.cwd.clone()?;
+                    Some((row.id.clone(), (cwd, row.remote_host.clone())))
+                })
+                .collect();
         std::sync::Arc::new(move |ask: &thurbox::kernel::runs::Ask| {
             let session = match &ask.target {
                 thurbox::kernel::runs::Target::Session(session) => session,
                 thurbox::kernel::runs::Target::Host(name) => {
-                    let Some(host) = thurbox::session_ops::configured_host(name) else {
+                    let Some(host) = thurbox::config::hosts::cached_registry()
+                        .0
+                        .get(name)
+                        .cloned()
+                    else {
                         return thurbox::kernel::runs::Run::Failed(format!(
                             "no configured host {name} to run it on"
                         ));
@@ -817,69 +777,38 @@ impl App {
                     return thurbox::kernel::runs::capture(command, ask.timeout);
                 }
             };
-            let Some((cwd, backend)) = sessions.get(session) else {
+            let Some((cwd, remote)) = sessions.get(session) else {
                 return thurbox::kernel::runs::Run::Failed(format!(
                     "no session {session} to run it in"
                 ));
             };
-            let Some(host) = thurbox::session_ops::resolve_host(backend) else {
-                return thurbox::kernel::runs::Run::Failed(format!(
-                    "'{backend}' is not in hosts.toml — cannot reach the machine it runs on"
-                ));
+            let host = match remote {
+                None => None,
+                Some(name) => match thurbox::config::hosts::cached_registry().0.get(name) {
+                    Some(host) => Some(host.clone()),
+                    None => {
+                        return thurbox::kernel::runs::Run::Failed(format!(
+                            "'{name}' is not in hosts.toml — cannot reach the machine it runs on"
+                        ))
+                    }
+                },
             };
             let command = thurbox::kernel::runs::command_for(&ask.program, cwd, host.as_ref());
             thurbox::kernel::runs::capture(command, ask.timeout)
         })
     }
 
-    /// Relaunch the agent of any session whose window is gone.
-    ///
-    /// v1's `respawn_stale_session`, reached differently. v1 asks the question
-    /// once, synchronously, during restore; here discovery is a worker, so the
-    /// answer arrives a moment later and the question is asked each frame until
-    /// it can be answered. `self.respawned` permits one automatic relaunch per
-    /// session in this TUI process, including when the attempt fails. A failure
-    /// remains visible for an explicit operator retry.
-    ///
-    /// It goes through `restart`, which is exactly a respawn once killing a
-    /// window that is not there stopped being an error: same session id, same
-    /// worktrees, same host, and `resume_trigger_for` deciding whether the agent
-    /// resumes its conversation or starts fresh.
-    pub(crate) fn respawn_missing_agents(&mut self) {
-        let missing = self.terminals.missing_agents(self.snapshots.current());
-        for id in missing {
-            if !self.respawned.insert(id.clone()) {
-                continue;
-            }
-            self.dispatch_tracked(thurbox::kernel::command::Command::Restart {
-                session: id,
-                if_missing: true,
-                fresh: false,
-            });
-        }
-    }
-
-    /// Re-attach any session to the shell window it already had.
-    ///
-    /// v1 does this at restore (`readopt_shell_pane`); here attaching is a
-    /// worker, so the shell is picked up on the frame after the agent's own pane
-    /// lands. Cheap to ask every iteration: it is a map lookup for a session that
-    /// has no shell recorded, which is nearly all of them.
-    pub(crate) fn readopt_shells(&mut self) {
+    /// Fold in the shells the terminals opened or lost.
+    pub(crate) fn collect_shell_results(&mut self) {
         for result in self.terminals.drain_shell_results() {
             use thurbox::kernel::terminal::ShellResult;
             self.dirty = true;
             match result {
-                ShellResult::Ready { session, pane } => {
-                    if let Err(error) = self.snapshots.remember_shell(&session, &pane) {
-                        tracing::warn!("could not record shell pane for {session}: {error}");
-                    }
-                }
+                ShellResult::Ready { .. } => {}
                 ShellResult::Gone {
                     session,
                     open_requested,
                 } => {
-                    let _ = self.snapshots.forget_shell(&session);
                     if open_requested {
                         self.apply_shell_command(&session);
                     }
@@ -891,29 +820,6 @@ impl App {
                     );
                 }
             }
-        }
-        let wanted: Vec<(String, String)> = self
-            .snapshots
-            .current()
-            .sessions
-            .iter()
-            .filter(|row| row.shell_backend_id.is_some())
-            .filter(|row| self.terminals.is_attached(&row.id))
-            .filter(|row| !self.terminals.has_shell(&row.id))
-            .filter_map(|row| {
-                row.shell_backend_id
-                    .clone()
-                    .map(|pane| (row.id.clone(), pane))
-            })
-            .collect();
-        // Asked before the size is so the common empty case stays free — and
-        // the size itself is the cached one, updated from `Event::Resize`.
-        if wanted.is_empty() {
-            return;
-        }
-        let (cols, rows) = self.screen_size;
-        for (session, pane) in wanted {
-            self.terminals.readopt_shell(&session, &pane, rows, cols);
         }
     }
 }

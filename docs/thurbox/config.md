@@ -32,7 +32,9 @@ development checkout never touches your real setup.
 | `~/.config/thurbox/plugin-state.json` | JSON | Interface tab (or `thurbox-cli plugin`) | startup | **what a plugin may do**: `trusted` (absolute path → the grant, a digest or `{pin, digest}` for an installed pane) and `disabled` (absolute paths turned off). Kept apart from `ui.json` so the file capabilities are granted from is written only when a grant or the disabled set changes. A release before it kept both tables in `ui.json`; the first start that finds them there writes this file, then removes them from `ui.json` — in that order, so an interruption leaves both copies and this file wins: a later start only removes the leftover tables from `ui.json` and never rewrites this file. If this file cannot be written, `ui.json` keeps both tables until a later start moves them; one that exists but cannot be read or parsed is never replaced by them, and `config validate` names it. Same `registry::Origin` rule as `ui.json` |
 | `~/.config/thurbox/extensions/<name>.toml` | TOML | `thurbox-cli extension install` | startup + tick | extension manifests (self-healed resources) |
 | `~/.config/thurbox/keybindings.json` | JSON | — | **never** | v1's chord overrides. **Ignored**: rebindings live in `ui.json`. Left alone rather than deleted, so going back to 1.x still finds it |
-| `~/.local/share/thurbox/thurbox.db` | SQLite | thurbox | live | sessions, automations, tasks, theme, editor command |
+| `~/.config/thurbox/interface.json` | JSON | thurbox (theme picker, `thurbox-cli editor`) | startup | the theme last chosen and the editor `Ctrl+O` opens. Missing or unreadable is the defaults |
+| `~/.local/share/thurbox/bookmarks.json` | JSON | the creation flow | each read of the repository list | the repositories and folders the creation flow remembers, per host |
+| `~/.local/share/thurbox/perf.json` | JSON | thurbox, while perf timing is on | each perf window | the perf snapshot `thurbox-cli perf` prints |
 | `~/.local/share/thurbox/thurbox.log` | text | thurbox | — | logs (incl. config warnings). Rotated daily into `thurbox.log.<date>`; the 30 most recent are kept and older ones deleted at startup |
 | `~/.local/share/thurbox/automation-tick.json` | JSON | `automation tick` | each tick | the last tick's time, outcome, error, fire counts and the automations it could not fire, which `thurbox-cli runtime status` reports — the heartbeat keeper throws the tick's own output away |
 | `~/.local/share/thurbox/host-verdicts.json` | JSON | thurbox | on each host-CLI question past the in-memory cache | why each shared host is not usable right now, when that was found and how many times in a row — the probe's backoff, so the interface and every heartbeat tick share one instead of each starting over (#1576). Not user-set; an entry goes the first time its host is usable, and `session sync --host <name>` drops it. A file rather than a `metadata` row because nothing needs it live and a write there would rebuild the session snapshot |
@@ -983,7 +985,7 @@ all commented so defaults still apply out of the box.
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
 | `deleted_retention_days` | `0` | days before the sweep removes a deleted session’s created worktrees and retains a purge tombstone; `0` keeps all |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
-| `[fleet] enabled` | `false` | run sessions as Fleet Tasks; see [`[fleet]`](#fleet--the-session-engine) |
+| `[fleet] program` | `fleet` | the Fleet that runs every session; see [`[fleet]`](#fleet--the-session-engine) |
 
 A complete `settings.toml` showing every knob at its default — copy
 this, uncomment what you want to change, and restart:
@@ -1027,8 +1029,7 @@ copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies 
 transitive_sessions = false    # true = also list sessions a host mirrors from hosts of its own
 
 [fleet]
-enabled = false                # true = every session is a Fleet Task (restart-only)
-program = "fleet"              # the fleet binary: a name on PATH or a path
+program = "fleet"              # the fleet binary: a name on PATH or a path (restart-only)
 ```
 
 ### `hidden_terminal_secs` — how much memory a session off screen holds
@@ -1303,13 +1304,13 @@ has the rule.
 
 ```toml
 [fleet]
-enabled = false      # true: every session is a Fleet Task
 program = "fleet"    # the fleet binary: a name on PATH or a path
 ```
 
-Off, thurbox's own engine runs the sessions over its database. On, Fleet runs
-them ([ADR-41](architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes)),
-and the interface is a client of Fleet's command line:
+Fleet runs every session
+([ADR-41](architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes)),
+and the interface is a client of Fleet's command line. thurbox keeps no
+database:
 
 | The interface | Fleet's command |
 | --- | --- |
@@ -1337,8 +1338,7 @@ and the interface is a client of Fleet's command line:
 - A creation that names a branch, a base, a worktree or further repositories
   is refused: Fleet makes a Task's workspace. The multiplexer the create flow
   settles on is dropped: Fleet's runtime keeps the terminal. A confirmed
-  delete is checked against the Task as it is then, as thurbox's own engine
-  checks it against the row.
+  delete is checked against the Task as it is then.
 - The host picker's route names the Fleet host: `ssh:devbox` is `devbox`,
   this machine is `local`. A host Fleet's config does not define
   (`fleet runtime hosts`) is refused.
@@ -1346,12 +1346,11 @@ and the interface is a client of Fleet's command line:
   harness profile for (`fleet version --json`'s `harnesses`: `claude`,
   `claude-code`, `codex`) is taken. Any other, `shell` included, is refused
   by name: Fleet would run a program named as the agent.
-- Only sessions are Fleet's. Restore, restart, fork, rename, sync, reorder
-  and dispatching a task to a session are refused by name. Everything that is
-  no session's (settings, bookmarks, folders and clones, the task list,
-  automations) runs on thurbox's own engine as before, and is read back from
-  its database: the snapshot takes its sessions from `fleet watch` and the
-  task list and automations from the database.
+- Restore, restart, fork, rename, sync, reorder, the task list, dispatching
+  a task and automations have no engine and are refused by name. A todo is a
+  Fleet Task that is not dispatched (`fleet apply`). Settings are
+  `settings.toml`; the repositories and folders the creation flow remembers
+  are `bookmarks.json`.
 - A Task's terminal is the stream `fleet attach` names, opened as a stream
   pane. A Task with no session yet has no pane; a stream that ends is opened
   again. Closing the pane detaches; the agent keeps running. A stream with no
@@ -2382,51 +2381,6 @@ other startup notices;
 
 ## Versioning
 
-The SQLite schema migrates automatically (`schema_version` in
-`metadata`). The TOML files carry a `config_version = 1` marker so a
-future format change can migrate them too; current files are version 1
-and the field is optional.
-
-`schema_version` records what *ran*, which is not the same as what is *there*,
-and the two came apart: migrations were originally written as
-`let _ = conn.execute("ALTER …")`, which swallowed a real failure while the
-version advanced anyway. One database in the field reported the current version
-with none of v41's four columns on `sessions`, so every status signal failed
-with `no such column: stopped_at` and no session on that machine ever reported
-a state. The version gate could not repair it — the version was the thing that
-was wrong — so the **additive** steps — those that add a column or a table of
-their own if absent — are re-asserted on any open that runs the pass, not only
-on an upgrade. A healthy database changes nothing and pays a handful of
-catalogue reads.
-
-An open whose database is already current skips the pass, and takes no write
-lock at all: every agent hook runs a `thurbox-cli`, and each of those used to
-queue behind any writer for a pass with nothing to do. "Current" is decided
-from SQLite's own schema cookie (`PRAGMA schema_version`), which any DDL by
-any binary changes. The last full pass records it in `metadata` as
-`schema_cookie`. An open whose cookie, version and `min_reader_version` all
-still agree skips the pass. A column dropped by hand, or a thurbox from before
-this rule re-adding its own triggers, changes the cookie and gets the full pass
-again. The retention sweeps on open also read before they delete, for the same
-reason. Steps that rewrite or seed data stay gated on the version, because
-applying one twice does not mean what applying it once meant.
-
-The TUI, every agent hook's `thurbox-cli` and the host CLIs open the same file,
-so the whole pass on open runs in one `BEGIN IMMEDIATE` transaction and reads
-the version inside it: a second process opening an old database at the same
-time waits, then finds it already migrated, instead of running a data step
-again. Switching a brand-new file to WAL is retried for the same reason: two
-processes doing it at once deadlock on the file lock, and SQLite fails one
-without waiting.
-
-A downgrade keeps working. A database whose `schema_version` is **newer** than
-the binary knows still opens: the older thurbox runs none of its own steps
-against it, leaves the version alone, and writes only what it knows. That is
-safe because migrations stay **additive** — new columns nullable or defaulted,
-new tables, nothing renamed, retyped or dropped. A migration that has to break
-that also raises `min_reader_version` in `metadata` (`MIN_READER_VERSION` in
-`src/storage/schema/mod.rs`) to its own schema version. A thurbox whose schema
-version is below that value then refuses the database with an error naming
-both versions and saying to update, rather than writing rows the schema no
-longer describes. The value only ever rises. Binaries released before
-`min_reader_version` existed do not read it.
+The TOML files carry a `config_version = 1` marker so a future format change
+can migrate them; current files are version 1 and the field is optional.
+thurbox keeps no database: sessions are Fleet's (ADR-41).

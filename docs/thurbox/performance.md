@@ -224,7 +224,7 @@ won't pay off.
 - **Time-to-first-frame**: launch with `THURBOX_PERF_LOG=1`; `run_loop` logs one
   `startup …` line to `~/.local/share/thurbox/thurbox.log` with a **phase
   breakdown** that sums to roughly `first_frame_ms` —
-  `config_init_ms` (config-file loads + local backend ready), `db_open_ms`,
+  `config_init_ms` (config-file loads + local backend ready), `snapshot_open_ms`,
   `theme_activate_ms` (persisted-theme lookup + custom-theme publish),
   `extension_heal_ms` (self-heal + built-in hooks wiring + agents reload),
   `app_new_ms` (`App::new`: keybindings load, settings snapshot, channels),
@@ -339,7 +339,8 @@ sweep's backoff keys, each of which rebuilt the whole snapshot.
 `Database::open_for_signal`, which skips migrations and retention for a current
 schema and falls back to the full open for a new or older database.
 
-Alongside this, `Database::initialize` (`src/storage/schema/mod.rs`) sets the
+Alongside this, `Database::initialize` (the schema module, since removed with
+the database) set the
 WAL-friendly performance pragmas `synchronous = NORMAL`, `cache_size = -8000`
 (8 MB), `mmap_size = 64 MB`, and `temp_store = MEMORY`.
 
@@ -2666,9 +2667,8 @@ The message itself was always durably queued — only the liveness report lied.
 This is **not** the automation freeze and shares no mechanism with it: no event
 loop, no blocking call, no starvation. It is a false-positive liveness signal
 in a headless CLI path. Five call sites shared it — the mailbox wake
-(`src/cli/messages.rs:300`), `session send` (`src/cli/sessions.rs:299`),
-`task run` (`src/cli/tasks.rs:310,333`), and the **headless `Send` automation**
-(`src/cli/automations.rs:545,571`), which recorded a `Success` run for a prompt
+(`message send`), `session send`, `task run` and the **headless `Send`
+automation**, which recorded a `Success` run for a prompt
 that went nowhere.
 
 Fixed here: `send_prompt_now` now refuses a dead pane, so all five callers
@@ -2781,7 +2781,7 @@ worktree/spawn offload should ride with that branch or follow it.
 | I want to… | Do this |
 | --- | --- |
 | Measure startup | `THURBOX_PERF_LOG=1 thurbox`, read the `startup` line in `thurbox.log` |
-| Break down startup time | Read the `startup` line's phase fields: `config_init_ms`, `db_open_ms`, `theme_activate_ms`, `extension_heal_ms`, `heartbeat_ms`, `ui_build_ms` (building the Lua interface) and `first_frame_ms` |
+| Break down startup time | Read the `startup` line's phase fields: `config_init_ms`, `snapshot_open_ms`, `theme_activate_ms`, `extension_heal_ms`, `heartbeat_ms`, `ui_build_ms` (building the Lua interface) and `first_frame_ms` |
 | Watch steady-state cost | `THURBOX_PERF_LOG=1 thurbox`, read the `perf_window` lines (~1000 iterations: counter deltas + frame/republish/tick percentiles + slow ops) |
 | Attribute an interactive stall | Look for `slow op` warnings in `thurbox.log` (named op + ms + the plugin whose call was longest), or the slow-op list in `perf_window` |
 | Watch perf live in the TUI | Press `F12` (perf HUD overlay; `[features] perf_hud`) |

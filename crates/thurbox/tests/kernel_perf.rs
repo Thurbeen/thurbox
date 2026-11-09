@@ -17,7 +17,6 @@ use thurbox::kernel::registry::Registry;
 use thurbox::kernel::runs::RunEvent;
 use thurbox::kernel::snapshot::{Snapshot, SnapshotStore};
 use thurbox::kernel::theme::Themes;
-use thurbox::storage::Database;
 
 fn ctx(width: u16, height: u16) -> RenderContext {
     RenderContext {
@@ -116,9 +115,7 @@ fn a_snapshot_read_never_touches_the_database() {
     // keep an idle tick off the sessions table. Here the shape makes it
     // structural — reads come from the snapshot, and refresh is the only thing
     // that queries.
-    let db = Database::open_in_memory().expect("db");
-    let store = SnapshotStore::with_database(
-        db,
+    let store = SnapshotStore::without_sessions(
         &thurbox::backend::wiring::configured(&Default::default()).0,
         &Default::default(),
     );
@@ -139,10 +136,7 @@ fn dispatching_a_command_never_blocks_the_caller() {
     // ADR-P12 re-derived: v1 moved the whole new-session flow off the UI thread
     // deliberately. Here it falls out of the bus — there is no blocking form to
     // accidentally use.
-    let bus = CommandBus::new(
-        std::sync::Arc::new(thurbox::backend::wiring::configured(&Default::default()).0),
-        &Default::default(),
-    );
+    let bus = CommandBus::fleet("thurbox-test-no-fleet".into());
     let started = std::time::Instant::now();
 
     for _ in 0..20 {
@@ -216,8 +210,7 @@ fn the_published_snapshot_is_what_the_cli_renders() {
 
     let startup = Startup {
         config_init_ms: 3,
-        db_open_ms: 11,
-        extension_heal_ms: 15,
+        snapshot_open_ms: 11,
         ui_build_ms: 40,
         first_frame_ms: 120,
         ..Startup::default()
@@ -225,9 +218,8 @@ fn the_published_snapshot_is_what_the_cli_renders() {
 
     let json = snapshot_json(&counters.read(), &timings, &startup, 2, &Default::default());
 
-    let db = Database::open_in_memory().expect("db");
-    db.set_perf_snapshot(&json.to_string()).expect("publish");
-    let out = thurbox::cli::perf::run(&db, false).expect("render");
+    let _profile = publish_perf(&json.to_string());
+    let out = thurbox::cli::perf::run(false).expect("render");
 
     assert!(
         out.failure.is_none(),
@@ -619,10 +611,9 @@ fn the_cli_prints_the_plugin_table_sorted_with_a_stable_json_shape() {
         0,
         &report,
     );
-    let db = Database::open_in_memory().expect("db");
-    db.set_perf_snapshot(&json.to_string()).expect("publish");
+    let _profile = publish_perf(&json.to_string());
 
-    let out = thurbox::cli::perf::run(&db, true).expect("render");
+    let out = thurbox::cli::perf::run(true).expect("render");
     assert!(out.failure.is_none());
     let rows = out.json["plugins"].as_array().expect("plugins array");
     assert_eq!(rows.len(), 4);
@@ -676,189 +667,19 @@ fn the_cli_prints_the_plugin_table_sorted_with_a_stable_json_shape() {
 
     // Without --plugins the aggregate view is unchanged, and says where the
     // per-pane view lives.
-    let plain = thurbox::cli::perf::run(&db, false).expect("render");
+    let plain = thurbox::cli::perf::run(false).expect("render");
     assert!(plain.human.contains("--plugins"), "{}", plain.human);
 }
 
 #[path = "../../runtime-mux/tests/support/tmux_server.rs"]
 mod tmux_server;
 
-fn file_store() -> (
-    tempfile::TempDir,
-    thurbox::paths::TestPathGuard,
-    tmux_server::TmuxServer,
-    Database,
-    SnapshotStore,
-) {
-    let dir = tempfile::tempdir().unwrap();
-    let guard = thurbox::paths::TestPathGuard::new(dir.path().to_path_buf());
-    let server = tmux_server::TmuxServer::private("thurbox-snapshot-perf");
-    let path = dir.path().join("thurbox.db");
-    let writer = Database::open(&path).unwrap();
-    let store = SnapshotStore::with_database(
-        Database::open(&path).unwrap(),
-        &thurbox::backend::wiring::configured(&Default::default()).0,
-        &Default::default(),
-    );
-    (dir, guard, server, writer, store)
-}
-
-fn signal(
-    root: &std::path::Path,
-    server: &tmux_server::TmuxServer,
-    id: thurbox::session::SessionId,
-    state: &str,
-) {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_thurbox-cli"));
-    command
-        .args([
-            "session",
-            "signal",
-            "--session",
-            &id.to_string(),
-            "--state",
-            state,
-            "--json",
-        ])
-        .env("THURBOX_CONFIG_DIR", root)
-        .env("THURBOX_DATA_DIR", root);
-    server.scope(&mut command);
-    let output = command.output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["signaled"], true);
-}
-
-fn poll_due(store: &mut SnapshotStore, clock: &mut Instant) -> bool {
-    *clock += Duration::from_secs(1);
-    poll_at(store, *clock)
-}
-
-/// One poll, and whether it reloaded the rows. The read runs on the store's
-/// worker, so the answer is waited for here rather than on a later poll.
-fn poll_at(store: &mut SnapshotStore, clock: Instant) -> bool {
-    let applied = store.refresh_if_due_at(clock);
-    applied | store.settle()
-}
-
-#[test]
-fn perf_publications_do_not_reload_the_snapshot() {
-    let (_dir, _guard, _server, writer, mut store) = file_store();
-    let mut clock = Instant::now();
-    let mut reloads = 0;
-    for frames in 1..=12 {
-        let json = format!(r#"{{"frames":{frames}}}"#);
-        writer.set_perf_snapshot(&json).unwrap();
-        clock += Duration::from_secs(5);
-        reloads += usize::from(poll_at(&mut store, clock));
-        assert_eq!(
-            writer.get_perf_snapshot().unwrap().as_deref(),
-            Some(json.as_str())
-        );
-    }
-    assert_eq!(
-        reloads, 0,
-        "twelve 5-second perf publications in an idle minute"
-    );
-    writer.set_active_theme("default").unwrap();
-    assert!(
-        poll_due(&mut store, &mut clock),
-        "a real metadata change must still reload"
-    );
-}
-
-#[test]
-fn repeated_hook_reports_do_not_reload_the_snapshot() {
-    let (dir, _guard, server, writer, mut store) = file_store();
-    let mut clock = Instant::now();
-    let id = thurbox::session::SessionId::default();
-    writer.conn_ref().execute(
-        "INSERT INTO sessions (id, name, agent, created_at, updated_at) VALUES (?1, 'busy', 'codex', 0, 0)",
-        [id.to_string()],
-    ).unwrap();
-    signal(dir.path(), &server, id, "working");
-    assert!(poll_due(&mut store, &mut clock));
-    let mut previous = writer
-        .load_hook_state(id)
-        .unwrap()
-        .unwrap()
-        .state_at
-        .unwrap();
-    let mut reloads = 0;
-    let started = clock;
-    for call in 1..=33 {
-        signal(dir.path(), &server, id, "working");
-        let stamp = writer
-            .load_hook_state(id)
-            .unwrap()
-            .unwrap()
-            .state_at
-            .unwrap();
-        assert!(
-            stamp > previous,
-            "re-reports retain the liveness and submission race stamp"
-        );
-        previous = stamp;
-        clock = started + Duration::from_secs(60) * call / 33;
-        reloads += usize::from(poll_at(&mut store, clock));
-        assert_eq!(
-            store
-                .codex_submission_report(&id.to_string())
-                .unwrap()
-                .state_at,
-            Some(stamp)
-        );
-    }
-    assert_eq!(reloads, 0, "33 same-state reports in a busy minute");
-    writer.set_hook_state(id, "done").unwrap();
-    assert!(poll_due(&mut store, &mut clock));
-    assert_eq!(
-        store.current().session(&id.to_string()).unwrap().status,
-        thurbox::session::SessionState::Done
-    );
-    store.acknowledge(&id.to_string());
-    assert_eq!(
-        store.current().session(&id.to_string()).unwrap().status,
-        thurbox::session::SessionState::Idle
-    );
-    writer.set_hook_state(id, "done").unwrap();
-    assert!(
-        !poll_due(&mut store, &mut clock),
-        "acknowledgement and a new done stamp need only hook reads"
-    );
-    assert_eq!(
-        store.current().session(&id.to_string()).unwrap().status,
-        thurbox::session::SessionState::Done
-    );
-}
-
-#[test]
-fn a_hook_stamp_cannot_hide_a_row_change_in_the_same_poll() {
-    let (_dir, _guard, _server, writer, mut store) = file_store();
-    let mut clock = Instant::now();
-    let id = thurbox::session::SessionId::default();
-    writer.conn_ref().execute(
-        "INSERT INTO sessions (id, name, agent, created_at, updated_at) VALUES (?1, 'original', 'codex', 0, 0)",
-        [id.to_string()],
-    ).unwrap();
-    writer.set_hook_state(id, "working").unwrap();
-    assert!(poll_due(&mut store, &mut clock));
-    writer.set_hook_state(id, "working").unwrap();
-    writer
-        .conn_ref()
-        .execute(
-            "UPDATE sessions SET name = 'renamed' WHERE id = ?1",
-            [id.to_string()],
-        )
-        .unwrap();
-    writer.set_perf_snapshot("{}").unwrap();
-    assert!(poll_due(&mut store, &mut clock));
-    assert_eq!(
-        store.current().session(&id.to_string()).unwrap().name,
-        "renamed"
-    );
+/// Publish `json` where a running interface writes its perf snapshot, in a
+/// profile of the test's own.
+fn publish_perf(json: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("profile");
+    thurbox::paths::set_test_dir(dir.path());
+    let path = thurbox::paths::perf_snapshot_file().expect("perf path");
+    std::fs::write(path, json).expect("publish");
+    dir
 }

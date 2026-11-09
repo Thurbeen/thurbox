@@ -37,7 +37,7 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
    table, which is what breaks the circularity.
 3. **Snapshot-read, command-write** — reads come from an in-memory snapshot and
    return instantly; writes are commands accepted now and surfaced later. Lua never
-   blocks, so no plugin can stall the loop on SQLite, git or an unreachable host.
+   blocks, so no plugin can stall the loop on Fleet, git or an unreachable host.
 4. **Capabilities by absence** — an ungranted capability is *not in the
    environment*. `io`, `os`, `debug`, `package` and the loaders are withheld, and
    `thurbox.yml` makes selene enforce that statically. One capability cannot be
@@ -45,13 +45,13 @@ deleted when the kernel took the binary name — v1 lives on the `v1.x` branch.
    plugin has, so `thurbox.granted` reports the grant instead — a boolean about a
    decision already made, which withholds nothing.
 5. **Anything touching the world runs on a worker** — terminal attach, commands,
-   the interface's database reads and writes (`kernel::snapshot::db`), diffs,
+   the `fleet watch` that feeds the snapshot (`kernel::snapshot::fleet`), diffs,
    metrics, git stats, repository reads, update checks, and programs a plugin
-   asked for. In `kernel::snapshot` (`db`, `fleet`, `git`, `probe`) and
-   `kernel::terminal` (`attach`, `discovery`, `shells`) each worker is a file of
+   asked for. In `kernel::snapshot` (`fleet`, `git`) and `kernel::terminal`
+   (`attach`, `discovery`, `shells`, `stream_pane`) each worker is a file of
    its own, and `each_kernel_worker_lives_in_a_file_of_its_own` in
    `tests/architecture_rules.rs` fails when the store, the read model or the
-   paint path (`terminal::paint`) starts a thread or opens the database.
+   paint path (`terminal::paint`) starts a thread or runs `git`.
 
 `files.read` uses `kernel::worker_store::WorkerStore<K, V>`: two reusable
 workers, 16 deduplicated keys/answers, one-second TTL refreshes, and a generation
@@ -93,28 +93,23 @@ backend              session, paths, config::hosts     (the gateway to
                                                         runtime-mux, and what
                                                         thurbox injects)
 git                  session, paths, shell
-storage              session, paths
-telemetry            session, storage                  (ADR-37/38 OTLP export)
-session_ops          session, storage, git, paths,     [agent|config|update::<file>,
-                     workspace, shell                   backend]
-kernel               session, storage, paths,          [agent|config|update::<file>,
-                     session_ops, git, notifications,   backend]
-                     shell, theme
-cli                  session, storage, session_ops,    [agent|config|update::<file>,
-                     paths, notifications, ui_control,  backend, kernel]
-                     telemetry, theme
-notifications        session, paths, shell             [storage]
+telemetry            session                           (ADR-38 diagnostic logs)
+kernel               session, paths, git,              [agent|config|update::<file>,
+                     notifications, shell, theme        backend]
+cli                  session, paths, notifications,    [agent|config|update::<file>,
+                     ui_control, theme                  backend, kernel]
+notifications        session, paths, shell
 clipboard            session, paths
 workspace            paths
 paths                nothing — leaf utility
 ui_control           paths
 shell                nothing — runtime-mux's launchers and quoting, re-exported
 theme                nothing — the presets, in ratatui colours
-coordinator          agent::input, config::settings,   (main's body: the loop,
-                     backend, clipboard, kernel,        the workers, the chrome)
-                     paths, session, session_ops,
-                     shell, storage, telemetry,
-                     ui_control
+coordinator          agent::input, config::{hosts,     (main's body: the loop,
+                     interface_state,settings},         the workers, the chrome)
+                     backend, clipboard, kernel,
+                     notifications, paths, session,
+                     shell, telemetry, ui_control
 ```
 
 The multiplexer runtime is its own crate, `crates/runtime-mux` (ADR-41), with
@@ -138,7 +133,7 @@ declared. Only the crate roots (`bin`, `lib`, `main`) are `EXEMPT`;
 "wires everything" was never the same claim as "may reach anything". `kernel` reaches
 `agent` and `backend` by fully-qualified path only — never `use` — so
 every crossing into the side-effect layer is visible at its call site, the rule
-`session_ops` and `cli` already follow. A function-local `use crate::agent::…` (or
+`cli` already follows. A function-local `use crate::agent::…` (or
 `as` alias) breaks it too. One test, `every_module_rule_holds`, loops over every
 entry — a rule used to be able to exist with no test calling it, which is how
 `kernel` drifted.
@@ -189,14 +184,14 @@ alias and re-export laundering, and test-only edges.
   into them), `modals/` (help, settings, theme picker, the command palette —
   chrome about thurbox itself,
   which plugins contribute *data* to rather than replace), `bands` (the top/bottom
-  bars), `snapshot` (the read side: the database, or a `SnapshotSource` such
-  as `fleet::FleetWatch`), `command` (the write side: an `Executor`, thurbox's
-  own engine or `command::fleet`; ADR-41), `terminal/` (live
+  bars), `snapshot` (the read side: a `SnapshotSource`, `fleet::FleetWatch`),
+  `command` (the write side: the `Executor`, `command::fleet`; ADR-41),
+  `bookmarks` (the creation flow's repository memory, `bookmarks.json`),
+  `terminal/` (live
   PTY surfaces: the attach machinery, plugin program panes, link detection +
   OSC 8 painting — every surface owns its own rect and size memo, and a
   session's agent and its `#shell` companion are two of them, never one),
-  `selection` (mouse text selection over a pane),
-  `consent` (the one-time v1→v2 gate), plus the worker-backed
+  `selection` (mouse text selection over a pane), plus the worker-backed
   stores: `diff`, `metrics`, `repos`, `runs`, `updates`, `files`, `notify`,
   `theme`, `perf`, `bundled`, `inventory`, `packages` (the spec, the lock, and the
   install/converge/withdraw operations — sharing `bundled`'s decision matrix).
@@ -269,9 +264,9 @@ alias and re-export laundering, and test-only edges.
 ### Event Loop (`src/main.rs` + `src/coordinator/`)
 
 ```text
-tokio::main → load config + settings → heal extensions → arm the heartbeat
-  → the v1→v2 consent gate (kernel::consent, before the terminal is taken)
-  → resolve ui/ → build the Lua host → open SQLite → init terminal → loop {
+tokio::main → load config + settings
+  → resolve ui/ → build the Lua host → follow `fleet watch` (and keep a
+  `fleet up`) → init terminal → loop {
     resolve layout → call each plugin with its rect → paint
     → poll workers (terminals, commands, diffs, metrics, repos, runs, updates)
     → dispatch events to the plugins subscribed to them (kernel::events)
@@ -602,8 +597,8 @@ budget. The kernel's events are **derived by diffing the snapshot** — a row
 appearing, leaving, changing status/name/branch/repos/parent — plus the focus
 ring, the command bus (`command.done`/`failed`, and `session.post_*` for the
 four operations *this* interface performed, named as `hooks.toml` names them) and
-`interface.reloaded`; never raised from `session_ops`, so a session another
-process made fires the same event. The set is closed (`KERNEL_EVENTS`): a
+`interface.reloaded`; never raised by whatever changed the session, so a
+session another process made fires the same event. The set is closed (`KERNEL_EVENTS`): a
 subscription to an unknown name refuses to load, and the same table renders in
 `F1` and `thurbox-cli plugin events`. `command("emit", { text = name, … })`
 delivers `user.<name>` to other plugins with `source` stamped by the kernel;

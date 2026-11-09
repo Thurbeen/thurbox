@@ -299,8 +299,7 @@ it. Naming the agent on the row (`session create --reports-as grok`) is what
 resolves the coverage. All are declared in
 [`extensions/hooks/extension.toml`](../../extensions/hooks/extension.toml); the
 embedded hook assets live in
-[`extensions/hooks/`](../../extensions/hooks/) and are `include_str!`'d by
-[`src/session_ops/builtin_hooks.rs`](../../crates/thurbox/src/session_ops/builtin_hooks.rs).
+[`extensions/hooks/`](../../extensions/hooks/).
 
 - **`agent_patches` (arg injection)** — appends args to the agent's launch
   command, reversibly.
@@ -563,16 +562,10 @@ automatically. Work the checklist top to bottom:
    mechanism from [Status hook mechanisms](#status-hook-mechanisms):
    `agent_patches` if hooks are launch flags, `config_merges` if they live in a
    shared config file thurbox must not clobber, `external_files` for a standalone
-   drop into the agent's own config dir. Register any new embedded asset with an
-   `include_str!` in
-   [`src/session_ops/builtin_hooks.rs`](../../crates/thurbox/src/session_ops/builtin_hooks.rs), and
-   add its row to `AGENT_HOOK_COVERAGE` in
+   drop into the agent's own config dir. Add its row to `AGENT_HOOK_COVERAGE` in
    [`src/session/hook_status.rs`](../../crates/thurbox/src/session/hook_status.rs) (the drift test
    fails until it matches the payload), and — for a `config_merges` /
-   `external_files` wiring — the matching entry in `remote_asset_for`
-   ([`src/session_ops/remote_hooks.rs`](../../crates/thurbox/src/session_ops/remote_hooks.rs)), so
-   remote sessions get the same payload (a test fails until local and remote
-   agree). Bump the hooks extension `version`. Skipping this step means the new
+   `external_files` wiring — the same payload for remote sessions. Bump the hooks extension `version`. Skipping this step means the new
    agent launches fine but **never shows working/blocked/done**.
 
    This step also stands **alone**: an agent thurbox ships no `[[agents]]` entry

@@ -10,9 +10,8 @@
 //! The manifest is the declarative contract behind `thurbox-cli extension
 //! activate/deactivate` and the startup/tick self-heal: it names the
 //! sessions/automations to (re)create idempotently. Kept here in `session` (the
-//! dependency sink) so both `agent` (the loader) and `session_ops` (the
-//! orchestration) can depend on the same type without crossing module-isolation
-//! rules — exactly like [`crate::session::HostDef`].
+//! dependency sink) so `agent` (the loader) and its callers can depend on the
+//! same type without crossing module-isolation rules — exactly like [`crate::session::HostDef`].
 
 use std::path::{Path, PathBuf};
 
@@ -247,7 +246,7 @@ impl ExtensionAutomation {
     /// (downstream `command` silently wins, dropping the send fields), or
     /// setting neither. Mirrors [`crate::session::message::validate_kind_body`];
     /// called where the manifest is turned into resources
-    /// ([`crate::session_ops::ensure_extension`]).
+    /// (the extension installer).
     pub fn validate(&self) -> Result<(), String> {
         let has_send_fields = self.session_ref.is_some() || self.prompt.is_some();
         if self.command.is_some() && has_send_fields {
@@ -605,8 +604,8 @@ mod tests {
             checked.push(named.to_string());
         }
         // The exact set, not a count: it also pins that the walk found the real
-        // tree, and that the built-ins — the only extensions thurbox ships,
-        // and the ones `session_ops::builtin` embeds — are all still there.
+        // tree, and that the built-ins — the only extensions thurbox ships —
+        // are all still there.
         checked.sort();
         assert_eq!(checked, ["hooks", "sessions-skill", "ui-skill"]);
     }

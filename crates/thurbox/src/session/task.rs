@@ -12,9 +12,7 @@
 //! empty.
 //!
 //! This module is pure data (no local crate imports beyond `super`), matching
-//! the architecture rule for `session`. Persistence lives in `storage::tasks`;
-//! the verbs that create, edit, delete and dispatch one live in
-//! `session_ops::tasks`.
+//! the architecture rule for `session`.
 
 use super::AutomationAction;
 

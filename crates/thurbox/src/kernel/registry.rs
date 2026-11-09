@@ -416,7 +416,7 @@ enum Origin {
 }
 
 impl Registry {
-    /// Load persisted overrides, migrating v1's bindings and a legacy
+    /// Load persisted overrides, migrating a legacy
     /// `ui.json`'s trust and disabled tables on first run.
     ///
     /// The one constructor that reads `ui.json` and `plugin-state.json`, and so
@@ -476,17 +476,6 @@ impl Registry {
             }
         }
 
-        if registry.binding_overrides.is_empty() {
-            let (migrated, notes) = migrate_v1_bindings();
-            if !migrated.is_empty() {
-                warnings.push(format!(
-                    "migrated {} keybinding override(s) from v1",
-                    migrated.len()
-                ));
-                registry.binding_overrides = migrated;
-            }
-            warnings.extend(notes);
-        }
         registry.load_warnings = warnings;
         registry
     }
@@ -1575,73 +1564,6 @@ fn read_grant(granted: &serde_json::Value) -> Option<Granted> {
     })
 }
 
-/// Bring v1's `keybindings.json` overrides forward.
-///
-/// v1 keyed overrides by `Action` name and stored a *list* of chords; v2 keys by
-/// a plugin's action id and stores one. Only actions with an obvious equivalent
-/// are carried — the rest are reported rather than guessed at, because silently
-/// binding a key to the wrong thing is worse than not binding it.
-fn migrate_v1_bindings() -> (BTreeMap<String, String>, Vec<String>) {
-    let mut migrated = BTreeMap::new();
-    let mut notes = Vec::new();
-
-    let Some(path) = crate::paths::keybindings_file() else {
-        return (migrated, notes);
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return (migrated, notes);
-    };
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else {
-        notes.push(format!(
-            "{}: could not be parsed; not migrated",
-            path.display()
-        ));
-        return (migrated, notes);
-    };
-    let Some(map) = parsed.as_object() else {
-        return (migrated, notes);
-    };
-
-    let mut unmapped = Vec::new();
-    for (action, chords) in map {
-        let Some(chord) = chords
-            .as_array()
-            .and_then(|list| list.first())
-            .and_then(|v| v.as_str())
-            .or_else(|| chords.as_str())
-        else {
-            continue;
-        };
-        match V1_ACTIONS.iter().find(|(v1, _)| v1 == action) {
-            Some((_, v2)) => {
-                migrated.insert((*v2).to_string(), normalise_chord(chord));
-            }
-            None => unmapped.push(action.clone()),
-        }
-    }
-    if !unmapped.is_empty() {
-        unmapped.sort();
-        notes.push(format!(
-            "not migrated (no v2 equivalent yet): {}",
-            unmapped.join(", ")
-        ));
-    }
-    (migrated, notes)
-}
-
-/// v1 `Action` name → v2 plugin action id.
-///
-/// Only the ones the bare core actually provides. Extended as each pane lands,
-/// which is why the unmapped remainder is reported rather than dropped.
-const V1_ACTIONS: [(&str, &str); 6] = [
-    ("SelectNextSession", "sessions.next"),
-    ("SelectPreviousSession", "sessions.previous"),
-    ("DeleteSession", "sessions.delete"),
-    ("RestartSession", "sessions.restart"),
-    ("SessionListMoveDown", "sessions.move_down"),
-    ("SessionListMoveUp", "sessions.move_up"),
-];
-
 fn value_to_json(value: &Value) -> serde_json::Value {
     match value {
         Value::Bool(b) => serde_json::Value::Bool(*b),
@@ -2008,15 +1930,6 @@ mod tests {
         let mut registry = Registry::default();
         let error = registry.rebind("nope.nothing", Some("ctrl+n")).unwrap_err();
         assert!(error.contains("no action"), "{error}");
-    }
-
-    #[test]
-    fn v1_action_names_map_onto_v2_actions() {
-        // Migration is only as good as this table; every entry must name an
-        // action the bare core actually declares.
-        for (v1, v2) in V1_ACTIONS {
-            assert!(!v1.is_empty() && v2.contains('.'), "{v1} -> {v2}");
-        }
     }
 
     #[test]

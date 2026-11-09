@@ -22,7 +22,9 @@ use thurbox::kernel::registry::{binding_from, Registry, Setting, Value};
 use thurbox::kernel::snapshot::{SessionRow, Snapshot};
 use thurbox::kernel::theme::Themes;
 use thurbox::session::SessionState;
-use thurbox::storage::Database;
+
+/// Where a test keeps the theme the loop would store in `interface.json`.
+type Database = std::cell::RefCell<Option<String>>;
 
 const WIDTH: u16 = 150;
 const HEIGHT: u16 = 40;
@@ -358,14 +360,7 @@ fn the_theme_picker_previews_as_you_move_and_reverts_when_abandoned() {
     );
 
     // Nothing was persisted — a preview is not a choice.
-    assert_eq!(
-        thurbox::storage::Database::open(&thurbox::paths::database_file().expect("path"))
-            .expect("db")
-            .get_active_theme()
-            .expect("read"),
-        None,
-        "a preview must not be written to the database"
-    );
+    assert_eq!(themes.take_chosen(), None, "a preview must not be stored");
 
     // Esc puts back what was active when it opened.
     send(
@@ -463,11 +458,11 @@ fn closing_the_picker_by_its_own_chord_also_reverts() {
     assert_eq!(themes.active_name(), opened_with);
 }
 
-/// What the loop does with a theme the picker chose: store it, through the
-/// snapshot's database worker there and directly here.
+/// What the loop does with a theme the picker chose: store it, in
+/// `interface.json` there and in a cell here.
 fn store_chosen(themes: &mut Themes, db: Option<&Database>) {
     if let (Some(db), Some(name)) = (db, themes.take_chosen()) {
-        db.set_active_theme(&name).expect("store the theme");
+        *db.borrow_mut() = Some(name);
     }
 }
 
@@ -1173,9 +1168,9 @@ fn the_filter_narrows_the_list_and_the_count_says_so() {
 
 #[test]
 fn enter_applies_the_highlighted_theme_and_persists_it_where_v1_does() {
-    let db = Database::open_in_memory().expect("in-memory database");
+    let db = Database::default();
     let mut registry = Registry::default();
-    let mut themes = Themes::load(Some(&db));
+    let mut themes = Themes::load(None);
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Theme);
 
@@ -1198,7 +1193,7 @@ fn enter_applies_the_highlighted_theme_and_persists_it_where_v1_does() {
     );
 
     assert_eq!(themes.active_name(), wanted);
-    assert_eq!(db.get_active_theme().expect("read"), Some(wanted));
+    assert_eq!(db.borrow().clone(), Some(wanted));
     // Applying closes the picker, so the palette just chosen is visible.
     assert!(!modals.is_open());
 }
@@ -1279,9 +1274,9 @@ fn clicking_select_applies_the_theme_exactly_as_enter_does() {
     // The rule a button exists to keep: it replays a key through the same
     // handler the keyboard uses, so ` Select ` cannot come to mean something
     // `Enter` does not.
-    let db = Database::open_in_memory().expect("in-memory database");
+    let db = Database::default();
     let mut registry = Registry::default();
-    let mut themes = Themes::load(Some(&db));
+    let mut themes = Themes::load(None);
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Theme);
 
@@ -1302,16 +1297,16 @@ fn clicking_select_applies_the_theme_exactly_as_enter_does() {
     let message = click(&mut modals, x, y, &mut registry, &mut themes, Some(&db));
 
     assert_eq!(themes.active_name(), wanted);
-    assert_eq!(db.get_active_theme().expect("read"), Some(wanted));
+    assert_eq!(db.borrow().clone(), Some(wanted));
     assert!(!modals.is_open(), "applying closes the picker");
     assert!(message.is_some_and(|m| m.contains("theme:")), "no report");
 }
 
 #[test]
 fn clicking_cancel_closes_the_picker_and_keeps_the_theme() {
-    let db = Database::open_in_memory().expect("in-memory database");
+    let db = Database::default();
     let mut registry = Registry::default();
-    let mut themes = Themes::load(Some(&db));
+    let mut themes = Themes::load(None);
     let mut modals = Modals::default();
     modals.toggle(ModalKind::Theme);
     let before = themes.active_name().to_string();
