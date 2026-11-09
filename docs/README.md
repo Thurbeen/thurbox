@@ -4,7 +4,7 @@ thurbox, Fleet and the runtimes are three components that talk only by
 running each other's programs. Each has its own directory here, and this page
 is the whole system: what each owns and how they meet. The direction is recorded as
 [ADR-41](thurbox/architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes);
-it is accepted and not yet implemented.
+it is accepted and partly implemented.
 
 | Component | Directory | Start at |
 | --- | --- | --- |

@@ -304,7 +304,8 @@ its sessions; another instance is a client of it (ADR-24).
 
 This rule holds until [ADR-41](thurbox/architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes)
 lands: sessions then belong to Fleet and run on a runtime, and thurbox keeps
-no session rows.
+no session rows. With `[fleet] enabled`, it already holds none of its own:
+Fleet's store is the source of truth for which sessions exist.
 
 #### T4. Logging never touches stdout
 

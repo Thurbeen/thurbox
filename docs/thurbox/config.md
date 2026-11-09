@@ -983,6 +983,7 @@ all commented so defaults still apply out of the box.
 | `audit_retention_days` | `90` | audit + session-event history kept (pruned on startup) |
 | `deleted_retention_days` | `0` | days before the sweep removes a deleted session’s created worktrees and retains a purge tombstone; `0` keeps all |
 | `git_poll_secs` | `5` | how often each session's git worktree is re-statted; `0` turns it off |
+| `[fleet] enabled` | `false` | run sessions as Fleet Tasks; see [`[fleet]`](#fleet--the-session-engine) |
 
 A complete `settings.toml` showing every knob at its default — copy
 this, uncomment what you want to change, and restart:
@@ -1024,6 +1025,10 @@ copy_on_select = true          # releasing a drag copies; false = Ctrl+C copies 
 
 [remote]
 transitive_sessions = false    # true = also list sessions a host mirrors from hosts of its own
+
+[fleet]
+enabled = false                # true = every session is a Fleet Task (restart-only)
+program = "fleet"              # the fleet binary: a name on PATH or a path
 ```
 
 ### `hidden_terminal_secs` — how much memory a session off screen holds
@@ -1293,6 +1298,43 @@ owns it. A row seen through another host has no terminal attached here. Read
 by every mirror pass, so a change applies on the next one (within 10 s in the
 TUI). [features.md](features.md) → *Shared sessions*
 has the rule.
+
+### `[fleet]` — the session engine
+
+```toml
+[fleet]
+enabled = false      # true: every session is a Fleet Task
+program = "fleet"    # the fleet binary: a name on PATH or a path
+```
+
+Off, thurbox's own engine runs the sessions over its database. On, Fleet runs
+them ([ADR-41](architecture.md#adr-41-fleet-is-thurboxs-engine-sessions-run-on-runtimes)),
+and the interface is a client of Fleet's command line:
+
+| The interface | Fleet's command |
+| --- | --- |
+| reads the sessions | `fleet watch --json`: each Task is a session row named as the Task |
+| creates a session | `fleet apply`: an interactive Task (no brief, dispatched) over the chosen directory, with the chosen agent as its harness and the chosen host |
+| sends to a session | `fleet send` |
+| deletes a session | `fleet delete task`; Fleet has no undo window |
+| keeps a manager | `fleet up`, started whenever none holds the lease |
+
+- Fleet reads its own config (`FLEET_CONFIG`, then its per-user file). Run
+  `fleet init` before the first `fleet up`.
+- A `fleet up` the interface started runs in a process group of its own and
+  outlives the interface: Tasks keep reconciling with no interface open.
+- A session row's status is the Task's `sessionState`: `Running`, `Idle`,
+  `Paused` as `stopped`, `Lost` and `Gone` as `failed`, absent as
+  `unreported`.
+- A creation that names a branch, a base, a worktree, a multiplexer or further
+  repositories is refused: Fleet makes a Task's workspace, and its runtime
+  runs the terminal. Every other session command is refused by name.
+- A Task's terminal is the stream `fleet attach` names; until the interface
+  shows that stream, a Fleet session has no terminal pane.
+- A watch or a manager that fails is the snapshot's error, beside the last
+  rows read. Both are started again: the watch resumes with `--since`.
+
+Read at startup only.
 
 ### `[telemetry]` — OpenTelemetry for sessions
 

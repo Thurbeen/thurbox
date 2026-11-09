@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod db;
+pub mod fleet;
 mod git;
 mod probe;
 
@@ -377,6 +378,25 @@ impl Snapshot {
     }
 }
 
+/// Where a store's session rows come from when they are not thurbox's own
+/// database's: Fleet's Tasks, through [`fleet::FleetWatch`] (ADR-41).
+///
+/// Polled on the store's refresh schedule, on the UI thread, so it never
+/// blocks: the source reads on a worker of its own and hands over what it
+/// has.
+pub trait SnapshotSource: Send {
+    /// What moved since the last call, or `None` when nothing did.
+    fn poll(&mut self) -> Option<SourceRead>;
+}
+
+/// One answer of a [`SnapshotSource`]: every session row, and what is wrong
+/// with the source, if anything is. The rows stand while the error does.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SourceRead {
+    pub sessions: Vec<SessionRow>,
+    pub error: Option<String>,
+}
+
 /// An editor request, answered: the session to open it over and the editor
 /// setting as stored (`thurbox-cli editor set` / `editor mode`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,6 +414,8 @@ pub struct EditorRequest {
 /// a loop that stops painting (issue #1474).
 pub struct SnapshotStore {
     db: Option<DbWorker>,
+    /// The rows' source when the database is not it; see [`SnapshotSource`].
+    source: Option<Box<dyn SnapshotSource>>,
     /// Whether a read has been sent and not answered. At most one is: an
     /// answer is applied whole, and two in flight would only race.
     reading: bool,
@@ -518,6 +540,32 @@ impl SnapshotStore {
         )
     }
 
+    /// Build a store whose session rows come from `source` rather than the
+    /// database. The writes the store makes to session rows (seen marks,
+    /// panes, hook reports) have nowhere to land and are dropped.
+    pub fn with_source(
+        source: Box<dyn SnapshotSource>,
+        backends: &crate::backend::BackendRegistry,
+        settings: &Settings,
+    ) -> Self {
+        let mut store = Self::build(None, None, None, backends, settings);
+        store.source = Some(source);
+        store.poll_source();
+        store
+    }
+
+    /// Apply what the source has, returning whether anything moved.
+    fn poll_source(&mut self) -> bool {
+        let Some(read) = self.source.as_mut().and_then(|source| source.poll()) else {
+            return false;
+        };
+        self.current.sessions = read.sessions;
+        self.current.error = read.error;
+        self.current.taken_at_ms = taken_at_stamp();
+        self.mark_changed();
+        true
+    }
+
     fn build(
         db: Option<DbWorker>,
         db_path: Option<PathBuf>,
@@ -530,6 +578,7 @@ impl SnapshotStore {
         let served: std::collections::HashSet<_> = backends.routes().cloned().collect();
         let mut store = Self {
             db,
+            source: None,
             db_path,
             reading: false,
             reread: false,
@@ -682,7 +731,7 @@ impl SnapshotStore {
     /// Poll using the caller's monotonic clock. The row read and other workers
     /// retain their own timestamps; this instant controls only the poll cadence.
     pub fn refresh_if_due_at(&mut self, now: Instant) -> bool {
-        let applied = self.drain_replies();
+        let applied = self.drain_replies() | self.poll_source();
         let due = self
             .last_refresh
             .is_none_or(|at| now.saturating_duration_since(at) >= REFRESH_INTERVAL);

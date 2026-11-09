@@ -354,17 +354,24 @@ thurbox is a Fleet client and reads nothing of Fleet's store directly.
 
 - `fleet watch --json`: a long-running NDJSON stream, one event per changed
   Task, resumable by the store's write counter (`--since`). Built; its events
-  are in [the command line](contracts.md#the-command-line). It will feed the
-  snapshot worker behind a `SnapshotSource` trait (today
-  `src/kernel/snapshot/db.rs`).
-- `fleet apply`, `delete`, `send`, `amend`: the interface's commands, behind
-  an `Executor` trait (today `src/kernel/command/execute.rs`, which calls
-  `session_ops` directly).
+  are in [the command line](contracts.md#the-command-line). It feeds
+  thurbox's snapshot behind the `SnapshotSource` trait: `FleetWatch`
+  (`src/kernel/snapshot/fleet.rs`) publishes each Task as a session row.
+- `fleet apply`, `delete`, `send`: the interface's commands, behind the
+  `Executor` trait. `src/kernel/command/fleet.rs` runs them; thurbox's own
+  engine (`src/kernel/command/execute.rs`, which calls `session_ops`) is the
+  other implementation. No interface command maps to `amend` yet.
 - `fleet attach <task> --json`: the command that opens the Task's terminal
   stream ([the terminal stream](../runtime/README.md#the-terminal-stream)).
   Built: it asks the runtime's `attach` and wraps a `tty` answer in
   `fleet term-bridge`.
-- thurbox starts `fleet up` when no manager holds the lease.
+- thurbox starts `fleet up` when no manager holds the lease. Built: it
+  starts one, and starts it again when it exits. A `fleet up` that exits with
+  6 found the lease held, which is no error.
+
+`[fleet] enabled` in thurbox's `settings.toml` selects the Fleet engine at
+startup ([thurbox's configuration](../thurbox/config.md#fleet--the-session-engine)).
+Off, thurbox's own engine still runs the sessions over its database.
 
 An interactive session is a Task with no brief: it spawns and waits for its
 user. Built: it stays Spawned with `Briefed=False/Interactive`, and its inbox

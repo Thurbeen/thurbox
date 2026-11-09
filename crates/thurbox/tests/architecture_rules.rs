@@ -1283,6 +1283,12 @@ struct InPlaceWrite {
 
 const IN_PLACE_ALLOWED: &[InPlaceWrite] = &[
     InPlaceWrite {
+        file: "kernel/snapshot/fleet.rs",
+        call: "File::create",
+        sites: 1,
+        why: "fleet up's standard error, unlinked once spawned and read once it exits",
+    },
+    InPlaceWrite {
         file: "update/self_update.rs",
         call: "fs::copy",
         sites: 1,
@@ -1657,6 +1663,7 @@ const KERNEL_THREADS: &[(&str, &[&str])] = &[
         "kernel/snapshot",
         &[
             "kernel/snapshot/db.rs",
+            "kernel/snapshot/fleet.rs",
             "kernel/snapshot/git.rs",
             "kernel/snapshot/probe.rs",
         ],

@@ -89,6 +89,38 @@ pub struct Settings {
     /// OpenTelemetry settings (`[telemetry]` table). Off by default.
     #[serde(default)]
     pub telemetry: TelemetrySettings,
+    /// The session engine (`[fleet]` table): thurbox's own, or Fleet.
+    #[serde(default)]
+    pub fleet: FleetSettings,
+}
+
+/// Which engine runs the sessions (`[fleet]` table), ADR-41. Off, thurbox's
+/// own engine runs them over its database, as it always has. On, every
+/// session is a Fleet Task: the interface reads them through `fleet watch`,
+/// acts through `fleet apply`, `send` and `delete`, and keeps a `fleet up`
+/// running. Read at startup only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FleetSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// The `fleet` binary: a name on `PATH` or a path. It reads its own
+    /// config, as `fleet` does anywhere (`FLEET_CONFIG`, then its per-user
+    /// file).
+    #[serde(default = "default_fleet_program")]
+    pub program: String,
+}
+
+fn default_fleet_program() -> String {
+    "fleet".to_string()
+}
+
+impl Default for FleetSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            program: default_fleet_program(),
+        }
+    }
 }
 
 /// OpenTelemetry for the sessions thurbox spawns (`[telemetry]` table).
@@ -563,6 +595,8 @@ pub const FIELDS: &[Field] = &[
     field!(Live, clipboard),
     // The mirror reads the file itself on every pass.
     field!(Live, remote),
+    // The engine's source and executor are chosen once, at boot (ADR-41).
+    field!(NextLaunch, fleet),
     // Spawns, restarts and the tick read the file themselves, so the table
     // applies live there. What is in force here feeds only the diagnostic-log
     // bridge, built once at boot (ADR-38), so it is held as booted and only a
@@ -614,6 +648,7 @@ impl Default for Settings {
             clipboard: ClipboardSettings::default(),
             remote: RemoteSettings::default(),
             telemetry: TelemetrySettings::default(),
+            fleet: FleetSettings::default(),
         }
     }
 }
@@ -968,7 +1003,8 @@ mod tests {
              soft_delete = true\nversion_check = false\nauto_update = false\n\
              [notifications]\nsound = false\n[clipboard]\nprovider = \"none\"\n\
              [remote]\ntransitive_sessions = true\n\
-             [telemetry]\nenabled = true\nexport_diagnostic_logs = true\n",
+             [telemetry]\nenabled = true\nexport_diagnostic_logs = true\n\
+             [fleet]\nenabled = true\n",
         )
         .unwrap();
         let adopted = base.with_live_from(&other);

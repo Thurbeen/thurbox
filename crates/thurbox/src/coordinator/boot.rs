@@ -270,7 +270,22 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
     // Hoisted out of the struct literal below so each phase can be timed
     // separately; the construction order is unchanged.
     let phase = Instant::now();
-    let snapshots = SnapshotStore::open(&backends, &startup_settings);
+    // The engine (ADR-41): thurbox's own over its database, or Fleet's Tasks
+    // through its command line, with a `fleet up` kept running.
+    let fleet = startup_settings
+        .fleet
+        .enabled
+        .then(|| std::path::PathBuf::from(&startup_settings.fleet.program));
+    let snapshots = match &fleet {
+        Some(program) => SnapshotStore::with_source(
+            Box::new(thurbox::kernel::snapshot::fleet::FleetWatch::with_manager(
+                program.clone(),
+            )),
+            &backends,
+            &startup_settings,
+        ),
+        None => SnapshotStore::open(&backends, &startup_settings),
+    };
     startup.db_open_ms = phase.elapsed().as_millis() as u64;
 
     let phase = Instant::now();
@@ -303,7 +318,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn Error>> {
         ui_dir,
         snapshots,
         terminals: terminals(std::sync::Arc::clone(&backends), &startup_settings),
-        commands: CommandBus::new(std::sync::Arc::clone(&backends), &startup_settings),
+        commands: match fleet {
+            Some(program) => CommandBus::fleet(program),
+            None => CommandBus::new(std::sync::Arc::clone(&backends), &startup_settings),
+        },
         diffs: DiffStore::new(),
         repos: thurbox::kernel::repos::RepoStore::new(),
         metrics: Metrics::new(),
