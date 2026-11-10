@@ -172,7 +172,7 @@ prek install
 ```
 
 - **commit-msg** — conventional-commit validation (`cog verify`)
-- **pre-commit** — fmt, clippy, bats, shellcheck, rumdl (and a check that the
+- **pre-commit** — fmt, clippy, large files, bats, shellcheck, rumdl (and a check that the
   local rumdl is the version CI pins), selene, stylua, prettier, htmlhint,
   stylelint, eslint
 - **pre-push** — nextest (the architecture rules included), rustdoc,
@@ -279,7 +279,24 @@ per-module allowlist, in [`docs/constitution.md`](docs/constitution.md).
 - Update docs alongside code when a documented decision changes.
 
 CI runs the same deterministic checks (clippy, nextest, cargo-deny, `cog`,
-rumdl, shellcheck) that gate every merge — there are no LLM-gated checks.
+rumdl, shellcheck, the large-file cap) that gate every merge — there are no
+LLM-gated checks.
+
+### Large files
+
+Git keeps every version of every file, and every clone downloads all of them.
+Re-recorded demo GIFs and MP4s grew this repository to 478 MiB packed while its
+tree is 39 MiB. Deleting a file later does not give that space back.
+
+- prek's builtin `check-added-large-files` hook fails a file over 1 MiB. It
+  runs on staged files at commit, and CI's `Large Files` job runs it on the
+  whole tree.
+- Its `exclude` in `.pre-commit-config.yaml` lists the few files that were over
+  the cap when it arrived. Shrink a file and remove it from that list; do not
+  add to it.
+- Re-record a demo only when its screen changes, and keep it short and small.
+- Put generated output in `.gitignore` and build it where it is used, or attach
+  it to a release.
 
 ## License
 
