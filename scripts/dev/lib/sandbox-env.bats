@@ -33,11 +33,25 @@ teardown() {
   # The manager's own argv, as thurbox starts it: `<fleet> up`.
   printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$bin/fleet"
   chmod +x "$bin/fleet"
-  "$bin/fleet" up &
+  FLEET_CONFIG="$ROOT/fleet/config.toml" "$bin/fleet" up &
   OTHER=$!
   sleep 0.2
   : > "$ROOT/data/fleet-up-$OTHER.log"
   _tbx_stop_fleet "$ROOT"
   sleep 0.2
   run ! kill -0 "$OTHER"
+}
+
+@test "another sandbox's fleet up whose pid a stale log names is left alone" {
+  [ -r /proc/self/environ ] || skip "no /proc to read a process's environment"
+  bin="${BATS_TEST_TMPDIR}/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\nwhile :; do sleep 1; done\n' > "$bin/fleet"
+  chmod +x "$bin/fleet"
+  FLEET_CONFIG="${BATS_TEST_TMPDIR}/other/fleet/config.toml" "$bin/fleet" up &
+  OTHER=$!
+  sleep 0.2
+  : > "$ROOT/data/fleet-up-$OTHER.log"
+  _tbx_stop_fleet "$ROOT"
+  kill -0 "$OTHER"
 }

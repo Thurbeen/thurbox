@@ -190,6 +190,14 @@ tbx_fleet_session() {
         "$task" "$1" "${3:-claude-code}" "$2" | fleet apply --create-only -f - >/dev/null
 }
 
+# _tbx_fleet_is_ours <pid> <root> — whether that process runs on the Fleet
+# config tbx_sandbox_fleet wrote under <root>. Without /proc nothing tells, so
+# the caller's `fleet up` check is all there is.
+_tbx_fleet_is_ours() { # <pid> <root>
+    [ -r "/proc/$1/environ" ] || return 0
+    tr '\0' '\n' < "/proc/$1/environ" | grep -qxF "FLEET_CONFIG=$2/fleet/config.toml"
+}
+
 # _tbx_stop_fleet <root> — stop the `fleet up` thurbox started for the sandbox
 # under <root>. It runs in a process group of its own and outlives the TUI, so
 # nothing else ends it. thurbox names its log after it, `fleet-up-<pid>.log` in
@@ -202,9 +210,11 @@ _tbx_stop_fleet() {
         case "$pid" in
             *[!0-9]*|"") ;; # named before its manager started: no manager
             # A log can outlive its manager and the pid be reused: signal it
-            # only while it is still a `fleet up`.
+            # only while it is still a `fleet up`, and, where /proc shows its
+            # environment, this sandbox's.
             *) case "$(ps -p "$pid" -o args= 2>/dev/null)" in
-                   *fleet" up") kill "$pid" 2>/dev/null || true ;;
+                   *fleet" up") _tbx_fleet_is_ours "$pid" "$1" \
+                       && kill "$pid" 2>/dev/null || true ;;
                esac ;;
         esac
     done
