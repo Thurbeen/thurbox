@@ -165,16 +165,9 @@ anything reading the screen to decide whether the session is ready sees a blank
 pane that is nonetheless working.
 
 It declares no `resume_args` or `fork_args`, and that absence is the statement:
-a shell has no conversation. `session restart` replays its recipe in the same
-directory (a shell barely notices — its history and cwd live on disk),
-`session fork` gives you a second shell beside it, and `session create --resume`
-silently starts fresh rather than attaching to anything (only a raw
-`--command` session refuses `--resume` outright; see
-[features.md](features.md#a-launch-recipe-is-not-a-conversation)). Nothing
-wires status hooks for it either, so a `shell` session reports `hook_state: null`
-until something in it calls `thurbox-cli session signal` — which anything in
-the pane can, since
-`THURBOX_SESSION` is in its environment.
+a shell has no conversation. Fleet runs a harness it has no profile for as the
+program of that name, with no hooks, so a `shell` session reports no hook
+state.
 
 ### ID model: pinned vs. id-less
 
@@ -343,31 +336,13 @@ automatically. Work the checklist top to bottom:
 
 ## Local preparation before an agent starts
 
-Two places can prepare a directory before an agent starts, and they answer
-different questions:
-
-- **`setup` in the agent's `agents.toml` entry** is part of *how this agent
-  launches*: shell steps run in the agent's own pane, in its launch directory
-  and environment, on every launch (create, restart, start, restore, fork) and
-  on the host the agent runs on. A failing step aborts the launch and the
-  session reads `failed`. See [config.md](config.md#templates-argument-order-and-setup).
-- **A `session.pre_launch` hook in the user's `hooks.toml`** is *policy around
-  launches*: one command for whichever agents it names, run by thurbox outside
-  the pane, on create/fork only, on the machine the agent runs on (a remote
-  session's host), before the window exists; a refusal leaves the prepared
-  directories for inspection.
-
-```toml
-[[hooks]]
-event = "session.pre_launch"
-agents = ["claude"]
-command = 'my-trust-script "$THURBOX_CWD"'
-timeout_secs = 10
-```
-
-Either way the script is yours: Thurbox supplies the final cwd and worktree
-paths without knowing an agent's trust-file format. See
-[config.md](config.md#hookstoml) for the hook's contract.
+`setup` in the agent's `agents.toml` entry prepares a directory before the
+agent starts: shell steps run in the agent's own pane, in its launch directory
+and environment, on every launch and on the host the agent runs on. A failing
+step aborts the launch and the session reads `failed`. See
+[config.md](config.md#templates-argument-order-and-setup). The script is
+yours: Thurbox supplies the final cwd without knowing an agent's trust-file
+format.
 
 ### Replacing a launch wrapper
 

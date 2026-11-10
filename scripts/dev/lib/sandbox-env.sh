@@ -235,7 +235,9 @@ tbx_sandbox_clean() {
     tdir="$(tbx_sandbox_tmux_dir "$profile")"
     _tbx_stop_fleet "$root"
     if [ -d "$tdir" ]; then
-        (TMUX_TMPDIR="$tdir" && export TMUX_TMPDIR && _tbx_kill_servers)
+        for socket in "$TBX_DEV_SOCKET" runtime-mux; do
+            TMUX_TMPDIR="$tdir" tmux -L "$socket" kill-server >/dev/null 2>&1 || true
+        done
     fi
     rm -rf "$root" "$tdir"
 }

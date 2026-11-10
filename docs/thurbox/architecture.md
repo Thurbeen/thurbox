@@ -3075,8 +3075,8 @@ The `hooks` consumer now uses that same lease/cursor pair for
 the cursor's SQLite transaction, so delivery is at-least-once and carries
 `seq` for script-side deduplication. Watch and waits keep a process-local
 sequence number and share the bounded event reader and JSON projection with
-hooks. The limits and lifecycle rules live in [config.md](config.md#hookstoml)
-and [orchestration.md](orchestration.md#bounded-waits-and-read-side-evidence).
+hooks. The limits and lifecycle rules lived in v2's `hooks.toml` section of
+config.md, and [orchestration.md](orchestration.md#bounded-waits-and-read-side-evidence).
 
 **Limits**: plain HTTP only. No TLS stack is in the tree, so an `https`
 backend is reached through a local Collector. A Prometheus backend needs the
